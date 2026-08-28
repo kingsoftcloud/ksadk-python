@@ -119,6 +119,8 @@ class ManagedLangGraphEngine:
         memory_runtime: Any | None = None,
         skill_runtime: SkillRuntime | None = None,
         mcp_runtime: McpCapabilityRuntime | None = None,
+        artifact_store: Any | None = None,
+        mcp_offload_policy: Any | None = None,
         event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
@@ -144,7 +146,12 @@ class ManagedLangGraphEngine:
         # 熔断/tools 缓存，披露层级（L0 目录/L1 列表/L2 Schema/L3 调用）
         # 由 McpDisclosureBridge 接入默认 Loop。
         self._mcp_runtime = mcp_runtime
-        self._mcp_disclosure = McpDisclosureBridge(mcp_runtime)
+        # P1 大结果 Offload：L3 结果超阈值/命中敏感策略 → Artifact Store 外置。
+        self._mcp_disclosure = McpDisclosureBridge(
+            mcp_runtime,
+            artifact_store=artifact_store,
+            offload_policy=mcp_offload_policy,
+        )
         # P3 补强：事件出口回调（session_id, run_id, event）——洞察登记处
         # （ksadk.harness.insights）由此拿到完整事件流，供 Studio API 消费。
         self._event_sink = event_sink

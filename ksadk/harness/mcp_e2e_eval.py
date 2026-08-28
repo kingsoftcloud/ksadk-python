@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -102,9 +103,16 @@ _HR_TOOLS = {
 
 
 class _FakeTransport(McpTransport):
-    def __init__(self, tools: dict[str, dict], *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        tools: dict[str, dict],
+        *,
+        fail: bool = False,
+        big_result: bool = False,
+    ) -> None:
         self._tools = tools
         self._fail = fail
+        self._big_result = big_result
         self.calls: list[tuple[str, dict]] = []
 
     async def list_tools(self) -> list[dict[str, Any]]:
@@ -117,8 +125,16 @@ class _FakeTransport(McpTransport):
             raise ConnectionError("mcp server unreachable")
         self.calls.append((name, dict(arguments)))
         if name == "get_invoice" and arguments.get("invoice_id") == "INV-2026-0042":
-            return {"invoice_id": "INV-2026-0042", "amount": 88600, "currency": "CNY",
+            base = {"invoice_id": "INV-2026-0042", "amount": 88600, "currency": "CNY",
                     "status": "approved", "vendor": "华信科技"}
+            if self._big_result:
+                # P1 大结果：摘要头之外拖上数百 KB 明细，逼迫结果外置。
+                base["lines"] = [
+                    {"no": i, "memo": "采购明细行" * 8, "qty": i % 9 + 1,
+                     "price": 120 + i, "tax_code": f"VAT-{i % 13:02d}"}
+                    for i in range(2000)
+                ]
+            return base
         return {"status": "ok", "tool": name, "echo": arguments}
 
 
@@ -131,6 +147,9 @@ class McpE2ECase:
     #: 高低风险混合：HR Server 升为 HIGH（财务保持 MEDIUM），验证按实际
     #: 目标 Server 动态审批——调财务（低）直通，调 HR（高）才进审批。
     mixed_risk: bool = False
+    #: 大结果 Offload（P1）：get_invoice 返回超大 JSON，验证结果外置
+    #: Artifact Store，模型基于摘要/引用作答。
+    big_result: bool = False
     #: 期望命中的 (server_id, tool_name, 关键参数)。
     expect_call: tuple[str, str, dict[str, Any]] | None = None
     #: 答案必须包含的事实（来自工具结果）。
@@ -169,11 +188,20 @@ MCP_E2E_DATASET: tuple[McpE2ECase, ...] = (
         # 财务 Server 仍 MEDIUM：查询直通执行，不进审批。
         expect_outcome="run_completed",
     ),
+    McpE2ECase(
+        case_id="large-result-offload",
+        task="查一下发票 INV-2026-0042 的金额和状态，并说明完整明细放在了哪里。",
+        big_result=True,
+        expect_call=(_FINANCE, "get_invoice", {"invoice_id": "INV-2026-0042"}),
+        expected_facts=("88600", "artifact://"),
+        expect_outcome="run_completed",
+    ),
 )
 
 
 def _runtime(case: McpE2ECase) -> tuple[McpCapabilityRuntime, _FakeTransport]:
-    transport = _FakeTransport(_FINANCE_TOOLS, fail=case.finance_fail)
+    transport = _FakeTransport(_FINANCE_TOOLS, fail=case.finance_fail,
+                               big_result=case.big_result)
     hr_transport = _FakeTransport(_HR_TOOLS)
     runtime = McpCapabilityRuntime()
     runtime.bind(
@@ -287,6 +315,21 @@ def analyze_case(
         outcome_met = matched and not approval_entered and any(
             e.event_type == EventType.RUN_COMPLETED for e in events
         )
+    elif case.big_result:
+        # P1：调用正确 + 结果外置（artifact.created）+ 答案含金额与 Artifact 引用。
+        artifact_created = any(
+            e.event_type == EventType.ARTIFACT_CREATED for e in events
+        )
+        # 金额事实按去千分位口径匹配（模型常写 88,600）。
+        answer_flat = final_answer.replace(",", "").replace("，", "")
+        outcome_met = (
+            matched
+            and artifact_created
+            and all(
+                fact.replace(",", "") in answer_flat for fact in case.expected_facts
+            )
+            and any(e.event_type == EventType.RUN_COMPLETED for e in events)
+        )
     elif case.expect_outcome == "awaiting_approval":
         outcome_met = approval_entered and not any(
             e.event_type == EventType.RUN_COMPLETED for e in events
@@ -375,7 +418,19 @@ async def run_case(
     case: McpE2ECase, *, reasoner: Any, preload_baseline_tokens: int = 0
 ) -> McpE2ECaseReport:
     runtime, transport = _runtime(case)
-    engine = ManagedLangGraphEngine(reasoner=reasoner, mcp_runtime=runtime)
+    engine_kwargs: dict[str, Any] = {"reasoner": reasoner, "mcp_runtime": runtime}
+    if case.big_result:
+        # P1：大结果外置到临时 Artifact Store（单结果阈值 4KB）。
+        from ksadk.harness.artifact_store import ArtifactStore
+        from ksadk.harness.engine.mcp_disclosure import McpOffloadPolicy
+
+        engine_kwargs["artifact_store"] = ArtifactStore(
+            Path(tempfile.mkdtemp(prefix="mcp-e2e-art-"))
+        )
+        engine_kwargs["mcp_offload_policy"] = McpOffloadPolicy(
+            single_result_threshold_bytes=4096
+        )
+    engine = ManagedLangGraphEngine(**engine_kwargs)
     compiled = await engine.compile(_spec())
     handle = await engine.start(
         StartRequest(

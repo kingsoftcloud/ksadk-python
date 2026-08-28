@@ -9,7 +9,10 @@
 - **L2**：``mcp_read_tool_schema(server_id, tool_name)`` —— 按需读取单个
   Tool 的完整输入 Schema；
 - **L3**：``mcp_call_tool(server_id, tool_name, arguments)`` —— 执行调用，
-  **必须先读过该 Tool 的 Schema**（越级调用被拒）。
+  **必须先读过该 Tool 的 Schema**（越级调用被拒）。大结果 Offload（P1）：
+  超过单结果阈值或命中敏感数据策略的结果写入 Artifact Store，Context 只
+  返回摘要与 URI/Hash/MIME/大小引用；Artifact 写入失败时明确降级报错，
+  绝不把超大结果静默塞回 Context。
 
 调用链复用 :class:`~ksadk.harness.mcp_runtime.McpCapabilityRuntime` 的
 健康缓存、熔断、tools/list 缓存与降级语义；Tool Schema 按 Run 级披露游标
@@ -23,9 +26,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ksadk.harness.artifact_store import ArtifactStore
 from ksadk.harness.capabilities import RiskLevel
 from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.events import EventType, RuntimeEvent
@@ -54,6 +59,30 @@ class McpDisclosureCursors:
 
     listed: set[tuple[str, str]] = field(default_factory=set)
     schema_read: set[tuple[str, str, str]] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class McpOffloadPolicy:
+    """P1 大结果 Offload 策略。
+
+    - ``single_result_threshold_bytes``：单次工具结果超过该字节数 → 外置；
+    - ``sensitive_patterns``：命中任一正则（如身份证/手机号）→ 无论大小强制
+      外置，且摘要置空（敏感明文不留在 Context）；
+    - ``run_total_quota_bytes``：Run 累计外置字节配额，超出后新的超大结果
+      明确报错降级（不回填 Context）。
+    """
+
+    enabled: bool = True
+    single_result_threshold_bytes: int = 4096
+    run_total_quota_bytes: int = 10 * 1024 * 1024
+    summary_chars: int = 500
+    sensitive_patterns: tuple[str, ...] = ()
+
+    def sensitive_match(self, content: str) -> str | None:
+        for pattern in self.sensitive_patterns:
+            if re.search(pattern, content):
+                return pattern
+        return None
 
 
 @dataclass(frozen=True)
@@ -136,8 +165,16 @@ class McpDisclosureBridge:
 
     _TOOL_NAMES = frozenset({MCP_LIST_TOOLS_TOOL, MCP_READ_SCHEMA_TOOL, MCP_CALL_TOOL_TOOL})
 
-    def __init__(self, runtime: McpCapabilityRuntime | None) -> None:
+    def __init__(
+        self,
+        runtime: McpCapabilityRuntime | None,
+        *,
+        artifact_store: ArtifactStore | None = None,
+        offload_policy: McpOffloadPolicy | None = None,
+    ) -> None:
         self._runtime = runtime
+        self._artifact_store = artifact_store
+        self._offload_policy = offload_policy or McpOffloadPolicy()
 
     # ------------------------------------------------------------- 装配
 
@@ -368,7 +405,87 @@ class McpDisclosureBridge:
             content=str(rendered),
             tool_name=tool_name,
         )
+        payload = self._offload_if_needed(
+            run, pending_events, server_id, tool_name, rendered
+        )
+        if payload.get("offloaded"):
+            # 大结果不回 Context：只保留摘要与引用（完整内容在 Artifact URI）。
+            return {"server_id": server_id, "tool_name": tool_name, **payload}
         return {"server_id": server_id, "tool_name": tool_name, "result": rendered}
+
+    def _offload_if_needed(
+        self,
+        run: Any,
+        pending_events: dict[str, list[RuntimeEvent]],
+        server_id: str,
+        tool_name: str,
+        rendered: Any,
+    ) -> dict[str, Any]:
+        """P1 大结果 Offload：超阈值/命中敏感策略 → Artifact Store 外置。
+
+        返回并入工具结果的引用字段（``offloaded=true`` 时含摘要与
+        URI/Hash/MIME/size）。写入失败或超额 → 抛 McpDisclosureError 明确
+        降级，绝不把超大/敏感结果静默留在 Context。
+        """
+        policy = self._offload_policy
+        content = str(rendered)
+        size = len(content.encode("utf-8"))
+        sensitive = policy.sensitive_match(content) if policy.enabled else None
+        oversized = policy.enabled and size > policy.single_result_threshold_bytes
+        if not sensitive and not oversized:
+            return {}
+        if self._artifact_store is None:
+            raise McpDisclosureError(
+                f"MCP {server_id!r} 的 Tool {tool_name!r} 结果 {size} 字节需外置"
+                "（超大或含敏感数据），但未装配 ArtifactStore：结果已丢弃，"
+                "不会写回上下文"
+            )
+        run_id = run.handle.run_id
+        # Run 累计配额（从 Artifact 索引实算，跨进程恢复后依然正确）。
+        used = sum(record.bytes for record in self._artifact_store.list(run_id))
+        if used + size > policy.run_total_quota_bytes:
+            raise McpDisclosureError(
+                f"MCP {server_id!r} 的 Tool {tool_name!r} 结果 {size} 字节超出 "
+                f"Run 外置配额（已用 {used}/{policy.run_total_quota_bytes}）："
+                "结果已丢弃，不会写回上下文"
+            )
+        name = f"mcp_{server_id}_{tool_name}"
+        try:
+            record = self._artifact_store.save(
+                run_id=run_id, name=name, content=content.encode("utf-8"),
+                mime="application/json",
+            )
+        except (OSError, ValueError) as exc:
+            raise McpDisclosureError(
+                f"MCP {server_id!r} 的 Tool {tool_name!r} 结果 {size} 字节 "
+                f"写入 Artifact Store 失败（{exc}）：结果已丢弃，不会写回上下文"
+            ) from exc
+        pending_events.setdefault(run_id, []).append(
+            RuntimeEvent.create(
+                EventType.ARTIFACT_CREATED,
+                agent_id=run.state.agent_id,
+                user_id=run.state.user_id,
+                session_id=run.state.session_id,
+                invocation_id=run_id,
+                seq_id=0,
+                payload={
+                    "name": record.name,
+                    "version": record.version,
+                    "uri": record.uri,
+                    "mime": record.mime,
+                },
+            )
+        )
+        # 敏感命中时摘要置空，敏感明文不留在 Context。
+        summary = "" if sensitive else content[: policy.summary_chars]
+        return {
+            "offloaded": True,
+            "artifact_uri": record.uri,
+            "content_hash": record.content_hash,
+            "mime": record.mime,
+            "size_bytes": record.bytes,
+            "summary": summary,
+        }
 
     def _emit(
         self,
@@ -414,5 +531,6 @@ __all__ = [
     "McpDisclosureError",
     "MCP_LIST_TOOLS_TOOL",
     "MCP_READ_SCHEMA_TOOL",
+    "McpOffloadPolicy",
     "disclosure_tools",
 ]

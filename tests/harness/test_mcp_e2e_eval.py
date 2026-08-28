@@ -52,10 +52,10 @@ def _good_calls() -> list[tuple[str, dict]]:
 
 
 def test_dataset_shape():
-    assert len(MCP_E2E_DATASET) == 4
+    assert len(MCP_E2E_DATASET) == 5
     assert {c.case_id for c in MCP_E2E_DATASET} == {
         "invoice-query", "high-risk-approval", "mcp-unavailable-degrade",
-        "mixed-risk-dynamic-approval",
+        "mixed-risk-dynamic-approval", "large-result-offload",
     }
     # 干扰工具规模足以体现预加载负担。
     assert len(_FINANCE_TOOLS) >= 20
@@ -101,6 +101,22 @@ def test_analyze_counts_unrelated_schema_and_violations():
     report = analyze_case(case, events, transport, "", preload_baseline_tokens=0)
     assert report.unrelated_schema_loads == 1
     assert report.level_violations == 1
+
+
+def test_big_result_offload_case():
+    """P1：大结果外置后调用仍正确，答案含金额与 artifact 引用即达成。"""
+    case = next(c for c in MCP_E2E_DATASET if c.case_id == "large-result-offload")
+    report = asyncio.run(
+        run_case(
+            case,
+            reasoner=_ScriptedReasoner(
+                _good_calls(), final_text="金额 88600，明细见 artifact://r/xxx"
+            ),
+            preload_baseline_tokens=1000,
+        )
+    )
+    assert report.tool_selection_success
+    assert report.expected_outcome_met
 
 
 def _event(event_type: str, payload: dict[str, Any]) -> RuntimeEvent:
