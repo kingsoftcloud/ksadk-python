@@ -62,11 +62,17 @@ class ArtifactStore:
         name = _safe_name(name)
         if not name:
             raise ValueError("artifact name 不能为空")
+        run_id = _safe_name(run_id)
+        if not run_id:
+            raise ValueError("run_id 不能为空")
         version = self._next_version(run_id, name)
         digest = "sha256:" + hashlib.sha256(content).hexdigest()
         directory = self._root / run_id
         directory.mkdir(parents=True, exist_ok=True)
         file_path = directory / f"{name}.v{version}"
+        # 目录穿越防线：规范化后必须仍在 Store 根目录内（run_id/name 已各
+        # 自过 _safe_name，此处校验最终落点，防御纵深）。
+        _assert_within_root(self._root, file_path)
         file_path.write_bytes(content)
         uri = f"artifact://{run_id}/{name}@v{version}"
         record = ArtifactRecord(
@@ -124,9 +130,10 @@ class ArtifactStore:
             body = uri[len("artifact://") :]
             run_id, rest = body.split("/", 1)
             name, version = rest.rsplit("@v", 1)
-            file_path = self._root / run_id / f"{_safe_name(name)}.v{int(version)}"
+            file_path = self._root / _safe_name(run_id) / f"{_safe_name(name)}.v{int(version)}"
         except ValueError as exc:
             raise ValueError(f"非法 artifact uri: {uri!r}") from exc
+        _assert_within_root(self._root, file_path)
         if not file_path.is_file():
             raise FileNotFoundError(f"artifact 内容缺失: {uri}")
         return file_path.read_bytes()
@@ -147,6 +154,13 @@ class ArtifactStore:
 def _safe_name(name: str) -> str:
     keep = [c if (c.isalnum() or c in "-_.") else "_" for c in str(name or "").strip()]
     return "".join(keep)[:128]
+
+
+def _assert_within_root(root: Path, path: Path) -> None:
+    root_resolved = root.resolve()
+    path_resolved = path.resolve()
+    if root_resolved != path_resolved and root_resolved not in path_resolved.parents:
+        raise ValueError(f"artifact 路径越界: {path}")
 
 
 def _record(row: tuple) -> ArtifactRecord:

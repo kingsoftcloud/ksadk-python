@@ -6,6 +6,8 @@ import asyncio
 import json
 from typing import Any
 
+import pytest
+
 from ksadk.harness.artifact_store import ArtifactStore
 from ksadk.harness.capabilities import CapabilityDescriptor, RiskLevel
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
@@ -172,6 +174,11 @@ def test_large_result_offloaded_to_artifact_store(tmp_path):
     payload = created[0].payload
     assert payload["uri"].startswith("artifact://")
     assert payload["mime"] == "application/json"
+    # P1.1：事件与 Context 引用对齐，便于 Studio 展示与审计。
+    assert payload["content_hash"].startswith("sha256:")
+    assert payload["size_bytes"] > 4096
+    assert payload["source"] == "mcp"
+    assert payload["source_ref"] == f"{_SERVER}/get_invoice"
     # 完整内容在 Store，可按 URI 取回。
     records = store.list(_run_id(events))
     assert records and b"rows" in store.read(records[0])
@@ -248,6 +255,36 @@ def test_sensitive_result_forced_offload_without_summary(tmp_path):
     # 敏感明文不留在 Context（摘要置空）。
     assert "id_card" not in text and "110101" not in text
     assert "artifact://" in text
+
+
+def test_default_sensitive_patterns_active(tmp_path):
+    """P1.1：默认策略开启基础敏感识别——手机号/身份证即使小结果也外置。"""
+    store = ArtifactStore(tmp_path / "art")
+    reasoner = _ScriptedReasoner(_CHAIN)
+    events = _drive(reasoner, _runtime({"contact": "13812345678"}), store=store)
+    assert [e for e in events if e.event_type == EventType.ARTIFACT_CREATED]
+    assert "13812345678" not in _tool_result_message(reasoner)
+
+
+def test_string_result_offloaded_as_text_plain(tmp_path):
+    """P1.1：MIME 按结果形态选择——纯字符串 → text/plain。"""
+    store = ArtifactStore(tmp_path / "art")
+    reasoner = _ScriptedReasoner(_CHAIN)
+    events = _drive(reasoner, _runtime("x" * 8192), store=store)
+    created = [e for e in events if e.event_type == EventType.ARTIFACT_CREATED]
+    assert created and created[0].payload["mime"] == "text/plain"
+
+
+def test_run_id_path_traversal_is_rejected(tmp_path):
+    """P1.1：调用方控制 invocation_id 时不得目录穿越。"""
+    store = ArtifactStore(tmp_path / "art")
+    record = store.save(run_id="../../evil", name="r", content=b"x")
+    # run_id 已规范化为安全名，URI 与磁盘路径都留在 Store 根目录内。
+    assert "../" not in record.uri
+    assert (tmp_path / "art" / ".._.._evil" / "r.v1").is_file()
+    with pytest.raises(ValueError):
+        # 非法 uri 解析后路径越界 → 拒绝读取。
+        store._read_uri("artifact://../../etc/passwd/r@v1")
 
 
 def _run_id(events):

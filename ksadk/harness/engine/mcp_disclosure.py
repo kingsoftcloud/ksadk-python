@@ -44,6 +44,14 @@ MCP_CALL_TOOL_TOOL = "mcp_call_tool"
 #: 触发审批的风险等级（capability.descriptor.risk_level）。
 _APPROVAL_RISK_LEVELS = frozenset({RiskLevel.HIGH, RiskLevel.CRITICAL})
 
+#: 平台托管 Runtime 的基础敏感数据默认规则（组织可覆盖或接 DLP）：
+#: 中国大陆身份证号 / 16-19 位银行卡号 / 1[3-9] 开头手机号。
+_DEFAULT_SENSITIVE_PATTERNS = (
+    r"\b\d{17}[\dXx]\b",
+    r"\b\d{16,19}\b",
+    r"(?<!\d)1[3-9]\d{9}(?!\d)",
+)
+
 
 class McpDisclosureError(RuntimeError):
     """MCP 披露越级或参数缺失（被默认 Loop 拦截为工具错误事件）。"""
@@ -66,8 +74,9 @@ class McpOffloadPolicy:
     """P1 大结果 Offload 策略。
 
     - ``single_result_threshold_bytes``：单次工具结果超过该字节数 → 外置；
-    - ``sensitive_patterns``：命中任一正则（如身份证/手机号）→ 无论大小强制
-      外置，且摘要置空（敏感明文不留在 Context）；
+    - ``sensitive_patterns``：命中任一正则 → 无论大小强制外置，且摘要置空
+      （敏感明文不留在 Context）。默认开启平台基础规则（身份证/银行卡/
+      手机号），组织可通过自定义 policy 覆盖或接入 DLP/分类服务；
     - ``run_total_quota_bytes``：Run 累计外置字节配额，超出后新的超大结果
       明确报错降级（不回填 Context）。
     """
@@ -76,7 +85,7 @@ class McpOffloadPolicy:
     single_result_threshold_bytes: int = 4096
     run_total_quota_bytes: int = 10 * 1024 * 1024
     summary_chars: int = 500
-    sensitive_patterns: tuple[str, ...] = ()
+    sensitive_patterns: tuple[str, ...] = _DEFAULT_SENSITIVE_PATTERNS
 
     def sensitive_match(self, content: str) -> str | None:
         for pattern in self.sensitive_patterns:
@@ -406,7 +415,8 @@ class McpDisclosureBridge:
             tool_name=tool_name,
         )
         payload = self._offload_if_needed(
-            run, pending_events, server_id, tool_name, rendered
+            run, pending_events, server_id, tool_name, rendered,
+            mime=_mime_for(result),
         )
         if payload.get("offloaded"):
             # 大结果不回 Context：只保留摘要与引用（完整内容在 Artifact URI）。
@@ -420,6 +430,8 @@ class McpDisclosureBridge:
         server_id: str,
         tool_name: str,
         rendered: Any,
+        *,
+        mime: str,
     ) -> dict[str, Any]:
         """P1 大结果 Offload：超阈值/命中敏感策略 → Artifact Store 外置。
 
@@ -453,7 +465,7 @@ class McpDisclosureBridge:
         try:
             record = self._artifact_store.save(
                 run_id=run_id, name=name, content=content.encode("utf-8"),
-                mime="application/json",
+                mime=mime,
             )
         except (OSError, ValueError) as exc:
             raise McpDisclosureError(
@@ -473,6 +485,11 @@ class McpDisclosureBridge:
                     "version": record.version,
                     "uri": record.uri,
                     "mime": record.mime,
+                    # 与返回 Context 的引用对齐，供 Studio 展示与审计。
+                    "content_hash": record.content_hash,
+                    "size_bytes": record.bytes,
+                    "source": "mcp",
+                    "source_ref": f"{server_id}/{tool_name}",
                 },
             )
         )
@@ -524,6 +541,14 @@ class McpDisclosureBridge:
 
 def _digest(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _mime_for(rendered: Any) -> str:
+    """按结果原始形态选 MIME：JSON 对象/数组 → application/json；
+    标量字符串 → text/plain（Markdown 无可靠嗅探，仍归 text/plain）。"""
+    if isinstance(rendered, (dict, list)):
+        return "application/json"
+    return "text/plain"
 
 
 __all__ = [
