@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import math
 import shlex
+import time
 from collections.abc import Callable, Iterable
 from typing import cast
 
@@ -19,6 +20,7 @@ from ksadk.harness.sandbox_backend import (
     ExecuteResult,
     FilesystemIsolation,
     NetworkControl,
+    SandboxAuditLog,
     SandboxBackendCapabilities,
     SandboxClosedError,
     SandboxHandle,
@@ -61,14 +63,18 @@ class SessionSandboxBackendAdapter:
         *,
         capabilities: SandboxBackendCapabilities,
         artifact_collector: ArtifactCollector | None = None,
+        audit_log: SandboxAuditLog | None = None,
         configured_workspace_root: str | None = None,
         prepare_workspace: bool = False,
     ) -> None:
         if artifact_collector is not None and not capabilities.artifact_collection:
             raise ValueError("提供 artifact_collector 时必须声明 artifact_collection")
+        if capabilities.execution_audit != (audit_log is not None):
+            raise ValueError("execution_audit 能力声明必须与 audit_log 装配一致")
         self._backend = backend
         self._capabilities = capabilities
         self._artifact_collector = artifact_collector
+        self._audit = audit_log
         self._configured_workspace_root = configured_workspace_root
         self._prepare_workspace = prepare_workspace
         self._handles: dict[int, SessionSandboxHandle] = {}
@@ -108,6 +114,7 @@ class SessionSandboxBackendAdapter:
     async def execute(self, handle: SandboxHandle, request: ExecuteRequest) -> ExecuteResult:
         owned = self._require_open_handle(handle)
         timeout = max(1, math.ceil(request.timeout_seconds))
+        started = time.monotonic()
         try:
             if self._capabilities.cooperative_cancellation:
                 result = await self._execute_cancellable(owned, request, timeout)
@@ -119,25 +126,58 @@ class SessionSandboxBackendAdapter:
                     env=dict(owned.spec.env),
                     cwd=owned.spec.workspace_root or None,
                 )
+        except asyncio.CancelledError:
+            self._append_audit(
+                owned,
+                request,
+                ExecuteResult(ok=False, output="", exit_code=130, error="sandbox 命令已取消"),
+                started,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - translate vendor SDK failures
             if "timeout" in type(exc).__name__.lower():
-                return ExecuteResult(
+                translated = ExecuteResult(
                     ok=False,
                     output="",
                     exit_code=124,
                     error=f"sandbox 命令超时: {exc}",
                 )
-            return ExecuteResult(ok=False, output="", exit_code=1, error=str(exc))
+            else:
+                translated = ExecuteResult(ok=False, output="", exit_code=1, error=str(exc))
+            self._append_audit(owned, request, translated, started)
+            return translated
 
         exit_code = int(result.exit_code) if result.exit_code is not None else 1
         error = str(result.stderr or "")
         if exit_code == 124 and "超时" not in error:
             error = f"sandbox 命令超时: {error}".rstrip()
-        return ExecuteResult(
+        translated = ExecuteResult(
             ok=exit_code == 0,
             output=str(result.stdout or ""),
             exit_code=exit_code,
             error=error,
+        )
+        self._append_audit(owned, request, translated, started)
+        return translated
+
+    def _append_audit(
+        self,
+        handle: SessionSandboxHandle,
+        request: ExecuteRequest,
+        result: ExecuteResult,
+        started: float,
+    ) -> None:
+        if self._audit is None:
+            return
+        self._audit.append(
+            handle_id=handle.handle_id,
+            command=request.command,
+            ok=result.ok,
+            exit_code=result.exit_code,
+            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+            output_bytes=len(result.output.encode("utf-8")),
+            error=result.error,
+            run_id=request.run_id,
         )
 
     async def _execute_cancellable(
@@ -239,7 +279,11 @@ def adapt_local_process_backend(
     )
 
 
-def adapt_e2b_backend(backend: E2BSandboxBackend) -> SessionSandboxBackendAdapter:
+def adapt_e2b_backend(
+    backend: E2BSandboxBackend,
+    *,
+    audit_log: SandboxAuditLog | None = None,
+) -> SessionSandboxBackendAdapter:
     """Adapt the current synchronous E2B backend.
 
     E2B enforces the backend's boolean internet policy, but the current SDK
@@ -262,9 +306,10 @@ def adapt_e2b_backend(backend: E2BSandboxBackend) -> SessionSandboxBackendAdapte
             cooperative_cancellation=True,
             artifact_collection=True,
             deterministic_cleanup=True,
-            execution_audit=False,
+            execution_audit=audit_log is not None,
             reconnect=False,
         ),
+        audit_log=audit_log,
         prepare_workspace=True,
     )
 
@@ -274,23 +319,25 @@ def adapt_sdk_sandbox_backend(
     *,
     capabilities: SandboxBackendCapabilities | None = None,
     artifact_collector: ArtifactCollector | None = None,
+    audit_log: SandboxAuditLog | None = None,
 ) -> SessionSandboxBackendAdapter:
     """Select a truthful built-in profile or require one for custom backends."""
 
     if isinstance(backend, LocalProcessSandboxBackend):
-        if capabilities is not None or artifact_collector is not None:
+        if capabilities is not None or artifact_collector is not None or audit_log is not None:
             raise ValueError("内置 local_process profile 不接受能力覆盖")
         return adapt_local_process_backend(backend)
     if isinstance(backend, E2BSandboxBackend):
         if capabilities is not None or artifact_collector is not None:
             raise ValueError("内置 E2B profile 不接受能力覆盖")
-        return adapt_e2b_backend(backend)
+        return adapt_e2b_backend(backend, audit_log=audit_log)
     if capabilities is None:
         raise ValueError("自定义 SDK SandboxBackend 必须显式提供 capabilities")
     return SessionSandboxBackendAdapter(
         backend,
         capabilities=capabilities,
         artifact_collector=artifact_collector,
+        audit_log=audit_log,
     )
 
 

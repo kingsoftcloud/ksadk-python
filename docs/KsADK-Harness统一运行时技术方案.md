@@ -779,6 +779,9 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   执行命令，取消 Harness Task 时先向远端进程发送 `kill()`，因此声明协作
   取消；工作目录由适配层初始化，Artifact 通过远端 Filesystem API 递归枚举，
   只返回目录内的普通文件相对路径，并排除目录外路径与符号链接；
+- E2B 适配器显式装配 `SandboxAuditLog` 时才声明执行审计；成功、超时、
+  SDK 异常和 Harness Task 取消均按 `run_id + handle_id` 留痕，未装配持久化
+  审计库时不宣称可审计；
 - E2B 当前只有 `allow_internet_access` 布尔开关，不能表达按域名 allowlist。
   禁止联网时声明后端强制控制，允许全量联网时声明无细粒度网络控制；任何
   `network_egress=(domain, ...)` 请求均显式拒绝，避免把全量联网伪装成白名单；

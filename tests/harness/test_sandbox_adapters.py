@@ -17,6 +17,7 @@ from ksadk.harness.sandbox_backend import (
     ExecuteRequest,
     FilesystemIsolation,
     NetworkControl,
+    SandboxAuditLog,
     SandboxBackendCapabilities,
     SandboxClosedError,
     SandboxPolicyViolation,
@@ -328,9 +329,47 @@ def test_e2b_adapter_collects_only_workspace_artifacts_and_runs_in_workspace():
     assert vendor.killed is True
 
 
-def test_e2b_adapter_kills_background_command_on_task_cancellation():
+def test_e2b_adapter_persists_execution_audit(tmp_path):
     vendor = _VendorSandbox()
-    backend = adapt_e2b_backend(_FakeE2BBackend(vendor))
+    audit = SandboxAuditLog(tmp_path / "e2b-audit.sqlite3")
+    backend = adapt_e2b_backend(_FakeE2BBackend(vendor), audit_log=audit)
+
+    async def flow():
+        handle = await backend.create(
+            SandboxSpec(workspace_root="/tmp/ksadk-audit", read_only=False)
+        )
+        result = await backend.execute(
+            handle,
+            ExecuteRequest(command="produce report", run_id="run-e2b-audit"),
+        )
+        await backend.close(handle)
+        return handle, result
+
+    handle, result = _run(flow())
+    rows = audit.list("run-e2b-audit")
+    audit.close()
+
+    assert result.ok is True
+    assert backend.capabilities.execution_audit is True
+    assert rows == [
+        {
+            "runId": "run-e2b-audit",
+            "handleId": handle.handle_id,
+            "command": "produce report",
+            "ok": 1,
+            "exitCode": 0,
+            "durationMs": rows[0]["durationMs"],
+            "outputBytes": len("ran:produce report".encode()),
+            "error": "",
+            "createdAt": rows[0]["createdAt"],
+        }
+    ]
+
+
+def test_e2b_adapter_kills_background_command_and_audits_cancellation(tmp_path):
+    vendor = _VendorSandbox()
+    audit = SandboxAuditLog(tmp_path / "e2b-cancel-audit.sqlite3")
+    backend = adapt_e2b_backend(_FakeE2BBackend(vendor), audit_log=audit)
 
     report = _run(
         verify_cooperative_cancellation(
@@ -346,6 +385,12 @@ def test_e2b_adapter_kills_background_command_on_task_cancellation():
     assert report.passed, report.findings
     assert [item.status for item in report.findings] == ["passed"]
     assert vendor.commands.handles[-1]._killed.is_set()
+    rows = audit.list("sandbox-conformance-cancel")
+    audit.close()
+    assert len(rows) == 1
+    assert rows[0]["ok"] == 0
+    assert rows[0]["exitCode"] == 130
+    assert rows[0]["error"] == "sandbox 命令已取消"
 
 
 def test_custom_sdk_backend_requires_explicit_capabilities():
