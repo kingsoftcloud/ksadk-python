@@ -147,6 +147,7 @@
 | `OPENAI_BASE_URL` | 本地运行时 / Runtime 镜像 / OpenClaw / Hermes | 条件必传 | 未设置 | `OPENAI_API_BASE`、`LLM_API_BASE`、`MODEL_API_BASE`、部分 OpenClaw 场景使用 `OPENCLAW_MODEL_BASE_URL` | 否 | 开发者 / 平台 | 否 | OpenAI 兼容接口 base url。 |
 | `OPENAI_MODEL_NAME` | 本地运行时 / Runtime 镜像 | 条件必传 | 未设置 | `LLM_MODEL`、`MODEL_NAME`、Hermes fallback 读取 `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | 默认模型名。 |
 | `KSADK_MODEL_PROFILE_MAP` | KsADK Harness 本地部署 Runtime | 否 | `{}` | 无 | 否 | 平台 / 开发者 | 否 | JSON 对象，将不可变的 `model-profile://name@version` 引用映射为供应商模型标识；仅保存标识映射，不得包含 endpoint 或凭证。未配置匹配项时回退使用 Profile 名称。 |
+| `KSADK_HARNESS_STATE_DIR` | KsADK Harness 本地部署 Runtime | 否 | 未设置 | CLI `--state-dir` | 是 | 平台 / 本地部署器 | 否 | Runtime 的私有状态目录，保存 SQLite Checkpoint 与可查询 Run 索引，用于同一 Deployment 进程重启后的恢复。目录可能包含会话和工具执行状态，必须使用受保护的逐 Deployment 卷，不得写入源码或 Bundle。 |
 | `OPENAI_CONTEXT_LENGTH` | Hermes / 模型配置 | 否 | 未设置 | `MODEL_CONTEXT_LENGTH`、`HERMES_CONTEXT_LENGTH` | 否 | 开发者 / 平台 | 否 | 模型上下文长度提示。 |
 | `OPENAI_FALLBACK_MODEL_NAME` | Hermes / 模型配置 | 否 | 未设置 | `HERMES_FALLBACK_MODEL` | 否 | 开发者 / 平台 | 否 | Hermes fallback 模型名 fallback。 |
 | `LLM_API_KEY` | Serverless / 兼容模型配置 | 条件必传 | 未设置 | `OPENAI_API_KEY`、`MODEL_API_KEY` | 是 | 平台 Secret / 开发者 | 否 | Serverless 平台兼容模型 API key。 |

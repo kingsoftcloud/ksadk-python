@@ -224,7 +224,11 @@ class ManagedLangGraphEngine:
             run_id=run_id,
             session_id=request.session_id,
             runtime_type="managed-langgraph",
-            native_ref={"thread_id": thread_id},
+            native_ref={
+                "thread_id": thread_id,
+                "user_id": request.user_id,
+                "agent_id": state.agent_id,
+            },
         )
         self._runs[run_id] = _EngineRun(
             handle=handle,
@@ -238,6 +242,10 @@ class ManagedLangGraphEngine:
         return handle
 
     # -------------------------------------------------------------- attach
+
+    def is_handle_attached(self, handle: RunHandle) -> bool:
+        """Return whether this engine process already owns the live Run state."""
+        return handle.run_id in self._runs
 
     async def attach(self, handle: RunHandle, compiled: CompiledHarness) -> RunHandle:
         """跨进程恢复（收口 3）：从持久 Checkpoint 重建 _EngineRun。

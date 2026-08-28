@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 from ksadk.harness.compiler import compile_revision_payload
 from ksadk.harness.events import EventType
 from ksadk.harness.reasoner import HarnessReasoningTurn
-from ksadk.harness.runtime_server import DeploymentRuntime, RunRequest, build_deployment_app
+from ksadk.harness.runtime_server import (
+    DeploymentRunStore,
+    DeploymentRuntime,
+    ResumeRequest,
+    RunRequest,
+    build_deployment_app,
+)
 from ksadk.runtime import CancelResult, RunHandle
 
 from .test_lifecycle import _revision_payload
@@ -39,7 +45,30 @@ class _CancelEngine:
         return CancelResult.INTERRUPTED_ACTIVE_TURN
 
 
-def _app():
+class _RecoverableEngine:
+    def __init__(self) -> None:
+        self.attached = False
+        self.resumed = False
+
+    async def compile(self, spec):
+        del spec
+        return object()
+
+    def is_handle_attached(self, handle):
+        del handle
+        return self.attached
+
+    async def attach(self, handle, compiled):
+        del compiled
+        self.attached = True
+        return handle
+
+    async def resume(self, handle, target, payload):
+        del handle, target, payload
+        self.resumed = True
+
+
+def _app(*, state_dir=None):
     spec = compile_revision_payload(
         _revision_payload(), revision_ref="agent-revision://runtime-test@1"
     )
@@ -50,6 +79,7 @@ def _app():
         build_id="bld-test",
         content_hash="sha256:test",
         reasoner=_Reasoner(),
+        state_dir=state_dir,
     )
 
 
@@ -87,6 +117,22 @@ def test_json_run_executes_harness_and_returns_v2_events():
 
         persisted = client.get("/runs/run-1").json()
         assert persisted == result
+
+
+def test_completed_run_projection_survives_app_restart(tmp_path):
+    """Run index is durable even after the in-process Runtime object is replaced."""
+    state_dir = tmp_path / "runtime-state"
+    with TestClient(_app(state_dir=state_dir)) as client:
+        client.post("/control/activate")
+        expected = client.post("/runs", json=_request()).json()
+
+    with TestClient(_app(state_dir=state_dir)) as restarted:
+        response = restarted.get("/runs/run-1")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert (state_dir / "checkpoints.sqlite").is_file()
+    assert (state_dir / "runs.json").stat().st_mode & 0o777 == 0o600
 
 
 def test_duplicate_invocation_id_is_rejected_without_second_execution():
@@ -138,3 +184,48 @@ async def test_cancel_updates_the_queryable_run_status():
     assert result["cancelResult"] == CancelResult.INTERRUPTED_ACTIVE_TURN
     assert result["status"] == "canceled"
     assert runtime.get(handle.run_id)["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_persisted_nonterminal_handle_is_attached_before_resume(tmp_path):
+    state_dir = tmp_path / "runtime-state"
+    handle = RunHandle(
+        run_id="run-paused",
+        session_id="session-1",
+        runtime_type="managed-langgraph",
+        native_ref={
+            "thread_id": "thread-paused",
+            "user_id": "user-1",
+            "agent_id": "agent-1",
+        },
+    )
+    DeploymentRunStore(state_dir).save(
+        {
+            handle.run_id: {
+                "runId": handle.run_id,
+                "status": "awaiting_approval",
+                "events": [],
+            }
+        },
+        {handle.run_id: handle},
+    )
+    spec = compile_revision_payload(
+        _revision_payload(), revision_ref="agent-revision://runtime-resume@1"
+    )
+    engine = _RecoverableEngine()
+    runtime = DeploymentRuntime(
+        deployment_id="dep-resume",
+        spec_payload=spec.model_dump(by_alias=True, mode="json"),
+        engine=engine,
+        activated=True,
+        state_dir=state_dir,
+    )
+
+    recovered = await runtime.resume(
+        handle.run_id,
+        ResumeRequest(decision="approved", callId="call-1"),
+    )
+
+    assert recovered == handle
+    assert engine.attached is True
+    assert engine.resumed is True

@@ -10,13 +10,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
 
 from ksadk.harness.engine.base import CompiledHarness
@@ -67,6 +68,58 @@ def _status_for(events: list[RuntimeEvent]) -> str:
     return "running"
 
 
+class DeploymentRunStore:
+    """Local durable index for RunHandle and RuntimeEvent v2 projections.
+
+    LangGraph owns checkpoint state. This index only preserves the opaque handle,
+    externally queryable status and emitted event projection needed to attach to
+    that checkpoint after a process restart.
+    """
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.path = self.root / "runs.json"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.chmod(0o700)
+
+    def load(self) -> tuple[dict[str, dict[str, Any]], dict[str, RunHandle]]:
+        if not self.path.is_file():
+            return {}, {}
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            raw_runs = payload.get("runs") or {}
+            raw_handles = payload.get("handles") or {}
+            if not isinstance(raw_runs, dict) or not isinstance(raw_handles, dict):
+                raise TypeError("runs and handles must be objects")
+            runs = {str(key): dict(value) for key, value in raw_runs.items()}
+            handles = {
+                str(key): RunHandle.model_validate(value) for key, value in raw_handles.items()
+            }
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid deployed run index: {self.path}") from exc
+        return runs, handles
+
+    def save(
+        self,
+        runs: dict[str, dict[str, Any]],
+        handles: dict[str, RunHandle],
+    ) -> None:
+        payload = {
+            "schemaVersion": 1,
+            "runs": runs,
+            "handles": {
+                run_id: handle.model_dump(mode="json") for run_id, handle in handles.items()
+            },
+        }
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        os.replace(temporary, self.path)
+
+
 class DeploymentRuntime:
     """One deployed HarnessSpec and its live Agent Loop handles."""
 
@@ -78,24 +131,50 @@ class DeploymentRuntime:
         reasoner: Any | None = None,
         engine: Any | None = None,
         activated: bool = False,
+        state_dir: str | Path | None = None,
     ) -> None:
         self.deployment_id = deployment_id
         self.spec = HarnessSpec.model_validate(spec_payload)
-        # A deployed process must support approval resume for its lifetime. Durable
-        # cross-process recovery remains a platform Store concern; the local runtime
-        # uses an in-memory checkpointer instead of silently disabling resume.
-        self.engine = engine or compose_engine(
-            self.spec,
-            reasoner=reasoner,
-            checkpointer=InMemorySaver(),
-        )
+        self._reasoner = reasoner
+        self.engine = engine
         self.activated = activated
+        self._state_dir = Path(state_dir) if state_dir is not None else None
+        self._run_store = DeploymentRunStore(self._state_dir) if self._state_dir else None
+        self._checkpointer_context: Any | None = None
         self._compiled: CompiledHarness | None = None
         self._compile_lock = asyncio.Lock()
-        self._handles: dict[str, RunHandle] = {}
-        self._runs: dict[str, dict[str, Any]] = {}
+        self._store_lock = asyncio.Lock()
+        if self._run_store is None:
+            self._runs, self._handles = {}, {}
+        else:
+            self._runs, self._handles = self._run_store.load()
+
+    async def initialize(self) -> None:
+        if self.engine is not None:
+            return
+        if self._state_dir is None:
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            checkpointer: Any = InMemorySaver()
+        else:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            checkpoint_path = self._state_dir / "checkpoints.sqlite"
+            self._checkpointer_context = AsyncSqliteSaver.from_conn_string(str(checkpoint_path))
+            checkpointer = await self._checkpointer_context.__aenter__()
+        self.engine = compose_engine(
+            self.spec,
+            reasoner=self._reasoner,
+            checkpointer=checkpointer,
+        )
+
+    async def shutdown(self) -> None:
+        if self._checkpointer_context is not None:
+            await self._checkpointer_context.__aexit__(None, None, None)
+            self._checkpointer_context = None
 
     async def ensure_compiled(self) -> CompiledHarness:
+        await self.initialize()
         if self._compiled is None:
             async with self._compile_lock:
                 if self._compiled is None:
@@ -128,10 +207,11 @@ class DeploymentRuntime:
         )
         self._handles[handle.run_id] = handle
         self._runs[handle.run_id] = {"runId": handle.run_id, "status": "running", "events": []}
+        await self._persist()
         return handle
 
     async def resume(self, run_id: str, payload: ResumeRequest) -> RunHandle:
-        handle = self._require_handle(run_id)
+        handle = await self._require_handle(run_id)
         thread_id = str(handle.native_ref.get("thread_id") or "")
         await self.engine.resume(
             handle,
@@ -143,6 +223,7 @@ class DeploymentRuntime:
             ),
         )
         self._runs[run_id]["status"] = "running"
+        await self._persist()
         return handle
 
     async def collect(self, handle: RunHandle) -> dict[str, Any]:
@@ -164,12 +245,13 @@ class DeploymentRuntime:
             await self._record(handle, events)
 
     async def cancel(self, run_id: str) -> dict[str, Any]:
-        handle = self._require_handle(run_id)
+        handle = await self._require_handle(run_id)
         result = await self.engine.cancel(handle)
         if result == CancelResult.INTERRUPTED_ACTIVE_TURN:
             self._runs[run_id]["status"] = "canceled"
         elif result == CancelResult.PENDING_CANCEL_RECORDED:
             self._runs[run_id]["status"] = "cancel_requested"
+        await self._persist()
         return {
             "runId": run_id,
             "status": self._runs[run_id]["status"],
@@ -182,14 +264,25 @@ class DeploymentRuntime:
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown run: {run_id}") from None
 
-    def _require_handle(self, run_id: str) -> RunHandle:
+    async def _require_handle(self, run_id: str) -> RunHandle:
         try:
-            return self._handles[run_id]
+            handle = self._handles[run_id]
         except KeyError:
             raise HTTPException(
                 status_code=404,
                 detail=f"unknown or terminal run: {run_id}",
             ) from None
+        await self.ensure_compiled()
+        is_attached = getattr(self.engine, "is_handle_attached", None)
+        if callable(is_attached) and not is_attached(handle):
+            try:
+                await self.engine.attach(handle, self._compiled)
+            except Exception as exc:  # noqa: BLE001 - map engine recovery to API contract
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"run cannot be recovered from checkpoint: {run_id}",
+                ) from exc
+        return handle
 
     async def _record(self, handle: RunHandle, events: list[RuntimeEvent]) -> dict[str, Any]:
         record = self._runs[handle.run_id]
@@ -200,7 +293,14 @@ class DeploymentRuntime:
         if status in {"completed", "failed", "canceled"}:
             self._handles.pop(handle.run_id, None)
             await self.engine.close(handle)
+        await self._persist()
         return record
+
+    async def _persist(self) -> None:
+        if self._run_store is None:
+            return
+        async with self._store_lock:
+            self._run_store.save(self._runs, self._handles)
 
 
 def build_deployment_app(
@@ -213,17 +313,28 @@ def build_deployment_app(
     reasoner: Any | None = None,
     engine: Any | None = None,
     activated: bool = False,
+    state_dir: str | Path | None = None,
 ) -> FastAPI:
     """Build one deployable Runtime service."""
 
-    app = FastAPI(title="KsADK Harness Runtime", version="1.0.0")
     runtime = DeploymentRuntime(
         deployment_id=deployment_id,
         spec_payload=spec_payload,
         reasoner=reasoner,
         engine=engine,
         activated=activated,
+        state_dir=state_dir,
     )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await runtime.initialize()
+        try:
+            yield
+        finally:
+            await runtime.shutdown()
+
+    app = FastAPI(title="KsADK Harness Runtime", version="1.0.0", lifespan=lifespan)
     app.state.deployment_runtime = runtime
 
     @app.get("/health")
@@ -298,6 +409,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--build-id", default="")
     parser.add_argument("--content-hash", default="")
+    parser.add_argument("--state-dir", default=os.getenv("KSADK_HARNESS_STATE_DIR", ""))
     return parser.parse_args(argv)
 
 
@@ -310,6 +422,7 @@ def main(argv: list[str] | None = None) -> None:
         spec_payload=spec_payload,
         build_id=args.build_id,
         content_hash=args.content_hash,
+        state_dir=args.state_dir or None,
     )
     import uvicorn
 

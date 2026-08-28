@@ -147,6 +147,21 @@ def test_active_process_executes_real_runs_endpoint(monkeypatch):
         }
         assert deployment.invocations == ["run-process-e2e"]
         assert _OpenAIHandler.requests[-1]["model"] == "runtime-fixture-model"
+
+        # Restart uses the same private state directory. The new process is
+        # activated again and exposes the previous RuntimeEvent v2 projection.
+        previous_base_url = deployment.base_url
+        deployment.restart_process()
+        assert deployment.base_url != previous_base_url
+        assert deployment.status == LifecycleStatus.ACTIVE
+        with urllib.request.urlopen(
+            f"{deployment.base_url}/runs/run-process-e2e", timeout=3
+        ) as response:
+            recovered = json.loads(response.read().decode("utf-8"))
+        assert recovered == result
+        with urllib.request.urlopen(f"{deployment.base_url}/health", timeout=3) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        assert health["activated"] is True
     finally:
         manager.close()
         model_server.shutdown()

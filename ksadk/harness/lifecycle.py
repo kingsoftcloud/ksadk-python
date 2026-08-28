@@ -134,6 +134,9 @@ class LocalDeployment:
         self.process: subprocess.Popen[bytes] | None = None
         self._workspace: tempfile.TemporaryDirectory[str] | None = None
         self._runtime_log: Any | None = None
+        self._route: str = ""
+        self._health_timeout: float = 20.0
+        self._server_command: list[str] | None = None
 
     @property
     def process_mode(self) -> bool:
@@ -240,12 +243,53 @@ class LocalDeployment:
         server_command: list[str] | None = None,
     ) -> None:
         """真实启动 Runtime 子进程并等待 HTTP Health Check 通过。"""
+        if self._workspace is not None:
+            raise LifecycleError("runtime workspace already exists; use restart_process")
         self._workspace = tempfile.TemporaryDirectory(prefix=f"ksadk-deploy-{self.deployment_id}-")
         spec_file = Path(self._workspace.name) / "spec.json"
         spec_file.write_text(
             json.dumps(self.spec.model_dump(by_alias=True, mode="json"), ensure_ascii=False),
             encoding="utf-8",
         )
+        self._route = route
+        self._health_timeout = health_timeout
+        self._server_command = list(server_command) if server_command else None
+        try:
+            self._launch_process(
+                route=route,
+                health_timeout=health_timeout,
+                server_command=server_command,
+            )
+        except Exception:
+            self.terminate()
+            raise
+
+    def restart_process(self) -> None:
+        """Restart a local deployment while preserving checkpoints and Run index."""
+        if self._workspace is None or not self._route:
+            raise LifecycleError("runtime has not been deployed in process mode")
+        reactivate = self.status in {LifecycleStatus.ACTIVE, LifecycleStatus.RUNNING}
+        self._stop_process()
+        self._launch_process(
+            route=self._route,
+            health_timeout=self._health_timeout,
+            server_command=self._server_command,
+        )
+        if reactivate:
+            self.activate_runtime()
+            self.status = LifecycleStatus.ACTIVE
+
+    def _launch_process(
+        self,
+        *,
+        route: str,
+        health_timeout: float,
+        server_command: list[str] | None,
+    ) -> None:
+        if self._workspace is None:
+            raise LifecycleError("runtime workspace is not initialized")
+        spec_file = Path(self._workspace.name) / "spec.json"
+        state_dir = Path(self._workspace.name) / "state"
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
@@ -266,6 +310,8 @@ class LocalDeployment:
             self.manifest.build_id,
             "--content-hash",
             self.manifest.content_hash,
+            "--state-dir",
+            str(state_dir),
         ]
         self._runtime_log = (Path(self._workspace.name) / "runtime.log").open("ab")
         self.process = subprocess.Popen(  # noqa: S603 - 命令由本模块构造
@@ -290,11 +336,18 @@ class LocalDeployment:
             except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
             time.sleep(0.2)
-        self.terminate()
+        self._stop_process()
+        self.status = LifecycleStatus.RUNTIME_UNHEALTHY
         raise LifecycleError(f"deploy failed: runtime process health check 未通过 ({last_error})")
 
     def terminate(self) -> None:
         """终止 Runtime 子进程并清理临时目录。"""
+        self._stop_process()
+        if self._workspace is not None:
+            self._workspace.cleanup()
+            self._workspace = None
+
+    def _stop_process(self) -> None:
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
             try:
@@ -305,9 +358,6 @@ class LocalDeployment:
         if self._runtime_log is not None:
             self._runtime_log.close()
             self._runtime_log = None
-        if self._workspace is not None:
-            self._workspace.cleanup()
-            self._workspace = None
 
 
 @dataclass
