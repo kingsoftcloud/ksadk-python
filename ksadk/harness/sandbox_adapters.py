@@ -34,6 +34,7 @@ from ksadk.harness.sandbox_lease import (
     SandboxLeaseConflict,
     SandboxLeaseGrant,
     SandboxLeaseProvider,
+    SandboxLeaseScope,
 )
 from ksadk.sandbox.backends.e2b import E2BSandboxBackend
 from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
@@ -105,6 +106,7 @@ class SessionSandboxBackendAdapter:
         artifact_collector: ArtifactCollector | None = None,
         audit_log: SandboxAuditLog | None = None,
         lease_provider: SandboxLeaseProvider | None = None,
+        lease_scope: SandboxLeaseScope | None = None,
         lease_owner_id: str | None = None,
         lease_ttl_seconds: float = 120.0,
         configured_workspace_root: str | None = None,
@@ -118,6 +120,8 @@ class SessionSandboxBackendAdapter:
             raise ValueError("后端声明 reconnect 但未实现 reconnect_session")
         if capabilities.ownership_fencing != (lease_provider is not None):
             raise ValueError("ownership_fencing 能力声明必须与 lease_provider 装配一致")
+        if (lease_provider is not None) != (lease_scope is not None):
+            raise ValueError("lease_provider 与 lease_scope 必须同时装配")
         if capabilities.command_reconnect and not (
             capabilities.reconnect
             and capabilities.ownership_fencing
@@ -135,6 +139,7 @@ class SessionSandboxBackendAdapter:
         self._artifact_collector = artifact_collector
         self._audit = audit_log
         self._lease_provider = lease_provider
+        self._lease_scope = lease_scope
         self._lease_owner_id = (lease_owner_id or f"harness-{uuid4().hex}").strip()
         if lease_provider is not None and not self._lease_owner_id:
             raise ValueError("lease_owner_id 不能为空")
@@ -529,6 +534,7 @@ class SessionSandboxBackendAdapter:
         grant = await self._lease_provider.acquire(
             backend_id=self._capabilities.backend_id,
             handle_id=handle_id,
+            scope=cast(SandboxLeaseScope, self._lease_scope),
             owner_id=self._lease_owner_id,
             ttl_seconds=self._lease_ttl_seconds,
         )
@@ -570,6 +576,7 @@ class SessionSandboxBackendAdapter:
         if (
             grant.backend_id != self._capabilities.backend_id
             or grant.handle_id != handle_id
+            or grant.scope != self._lease_scope
             or grant.owner_id != self._lease_owner_id
             or grant.fencing_token <= 0
             or (fencing_token is not None and grant.fencing_token != fencing_token)
@@ -634,6 +641,7 @@ def adapt_e2b_backend(
     *,
     audit_log: SandboxAuditLog | None = None,
     lease_provider: SandboxLeaseProvider | None = None,
+    lease_scope: SandboxLeaseScope | None = None,
     lease_owner_id: str | None = None,
     lease_ttl_seconds: float = 120.0,
 ) -> SessionSandboxBackendAdapter:
@@ -666,6 +674,7 @@ def adapt_e2b_backend(
         ),
         audit_log=audit_log,
         lease_provider=lease_provider,
+        lease_scope=lease_scope,
         lease_owner_id=lease_owner_id,
         lease_ttl_seconds=lease_ttl_seconds,
         prepare_workspace=True,
@@ -679,6 +688,7 @@ def adapt_sdk_sandbox_backend(
     artifact_collector: ArtifactCollector | None = None,
     audit_log: SandboxAuditLog | None = None,
     lease_provider: SandboxLeaseProvider | None = None,
+    lease_scope: SandboxLeaseScope | None = None,
     lease_owner_id: str | None = None,
     lease_ttl_seconds: float = 120.0,
 ) -> SessionSandboxBackendAdapter:
@@ -700,6 +710,7 @@ def adapt_sdk_sandbox_backend(
             backend,
             audit_log=audit_log,
             lease_provider=lease_provider,
+            lease_scope=lease_scope,
             lease_owner_id=lease_owner_id,
             lease_ttl_seconds=lease_ttl_seconds,
         )
@@ -711,6 +722,7 @@ def adapt_sdk_sandbox_backend(
         artifact_collector=artifact_collector,
         audit_log=audit_log,
         lease_provider=lease_provider,
+        lease_scope=lease_scope,
         lease_owner_id=lease_owner_id,
         lease_ttl_seconds=lease_ttl_seconds,
     )

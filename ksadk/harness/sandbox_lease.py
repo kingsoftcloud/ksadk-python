@@ -17,11 +17,24 @@ class SandboxLeaseConflict(RuntimeError):
 
 
 @dataclass(frozen=True)
+class SandboxLeaseScope:
+    """Tenant/workspace namespace for one authoritative lease."""
+
+    tenant_id: str
+    workspace_id: str
+
+    def __post_init__(self) -> None:
+        if not self.tenant_id.strip() or not self.workspace_id.strip():
+            raise ValueError("Sandbox Lease Scope 缺少 tenant/workspace")
+
+
+@dataclass(frozen=True)
 class SandboxLeaseGrant:
     """One time-bounded ownership grant returned by the control plane."""
 
     backend_id: str
     handle_id: str
+    scope: SandboxLeaseScope
     owner_id: str
     fencing_token: int
     expires_at: float
@@ -30,9 +43,10 @@ class SandboxLeaseGrant:
 class SandboxLeaseProvider(Protocol):
     """Authoritative, cross-process lease provider.
 
-    ``acquire`` must monotonically increase ``fencing_token`` whenever
-    ownership changes. ``renew`` and ``release`` must reject stale owner/token
-    pairs with :class:`SandboxLeaseConflict`.
+    ``acquire`` must isolate tenant/workspace and monotonically increase
+    ``fencing_token`` whenever ownership changes within that scope. ``renew``
+    and ``release`` must reject stale owner/token/scope tuples with
+    :class:`SandboxLeaseConflict`.
     """
 
     async def acquire(
@@ -40,6 +54,7 @@ class SandboxLeaseProvider(Protocol):
         *,
         backend_id: str,
         handle_id: str,
+        scope: SandboxLeaseScope,
         owner_id: str,
         ttl_seconds: float,
     ) -> SandboxLeaseGrant: ...
@@ -58,4 +73,5 @@ __all__ = [
     "SandboxLeaseConflict",
     "SandboxLeaseGrant",
     "SandboxLeaseProvider",
+    "SandboxLeaseScope",
 ]

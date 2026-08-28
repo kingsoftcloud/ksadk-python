@@ -822,9 +822,15 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   SDK Fake Provider 结果代替控制面持久化验收；
 - 跨进程恢复的排他所有权使用 `SandboxLeaseProvider` 合同。权威租约存储
   属于 `agentengine-server` 控制面，KsADK 只消费单调递增的 fencing token；
+  Lease 必须以 `tenant_id + workspace_id + backend_id + handle_id` 建立
+  命名空间，Adapter 装配 Provider 时必须同时提供 `SandboxLeaseScope`，
+  禁止只依赖全局随机 Handle 代替租户授权边界；
   恢复、执行、Artifact 收集和关闭前都必须续租并校验当前 token。
   新进程接管后，旧进程的执行和清理请求均被拒绝，避免重复副作用
-  或旧进程误杀新会话。SDK 不用本地 SQLite 冒充跨主机权威租约；
+  或旧进程误杀新会话。`Sandbox Lease Conformance` 统一验证排他获取、
+  Scope 隔离、续租、错误 Owner 拒绝、释放、接管后 fencing token 单调递增
+  与旧 Grant 失效；控制面 Provider 必须在独立测试租户运行该套件。
+  SDK 不用本地 SQLite 冒充跨主机权威租约；
 - E2B 当前只有 `allow_internet_access` 布尔开关，不能表达按域名 allowlist。
   禁止联网时声明后端强制控制，允许全量联网时声明无细粒度网络控制；任何
   `network_egress=(domain, ...)` 请求均显式拒绝，避免把全量联网伪装成白名单；

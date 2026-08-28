@@ -33,6 +33,7 @@ from ksadk.harness.sandbox_conformance import (
 from ksadk.harness.sandbox_lease import (
     SandboxLeaseConflict,
     SandboxLeaseGrant,
+    SandboxLeaseScope,
 )
 from ksadk.sandbox.backends.e2b import E2BSandboxBackend, E2BSandboxSession
 from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
@@ -342,34 +343,38 @@ class _FakeE2BBackend(E2BSandboxBackend):
 class _FakeLeaseProvider:
     def __init__(self) -> None:
         self.now = 100.0
-        self._grants: dict[str, SandboxLeaseGrant] = {}
-        self._last_fencing: dict[str, int] = {}
+        self._grants: dict[tuple[SandboxLeaseScope, str], SandboxLeaseGrant] = {}
+        self._last_fencing: dict[tuple[SandboxLeaseScope, str], int] = {}
 
     async def acquire(
         self,
         *,
         backend_id,
         handle_id,
+        scope,
         owner_id,
         ttl_seconds,
     ):
-        current = self._grants.get(handle_id)
+        key = (scope, handle_id)
+        current = self._grants.get(key)
         if current is not None and current.expires_at > self.now:
             raise SandboxLeaseConflict("sandbox lease already owned")
-        fencing = self._last_fencing.get(handle_id, 0) + 1
+        fencing = self._last_fencing.get(key, 0) + 1
         grant = SandboxLeaseGrant(
             backend_id=backend_id,
             handle_id=handle_id,
+            scope=scope,
             owner_id=owner_id,
             fencing_token=fencing,
             expires_at=self.now + ttl_seconds,
         )
-        self._last_fencing[handle_id] = fencing
-        self._grants[handle_id] = grant
+        self._last_fencing[key] = fencing
+        self._grants[key] = grant
         return grant
 
     async def renew(self, grant, *, ttl_seconds):
-        current = self._grants.get(grant.handle_id)
+        key = (grant.scope, grant.handle_id)
+        current = self._grants.get(key)
         if (
             current is None
             or current.owner_id != grant.owner_id
@@ -380,25 +385,30 @@ class _FakeLeaseProvider:
         renewed = SandboxLeaseGrant(
             backend_id=grant.backend_id,
             handle_id=grant.handle_id,
+            scope=grant.scope,
             owner_id=grant.owner_id,
             fencing_token=grant.fencing_token,
             expires_at=self.now + ttl_seconds,
         )
-        self._grants[grant.handle_id] = renewed
+        self._grants[key] = renewed
         return renewed
 
     async def release(self, grant):
-        current = self._grants.get(grant.handle_id)
+        key = (grant.scope, grant.handle_id)
+        current = self._grants.get(key)
         if (
             current is None
             or current.owner_id != grant.owner_id
             or current.fencing_token != grant.fencing_token
         ):
             raise SandboxLeaseConflict("stale sandbox fencing token")
-        self._grants.pop(grant.handle_id)
+        self._grants.pop(key)
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+_LEASE_SCOPE = SandboxLeaseScope("tenant-sandbox", "workspace-sandbox")
 
 
 def test_e2b_adapter_collects_only_workspace_artifacts_and_runs_in_workspace():
@@ -510,6 +520,7 @@ def test_e2b_adapter_fences_stale_owner_after_cross_process_takeover():
     first_backend = adapt_e2b_backend(
         sdk,
         lease_provider=leases,
+        lease_scope=_LEASE_SCOPE,
         lease_owner_id="process-a",
         lease_ttl_seconds=5,
     )
@@ -524,6 +535,7 @@ def test_e2b_adapter_fences_stale_owner_after_cross_process_takeover():
         second_backend = adapt_e2b_backend(
             sdk,
             lease_provider=leases,
+            lease_scope=_LEASE_SCOPE,
             lease_owner_id="process-b",
             lease_ttl_seconds=5,
         )
@@ -580,7 +592,16 @@ def test_e2b_adapter_rejects_empty_lease_owner_id():
         adapt_e2b_backend(
             _FakeE2BBackend(_VendorSandbox()),
             lease_provider=_FakeLeaseProvider(),
+            lease_scope=_LEASE_SCOPE,
             lease_owner_id="   ",
+        )
+
+
+def test_e2b_adapter_requires_tenant_workspace_scope_for_lease_provider():
+    with pytest.raises(ValueError, match="lease_scope"):
+        adapt_e2b_backend(
+            _FakeE2BBackend(_VendorSandbox()),
+            lease_provider=_FakeLeaseProvider(),
         )
 
 
@@ -619,6 +640,7 @@ def test_e2b_adapter_reconnects_inflight_command_with_fencing_across_instances()
     first_backend = adapt_e2b_backend(
         sdk,
         lease_provider=leases,
+        lease_scope=_LEASE_SCOPE,
         lease_owner_id="process-a",
         lease_ttl_seconds=5,
     )
@@ -638,6 +660,7 @@ def test_e2b_adapter_reconnects_inflight_command_with_fencing_across_instances()
         second_backend = adapt_e2b_backend(
             sdk,
             lease_provider=leases,
+            lease_scope=_LEASE_SCOPE,
             lease_owner_id="process-b",
             lease_ttl_seconds=5,
         )
@@ -686,6 +709,7 @@ def test_e2b_adapter_detach_releases_lease_without_killing_remote_sandbox():
     first = adapt_e2b_backend(
         sdk,
         lease_provider=leases,
+        lease_scope=_LEASE_SCOPE,
         lease_owner_id="process-a",
     )
 
@@ -698,6 +722,7 @@ def test_e2b_adapter_detach_releases_lease_without_killing_remote_sandbox():
         second = adapt_e2b_backend(
             sdk,
             lease_provider=leases,
+            lease_scope=_LEASE_SCOPE,
             lease_owner_id="process-b",
         )
         resumed = await second.reconnect(token, spec=spec)
