@@ -110,6 +110,58 @@ def test_sandbox_envelope_rejects_mismatched_skill_and_missing_invocation() -> N
         )
 
 
+def test_sandbox_envelope_accepts_matching_identity_with_richer_metadata() -> None:
+    expected = _ref()
+    sandbox_ref = SkillRef(
+        skill_id=expected.skill_id,
+        version_id=expected.version_id,
+        version=expected.version,
+        name=expected.name,
+        description="Runtime description",
+        status="active",
+        content_hash=expected.content_hash,
+        aliases=("reporting",),
+        tags=("analytics",),
+        input_schema={"type": "object"},
+        runtime_requirements={"python": ">=3.11"},
+    )
+    event = SkillEvent.create(
+        "skill.execution.completed",
+        status="completed",
+        skill_ref=sandbox_ref,
+        skill_invocation_id="invocation-1",
+    )
+
+    accepted = SandboxSkillEventEnvelope(event).to_event(
+        expected_skill_ref=expected,
+        expected_invocation_id="invocation-1",
+    )
+
+    assert accepted.skill_ref is expected
+
+
+def test_sandbox_envelope_rejects_matching_identity_with_conflicting_hash() -> None:
+    expected = _ref()
+    event = SkillEvent.create(
+        "skill.execution.completed",
+        status="completed",
+        skill_ref=SkillRef(
+            expected.skill_id,
+            expected.version_id,
+            expected.version,
+            expected.name,
+            content_hash=ContentHash("sha256", "b" * 64),
+        ),
+        skill_invocation_id="invocation-1",
+    )
+
+    with pytest.raises(ValueError, match="SkillRef"):
+        SandboxSkillEventEnvelope(event).to_event(
+            expected_skill_ref=expected,
+            expected_invocation_id="invocation-1",
+        )
+
+
 def test_sandbox_envelope_rejects_invocation_not_in_outer_plan() -> None:
     event = SkillEvent.create(
         "skill.execution.completed",

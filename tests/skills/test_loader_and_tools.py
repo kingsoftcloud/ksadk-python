@@ -183,6 +183,52 @@ def test_execute_skills_tool_rejects_unbound_events_and_overwrites_untrusted_cor
     assert accepted["decision_id"] == "decision-1"
 
 
+def test_execute_skills_tool_accepts_matching_identity_with_richer_runtime_metadata():
+    skill_ref = SkillRef("skill-1", "version-1", "1.0.0", "report")
+    runtime_ref = SkillRef(
+        "skill-1",
+        "version-1",
+        "1.0.0",
+        "report",
+        description="Runtime description",
+        status="active",
+        aliases=("reporting",),
+        tags=("analytics",),
+    )
+    context = SkillExecutionContext(
+        binding=SkillBinding("binding-1", (BoundSkillRef(skill_ref, "space-1"),)),
+        decision_id="decision-1",
+        selected_skill_ids=("skill-1",),
+    )
+
+    class Backend:
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            invocation = kwargs["invocation_plan"].entries[0]
+            return SkillRuntimeResult(
+                exit_code=0,
+                skill_events=[
+                    SkillEvent.create(
+                        "skill.execution.completed",
+                        status="completed",
+                        skill_ref=runtime_ref,
+                        skill_invocation_id=invocation.skill_invocation_id,
+                    )
+                ],
+            )
+
+    result = build_execute_skills_tool(
+        backend=Backend(), skill_space_ids=["space-1"], execution_context=context
+    )("write a report")
+
+    assert [event["event_type"] for event in result["skill_events"]] == [
+        "skill.candidates.resolved",
+        "skill.selection.completed",
+        "skill.execution.completed",
+    ]
+    assert result["skill_events"][-1]["skill_ref"]["description"] == ""
+    assert result["skill_events"][-1]["skill_ref"]["aliases"] == []
+
+
 def test_execute_skills_tool_projects_accepted_skill_events(monkeypatch) -> None:
     event = SkillEvent.create(
         "skill.load.completed", status="completed", skill_invocation_id="inv-1"

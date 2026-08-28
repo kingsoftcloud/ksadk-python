@@ -277,9 +277,15 @@ class SandboxSkillEventEnvelope:
         event = self.event
         if expected_invocation_id and event.skill_invocation_id != expected_invocation_id:
             raise ValueError("sandbox envelope skill_invocation_id does not match outer invocation")
-        if expected_skill_ref is not None and event.skill_ref != expected_skill_ref:
+        if (
+            expected_skill_ref is not None
+            and (
+                event.skill_ref is None
+                or not expected_skill_ref.matches_execution_identity(event.skill_ref)
+            )
+        ):
             raise ValueError("sandbox envelope SkillRef does not match outer invocation")
-        return event
+        return replace(event, skill_ref=expected_skill_ref) if expected_skill_ref else event
 
 
 class SkillEventSink:

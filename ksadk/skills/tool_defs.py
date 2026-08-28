@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from uuid import uuid4
 
 from ksadk.skills.events import (
@@ -175,34 +176,32 @@ def _with_execution_context(
         else {}
     )
     for event in result.skill_events:
-        if (
-            event.skill_ref is not None
-            and invocation_plan is not None
-            and (expected_invocations.get(event.skill_invocation_id) != event.skill_ref)
-        ):
-            accepted_events.append(
-                SkillEvent.create(
-                    "sandbox.envelope.rejected",
-                    status="rejected",
-                    runtime_id=event.runtime_id,
-                    error_category="correlation_mismatch",
+        if event.skill_ref is not None:
+            expected_ref = expected_invocations.get(event.skill_invocation_id)
+            if invocation_plan is not None:
+                canonical_ref = expected_ref
+            else:
+                canonical_ref = next(
+                    (
+                        skill_ref
+                        for skill_ref in allowed_skill_refs
+                        if skill_ref.matches_execution_identity(event.skill_ref)
+                    ),
+                    None,
                 )
-            )
-            continue
-        if (
-            event.skill_ref is not None
-            and context.binding
-            and event.skill_ref not in allowed_skill_refs
-        ):
-            accepted_events.append(
-                SkillEvent.create(
-                    "sandbox.envelope.rejected",
-                    status="rejected",
-                    runtime_id=event.runtime_id,
-                    error_category="correlation_mismatch",
+            if canonical_ref is None or not canonical_ref.matches_execution_identity(
+                event.skill_ref
+            ):
+                accepted_events.append(
+                    SkillEvent.create(
+                        "sandbox.envelope.rejected",
+                        status="rejected",
+                        runtime_id=event.runtime_id,
+                        error_category="correlation_mismatch",
+                    )
                 )
-            )
-            continue
+                continue
+            event = replace(event, skill_ref=canonical_ref)
         accepted_events.append(apply_execution_context(event, context))
     return SkillRuntimeResult(
         runtime_id=result.runtime_id,
