@@ -770,6 +770,21 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
 边界 + 网络准入拒绝”，不宣称容器/VM 级文件系统、内核或网络隔离；
 `LocalReadOnlySandboxBackend` 依靠极窄只读命令面和路径解析提供最低安全模式。
 
+现有 SDK 侧 `ksadk.sandbox` 通过 `SessionSandboxBackendAdapter` 接入 Harness
+异步合同。适配层不复制 Session 实现，只负责生命周期、结果和错误语义转换：
+
+- `LocalProcessSandboxBackend` 声明为受控工作区与宿主子进程边界；其工作区
+  不随 `kill()` 销毁，因此不声明确定性资源清理；
+- `E2BSandboxBackend` 声明为远程 Sandbox；关闭时调用远程 `kill()`，但当前
+  同步 SDK 不提供可靠的命令取消和工作区文件枚举，因此不声明协作取消或
+  Artifact 收集；
+- E2B 当前只有 `allow_internet_access` 布尔开关，不能表达按域名 allowlist。
+  禁止联网时声明后端强制控制，允许全量联网时声明无细粒度网络控制；任何
+  `network_egress=(domain, ...)` 请求均显式拒绝，避免把全量联网伪装成白名单；
+- 真实 E2B Conformance 由 `KSADK_REAL_SANDBOX_E2E=1` 与
+  `KSADK_SANDBOX_TEMPLATE_ID` 双重门控。未满足远程模板、凭证和网络条件时
+  只运行适配合同单测并明确 skip，不用 Fake SDK 结果替代远程 E2E 结论。
+
 ---
 
 ## 12. 生命周期闭环
