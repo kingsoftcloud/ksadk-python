@@ -13,6 +13,7 @@ from ksadk.harness.conformance.contract import (
     verify_secret_redaction,
     verify_start_and_terminal_event,
     verify_tool_call_pairing,
+    verify_tool_reliability_honesty,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "verify_secret_redaction",
     "verify_start_and_terminal_event",
     "verify_tool_call_pairing",
+    "verify_tool_reliability_honesty",
 ]

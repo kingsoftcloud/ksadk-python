@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.state import WorkingContext
+from ksadk.harness.tool_reliability import ToolReliability, classify_tool_reliability
 from ksadk.harness.working_context import record_tool_failure, record_tool_result
 
 #: 审批决策值（§11.2）：approved 放行，其余视为拒绝并记录原因。
@@ -144,18 +145,30 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
     for pending in inp.pending_tool_calls:
         call_id, name = pending["call_id"], pending["name"]
         arguments = pending["arguments"]
+        reliability = _resolve_reliability(inp, name, arguments)
+        reliability_payload = reliability.to_event_payload()
 
         # 1. Receipt 幂等回放：审批恢复重放节点时不再重复触发副作用。
         prior = runtime.check_receipt(inp.run_id, call_id) if runtime is not None else None
-        if prior is not None and prior.status == "executed":
-            result_text = prior.result_digest or "[idempotent replay: no result recorded]"
+        if prior is not None and prior.status in {"executed", "skipped"}:
+            executed = prior.status == "executed"
+            result_text = (
+                prior.result_digest or "[idempotent replay: no result recorded]"
+                if executed
+                else "[denied] prior approval decision replayed"
+            )
             seq += 1
             out.events.append(
                 _event(
                     EventType.TOOL_CALL_BEGIN,
                     inp,
                     seq,
-                    {"call_id": call_id, "name": name, "args": arguments},
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "args": arguments,
+                        "reliability": reliability_payload,
+                    },
                 )
             )
             seq += 1
@@ -167,8 +180,10 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     {
                         "call_id": call_id,
                         "name": name,
-                        "result": result_text,
+                        **({"result": result_text} if executed else {"error": "approval denied"}),
                         "replayed": True,
+                        "receipt_committed": True,
+                        "reliability": reliability_payload,
                     },
                 )
             )
@@ -212,13 +227,19 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
             )
 
         if decision != APPROVED:
+            receipt_committed = runtime is not None and runtime.receipt_enabled
             seq += 1
             out.events.append(
                 _event(
                     EventType.TOOL_CALL_BEGIN,
                     inp,
                     seq,
-                    {"call_id": call_id, "name": name, "args": arguments},
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "args": arguments,
+                        "reliability": reliability_payload,
+                    },
                 )
             )
             seq += 1
@@ -227,7 +248,13 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     EventType.TOOL_CALL_END,
                     inp,
                     seq,
-                    {"call_id": call_id, "name": name, "error": f"approval {decision}"},
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": f"approval {decision}",
+                        "receipt_committed": receipt_committed,
+                        "reliability": reliability_payload,
+                    },
                 )
             )
             out.new_messages.append(
@@ -259,7 +286,12 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 EventType.TOOL_CALL_BEGIN,
                 inp,
                 seq,
-                {"call_id": call_id, "name": name, "args": arguments},
+                {
+                    "call_id": call_id,
+                    "name": name,
+                    "args": arguments,
+                    "reliability": reliability_payload,
+                },
             )
         )
         try:
@@ -278,7 +310,13 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     EventType.TOOL_CALL_END,
                     inp,
                     seq,
-                    {"call_id": call_id, "name": name, "error": f"{type(exc).__name__}: {exc}"},
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "receipt_committed": False,
+                        "reliability": reliability_payload,
+                    },
                 )
             )
             out.new_messages.append(
@@ -316,7 +354,15 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 EventType.TOOL_CALL_END,
                 inp,
                 seq,
-                {"call_id": call_id, "name": name, "result": result},
+                {
+                    "call_id": call_id,
+                    "name": name,
+                    "result": result,
+                    "receipt_committed": bool(
+                        runtime is not None and runtime.receipt_enabled
+                    ),
+                    "reliability": reliability_payload,
+                },
             )
         )
         out.new_messages.append(
@@ -330,6 +376,21 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
 
     out.pending_tool_calls = []
     return out
+
+
+def _resolve_reliability(
+    inp: ToolCallInput,
+    name: str,
+    arguments: dict[str, Any],
+) -> ToolReliability:
+    runtime = inp.capability_runtime
+    receipt_enabled = bool(runtime is not None and runtime.receipt_enabled)
+    resolver = getattr(inp.tool_executor, "reliability", None)
+    if callable(resolver):
+        return resolver(name, arguments, receipt_enabled=receipt_enabled)
+    if runtime is not None:
+        return runtime.reliability(name)
+    return classify_tool_reliability(side_effect="unknown")
 
 
 async def _invoke(

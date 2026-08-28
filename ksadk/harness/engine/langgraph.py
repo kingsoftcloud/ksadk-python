@@ -619,6 +619,19 @@ class ManagedLangGraphEngine:
                         call_id=context.call_id,
                     )
 
+                def reliability(self, name, arguments, *, receipt_enabled):  # type: ignore[no-untyped-def]
+                    if engine._mcp_disclosure.is_tool(name):
+                        return engine._mcp_disclosure.reliability(
+                            name,
+                            arguments,
+                            receipt_enabled=receipt_enabled,
+                        )
+                    if engine._capability_runtime is not None:
+                        return engine._capability_runtime.reliability(name)
+                    from ksadk.harness.tool_reliability import classify_tool_reliability
+
+                    return classify_tool_reliability(side_effect="unknown")
+
             out = await execute_tool_calls(
                 ToolCallInput(
                     pending_tool_calls=state["pending_tool_calls"],

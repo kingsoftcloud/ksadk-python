@@ -212,6 +212,53 @@ def verify_tool_failure_honesty(events: list[RuntimeEvent], report: ConformanceR
             )
 
 
+def verify_tool_reliability_honesty(
+    events: list[RuntimeEvent], report: ConformanceReport
+) -> None:
+    """Tool 可靠性声明必须与 Receipt/Transport 事实一致。
+
+    旧 Runner 没有该 metadata 时保持兼容；一旦声明，就不允许把只有 Receipt 的
+    外部副作用工具包装为 effectively-once，也不允许 Receipt 回放事件声称未提交。
+    """
+    declared: dict[str, dict[str, Any]] = {}
+    valid_semantics = {"replay_safe", "effectively_once", "at_least_once", "best_effort"}
+    for event in events:
+        if event.event_type not in {EventType.TOOL_CALL_BEGIN, EventType.TOOL_CALL_END}:
+            continue
+        payload = _payload(event)
+        call_id = str(payload.get("call_id") or "")
+        reliability = payload.get("reliability")
+        if not isinstance(reliability, dict):
+            continue
+        semantics = str(reliability.get("semantics") or "")
+        receipt_enabled = reliability.get("receipt_enabled") is True
+        transport_idempotent = reliability.get("transport_idempotent") is True
+        side_effect = str(reliability.get("side_effect") or "unknown")
+        if semantics not in valid_semantics:
+            report.fail("tool-reliability", f"{call_id} 交付语义非法: {semantics!r}")
+        if semantics == "effectively_once" and not (
+            receipt_enabled and transport_idempotent
+        ):
+            report.fail(
+                "tool-reliability",
+                f"{call_id} effectively_once 缺少 Receipt 或 Transport 幂等",
+            )
+        if semantics == "replay_safe" and side_effect not in {"none", "read"}:
+            report.fail(
+                "tool-reliability",
+                f"{call_id} 有副作用 {side_effect!r} 却声明 replay_safe",
+            )
+        prior = declared.get(call_id)
+        if prior is not None and prior != reliability:
+            report.fail("tool-reliability", f"{call_id} begin/end 可靠性声明不一致")
+        declared[call_id] = reliability
+        if payload.get("replayed") is True and payload.get("receipt_committed") is not True:
+            report.fail(
+                "tool-reliability",
+                f"{call_id} Receipt 回放事件未声明 receipt_committed=true",
+            )
+
+
 def verify_approval_flow(events: list[RuntimeEvent], report: ConformanceReport) -> None:
     """approval.requested → run.interrupted(审批) → approval.resolved → run.resumed 顺序守恒。"""
     requested: set[str] = set()
@@ -325,6 +372,7 @@ def run_conformance_suite(
     # 加固（plan §15 conformance 补齐：恢复/检查点/幂等/工具失败/压缩）。
     verify_model_call_pairing(events, report)
     verify_tool_failure_honesty(events, report)
+    verify_tool_reliability_honesty(events, report)
     verify_approval_flow(events, report)
     verify_checkpoint_honesty(events, report)
     verify_compaction_honesty(events, report)
@@ -345,5 +393,6 @@ __all__ = [
     "verify_secret_redaction",
     "verify_start_and_terminal_event",
     "verify_tool_failure_honesty",
+    "verify_tool_reliability_honesty",
     "verify_usage_accounting",
 ]

@@ -22,6 +22,7 @@ from typing import Any
 from ksadk.harness.capabilities import RiskLevel
 from ksadk.harness.tool_policy import ToolCallContext, ToolDecision, ToolPolicy
 from ksadk.harness.tool_receipts import ToolReceipt, ToolReceiptStore
+from ksadk.harness.tool_reliability import ToolReliability, classify_tool_reliability
 
 #: side_effect（Studio ToolContract）→ 是否存在外部副作用。
 _SIDE_EFFECT_EXTERNAL = frozenset({"write", "external"})
@@ -79,6 +80,31 @@ class CapabilityRuntime:
 
     def register_profile(self, profile: ToolProfile) -> None:
         self._profiles[profile.name] = profile
+
+    @property
+    def receipt_enabled(self) -> bool:
+        """当前执行入口是否装配 Receipt Store。"""
+        return self._receipts is not None
+
+    def reliability(
+        self,
+        tool_name: str,
+        *,
+        side_effect: str | None = None,
+        transport_idempotent: bool = False,
+    ) -> ToolReliability:
+        """返回 Tool 的诚实可靠性声明。
+
+        ``side_effect`` 允许 MCP/子 Agent 等动态工具按实际目标覆盖静态画像；
+        未注册工具保持 ``unknown``，不会被误标为无副作用。
+        """
+        profile = self._profiles.get(tool_name)
+        resolved_side_effect = side_effect or (profile.side_effect if profile else "unknown")
+        return classify_tool_reliability(
+            side_effect=resolved_side_effect,
+            receipt_enabled=self.receipt_enabled,
+            transport_idempotent=transport_idempotent,
+        )
 
     def decide(
         self,

@@ -15,6 +15,11 @@ from ksadk.harness.reasoner import (
 )
 from ksadk.harness.runtime import HarnessRuntime, HarnessRuntimeAdapter
 from ksadk.harness.sandbox import HarnessSandboxExecutor, SandboxPolicyDenied
+from ksadk.harness.tool_reliability import (
+    ToolDeliverySemantics,
+    ToolReliability,
+    classify_tool_reliability,
+)
 
 __all__ = [
     "HarnessApp",
@@ -32,4 +37,7 @@ __all__ = [
     "McpToolSpec",
     "SandboxPolicy",
     "SandboxPolicyDenied",
+    "ToolDeliverySemantics",
+    "ToolReliability",
+    "classify_tool_reliability",
 ]

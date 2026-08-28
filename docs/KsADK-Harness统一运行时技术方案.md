@@ -77,77 +77,52 @@ RuntimeAdapter Contract
 
 ## 3. 当前实现盘点
 
-### 3.1 当前不是一套 Harness，而是五条能力路径
+### 3.1 当前主线已经收口为默认 Harness
 
 ```text
-1. ksadk.harness
-   最小原生 Harness：Model + Prompt + MCP + 只读 Sandbox + Agent Loop
-
-2. ksadk.conversations / ksadk.sessions / ksadk.memory
-   已有会话、Transcript、压缩、恢复、长期记忆和上下文预处理
-
-3. ksadk.studio.studio_agent_runtime
-   Studio 当前 Playground/正式对话使用的 OpenAI-compatible 执行适配器
-
-4. ksadk.orchestration
-   财务场景 Manager–Executor–Auditor/Reviewer 多 Agent 样板
-
-5. ADK / LangGraph / Codex RuntimeAdapter
-   多 Runner 统一协议和兼容执行层
+Studio / CLI / RuntimeAdapter
+          |
+      KsADK Harness
+          |
+  HarnessSpec + Context/Memory + MCP/Skill + Approval/Receipt
+          |
+  ManagedLangGraphEngine（默认）
+          |
+  RuntimeEvent / Checkpoint / Artifact / Lifecycle
 ```
 
-当前最主要的技术债是这些路径没有共享同一个 HarnessSpec、ContextEngine、ToolRuntime 和生命周期执行入口。
+业务用户默认使用 KsADK Harness，不选择 Runner。LangGraph 提供状态图、Checkpoint
+和 Interrupt/Resume，但 Prompt、Context、Memory、能力披露、审批、生命周期与事件协议
+均由 KsADK 定义。ADK、Codex 和外部 LangGraph 项目通过 RuntimeAdapter 兼容接入，
+不等同于由平台完整接管其内部 Context 和 Agent Loop。
 
 ### 3.2 核心能力现状
 
-| 能力 | 当前实现位置 | 当前程度 | 主要缺口 |
-|---|---|---:|---|
-| Agent Loop | `ksadk/harness/runtime.py`、各 Runner | 基础可运行 | Retry、实时 Tool Event、持久恢复未统一 |
-| Runtime Contract | `ksadk/runtime/adapter.py` | 较完整 | 缺正式跨 Engine Conformance Matrix |
-| Session | `ksadk/sessions` | 较完整 | 未接入原生 Harness |
-| Transcript | `ksadk/conversations` | 较完整 | Studio/Harness 仍有不同事件路径 |
-| Context 压缩 | `ksadk/conversations/runtime_compaction.py` | 已实现 | 未成为 Harness ContextEngine |
-| 长期 Memory | `ksadk/memory` | 已实现服务层 | 缺 Memory Policy 与 Harness 节点集成 |
-| MCP Runtime | `ksadk/harness/tools.py`、Studio MCP Runtime | 基础可用 | 健康缓存、重连、熔断和降级不统一 |
-| Skill Runtime | `ksadk/skills/runtime` | 已有独立能力 | 原生 Harness 配置明确不支持 Skill |
-| Sandbox | `ksadk/harness/sandbox.py`、`ksadk.sandbox` | 两层并存 | 最小只读实现与通用 Sandbox Backend 未统一 |
-| Tool Approval | Conversation Runtime、Studio Approval | 部分具备 | Harness 不支持 suspend/resume |
-| Observability | RuntimeEvent、Tracing、Studio Run Store | 基础较多 | Harness 缺 Turn/Context/Usage/Artifact 统一事件 |
-| Lifecycle | Studio Revision/Build/Publish/Deployment | 控制面基本具备 | Active 仍偏本地状态，执行实例与路由闭环不完整 |
-| 多 Agent | `ksadk/orchestration` | 财务样板可运行 | 不是通用策略，没有自动从 Revision 编译 |
+| 能力 | 当前实现 | 主要缺口 |
+|---|---|---|
+| Agent Loop | 默认 ManagedLangGraphEngine 已接入 Reason/Tool/Approval/Resume | 多模型与真实远程 Sandbox 仍需扩大一致性验证 |
+| Runtime Contract | HarnessSpec、RuntimeAdapter、Capability 声明 | ADK/Codex 深接管程度仍不同 |
+| Session/恢复 | Checkpoint、跨进程 attach/resume、Transcript 投影 | 云端 Session 事实源属于控制面协同范围 |
+| Context | Manifest、预算、WorkingContext Patch、压缩与关键事实重注入 | 更大规模长任务数据集仍需持续评测 |
+| 长期 Memory | Scope 检索、纠错/遗忘/锁定、审计、真实模型评测 | 生产数据治理与规模化评测仍需平台服务配合 |
+| MCP Runtime | L0-L3 渐进披露、健康/熔断、审批、幂等、结果外置 | 更多真实 MCP Transport 故障注入待覆盖 |
+| Skill Runtime | L0-L3 渐进披露、三级解析、父子 Agent 透传 | Skill 管理面仍由 Skill Service 负责 |
+| Sandbox | 通用 Backend 抽象与工具执行入口 | E2B/平台私有后端的可靠性矩阵仍需补齐 |
+| Tool Approval | Interrupt/Resume、Receipt、动态风险判定 | 外部副作用仍取决于 Transport 幂等合同 |
+| Observability | Run/Turn/Tool/Context/Memory/Usage/Artifact 统一事件 | Studio 的聚合展示仍可继续增强 |
+| Lifecycle | DraftRuntime 即时调试与 Revision/Build/Deploy/Activate 正式链路隔离 | 云端准入、路由和回滚由控制面完成 |
+| 多 Agent | 可选 Strategy、子 Agent 事件与能力继承 | 不固化进业务模板，更多策略后续按需增加 |
+| Tool Reliability | Receipt、Transport 幂等、四级诚实交付语义 | 不承诺跨系统事务意义的 exactly-once |
 
-### 3.3 原生 Harness 当前硬边界
+### 3.3 当前边界
 
-现有 `HarnessConfig` 只支持：
-
-```yaml
-model: model-name
-prompt: system instructions
-mcp_tools: []
-sandbox:
-  read_only: true
-runtime: yaml
-```
-
-以下字段当前会明确报“不支持”：
-
-- `memory`
-- `knowledge`
-- `workflow`
-- `tracing`
-- `skills`
-
-原生 Harness 当前能力声明也明确为：
-
-- Cancel：支持；
-- Resume：不支持；
-- Checkpoint：不支持；
-- Session Continuity：只在当前进程内；
-- Reasoning Turn：固定最多 8 轮；
-- Sandbox：仅只读命令白名单；
-- MCP：可以真实发现和调用；
-- Tool Event：尚未做到执行过程中的完全实时事件；
-- Usage：尚未完整进入 Harness 事件。
+- 默认引擎是 ManagedLangGraphEngine，但平台合同不暴露 LangGraph 私有类型；
+- 兼容多 Runner 表示统一接入、事件和能力声明，不表示平台能无条件接管第三方
+  Runner 的 Prompt、Context、恢复与 Tool Loop；
+- Skill Service 负责 Skill 注册、CRUD 和版本治理，SDK 只负责运行时消费；
+- Agent Registry、Gateway Route、Hosted Runtime 和云端回滚属于控制面；
+- Sandbox 以通用 Backend 抽象接入，当前优先 E2B，不把业务逻辑写死到单一后端；
+- 对外部副作用只能按实际能力声明可靠性，不能用 Receipt 掩盖 Transport 不幂等。
 
 ### 3.4 可复用资产
 
@@ -466,6 +441,28 @@ Tool 调用必须支持：
 - Tool Result 重放必须使用 Receipt 防止重复副作用；
 - Checkpoint 必须声明持久化范围和跨实例能力；
 - Engine 不支持某能力时必须诚实声明。
+
+### 7.4 Tool Reliability Conformance
+
+每次 Tool Call 在 `tool.call.begin/end` 中记录 metadata-only 的可靠性声明：
+
+| 语义 | 条件 | 崩溃恢复含义 |
+|---|---|---|
+| `replay_safe` | 只读或无副作用 | 可以安全重放 |
+| `effectively_once` | Receipt + Transport 幂等均成立 | 提交前后两个重复窗口均被关闭 |
+| `at_least_once` | 有 Receipt，但外部 Transport 不保证幂等 | Receipt 前崩溃可能重复外部副作用 |
+| `best_effort` | 无 Receipt，或副作用合同未知 | 不自动抬高可靠性承诺 |
+
+Harness 不声明跨网络、跨存储事务意义的 `exactly-once`。Conformance 必须覆盖：
+
+1. 外部调用前崩溃；
+2. 外部调用成功、Receipt 提交前崩溃；
+3. Receipt 提交后、Graph Checkpoint 前崩溃；
+4. Checkpoint 已提交、Run 终态事件前崩溃。
+
+Local Tool、MCP、Sandbox、Approval 和 Subagent 均使用同一套声明与故障窗口测试；
+其中外部副作用路径只有在 Transport 实际消费稳定幂等键时，才能升级为
+`effectively_once`。
 
 ---
 
@@ -967,6 +964,9 @@ def test_runtime_conformance(engine_factory):
 - Secret/PII 脱敏；
 - Revision 与 Bundle 可重复加载；
 - Engine 升级回归。
+- Tool 可靠性声明不高于实际 Receipt/Transport 能力；
+- 外部调用前、Receipt 前、Checkpoint 前和终态前四个崩溃窗口；
+- 已拒绝审批的 Receipt 重放不得再次创建审批任务。
 
 ---
 

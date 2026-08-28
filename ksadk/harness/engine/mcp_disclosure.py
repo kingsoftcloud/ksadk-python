@@ -40,6 +40,7 @@ from ksadk.harness.mcp_runtime import (
     McpToolCallContext,
 )
 from ksadk.harness.spec import HarnessSpec
+from ksadk.harness.tool_reliability import ToolReliability, classify_tool_reliability
 
 MCP_LIST_TOOLS_TOOL = "mcp_list_tools"
 MCP_READ_SCHEMA_TOOL = "mcp_read_tool_schema"
@@ -265,6 +266,34 @@ class McpDisclosureBridge:
         except McpRuntimeError:
             return False
         return descriptor.risk_level in _APPROVAL_RISK_LEVELS
+
+    def reliability(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        receipt_enabled: bool,
+    ) -> ToolReliability:
+        """按实际 Server 声明本次披露工具的交付语义。"""
+        if name != MCP_CALL_TOOL_TOOL:
+            return classify_tool_reliability(
+                side_effect="read",
+                receipt_enabled=receipt_enabled,
+            )
+        server_id = str((arguments or {}).get("server_id") or "")
+        transport_idempotent = False
+        if self._runtime is not None:
+            try:
+                transport_idempotent = (
+                    self._runtime.binding(server_id).idempotency_mode == "transport"
+                )
+            except McpRuntimeError:
+                pass
+        return classify_tool_reliability(
+            side_effect="external",
+            receipt_enabled=receipt_enabled,
+            transport_idempotent=transport_idempotent,
+        )
 
     @staticmethod
     def catalog_message(catalog: tuple[dict[str, str], ...]) -> dict[str, str] | None:
