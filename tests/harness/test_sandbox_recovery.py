@@ -15,6 +15,10 @@ from ksadk.harness.sandbox_backend import (
     SandboxResumeToken,
     SandboxSpec,
 )
+from ksadk.harness.sandbox_reconciliation import (
+    SandboxCommandReconciler,
+    SandboxCommandReconciliationStatus,
+)
 from ksadk.harness.sandbox_recovery import (
     RecoverableSandboxCommandCoordinator,
     SandboxCommandJournalConflict,
@@ -122,9 +126,15 @@ class _FakeRecoverableAdapter:
 
 
 class _MemoryJournal:
-    def __init__(self, *, fail_create: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_create: bool = False,
+        fail_finish: bool = False,
+    ) -> None:
         self.records: dict[str, SandboxCommandJournalRecord] = {}
         self.fail_create = fail_create
+        self.fail_finish = fail_finish
 
     async def create_running(self, record):
         if self.fail_create:
@@ -149,6 +159,8 @@ class _MemoryJournal:
         state,
         exit_code,
     ):
+        if self.fail_finish:
+            raise OSError("control plane unavailable")
         record = self.records[operation_id]
         if record.scope != scope:
             raise SandboxCommandJournalConflict("scope mismatch")
@@ -424,3 +436,113 @@ def test_cancelled_recovery_marks_journal_terminal_and_detaches():
     assert record.state is SandboxCommandJournalState.CANCELLED
     assert record.exit_code == 130
     assert second.detached is True
+
+
+def _running_journal(*, fail_finish: bool = False) -> _MemoryJournal:
+    journal = _MemoryJournal(fail_finish=fail_finish)
+    first = _FakeRecoverableAdapter(crash_on_wait=True)
+    with pytest.raises(_WorkerCrash):
+        _run(
+            _coordinator(first, journal).start_and_wait(
+                _Handle(_spec()),
+                _request(),
+                operation_id="operation-1",
+                execution_ref="agent-revision://finance@2#sandbox-step-1",
+            )
+        )
+    return journal
+
+
+def _reconcile(adapter, journal, *, spec=None):
+    return _run(
+        SandboxCommandReconciler(_coordinator(adapter, journal)).reconcile(
+            "operation-1",
+            execution_ref="agent-revision://finance@2#sandbox-step-1",
+            spec=spec or _spec(),
+            request=_request(),
+        )
+    )
+
+
+def test_reconciler_recovers_and_reports_terminal_journal():
+    journal = _running_journal()
+
+    result = _reconcile(_FakeRecoverableAdapter(), journal)
+
+    assert result.status is SandboxCommandReconciliationStatus.RECOVERED
+    assert result.reason_code == "journal_succeeded"
+    assert result.retryable is False
+    assert result.requires_operator is False
+    assert result.execution is not None
+    assert result.journal is journal.records["operation-1"]
+    assert result.to_dict() == {
+        "schemaVersion": 1,
+        "operationId": "operation-1",
+        "status": "recovered",
+        "reasonCode": "journal_succeeded",
+        "retryable": False,
+        "requiresOperator": False,
+        "journalState": "succeeded",
+        "journalVersion": 2,
+    }
+
+
+def test_reconciler_treats_existing_terminal_record_as_idempotent_success():
+    journal = _running_journal()
+    _reconcile(_FakeRecoverableAdapter(), journal)
+    second = _FakeRecoverableAdapter()
+
+    result = _reconcile(second, journal)
+
+    assert result.status is SandboxCommandReconciliationStatus.ALREADY_TERMINAL
+    assert result.reason_code == "journal_succeeded"
+    assert result.journal is journal.records["operation-1"]
+    assert second.reconnect_calls == 0
+
+
+def test_reconciler_reports_missing_record_for_operator_review():
+    result = _reconcile(_FakeRecoverableAdapter(), _MemoryJournal())
+
+    assert result.status is SandboxCommandReconciliationStatus.NOT_FOUND
+    assert result.reason_code == "journal_not_found"
+    assert result.requires_operator is True
+
+
+def test_reconciler_does_not_retry_changed_immutable_policy():
+    journal = _running_journal()
+    changed_spec = SandboxSpec(
+        workspace_root="/different-workspace",
+        read_only=False,
+        env={"PRIVATE_TOKEN": "rotated-secret"},
+    )
+    adapter = _FakeRecoverableAdapter()
+
+    result = _reconcile(adapter, journal, spec=changed_spec)
+
+    assert result.status is SandboxCommandReconciliationStatus.MANUAL_REVIEW
+    assert result.reason_code == "spec_fingerprint_mismatch"
+    assert result.requires_operator is True
+    assert adapter.reconnect_calls == 0
+    assert journal.records["operation-1"].state is SandboxCommandJournalState.RUNNING
+
+
+def test_reconciler_retries_backend_failure_without_finishing_journal():
+    journal = _running_journal()
+
+    result = _reconcile(_FakeRecoverableAdapter(fail_on_wait=True), journal)
+
+    assert result.status is SandboxCommandReconciliationStatus.RETRY_LATER
+    assert result.reason_code == "sandbox_backend_unavailable"
+    assert result.retryable is True
+    assert journal.records["operation-1"].state is SandboxCommandJournalState.RUNNING
+
+
+def test_reconciler_retries_when_terminal_journal_write_is_unavailable():
+    journal = _running_journal(fail_finish=True)
+
+    result = _reconcile(_FakeRecoverableAdapter(), journal)
+
+    assert result.status is SandboxCommandReconciliationStatus.RETRY_LATER
+    assert result.reason_code == "journal_unavailable"
+    assert result.retryable is True
+    assert journal.records["operation-1"].state is SandboxCommandJournalState.RUNNING

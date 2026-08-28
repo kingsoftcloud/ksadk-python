@@ -37,6 +37,26 @@ class SandboxCommandJournalUnavailable(RuntimeError):
     """The authoritative journal could not durably accept an update."""
 
 
+class SandboxCommandJournalNotFound(KeyError):
+    """The scoped authoritative journal record does not exist."""
+
+
+class SandboxCommandAlreadyTerminal(SandboxCommandJournalConflict):
+    """Recovery raced with, or was requested after, terminal completion."""
+
+    def __init__(self, record: SandboxCommandJournalRecord) -> None:
+        self.record = record
+        super().__init__(f"Sandbox 命令已处于终态: {record.state.value}")
+
+
+class SandboxCommandRecoveryInputMismatch(SandboxCommandJournalConflict):
+    """Immutable recovery input differs from the journal fact."""
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(message)
+
+
 class SandboxCommandJournalState(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
@@ -256,11 +276,11 @@ class RecoverableSandboxCommandCoordinator:
     ) -> RecoveredSandboxCommandExecution:
         record = await self._journal.load(operation_id, scope=self._scope)
         if record is None:
-            raise KeyError(f"Sandbox Command Journal 不存在: {operation_id}")
-        if record.state is not SandboxCommandJournalState.RUNNING:
-            raise SandboxCommandJournalConflict(
-                f"Sandbox 命令已处于终态: {record.state.value}"
+            raise SandboxCommandJournalNotFound(
+                f"Sandbox Command Journal 不存在: {operation_id}"
             )
+        if record.state is not SandboxCommandJournalState.RUNNING:
+            raise SandboxCommandAlreadyTerminal(record)
         self._validate_recovery_input(
             record,
             execution_ref=execution_ref,
@@ -377,18 +397,33 @@ class RecoverableSandboxCommandCoordinator:
         request: ExecuteRequest,
     ) -> None:
         if record.execution_ref != execution_ref:
-            raise SandboxCommandJournalConflict("execution_ref 与 Journal 不匹配")
+            raise SandboxCommandRecoveryInputMismatch(
+                "execution_ref_mismatch",
+                "execution_ref 与 Journal 不匹配",
+            )
         if record.scope != self._scope:
-            raise SandboxCommandJournalConflict("tenant/workspace 与 Journal 不匹配")
+            raise SandboxCommandRecoveryInputMismatch(
+                "scope_mismatch",
+                "tenant/workspace 与 Journal 不匹配",
+            )
         if record.run_id != request.run_id:
-            raise SandboxCommandJournalConflict("run_id 与 Journal 不匹配")
+            raise SandboxCommandRecoveryInputMismatch(
+                "run_id_mismatch",
+                "run_id 与 Journal 不匹配",
+            )
         if record.spec_fingerprint != _spec_fingerprint(spec):
-            raise SandboxCommandJournalConflict("Sandbox 策略与 Journal 不匹配")
+            raise SandboxCommandRecoveryInputMismatch(
+                "spec_fingerprint_mismatch",
+                "Sandbox 策略与 Journal 不匹配",
+            )
         if record.request_fingerprint != _request_fingerprint(
             execution_ref=execution_ref,
             request=request,
         ):
-            raise SandboxCommandJournalConflict("执行请求与 Journal 不匹配")
+            raise SandboxCommandRecoveryInputMismatch(
+                "request_fingerprint_mismatch",
+                "执行请求与 Journal 不匹配",
+            )
 
     async def _release_recovery_handle(self, sandbox: SessionSandboxHandle) -> None:
         # ``close`` would kill the remote Sandbox. An unsuccessful reconnect
@@ -447,11 +482,14 @@ def complete_journal_record(
 __all__ = [
     "RecoverableSandboxCommandCoordinator",
     "RecoveredSandboxCommandExecution",
+    "SandboxCommandAlreadyTerminal",
     "SandboxCommandJournalConflict",
+    "SandboxCommandJournalNotFound",
     "SandboxCommandJournalProvider",
     "SandboxCommandJournalRecord",
     "SandboxCommandJournalScope",
     "SandboxCommandJournalState",
     "SandboxCommandJournalUnavailable",
+    "SandboxCommandRecoveryInputMismatch",
     "complete_journal_record",
 ]

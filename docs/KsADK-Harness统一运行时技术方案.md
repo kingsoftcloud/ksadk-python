@@ -820,6 +820,16 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   乐观版本更新、过期写拒绝与终态不可变。`agentengine-server`
   的 HTTP/DB Provider 必须在独立测试租户内运行该套件，不能仅以
   SDK Fake Provider 结果代替控制面持久化验收；
+- 控制面发现长期停留在 `running` 的 Journal 后，从不可变 Revision/Bundle
+  重建输入，并把单条记录交给 SDK 的 `SandboxCommandReconciler`。返回结果
+  只使用稳定状态和原因码：恢复成功、已是终态、记录不存在、稍后重试或
+  人工核对；不把厂商异常原文、凭证或实时 Handle 写入审计。配置指纹不一致
+  必须进入人工核对，后端或 Journal 暂时不可用保持 `running` 并稍后重试，
+  禁止因“无法连接”直接猜测远端命令失败；
+- Stale Journal 的批量扫描、重试退避、最大尝试次数、告警与人工处置工作流
+  属于 `agentengine-server`。KsADK 不持有控制面数据库，也不在 SDK 内启动
+  后台扫描器；服务端集成时应以 `SandboxCommandReconciliationResult.to_dict()`
+  作为稳定审计投影，并使用 Lease fencing 保证同一时刻只有一个恢复 Worker；
 - 跨进程恢复的排他所有权使用 `SandboxLeaseProvider` 合同。权威租约存储
   属于 `agentengine-server` 控制面，KsADK 只消费单调递增的 fencing token；
   Lease 必须以 `tenant_id + workspace_id + backend_id + handle_id` 建立
