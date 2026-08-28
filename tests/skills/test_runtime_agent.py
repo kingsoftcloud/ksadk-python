@@ -15,6 +15,7 @@ from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime import agent as runtime_agent
 from ksadk.skills.runtime import executor as runtime_executor
 from ksadk.skills.runtime.agent import run_agent
+from ksadk.skills.runtime.artifacts import collect_text_output
 from ksadk.skills.runtime.registry import select_remote_skill_refs
 
 
@@ -764,6 +765,55 @@ def test_runtime_agent_collects_generic_workflow_output_dir(monkeypatch, tmp_pat
     assert result.status == "ok"
     assert result.output_files == [artifact]
     assert result.artifacts == [artifact]
+    assert result.output_text == "generated"
+    assert result.output_text_truncated is False
+
+
+def test_runtime_agent_bounds_text_artifact_output(monkeypatch, tmp_path: Path):
+    skill_root = tmp_path / "skills" / "bounded-output-workflow"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: bounded-output-workflow\ndescription: Bounded output workflow\n---\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "run-workflow.sh").write_text(
+        "#!/bin/bash\n"
+        'mkdir -p "$KSADK_SKILL_OUTPUT_DIR"\n'
+        "printf '0123456789' > \"$KSADK_SKILL_OUTPUT_DIR/result.txt\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KSADK_SKILL_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES", "5")
+
+    result = runtime_agent._execute_workflow(
+        "run bounded output workflow",
+        [load_local_skill(skill_root)],
+        selected_skill_names=["bounded-output-workflow"],
+    )
+
+    assert result.output_text == "01234"
+    assert result.output_text_truncated is True
+
+
+def test_text_output_rejects_paths_outside_workdir_and_non_text_artifacts(tmp_path: Path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    report = workdir / "report.md"
+    report.write_text("safe report", encoding="utf-8")
+    binary = workdir / "bundle.bin"
+    binary.write_bytes(b"binary payload")
+    outside = tmp_path / "outside.md"
+    outside.write_text("must not escape", encoding="utf-8")
+
+    output_text, truncated = collect_text_output(
+        [str(outside), str(binary), str(report)],
+        allowed_root=workdir,
+        max_bytes=1024,
+    )
+
+    assert output_text == "safe report"
+    assert truncated is False
 
 
 def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_path: Path):

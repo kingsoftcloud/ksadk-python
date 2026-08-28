@@ -41,6 +41,8 @@ class SkillRuntimeResult:
     error_type: str | None = None
     error_message: str | None = None
     output_files: list[str] = field(default_factory=list)
+    output_text: str = ""
+    output_text_truncated: bool = False
     skill_events: list[SkillEvent] = field(default_factory=list)
 
     @property
@@ -59,6 +61,10 @@ class SkillRuntimeResult:
             "error_message": self.error_message,
             "output_files": list(self.output_files),
         }
+        if self.output_text:
+            result["output_text"] = self.output_text
+        if self.output_text_truncated:
+            result["output_text_truncated"] = True
         if self.skill_events:
             result["skill_events"] = [event.to_dict() for event in self.skill_events]
         return result
@@ -79,7 +85,14 @@ class SkillRuntimeBackend(Protocol):
     ) -> SkillRuntimeResult: ...
 
 
-def parse_output_files(stdout: str) -> list[str]:
+@dataclass(frozen=True)
+class ParsedWorkflowResult:
+    output_files: tuple[str, ...] = ()
+    output_text: str = ""
+    output_text_truncated: bool = False
+
+
+def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
     for line in stdout.splitlines():
         if not line.startswith("workflow_result="):
             continue
@@ -87,11 +100,25 @@ def parse_output_files(stdout: str) -> list[str]:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return []
+            return ParsedWorkflowResult()
+        if not isinstance(payload, dict):
+            return ParsedWorkflowResult()
         output_files = payload.get("output_files") if isinstance(payload, dict) else None
-        if isinstance(output_files, list):
-            return [str(item) for item in output_files]
-    return []
+        output_text = payload.get("output_text")
+        return ParsedWorkflowResult(
+            output_files=(
+                tuple(str(item) for item in output_files) if isinstance(output_files, list) else ()
+            ),
+            output_text=output_text if isinstance(output_text, str) else "",
+            output_text_truncated=payload.get("output_text_truncated") is True,
+        )
+    return ParsedWorkflowResult()
+
+
+def parse_output_files(stdout: str) -> list[str]:
+    """Compatibility helper for callers that only need artifact paths."""
+
+    return list(parse_workflow_result(stdout).output_files)
 
 
 def normalize_skill_names(skill_names: Sequence[str] | str | None) -> list[str]:

@@ -47,6 +47,17 @@ def test_runtime_result_only_serializes_skill_events_when_present() -> None:
     ]
 
 
+def test_runtime_result_serializes_text_output_when_present() -> None:
+    result = SkillRuntimeResult(
+        exit_code=0,
+        output_text="# Report\ncomplete",
+        output_text_truncated=True,
+    ).to_dict()
+
+    assert result["output_text"] == "# Report\ncomplete"
+    assert result["output_text_truncated"] is True
+
+
 def test_runtime_factory_creates_local_process_backend(monkeypatch, tmp_path: Path):
     agent = tmp_path / "agent.py"
     agent.write_text("print('agent')", encoding="utf-8")
@@ -96,7 +107,10 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
     calls: list[tuple[str, object]] = []
 
     class FakeResult:
-        stdout = 'ok\nworkflow_result={"output_files":["/tmp/bundle.html"],"status":"ok"}\n'
+        stdout = (
+            'ok\nworkflow_result={"output_files":["/tmp/report.md"],'
+            '"output_text":"# Report\\ncomplete","status":"ok"}\n'
+        )
         stderr = ""
         exit_code = 0
 
@@ -137,11 +151,11 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
 
     assert result.runtime_id == "sbx-123"
     assert result.exit_code == 0
-    assert (
-        result.stdout == 'ok\nworkflow_result={"output_files":["/tmp/bundle.html"],"status":"ok"}\n'
-    )
+    assert result.stdout == FakeResult.stdout
     assert result.stderr == ""
-    assert result.output_files == ["/tmp/bundle.html"]
+    assert result.output_files == ["/tmp/report.md"]
+    assert result.output_text == "# Report\ncomplete"
+    assert result.output_text_truncated is False
     assert [event.event_type for event in result.skill_events] == [
         "sandbox.session.created",
         "sandbox.session.cleaned_up",
@@ -422,7 +436,15 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
                 "env": kwargs["env"],
             }
         )
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                'workflow_result={"output_files":["/tmp/report.md"],'
+                '"output_text":"local report","status":"ok"}\n'
+            ),
+            stderr="",
+        )
 
     monkeypatch.setattr("ksadk.skills.runtime.backends.local.subprocess.run", fake_run)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example")
@@ -430,7 +452,7 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "not-for-sandbox")
     backend = LocalProcessSkillRuntimeBackend(agent_path=agent)
 
-    backend.run_workflow(
+    result = backend.run_workflow(
         "build artifact",
         skill_space_ids=["ss-1"],
         skill_names=["demo-skill"],
@@ -449,6 +471,8 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
     assert "TRACEPARENT" not in calls[0]["env"]
     assert "LANGFUSE_SECRET_KEY" not in calls[0]["env"]
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in calls[0]["env"]
+    assert result.output_files == ["/tmp/report.md"]
+    assert result.output_text == "local report"
 
 
 def test_local_process_backend_recovers_skill_event_sidecar(monkeypatch, tmp_path: Path):

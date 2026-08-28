@@ -34,6 +34,7 @@ def test_execute_skills_tool_delegates_to_runtime_without_leaking_secret(monkeyp
     monkeypatch.setenv("E2B_API_KEY", "secret-token")
     monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
     monkeypatch.setenv("KSADK_SKILL_SERVICE_SECRET_KEY", "skill-secret")
+    monkeypatch.setenv("KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES", "32768")
 
     class Backend:
         def __init__(self):
@@ -61,6 +62,7 @@ def test_execute_skills_tool_delegates_to_runtime_without_leaking_secret(monkeyp
     assert backend.calls[0][1]["skill_space_ids"] == ["ss-1"]
     assert backend.calls[0][1]["env"]["KSADK_SKILL_SERVICE_URL"] == "https://skill.example/api/v1"
     assert backend.calls[0][1]["env"]["KSADK_SKILL_SERVICE_SECRET_KEY"] == "skill-secret"
+    assert backend.calls[0][1]["env"]["KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES"] == "32768"
     assert "E2B_API_KEY" not in backend.calls[0][1]["env"]
 
 
@@ -206,6 +208,7 @@ def test_execute_skills_tool_accepts_matching_identity_with_richer_runtime_metad
             invocation = kwargs["invocation_plan"].entries[0]
             return SkillRuntimeResult(
                 exit_code=0,
+                output_text="report body",
                 skill_events=[
                     SkillEvent.create(
                         "skill.execution.completed",
@@ -227,6 +230,7 @@ def test_execute_skills_tool_accepts_matching_identity_with_richer_runtime_metad
     ]
     assert result["skill_events"][-1]["skill_ref"]["description"] == ""
     assert result["skill_events"][-1]["skill_ref"]["aliases"] == []
+    assert result["output_text"] == "report body"
 
 
 def test_execute_skills_tool_projects_accepted_skill_events(monkeypatch) -> None:

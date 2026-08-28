@@ -322,7 +322,7 @@ read SKILL.md
 run workflow inside sandbox agent
           |
           v
-return stdout/stderr/status/output_files to outer Agent
+return stdout/stderr/status/output_files and bounded text output to outer Agent
 ```
 
 ### 模块设计
