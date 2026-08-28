@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -105,6 +107,16 @@ def _post_json(url: str, payload: dict, *, timeout: float = 15.0) -> dict:
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _wait_for_process_exit(process, *, timeout: float = 10.0) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            return return_code
+        time.sleep(0.05)
+    raise AssertionError("runtime process did not exit after injected crash")
 
 
 def test_deploy_spawns_real_runtime_process_with_http_health():
@@ -296,6 +308,95 @@ def test_high_risk_mcp_approval_survives_runtime_restart_and_executes_once():
             )
         assert exc_info.value.code == 404
         assert len(_ToolHandler.calls) == 1
+    finally:
+        manager.close()
+        tool_server.shutdown()
+        tool_server.server_close()
+        thread.join(timeout=3)
+
+
+def test_tool_receipt_replays_after_crash_before_graph_checkpoint(tmp_path):
+    """Tool 已成功且 Receipt 已落盘，Graph 写回前崩溃；恢复不得重复副作用。"""
+    tool_server, thread = _start_tool_server()
+    manager = LocalLifecycleManager()
+    payload = _revision_payload()
+    payload["capabilities"] = {
+        "mcpBindings": [{"bindingRef": "mcp://finance-tools@1.0.0"}]
+    }
+    crash_marker = tmp_path / "crash-after-receipt.marker"
+    command = [
+        sys.executable,
+        "-m",
+        "tests.harness.runtime_approval_fixture",
+        "--spec-file",
+        "{spec_file}",
+        "--route",
+        "{route}",
+        "--deployment-id",
+        "{deployment_id}",
+        "--port",
+        "{port}",
+        "--build-id",
+        "{build_id}",
+        "--content-hash",
+        "{content_hash}",
+        "--state-dir",
+        "{state_dir}",
+        "--tool-url",
+        f"http://127.0.0.1:{tool_server.server_port}/tool",
+        "--crash-after-receipt",
+        str(crash_marker),
+    ]
+    try:
+        manifest = manager.build(
+            revision_payload=payload,
+            revision_ref="agent-revision://receipt-crash-e2e@1",
+        )
+        deployment = manager.deploy(
+            manifest=manifest,
+            revision_payload=payload,
+            route="studio://receipt-crash-e2e/local",
+            launch_process=True,
+            server_command=command,
+        )
+        manager.activate("studio://receipt-crash-e2e/local")
+        interrupted = manager.invoke_run(
+            route="studio://receipt-crash-e2e/local",
+            invocation_id="run-receipt-crash-e2e",
+            input="支付发票 INV-E2E-1，金额 88 元",
+            user_id="user-e2e",
+            session_id="session-e2e",
+        )
+        assert interrupted["status"] == "awaiting_approval"
+
+        crashing_process = deployment.process
+        assert crashing_process is not None
+        with pytest.raises((LifecycleError, urllib.error.URLError, ConnectionError)):
+            _post_json(
+                f"{deployment.base_url}/runs/run-receipt-crash-e2e:resume",
+                {"decision": "approved", "callId": "pay-invoice", "stream": False},
+                timeout=30,
+            )
+        assert _wait_for_process_exit(crashing_process) == 91
+        assert crash_marker.read_text(encoding="utf-8") == "receipt-committed"
+        assert len(_ToolHandler.calls) == 1
+
+        deployment.restart_process()
+        completed = _post_json(
+            f"{deployment.base_url}/runs/run-receipt-crash-e2e:resume",
+            {"decision": "approved", "callId": "pay-invoice", "stream": False},
+            timeout=30,
+        )
+        assert completed["status"] == "completed"
+        assert len(_ToolHandler.calls) == 1, "恢复必须回放 Receipt，不得重复外部副作用"
+        replayed = [
+            event
+            for event in completed["events"]
+            if event["event_type"] == "tool.call.end"
+            and event["payload"].get("replayed") is True
+        ]
+        assert replayed
+        assert completed["events"][-1]["event_type"] == "run.completed"
     finally:
         manager.close()
         tool_server.shutdown()

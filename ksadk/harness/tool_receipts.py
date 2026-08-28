@@ -3,6 +3,10 @@
 审批恢复流程要求：审批通过 → 校验 revision/checkpoint/receipt → 执行一次 →
 持久化 ToolReceipt。Receipt 以 (invocation_id, call_id) 为幂等键：重复执行
 同一审批调用直接返回既有结果，不再触发副作用。
+
+Receipt 保证的是「已持久化执行结果不会因 Graph 重放而再次执行」。外部系统已
+成功、但 Receipt 提交前进程即崩溃的极小窗口，仍需 Tool 接受 call_id 等稳定
+幂等键，或由上游提供事务性 outbox，才能获得端到端 exactly-once 语义。
 """
 
 from __future__ import annotations

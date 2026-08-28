@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
 from ksadk.harness.capabilities import CapabilityDescriptor, RiskLevel
+from ksadk.harness.capability_runtime import CapabilityRuntime
 from ksadk.harness.engine.mcp_disclosure import (
     MCP_CALL_TOOL_TOOL,
     MCP_LIST_TOOLS_TOOL,
@@ -18,6 +20,7 @@ from ksadk.harness.engine.mcp_disclosure import (
 from ksadk.harness.mcp_runtime import McpCapabilityRuntime, McpServerBinding, McpTransport
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.runtime_server import build_deployment_app
+from ksadk.harness.tool_receipts import ToolReceiptStore
 
 MCP_REF = "mcp://finance-tools@1.0.0"
 
@@ -112,7 +115,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--content-hash", default="")
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--tool-url", required=True)
+    parser.add_argument("--crash-after-receipt", default="")
     return parser.parse_args()
+
+
+class _CrashAfterReceiptRuntime(CapabilityRuntime):
+    """Exit only after the executed Receipt is durably committed once."""
+
+    def __init__(self, *, receipts: ToolReceiptStore, marker: str) -> None:
+        super().__init__(receipts=receipts)
+        self._marker = Path(marker)
+
+    def record_receipt(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+        prior = super().record_receipt(**kwargs)
+        if (
+            kwargs.get("status") == "executed"
+            and kwargs.get("tool_name") == MCP_CALL_TOOL_TOOL
+            and not self._marker.exists()
+        ):
+            self._marker.write_text("receipt-committed", encoding="utf-8")
+            os._exit(91)
+        return prior
 
 
 def main() -> None:
@@ -133,6 +156,15 @@ def main() -> None:
         )
     )
     spec_payload = json.loads(Path(args.spec_file).read_text(encoding="utf-8"))
+    engine_kwargs: dict[str, Any] = {"mcp_runtime": runtime}
+    if args.crash_after_receipt:
+        state_dir = Path(args.state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        receipts = ToolReceiptStore(str(state_dir / "tool_receipts.sqlite"))
+        engine_kwargs["capability_runtime"] = _CrashAfterReceiptRuntime(
+            receipts=receipts,
+            marker=args.crash_after_receipt,
+        )
     app = build_deployment_app(
         deployment_id=args.deployment_id,
         route=args.route,
@@ -140,7 +172,7 @@ def main() -> None:
         build_id=args.build_id,
         content_hash=args.content_hash,
         reasoner=_CheckpointAwareReasoner(),
-        engine_kwargs={"mcp_runtime": runtime},
+        engine_kwargs=engine_kwargs,
         state_dir=args.state_dir,
     )
     import uvicorn

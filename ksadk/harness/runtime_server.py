@@ -143,6 +143,7 @@ class DeploymentRuntime:
         self._state_dir = Path(state_dir) if state_dir is not None else None
         self._run_store = DeploymentRunStore(self._state_dir) if self._state_dir else None
         self._checkpointer_context: Any | None = None
+        self._owned_receipt_store: Any | None = None
         self._compiled: CompiledHarness | None = None
         self._compile_lock = asyncio.Lock()
         self._store_lock = asyncio.Lock()
@@ -164,17 +165,31 @@ class DeploymentRuntime:
             checkpoint_path = self._state_dir / "checkpoints.sqlite"
             self._checkpointer_context = AsyncSqliteSaver.from_conn_string(str(checkpoint_path))
             checkpointer = await self._checkpointer_context.__aenter__()
+        engine_kwargs = dict(self._engine_kwargs)
+        if self._state_dir is not None and "capability_runtime" not in engine_kwargs:
+            from ksadk.harness.capability_runtime import CapabilityRuntime
+            from ksadk.harness.tool_receipts import ToolReceiptStore
+
+            self._owned_receipt_store = ToolReceiptStore(
+                str(self._state_dir / "tool_receipts.sqlite")
+            )
+            engine_kwargs["capability_runtime"] = CapabilityRuntime(
+                receipts=self._owned_receipt_store
+            )
         self.engine = compose_engine(
             self.spec,
             reasoner=self._reasoner,
             checkpointer=checkpointer,
-            **self._engine_kwargs,
+            **engine_kwargs,
         )
 
     async def shutdown(self) -> None:
         if self._checkpointer_context is not None:
             await self._checkpointer_context.__aexit__(None, None, None)
             self._checkpointer_context = None
+        if self._owned_receipt_store is not None:
+            self._owned_receipt_store.close()
+            self._owned_receipt_store = None
 
     async def ensure_compiled(self) -> CompiledHarness:
         await self.initialize()

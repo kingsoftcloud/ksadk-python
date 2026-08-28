@@ -229,3 +229,24 @@ async def test_persisted_nonterminal_handle_is_attached_before_resume(tmp_path):
     assert recovered == handle
     assert engine.attached is True
     assert engine.resumed is True
+
+
+@pytest.mark.asyncio
+async def test_stateful_runtime_defaults_to_durable_tool_receipts(tmp_path):
+    state_dir = tmp_path / "runtime-state"
+    spec = compile_revision_payload(
+        _revision_payload(), revision_ref="agent-revision://runtime-receipts@1"
+    )
+    runtime = DeploymentRuntime(
+        deployment_id="dep-receipts",
+        spec_payload=spec.model_dump(by_alias=True, mode="json"),
+        reasoner=_Reasoner(),
+        activated=True,
+        state_dir=state_dir,
+    )
+    try:
+        await runtime.initialize()
+        assert runtime.engine._capability_runtime is not None
+        assert (state_dir / "tool_receipts.sqlite").exists()
+    finally:
+        await runtime.shutdown()
