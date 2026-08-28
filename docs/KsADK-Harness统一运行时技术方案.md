@@ -107,7 +107,7 @@ Studio / CLI / RuntimeAdapter
 | 长期 Memory | Scope 检索、纠错/遗忘/锁定、审计、真实模型评测 | 生产数据治理与规模化评测仍需平台服务配合 |
 | MCP Runtime | L0-L3 渐进披露、健康/熔断、审批、幂等、结果外置 | 更多真实 MCP Transport 故障注入待覆盖 |
 | Skill Runtime | L0-L3 渐进披露、三级解析、父子 Agent 透传 | Skill 管理面仍由 Skill Service 负责 |
-| Sandbox | 通用 Backend 抽象与工具执行入口 | E2B/平台私有后端的可靠性矩阵仍需补齐 |
+| Sandbox | 异步 Backend 合同、能力声明、本地只读/进程后端、超时/取消/Artifact/清理 Conformance | E2B/平台私有后端仍需在真实模板和凭证环境跑远程矩阵 |
 | Tool Approval | Interrupt/Resume、Receipt、动态风险判定 | 外部副作用仍取决于 Transport 幂等合同 |
 | Observability | Run/Turn/Tool/Context/Memory/Usage/Artifact 统一事件 | Studio 的聚合展示仍可继续增强 |
 | Lifecycle | DraftRuntime 即时调试与 Revision/Build/Deploy/Activate 正式链路隔离 | 云端准入、路由和回滚由控制面完成 |
@@ -734,6 +734,8 @@ Harness 不直接绑定 E2B 对象，统一使用 Sandbox Backend：
 
 ```python
 class SandboxBackend(Protocol):
+    @property
+    def capabilities(self) -> SandboxBackendCapabilities: ...
     async def create(self, spec: SandboxSpec) -> SandboxHandle: ...
     async def execute(self, handle: SandboxHandle, request: ExecuteRequest) -> ExecuteResult: ...
     async def collect_artifacts(self, handle: SandboxHandle) -> list[ArtifactRef]: ...
@@ -746,6 +748,27 @@ class SandboxBackend(Protocol):
 - 接入现有通用 `ksadk.sandbox`；
 - E2B 作为优先远程后端；
 - 后续扩展 KOP/平台私有 Backend。
+
+Backend 必须声明真实能力，而不是只暴露一个统一类名。当前合同至少区分：
+
+- 文件系统边界：无隔离、受控工作区、临时工作区、远程 Sandbox；
+- 网络控制：无控制、命令面限制、仅准入拒绝、后端强制执行；
+- 是否具备进程边界、按请求超时、协作取消、Artifact 收集、确定性清理、
+  执行审计和跨进程重连。
+
+`Sandbox Backend Conformance` 使用同一组行为探针验证声明与实现一致：
+
+1. 创建与执行结果遵守统一合同；
+2. 声明支持按请求超时的后端必须形成明确超时结果；
+3. 声明支持取消的后端必须终止子进程并记录审计，不能只取消等待者；
+4. Artifact 只能从声明的工作区收集，关闭后 Handle 必须稳定拒绝执行；
+5. 网络策略在创建阶段明确拒绝或由后端强制执行，不能静默放行；
+6. 未配置真实远程模板、凭证和网络条件时，E2B/KOP 用例标记为跳过，
+   不以 Fake SDK 测试冒充远程隔离 E2E。
+
+当前本地 `SubprocessSandboxBackend` 诚实声明为“临时工作区 + 宿主子进程
+边界 + 网络准入拒绝”，不宣称容器/VM 级文件系统、内核或网络隔离；
+`LocalReadOnlySandboxBackend` 依靠极窄只读命令面和路径解析提供最低安全模式。
 
 ---
 
