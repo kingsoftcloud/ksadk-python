@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import QRCode from "qrcode";
 import { apiFetch } from "../api";
+import { groupRunsBySession, type ChatSession } from "../chatProtocol";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Drawer } from "../components/Drawer";
 import { MoreActionsMenu } from "../components/MoreActionsMenu";
@@ -537,10 +538,18 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [deleting, setDeleting] = useState(false);
   const [unbindTarget, setUnbindTarget] = useState<ChannelBinding | null>(null);
   const [unbinding, setUnbinding] = useState(false);
-  const [editBindingTarget, setEditBindingTarget] = useState<ChannelBinding | null>(null);
-  const [editSessionId, setEditSessionId] = useState("");
-  const [editSubmitting, setEditSubmitting] = useState(false);
-  const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
+ const [editBindingTarget, setEditBindingTarget] = useState<ChannelBinding | null>(null);
+ const [editSessionId, setEditSessionId] = useState("");
+ const [editSubmitting, setEditSubmitting] = useState(false);
+  const [studioSessions, setStudioSessions] = useState<ChatSession[]>([]);
+  const [activeTakeovers, setActiveTakeovers] = useState<Record<string, string>>({});
+  const [takeoverTarget, setTakeoverTarget] = useState<ChannelBinding | null>(null);
+  const [takeoverReason, setTakeoverReason] = useState("");
+  const [takeoverByName, setTakeoverByName] = useState("");
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
+  const [releaseTarget, setReleaseTarget] = useState<ChannelBinding | null>(null);
+  const [releaseBusy, setReleaseBusy] = useState(false);
+ const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
   const [actionKind, setActionKind] = useState<"approve" | "reject" | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -551,13 +560,14 @@ const [selectedConversationId, setSelectedConversationId] = useState<string | nu
   const [qrImageData, setQrImageData] = useState("");
 
 const loadAll = useCallback(async () => {
-    const [chRes, pairRes, bindRes, msgRes, agentRes, cloudAgentRes] = await Promise.allSettled([
+    const [chRes, pairRes, bindRes, msgRes, agentRes, cloudAgentRes, runsRes] = await Promise.allSettled([
       channelApi<ListResult<Channel>>("ListChannels", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<PairingRequest>>("ListPairingRequests", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<ChannelBinding>>("ListBindings", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<ChannelMessage>>("ListMessages", { Offset: 0, Limit: 100 }),
       apiFetch("/api/v1/agents?limit=100").then(r => r.ok ? r.json() : Promise.reject(new Error("agents"))),
       apiFetch("/api/v1/cloud-agents?size=100").then(r => r.ok ? r.json() : Promise.reject(new Error("cloud-agents"))),
+      apiFetch("/api/v1/runs").then(r => r.ok ? r.json() : Promise.reject(new Error("runs"))),
     ]);
     if (chRes.status === "fulfilled") setChannels(chRes.value.Items || []);
     if (pairRes.status === "fulfilled") setPairings(pairRes.value.Items || []);
@@ -565,6 +575,31 @@ const loadAll = useCallback(async () => {
     if (msgRes.status === "fulfilled") setMessages(msgRes.value.Items || []);
     if (agentRes.status === "fulfilled") setAgents(agentRes.value.items || []);
     if (cloudAgentRes.status === "fulfilled") setCloudAgents(cloudAgentRes.value.items || []);
+    if (runsRes.status === "fulfilled" && runsRes.value.items) {
+      const allSessions: ChatSession[] = [];
+      const seen = new Set<string>();
+      for (const item of runsRes.value.items) {
+        const agentId = (item as { agentId?: string }).agentId || "";
+        const grouped = groupRunsBySession([item] as Parameters<typeof groupRunsBySession>[0], agentId);
+        for (const s of grouped) {
+          if (!seen.has(s.id)) { seen.add(s.id); allSessions.push(s); }
+        }
+      }
+      allSessions.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+      setStudioSessions(allSessions);
+    }
+    // Check active takeovers for each binding
+    if (bindRes.status === "fulfilled") {
+      const bindingsList = bindRes.value.Items || [];
+      const takeoverMap: Record<string, string> = {};
+      await Promise.allSettled(bindingsList.map(async (bd) => {
+        try {
+          const res = await channelApi<{ Takeover?: { Id: string } }>("GetActiveTakeover", { BindingId: bd.Id });
+          if (res.Takeover) takeoverMap[bd.Id] = res.Takeover.Id;
+        } catch { /* no active takeover */ }
+      }));
+      setActiveTakeovers(takeoverMap);
+    }
     setLoading(false);
   }, []);
 
@@ -597,6 +632,14 @@ const loadAll = useCallback(async () => {
       }));
     return [...local, ...cloud];
   }, [agents, cloudAgents]);
+
+  const sessionOptions = useMemo(() => {
+    const opts = studioSessions.map(s => ({
+      value: s.id,
+      label: s.title || s.id,
+    }));
+    return [{ value: "", label: "(不关联会话)" }, ...opts];
+  }, [studioSessions]);
 
   const isEdit = Boolean(editingId);
 
@@ -715,6 +758,48 @@ async function submitChannel(event: React.FormEvent) {
       showToast("解绑失败", error instanceof Error ? error.message : "请稍后重试", "error");
     } finally {
       setUnbinding(false);
+    }
+  }
+
+  async function submitTakeover() {
+    if (!takeoverTarget) return;
+    setTakeoverBusy(true);
+    try {
+      await channelApi("Takeover", {
+        BindingId: takeoverTarget.Id,
+        TakenOverBy: "admin",
+        TakenOverByName: takeoverByName.trim() || "Admin",
+        Reason: takeoverReason.trim() || undefined,
+      });
+      const res = await channelApi<{ Takeover?: { Id: string } }>("GetActiveTakeover", { BindingId: takeoverTarget.Id });
+      if (res.Takeover) setActiveTakeovers(prev => ({ ...prev, [takeoverTarget.Id]: res.Takeover!.Id }));
+      showToast("已接管", "该会话的消息将不再自动回复");
+      setTakeoverTarget(null);
+    } catch (error) {
+      showToast("接管失败", error instanceof Error ? error.message : "请稍后重试", "error");
+    } finally {
+      setTakeoverBusy(false);
+    }
+  }
+
+  async function submitRelease() {
+    if (!releaseTarget) return;
+    const takeoverId = activeTakeovers[releaseTarget.Id];
+    if (!takeoverId) {
+      showToast("无需释放", "当前没有活跃的接管", "info");
+      setReleaseTarget(null);
+      return;
+    }
+    setReleaseBusy(true);
+    try {
+      await channelApi("ReleaseTakeover", { Id: takeoverId });
+      setActiveTakeovers(prev => { const next = { ...prev }; delete next[releaseTarget.Id]; return next; });
+      showToast("已释放接管", "该会话恢复自动回复");
+      setReleaseTarget(null);
+    } catch (error) {
+      showToast("释放失败", error instanceof Error ? error.message : "请稍后重试", "error");
+    } finally {
+      setReleaseBusy(false);
     }
   }
 
@@ -920,7 +1005,12 @@ async function submitChannel(event: React.FormEvent) {
       id: "sessionId",
       header: "Session ID",
       minWidth: 150,
-      cell: bd => <span className="mono resource-origin">{bd.SessionId}</span>,
+      cell: bd => (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <span className="mono resource-origin">{bd.SessionId}</span>
+            {activeTakeovers[bd.Id] && <span className="channels-page__takeover-badge">已接管</span>}
+          </span>
+        ),
     },
     {
       id: "userId",
@@ -943,6 +1033,9 @@ async function submitChannel(event: React.FormEvent) {
           label={`会话绑定 ${bd.SessionId} 操作`}
           items={[
             { label: "编辑会话", onSelect: () => { setEditBindingTarget(bd); setEditSessionId(bd.SessionId); } },
+            activeTakeovers[bd.Id]
+              ? { label: "释放接管", onSelect: () => setReleaseTarget(bd) }
+              : { label: "接管", onSelect: () => { setTakeoverTarget(bd); setTakeoverReason(""); setTakeoverByName(""); } },
             { label: "解绑", danger: true, onSelect: () => setUnbindTarget(bd) },
           ]}
         />
@@ -1469,18 +1562,64 @@ async function submitChannel(event: React.FormEvent) {
             </>
           )}
         >
-          <FormField label="Session ID" htmlFor="edit-binding-session-id" requirement="required">
-            <input
-              id="edit-binding-session-id"
+          <FormField label="关联会话" htmlFor="edit-binding-session" requirement="required">
+            <StudioSelect
+              ariaLabel="选择会话"
               value={editSessionId}
-              onChange={event => setEditSessionId(event.target.value)}
-              placeholder="输入要关联的 Studio 会话 ID"
-              required
+              options={sessionOptions}
+              onValueChange={value => setEditSessionId(value)}
             />
           </FormField>
          <p className="channels-page__form-hint">将此绑定关联到 Studio 中的会话，用户在 IM 发送的消息将使用此 SessionId 调用 Agent Runtime，实现 Studio 会话和 IM 会话的互通。</p>
        </StudioDialog>
      )}
+
+      {takeoverTarget && (
+        <StudioDialog
+          open
+          onOpenChange={open => { if (!open && !takeoverBusy) setTakeoverTarget(null); }}
+          title="接管会话"
+          closeDisabled={takeoverBusy}
+          footer={(
+            <>
+              <button className="button tertiary" type="button" onClick={() => setTakeoverTarget(null)} disabled={takeoverBusy}>取消</button>
+              <button className="button accent" type="button" onClick={submitTakeover} disabled={takeoverBusy}>
+                {takeoverBusy ? "处理中…" : "确认接管"}
+              </button>
+            </>
+          )}
+        >
+          <div className="form-grid">
+            <FormField label="接管人名称" htmlFor="takeover-name">
+              <input
+                id="takeover-name"
+                value={takeoverByName}
+                onChange={event => setTakeoverByName(event.target.value)}
+                placeholder="Admin"
+              />
+            </FormField>
+            <FormField label="接管原因" htmlFor="takeover-reason">
+              <input
+                id="takeover-reason"
+                value={takeoverReason}
+                onChange={event => setTakeoverReason(event.target.value)}
+                placeholder="可选"
+              />
+            </FormField>
+          </div>
+          <p className="channels-page__form-hint">接管后，该会话的 IM 消息将不再自动触发 Agent 回复，直到释放接管。</p>
+        </StudioDialog>
+      )}
+
+      {releaseTarget && (
+        <ConfirmDialog
+          title="释放接管"
+          message="释放后该会话将恢复 Agent 自动回复，确认释放？"
+          busy={releaseBusy}
+          onConfirm={submitRelease}
+          onCancel={() => setReleaseTarget(null)}
+        />
+      )}
 
       {qrTarget && (
         <StudioDialog

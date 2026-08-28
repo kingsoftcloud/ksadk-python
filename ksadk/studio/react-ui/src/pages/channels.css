@@ -626,3 +626,16 @@
     min-height: 320px;
   }
 }
+
+.channels-page__takeover-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: var(--font-size-caption, 12px);
+  font-weight: 500;
+  color: var(--text-warning, #e8730c);
+  background: var(--bg-warning-subtle, rgba(232, 115, 12, 0.1));
+  border: 1px solid var(--border-warning, rgba(232, 115, 12, 0.3));
+  white-space: nowrap;
+}
