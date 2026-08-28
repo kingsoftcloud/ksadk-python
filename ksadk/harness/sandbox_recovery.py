@@ -217,6 +217,20 @@ class RecoveredSandboxCommandExecution:
     journal: SandboxCommandJournalRecord
 
 
+@dataclass(frozen=True)
+class StartedRecoverableSandboxCommand:
+    """A live command whose reconnect tokens are already durable.
+
+    The object is intentionally process-local because it contains a live
+    adapter command handle.  A replacement worker reconstructs its state from
+    ``journal`` through :meth:`recover_and_wait`, never by serializing this
+    wrapper.
+    """
+
+    command: SessionSandboxCommand
+    journal: SandboxCommandJournalRecord
+
+
 class RecoverableSandboxCommandCoordinator:
     """Compose command reconnect primitives with an authoritative journal."""
 
@@ -241,6 +255,29 @@ class RecoverableSandboxCommandCoordinator:
         operation_id: str,
         execution_ref: str,
     ) -> ExecuteResult:
+        started = await self.start(
+            handle,
+            request,
+            operation_id=operation_id,
+            execution_ref=execution_ref,
+        )
+        return await self.wait(started)
+
+    async def start(
+        self,
+        handle: SessionSandboxHandle,
+        request: ExecuteRequest,
+        *,
+        operation_id: str,
+        execution_ref: str,
+    ) -> StartedRecoverableSandboxCommand:
+        """Start a command and durably publish its recovery tokens.
+
+        Returning from this method is the recoverability boundary: callers
+        may lose the current worker afterwards and a replacement worker can
+        continue with :meth:`recover_and_wait`.
+        """
+
         command = await self._adapter.start_execute(handle, request)
         record = self._build_running_record(
             command,
@@ -250,6 +287,13 @@ class RecoverableSandboxCommandCoordinator:
         try:
             durable = await self._journal.create_running(record)
             self._validate_created_record(record, durable)
+        except asyncio.CancelledError:
+            # Task cancellation is a BaseException on supported Python
+            # versions, so it must be handled separately from provider
+            # failures. No durable token means the remote side effect must not
+            # survive the cancelled worker.
+            await asyncio.shield(self._adapter.cancel_command(command))
+            raise
         except Exception as exc:
             # No durable token means no recoverability. Stop the remote process
             # rather than letting an untracked side effect continue.
@@ -258,13 +302,59 @@ class RecoverableSandboxCommandCoordinator:
                 "Sandbox 命令恢复记录未持久化，已 fail-closed 取消命令"
             ) from exc
 
+        return StartedRecoverableSandboxCommand(command=command, journal=durable)
+
+    async def wait(self, started: StartedRecoverableSandboxCommand) -> ExecuteResult:
+        """Wait for a previously started command and persist its terminal state."""
+
+        self._validate_started_command(started)
+
         try:
-            result = await self._adapter.wait_command(command)
+            result = await self._adapter.wait_command(started.command)
         except asyncio.CancelledError:
-            await self._finish_cancelled(durable)
+            await self._finish_cancelled(started.journal)
             raise
-        await self._finish_result(durable, result)
+        await self._finish_result(started.journal, result)
         return result
+
+    def _validate_started_command(self, started: StartedRecoverableSandboxCommand) -> None:
+        command = started.command
+        record = started.journal
+        if record.scope != self._scope:
+            raise SandboxCommandRecoveryInputMismatch(
+                "scope_mismatch",
+                "tenant/workspace 与已启动命令不匹配",
+            )
+        if record.state is not SandboxCommandJournalState.RUNNING:
+            raise SandboxCommandAlreadyTerminal(record)
+        if record.run_id != command.request.run_id:
+            raise SandboxCommandRecoveryInputMismatch(
+                "run_id_mismatch",
+                "run_id 与已启动命令不匹配",
+            )
+        if record.sandbox_token != self._adapter.export_resume_token(command.sandbox):
+            raise SandboxCommandRecoveryInputMismatch(
+                "sandbox_token_mismatch",
+                "Sandbox Token 与已启动命令不匹配",
+            )
+        if record.command_token != self._adapter.export_command_resume_token(command):
+            raise SandboxCommandRecoveryInputMismatch(
+                "command_token_mismatch",
+                "Command Token 与已启动命令不匹配",
+            )
+        if record.spec_fingerprint != _spec_fingerprint(command.sandbox.spec):
+            raise SandboxCommandRecoveryInputMismatch(
+                "spec_fingerprint_mismatch",
+                "Sandbox 策略与已启动命令不匹配",
+            )
+        if record.request_fingerprint != _request_fingerprint(
+            execution_ref=record.execution_ref,
+            request=command.request,
+        ):
+            raise SandboxCommandRecoveryInputMismatch(
+                "request_fingerprint_mismatch",
+                "执行请求与已启动命令不匹配",
+            )
 
     async def recover_and_wait(
         self,
@@ -482,6 +572,7 @@ def complete_journal_record(
 __all__ = [
     "RecoverableSandboxCommandCoordinator",
     "RecoveredSandboxCommandExecution",
+    "StartedRecoverableSandboxCommand",
     "SandboxCommandAlreadyTerminal",
     "SandboxCommandJournalConflict",
     "SandboxCommandJournalNotFound",

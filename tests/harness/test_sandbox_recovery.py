@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 
 import pytest
 
+from ksadk.harness.sandbox_adapters import adapt_e2b_backend
 from ksadk.harness.sandbox_backend import (
     ExecuteRequest,
     ExecuteResult,
@@ -14,6 +16,11 @@ from ksadk.harness.sandbox_backend import (
     SandboxCommandResumeToken,
     SandboxResumeToken,
     SandboxSpec,
+)
+from ksadk.harness.sandbox_lease import (
+    SandboxLeaseConflict,
+    SandboxLeaseGrant,
+    SandboxLeaseScope,
 )
 from ksadk.harness.sandbox_reconciliation import (
     SandboxCommandReconciler,
@@ -28,6 +35,8 @@ from ksadk.harness.sandbox_recovery import (
     SandboxCommandJournalUnavailable,
     complete_journal_record,
 )
+from ksadk.sandbox.backends.e2b import E2BSandboxBackend
+from ksadk.sandbox.base import SandboxSpec as SdkSandboxSpec
 
 
 def _run(coro):
@@ -171,6 +180,86 @@ class _MemoryJournal:
         return completed
 
 
+class _CancelledCreateJournal(_MemoryJournal):
+    async def create_running(self, record):
+        raise asyncio.CancelledError
+
+
+class _MemoryLeaseProvider:
+    """Process-shared lease double for the gated remote-backend E2E.
+
+    The remote command and reconnect are real E2B operations.  The lease
+    remains an SDK-side test provider because its authoritative production
+    implementation belongs to agentengine-server.
+    """
+
+    def __init__(self) -> None:
+        self.now = 100.0
+        self._grants: dict[tuple[SandboxLeaseScope, str], SandboxLeaseGrant] = {}
+        self._last_fencing: dict[tuple[SandboxLeaseScope, str], int] = {}
+
+    async def acquire(
+        self,
+        *,
+        backend_id,
+        handle_id,
+        scope,
+        owner_id,
+        ttl_seconds,
+    ):
+        key = (scope, handle_id)
+        current = self._grants.get(key)
+        if current is not None and current.expires_at > self.now:
+            raise SandboxLeaseConflict("sandbox lease already owned")
+        fencing = self._last_fencing.get(key, 0) + 1
+        grant = SandboxLeaseGrant(
+            backend_id=backend_id,
+            handle_id=handle_id,
+            scope=scope,
+            owner_id=owner_id,
+            fencing_token=fencing,
+            expires_at=self.now + ttl_seconds,
+        )
+        self._last_fencing[key] = fencing
+        self._grants[key] = grant
+        return grant
+
+    async def renew(self, grant, *, ttl_seconds):
+        key = (grant.scope, grant.handle_id)
+        current = self._grants.get(key)
+        if (
+            current is None
+            or current.owner_id != grant.owner_id
+            or current.fencing_token != grant.fencing_token
+            or current.expires_at <= self.now
+        ):
+            raise SandboxLeaseConflict("stale sandbox fencing token")
+        renewed = SandboxLeaseGrant(
+            backend_id=grant.backend_id,
+            handle_id=grant.handle_id,
+            scope=grant.scope,
+            owner_id=grant.owner_id,
+            fencing_token=grant.fencing_token,
+            expires_at=self.now + ttl_seconds,
+        )
+        self._grants[key] = renewed
+        return renewed
+
+    async def release(self, grant):
+        key = (grant.scope, grant.handle_id)
+        current = self._grants.get(key)
+        if (
+            current is None
+            or current.owner_id != grant.owner_id
+            or current.fencing_token != grant.fencing_token
+        ):
+            raise SandboxLeaseConflict("stale sandbox fencing token")
+        self._grants.pop(key)
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def _spec() -> SandboxSpec:
     return SandboxSpec(
         workspace_root="/workspace/revision-1",
@@ -213,6 +302,57 @@ def test_start_persists_credential_free_record_and_finishes():
     assert record.scope == _SCOPE
 
 
+def test_start_exposes_durable_recovery_boundary_before_wait():
+    adapter = _FakeRecoverableAdapter()
+    journal = _MemoryJournal()
+    coordinator = _coordinator(adapter, journal)
+
+    started = _run(
+        coordinator.start(
+            _Handle(_spec()),
+            _request(),
+            operation_id="operation-1",
+            execution_ref="agent-revision://finance@2#sandbox-step-1",
+        )
+    )
+
+    assert started.journal is journal.records["operation-1"]
+    assert started.journal.state is SandboxCommandJournalState.RUNNING
+    assert started.journal.command_token.process_id == 42
+
+    result = _run(coordinator.wait(started))
+    assert result.ok is True
+    assert journal.records["operation-1"].state is SandboxCommandJournalState.SUCCEEDED
+
+
+def test_second_worker_can_recover_after_first_worker_only_started_command():
+    journal = _MemoryJournal()
+    first = _FakeRecoverableAdapter()
+    started = _run(
+        _coordinator(first, journal).start(
+            _Handle(_spec()),
+            _request(),
+            operation_id="operation-1",
+            execution_ref="agent-revision://finance@2#sandbox-step-1",
+        )
+    )
+    assert started.journal.state is SandboxCommandJournalState.RUNNING
+
+    second = _FakeRecoverableAdapter()
+    recovered = _run(
+        _coordinator(second, journal).recover_and_wait(
+            "operation-1",
+            execution_ref="agent-revision://finance@2#sandbox-step-1",
+            spec=_spec(),
+            request=_request(),
+        )
+    )
+
+    assert second.reconnect_calls == 1
+    assert recovered.result.output == "private-result"
+    assert recovered.journal.state is SandboxCommandJournalState.SUCCEEDED
+
+
 def test_journal_create_failure_cancels_untracked_command():
     adapter = _FakeRecoverableAdapter()
     coordinator = _coordinator(
@@ -223,6 +363,23 @@ def test_journal_create_failure_cancels_untracked_command():
     with pytest.raises(SandboxCommandJournalUnavailable, match="fail-closed"):
         _run(
             coordinator.start_and_wait(
+                _Handle(_spec()),
+                _request(),
+                operation_id="operation-1",
+                execution_ref="agent-revision://finance@2#sandbox-step-1",
+            )
+        )
+
+    assert adapter.cancelled is True
+
+
+def test_cancellation_during_journal_create_cancels_untracked_command():
+    adapter = _FakeRecoverableAdapter()
+    coordinator = _coordinator(adapter, _CancelledCreateJournal())
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(
+            coordinator.start(
                 _Handle(_spec()),
                 _request(),
                 operation_id="operation-1",
@@ -546,3 +703,93 @@ def test_reconciler_retries_when_terminal_journal_write_is_unavailable():
     assert result.reason_code == "journal_unavailable"
     assert result.retryable is True
     assert journal.records["operation-1"].state is SandboxCommandJournalState.RUNNING
+
+
+def test_real_e2b_worker_takeover_finishes_authoritative_journal_when_enabled():
+    """Exercise a real remote command across two adapter/worker instances.
+
+    E2B supplies the remote Sandbox and process reconnect. The in-memory lease
+    and journal stand in only for agentengine-server contracts, so this test
+    does not claim to validate server durability.
+    """
+
+    if os.environ.get("KSADK_REAL_SANDBOX_E2E") != "1":
+        pytest.skip("set KSADK_REAL_SANDBOX_E2E=1 to run remote recovery E2E")
+    template_id = os.environ.get("KSADK_SANDBOX_TEMPLATE_ID", "").strip()
+    if not template_id:
+        pytest.skip("KSADK_SANDBOX_TEMPLATE_ID is required for remote recovery E2E")
+
+    sdk = E2BSandboxBackend(
+        spec=SdkSandboxSpec(
+            template_id=template_id,
+            timeout=120,
+            allow_internet_access=False,
+        )
+    )
+    leases = _MemoryLeaseProvider()
+    lease_scope = SandboxLeaseScope("tenant-e2e", "workspace-e2e")
+    journal = _MemoryJournal()
+    journal_scope = SandboxCommandJournalScope("tenant-e2e", "workspace-e2e")
+    spec = SandboxSpec(
+        workspace_root="/tmp/ksadk-harness-recovery-e2e",
+        read_only=False,
+    )
+    request = ExecuteRequest(
+        command="sleep 5; printf remote-worker-recovery-ok",
+        timeout_seconds=30,
+        run_id="run-remote-worker-recovery",
+    )
+    execution_ref = "agent-revision://sandbox-recovery-e2e@1#command-1"
+
+    async def flow():
+        first_adapter = adapt_e2b_backend(
+            sdk,
+            lease_provider=leases,
+            lease_scope=lease_scope,
+            lease_owner_id="worker-a",
+            lease_ttl_seconds=5,
+        )
+        first_handle = await first_adapter.create(spec)
+        first_coordinator = RecoverableSandboxCommandCoordinator(
+            first_adapter,
+            journal,
+            scope=journal_scope,
+        )
+        started = await first_coordinator.start(
+            first_handle,
+            request,
+            operation_id="operation-remote-worker-recovery",
+            execution_ref=execution_ref,
+        )
+        assert started.journal.state is SandboxCommandJournalState.RUNNING
+
+        # Simulate worker-a disappearing after the durable recovery boundary.
+        # The virtual control-plane clock avoids a minute-long wall-clock wait.
+        leases.advance(61)
+        second_adapter = adapt_e2b_backend(
+            sdk,
+            lease_provider=leases,
+            lease_scope=lease_scope,
+            lease_owner_id="worker-b",
+            lease_ttl_seconds=5,
+        )
+        second_coordinator = RecoverableSandboxCommandCoordinator(
+            second_adapter,
+            journal,
+            scope=journal_scope,
+        )
+        recovered = await second_coordinator.recover_and_wait(
+            "operation-remote-worker-recovery",
+            execution_ref=execution_ref,
+            spec=spec,
+            request=request,
+        )
+        await second_adapter.close(recovered.sandbox)
+        return first_handle, recovered
+
+    first_handle, recovered = _run(flow())
+    assert recovered.sandbox.handle_id == first_handle.handle_id
+    assert recovered.result.ok is True
+    assert recovered.result.output == "remote-worker-recovery-ok"
+    assert recovered.journal.state is SandboxCommandJournalState.SUCCEEDED
+    assert recovered.journal.version == 2

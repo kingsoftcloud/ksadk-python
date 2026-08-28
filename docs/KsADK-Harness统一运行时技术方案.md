@@ -796,6 +796,10 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
 - SDK 通过 `SandboxCommandJournalProvider` 定义控制面持久化合同，
   `RecoverableSandboxCommandCoordinator` 组合 `start -> durable journal -> wait`
   和 `load journal -> reconnect sandbox -> reconnect command -> wait` 两条路径。
+  `start()` 返回即为明确的可恢复边界：恢复 Token 已完成权威持久化，而实时
+  Command Handle 只留在当前进程；当前 Worker 可继续调用 `wait()`，也可以在
+  进程丢失后由新 Worker 仅凭 Journal 调用 `recover_and_wait()`。便捷方法
+  `start_and_wait()` 只是前两步的顺序组合，不再是唯一入口。
   Journal 仅包含 tenant/workspace scope、`operation_id`、不可变
   `execution_ref`、`run_id`、
   Sandbox/Command Resume Token、策略指纹、超时、状态、乐观版本和
@@ -848,8 +852,12 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   `KSADK_SANDBOX_TEMPLATE_ID` 双重门控。未满足远程模板、凭证和网络条件时
   只运行适配合同单测并明确 skip，不用 Fake SDK 结果替代远程 E2E 结论；
   启用后会额外验证远端命令取消、工作目录 Artifact 枚举与
-  跨 Adapter 会话恢复；运行中命令的真实远端恢复还要求测试环境提供
-  控制面 Lease Provider，默认离线套件只验证合同与跨 Adapter PID 重连。
+  跨 Adapter 会话恢复，并执行真实 E2B 远端命令的 Worker A 启动、Journal
+  落盘、Worker B fencing 接管、PID 重连和 Journal 终态写入。该 SDK E2E
+  中远端 Sandbox/命令为真实 E2B，Lease 与 Journal 使用进程共享测试 Provider；
+  它验证 SDK 编排与厂商重连能力，但不冒充 `agentengine-server` 的跨 Pod
+  持久化验收。服务端真实 Lease/Journal Provider 仍须在预发独立租户运行
+  Conformance 与 Worker kill E2E 后，才能宣称端云恢复闭环完成。
 
 ---
 
