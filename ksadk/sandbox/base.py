@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class SandboxError(RuntimeError):
@@ -84,6 +84,36 @@ class SandboxSession(Protocol):
     def get_host(self, port: int) -> str: ...
 
     def kill(self) -> None: ...
+
+
+@runtime_checkable
+class SandboxCommandHandle(Protocol):
+    """Optional handle for a command that can be stopped explicitly."""
+
+    def wait(self) -> SandboxCommandResult: ...
+
+    def kill(self) -> bool: ...
+
+
+@runtime_checkable
+class BackgroundCommandSandboxSession(Protocol):
+    """Optional session extension used for truthful cooperative cancellation."""
+
+    def start_command(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> SandboxCommandHandle: ...
+
+
+@runtime_checkable
+class ArtifactListingSandboxSession(Protocol):
+    """Optional session extension for bounded artifact enumeration."""
+
+    def list_files(self, root: str, *, recursive: bool = True) -> list[str]: ...
 
 
 class SandboxBackend(Protocol):

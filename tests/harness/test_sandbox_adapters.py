@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
+from dataclasses import dataclass
 
 import pytest
 
@@ -23,8 +25,9 @@ from ksadk.harness.sandbox_backend import (
 from ksadk.harness.sandbox_conformance import (
     SandboxConformanceCase,
     run_sandbox_backend_conformance,
+    verify_cooperative_cancellation,
 )
-from ksadk.sandbox.backends.e2b import E2BSandboxBackend
+from ksadk.sandbox.backends.e2b import E2BSandboxBackend, E2BSandboxSession
 from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
 from ksadk.sandbox.base import SandboxCommandResult
 from ksadk.sandbox.base import SandboxSpec as SdkSandboxSpec
@@ -186,11 +189,7 @@ def test_local_process_adapter_rejects_workspace_mismatch(tmp_path):
     )
 
     with pytest.raises(SandboxPolicyViolation, match="workspace_root"):
-        _run(
-            backend.create(
-                SandboxSpec(workspace_root=str(tmp_path / "other"), read_only=False)
-            )
-        )
+        _run(backend.create(SandboxSpec(workspace_root=str(tmp_path / "other"), read_only=False)))
 
 
 def test_e2b_profile_does_not_overclaim_network_allowlist():
@@ -209,8 +208,144 @@ def test_e2b_profile_does_not_overclaim_network_allowlist():
 
     assert denied.capabilities.network_control is NetworkControl.ENFORCED
     assert unrestricted.capabilities.network_control is NetworkControl.NONE
-    assert denied.capabilities.cooperative_cancellation is False
-    assert denied.capabilities.artifact_collection is False
+    assert denied.capabilities.cooperative_cancellation is True
+    assert denied.capabilities.artifact_collection is True
+
+
+@dataclass
+class _VendorResult:
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int = 0
+
+
+class _VendorCommandHandle:
+    def __init__(self, result: _VendorResult, *, blocks: bool = False) -> None:
+        self._result = result
+        self._blocks = blocks
+        self._killed = threading.Event()
+
+    def wait(self):
+        if self._blocks:
+            self._killed.wait(timeout=2)
+        return self._result
+
+    def kill(self):
+        self._killed.set()
+        return True
+
+
+class _VendorCommands:
+    def __init__(self) -> None:
+        self.handles: list[_VendorCommandHandle] = []
+
+    def run(self, command, **kwargs):
+        if not kwargs.get("background"):
+            return _VendorResult()
+        handle = _VendorCommandHandle(
+            _VendorResult(stdout=f"ran:{command}"),
+            blocks=command == "sleep forever",
+        )
+        self.handles.append(handle)
+        return handle
+
+
+class _EntryType:
+    value = "file"
+
+
+@dataclass
+class _VendorEntry:
+    path: str
+    type: object = _EntryType()
+    symlink_target: str | None = None
+
+
+class _VendorFiles:
+    def write(self, path, data):
+        return None
+
+    def write_files(self, files):
+        return None
+
+    def read(self, path):
+        return ""
+
+    def list(self, path, *, depth=None):
+        return [
+            _VendorEntry(f"{path}/report.json"),
+            _VendorEntry(f"{path}/nested/evidence.txt"),
+            _VendorEntry("relative.txt"),
+            _VendorEntry(f"{path}/outside-link", symlink_target="/tmp/outside.txt"),
+            _VendorEntry("/tmp/outside.txt"),
+        ]
+
+
+class _VendorSandbox:
+    sandbox_id = "vendor-e2b"
+
+    def __init__(self) -> None:
+        self.commands = _VendorCommands()
+        self.files = _VendorFiles()
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+
+
+class _FakeE2BBackend(E2BSandboxBackend):
+    def __init__(self, vendor: _VendorSandbox):
+        super().__init__(
+            spec=SdkSandboxSpec(
+                template_id="fake",
+                allow_internet_access=False,
+            ),
+            sandbox_cls=object,
+        )
+        self.vendor = vendor
+
+    def create_session(self, *, session_id, env=None, input_files=None):
+        return E2BSandboxSession(self.vendor)
+
+
+def test_e2b_adapter_collects_only_workspace_artifacts_and_runs_in_workspace():
+    vendor = _VendorSandbox()
+    backend = adapt_e2b_backend(_FakeE2BBackend(vendor))
+
+    async def flow():
+        handle = await backend.create(
+            SandboxSpec(workspace_root="/tmp/ksadk-artifacts", read_only=False)
+        )
+        result = await backend.execute(handle, ExecuteRequest(command="produce report"))
+        artifacts = await backend.collect_artifacts(handle)
+        await backend.close(handle)
+        return result, artifacts
+
+    result, artifacts = _run(flow())
+    assert result.ok is True
+    assert result.output == "ran:produce report"
+    assert artifacts == ["nested/evidence.txt", "relative.txt", "report.json"]
+    assert vendor.killed is True
+
+
+def test_e2b_adapter_kills_background_command_on_task_cancellation():
+    vendor = _VendorSandbox()
+    backend = adapt_e2b_backend(_FakeE2BBackend(vendor))
+
+    report = _run(
+        verify_cooperative_cancellation(
+            backend,
+            spec=SandboxSpec(
+                workspace_root="/tmp/ksadk-cancel",
+                read_only=False,
+            ),
+            command="sleep forever",
+        )
+    )
+
+    assert report.passed, report.findings
+    assert [item.status for item in report.findings] == ["passed"]
+    assert vendor.commands.handles[-1]._killed.is_set()
 
 
 def test_custom_sdk_backend_requires_explicit_capabilities():
@@ -244,7 +379,21 @@ def test_real_e2b_backend_conformance_when_explicitly_enabled():
                 smoke_command="printf remote-conformance-ok",
                 expected_output="remote-conformance-ok",
                 timeout_command="sleep 5",
+                artifact_command="printf artifact-ok > report.txt",
+                expected_artifact="report.txt",
             ),
         )
     )
     assert report.passed, report.findings
+
+    cancel_report = _run(
+        verify_cooperative_cancellation(
+            backend,
+            spec=SandboxSpec(
+                workspace_root="/tmp/ksadk-harness-cancel",
+                read_only=False,
+            ),
+            command="sleep 30",
+        )
+    )
+    assert cancel_report.passed, cancel_report.findings

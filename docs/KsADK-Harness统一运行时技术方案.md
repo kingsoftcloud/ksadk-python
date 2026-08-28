@@ -775,15 +775,17 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
 
 - `LocalProcessSandboxBackend` 声明为受控工作区与宿主子进程边界；其工作区
   不随 `kill()` 销毁，因此不声明确定性资源清理；
-- `E2BSandboxBackend` 声明为远程 Sandbox；关闭时调用远程 `kill()`，但当前
-  同步 SDK 不提供可靠的命令取消和工作区文件枚举，因此不声明协作取消或
-  Artifact 收集；
+- `E2BSandboxBackend` 声明为远程 Sandbox；通过 E2B 后台 Command Handle
+  执行命令，取消 Harness Task 时先向远端进程发送 `kill()`，因此声明协作
+  取消；工作目录由适配层初始化，Artifact 通过远端 Filesystem API 递归枚举，
+  只返回目录内的普通文件相对路径，并排除目录外路径与符号链接；
 - E2B 当前只有 `allow_internet_access` 布尔开关，不能表达按域名 allowlist。
   禁止联网时声明后端强制控制，允许全量联网时声明无细粒度网络控制；任何
   `network_egress=(domain, ...)` 请求均显式拒绝，避免把全量联网伪装成白名单；
 - 真实 E2B Conformance 由 `KSADK_REAL_SANDBOX_E2E=1` 与
   `KSADK_SANDBOX_TEMPLATE_ID` 双重门控。未满足远程模板、凭证和网络条件时
-  只运行适配合同单测并明确 skip，不用 Fake SDK 结果替代远程 E2E 结论。
+  只运行适配合同单测并明确 skip，不用 Fake SDK 结果替代远程 E2E 结论；
+  启用后会额外验证远端命令取消与工作目录 Artifact 枚举。
 
 ---
 

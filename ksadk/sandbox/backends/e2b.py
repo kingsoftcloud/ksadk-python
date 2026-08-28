@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import time
 from typing import Any
 
 from ksadk.sandbox.base import (
+    SandboxCommandHandle,
     SandboxCommandResult,
     SandboxError,
     SandboxInputFile,
@@ -62,6 +64,36 @@ def _with_startup_retry(operation):
     raise SandboxError("E2B sandbox startup retry failed unexpectedly")
 
 
+class E2BCommandHandle:
+    """Normalize an E2B background command to the SDK optional contract."""
+
+    def __init__(self, handle: Any):
+        self._handle = handle
+
+    def wait(self) -> SandboxCommandResult:
+        try:
+            result = self._handle.wait()
+        except Exception as exc:
+            # E2B raises CommandExitException for an ordinary non-zero exit.
+            # Preserve the result contract instead of erasing stdout/stderr.
+            exit_code = getattr(exc, "exit_code", None)
+            if exit_code is None:
+                raise
+            return SandboxCommandResult(
+                stdout=str(getattr(exc, "stdout", "") or ""),
+                stderr=str(getattr(exc, "stderr", "") or ""),
+                exit_code=int(exit_code),
+            )
+        return SandboxCommandResult(
+            stdout=str(getattr(result, "stdout", "") or ""),
+            stderr=str(getattr(result, "stderr", "") or ""),
+            exit_code=getattr(result, "exit_code", None),
+        )
+
+    def kill(self) -> bool:
+        return bool(self._handle.kill())
+
+
 class E2BSandboxSession:
     def __init__(self, sandbox: Any):
         self._sandbox = sandbox
@@ -102,6 +134,52 @@ class E2BSandboxSession:
             stderr=str(getattr(result, "stderr", "") or ""),
             exit_code=getattr(result, "exit_code", None),
         )
+
+    def start_command(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> SandboxCommandHandle:
+        kwargs: dict[str, Any] = {"background": True}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if env is not None:
+            kwargs["envs"] = env
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        return E2BCommandHandle(self._sandbox.commands.run(command, **kwargs))
+
+    def list_files(self, root: str, *, recursive: bool = True) -> list[str]:
+        """List file paths below ``root`` without exposing sibling paths."""
+
+        normalized_root = posixpath.normpath(root)
+        if not normalized_root.startswith("/"):
+            raise SandboxError("E2B artifact root must be an absolute path")
+        entries = self._sandbox.files.list(
+            normalized_root,
+            depth=None if recursive else 1,
+        )
+        files: list[str] = []
+        for entry in entries:
+            entry_path = posixpath.normpath(str(getattr(entry, "path", "") or ""))
+            if not entry_path.startswith("/"):
+                entry_path = posixpath.normpath(posixpath.join(normalized_root, entry_path))
+            entry_type = getattr(getattr(entry, "type", None), "value", "")
+            if getattr(entry, "symlink_target", None) is not None:
+                continue
+            try:
+                in_root = posixpath.commonpath((normalized_root, entry_path)) == normalized_root
+            except ValueError:
+                in_root = False
+            if not in_root or entry_type != "file":
+                continue
+            relative = posixpath.relpath(entry_path, normalized_root)
+            if relative != "." and not relative.startswith("../"):
+                files.append(relative)
+        return sorted(set(files))
 
     def get_host(self, port: int) -> str:
         return str(self._sandbox.get_host(port))

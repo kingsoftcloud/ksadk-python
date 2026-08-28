@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import shlex
 from collections.abc import Callable, Iterable
 from typing import cast
 
@@ -26,8 +27,13 @@ from ksadk.harness.sandbox_backend import (
 )
 from ksadk.sandbox.backends.e2b import E2BSandboxBackend
 from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
+from ksadk.sandbox.base import (
+    ArtifactListingSandboxSession,
+    BackgroundCommandSandboxSession,
+    SandboxCommandResult,
+    SandboxSession,
+)
 from ksadk.sandbox.base import SandboxBackend as SdkSandboxBackend
-from ksadk.sandbox.base import SandboxSession
 
 ArtifactCollector = Callable[[SandboxSession], Iterable[str]]
 
@@ -43,10 +49,10 @@ class SessionSandboxHandle(SandboxHandle):
 class SessionSandboxBackendAdapter:
     """Run a synchronous SDK sandbox backend behind the Harness contract.
 
-    Cancellation is intentionally *not* advertised: cancelling
-    ``asyncio.to_thread`` only cancels the waiter and does not prove that the
-    SDK command stopped.  Likewise, artifact collection is only advertised
-    when the caller provides an explicit collector.
+    Optional session protocols provide cancellation and Artifact enumeration.
+    A backend may only advertise those capabilities when each created session
+    implements the corresponding protocol; otherwise execution fails loudly
+    instead of silently degrading its isolation claim.
     """
 
     def __init__(
@@ -56,15 +62,15 @@ class SessionSandboxBackendAdapter:
         capabilities: SandboxBackendCapabilities,
         artifact_collector: ArtifactCollector | None = None,
         configured_workspace_root: str | None = None,
+        prepare_workspace: bool = False,
     ) -> None:
-        if capabilities.cooperative_cancellation:
-            raise ValueError("同步 SandboxSession 适配器不能声明协作取消")
-        if capabilities.artifact_collection != (artifact_collector is not None):
-            raise ValueError("artifact_collection 声明必须与 artifact_collector 一致")
+        if artifact_collector is not None and not capabilities.artifact_collection:
+            raise ValueError("提供 artifact_collector 时必须声明 artifact_collection")
         self._backend = backend
         self._capabilities = capabilities
         self._artifact_collector = artifact_collector
         self._configured_workspace_root = configured_workspace_root
+        self._prepare_workspace = prepare_workspace
         self._handles: dict[int, SessionSandboxHandle] = {}
 
     @property
@@ -79,6 +85,19 @@ class SessionSandboxBackendAdapter:
             session_id=provisional.handle_id,
             env=dict(spec.env),
         )
+        if self._prepare_workspace and spec.workspace_root:
+            try:
+                result = await asyncio.to_thread(
+                    session.run_command,
+                    f"mkdir -p -- {shlex.quote(spec.workspace_root)}",
+                    timeout=10,
+                )
+            except Exception:
+                await asyncio.to_thread(session.kill)
+                raise
+            if result.exit_code != 0:
+                await asyncio.to_thread(session.kill)
+                raise SandboxPolicyViolation(f"无法初始化 Sandbox workspace_root: {result.stderr}")
         handle = SessionSandboxHandle(spec, session)
         # Keep the id generated before the potentially remote create call as
         # the stable correlation id passed to the SDK backend.
@@ -86,18 +105,20 @@ class SessionSandboxBackendAdapter:
         self._handles[id(handle)] = handle
         return handle
 
-    async def execute(
-        self, handle: SandboxHandle, request: ExecuteRequest
-    ) -> ExecuteResult:
+    async def execute(self, handle: SandboxHandle, request: ExecuteRequest) -> ExecuteResult:
         owned = self._require_open_handle(handle)
         timeout = max(1, math.ceil(request.timeout_seconds))
         try:
-            result = await asyncio.to_thread(
-                owned.session.run_command,
-                request.command,
-                timeout=timeout,
-                env=dict(owned.spec.env),
-            )
+            if self._capabilities.cooperative_cancellation:
+                result = await self._execute_cancellable(owned, request, timeout)
+            else:
+                result = await asyncio.to_thread(
+                    owned.session.run_command,
+                    request.command,
+                    timeout=timeout,
+                    env=dict(owned.spec.env),
+                    cwd=owned.spec.workspace_root or None,
+                )
         except Exception as exc:  # noqa: BLE001 - translate vendor SDK failures
             if "timeout" in type(exc).__name__.lower():
                 return ExecuteResult(
@@ -119,9 +140,46 @@ class SessionSandboxBackendAdapter:
             error=error,
         )
 
+    async def _execute_cancellable(
+        self,
+        owned: SessionSandboxHandle,
+        request: ExecuteRequest,
+        timeout: int,
+    ) -> SandboxCommandResult:
+        session = owned.session
+        if not isinstance(session, BackgroundCommandSandboxSession):
+            raise RuntimeError("后端声明协作取消，但 Session 未实现 start_command")
+        command_handle = await asyncio.to_thread(
+            session.start_command,
+            request.command,
+            timeout=timeout,
+            env=dict(owned.spec.env),
+            cwd=owned.spec.workspace_root or None,
+        )
+        try:
+            return await asyncio.to_thread(command_handle.wait)
+        except asyncio.CancelledError:
+            # Cancellation is not considered complete until the remote process
+            # has received a kill request.
+            await asyncio.to_thread(command_handle.kill)
+            raise
+
     async def collect_artifacts(self, handle: SandboxHandle) -> list[str]:
         owned = self._require_open_handle(handle)
         if self._artifact_collector is None:
+            if not self._capabilities.artifact_collection:
+                return list(owned.artifacts)
+            session = owned.session
+            if not isinstance(session, ArtifactListingSandboxSession):
+                raise RuntimeError("后端声明 Artifact 收集，但 Session 未实现 list_files")
+            if not owned.spec.workspace_root:
+                return []
+            artifacts = await asyncio.to_thread(
+                session.list_files,
+                owned.spec.workspace_root,
+                recursive=True,
+            )
+            owned.artifacts = sorted(str(item) for item in artifacts)
             return list(owned.artifacts)
         artifacts = await asyncio.to_thread(self._artifact_collector, owned.session)
         return sorted(str(item) for item in artifacts)
@@ -151,9 +209,7 @@ class SessionSandboxBackendAdapter:
             )
         if self._configured_workspace_root and spec.workspace_root:
             if spec.workspace_root != self._configured_workspace_root:
-                raise SandboxPolicyViolation(
-                    "Harness workspace_root 与 SDK Sandbox 后端配置不一致"
-                )
+                raise SandboxPolicyViolation("Harness workspace_root 与 SDK Sandbox 后端配置不一致")
 
 
 def adapt_local_process_backend(
@@ -193,9 +249,7 @@ def adapt_e2b_backend(backend: E2BSandboxBackend) -> SessionSandboxBackendAdapte
     """
 
     network_control = (
-        NetworkControl.NONE
-        if backend.spec.allow_internet_access
-        else NetworkControl.ENFORCED
+        NetworkControl.NONE if backend.spec.allow_internet_access else NetworkControl.ENFORCED
     )
     return SessionSandboxBackendAdapter(
         cast(SdkSandboxBackend, backend),
@@ -205,12 +259,13 @@ def adapt_e2b_backend(backend: E2BSandboxBackend) -> SessionSandboxBackendAdapte
             network_control=network_control,
             process_boundary=True,
             request_timeout=True,
-            cooperative_cancellation=False,
-            artifact_collection=False,
+            cooperative_cancellation=True,
+            artifact_collection=True,
             deterministic_cleanup=True,
             execution_audit=False,
             reconnect=False,
         ),
+        prepare_workspace=True,
     )
 
 
