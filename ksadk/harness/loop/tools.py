@@ -43,6 +43,10 @@ class ApprovalResolver(Protocol):
     def request(self, *, call_id: str, name: str, arguments: dict[str, Any]) -> str: ...
 
 
+#: 按调用参数动态判定是否需审批（P0.1：MCP 按实际目标 Server 风险决策）。
+ApprovalDecider = Callable[[str, dict[str, Any]], bool]
+
+
 #: 同步审批解析器（适合 LangGraph interrupt 同步语义）。
 SyncApprovalResolver = ApprovalResolver
 
@@ -76,6 +80,9 @@ class ToolCallInput:
     #: 统一 CapabilityRuntime（收口 2）：Policy 决策 + Receipt 幂等。
     #: 为 None 时回退 approval_required 静态集合（旧语义）。
     capability_runtime: Any = None
+    #: 按调用参数的动态审批决策（P0.1）：对静态集合与 Policy 决策都是
+    #: 追加约束——decider 返回 True 则必须审批，即使 Policy 判 allow。
+    approval_decider: ApprovalDecider | None = None
     tenant_id: str = "default"
 
 
@@ -153,6 +160,9 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
 
         # 2. 决策：统一 Policy 优先；未注入时回退静态 approval_required 集合。
         decision = APPROVED
+        dynamic_requires = (
+            inp.approval_decider is not None and inp.approval_decider(name, arguments)
+        )
         if runtime is not None:
             policy_decision = runtime.decide(
                 tenant_id=inp.tenant_id,
@@ -163,14 +173,16 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
             )
             if policy_decision.action == "deny":
                 decision = f"policy-denied: {policy_decision.reason}"
-            elif policy_decision.action == "require_approval":
+            elif policy_decision.action == "require_approval" or dynamic_requires:
                 if inp.approval_resolver is not None:
                     decision = inp.approval_resolver.request(
                         call_id=call_id, name=name, arguments=arguments
                     )
                 else:
                     decision = f"policy-denied: approval required ({policy_decision.reason})"
-        elif name in inp.approval_required and inp.approval_resolver is not None:
+        elif (
+            name in inp.approval_required or dynamic_requires
+        ) and inp.approval_resolver is not None:
             decision = inp.approval_resolver.request(
                 call_id=call_id, name=name, arguments=arguments
             )

@@ -31,7 +31,11 @@ from ksadk.harness.engine.base import (
     ExecutionEngineError,
 )
 from ksadk.harness.engine.context_pipeline import EngineContextPipeline
-from ksadk.harness.engine.mcp_disclosure import MCP_CALL_TOOL_TOOL, McpDisclosureBridge
+from ksadk.harness.engine.mcp_disclosure import (
+    MCP_CALL_TOOL_TOOL,
+    McpDisclosureBridge,
+    McpDisclosureCursors,
+)
 from ksadk.harness.engine.skill_disclosure import SkillDisclosureBridge
 from ksadk.harness.engine.spans import wrap_node_span
 from ksadk.harness.engine.thread_ids import encode_thread_id
@@ -61,13 +65,16 @@ from ksadk.runtime import (
 _MAX_REASONING_TURNS = 8
 
 
-class _GraphState(TypedDict):
+class _GraphState(TypedDict, total=False):
     """图 State——只存最小路由信息（plan §6.2.1），正文活在 HarnessState。"""
 
     messages: list[dict[str, Any]]  # OpenAI 形态消息（含 tool_calls）
     pending_tool_calls: list[dict[str, Any]]
     turn_count: int
     route: str  # "reason" | "final"
+    # MCP 披露游标（P0.1）：随图状态进 Checkpoint，跨进程审批恢复不丢。
+    mcp_listed: list[tuple[str, str]]
+    mcp_schema_read: list[tuple[str, str, str]]
 
 
 @dataclass
@@ -388,6 +395,8 @@ class ManagedLangGraphEngine:
                     "pending_tool_calls": [],
                     "turn_count": 0,
                     "route": "reason",
+                    "mcp_listed": [],
+                    "mcp_schema_read": [],
                 }
             final_state = await graph.ainvoke(invoke_input, config=config)
             interrupts = final_state.get("__interrupt__") if isinstance(final_state, dict) else None
@@ -564,19 +573,31 @@ class ManagedLangGraphEngine:
                     )
 
             engine = self
+            # 披露游标活在图状态（随 Checkpoint 持久化）；节点结束写回。
+            cursors = McpDisclosureCursors(
+                # Checkpoint 反序列化会把 tuple 变 list（不可哈希），统一还原。
+                listed={tuple(item) for item in (state.get("mcp_listed") or ())},
+                schema_read={tuple(item) for item in (state.get("mcp_schema_read") or ())},
+            )
+
+            def _mcp_approval_decider(name: str, arguments: dict[str, Any]) -> bool:
+                # P0.1：按实际目标 Server 动态决策——只有 mcp_call_tool 指向
+                # high/critical 风险 Server 时才要求审批（高低风险混用不误伤）。
+                return name == MCP_CALL_TOOL_TOOL and engine._mcp_disclosure.approval_decider(
+                    arguments
+                )
 
             class _EngineToolExecutor:
                 async def execute(self, name, arguments):  # type: ignore[no-untyped-def]
-                    return await engine._invoke_tool(name, arguments, run=run)
+                    return await engine._invoke_tool(
+                        name, arguments, run=run, mcp_cursors=cursors
+                    )
 
             out = await execute_tool_calls(
                 ToolCallInput(
                     pending_tool_calls=state["pending_tool_calls"],
-                    approval_required=frozenset(engine._approval_required) | (
-                        {MCP_CALL_TOOL_TOOL}
-                        if engine._mcp_disclosure.requires_approval(run.compiled.spec)
-                        else set()
-                    ),
+                    approval_required=frozenset(engine._approval_required),
+                    approval_decider=_mcp_approval_decider,
                     capability_runtime=engine._capability_runtime,
                     tenant_id=engine._tenant_id,
                     approval_resolver=_GraphApprovalResolver(),
@@ -600,6 +621,8 @@ class ManagedLangGraphEngine:
             if out.working_context is not None:
                 run.state.working_context = out.working_context
             state["pending_tool_calls"] = out.pending_tool_calls
+            state["mcp_listed"] = sorted(cursors.listed)
+            state["mcp_schema_read"] = sorted(cursors.schema_read)
             state["route"] = out.route
             return state
 
@@ -690,7 +713,14 @@ class ManagedLangGraphEngine:
         graph = builder.compile(checkpointer=self._checkpointer)
         return graph
 
-    async def _invoke_tool(self, name: str, arguments: dict[str, Any], *, run: Any = None) -> Any:
+    async def _invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        run: Any = None,
+        mcp_cursors: McpDisclosureCursors | None = None,
+    ) -> Any:
         # 收口 6：子 Agent 即工具——内联运行到完成，子事件并入父流。
         sub = self._sub_agents.get(name)
         if sub is not None and run is not None:
@@ -707,7 +737,11 @@ class ManagedLangGraphEngine:
         if self._skill_disclosure.is_tool(name):
             return self._invoke_skill_tool(name, arguments, run=run)
         if self._mcp_disclosure.is_tool(name):
-            return await self._invoke_mcp_tool(name, arguments, run=run)
+            if mcp_cursors is None:
+                mcp_cursors = McpDisclosureCursors()
+            return await self._invoke_mcp_tool(
+                name, arguments, run=run, cursors=mcp_cursors
+            )
         tool = self._tools.get(name)
         if tool is None:
             raise RuntimeError(
@@ -886,12 +920,18 @@ class ManagedLangGraphEngine:
             raise KeyError(f"unknown engine run: {handle.run_id}") from None
 
     async def _invoke_mcp_tool(
-        self, name: str, arguments: dict[str, Any], *, run: _EngineRun | None
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        run: _EngineRun | None,
+        cursors: McpDisclosureCursors,
     ) -> dict[str, Any]:
         return await self._mcp_disclosure.invoke(
             name,
             arguments,
             run=run,
+            cursors=cursors,
             pending_events=self._pending_child_events,
         )
 

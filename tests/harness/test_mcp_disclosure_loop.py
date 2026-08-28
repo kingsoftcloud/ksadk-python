@@ -32,6 +32,7 @@ from ksadk.harness.spec import (
 from ksadk.runtime import StartRequest
 
 _FINANCE = "mcp://finance-tools@1.0.0"
+_LOW = "mcp://low-tools@1.0.0"
 _HR = "mcp://hr-tools@1.0.0"
 
 _TOOLS = {
@@ -297,11 +298,162 @@ def test_list_tools_refresh_invalidates_cache():
     assert runtime._tools_cache.get(_FINANCE) is None
 
 
-def test_disclosure_cursors_cleared_on_close():
-    from ksadk.harness.engine.mcp_disclosure import McpDisclosureBridge
+def test_cross_process_approval_resume_preserves_cursors(tmp_path):
+    """P0.1：披露游标随图状态进 SQLite Checkpoint——跨进程 attach+resume 后，
+    已读过的 Schema 不必重读（游标丢失则 L3 会被"须先读 Schema"拒绝）。"""
+    import contextlib
 
-    bridge = McpDisclosureBridge(_runtime()[0])
-    bridge._listed.add(("r1", _FINANCE))
-    bridge._schema_read.add(("r1", _FINANCE, "get_invoice"))
-    bridge.clear_run("r1")
-    assert not bridge._listed and not bridge._schema_read
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from ksadk.runtime import ResumePayload, ResumeTarget
+
+    db_path = str(tmp_path / "mcp-cursors.db")
+    spec = _spec()
+    calls = [
+        (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
+        (MCP_READ_SCHEMA_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice"}),
+        (MCP_CALL_TOOL_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice",
+                               "arguments": {"invoice_id": "INV-9", "amount": 5}}),
+    ]
+
+    def runtime(transport):
+        rt = McpCapabilityRuntime()
+        rt.bind(
+            McpServerBinding(
+                descriptor=CapabilityDescriptor(
+                    id=_FINANCE, kind="mcp", name="财务工具", description="发票",
+                    version="1.0.0", risk_level=RiskLevel.HIGH,
+                ),
+                transport=transport, required=True,
+            )
+        )
+        return rt
+
+    async def phase_one():
+        cm = AsyncSqliteSaver.from_conn_string(db_path)
+        saver = await cm.__aenter__()
+        try:
+            transport = _FakeTransport(_TOOLS)
+            rt = runtime(transport)
+            engine = ManagedLangGraphEngine(
+                reasoner=_ScriptedReasoner(calls), checkpointer=saver, mcp_runtime=rt
+            )
+            compiled = await engine.compile(spec)
+            handle = await engine.start(
+                StartRequest(agent_id="a", user_id="u", session_id="s", input="x",
+                             runtime_type="managed-langgraph"),
+                compiled,
+            )
+            events = [e async for e in engine.stream(handle)]
+            return handle, events, transport
+        finally:
+            with contextlib.suppress(Exception):
+                await cm.__aexit__(None, None, None)
+
+    async def phase_two(handle, transport):
+        cm = AsyncSqliteSaver.from_conn_string(db_path)
+        saver = await cm.__aenter__()
+        try:
+            engine = ManagedLangGraphEngine(
+                # 恢复后 reason 直接给最终文本（无需再次披露）。
+                reasoner=_ScriptedReasoner([]),
+                checkpointer=saver,
+                mcp_runtime=runtime(transport),
+            )
+            compiled = await engine.compile(spec)
+            attached = await engine.attach(handle, compiled)
+            await engine.resume(
+                attached,
+                ResumeTarget(kind="thread_id", id=handle.native_ref["thread_id"]),
+                ResumePayload(kind="approval_decision", call_id="c3", data="approved"),
+            )
+            events = [e async for e in engine.stream(attached)]
+            return events, transport
+        finally:
+            with contextlib.suppress(Exception):
+                await cm.__aexit__(None, None, None)
+
+    handle, first, transport = asyncio.run(phase_one())
+    assert any(e.event_type == EventType.RUN_INTERRUPTED for e in first)
+    assert transport.calls == []  # 审批前未执行
+
+    second, transport = asyncio.run(phase_two(handle, transport))
+    # 审批通过后调用直达传输层——游标跨进程存活（否则会被"须先读 Schema"拒绝）。
+    assert transport.calls == [("pay_invoice", {"invoice_id": "INV-9", "amount": 5})]
+    assert second[-1].event_type == EventType.RUN_COMPLETED
+
+
+def test_mixed_risk_servers_dynamic_approval():
+    """P0.1：高低风险 Server 混用——低风险调用直通，高风险调用才进审批。"""
+    from ksadk.harness.mcp_runtime import McpCapabilityRuntime
+
+    runtime = McpCapabilityRuntime()
+    low_transport = _FakeTransport(_TOOLS)
+    high_transport = _FakeTransport(_TOOLS)
+    runtime.bind(
+        McpServerBinding(
+            descriptor=CapabilityDescriptor(
+                id=_LOW, kind="mcp", name="低风险站", description="低风险工具",
+                version="1.0.0", risk_level=RiskLevel.LOW,
+            ),
+            transport=low_transport, required=False,
+        )
+    )
+    runtime.bind(
+        McpServerBinding(
+            descriptor=CapabilityDescriptor(
+                id=_FINANCE, kind="mcp", name="高风险站", description="高风险工具",
+                version="1.0.0", risk_level=RiskLevel.HIGH,
+            ),
+            transport=high_transport, required=False,
+        )
+    )
+    spec = HarnessSpec(
+        agent_revision_ref="agent-revision://mix@1",
+        model=ModelBinding(profile_ref="model-profile://test@1.0.0"),
+        prompt=PromptSpec(instructions="你是财务助手。"),
+        capabilities=CapabilityBindings(
+            mcp_bindings=(
+                CapabilityBinding(capability_ref=_LOW, required=False, load_policy="on_demand"),
+                CapabilityBinding(capability_ref=_FINANCE, required=False, load_policy="on_demand"),
+            )
+        ),
+    )
+    reasoner = _ScriptedReasoner(
+        [
+            # 低风险 Server：全链路（L1→L2→L3）无需审批，直通执行。
+            (MCP_LIST_TOOLS_TOOL, {"server_id": _LOW}),
+            (MCP_READ_SCHEMA_TOOL, {"server_id": _LOW, "tool_name": "get_invoice"}),
+            (MCP_CALL_TOOL_TOOL, {"server_id": _LOW, "tool_name": "get_invoice",
+                                   "arguments": {"invoice_id": "INV-L"}}),
+            # 高风险 Server：调用触发审批中断。
+            (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
+            (MCP_READ_SCHEMA_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice"}),
+            (MCP_CALL_TOOL_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice",
+                                   "arguments": {"invoice_id": "INV-H", "amount": 1}}),
+        ]
+    )
+
+    async def drive():
+        engine = ManagedLangGraphEngine(reasoner=reasoner, mcp_runtime=runtime)
+        compiled = await engine.compile(spec)
+        handle = await engine.start(
+            StartRequest(agent_id="a", user_id="u", session_id="s", input="x",
+                         runtime_type="managed-langgraph"),
+            compiled,
+        )
+        events = [e async for e in engine.stream(handle)]
+        return handle, events
+
+    handle, events = asyncio.run(drive())
+    # 低风险调用已直通执行；高风险调用未执行，Run 中断等审批。
+    assert low_transport.calls == [("get_invoice", {"invoice_id": "INV-L"})]
+    assert high_transport.calls == []
+    requested = [e for e in events if e.event_type == EventType.APPROVAL_REQUESTED]
+    assert requested
+    assert requested[0].payload["detail"]["args"]["server_id"] == _FINANCE
+    assert any(
+        e.payload.get("reason") == "tool_approval" for e in events
+        if e.event_type == EventType.RUN_INTERRUPTED
+    )
+    del handle

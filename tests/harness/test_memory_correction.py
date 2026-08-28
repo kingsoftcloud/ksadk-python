@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from ksadk.harness.events import EventType
 from ksadk.harness.memory_runtime import (
     HarnessMemoryError,
     HarnessMemoryRuntime,
     MemoryWriteRequest,
 )
 from ksadk.harness.spec import HarnessSpec, MemoryPolicy, ModelBinding, PromptSpec
-from ksadk.memory.models import MemorySearchRequest
 
 
 def _spec() -> HarnessSpec:

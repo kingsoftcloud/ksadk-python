@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ksadk.harness.capabilities import RiskLevel
@@ -42,6 +42,18 @@ _APPROVAL_RISK_LEVELS = frozenset({RiskLevel.HIGH, RiskLevel.CRITICAL})
 
 class McpDisclosureError(RuntimeError):
     """MCP 披露越级或参数缺失（被默认 Loop 拦截为工具错误事件）。"""
+
+
+@dataclass
+class McpDisclosureCursors:
+    """按 Run 的披露游标（L1 已列 Server / L2 已读 Schema 的 Tool）。
+
+    由引擎持有并写入 Graph State——LangGraph Checkpoint 随图状态持久化，
+    跨进程审批恢复（attach + resume）后游标不丢，模型无需重读已披露内容。
+    """
+
+    listed: set[tuple[str, str]] = field(default_factory=set)
+    schema_read: set[tuple[str, str, str]] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -126,9 +138,6 @@ class McpDisclosureBridge:
 
     def __init__(self, runtime: McpCapabilityRuntime | None) -> None:
         self._runtime = runtime
-        #: 披露游标：(run_id, server_id) → L1；(run_id, server_id, tool) → L2。
-        self._listed: set[tuple[str, str]] = set()
-        self._schema_read: set[tuple[str, str, str]] = set()
 
     # ------------------------------------------------------------- 装配
 
@@ -194,6 +203,19 @@ class McpDisclosureBridge:
                 return True
         return False
 
+    def approval_decider(self, arguments: dict[str, Any]) -> bool:
+        """按**实际目标 Server** 动态决策（P0.1）：mcp_call_tool 的参数指向
+        high/critical 风险 Server 才需审批；同一 Run 里调用低风险 Server
+        的 Tool 不被拖累进审批。非 mcp_call_tool 调用一律不触发。"""
+        if self._runtime is None:
+            return False
+        server_id = str((arguments or {}).get("server_id") or "")
+        try:
+            descriptor = self._runtime.binding(server_id).descriptor
+        except McpRuntimeError:
+            return False
+        return descriptor.risk_level in _APPROVAL_RISK_LEVELS
+
     @staticmethod
     def catalog_message(catalog: tuple[dict[str, str], ...]) -> dict[str, str] | None:
         if not catalog:
@@ -226,6 +248,7 @@ class McpDisclosureBridge:
         arguments: dict[str, Any],
         *,
         run: Any,
+        cursors: McpDisclosureCursors,
         pending_events: dict[str, list[RuntimeEvent]],
     ) -> dict[str, Any]:
         if run is None or self._runtime is None:
@@ -233,13 +256,13 @@ class McpDisclosureBridge:
         server_id = str((arguments or {}).get("server_id") or "")
         self._require_bound(run, server_id)
         if name == MCP_LIST_TOOLS_TOOL:
-            return await self._list_tools(run, server_id, arguments, pending_events)
+            return await self._list_tools(run, server_id, arguments, cursors, pending_events)
         tool_name = str((arguments or {}).get("tool_name") or "")
         if not tool_name:
             raise McpDisclosureError(f"{name} 缺少 tool_name")
         if name == MCP_READ_SCHEMA_TOOL:
-            return await self._read_schema(run, server_id, tool_name, pending_events)
-        return await self._call_tool(run, server_id, tool_name, arguments, pending_events)
+            return await self._read_schema(run, server_id, tool_name, cursors, pending_events)
+        return await self._call_tool(run, server_id, tool_name, arguments, cursors, pending_events)
 
     # ------------------------------------------------------------ 内部
 
@@ -248,19 +271,25 @@ class McpDisclosureBridge:
             raise McpDisclosureError("缺少 server_id")
         allowed = {item["server_id"] for item in run.mcp_catalog}
         if server_id not in allowed:
-            raise McpDisclosureError(f"MCP Server {server_id!r} 未绑定到当前 Agent Revision")
+            # 列出合法引用：模型可能用短名（如 finance-tools）而非完整
+            # 固定版本引用（mcp://finance-tools@1.0.0），错误信息给出可重试的值。
+            raise McpDisclosureError(
+                f"MCP Server {server_id!r} 未绑定到当前 Agent Revision；"
+                f"可用引用: {sorted(allowed)}"
+            )
 
     async def _list_tools(
         self,
         run: Any,
         server_id: str,
         arguments: dict[str, Any],
+        cursors: McpDisclosureCursors,
         pending_events: dict[str, list[RuntimeEvent]],
     ) -> dict[str, Any]:
         if arguments.get("refresh"):
             self._runtime.invalidate_tools(server_id)
         tools = await self._runtime.tools(server_id)
-        self._listed.add((run.handle.run_id, server_id))
+        cursors.listed.add((run.handle.run_id, server_id))
         entries = [
             {
                 "tool_name": str(tool.get("name") or ""),
@@ -282,9 +311,10 @@ class McpDisclosureBridge:
         run: Any,
         server_id: str,
         tool_name: str,
+        cursors: McpDisclosureCursors,
         pending_events: dict[str, list[RuntimeEvent]],
     ) -> dict[str, Any]:
-        if (run.handle.run_id, server_id) not in self._listed:
+        if (run.handle.run_id, server_id) not in cursors.listed:
             raise McpDisclosureError(
                 f"MCP {server_id!r} 须先 mcp_list_tools 再读取 Tool Schema"
             )
@@ -292,7 +322,7 @@ class McpDisclosureBridge:
         match = next((tool for tool in tools if tool.get("name") == tool_name), None)
         if match is None:
             raise McpDisclosureError(f"MCP {server_id!r} 无 Tool {tool_name!r}")
-        self._schema_read.add((run.handle.run_id, server_id, tool_name))
+        cursors.schema_read.add((run.handle.run_id, server_id, tool_name))
         content = json.dumps(match, ensure_ascii=False, sort_keys=True)
         self._emit(
             run,
@@ -315,10 +345,11 @@ class McpDisclosureBridge:
         server_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        cursors: McpDisclosureCursors,
         pending_events: dict[str, list[RuntimeEvent]],
     ) -> dict[str, Any]:
         # 校验模型不能跳过 Schema 直接调用未知 Tool（P0 要求 3）。
-        if (run.handle.run_id, server_id, tool_name) not in self._schema_read:
+        if (run.handle.run_id, server_id, tool_name) not in cursors.schema_read:
             raise McpDisclosureError(
                 f"MCP {server_id!r} 的 Tool {tool_name!r} 须先 mcp_read_tool_schema 再调用"
             )
@@ -370,8 +401,8 @@ class McpDisclosureBridge:
         )
 
     def clear_run(self, run_id: str) -> None:
-        self._listed = {key for key in self._listed if key[0] != run_id}
-        self._schema_read = {key for key in self._schema_read if key[0] != run_id}
+        """游标由引擎写入 Graph State（随 Checkpoint 持久化），无需清理。"""
+        del run_id
 
 
 def _digest(content: str) -> str:

@@ -52,9 +52,10 @@ def _good_calls() -> list[tuple[str, dict]]:
 
 
 def test_dataset_shape():
-    assert len(MCP_E2E_DATASET) == 3
+    assert len(MCP_E2E_DATASET) == 4
     assert {c.case_id for c in MCP_E2E_DATASET} == {
-        "invoice-query", "high-risk-approval", "mcp-unavailable-degrade"
+        "invoice-query", "high-risk-approval", "mcp-unavailable-degrade",
+        "mixed-risk-dynamic-approval",
     }
     # 干扰工具规模足以体现预加载负担。
     assert len(_FINANCE_TOOLS) >= 20

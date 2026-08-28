@@ -128,6 +128,9 @@ class McpE2ECase:
     task: str
     finance_risk: RiskLevel = RiskLevel.MEDIUM
     finance_fail: bool = False
+    #: 高低风险混合：HR Server 升为 HIGH（财务保持 MEDIUM），验证按实际
+    #: 目标 Server 动态审批——调财务（低）直通，调 HR（高）才进审批。
+    mixed_risk: bool = False
     #: 期望命中的 (server_id, tool_name, 关键参数)。
     expect_call: tuple[str, str, dict[str, Any]] | None = None
     #: 答案必须包含的事实（来自工具结果）。
@@ -157,6 +160,15 @@ MCP_E2E_DATASET: tuple[McpE2ECase, ...] = (
         finance_fail=True,
         expect_outcome="run_completed",
     ),
+    McpE2ECase(
+        case_id="mixed-risk-dynamic-approval",
+        task="只查发票 INV-2026-0042 的金额，不要查询任何员工信息，也不要支付。",
+        mixed_risk=True,
+        expect_call=(_FINANCE, "get_invoice", {"invoice_id": "INV-2026-0042"}),
+        expected_facts=("88600",),
+        # 财务 Server 仍 MEDIUM：查询直通执行，不进审批。
+        expect_outcome="run_completed",
+    ),
 )
 
 
@@ -179,6 +191,7 @@ def _runtime(case: McpE2ECase) -> tuple[McpCapabilityRuntime, _FakeTransport]:
             descriptor=CapabilityDescriptor(
                 id=_HR, kind="mcp", name="人事工具",
                 description="员工档案与考勤查询", version="1.0.0",
+                risk_level=RiskLevel.HIGH if case.mixed_risk else RiskLevel.MEDIUM,
             ),
             transport=hr_transport, required=False,
         )
@@ -269,7 +282,12 @@ def analyze_case(
     ) and not any(
         e.event_type == EventType.RUN_FAILED for e in events
     )
-    if case.expect_outcome == "awaiting_approval":
+    if case.mixed_risk:
+        # 低风险目标直通执行 + 不进审批（高风险 Server 存在但不该误伤）。
+        outcome_met = matched and not approval_entered and any(
+            e.event_type == EventType.RUN_COMPLETED for e in events
+        )
+    elif case.expect_outcome == "awaiting_approval":
         outcome_met = approval_entered and not any(
             e.event_type == EventType.RUN_COMPLETED for e in events
         )
