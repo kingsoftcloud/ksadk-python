@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from ksadk.harness.sandbox import HarnessSandboxExecutor, SandboxPolicyDenied
@@ -100,6 +100,33 @@ class SandboxHandle:
         self.closed = False
 
 
+@dataclass(frozen=True)
+class SandboxResumeToken:
+    """Serializable, credential-free locator for a remote Sandbox session."""
+
+    backend_id: str
+    handle_id: str
+    session_locator: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "backendId": self.backend_id,
+            "handleId": self.handle_id,
+            "sessionLocator": self.session_locator,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> SandboxResumeToken:
+        token = cls(
+            backend_id=str(value.get("backendId", "")).strip(),
+            handle_id=str(value.get("handleId", "")).strip(),
+            session_locator=str(value.get("sessionLocator", "")).strip(),
+        )
+        if not token.backend_id or not token.handle_id or not token.session_locator:
+            raise ValueError("Sandbox Resume Token 缺少必填定位字段")
+        return token
+
+
 class SandboxBackend(Protocol):
     """通用 Sandbox 后端协议（本地/通用 ksadk.sandbox/E2B 同构）。"""
 
@@ -113,6 +140,20 @@ class SandboxBackend(Protocol):
     async def collect_artifacts(self, handle: SandboxHandle) -> list[str]: ...
 
     async def close(self, handle: SandboxHandle) -> None: ...
+
+
+@runtime_checkable
+class ReconnectableSandboxBackend(Protocol):
+    """Optional Harness extension for cross-process session recovery."""
+
+    def export_resume_token(self, handle: SandboxHandle) -> SandboxResumeToken: ...
+
+    async def reconnect(
+        self,
+        token: SandboxResumeToken,
+        *,
+        spec: SandboxSpec,
+    ) -> SandboxHandle: ...
 
 
 class SandboxPolicyViolation(PermissionError):
@@ -186,12 +227,14 @@ __all__ = [
     "FilesystemIsolation",
     "LocalReadOnlySandboxBackend",
     "NetworkControl",
+    "ReconnectableSandboxBackend",
     "SandboxAuditLog",
     "SandboxBackend",
     "SandboxBackendCapabilities",
     "SandboxClosedError",
     "SandboxHandle",
     "SandboxPolicyViolation",
+    "SandboxResumeToken",
     "SandboxSpec",
     "SubprocessSandboxBackend",
 ]

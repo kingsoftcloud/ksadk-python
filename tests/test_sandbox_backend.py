@@ -139,6 +139,7 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
             calls.append(("run", command))
             calls.append(("run_kwargs", kwargs))
             if command.startswith("printenv "):
+
                 class EnvResult:
                     stdout = "1\n"
                     stderr = ""
@@ -202,6 +203,54 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
     assert ("run", "python -V") in calls
     assert ("run_kwargs", {"timeout": 30, "envs": {"REQUEST_ENV": "command"}}) in calls
     assert calls[-1] == ("kill", "sbx-123")
+
+
+def test_e2b_sandbox_backend_reconnects_existing_session():
+    calls: list[tuple[str, object]] = []
+
+    class FakeResult:
+        stdout = ""
+        stderr = ""
+        exit_code = 0
+
+    class FakeCommands:
+        def run(self, command: str, **_kwargs):
+            calls.append(("run", command))
+            return FakeResult()
+
+    class FakeFiles:
+        def read(self, _path):
+            return ""
+
+        def write(self, _path, _data):
+            return None
+
+    class FakeSandbox:
+        def __init__(self, sandbox_id: str):
+            self.sandbox_id = sandbox_id
+            self.commands = FakeCommands()
+            self.files = FakeFiles()
+
+        @classmethod
+        def connect(cls, sandbox_id: str, *, timeout: int):
+            calls.append(("connect", {"sandbox_id": sandbox_id, "timeout": timeout}))
+            return cls(sandbox_id)
+
+        def kill(self):
+            return None
+
+    backend = E2BSandboxBackend(
+        spec=SandboxSpec(template_id="tpl-aio", timeout=321),
+        sandbox_cls=FakeSandbox,
+    )
+
+    session = backend.reconnect_session(session_locator="sbx-existing")
+
+    assert session.sandbox_id == "sbx-existing"
+    assert calls == [
+        ("connect", {"sandbox_id": "sbx-existing", "timeout": 321}),
+        ("run", "true"),
+    ]
 
 
 def test_e2b_sandbox_backend_waits_for_startup_command_readiness(monkeypatch):

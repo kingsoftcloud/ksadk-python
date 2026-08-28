@@ -21,6 +21,7 @@ from ksadk.harness.sandbox_backend import (
     SandboxBackendCapabilities,
     SandboxClosedError,
     SandboxPolicyViolation,
+    SandboxResumeToken,
     SandboxSpec,
 )
 from ksadk.harness.sandbox_conformance import (
@@ -76,7 +77,11 @@ class FakeBackend:
         return self.session
 
 
-def _custom_capabilities(*, artifacts: bool = False) -> SandboxBackendCapabilities:
+def _custom_capabilities(
+    *,
+    artifacts: bool = False,
+    reconnect: bool = False,
+) -> SandboxBackendCapabilities:
     return SandboxBackendCapabilities(
         backend_id="fake-sdk",
         filesystem_isolation=FilesystemIsolation.REMOTE_SANDBOX,
@@ -87,6 +92,7 @@ def _custom_capabilities(*, artifacts: bool = False) -> SandboxBackendCapabiliti
         artifact_collection=artifacts,
         deterministic_cleanup=True,
         execution_audit=False,
+        reconnect=reconnect,
     )
 
 
@@ -159,6 +165,14 @@ def test_sdk_adapter_rejects_unenforceable_read_only_and_domain_allowlist():
                     network_egress=("example.invalid",),
                 )
             )
+        )
+
+
+def test_sdk_adapter_rejects_false_reconnect_capability_claim():
+    with pytest.raises(ValueError, match="reconnect_session"):
+        SessionSandboxBackendAdapter(
+            FakeBackend(),
+            capabilities=_custom_capabilities(reconnect=True),
         )
 
 
@@ -308,6 +322,11 @@ class _FakeE2BBackend(E2BSandboxBackend):
     def create_session(self, *, session_id, env=None, input_files=None):
         return E2BSandboxSession(self.vendor)
 
+    def reconnect_session(self, *, session_locator):
+        if session_locator != self.vendor.sandbox_id:
+            raise RuntimeError("unknown sandbox")
+        return E2BSandboxSession(self.vendor)
+
 
 def test_e2b_adapter_collects_only_workspace_artifacts_and_runs_in_workspace():
     vendor = _VendorSandbox()
@@ -364,6 +383,60 @@ def test_e2b_adapter_persists_execution_audit(tmp_path):
             "createdAt": rows[0]["createdAt"],
         }
     ]
+
+
+def test_e2b_adapter_reconnects_from_serializable_token_across_instances():
+    vendor = _VendorSandbox()
+    sdk = _FakeE2BBackend(vendor)
+    first_backend = adapt_e2b_backend(sdk)
+    spec = SandboxSpec(
+        workspace_root="/tmp/ksadk-reconnect",
+        read_only=False,
+        env={"RUNTIME_VALUE": "resolved-again"},
+    )
+
+    async def create_and_export():
+        handle = await first_backend.create(spec)
+        return handle, first_backend.export_resume_token(handle).to_dict()
+
+    original, payload = _run(create_and_export())
+    token = SandboxResumeToken.from_dict(payload)
+    second_backend = adapt_e2b_backend(sdk)
+
+    async def reconnect_and_execute():
+        handle = await second_backend.reconnect(token, spec=spec)
+        result = await second_backend.execute(
+            handle,
+            ExecuteRequest(command="resume work", run_id="run-reconnected"),
+        )
+        await second_backend.close(handle)
+        return handle, result
+
+    resumed, result = _run(reconnect_and_execute())
+
+    assert second_backend.capabilities.reconnect is True
+    assert payload == {
+        "backendId": "sdk-e2b",
+        "handleId": original.handle_id,
+        "sessionLocator": "vendor-e2b",
+    }
+    assert "resolved-again" not in str(payload)
+    assert resumed.handle_id == original.handle_id
+    assert resumed.session.sandbox_id == "vendor-e2b"
+    assert result.ok is True
+    assert result.output == "ran:resume work"
+    assert vendor.commands.handles[-1]._result.stdout == "ran:resume work"
+
+
+def test_sandbox_resume_token_rejects_missing_locator():
+    with pytest.raises(ValueError, match="缺少"):
+        SandboxResumeToken.from_dict(
+            {
+                "backendId": "sdk-e2b",
+                "handleId": "sandbox-1",
+                "sessionLocator": "",
+            }
+        )
 
 
 def test_e2b_adapter_kills_background_command_and_audits_cancellation(tmp_path):
@@ -442,3 +515,28 @@ def test_real_e2b_backend_conformance_when_explicitly_enabled():
         )
     )
     assert cancel_report.passed, cancel_report.findings
+
+    reconnect_source = adapt_e2b_backend(sdk)
+    reconnect_spec = SandboxSpec(
+        workspace_root="/tmp/ksadk-harness-reconnect",
+        read_only=False,
+    )
+
+    async def reconnect_across_adapters():
+        original = await reconnect_source.create(reconnect_spec)
+        token = SandboxResumeToken.from_dict(
+            reconnect_source.export_resume_token(original).to_dict()
+        )
+        resumed_backend = adapt_e2b_backend(sdk)
+        resumed = await resumed_backend.reconnect(token, spec=reconnect_spec)
+        result = await resumed_backend.execute(
+            resumed,
+            ExecuteRequest(command="printf remote-reconnect-ok"),
+        )
+        await resumed_backend.close(resumed)
+        return original, resumed, result
+
+    original, resumed, result = _run(reconnect_across_adapters())
+    assert resumed.handle_id == original.handle_id
+    assert result.ok is True
+    assert result.output == "remote-reconnect-ok"

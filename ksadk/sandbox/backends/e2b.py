@@ -200,6 +200,18 @@ class E2BSandboxBackend:
         self.spec = spec
         self.sandbox_cls = sandbox_cls
 
+    def _get_sandbox_cls(self) -> Any:
+        sandbox_cls = self.sandbox_cls
+        if sandbox_cls is not None:
+            return sandbox_cls
+        try:
+            from e2b import Sandbox  # type: ignore[import-not-found, import-untyped]
+        except ImportError as exc:
+            raise SandboxError(
+                "e2b>=2.15.3,<2.25.0 is required for KSADK_SANDBOX_BACKEND=e2b"
+            ) from exc
+        return Sandbox
+
     def create_session(
         self,
         *,
@@ -207,15 +219,7 @@ class E2BSandboxBackend:
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
     ) -> SandboxSession:
-        sandbox_cls = self.sandbox_cls
-        if sandbox_cls is None:
-            try:
-                from e2b import Sandbox  # type: ignore[import-not-found, import-untyped]
-            except ImportError as exc:
-                raise SandboxError(
-                    "e2b>=2.15.3,<2.25.0 is required for KSADK_SANDBOX_BACKEND=e2b"
-                ) from exc
-            sandbox_cls = Sandbox
+        sandbox_cls = self._get_sandbox_cls()
 
         metadata = {
             "runtime": "ksadk",
@@ -236,6 +240,18 @@ class E2BSandboxBackend:
         session.write_files(
             [(item.target_path, item.source.read_bytes()) for item in input_files or []]
         )
+        return session
+
+    def reconnect_session(self, *, session_locator: str) -> SandboxSession:
+        """Reconnect to an existing E2B sandbox without recreating it."""
+
+        locator = session_locator.strip()
+        if not locator:
+            raise SandboxError("E2B reconnect requires a sandbox ID")
+        sandbox_cls = self._get_sandbox_cls()
+        sandbox = sandbox_cls.connect(locator, timeout=self.spec.timeout)
+        session = self._wrap_sandbox(sandbox)
+        _with_startup_retry(lambda: session.run_command("true"))
         return session
 
     def _wrap_sandbox(self, sandbox: Any) -> E2BSandboxSession:

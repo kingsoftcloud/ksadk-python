@@ -782,13 +782,19 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
 - E2B 适配器显式装配 `SandboxAuditLog` 时才声明执行审计；成功、超时、
   SDK 异常和 Harness Task 取消均按 `run_id + handle_id` 留痕，未装配持久化
   审计库时不宣称可审计；
+- E2B 适配器通过 `SandboxResumeToken` 恢复跨进程 Sandbox 会话。Token
+  只保存 `backend_id`、稳定 `handle_id` 和厂商 Sandbox ID，不保存
+  环境变量、凭证或 Secret；恢复方必须重新提供 `SandboxSpec`，使策略
+  与密钥继续由 Revision/Secret 事实源决定。本合同只承诺恢复 Sandbox
+  会话，不宣称可恢复崩溃时正在执行的后台进程；
 - E2B 当前只有 `allow_internet_access` 布尔开关，不能表达按域名 allowlist。
   禁止联网时声明后端强制控制，允许全量联网时声明无细粒度网络控制；任何
   `network_egress=(domain, ...)` 请求均显式拒绝，避免把全量联网伪装成白名单；
 - 真实 E2B Conformance 由 `KSADK_REAL_SANDBOX_E2E=1` 与
   `KSADK_SANDBOX_TEMPLATE_ID` 双重门控。未满足远程模板、凭证和网络条件时
   只运行适配合同单测并明确 skip，不用 Fake SDK 结果替代远程 E2E 结论；
-  启用后会额外验证远端命令取消与工作目录 Artifact 枚举。
+  启用后会额外验证远端命令取消、工作目录 Artifact 枚举与
+  跨 Adapter 会话恢复。
 
 ---
 

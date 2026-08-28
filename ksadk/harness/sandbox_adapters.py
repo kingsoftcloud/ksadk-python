@@ -25,6 +25,7 @@ from ksadk.harness.sandbox_backend import (
     SandboxClosedError,
     SandboxHandle,
     SandboxPolicyViolation,
+    SandboxResumeToken,
     SandboxSpec,
 )
 from ksadk.sandbox.backends.e2b import E2BSandboxBackend
@@ -34,6 +35,9 @@ from ksadk.sandbox.base import (
     BackgroundCommandSandboxSession,
     SandboxCommandResult,
     SandboxSession,
+)
+from ksadk.sandbox.base import (
+    ReconnectableSandboxBackend as SdkReconnectableSandboxBackend,
 )
 from ksadk.sandbox.base import SandboxBackend as SdkSandboxBackend
 
@@ -71,6 +75,8 @@ class SessionSandboxBackendAdapter:
             raise ValueError("提供 artifact_collector 时必须声明 artifact_collection")
         if capabilities.execution_audit != (audit_log is not None):
             raise ValueError("execution_audit 能力声明必须与 audit_log 装配一致")
+        if capabilities.reconnect and not isinstance(backend, SdkReconnectableSandboxBackend):
+            raise ValueError("后端声明 reconnect 但未实现 reconnect_session")
         self._backend = backend
         self._capabilities = capabilities
         self._artifact_collector = artifact_collector
@@ -108,6 +114,48 @@ class SessionSandboxBackendAdapter:
         # Keep the id generated before the potentially remote create call as
         # the stable correlation id passed to the SDK backend.
         handle.handle_id = provisional.handle_id
+        self._handles[id(handle)] = handle
+        return handle
+
+    def export_resume_token(self, handle: SandboxHandle) -> SandboxResumeToken:
+        if not self._capabilities.reconnect:
+            raise SandboxPolicyViolation("当前 Sandbox 后端未声明跨进程重连")
+        owned = self._require_open_handle(handle)
+        locator = str(owned.session.sandbox_id or "").strip()
+        if not locator:
+            raise RuntimeError("Sandbox Session 未提供可持久化的 session locator")
+        return SandboxResumeToken(
+            backend_id=self._capabilities.backend_id,
+            handle_id=owned.handle_id,
+            session_locator=locator,
+        )
+
+    async def reconnect(
+        self,
+        token: SandboxResumeToken,
+        *,
+        spec: SandboxSpec,
+    ) -> SessionSandboxHandle:
+        if not self._capabilities.reconnect:
+            raise SandboxPolicyViolation("当前 Sandbox 后端未声明跨进程重连")
+        if token.backend_id != self._capabilities.backend_id:
+            raise SandboxPolicyViolation("Sandbox Resume Token 与当前后端不匹配")
+        self._validate_spec(spec)
+        if any(
+            item.handle_id == token.handle_id and not item.closed for item in self._handles.values()
+        ):
+            raise SandboxPolicyViolation("Sandbox Handle 已在当前进程连接")
+        backend = cast(SdkReconnectableSandboxBackend, self._backend)
+        session = await asyncio.to_thread(
+            backend.reconnect_session,
+            session_locator=token.session_locator,
+        )
+        locator = str(session.sandbox_id or "").strip()
+        if locator != token.session_locator:
+            await asyncio.to_thread(session.kill)
+            raise SandboxPolicyViolation("Sandbox 重连返回了不同的 session locator")
+        handle = SessionSandboxHandle(spec, session)
+        handle.handle_id = token.handle_id
         self._handles[id(handle)] = handle
         return handle
 
@@ -307,7 +355,7 @@ def adapt_e2b_backend(
             artifact_collection=True,
             deterministic_cleanup=True,
             execution_audit=audit_log is not None,
-            reconnect=False,
+            reconnect=True,
         ),
         audit_log=audit_log,
         prepare_workspace=True,

@@ -124,3 +124,14 @@ class SandboxBackend(Protocol):
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
     ) -> SandboxSession: ...
+
+
+@runtime_checkable
+class ReconnectableSandboxBackend(Protocol):
+    """Optional SDK backend extension for reconnecting an existing session.
+
+    ``session_locator`` is an opaque vendor locator (for example an E2B
+    sandbox ID).  It must not contain credentials or environment values.
+    """
+
+    def reconnect_session(self, *, session_locator: str) -> SandboxSession: ...
