@@ -17,6 +17,9 @@ P2.1 收口：
 - **TTL / 关闭 / 替换清理**：会话惰性过期、显式关闭、同 draft_id 重新
   保存自动替换旧会话。
 
+P2.2 补强连续审批、恢复失败重试、TTL 挂起句柄确定性释放，并与
+ContextEngine 的 current input 去重约定对齐。
+
 隔离不变：draft 引用命名空间（``agent-revision://draft-<id>@1``）、
 ``draft:`` 会话前缀、metadata 标记、正式生命周期零感知。
 """
@@ -153,7 +156,7 @@ class DraftConversation:
 
         approval = next(
             (
-                e for e in events
+                e for e in reversed(events)
                 if e.event_type == EventType.APPROVAL_REQUESTED
             ),
             None,
@@ -174,19 +177,25 @@ class DraftConversation:
             raise DraftRuntimeError("没有挂起的审批")
         from ksadk.runtime import ResumePayload, ResumeTarget
 
-        handle = self.pending.handle
-        call_id = self.pending.call_id
-        self.pending = None
+        pending = self.pending
+        handle = pending.handle
+        call_id = pending.call_id
         self.last_active = time.monotonic()
-        await self.engine.resume(
-            handle,
-            ResumeTarget(kind="thread_id", id=handle.native_ref["thread_id"]),
-            ResumePayload(kind="approval_decision", call_id=call_id, data=decision),
-        )
-        events = [event async for event in self.engine.stream(handle)]
-        self._absorb(handle)
-        await self.engine.close(handle)
-        return events
+        try:
+            await self.engine.resume(
+                handle,
+                ResumeTarget(kind="thread_id", id=handle.native_ref["thread_id"]),
+                ResumePayload(kind="approval_decision", call_id=call_id, data=decision),
+            )
+        except Exception:
+            # Resume 失败时保留 pending，调用方可重试或显式放弃；
+            # 不得在引擎拒绝恢复时丢失审批决策入口。
+            self.pending = pending
+            raise
+        self.pending = None
+        # 续跑后可能再次命中高风险工具；统一回到 _drain，
+        # 使同一 Run 的连续审批仍保留 Handle，而不是误关闭。
+        return await self._drain(handle)
 
     def _absorb(self, handle: Any) -> None:
         """把本轮完整对话投影并入跨轮历史。"""
@@ -235,6 +244,7 @@ class DraftRuntime:
         冲突、required MCP 无 Runtime 等运行时校验）。失败抛
         DraftRuntimeError——Studio 保存时即可暴露全部问题。
         """
+        await self._expire_stale()
         draft_id = draft_id or f"draft_{uuid.uuid4().hex[:12]}"
         revision_ref = f"{DRAFT_REF_PREFIX}{draft_id}@1"
         try:
@@ -254,8 +264,9 @@ class DraftRuntime:
         self._sessions[draft_id] = session
         return session
 
-    def session(self, draft_id: str) -> DraftConversation:
-        self._expire_stale()
+    async def session(self, draft_id: str) -> DraftConversation:
+        """返回未过期的 Draft 会话，并确定性关闭所有过期句柄。"""
+        await self._expire_stale()
         if draft_id not in self._sessions:
             raise DraftRuntimeError(f"unknown draft: {draft_id!r}")
         return self._sessions[draft_id]
@@ -273,14 +284,17 @@ class DraftRuntime:
             await session.close()
         self._sessions.clear()
 
-    def _expire_stale(self) -> None:
-        """TTL 惰性清理：超时会话直接丢弃（Handle 由 GC 回收，
-        正常轮次已逐轮 close，挂起审批句柄随引擎生命周期回收）。"""
+    async def _expire_stale(self) -> None:
+        """TTL 惰性清理：先移出索引，再确定性关闭挂起 Handle。"""
         now = time.monotonic()
+        stale: list[DraftConversation] = []
         for draft_id in list(self._sessions):
             session = self._sessions[draft_id]
             if now - session.last_active > self._session_ttl_seconds:
                 self._sessions.pop(draft_id, None)
+                stale.append(session)
+        for session in stale:
+            await session.close()
 
     # ------------------------------------------------------------ 内部
 

@@ -182,11 +182,19 @@ class EngineContextPipeline:
 
         window, _source = self._resolve_window(run)
         snapshot = run.state.model_copy(update={"messages": messages})
+        current_input = str(run.request.input or "")
+        # Studio/Draft 的 conversation_history 可能已包含本轮用户输入。
+        # ContextEngine 另会把 user_input 作为 required current_input 加入；
+        # 若不去重，模型将在同一次请求中看到两份相同问题。
+        if messages:
+            latest = messages[-1]
+            if latest.role is MessageRole.USER and latest.content == current_input:
+                current_input = ""
         return self._context_engine.plan(
             ContextRequest(
                 spec=run.compiled.spec,
                 state=snapshot,
-                user_input=str(run.request.input or ""),
+                user_input=current_input,
                 context_window_tokens=window,
                 skill_catalog=tuple(run.skill_catalog),
             )

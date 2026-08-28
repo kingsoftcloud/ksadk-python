@@ -6,6 +6,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from ksadk.harness.capabilities import CapabilityDescriptor, RiskLevel
+from ksadk.harness.context_engine import HarnessContextEngine
 from ksadk.harness.draft_runtime import (
     DRAFT_REF_PREFIX,
     DRAFT_SESSION_PREFIX,
@@ -183,6 +184,35 @@ class _CallToolReasoner:
         return HarnessReasoningTurn(final_text="已支付。")
 
 
+class _CallTwoToolsReasoner(_CallToolReasoner):
+    """同一 Run 连续调用两个高风险工具，验证审批可连续挂起。"""
+
+    async def complete(self, *, model, prompt, messages, tools):
+        if self.step <= 2:
+            return await super().complete(
+                model=model,
+                prompt=prompt,
+                messages=messages,
+                tools=tools,
+            )
+        if self.step == 3:
+            self.step += 1
+            return HarnessReasoningTurn(
+                tool_calls=(
+                    HarnessToolCall(
+                        call_id="c4",
+                        name="mcp_call_tool",
+                        arguments={
+                            "server_id": "mcp://pay-server@1.0.0",
+                            "tool_name": "pay_invoice",
+                            "arguments": {"invoice_id": "INV-2"},
+                        },
+                    ),
+                )
+            )
+        return HarnessReasoningTurn(final_text="两张发票均已支付。")
+
+
 def _mcp_runtime(transport: McpTransport) -> McpCapabilityRuntime:
     runtime = McpCapabilityRuntime()
     runtime.bind(
@@ -257,6 +287,59 @@ async def test_approval_reject_keeps_run_alive():
     await runtime.close()
 
 
+@pytest.mark.asyncio
+async def test_two_approvals_in_same_run_are_preserved_in_sequence():
+    """批准第一次调用后若再次中断，Handle 必须继续保留而非提前关闭。"""
+    transport = _PayTransport()
+    runtime = DraftRuntime(
+        reasoner=_CallTwoToolsReasoner(),
+        mcp_runtime=_mcp_runtime(transport),
+        checkpointer=MemorySaver(),
+    )
+    session = await runtime.compile(_mcp_payload())
+
+    await session.converse("依次支付 INV-1 和 INV-2")
+    assert session.awaiting_approval
+    first_resume = await session.approve()
+    assert transport.calls == [("pay_invoice", {"invoice_id": "INV-1"})]
+    assert session.awaiting_approval
+    assert any(e.event_type == EventType.APPROVAL_REQUESTED for e in first_resume)
+
+    second_resume = await session.approve()
+    assert transport.calls == [
+        ("pay_invoice", {"invoice_id": "INV-1"}),
+        ("pay_invoice", {"invoice_id": "INV-2"}),
+    ]
+    assert second_resume[-1].event_type == EventType.RUN_COMPLETED
+    assert not session.awaiting_approval
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_failure_keeps_pending_approval_for_retry(monkeypatch):
+    """引擎恢复失败不能吞掉审批入口，用户仍可重试或放弃。"""
+    runtime = DraftRuntime(
+        reasoner=_CallToolReasoner(),
+        mcp_runtime=_mcp_runtime(_PayTransport()),
+        checkpointer=MemorySaver(),
+    )
+    session = await runtime.compile(_mcp_payload())
+    await session.converse("支付发票 INV-1")
+    pending = session.pending
+
+    async def _fail_resume(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("temporary checkpoint failure")
+
+    monkeypatch.setattr(session.engine, "resume", _fail_resume)
+    with pytest.raises(RuntimeError, match="temporary checkpoint failure"):
+        await session.approve()
+    assert session.pending is pending
+    assert session.awaiting_approval
+    await session.discard_approval()
+    await runtime.close()
+
+
 # ------------------------------------------------------------- 生命周期隔离
 
 
@@ -289,11 +372,11 @@ async def test_draft_build_parity_shares_compiler_path():
     await runtime.close()
 
 
-def test_unknown_draft_session_rejected():
-
+@pytest.mark.asyncio
+async def test_unknown_draft_session_rejected():
     runtime = _runtime(_EchoReasoner())
     with pytest.raises(DraftRuntimeError, match="unknown draft"):
-        runtime.session("nope")
+        await runtime.session("nope")
 
 
 @pytest.mark.asyncio
@@ -305,7 +388,7 @@ async def test_resave_same_draft_id_replaces_session():
     assert old.turns == 1
     new = await runtime.compile(_draft_payload(), draft_id="same")
     assert new is not old and new.turns == 0
-    assert runtime.session("same") is new
+    assert await runtime.session("same") is new
     # 旧会话历史不泄漏到新会话。
     await new.converse("第二版")
     assert not any("第一版" in str(m) for m in new.history)
@@ -322,7 +405,30 @@ async def test_session_ttl_expiry():
 
     time.sleep(0.01)
     with pytest.raises(DraftRuntimeError, match="unknown draft"):
-        runtime.session("ttl")
+        await runtime.session("ttl")
+
+
+@pytest.mark.asyncio
+async def test_session_ttl_expiry_closes_pending_handle():
+    """TTL 清理不能只删索引，还必须从 Engine 释放挂起 Run。"""
+    runtime = DraftRuntime(
+        reasoner=_CallToolReasoner(),
+        mcp_runtime=_mcp_runtime(_PayTransport()),
+        checkpointer=MemorySaver(),
+        session_ttl_seconds=0.0,
+    )
+    session = await runtime.compile(_mcp_payload(), draft_id="ttl-pending")
+    await session.converse("支付发票 INV-1")
+    assert session.pending is not None
+    run_id = session.pending.handle.run_id
+
+    import asyncio
+
+    await asyncio.sleep(0.01)
+    with pytest.raises(DraftRuntimeError, match="unknown draft"):
+        await runtime.session("ttl-pending")
+    assert not session.awaiting_approval
+    assert run_id not in session.engine._runs
 
 
 @pytest.mark.asyncio
@@ -338,7 +444,7 @@ async def test_close_session_releases_pending_approval():
     await runtime.close_session("d1")
     assert not session.awaiting_approval
     with pytest.raises(DraftRuntimeError, match="unknown draft"):
-        runtime.session("d1")
+        await runtime.session("d1")
 
 
 # ------------------------------------------------------------------- Skill
@@ -368,4 +474,25 @@ async def test_draft_with_skill_binding_resolves_and_discloses(tmp_path):
     assert not session.warnings
     events = await session.converse("测试")
     assert events[-1].event_type == EventType.RUN_COMPLETED
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_context_engine_does_not_duplicate_current_user_input():
+    """Draft 历史与 current_input 交汇处只向模型注入一份本轮问题。"""
+    reasoner = _EchoReasoner()
+    runtime = DraftRuntime(
+        reasoner=reasoner,
+        context_engine=HarnessContextEngine(),
+    )
+    session = await runtime.compile(_draft_payload())
+    await session.converse("这句话只能出现一次")
+
+    current_turn = reasoner.seen_messages[0]
+    exact_matches = [
+        message for message in current_turn
+        if message.get("role") == "user"
+        and message.get("content") == "这句话只能出现一次"
+    ]
+    assert len(exact_matches) == 1
     await runtime.close()
