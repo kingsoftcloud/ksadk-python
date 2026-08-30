@@ -851,14 +851,10 @@ async def test_adk_runner_invocation_map_lock_prevents_lost_update(tmp_path):
 def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
     from ksadk.runners.langgraph_runner import LangGraphRunner
 
-    class AsyncPostgresSaver:
-        pass
-
-    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
     detection = _write_detection(FrameworkType.LANGGRAPH)
     runner = LangGraphRunner(detection, "/workspace/demo")
-    runner._agent = SimpleNamespace(checkpointer=AsyncPostgresSaver())
-    monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
+    runner._agent = SimpleNamespace(checkpointer=object())
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
 
     capabilities = runner.get_runtime_capabilities()
 
@@ -869,26 +865,108 @@ def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
     assert capabilities["ResumeRun"]["Reason"] == ""
 
 
-def test_langgraph_runner_does_not_advertise_memory_checkpoint_resume(monkeypatch):
-    from langgraph.checkpoint.memory import MemorySaver
+def test_langgraph_runner_reports_actual_memory_checkpointer_over_backend_env(monkeypatch):
+    from langgraph.checkpoint.memory import InMemorySaver
 
     from ksadk.runners.langgraph_runner import LangGraphRunner
 
     detection = _write_detection(FrameworkType.LANGGRAPH)
     runner = LangGraphRunner(detection, "/workspace/demo")
-    runner._agent = SimpleNamespace(checkpointer=MemorySaver())
+    runner._agent = SimpleNamespace(checkpointer=InMemorySaver())
     monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
 
-    capabilities = runner.get_runtime_capabilities()
+    capability = runner.describe_checkpoint_capability()
 
-    assert capabilities["Checkpoint"]["Supported"] is False
-    assert capabilities["Checkpoint"]["Backend"] == "memory"
-    assert capabilities["Checkpoint"]["Scope"] == "process_local"
-    assert capabilities["Checkpoint"]["Durable"] is False
-    assert capabilities["ResumeRun"]["Supported"] is False
-    assert capabilities["ResumeRun"]["ResumeMode"] == "none"
-    assert capabilities["ResumeRun"]["ReasonCode"] == "CHECKPOINTER_NOT_DURABLE"
-    assert "In-memory checkpoint" in capabilities["ResumeRun"]["Reason"]
+    assert capability["Supported"] is False
+    assert capability["Backend"] == "memory"
+    assert capability["Scope"] == "process_local"
+    assert capability["Durable"] is False
+    assert capability["SharedAcrossPods"] is False
+    assert capability["ResumeMode"] == "none"
+    assert capability["ReasonCode"] == "CHECKPOINTER_NOT_DURABLE"
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rebuilds_studio_graph_with_managed_postgres_checkpoint(
+    monkeypatch,
+):
+    """Hosted Studio LangGraph agents must replace their local saver before a run.
+
+    The generated module deliberately starts with ``MemorySaver`` for local
+    authoring.  In a managed runtime it exports a factory so the runner can
+    rebuild it with the shared PostgreSQL saver; merely reporting the DSN is
+    not sufficient for an interrupt to survive a pod replacement.
+    """
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+
+    class _Pool:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    saver = AsyncPostgresSaver()
+    pool = _Pool()
+    captured: dict[str, object] = {}
+
+    class _ManagedRunner(LangGraphRunner):
+        async def _create_managed_postgres_saver(self, dsn):
+            captured["dsn"] = dsn
+            return saver, pool
+
+    module = ModuleType("studio_graph")
+
+    def ksadk_graph_factory(*, checkpointer):
+        captured["checkpointer"] = checkpointer
+        return SimpleNamespace(invoke=lambda *_args, **_kwargs: None, checkpointer=checkpointer)
+
+    module.ksadk_graph_factory = ksadk_graph_factory
+    runner = _ManagedRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = module
+    runner._agent = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
+    monkeypatch.setenv("KSADK_SESSION_NAMESPACE", "tenant:acct:agent:studio-graph")
+
+    await runner.prepare_runtime_capabilities()
+
+    assert captured == {
+        "dsn": "postgresql://checkpoint.test/app",
+        "checkpointer": saver,
+    }
+    assert runner.describe_checkpoint_capability()["Backend"] == "postgres"
+    assert runner._get_config("session-1")["configurable"]["checkpoint_ns"] == (
+        "tenant:acct:agent:studio-graph"
+    )
+
+    await runner.close()
+    assert pool.closed is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_fails_closed_when_managed_checkpoint_factory_is_missing(
+    monkeypatch,
+):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    original_graph = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    runner = LangGraphRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = ModuleType("graph_without_checkpoint_factory")
+    runner._agent = original_graph
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
+
+    await runner.prepare_runtime_capabilities()
+
+    capability = runner.describe_checkpoint_capability()
+    assert runner._agent is original_graph
+    assert capability["Supported"] is False
+    assert capability["ReasonCode"] == "LANGGRAPH_FACTORY_REQUIRED"
 
 
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
@@ -1135,10 +1213,11 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
         {"app": app, "host": host, "port": port}
     )
 
-    # run_server 现经 create_runtime_app(RuntimeAppConfig(runner=self)) 装配(goal-16,
-    # 不再走 ksadk.server.app + set_runner 全局态)。monkeypatch factory 捕获注入的 runner。
+    # run_server 只把 RuntimeExecutor + RuntimeLaunchContext 注入 app factory；
+    # BaseRunner 必须被收敛在其注册的 RuntimeAdapter 内，而不是作为 app 配置字段泄漏。
     def _fake_create_runtime_app(config, configure=None):
-        recorded["config_runner"] = config.runner
+        recorded["executor"] = config.runtime_executor
+        recorded["launch_context"] = config.launch_context
         recorded["agui_config"] = config.agui
         return "fake-app"
 
@@ -1156,7 +1235,8 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
 
     runner.run_server(port=9000)
 
-    assert recorded["config_runner"] is runner
+    adapter = recorded["executor"]._registry.create(recorded["launch_context"])
+    assert adapter._runner is runner
     assert recorded["agui_config"].enabled is True
     assert recorded["agui_config"].runtime_type == "langgraph"
     assert recorded["agui_config"].agent_name == "demo-agent"
@@ -1762,7 +1842,7 @@ def test_apply_adk_only_latest_resumable_marks_older_checkpoints():
     """P1.4: _apply_adk_only_latest_resumable should set IsResumable=False
     on older ADK checkpoints within the same RunId, keeping only the latest
     one resumable."""
-    from ksadk.server.app import _apply_adk_only_latest_resumable
+    from ksadk.server.routes.projection import _apply_adk_only_latest_resumable
 
     checkpoints = [
         {
@@ -1805,7 +1885,7 @@ def test_apply_adk_only_latest_resumable_marks_older_checkpoints():
 
 def test_apply_adk_only_latest_resumable_separate_run_ids():
     """P1.4: Different RunIds should each keep their own latest checkpoint resumable."""
-    from ksadk.server.app import _apply_adk_only_latest_resumable
+    from ksadk.server.routes.projection import _apply_adk_only_latest_resumable
 
     checkpoints = [
         {
@@ -1832,7 +1912,7 @@ def test_apply_adk_only_latest_resumable_separate_run_ids():
 
 def test_apply_adk_only_latest_resumable_skips_non_adk():
     """P1.4: Non-ADK checkpoints (no only_latest_resumable flag) should be untouched."""
-    from ksadk.server.app import _apply_adk_only_latest_resumable
+    from ksadk.server.routes.projection import _apply_adk_only_latest_resumable
 
     checkpoints = [
         {
@@ -1860,7 +1940,7 @@ def test_apply_adk_only_latest_resumable_skips_non_adk():
 def test_check_adk_latest_resumable_marks_non_latest():
     """P1.4: _check_adk_latest_resumable should disable a checkpoint that is
     not the latest for its RunId, based on event history."""
-    from ksadk.server.app import _check_adk_latest_resumable
+    from ksadk.server.routes.projection import _check_adk_latest_resumable
 
     checkpoint = {
         "CheckpointId": "adk-ckpt-1",
@@ -1891,7 +1971,7 @@ def test_check_adk_latest_resumable_marks_non_latest():
 
 def test_check_adk_latest_resumable_keeps_latest():
     """P1.4: _check_adk_latest_resumable should keep the latest checkpoint resumable."""
-    from ksadk.server.app import _check_adk_latest_resumable
+    from ksadk.server.routes.projection import _check_adk_latest_resumable
 
     checkpoint = {
         "CheckpointId": "adk-ckpt-3",
@@ -1921,7 +2001,7 @@ def test_check_adk_latest_resumable_keeps_latest():
 
 def test_check_adk_latest_resumable_skips_non_adk():
     """P1.4: Non-ADK checkpoints should be passed through unchanged."""
-    from ksadk.server.app import _check_adk_latest_resumable
+    from ksadk.server.routes.projection import _check_adk_latest_resumable
 
     checkpoint = {
         "CheckpointId": "lg-ckpt-1",

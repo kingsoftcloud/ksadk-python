@@ -1,0 +1,144 @@
+{
+  "scenario": "Phase1 完成门槛补齐：合同不一致阻流真实预发演练（contract mismatch blocking drill）",
+  "executed_at": "2026-08-19T18:05:00Z/2026-08-19T18:21:00Z (UTC)",
+  "environment": {
+    "cluster": "pre-online manage cluster, namespace agent-kernel-phase1",
+    "gateway_chain": "gateway router :8082 /agentengine/api/v1/{RunAgent,SubmitAgentControl,GetAgentStatus} -> agentengine-kernel server admission (digest 校验层) -> runtime /agent-kernel/v1",
+    "instance": "phase1-canary-1 (agent phase1-canary-agent, tenant phase1-canary, runtime agent-kernel-canary)",
+    "canary_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-v4-fb9113a",
+    "canonical_digest": "d4a66a7249e10375d32d6a83434fde1d16ee7421e3a09ea03ed71217ee742d62",
+    "auth": "api_keys row ak-phase1-e2e-a (bearer key supplied at runtime, never recorded)",
+    "no_credentials": "no api keys, DSNs, tokens or bearer values recorded"
+  },
+  "blocking_layer": {
+    "layer": "agentengine-server admission (app/services/agent_control_service.py AgentControlService._admit: instance.contract_digest vs server manifest digest vs runtime-reported digest)",
+    "error_shape": "HTTP 200 envelope with Code=409, Data.Error.code=contract_digest_mismatch, retryable=false; per-op audit rows written to agent_control_audits with error_code=contract_digest_mismatch",
+    "runtime_side_note": "runtime 自身 /healthz 在 digest 被污染时仍 ready=true（digests_match 仅校验非空）；阻流由 server admission 的 runtime report digest 校验完成，不是 runtime 自拦截",
+    "gateway_side_note": "gateway 只透传 server 结论（X-Agent-Kernel-Contract-Digest header 由 gateway lifecycle 注入）；gateway 自身不做目录解析/digest 校验"
+  },
+  "checks": {
+    "contract_mismatch_drill": {
+      "status": "pass",
+      "baseline": {
+        "runagent": {
+          "http": 200,
+          "code": 0,
+          "receipt_status": "accepted",
+          "message_id": "1596828e-3917-41b1-be5b-091037fdf899",
+          "session": "cm-drill-base-1787162924",
+          "request_id": "req-20260820020844-axhnck",
+          "inbox_state": "completed accepted_seq=1 agent_instance_id=phase1-canary-1",
+          "recorded_at": "2026-08-19T18:08:44Z"
+        },
+        "canary_healthz": "ok=true ready=true lease_healthy=true digest=d4a66a...",
+        "note_submitagentcontrol": "SubmitAgentControl/GetAgentStatus 经该 api key 解析到 tenant='' 的 auto-created instance ai-f5628db865884d0fabab（bundle unknown），基线即返回 runtime_not_ready 503——预存环境事实，与本次注入无关，已如实记录；digest 阻流证据以 RunAgent + 注入期三动作对比为准"
+      },
+      "injection_a_server_pg_row": {
+        "method": "UPDATE agent_instances SET contract_digest=64*'0' WHERE id='phase1-canary-1'（psql via ak-pg-0，可恢复）",
+        "injected_at": "2026-08-19T18:12:56Z",
+        "runagent": {
+          "http": 200,
+          "code": 409,
+          "error_code": "contract_digest_mismatch",
+          "message": "contract digest mismatch between server and agent instance",
+          "command_id": "0ec897a7-ceb0-480e-8b88-b665ebd3b43f",
+          "command_type": "enqueue",
+          "request_id": "req-20260820021301-zdcrar"
+        },
+        "getagentstatus": {
+          "code": 409,
+          "error_code": "contract_digest_mismatch",
+          "command_id": "482dc84c-a166-4f01-b9c4-9acabd7dae93",
+          "request_id": "req-20260820021301-skhdaj"
+        },
+        "submitagentcontrol": {
+          "code": 409,
+          "error_code": "contract_digest_mismatch",
+          "command_id": "683533c4-eee2-4cf4-8b60-7beb442a9c02",
+          "command_type": "interrupt",
+          "request_id": "req-20260820021306-yidupj"
+        },
+        "forwarded_to_runtime": "无（server logs 显示零次 /agent-kernel/v1 转发，命令未进入 kernel inbox）"
+      },
+      "injection_b_runtime_report": {
+        "method": "kubectl set env deploy/agent-kernel-canary AGENT_KERNEL_CONTRACT_DIGEST=64*'0' + rollout（更贴近真实路径：runtime health/reporter 链路上报坏 digest）",
+        "injected_at": "2026-08-19T18:19:30Z",
+        "runtime_report": "redis agent_status:agent-kernel-canary -> agent_kernel_runtime.contract_digest=0000... (observed_at=2026-08-19T18:19:45Z, ready=true)",
+        "runagent": {
+          "code": 409,
+          "error_code": "contract_digest_mismatch",
+          "message": "runtime contract digest does not match server contract",
+          "command_id": "c2279721-a207-4bfb-ad21-a6daac9e3cbc",
+          "request_id": "req-20260820021954-qwiiso"
+        },
+        "getagentstatus": {
+          "code": 409,
+          "command_id": "ed0f3264-e15d-4174-8bd3-84ce095124f6",
+          "request_id": "req-20260820021954-vdsdsl"
+        },
+        "submitagentcontrol": {
+          "code": 409,
+          "command_id": "72675629-3cc8-4390-96c2-8dffd120f9cb",
+          "request_id": "req-20260820021954-cybcpx"
+        },
+        "which_layer_first": "两层注入均被同一层（server admission）拦截：A 命中 instance-vs-server 分支，B 命中 runtime-report-vs-server 分支；runtime 不自拦，gateway 不校验"
+      },
+      "metrics": {
+        "agent_kernel_contract_mismatch_total": "不可得：gateway router /metrics 需 auth context（curl 返回 400/拒绝），gateway-api 无 metrics 路由，server /metrics 无 contract/kernel 指标族。以请求级 409 错误体 + agent_control_audits 六条 error_code=contract_digest_mismatch 审计行为证据"
+      },
+      "recovery": {
+        "a_restore": {
+          "action": "UPDATE contract_digest 回 canonical 值 @18:14:01Z",
+          "complication": "恢复后 readiness 短暂 false（lease_healthy=false）——deployed 镜像 fb9113a 早于修复 commit bb2fe85c『renew heartbeat across waiting runs』的已知 bug：waiting run 留在 heartbeat 集合且不再续约；delete pod 重启后立即恢复（修复 commit 描述即『预发需重启 pod 才恢复』）",
+          "pod_restart_at": "2026-08-19T18:18:30Z",
+          "post_recovery_runagent": {
+            "code": 0,
+            "receipt_status": "accepted",
+            "message_id": "5a137704-ef49-4093-945b-6dcf50274633",
+            "session": "cm-drill-recA3",
+            "inbox_state": "completed",
+            "request_id": "req-20260820021922-hpqago"
+          }
+        },
+        "b_restore": {
+          "action": "set env 回 canonical digest + rollout @18:20:20Z，rollout 完成 @18:20:29Z",
+          "canary_healthz_after": "ok=true ready=true digest=d4a66a...",
+          "post_recovery_runagent": {
+            "code": 0,
+            "receipt_status": "accepted",
+            "message_id": "f1843e47-4b42-41f8-a381-cd289de53690",
+            "session": "cm-drill-recB",
+            "inbox_state": "completed accepted_seq=1",
+            "request_id": "req-20260820022052-bgfntc"
+          },
+          "deployment_env_final": "AGENT_KERNEL_CONTRACT_DIGEST=d4a66a7249e10375d32d6a83434fde1d16ee7421e3a09ea03ed71217ee742d62"
+        },
+        "residue": "无环境残留：deployment env 与 PG agent_instances 行均回到 canonical 值；drill 会话数据（cm-drill-*）留存在 append-only kernel 表（按设计不清理）；canary pod 因已知 heartbeat bug 重启过一次"
+      },
+      "timeline": [
+        "18:08:44Z baseline RunAgent accepted/completed (message_id 1596828e)",
+        "18:12:56Z 注入A：agent_instances.contract_digest -> 64*'0'",
+        "18:13:01Z RunAgent 409 / GetAgentStatus 409 contract_digest_mismatch（未转发 runtime）",
+        "18:13:06Z SubmitAgentControl 409 contract_digest_mismatch",
+        "18:14:01Z 恢复A：PG 行改回 canonical；readiness 因已知 waiting-run heartbeat bug（fb9113a<bb2fe85c）跌 false",
+        "18:18:30Z delete pod 恢复 readiness",
+        "18:19:22Z RunAgent 复测 accepted (cm-drill-recA3 completed)",
+        "18:19:30Z 注入B：canary env digest -> 64*'0' + rollout",
+        "18:19:45Z reporter 上报坏 digest（ready=true）",
+        "18:19:54Z RunAgent/GetAgentStatus/SubmitAgentControl 全部 409 contract_digest_mismatch",
+        "18:20:29Z 恢复B rollout 完成",
+        "18:20:52Z RunAgent 复测 accepted (cm-drill-recB completed)；环境无残留",
+        "18:27:49Z 收尾：恢复验证产生的 waiting run（recA3/recB）再次触发同一已知 heartbeat bug 使 readiness 跌 false，delete pod 后 ok=true ready=true；演练后环境健康"
+      ],
+      "audit_row_command_ids": [
+        "0ec897a7-ceb0-480e-8b88-b665ebd3b43f",
+        "482dc84c-a166-4f01-b9c4-9acabd7dae93",
+        "683533c4-eee2-4cf4-8b60-7beb442a9c02",
+        "c2279721-a207-4bfb-ad21-a6daac9e3cbc",
+        "ed0f3264-e15d-4174-8bd3-84ce095124f6",
+        "72675629-3cc8-4390-96c2-8dffd120f9cb"
+      ],
+      "digest": "d4a66a7249e10375d32d6a83434fde1d16ee7421e3a09ea03ed71217ee742d62"
+    }
+  }
+}

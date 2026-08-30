@@ -2,7 +2,7 @@
 
 import pytest
 
-from ksadk.api.client import AgentEngineClient
+from ksadk.api.client import AgentEngineAPIError, AgentEngineClient
 
 
 def _build_create_payload() -> dict:
@@ -35,6 +35,63 @@ async def test_create_agent_preserves_deepagents_when_server_supports_it(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_create_agent_forwards_explicit_observability_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-observable"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_agent(
+        {
+            **_build_create_payload(),
+            "observability": {"langfuse_enabled": False},
+        }
+    )
+
+    assert calls[0][0] == "CreateAgentProduct"
+    assert calls[0][1]["Advanced"]["EnableObservability"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-checksum"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+    checksum = "a" * 64
+    command = ["ksadk", "web", "/app/code/runtime", "--port", "8080"]
+    await client.create_agent(
+        {
+            **_build_create_payload(),
+            "code_checksum": checksum,
+            "code_command": command,
+        }
+    )
+    await client.update_agent(
+        "ar-checksum",
+        {
+            "artifact_type": "Code",
+            "artifact_path": "ks3://bucket/path/next.zip",
+            "code_checksum": checksum,
+            "code_command": command,
+        },
+    )
+
+    assert calls[0][1]["CodeConfig"]["Checksum"] == checksum
+    assert calls[1][1]["CodeConfig"]["Checksum"] == checksum
+    assert calls[0][1]["CodeConfig"]["Command"] == command
+    assert calls[1][1]["CodeConfig"]["Command"] == command
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
@@ -50,23 +107,166 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
             "name": "managed-codex",
             "framework": "codex",
             "artifact_type": "ManagedRuntime",
-            "artifact_path": "ks3://bucket/managed-codex-runtime.zip",
-            "runtime_config": {
-                "name": "codex",
-                "version": "0.144.4",
+            "managed_runtime_config": {
+                "runtime_name": "codex",
+                "runtime_version": "0.144.4",
                 "manifest_sha256": "a" * 64,
+                "manifest": "name: managed-codex\n",
             },
         }
     )
 
     payload = calls[0][1]
+    assert calls[0][0] == "CreateAgent"
+    assert isinstance(payload["InstanceId"], str) and payload["InstanceId"]
     assert payload["DeploymentType"] == "ManagedRuntime"
-    assert payload["CodeConfig"]["Path"] == "ks3://bucket/managed-codex-runtime.zip"
-    assert payload["RuntimeConfig"] == {
-        "Name": "codex",
-        "Version": "0.144.4",
-        "ManifestSha256": "a" * 64,
+    assert "CodeConfig" not in payload
+    assert payload["ManagedRuntimeConfig"] == {
+        "Manifest": "name: managed-codex",
+        "RuntimeName": "codex",
+        "RuntimeVersion": "0.144.4",
+        "ManifestSHA256": "a" * 64,
     }
+
+
+@pytest.mark.asyncio
+async def test_list_session_messages_uses_server_owned_cursor_contract(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"messages": []}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    result = await client.list_session_messages(
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        after_seq_id=12,
+        cursor_source="runtime",
+        limit=20,
+        include_reasoning=True,
+        include_tool_events=True,
+        include_attachments=False,
+    )
+
+    assert result == {"messages": []}
+    assert calls == [
+        (
+            "ListSessionMessages",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "AfterSeqId": 12,
+                "CursorSource": "runtime",
+                "Limit": 20,
+                "IncludeReasoning": True,
+                "IncludeToolEvents": True,
+                "IncludeAttachments": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.list_session_events(
+        agent_id="ar-cloud", session_id="sess-cloud", after_seq_id=7, limit=200
+    )
+    await client.submit_interaction(
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        run_id="run-cloud",
+        interaction_id="int-cloud",
+        expected_revision=2,
+        action="approve",
+        response={"decision": "approve"},
+        idempotency_key="idem-cloud",
+    )
+
+    assert calls == [
+        (
+            "ListSessionEvents",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "AfterSeqId": 7,
+                "Limit": 200,
+            },
+        ),
+        (
+            "SubmitInteraction",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "RunId": "run-cloud",
+                "InteractionId": "int-cloud",
+                "ExpectedRevision": 2,
+                "InteractionAction": "approve",
+                "Response": {"decision": "approve"},
+                "IdempotencyKey": "idem-cloud",
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_interaction_falls_back_to_authenticated_agent_gateway_when_kop_is_unpublished(
+    monkeypatch,
+):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls: list[tuple[str, dict]] = []
+
+    async def unpublished(action: str, params: dict):
+        raise AgentEngineAPIError(
+            400,
+            "The action SubmitInteraction or version 2024-06-12 is not valid for this web service",
+        )
+
+    async def runtime_action(**kwargs):
+        calls.append((str(kwargs["action"]), dict(kwargs["params"])))
+        return {"receipt_status": "accepted"}
+
+    monkeypatch.setattr(client, "_action_async", unpublished)
+    monkeypatch.setattr(client, "_runtime_action_for_agent", runtime_action)
+
+    result = await client.submit_interaction(
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        run_id="run-cloud",
+        interaction_id="int-cloud",
+        expected_revision=1,
+        action="reject",
+        response={"decision": "reject"},
+        idempotency_key="idem-runtime-fallback",
+    )
+
+    assert result == {"receipt_status": "accepted"}
+    assert calls == [
+        (
+            "SubmitInteraction",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "RunId": "run-cloud",
+                "InteractionId": "int-cloud",
+                "ExpectedRevision": 1,
+                "InteractionAction": "reject",
+                "Response": {"decision": "reject"},
+                "IdempotencyKey": "idem-runtime-fallback",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -100,6 +300,29 @@ async def test_create_agent_forwards_network_configuration(monkeypatch):
         "SecurityGroupId": "sg-demo",
         "AvailabilityZone": "cn-beijing-6a",
     }
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_agent_mark_sensitive_environment_variables(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-sensitive"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+    env_vars = {"OPENAI_API_KEY": "model-secret", "APP_MODE": "release"}
+
+    await client.create_agent({**_build_create_payload(), "env_vars": env_vars})
+    await client.update_agent("ar-sensitive", {"env_vars": env_vars})
+
+    expected = [
+        {"Key": "OPENAI_API_KEY", "Value": "model-secret", "IsSensitive": True},
+        {"Key": "APP_MODE", "Value": "release", "IsSensitive": False},
+    ]
+    assert calls[0][1]["Advanced"]["EnvironmentVariables"] == expected
+    assert calls[1][1]["EnvironmentVariables"] == expected
 
 
 @pytest.mark.asyncio
@@ -263,21 +486,53 @@ async def test_update_agent_forwards_managed_runtime_contract(monkeypatch):
         "ar-managed",
         {
             "artifact_type": "ManagedRuntime",
-            "artifact_path": "ks3://bucket/managed-codex-runtime.zip",
-            "runtime_config": {
-                "name": "codex",
-                "version": "0.144.4",
+            "managed_runtime_config": {
+                "runtime_name": "codex",
+                "runtime_version": "0.144.4",
                 "manifest_sha256": "b" * 64,
+                "manifest": "name: managed-codex\n",
             },
         },
     )
 
     payload = calls[0][1]
     assert payload["DeploymentType"] == "ManagedRuntime"
-    assert payload["RuntimeConfig"] == {
-        "Name": "codex",
-        "Version": "0.144.4",
-        "ManifestSha256": "b" * 64,
+    assert "CodeConfig" not in payload
+    assert payload["ManagedRuntimeConfig"] == {
+        "Manifest": "name: managed-codex",
+        "RuntimeName": "codex",
+        "RuntimeVersion": "0.144.4",
+        "ManifestSHA256": "b" * 64,
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_accepts_legacy_managed_runtime_read_model(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-managed"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-managed",
+        {
+            "artifact_type": "ManagedRuntime",
+            "runtime_config": {
+                "name": "codex",
+                "version": "0.144.4",
+                "manifest": "name: managed-codex\n",
+            },
+        },
+    )
+
+    assert calls[0][1]["ManagedRuntimeConfig"] == {
+        "Manifest": "name: managed-codex",
+        "RuntimeName": "codex",
+        "RuntimeVersion": "0.144.4",
     }
 
 

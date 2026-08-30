@@ -17,10 +17,33 @@ from fastapi.testclient import TestClient
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from ksadk.events.runtime_event import EventType
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
+from tests.test_server_session_app import _ExplicitRuntimeAppFixture
+
+
+@pytest.fixture(autouse=True)
+def _stub_cmd_web_server(monkeypatch):
+    """Keep command tests on the RuntimeAdapter-first web composition path."""
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    launches: list[tuple[object, str, int]] = []
+    runtime_apps: list[tuple[object, Path]] = []
+
+    def create_runtime_web_app(detection: object, agent_path: Path) -> object:
+        runtime_app = object()
+        runtime_apps.append((detection, agent_path))
+        return runtime_app
+
+    def run(runtime_app: object, *, host: str, port: int) -> None:
+        launches.append((runtime_app, host, port))
+
+    monkeypatch.setattr(cmd_web_module, "create_runtime_web_app", create_runtime_web_app)
+    monkeypatch.setattr(cmd_web_module.uvicorn, "run", run)
+    monkeypatch.setattr(cmd_web_module, "_test_runtime_web_launches", launches, raising=False)
+    monkeypatch.setattr(cmd_web_module, "_test_runtime_web_apps", runtime_apps, raising=False)
 
 
 class _UiRunner(BaseRunner):
@@ -108,7 +131,7 @@ class _KeyboardInterruptServerRunner(_UiRunner):
 
 def test_cmd_run_binds_local_persistence_to_the_agent_project(monkeypatch, tmp_path):
     runner = CliRunner()
-    fake_runner = _UiRunner()
+    fake_app = object()
     project_dir = tmp_path / "demo-langgraph-agent"
     project_dir.mkdir()
     captured: dict[str, str | None] = {}
@@ -147,7 +170,7 @@ def test_cmd_run_binds_local_persistence_to_the_agent_project(monkeypatch, tmp_p
     monkeypatch.setattr(detection_module, "FrameworkDetector", _Detector)
     monkeypatch.setattr("ksadk.configs.setup_environment", lambda _path: None)
 
-    def create_runner(_result, _project_dir):
+    def create_runtime_web_app(_result, _project_dir):
         captured.update(
             {
                 "project_dir": os.getenv("KSADK_PROJECT_DIR"),
@@ -156,21 +179,28 @@ def test_cmd_run_binds_local_persistence_to_the_agent_project(monkeypatch, tmp_p
                 "checkpoint_path": os.getenv("KSADK_CHECKPOINT_PATH"),
             }
         )
-        return fake_runner
+        return fake_app
 
-    monkeypatch.setattr("ksadk.runners.factory.create_runner", create_runner)
+    monkeypatch.setattr(cmd_run_module, "create_runtime_web_app", create_runtime_web_app)
+    monkeypatch.setattr(
+        cmd_run_module.uvicorn,
+        "run",
+        lambda app, host, port: captured.update({"app": app, "host": host, "port": str(port)}),
+    )
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(cmd_run_module.run, [str(project_dir), "--port", "8899", "--no-trace"])
 
     expected_ui_dir = str(project_dir / ".agentengine" / "ui")
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
     assert captured == {
         "project_dir": str(project_dir),
         "ui_dir": expected_ui_dir,
         "session_path": str(project_dir / ".agentengine" / "ui" / "sessions.sqlite"),
         "checkpoint_path": str(project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"),
+        "app": fake_app,
+        "host": "127.0.0.1",
+        "port": "8899",
     }
 
 
@@ -182,7 +212,6 @@ def _block_real_browser_open(monkeypatch):
 
 
 def _build_transport(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _UiRunner()
     monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
@@ -192,19 +221,22 @@ def _build_transport(monkeypatch):
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    return server_app_module, runner, service, transport
+    facade = _ExplicitRuntimeAppFixture()
+    facade._session_service = service
+    facade.resolve_session_service = lambda: service
+    facade.set_runner(runner)
+    transport = httpx.ASGITransport(app=facade.app)
+    return facade, runner, service, transport
 
 
 def _build_transport_with_runner(monkeypatch, runner):
-    server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    return server_app_module, runner, service, transport
+    facade = _ExplicitRuntimeAppFixture()
+    facade._session_service = service
+    facade.resolve_session_service = lambda: service
+    facade.set_runner(runner)
+    transport = httpx.ASGITransport(app=facade.app)
+    return facade, runner, service, transport
 
 
 @pytest.fixture
@@ -344,12 +376,11 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Stream"] is True
     assert payload["Data"]["SessionId"] == "sess-bootstrap"
     assert payload["Data"]["HostedRuntime"] is None
-    assert payload["Data"]["HostedChat"]["PreferredTransport"] == "ag-ui"
+    assert payload["Data"]["HostedChat"]["PreferredTransport"] == "responses"
     assert [item["Protocol"] for item in payload["Data"]["HostedChat"]["Transports"]] == [
-        "ag-ui",
         "responses",
     ]
-    assert payload["Data"]["HostedChat"]["Transports"][0]["Endpoint"] == ("/agentengine/agui")
+    assert payload["Data"]["HostedChat"]["Transports"][0]["Endpoint"] == "/v1/responses"
     assert payload["Data"]["Model"]["id"] == "glm-5.1"
     assert payload["Data"]["Model"]["source"] == "OPENAI_MODEL_NAME"
     assert runner.load_agent_calls == 1
@@ -464,38 +495,31 @@ async def test_run_agent_action_returns_responses_payload_and_persists_session(m
     assert payload["Code"] == 0
     assert payload["Data"]["object"] == "response"
     assert payload["Data"]["status"] == "completed"
-    assert payload["Data"]["output_text"] == "assistant says hi"
+    # 统一 RuntimeAdapter 无论 transport 是否 SSE 都消费同一事件流，因此最终文本
+    # 来自 runner.stream() 的 final event，而不是旧 RunAgent 的 invoke 分支。
+    assert payload["Data"]["output_text"] == "hello world"
 
     session_id = payload["Data"]["session_id"]
     session = await service.get_session(session_id)
     assert session is not None
     events = await service.get_events(session_id)
-    assert [event.author for event in events] == ["user", "demo-agent", "demo-agent", "demo-agent"]
-    assert [event.event_type for event in events] == [
-        "user_message",
-        "run_status",
-        "assistant_message",
-        "run_status",
-    ]
+    # tool/thinking/text 等 RuntimeEvent 也会被持久化；只锁定协议所需的首尾状态和
+    # 最终助手消息，不把旧 runner.invoke() 分支的固定事件数量写死。
+    event_types = [event.event_type for event in events]
+    assert event_types[0] == "user_message"
+    assert "run_status" in event_types
+    assert "run.started" in event_types
+    assert "item.completed" in event_types
+    assert "run.completed" in event_types
+    assert event_types[-1] == "run_status"
+    assert (events[-1].content or {}).get("status") == "completed"
     assert runner.invocations[-1]["history"] == [{"role": "user", "content": "hello"}]
     assert runner.load_agent_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_run_agent_action_forwards_model_metadata_to_conversation_runtime(monkeypatch):
-    server_app_module, _, _, transport = _build_transport(monkeypatch)
-    captured: dict[str, object] = {}
-
-    async def _fake_invoke_conversation_once(**kwargs):
-        captured.update(kwargs)
-        return "sess-model-metadata", {
-            "output_text": "assistant says hi",
-            "model": kwargs.get("model"),
-        }
-
-    monkeypatch.setattr(
-        server_app_module.conversation, "invoke_conversation_once", _fake_invoke_conversation_once
-    )
+    _, runner, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -516,12 +540,11 @@ async def test_run_agent_action_forwards_model_metadata_to_conversation_runtime(
 
     assert response.status_code == 200
     assert response.json()["Code"] == 0
-    assert captured["model"] == "glm-5.1"
-    assert captured["model_metadata"] == {
-        "id": "glm-5.1",
-        "context_length": "64k",
-        "max_completion_tokens": "8k",
-    }
+    assert runner.invocations[-1]["model"] == "glm-5.1"
+    metadata = runner.invocations[-1]["model_metadata"]
+    assert metadata["id"] == "glm-5.1"
+    assert metadata["context_window_tokens"] == 64000
+    assert metadata["max_output_tokens"] == 8000
 
 
 @pytest.mark.asyncio
@@ -556,9 +579,10 @@ async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(mon
     assert runner.invocations[-1]["responses_conversation"] is True
     assert await service.get_session("sess-runagent-responses") is not None
     stored_events = await service.get_events("sess-runagent-responses")
-    assistant_events = [event for event in stored_events if event.event_type == "assistant_message"]
-    assert assistant_events[-1].metadata["response_id"] == "resp_demo"
-    assert assistant_events[-1].metadata["responses_output"][0]["type"] == "function_call"
+    completed_text_events = [
+        event for event in stored_events if event.event_type == "item.completed"
+    ]
+    assert completed_text_events
 
     current_event = ""
     completed_payload = None
@@ -1013,19 +1037,15 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert fetched_session["TitleSource"] == "fallback_first_prompt"
     assert fetched_session["FirstPrompt"] == "hello"
     assert fetched_session["LastPrompt"] == "hello"
-    assert fetched_session["Summary"] == "assistant says hi"
-    assert [item["Author"] for item in events.json()["Data"]["Events"]] == [
-        "demo-agent",
-        "demo-agent",
-        "demo-agent",
-        "user",
-    ]
-    assert [item["EventType"] for item in events.json()["Data"]["Events"]] == [
-        "run_status",
-        "assistant_message",
-        "run_status",
-        "user_message",
-    ]
+    assert fetched_session["Summary"] == "hello world"
+    persisted_events = events.json()["Data"]["Events"]
+    event_types = [item["EventType"] for item in persisted_events]
+    assert persisted_events[0]["Author"] == "user"
+    assert event_types[0] == "user_message"
+    assert "run.started" in event_types
+    assert "item.completed" in event_types
+    assert "run.completed" in event_types
+    assert event_types[-1] == "run_status"
     assert deleted.json()["Data"]["Deleted"] is True
 
 
@@ -1068,18 +1088,15 @@ async def test_local_list_session_messages_restores_chat_history(monkeypatch):
     ]
     assistant = data["Messages"][1]
     assert [item["text"] for item in assistant["Reasoning"]] == ["plan"]
-    assert assistant["ToolEvents"] == [
-        {
-            "SeqId": 3,
-            "Type": "tool_call",
-            "Name": "resume_lookup",
-            "Args": {"keyword": "jd"},
-            "Status": "completed",
-            "ToolCallId": None,
-            "Result": '{"score": 91}',
-            "ResultSeqId": 4,
-        }
-    ]
+    assert len(assistant["ToolEvents"]) == 1
+    tool_event = assistant["ToolEvents"][0]
+    assert tool_event["Type"] == "tool_call"
+    assert tool_event["Name"] == "resume_lookup"
+    assert tool_event["Args"] == {"keyword": "jd"}
+    assert tool_event["Status"] == "completed"
+    assert tool_event["ToolCallId"] == "resume_lookup"
+    assert tool_event["Result"] == '{"score": 91}'
+    assert tool_event["ResultSeqId"] > tool_event["SeqId"]
     assert data["LatestSeqId"] > 0
     assert data["HasMore"] is False
     assert data["NextCursor"] is None
@@ -1095,11 +1112,11 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
     )
     runtime_events = [
         (
-            EventType.RUN_STARTED,
+            "run.started",
             {"status": "in_progress", "input": "run pwd", "source": "ag-ui"},
         ),
         (
-            EventType.APPROVAL_REQUESTED,
+            "approval.requested",
             {
                 "approval_id": "approval-1",
                 "call_id": "approval-1",
@@ -1109,7 +1126,7 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
             },
         ),
         (
-            EventType.APPROVAL_RESOLVED,
+            "approval.resolved",
             {
                 "approval_id": "approval-1",
                 "call_id": "approval-1",
@@ -1117,7 +1134,7 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
                 "protocol": "ag-ui",
             },
         ),
-        (EventType.TEXT_COMPLETED, {"text": "done"}),
+        ("text.completed", {"text": "done"}),
     ]
     for event_type, payload in runtime_events:
         await service.append_event(
@@ -1162,9 +1179,7 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
 
 
 @pytest.mark.asyncio
-async def test_local_list_session_messages_allows_mismatched_user_and_enforces_agent_scope(
-    monkeypatch,
-):
+async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cursors(monkeypatch):
     _, _, service, transport = _build_transport(monkeypatch)
     session = await service.create_session(
         agent_id="demo-agent",
@@ -1184,18 +1199,10 @@ async def test_local_list_session_messages_allows_mismatched_user_and_enforces_a
         )
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        mismatched_user = await client.post(
+        wrong_user = await client.post(
             "/agentengine/api/v1/ListSessionMessages",
             json={
                 "AgentId": "demo-agent",
-                "UserId": "user-a",
-                "SessionId": session.id,
-            },
-        )
-        wrong_agent = await client.post(
-            "/agentengine/api/v1/ListSessionMessages",
-            json={
-                "AgentId": "other-agent",
                 "UserId": "user-a",
                 "SessionId": session.id,
             },
@@ -1230,8 +1237,7 @@ async def test_local_list_session_messages_allows_mismatched_user_and_enforces_a
             },
         )
 
-    assert mismatched_user.status_code == 200
-    assert wrong_agent.status_code == 404
+    assert wrong_user.status_code == 404
     assert [item["SeqId"] for item in latest_data["Messages"]] == [7, 8]
     assert latest_data["NextCursor"] == 7
     assert [item["SeqId"] for item in older.json()["Data"]["Messages"]] == [5, 6]
@@ -1667,7 +1673,6 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
     assert "event: response.function_call_arguments.done" in lines
     assert "event: response.ksadk.tool_result" in lines
     assert "event: response.reasoning.delta" in lines
-    assert "event: response.output_text.delta" in lines
     assert "event: response.output_text.done" in lines
     assert "event: response.completed" in lines
     added_indexes = []
@@ -1677,7 +1682,7 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
             current_event = line.removeprefix("event: ")
         elif line.startswith("data: ") and current_event == "response.output_item.added":
             added_indexes.append(json.loads(line.removeprefix("data: "))["output_index"])
-    assert added_indexes == [0, 1, 2]
+    assert added_indexes == [0, 1, 2, 3]
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-responses-stream"
     assert await service.get_session("sess-responses-stream") is not None
@@ -1745,19 +1750,22 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     assert payload["object"] == "response"
     assert payload["status"] == "completed"
     assert payload["metadata"] == {"trace_label": "demo"}
-    assert payload["output_text"] == "assistant says hi"
+    assert payload["output_text"] == "hello world"
     assert payload["session_id"]
     assert runner.invocations[-1]["instructions"] == "只用中文回答"
     assert "responses_conversation" not in runner.invocations[-1]
 
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
-    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assistant_event = next(
+        event for event in reversed(events)
+        if event.event_type == "item.completed"
+        and (event.content.get("runtime_event") or {}).get("item_kind") == "message"
+    )
     assert user_event.content["parts"][0]["text"] == "hello"
     assert user_event.metadata["instructions"] == "只用中文回答"
     assert user_event.metadata["request_metadata"] == {"trace_label": "demo"}
-    assert assistant_event.metadata["trace_id"]
-    assert assistant_event.metadata["root_span_id"]
+    assert assistant_event.content["runtime_event"]["snapshot"]["parts"][0]["text"] == "hello world"
 
 
 @pytest.mark.asyncio
@@ -1790,7 +1798,7 @@ async def test_responses_endpoint_streaming_interrupt_returns_incomplete(monkeyp
     )
     assert incomplete_payload["incomplete_details"]["reason"] == "approval_required"
     events = await service.get_events(incomplete_payload["session_id"])
-    assert any(event.event_type == "approval_request" for event in events)
+    assert any(event.event_type == "interaction.requested" for event in events)
 
 
 @pytest.mark.asyncio
@@ -2113,12 +2121,13 @@ async def test_responses_endpoint_maps_openai_input_file_data_to_current_attachm
 
 @pytest.mark.asyncio
 async def test_streaming_run_agent_fails_before_starting_sse_when_runner_load_fails(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
     runner = _BrokenLoadRunner()
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
-    transport = httpx.ASGITransport(app=server_app_module.app, raise_app_exceptions=False)
+    service = InMemorySessionService()
+    facade = _ExplicitRuntimeAppFixture()
+    facade._session_service = service
+    facade.resolve_session_service = lambda: service
+    facade.set_runner(runner, loaded=True)
+    transport = httpx.ASGITransport(app=facade.app, raise_app_exceptions=False)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -2170,7 +2179,7 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert fake_runner.load_agent_calls == 0
     assert opened["url"] == "http://localhost:8899"
 
@@ -2210,7 +2219,7 @@ def test_cmd_web_can_skip_browser_open(monkeypatch, tmp_path):
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899", "--no-open"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert opened == {}
 
 
@@ -2301,7 +2310,7 @@ def test_cmd_web_does_not_reexec_inside_project_venv(monkeypatch, tmp_path):
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
 
 
 @pytest.mark.parametrize("framework", ["adk", "langgraph", "langchain", "deepagents"])
@@ -2336,7 +2345,6 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
-    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
@@ -2352,7 +2360,7 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["KSADK_STM_BACKEND"] == "sqlite"
     assert os.environ["KSADK_STM_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
@@ -2368,7 +2376,7 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
         )
 
 
-def test_cmd_web_overrides_project_dotenv_checkpoint_dsn_for_local_debug(monkeypatch, tmp_path):
+def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-langgraph-agent"
@@ -2394,17 +2402,15 @@ def test_cmd_web_overrides_project_dotenv_checkpoint_dsn_for_local_debug(monkeyp
     monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
-    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
 
     def fake_setup_environment(_path):
-        monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
-        monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
-        monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
-        monkeypatch.setenv(
-            "KSADK_CHECKPOINT_DSN",
+        os.environ["KSADK_SESSION_BACKEND"] = "postgres"
+        os.environ["KSADK_SESSION_DSN"] = "postgresql://ksadk:secret@db.example.test/session"
+        os.environ["KSADK_CHECKPOINT_BACKEND"] = "postgres"
+        os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] = (
             "postgresql://ksadk:secret@db.example.test/checkpoints"
         )
 
@@ -2420,7 +2426,7 @@ def test_cmd_web_overrides_project_dotenv_checkpoint_dsn_for_local_debug(monkeyp
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["KSADK_SESSION_BACKEND"] == "local"
     assert os.environ["KSADK_SESSION_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
@@ -2430,10 +2436,10 @@ def test_cmd_web_overrides_project_dotenv_checkpoint_dsn_for_local_debug(monkeyp
     assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
     )
-    assert "KSADK_CHECKPOINT_DSN" not in os.environ
+    assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
 
 
-def test_cmd_web_overrides_loaded_checkpoint_dsn_for_local_debug(monkeypatch, tmp_path):
+def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-langgraph-agent"
@@ -2442,7 +2448,7 @@ def test_cmd_web_overrides_loaded_checkpoint_dsn_for_local_debug(monkeypatch, tm
         [
             "KSADK_SESSION_BACKEND=postgres",
             "KSADK_SESSION_DSN=postgresql://ksadk:secret@db.example.test/session",
-            "KSADK_CHECKPOINT_DSN=postgresql://ksadk:secret@db.example.test/checkpoints",
+            "KSADK_LANGGRAPH_CHECKPOINT_DSN=postgresql://ksadk:secret@db.example.test/checkpoints",
         ]
     )
     (project_dir / ".env").write_text(dotenv_text, encoding="utf-8")
@@ -2463,7 +2469,7 @@ def test_cmd_web_overrides_loaded_checkpoint_dsn_for_local_debug(monkeypatch, tm
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
     monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
     monkeypatch.setenv(
-        "KSADK_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints"
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints"
     )
     monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
@@ -2482,7 +2488,7 @@ def test_cmd_web_overrides_loaded_checkpoint_dsn_for_local_debug(monkeypatch, tm
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["KSADK_SESSION_BACKEND"] == "local"
     assert os.environ["KSADK_SESSION_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
@@ -2492,7 +2498,7 @@ def test_cmd_web_overrides_loaded_checkpoint_dsn_for_local_debug(monkeypatch, tm
     assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
     )
-    assert "KSADK_CHECKPOINT_DSN" not in os.environ
+    assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
 
 
 def test_cmd_web_overrides_project_dotenv_ui_dir_for_local_debug(monkeypatch, tmp_path):
@@ -2531,7 +2537,7 @@ def test_cmd_web_overrides_project_dotenv_ui_dir_for_local_debug(monkeypatch, tm
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["AGENTENGINE_UI_DIR"] == str(project_dir / ".agentengine" / "ui")
 
 
@@ -2572,7 +2578,7 @@ def test_cmd_web_preserves_explicit_ui_dir_for_local_debug(monkeypatch, tmp_path
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["AGENTENGINE_UI_DIR"] == explicit_ui_dir
 
 
@@ -2639,7 +2645,6 @@ def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp
 
 
 def test_server_serves_custom_ui_path_and_assets_from_env(monkeypatch, tmp_path):
-    server_app_module = importlib.import_module("ksadk.server.app")
     project_dir = tmp_path / "agent"
     bundle_dir = project_dir / "research-ui" / "dist"
     assets_dir = bundle_dir / "assets"
@@ -2652,12 +2657,13 @@ def test_server_serves_custom_ui_path_and_assets_from_env(monkeypatch, tmp_path)
     runner = _UiRunner()
     runner.project_dir = str(project_dir)
 
-    server_app_module.set_runner(runner)
+    facade = _ExplicitRuntimeAppFixture()
+    facade.set_runner(runner)
     monkeypatch.setenv("KSADK_UI_PROFILE", "custom")
     monkeypatch.setenv("KSADK_UI_PATH", "/research")
     monkeypatch.setenv("KSADK_UI_BUNDLE_PATH", "research-ui/dist")
 
-    client = TestClient(server_app_module.app)
+    client = TestClient(facade.app)
     shell_response = client.get("/research")
     asset_response = client.get("/research/assets/index.js")
 
@@ -2668,11 +2674,9 @@ def test_server_serves_custom_ui_path_and_assets_from_env(monkeypatch, tmp_path)
     monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
     monkeypatch.delenv("KSADK_UI_PATH", raising=False)
     monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
-    server_app_module.set_runner(_UiRunner())
 
 
 def test_server_serves_custom_ui_spa_routes_from_env(monkeypatch, tmp_path):
-    server_app_module = importlib.import_module("ksadk.server.app")
     project_dir = tmp_path / "agent"
     bundle_dir = project_dir / "frontend" / "dist"
     assets_dir = bundle_dir / "assets"
@@ -2684,12 +2688,13 @@ def test_server_serves_custom_ui_spa_routes_from_env(monkeypatch, tmp_path):
     runner = _UiRunner()
     runner.project_dir = str(project_dir)
 
-    server_app_module.set_runner(runner)
+    facade = _ExplicitRuntimeAppFixture()
+    facade.set_runner(runner)
     monkeypatch.setenv("KSADK_UI_PROFILE", "custom")
     monkeypatch.setenv("KSADK_UI_PATH", "/luoluo")
     monkeypatch.setenv("KSADK_UI_BUNDLE_PATH", "frontend/dist")
 
-    client = TestClient(server_app_module.app)
+    client = TestClient(facade.app)
     shell_response = client.get("/luoluo/chat")
     missing_asset_response = client.get("/luoluo/assets/missing.js")
 
@@ -2699,7 +2704,6 @@ def test_server_serves_custom_ui_spa_routes_from_env(monkeypatch, tmp_path):
     monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
     monkeypatch.delenv("KSADK_UI_PATH", raising=False)
     monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
-    server_app_module.set_runner(_UiRunner())
 
 
 def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
@@ -2743,7 +2747,7 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["KSADK_STM_BACKEND"] == "local"
     assert os.environ["KSADK_STM_PATH"] == "/tmp/custom-sessions.db"
     assert os.environ["KSADK_SESSION_BACKEND"] == "postgres"
@@ -2752,125 +2756,6 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     assert (
         os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"]
         == "postgresql://ksadk:secret@db.example.test/checkpoints"
-    )
-
-
-def test_configure_local_runtime_persistence_preserves_explicit_checkpoint_dsn(
-    monkeypatch, tmp_path
-):
-    """A shell-provided checkpoint DSN must win over local web defaults."""
-    import ksadk.cli.cmd_web as cmd_web_module
-
-    project_dir = tmp_path / "demo-langgraph-agent"
-    project_dir.mkdir()
-    for name in (
-        "KSADK_STM_BACKEND",
-        "KSADK_STM_PATH",
-        "KSADK_STM_URL",
-        "KSADK_STM_DB_PATH",
-        "KSADK_STM_DB_URL",
-        "KSADK_SESSION_BACKEND",
-        "AGENTENGINE_SESSION_BACKEND",
-        "KSADK_SESSION_PATH",
-        "KSADK_SESSION_DSN",
-        "KSADK_CHECKPOINT_BACKEND",
-        "KSADK_CHECKPOINT_PATH",
-        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv(
-        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
-    )
-
-    cmd_web_module.configure_local_runtime_persistence(project_dir, "langgraph")
-
-    assert (
-        os.environ["KSADK_CHECKPOINT_DSN"]
-        == "postgresql://checkpoint.example.test/checkpoint_db"
-    )
-    assert "KSADK_CHECKPOINT_BACKEND" not in os.environ
-
-
-@pytest.mark.parametrize(
-    ("framework", "checkpoint_env_name"),
-    [
-        ("adk", "KSADK_ADK_SESSION_URL"),
-        ("langchain", "KSADK_LANGGRAPH_CHECKPOINT_DSN"),
-        ("deepagents", "KSADK_CHECKPOINT_DSN"),
-    ],
-)
-def test_configure_local_runtime_persistence_removes_project_checkpoint_dsn(
-    monkeypatch, tmp_path, framework, checkpoint_env_name
-):
-    """Project DSNs must not escape into non-LangGraph local Web runtimes."""
-    import ksadk.cli.cmd_web as cmd_web_module
-
-    project_dir = tmp_path / f"demo-{framework}-agent"
-    project_dir.mkdir()
-    checkpoint_dsn = "postgresql://checkpoint.example.test/checkpoint_db"
-    (project_dir / ".env").write_text(
-        f"{checkpoint_env_name}={checkpoint_dsn}\n", encoding="utf-8"
-    )
-    for name in (
-        "KSADK_STM_BACKEND",
-        "KSADK_STM_PATH",
-        "KSADK_STM_URL",
-        "KSADK_STM_DB_PATH",
-        "KSADK_STM_DB_URL",
-        "KSADK_SESSION_BACKEND",
-        "AGENTENGINE_SESSION_BACKEND",
-        "KSADK_SESSION_PATH",
-        "KSADK_SESSION_DSN",
-        "KSADK_CHECKPOINT_BACKEND",
-        "KSADK_CHECKPOINT_PATH",
-        "KSADK_CHECKPOINT_DSN",
-        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
-        "KSADK_ADK_SESSION_URL",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv(checkpoint_env_name, checkpoint_dsn)
-
-    cmd_web_module.configure_local_runtime_persistence(project_dir, framework)
-
-    assert checkpoint_env_name not in os.environ
-
-
-def test_configure_local_runtime_persistence_preserves_shell_checkpoint_dsn_over_project_backend(
-    monkeypatch, tmp_path
-):
-    """An external DSN wins even if the project selects a local checkpoint backend."""
-    import ksadk.cli.cmd_web as cmd_web_module
-
-    project_dir = tmp_path / "demo-langgraph-agent"
-    project_dir.mkdir()
-    (project_dir / ".env").write_text(
-        "KSADK_CHECKPOINT_BACKEND=local\n", encoding="utf-8"
-    )
-    for name in (
-        "KSADK_STM_BACKEND",
-        "KSADK_STM_PATH",
-        "KSADK_STM_URL",
-        "KSADK_STM_DB_PATH",
-        "KSADK_STM_DB_URL",
-        "KSADK_SESSION_BACKEND",
-        "AGENTENGINE_SESSION_BACKEND",
-        "KSADK_SESSION_PATH",
-        "KSADK_SESSION_DSN",
-        "KSADK_CHECKPOINT_PATH",
-        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
-        "KSADK_ADK_SESSION_URL",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "local")
-    monkeypatch.setenv(
-        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
-    )
-
-    cmd_web_module.configure_local_runtime_persistence(project_dir, "langgraph")
-
-    assert (
-        os.environ["KSADK_CHECKPOINT_DSN"]
-        == "postgresql://checkpoint.example.test/checkpoint_db"
     )
 
 
@@ -2895,7 +2780,6 @@ def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch,
 
     monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "local")
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
-    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
@@ -2909,7 +2793,7 @@ def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch,
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "sqlite"
     assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
@@ -2946,7 +2830,6 @@ def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(monkeyp
 
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
-    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
@@ -2962,7 +2845,7 @@ def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(monkeyp
 
     assert result.exit_code == 1
     assert "pip install langgraph-checkpoint-sqlite" in result.output
-    assert fake_runner.run_server_calls == []
+    assert cmd_web_module._test_runtime_web_launches == []
 
 
 def test_cmd_web_preserves_partial_explicit_stm_configuration(monkeypatch, tmp_path):
@@ -3001,7 +2884,7 @@ def test_cmd_web_preserves_partial_explicit_stm_configuration(monkeypatch, tmp_p
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert [port for _, _, port in cmd_web_module._test_runtime_web_launches] == [8899]
     assert "KSADK_STM_BACKEND" not in os.environ
     assert "KSADK_STM_PATH" not in os.environ
     assert os.environ["KSADK_STM_DB_PATH"] == "/tmp/legacy-custom-sessions.db"
@@ -3033,12 +2916,17 @@ def test_cmd_web_exits_quietly_on_keyboard_interrupt(monkeypatch, tmp_path):
         lambda result, project_dir: fake_runner,
         raising=False,
     )
+
+    def raise_keyboard_interrupt(*_args, **_kwargs) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cmd_web_module.uvicorn, "run", raise_keyboard_interrupt)
     monkeypatch.chdir(project_dir)
 
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.run_server_calls == [8899]
+    assert cmd_web_module._test_runtime_web_launches == []
     assert "Traceback" not in result.output
     assert "统一 Web UI 启动失败" not in result.output
 

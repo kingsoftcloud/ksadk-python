@@ -20,8 +20,7 @@ from ksadk.a2ui import (
     Surface,
     submit_a2ui_action,
 )
-from ksadk.events.replay import replay_transcript
-from ksadk.events.runtime_event import EventType
+from ksadk.events.canonical import InteractionRequested, ItemCompleted, ItemStarted
 from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -121,12 +120,15 @@ async def test_approval_click_submit_action_loop():
     assert receipt.status == "received"
     assert receipt.name == "approve"
 
-    # 3. a2ui.action 事件落在 store(payload 正确)→ resume 通路可据此 resolve pending
+    # 3. a2ui.action 事件落在 store(InteractionRequested approval)→ resume 通路可据此 resolve pending
     events = await store.list("s1")
-    action_events = [e for e in events if e.event_type == EventType.A2UI_ACTION]
+    action_events = [
+        e for e in events
+        if isinstance(e, InteractionRequested) and e.interaction_kind == "approval"
+    ]
     assert len(action_events) == 1
-    assert action_events[0].payload["name"] == "approve"
-    assert action_events[0].payload["action_id"] == "act-approve-1"
+    assert action_events[0].request.detail["name"] == "approve"
+    assert action_events[0].interaction_id == "act-approve-1"
     # pending interaction 仍存在(待 resolve);回传闭环在 store 层闭合
     assert core.pending_interaction(interaction.interaction_id) is not None
 
@@ -153,14 +155,17 @@ async def test_live_render_equals_replay_render_and_actions_replayable():
 
     # replay:从 store 回放 surface.begin 事件,重建 surface 再渲染
     events = await store.list("s1")
-    begin = [e for e in events if e.event_type == EventType.A2UI_SURFACE_BEGIN][0]
-    replayed_surface = Surface.from_dict(begin.payload["surface"])
+    begin = [e for e in events if isinstance(e, ItemStarted) and e.item_kind == "data"][0]
+    replayed_surface = Surface.from_dict(begin.initial.parts[0].data)
     replay_json = renderer.render_surface(replayed_surface).to_json()
 
     # live 渲染 == replay 渲染(逐字节)
     assert live_json == replay_json
 
-    # 交互记录(a2ui.action)经 goal-12 replay 可回放(保序,不丢)
-    parser = await replay_transcript(store, "s1")
-    extras_types = [x["event_type"] for x in parser.transcript()["extras"]]
-    assert EventType.A2UI_ACTION in extras_types
+    # 交互记录(InteractionRequested approval)经 store 可回放(保序,不丢)
+    action_events = [
+        e for e in events
+        if isinstance(e, InteractionRequested) and e.interaction_kind == "approval"
+    ]
+    assert len(action_events) == 1
+    assert action_events[0].interaction_id == "act1"

@@ -16,7 +16,8 @@ import httpx
 import pytest
 
 from ksadk.harness import HarnessApp, HarnessConfig, HarnessConfigError
-from ksadk.harness.runner import HarnessReasoningTurn
+from ksadk.harness.reasoner import HarnessReasoningTurn
+from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime.adapter import StartRequest
 
 
@@ -190,14 +191,14 @@ async def test_per_invocation_override(tmp_path):
         overrides={"model": "glm-override", "prompt": "覆盖"},
     )
     events = [event async for event in app.stream(handle)]
-    text = [event for event in events if event.event_type == "text.completed"][-1]
-    assert "glm-override" in str(text.payload) and "覆盖" in str(text.payload)
+    text = [event for event in events if event.event_type == "item.completed"][-1]
+    assert "glm-override" in str(text.snapshot.parts[0].text) and "覆盖" in str(text.snapshot.parts[0].text)
 
 
 def test_override_out_of_subset_rejected(tmp_path):
     app = HarnessApp.from_yaml(_write(tmp_path, VALID_YAML))
     with pytest.raises(ValueError, match="override"):
-        app.build_runner(overrides={"memory": "x"})
+        app.adapter(overrides={"memory": "x"})
 
 
 # ---- yaml → RuntimeAdapter start(request) 映射 ----
@@ -233,14 +234,16 @@ async def test_app_owns_one_adapter_and_start_override_is_request_local(tmp_path
         ),
     )
     events = [event async for event in adapter.stream(handle)]
-    text_events = [event for event in events if event.event_type == "text.completed"]
+    text_events = [event for event in events if event.event_type == "item.completed"]
     assert text_events
-    assert "request-model" in str(text_events[-1].payload)
-    assert "request-prompt" in str(text_events[-1].payload)
+    assert "request-model" in str(text_events[-1].snapshot.parts[0].text)
+    assert "request-prompt" in str(text_events[-1].snapshot.parts[0].text)
 
     fastapi_app = app.build_app()
-    assert fastapi_app.state.runtime.runtime_adapter is adapter
-    assert fastapi_app.state.runtime.runner is app.runner
+    assert isinstance(adapter, HarnessRuntimeAdapter)
+    assert fastapi_app.state.runtime.executor is not None
+    assert fastapi_app.state.runtime.launch_context.runtime_type == "harness"
+    assert not hasattr(fastapi_app.state.runtime, "runner")
 
 
 @pytest.mark.asyncio

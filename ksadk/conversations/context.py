@@ -6,6 +6,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Iterable, List
 
 from ksadk.sessions.base import SessionEvent
+from ksadk.tools.result_budget import (
+    ToolResultBudget,
+    budget_tool_output,
+    default_tool_result_budget,
+)
 
 CANONICAL_EVENT_TYPES = {
     "user_message",
@@ -34,11 +39,23 @@ TRANSCRIPT_EVENT_TYPES = {
     "context_checkpoint",
 }
 
+_RUNTIME_PLACEHOLDER_EVENT_TYPES = {
+    "tool_call",
+    "tool_result",
+    "approval_request",
+    "approval_response",
+}
+
 DATA_URL_RE = re.compile(r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+")
 BASE64_FIELD_RE = re.compile(
     r"(?P<prefix>['\"](?P<field>file_data|data|bytes|base64)['\"]\s*:\s*['\"])(?P<value>[A-Za-z0-9+/=_-]{512,})(?P<suffix>['\"])",
     re.IGNORECASE,
 )
+_CORRECTION_MARKER_RE = re.compile(
+    r"(?:修正|更正|改为|更新为|最新(?:的)?|废弃|作废|不再使用|不是.+而是|不要|不得|禁止)"
+)
+_LATEST_USER_INSTRUCTION_MAX_CHARS = 8192
+_CORRECTION_SUMMARY_MAX_CHARS = 2048
 
 
 def sanitize_event_text_for_context(text: Any) -> str:
@@ -55,8 +72,7 @@ def sanitize_event_text_for_context(text: Any) -> str:
     value = DATA_URL_RE.sub(_replace_data_url, value)
     value = BASE64_FIELD_RE.sub(
         lambda match: (
-            f"{match.group('prefix')}[base64 {match.group('field')} omitted]"
-            f"{match.group('suffix')}"
+            f"{match.group('prefix')}[base64 {match.group('field')} omitted]{match.group('suffix')}"
         ),
         value,
     )
@@ -146,6 +162,70 @@ def _stringify_part_text(value: Any) -> str:
     return str(value)
 
 
+def budget_tool_result_for_event(
+    *,
+    tool_name: str,
+    tool_output: Any,
+    tool_call_id: str | None,
+    enabled: bool,
+    budget: ToolResultBudget | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """PR C：tool_result 落 SessionEvent 前的单项预算（ksadk_hosted 门控）。
+
+    返回 ``(session_event_text, metadata_extras)``：
+
+    - ``enabled=False`` → ``(str(tool_output), {})``：与旧
+      ``text=str(tool_output)`` **字节级一致**，非ksadk_hosted / framework / native
+      路径零行为变更。
+    - ``enabled=True``：先 ``_stringify_part_text`` 干净渲染（已预算的 toolset dict →
+      ``"preview\\n[persisted-output] path (mime)"``；裸串 → 原串），再若仍超 ``max_chars`` 则
+      ``budget_tool_output`` 落盘+截断，``text = "preview\\n[persisted-output] path (mime)"``，
+      ``extras = {"tool_result_budget": {truncated, original_chars, preview_chars, persisted}}``。
+      未超阈值 → ``(rendered, {})``。
+
+    **不碰 ``metadata.tool_output``**：调用方保留原值（UI/Responses 读取方不受影响，
+    会话存储节省留后续）。
+    只 bound 进 ``content.parts[0].text``——即下一轮 ``extract_event_text`` → ``payload["history"]``
+    → 模型输入的那条 text。已预算 dict 经 ``_stringify_part_text`` 渲染后必小于阈值，不重复落盘。
+    """
+    if not enabled:
+        return str(tool_output), {}
+    active = budget or default_tool_result_budget()
+    rendered = _stringify_part_text(tool_output)
+    if len(rendered) <= active.max_chars:
+        return rendered, {}
+    budgeted = budget_tool_output(
+        tool_name=tool_name,
+        field_name="output",
+        value=tool_output,
+        metadata={"tool_call_id": tool_call_id or ""},
+        budget=active,
+    )
+    preview = str(budgeted.get("output") or "")
+    persisted = budgeted.get("persisted")
+    if not isinstance(persisted, Mapping) or not persisted.get("path"):
+        # 无落盘（不应发生，但兜底）→ 退回 rendered 截断标记，不谎报 persisted。
+        marker = f"\n[truncated {len(rendered) - active.max_chars} chars]"
+        return (rendered[: active.max_chars] + marker), {
+            "tool_result_budget": {
+                "truncated": True,
+                "original_chars": int(budgeted.get("original_chars") or len(rendered)),
+                "preview_chars": active.max_chars,
+            }
+        }
+    mime_type = persisted.get("mime_type") or "text/plain"
+    text = f"{preview}\n[persisted-output] {persisted['path']} ({mime_type})"
+    extras = {
+        "tool_result_budget": {
+            "truncated": bool(budgeted.get("truncated")),
+            "original_chars": int(budgeted.get("original_chars") or 0),
+            "preview_chars": int(budgeted.get("preview_chars") or len(preview)),
+            "persisted": dict(persisted),
+        }
+    }
+    return text, extras
+
+
 def build_request_history(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
     history: List[Dict[str, str]] = []
     for message in messages or []:
@@ -191,14 +271,16 @@ def summarize_event_groups(
 ) -> str:
     """把要折叠的旧轮次压成一段 checkpoint 文本。
 
-    这里没有直接照搬 Claude Code 的 LLM summarizer，而是先落一个可预测、
-    可恢复的结构化摘要骨架，后续再替换成真正的 summarize agent 也不需要改
-    event contract。
+    extractive fallback：结构化骨架 + 有界保留错误修正和最新长 user 指令。
+    无摘要模型时，关键修正可能位于长消息尾部，也可能不是最后一条 user 消息；
+    因此跨消息提取修正，并在预算上限内保留最新长指令首尾（方案 §9.4）。
     """
     lines: List[str] = []
     if previous_summary:
         lines.append(previous_summary)
     lines.append("Earlier conversation summary:")
+    last_user_text = ""
+    correction_snippets: list[str] = []
     for group in groups:
         snippets: List[str] = []
         for event in group:
@@ -216,9 +298,34 @@ def summarize_event_groups(
                 role = "assistant"
             else:
                 role = "user"
+                last_user_text = text
+                for sentence in re.split(r"[\n。；;]+", text):
+                    normalized = sentence.strip()
+                    if normalized and _CORRECTION_MARKER_RE.search(normalized):
+                        correction_snippets.append(normalized[:512])
             snippets.append(f"{role}: {text[:180]}")
         if snippets:
             lines.append(" | ".join(snippets))
+    # 修正不一定是 compact 范围内最后一条 user 消息；单独形成结构化段，供
+    # Working State 确定性解析。总量有界，避免用“保留完整”重新撑爆上下文。
+    if correction_snippets:
+        unique: list[str] = []
+        for snippet in correction_snippets:
+            if snippet not in unique:
+                unique.append(snippet)
+        correction_text = "；".join(unique[-8:])[-_CORRECTION_SUMMARY_MAX_CHARS:]
+        lines.append(f"错误修正：{correction_text}")
+    # 末尾追加最新 user 指令的有界首尾内容。短消息已在摘要骨架里，不重复。
+    if last_user_text and len(last_user_text) > 180:
+        preserved = last_user_text
+        if len(preserved) > _LATEST_USER_INSTRUCTION_MAX_CHARS:
+            half = _LATEST_USER_INSTRUCTION_MAX_CHARS // 2
+            preserved = (
+                preserved[:half]
+                + "\n...[中间内容因上下文预算省略]...\n"
+                + preserved[-half:]
+            )
+        lines.append(f"最新用户指令（有界保留）: {preserved}")
     return "\n".join(line for line in lines if line).strip()
 
 
@@ -235,6 +342,7 @@ def project_model_messages(
     3. tool/approval/attachment 仍保留成可解释的文本占位，避免状态丢失。
     """
     projected: List[Dict[str, str]] = []
+    placeholder_flags: list[bool] = []
     compacted_until = compacted_until_seq_id(events)
     checkpoint = next(
         (
@@ -253,6 +361,7 @@ def project_model_messages(
                     "content": summary_text,
                 }
             )
+            placeholder_flags.append(False)
 
     for event in events:
         event_type = canonical_event_type(
@@ -291,10 +400,17 @@ def project_model_messages(
         else:
             role = "user"
 
-        if projected and projected[-1]["role"] == role:
+        is_placeholder = event_type in _RUNTIME_PLACEHOLDER_EVENT_TYPES
+        if (
+            projected
+            and projected[-1]["role"] == role
+            and not placeholder_flags[-1]
+            and not is_placeholder
+        ):
             projected[-1]["content"] = f"{projected[-1]['content']}\n{text}".strip()
         else:
             projected.append({"role": role, "content": text})
+            placeholder_flags.append(is_placeholder)
 
     return projected
 
@@ -430,6 +546,10 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
     from a text summary. Events without a reliable call id fall back to the
     existing explanatory message representation instead of emitting an invalid
     ``function_call_output`` item.
+
+    公开承诺（契约声明见 ``ksadk/events/projections.py``）：仅 OpenAI Responses
+    input item 形态（``type``/``call_id``/``output``/role 消息）；内部不保证
+    compacted 前缀的重放方式与占位消息的具体措辞。
     """
     projected: List[dict[str, Any]] = []
     projected_call_ids: set[str] = set()

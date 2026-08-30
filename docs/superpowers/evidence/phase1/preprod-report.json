@@ -1,0 +1,182 @@
+{
+  "checks": {
+    "audit": {
+      "detail": {
+        "accepted_seq": 1,
+        "agent_id": "ar-20260823075542-cce1df89",
+        "agent_instance_id": "ai-1a6a130e01af4104abc1",
+        "audit_id": "audit-4cf27d4e511049f4a10264c1",
+        "bundle_digest": "33d4708608c00b9d0dd3cde3df1d5c64543e72517ddaa575cef5a62a68e7adc5",
+        "command_id": "02bdbd0b-9faf-441d-b4be-0db7f9f34020",
+        "command_type": "enqueue",
+        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "message_id": "8ea5f9c6-34e8-4b8e-a867-5881f5d46cde",
+        "path": "Studio cloud chat -> Gateway -> Server admission -> AgentInstance directory -> managed runtime",
+        "persistence": "agent_control_audits row and matching AgentInstance row read back from the shared preproduction Server database",
+        "principal_ref": "user:No1qNME1QqKQhMmANC4xcQ",
+        "receipt_status": "accepted",
+        "redaction": "No request body, signature, credential, connection string, or model content is recorded.",
+        "runtime_id": "ar-20260823075542-cce1df89",
+        "server_image": "hub.kce.ksyun.com/bigdata-ai/agentengine-server@sha256:d609f934b76f25752d7036d8cc51d7ac758a5212b8bcf96d51d2150321aeb5a7",
+        "server_pod_uid": "0805e864-1d9d-46e8-9a04-f0af6cc5db96",
+        "session_id": "sess-4acca9817da243db"
+      },
+      "status": "pass"
+    },
+    "cold_recovery": {
+      "detail": {
+        "command_id": "0f009f42-4978-4c14-a684-03dffae40c1f",
+        "duration_seconds": 32.343,
+        "event_id": "de5dd236-98bb-43db-8764-f4a4d9b0492f",
+        "new_fencing_token": 2,
+        "new_pod": "agent-kernel-canary-64c9cb6c8-jwhvq",
+        "new_pod_uid": "c75bc95c-59c1-425c-9415-726db9445d27",
+        "old_fencing_token": 1,
+        "old_pod": "agent-kernel-canary-64c9cb6c8-vsvg8",
+        "old_pod_uid": "1e2174d3-9593-4d64-be89-8cd775dc58a8",
+        "terminal_count": 6
+      },
+      "status": "pass"
+    },
+    "contract_digest": {
+      "detail": {
+        "digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "instance_id": "phase1-canary-managed-pg"
+      },
+      "status": "pass"
+    },
+    "cross_repo_versions": {
+      "detail": {
+        "branch": "feat/agent-kernel-phase1",
+        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "contract_fixture_sha256": {
+          "agentengine_gateway": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "agentengine_server": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "ksadk_python": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631"
+        },
+        "note": "The three frozen contract fixtures have identical file digests; the shared main runtime and the managed PostgreSQL gate both report the d4a66a72 aggregate contract.",
+        "runtime_identity": {
+          "agent_id": "ar-20260823075542-cce1df89",
+          "ksadk_commit": "7bbb491d79fba87460eff10d9dfebb834cc5a78c",
+          "ksadk_version": "0.8.1",
+          "ksadk_wheel_sha256": "525340bcd957bbb41df2876f5a900c0a1f6018698e448a760a319705f8b75525",
+          "pod_uid": "a4b68ee3-db6e-4734-bb40-eae46cd62c0c"
+        },
+        "shared_main_images": {
+          "agent_platform_operator": "hub.kce.ksyun.com/agentengine/agent-platform-operator@sha256:25068cb63aa00677ddfc9c8bf7a25db15a9ac35879ca5e6cf2b9ee3d3e96d7da",
+          "agent_runtime_service": "hub.kce.ksyun.com/agentengine/agent-runtime-service@sha256:28f82c31abfc38a26cb3c25294784d3b92ac5a5a22a5908e1b5f6b5e5a52288d",
+          "agentengine_gateway": "hub.kce.ksyun.com/bigdata-ai/agentengine-gateway@sha256:dad1e84244e03399c772fd199c34f576accd6804796f9a4dac47478e9ec6274a",
+          "agentengine_hosted_ui": "hub.kce.ksyun.com/bigdata-ai/agentengine-hosted-ui@sha256:d8c7be412e674c873040d786d9463fc6f4cd931919cab89de50296fb15542daf",
+          "agentengine_server": "hub.kce.ksyun.com/bigdata-ai/agentengine-server@sha256:d609f934b76f25752d7036d8cc51d7ac758a5212b8bcf96d51d2150321aeb5a7",
+          "managed_pg_gate": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:636a7cd469ed9a7a3407a0ec2b080c8881cfc146845ae3fb1d61b0def9af826f",
+          "managed_runtime": "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/agent-runtime-codex@sha256:fd5ae845e48962da671d27e64c77ff43a52d943eb729354c7bcef8165d859b95"
+        },
+        "source_commits": {
+          "agent_platform_operator": "60b6925307a0791afba4d15d022c61407b8d969a",
+          "agent_runtime_service": "09f9569a8fcfee1886ea925ae9f546a989fbc870",
+          "agentengine_gateway": "79fc4feab26619605237f8ed5378a04700220392",
+          "agentengine_server": "a6eedbee4c36ec883f09b6370542d2e8f4719cf7",
+          "ksadk_managed_pg_gate": "3a44c815108ab47f226450f259a8efbcbf180dfd",
+          "ksadk_web_0_3_2": "12ada9592cf5cab178a4ddd7add44cde24ef9ac1"
+        }
+      },
+      "status": "pass"
+    },
+    "fifo": {
+      "detail": {
+        "accepted_seq_range": [
+          1,
+          100
+        ],
+        "claimed_in_order": true,
+        "completed_in_order": true,
+        "event_id": "2a10d980-11c9-4351-94ed-4daa80f4a5dd"
+      },
+      "status": "pass"
+    },
+    "idempotency": {
+      "detail": {
+        "accepted_seq": 1,
+        "command_id": "e64c02c8-a9d5-4daa-833e-047217bfad07",
+        "message_id": "f1c232ab-8dfb-4276-84b8-30309d4203d9"
+      },
+      "status": "pass"
+    },
+    "phase0_baseline": {
+      "detail": {
+        "accepted": true,
+        "manifest": "docs/superpowers/evidence/phase0/manifest.json",
+        "manifest_digest": "2237156b1c0a0d75cff921a523a694ce35a6258dd198f10a2c79eeff449b025f"
+      },
+      "status": "pass"
+    },
+    "queue_full": {
+      "detail": {
+        "accepted_count": 100,
+        "command_id": "5d66823e-daee-41f3-88ee-59d650541e5e",
+        "error_code": "queue_full",
+        "event_id": "d75dd6f8-501b-4aae-a9cd-1caa04328cf2"
+      },
+      "status": "pass"
+    },
+    "reconnect": {
+      "detail": {
+        "disconnect_after_seq": 1,
+        "duration_seconds": 0.055,
+        "event_id": "e3de4da3-7314-44ba-9dba-c1b670adc3d3",
+        "resumed_seq_range": [
+          2,
+          9
+        ]
+      },
+      "status": "pass"
+    },
+    "rollback": {
+      "detail": {
+        "backlog_after": 0,
+        "backlog_before": 5,
+        "command_id": "c35722bb-afdd-4be5-8c32-084eb8aae544",
+        "commit": "3a44c815108ab47f226450f259a8efbcbf180dfd",
+        "event_id": "f4f0157d-d3bb-4eea-9c2b-0f0bb6e8ab09",
+        "rollback_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:043073b03b8f856b9d6c0a119b94062baeeba6485649dc9700eee28aec6afc82",
+        "rollback_seconds": 10.857,
+        "rollforward_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:636a7cd469ed9a7a3407a0ec2b080c8881cfc146845ae3fb1d61b0def9af826f",
+        "rollforward_seconds": 10.875
+      },
+      "status": "pass"
+    },
+    "stale_fence": {
+      "detail": {
+        "command_id": "run-05c1ae1da127",
+        "event_id": "run-05c1ae1da127",
+        "new_activation_id": "new-0b885b39b9eb",
+        "new_fencing_token": 2,
+        "old_activation_id": "old-adef4e28c605",
+        "old_fencing_token": 1,
+        "session_id": "phase1-fence-f94e73ea2230",
+        "stale_writer_rejected": true
+      },
+      "status": "pass"
+    }
+  },
+  "environment": "preproduction",
+  "failed_checks": [],
+  "generated_at": "2026-08-23T17:57:21Z",
+  "passed_checks": [
+    "audit",
+    "cold_recovery",
+    "contract_digest",
+    "cross_repo_versions",
+    "fifo",
+    "idempotency",
+    "phase0_baseline",
+    "queue_full",
+    "reconnect",
+    "rollback",
+    "stale_fence"
+  ],
+  "reasons": [],
+  "scenario": "phase1_final_closure",
+  "skipped_checks": [],
+  "status": "pass"
+}

@@ -37,6 +37,16 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
+## 0.8.2 Agent Runtime V2 Phase 1
+
+- Studio now covers local authoring, builds and debugging plus cloud deployment, status, details, conversations, updates, deletion and version rollback. Existing high-code Agents deployed with the CLI are selectable as well.
+- Studio's local service signs cloud requests with AK/SK and routes them through Server admission; credentials never enter the browser and Gateway no longer bypasses Server to reach Runtime.
+- Foreground conversations use real SSE for incremental text, reasoning, tools and approvals. Goal and Plan are explicit execution controls; Background is reserved for work that must outlive the foreground connection.
+- AgentKernelStore may use InMemory or SQLite by default. PostgreSQL is optional and is enabled for cross-Pod takeover, recovery and high availability.
+- The bundled Web UI is pinned to `@kingsoftcloud/ksadk-web@0.3.2`.
+
+See [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/) and the [changelog](CHANGELOG.md) for details.
+
 ## 0.8.1 Observability Contract
 
 - Remote traces use standard OTLP/HTTP only: Langfuse consumes `OTEL_EXPORTER_OTLP_*`, while CloudMonitor consumes `CLOUD_MONITOR_OTLP_*`. Both backends receive the same span with identical `trace_id` and `span_id` values.
@@ -45,6 +55,13 @@ agentengine web . --no-open
 - Exporters run directly inside the Agent process. No OpenTelemetry Collector, sidecar, extra container, or extra Pod is started.
 
 See the [observability guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/) and [environment variable reference](https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/) for migration details and examples.
+
+## 0.8.1 RuntimeEvent Schema v2 Contract
+
+- The runtime event main path uses the canonical `RuntimeEvent(schema_version=2)`: the runtime, protocol projections, event store, replay, and final-output selection all treat v2 as the single source of truth.
+- v1 events become a read-only compatibility projection and no longer accept new v1 writes. Undeclared downstream consumers receive terminal snapshots, while upgraded consumers explicitly opt into identity-aware replace semantics.
+- Capability descriptor: `RuntimeEventVersions=[1,2]`, `RuntimeEventDefault=2`, `RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`, `RuntimeEventV1ProjectionDefault="snapshot_only"`.
+- The local Web UI, Studio, and Hosted UI must run the identity-aware version that matches this Python release so they can merge streaming and replayed output by item identity.
 
 <p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 

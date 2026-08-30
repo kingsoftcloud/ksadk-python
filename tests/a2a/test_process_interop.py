@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -48,9 +49,14 @@ def start_agent(tmp_path: Path, name: str, *, token: str = "") -> AgentProcess:
     ]
     if token:
         command.extend(["--require-token", token])
+    # 子进程按脚本目录解析 sys.path[0],拿不到仓库内 ksadk;显式注入 PYTHONPATH
+    # 保证子进程与测试进程使用同一份工作区代码(而非 site-packages 旧版)。
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + child_env.get("PYTHONPATH", "")
     process = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
+        env=child_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -114,8 +120,10 @@ def assert_streamed(result: dict) -> None:
     assert "run.started" in result["event_types"]
     assert "run.progress" in result["event_types"]
     assert "run.completed" in result["event_types"]
-    assert "artifact.created" in result["event_types"]
-    assert "text.completed" in result["event_types"]
+    # v1 "artifact.created" → canonical ItemStarted(item_kind="artifact") = "item.started"
+    assert "item.started" in result["event_types"]
+    # v1 "text.completed" → canonical ItemCompleted(item_kind="message") = "item.completed"
+    assert "item.completed" in result["event_types"]
     assert "echo:" in "".join(result["texts"])
 
 
@@ -143,16 +151,16 @@ def test_hosted_to_external_uses_credential_store_and_cursor_resume(agent_proces
     auth = httpx.get(f"{agent_processes['external'].url}/test/auth").json()
     assert f"Bearer {EXTERNAL_TOKEN}" in auth["authorization"]
 
-    previous_cursor = before[-1]["seq_id"] if before else 0
+    previous_cursor = before[-1]["seq"] if before else 0
     first = httpx.get(
         f"{source.url}/test/events", params={"after_seq_id": previous_cursor, "limit": 2}
     ).json()["events"]
     resumed = httpx.get(
-        f"{source.url}/test/events", params={"after_seq_id": first[-1]["seq_id"]}
+        f"{source.url}/test/events", params={"after_seq_id": first[-1]["seq"]}
     ).json()["events"]
-    seq_ids = [event["seq_id"] for event in first + resumed]
+    seq_ids = [event["seq"] for event in first + resumed]
     assert seq_ids == sorted(set(seq_ids))
-    assert {event["invocation_id"] for event in first + resumed} == {result["task_id"]}
+    assert {event["run_id"] for event in first + resumed} == {result["task_id"]}
     print("hosted->external", result["task_id"], seq_ids)
 
 

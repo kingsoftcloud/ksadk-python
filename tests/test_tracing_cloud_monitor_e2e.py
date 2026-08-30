@@ -17,7 +17,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 for key in list(os.environ):
-    if key.startswith("OTEL_EXPORTER_OTLP") or key.startswith("LANGFUSE_"):
+    if (
+        key.startswith("OTEL_EXPORTER_OTLP")
+        or key.startswith("CLOUD_MONITOR_")
+        or key.startswith("LANGFUSE_")
+    ):
         os.environ.pop(key, None)
 
 received = []
@@ -87,7 +91,11 @@ print(
 """
     env = os.environ.copy()
     for key in list(env):
-        if key.startswith("OTEL_EXPORTER_OTLP") or key.startswith("LANGFUSE_"):
+        if (
+            key.startswith("OTEL_EXPORTER_OTLP")
+            or key.startswith("CLOUD_MONITOR_")
+            or key.startswith("LANGFUSE_")
+        ):
             env.pop(key, None)
     env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
     env["NO_PROXY"] = "127.0.0.1,localhost"
@@ -151,15 +159,11 @@ def make_receiver():
                     for item in resource_spans.resource.attributes
                 }
                 for scope_spans in resource_spans.scope_spans:
-                    for span in scope_spans.spans:
-                        attrs = {
-                            item.key: (
-                                item.value.string_value
-                                if item.value.HasField("string_value")
-                                else item.value.bool_value
-                            )
-                            for item in span.attributes
-                        }
+                        for span in scope_spans.spans:
+                            attrs = {}
+                            for item in span.attributes:
+                                value_type = item.value.WhichOneof("value")
+                                attrs[item.key] = getattr(item.value, value_type)
                         spans.append(
                             {
                                 "trace_id": span.trace_id.hex(),
@@ -184,7 +188,16 @@ def make_receiver():
 
 primary, primary_spans = make_receiver()
 secondary, secondary_spans = make_receiver()
-os.environ["OTEL_SERVICE_NAME"] = "ar-dual-e2e"
+os.environ["OTEL_SERVICE_NAME"] = "runtime-display-name"
+os.environ["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(
+    (
+        "agentengine.account_id=73398439",
+        "agentengine.agent_id=ar-dual-e2e",
+        "agentengine.framework=langgraph",
+        "agentengine.langfuse_project_id=arduale2e",
+        "agentengine.region=cn-beijing-6",
+    )
+)
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{primary.server_port}"
 os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=Bearer%20primary"
 os.environ["CLOUD_MONITOR_OTLP_ENDPOINT"] = f"http://127.0.0.1:{secondary.server_port}"
@@ -198,6 +211,21 @@ tracer = trace.get_tracer("ksadk-dual-e2e")
 with tracer.start_as_current_span("ksadk-dual-e2e-known-span") as span:
     span.set_attribute("ksadk.e2e.marker", "same-object")
     span.set_attribute("ksadk.e2e.enabled", True)
+    span.set_attribute("gen_ai.agentengine.account_id", "span-value-must-win")
+    span.set_attribute("langfuse.trace.name", "demo-agent")
+    span.set_attribute("langfuse.trace.input", "hello")
+    span.set_attribute("langfuse.trace.output", "world")
+    span.set_attribute("langfuse.observation.input", "hello")
+    span.set_attribute("langfuse.observation.output", "world")
+    span.set_attribute("langfuse.session.id", "session-1")
+    span.set_attribute("session.id", "session-1")
+    span.set_attribute("langfuse.user.id", "user-1")
+    span.set_attribute("openinference.span.kind", "LLM")
+    span.set_attribute("gen_ai.system", "openai")
+    span.set_attribute("gen_ai.request.model", "gpt-4o")
+    span.set_attribute("gen_ai.usage.input_tokens", 105)
+    span.set_attribute("gen_ai.usage.output_tokens", 68)
+    span.set_attribute("gen_ai.usage.cache_read.input_tokens", 20)
     context = span.get_span_context()
     expected = {
         "trace_id": f"{context.trace_id:032x}",
@@ -254,7 +282,45 @@ print(
     assert payload["expected"]["span_id"] != "0" * 16
     assert primary["trace_id"] == secondary["trace_id"] == payload["expected"]["trace_id"]
     assert primary["span_id"] == secondary["span_id"] == payload["expected"]["span_id"]
-    assert primary["attrs"] == secondary["attrs"]
-    assert primary["resource"] == secondary["resource"]
     assert primary["attrs"]["ksadk.e2e.marker"] == "same-object"
-    assert primary["resource"]["service.name"] == "ar-dual-e2e"
+    assert primary["resource"]["service.name"] == "runtime-display-name"
+    assert secondary["resource"]["service.name"] == "ar-dual-e2e"
+    for key in (
+        "agentengine.account_id",
+        "agentengine.agent_id",
+        "agentengine.framework",
+        "agentengine.langfuse_project_id",
+        "agentengine.region",
+    ):
+        assert primary["resource"][key] == secondary["resource"][key]
+        span_key = f"gen_ai.{key}"
+        assert secondary["attrs"][span_key] == (
+            "span-value-must-win" if key == "agentengine.account_id" else primary["resource"][key]
+        )
+        assert key not in secondary["attrs"]
+    assert "gen_ai.agentengine.agent_id" not in primary["attrs"]
+    assert "gen_ai.agentengine.agent_name" not in primary["attrs"]
+    assert secondary["attrs"]["gen_ai.agentengine.agent_name"] == "runtime-display-name"
+    assert "gen_ai.usage.total_tokens" not in primary["attrs"]
+    assert secondary["attrs"]["gen_ai.usage.total_tokens"] == 173
+    assert "langfuse.observation.type" not in primary["attrs"]
+    assert secondary["attrs"]["langfuse.observation.type"] == "generation"
+    assert secondary["attrs"]["langfuse.observation.metadata.ls_provider"] == "openai"
+    assert secondary["attrs"]["langfuse.observation.model.name"] == "gpt-4o"
+    assert secondary["attrs"]["langfuse.observation.metadata.ls_model_name"] == "gpt-4o"
+    assert json.loads(secondary["attrs"]["langfuse.observation.usage_details"]) == {
+        "input": 105,
+        "output": 68,
+        "total": 173,
+        "input_cache_read": 20,
+    }
+    for key in (
+        "langfuse.trace.name",
+        "langfuse.trace.input",
+        "langfuse.trace.output",
+        "langfuse.observation.input",
+        "langfuse.observation.output",
+        "langfuse.session.id",
+        "langfuse.user.id",
+    ):
+        assert secondary["attrs"][key] == primary["attrs"][key]

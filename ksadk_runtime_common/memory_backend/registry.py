@@ -46,8 +46,8 @@ def list_providers() -> list[str]:
 
 def _register_builtin_providers() -> None:
     """Register providers shipped in this repo copy."""
-    from ksadk_runtime_common.memory_backend.providers.mem0 import Mem0Provider
     from ksadk_runtime_common.memory_backend.providers.lancedb import LanceDBProvider
+    from ksadk_runtime_common.memory_backend.providers.mem0 import Mem0Provider
 
     register_provider("mem0", Mem0Provider())
     register_provider("lancedb", LanceDBProvider())

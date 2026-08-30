@@ -55,3 +55,19 @@ def test_from_env_keeps_explicit_scheme_for_inner_endpoint(monkeypatch):
     client = KnowledgeBaseClient.from_env()
 
     assert client.scheme == "https"
+
+
+def test_from_env_supports_aws_style_credentials_and_sts_session_token(monkeypatch):
+    from ksadk.knowledge_base.client import KnowledgeBaseClient
+
+    _clear_kb_env(monkeypatch)
+    monkeypatch.setenv("KSADK_KB_DATASET_ID", "dataset-test")
+    monkeypatch.setenv("KSYUN_ACCESS_KEY_ID", "aws-style-ak")
+    monkeypatch.setenv("KSYUN_SECRET_ACCESS_KEY", "aws-style-sk")
+    monkeypatch.setenv("KSYUN_SESSION_TOKEN", "sts-token")
+
+    client = KnowledgeBaseClient.from_env()
+
+    assert client.access_key == "aws-style-ak"
+    assert client.secret_key == "aws-style-sk"
+    assert client.session_token == "sts-token"

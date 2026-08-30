@@ -7,7 +7,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-appmod = importlib.import_module("ksadk.server.app")
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import RuntimeAppConfig, create_runtime_app, set_fallback_state
+
 route_common = importlib.import_module("ksadk.server.routes.common")
 
 
@@ -16,7 +18,9 @@ def _client_with_workspace(monkeypatch, tmp_path: Path) -> tuple[TestClient, Pat
     workspace = session_dir / "workspace"
     workspace.mkdir(parents=True)
     monkeypatch.setattr(route_common, "resolve_local_session_dir", lambda: session_dir)
-    return TestClient(appmod.app), workspace
+    app = create_runtime_app(RuntimeAppConfig(), configure_runtime_app)
+    set_fallback_state(app.state.runtime)
+    return TestClient(app), workspace
 
 
 def test_workspace_html_route_applies_sandbox_csp(monkeypatch, tmp_path: Path):

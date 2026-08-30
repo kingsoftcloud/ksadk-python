@@ -10,7 +10,7 @@ from ksadk.detection.mcp_detector import MCPDetector
 
 def test_mcp_detection_result_supports_code_builder_fingerprinting(tmp_path):
     (tmp_path / "server.py").write_text(
-        "from fastmcp import FastMCP\n\n" "mcp = FastMCP(name='demo')\n",
+        "from fastmcp import FastMCP\n\nmcp = FastMCP(name='demo')\n",
         encoding="utf-8",
     )
 

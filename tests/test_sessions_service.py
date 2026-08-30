@@ -89,6 +89,35 @@ async def test_in_memory_session_service_crud_append_event_and_state_updates():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_session_service_rejects_duplicate_event_id():
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "sess-1")
+    event = SessionEvent(id="evt-1", author="user", event_type="text")
+
+    await service.append_event("sess-1", event)
+    with pytest.raises(ValueError, match="evt-1"):
+        await service.append_event("sess-1", event)
+
+    assert [item.id for item in await service.get_events("sess-1")] == ["evt-1"]
+
+
+def test_local_session_service_has_unique_session_cursor_index(tmp_path):
+    service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+
+    with sqlite3.connect(service.db_path) as connection:
+        indexes = connection.execute("PRAGMA index_list(ksadk_events)").fetchall()
+        unique_indexes = [row[1] for row in indexes if row[2]]
+        indexed_columns = {
+            tuple(
+                column[2] for column in connection.execute(f"PRAGMA index_info({name})").fetchall()
+            )
+            for name in unique_indexes
+        }
+
+    assert ("session_id", "seq_id") in indexed_columns
+
+
+@pytest.mark.asyncio
 async def test_in_memory_session_service_get_events_pages_from_latest_and_returns_ascending():
     service = InMemorySessionService()
     await service.create_session(

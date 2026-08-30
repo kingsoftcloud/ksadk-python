@@ -18,6 +18,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/agentkit-local-studio/",
     f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
 }
 EN_DOC_URLS = {
@@ -28,6 +29,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/agentkit-local-studio/",
     f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
 }
 
@@ -223,14 +225,40 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.1"
-    assert 'VERSION = "0.8.1"' in version_text
+    assert pyproject["project"]["version"] == "0.8.2"
+    assert 'VERSION = "0.8.2"' in version_text
+    assert "## [0.8.2] - 2026-08-26" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
     assert "Agent Development Kit" not in init_text
+
+
+def test_runtime_event_v2_capability_is_documented_publicly():
+    changelog = _read("CHANGELOG.md")
+    readme = _read("README.md")
+    zh_readme = _read("README.zh-CN.md")
+    en_readme = _read("README.en.md")
+
+    # The canonical-v2 / read-only-v1 boundary replaces the stale additive-v1 claim.
+    assert "schema_version=2" in changelog
+    assert "只读兼容投影" in changelog
+    assert "继续保持 v1 additive 兼容" not in changelog
+
+    for text in (readme, zh_readme):
+        assert "RuntimeEvent schema v2 契约" in text
+        assert "RuntimeEventVersions=[1,2]" in text
+        assert "RuntimeEventDefault=2" in text
+        assert 'RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]' in text
+        assert 'RuntimeEventV1ProjectionDefault="snapshot_only"' in text
+
+    assert "RuntimeEvent Schema v2 Contract" in en_readme
+    assert "RuntimeEventVersions=[1,2]" in en_readme
+    assert "RuntimeEventDefault=2" in en_readme
+    assert 'RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]' in en_readme
+    assert 'RuntimeEventV1ProjectionDefault="snapshot_only"' in en_readme
 
 
 def test_adk_extra_avoids_litellm_source_build_on_windows_python_3_13():
@@ -270,10 +298,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.0"' in workflow
+    assert 'default: "0.3.2"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.0' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.2' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -291,14 +319,14 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.0"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.2"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.0" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.2" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
         "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
-        "tests/runners/test_codex_runner.py" in makefile
+        "tests/runners/test_adapter_contract.py" in makefile
     )
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile
@@ -340,8 +368,8 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
 def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.8.0 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
+    assert "| Python package version | 0.8.2 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.2" in approval_record
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
@@ -355,6 +383,14 @@ def test_0_8_changelog_is_ready_for_authorized_release():
     assert "a76f2de7565ffe34d44a9d17257401fa805de0de" in release_section
     assert "@kingsoftcloud/ksadk-web@0.3.0" in release_section
     assert "Codex ManagedRuntime" in release_section
+
+
+def test_0_8_1_changelog_pins_the_compatible_ksadk_web_release():
+    changelog = _read("CHANGELOG.md")
+    release_section = changelog.split("## [0.8.1]", 1)[1].split("## [0.8.0]", 1)[0]
+
+    assert "## [0.8.1] - 2026-08-10" in changelog
+    assert "@kingsoftcloud/ksadk-web@0.3.1" in release_section
 
 
 def test_public_release_sync_compares_exported_file_contents():
@@ -386,6 +422,31 @@ def test_source_repository_does_not_track_generated_ksadk_web_static():
     assert '"server/static/**/*"' in pyproject
     assert "server/web-ui" not in pyproject
     assert web_ui_files == ""
+
+
+def test_compiled_studio_asset_tracking_matches_release_boundary():
+    gitignore = _read(".gitignore")
+    pyproject = _read("pyproject.toml")
+    editable_source = (ROOT / "ksadk/studio/react-ui/package.json").is_file()
+    if (ROOT / ".git").exists():
+        tracked_static_files = subprocess.run(
+            ["git", "ls-files", "ksadk/studio/static/**"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.splitlines()
+    else:
+        tracked_static_files = []
+
+    assert "ksadk/studio/static/**" in gitignore
+    assert '"studio/static/**/*"' in pyproject
+    if editable_source:
+        assert tracked_static_files == []
+    else:
+        assert (ROOT / "ksadk/studio/static/index.html").is_file()
+        if (ROOT / ".git").exists():
+            assert tracked_static_files
 
 
 def test_public_release_materials_do_not_include_internal_environment_details():

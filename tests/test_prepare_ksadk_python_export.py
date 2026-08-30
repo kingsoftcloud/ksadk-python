@@ -40,7 +40,44 @@ def test_export_plan_includes_public_preflight_contract_files():
         "scripts/check_release_version.py",
         "scripts/open_source_audit.py",
         "scripts/public_secret_audit.py",
+        "tests/events/fixtures/runtime_projection_golden.json",
+        "tests/studio/e2e/studio_browser_smoke.py",
+        "tests/studio/e2e/studio_e2e_support.py",
+        "tests/studio/e2e/studio_responsive_smoke.py",
+        "tests/studio/test_style_system.py",
         "tests/test_config_env_registry.py",
+        "tests/runners/test_adapter_contract.py",
+        "ksadk/server/static/index.html",
+        "ksadk/studio/static/index.html",
     }
 
     assert required_paths <= set(plan.export_paths)
+
+
+def test_export_plan_excludes_editable_studio_source_but_keeps_compiled_assets():
+    module = _load_module()
+
+    assert module.is_excluded("ksadk/studio/react-ui/src/App.tsx") is True
+    assert module.is_excluded("ksadk/studio/react-ui/package.json") is True
+    assert module.is_excluded("ksadk/studio/static/index.html") is False
+    assert module.is_excluded("ksadk/server/static/assets/app.js") is False
+
+
+def test_generated_static_files_reject_source_maps(tmp_path: Path):
+    module = _load_module()
+    for prefix in module.GENERATED_PUBLIC_STATIC_PREFIXES:
+        root = tmp_path / prefix
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("<html></html>", encoding="utf-8")
+    leaked = tmp_path / "ksadk/studio/static/assets/app.js.map"
+    leaked.parent.mkdir(parents=True)
+    leaked.write_text("{}", encoding="utf-8")
+    violations: list[str] = []
+
+    paths = module.generated_static_files(tmp_path, violations)
+
+    assert "ksadk/studio/static/assets/app.js.map" not in paths
+    assert violations == [
+        "compiled public static directory contains source artifact: "
+        "ksadk/studio/static/assets/app.js.map"
+    ]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from types import SimpleNamespace
 
 import httpx
@@ -11,6 +10,7 @@ from httpx import ASGITransport
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime_context import get_current_invocation_context
+from tests.test_server_session_app import _ExplicitRuntimeAppFixture
 
 
 class _SlowBackgroundRunner(BaseRunner):
@@ -57,22 +57,22 @@ class _FailingBackgroundRunner(_SlowBackgroundRunner):
 def bg_client(monkeypatch, tmp_path):
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
-    from ksadk.server import app, set_runner
-
+    facade = _ExplicitRuntimeAppFixture()
     runner = _SlowBackgroundRunner()
-    set_runner(runner)
-    yield app, runner
+    facade.set_runner(runner)
+    facade.app.state.test_facade = facade
+    yield facade.app, runner
 
 
 @pytest.fixture
 def failing_bg_client(monkeypatch, tmp_path):
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
-    from ksadk.server import app, set_runner
-
+    facade = _ExplicitRuntimeAppFixture()
     runner = _FailingBackgroundRunner()
-    set_runner(runner)
-    yield app, runner
+    facade.set_runner(runner)
+    facade.app.state.test_facade = facade
+    yield facade.app, runner
 
 
 async def _run_statuses(app, session_id: str, invocation_id: str) -> list[str]:
@@ -117,7 +117,7 @@ def test_background_field_is_parsed(bg_client):
     # 非 422 即说明 Background 字段被模型接受
     assert resp.status_code != 422
     # 正向断言：字段确已落在模型上（pydantic 默认忽略 extra，需直接校验属性可读）
-    from ksadk.server.app import RunAgentActionRequest
+    from ksadk.server.routes.models import RunAgentActionRequest
 
     req = RunAgentActionRequest(AgentId="a", Messages=[], Background=True)
     assert hasattr(req, "Background"), "RunAgentActionRequest 缺 Background 字段"
@@ -156,9 +156,7 @@ async def test_run_agent_background_returns_immediately_with_job_handle(bg_clien
         # 关键：响应返回时后台慢流（0.3s）还没跑完，证明是立即返回而非阻塞
         assert not runner.stream_finished.is_set(), "background 应立即返回，不该等 stream 完成"
         # InvocationId 落入 _DETACHED_STREAMS_BY_INVOCATION，CancelRun 能查到
-        from ksadk.server.app import _DETACHED_STREAMS_BY_INVOCATION
-
-        assert data["InvocationId"] in _DETACHED_STREAMS_BY_INVOCATION
+        assert data["InvocationId"] in app.state.runtime.stream_registry.streams_by_invocation
 
 
 @pytest.mark.asyncio
@@ -190,7 +188,6 @@ async def test_run_agent_background_primes_session_title_before_detached_stream_
     bg_client, monkeypatch
 ):
     """Background=true 返回 job 句柄前先写入首轮 prompt/title，刷新列表不显示空标题。"""
-    server_app_module = importlib.import_module("ksadk.server.app")
 
     class _IdleDetachedStream:
         def __init__(
@@ -209,9 +206,10 @@ async def test_run_agent_background_primes_session_title_before_detached_stream_
             self._run_trigger = run_trigger
             self._task = asyncio.Future()
 
-    monkeypatch.setattr(server_app_module, "_DetachedSSEStream", _IdleDetachedStream)
-
     app, _runner = bg_client
+    facade = app.state.test_facade
+    monkeypatch.setattr(facade, "_DetachedSSEStream", _IdleDetachedStream)
+    facade._configure_dependencies()
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         resp = await client.post(
@@ -312,10 +310,10 @@ async def test_run_agent_background_writes_single_in_progress_status(bg_client):
         invocation_id = resp.json()["Data"]["InvocationId"]
         await runner.stream_finished.wait()
 
-    statuses = await _run_statuses(app, "sess-bg-single-start", invocation_id)
-    assert (
-        statuses.count("in_progress") == 1
-    ), f"期望同一 InvocationId 只有一个 in_progress，实际 statuses: {statuses}"
+    statuses = await _wait_for_terminal_statuses(app, "sess-bg-single-start", invocation_id)
+    assert statuses.count("in_progress") == 1, (
+        f"期望同一 InvocationId 只有一个 in_progress，实际 statuses: {statuses}"
+    )
     assert _terminal_statuses(statuses) == ["completed"]
 
 
@@ -324,8 +322,8 @@ async def test_detached_stream_does_not_write_duplicate_completed_status(monkeyp
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
     from ksadk.conversations import append_run_status_event
-    from ksadk.server.app import _DetachedSSEStream
-    from ksadk.sessions import resolve_session_service
+    from ksadk.server.routes.streaming import _DetachedSSEStream
+    from tests.test_server_session_app import _ExplicitRuntimeAppFixture
 
     async def source():
         await append_run_status_event(
@@ -333,6 +331,7 @@ async def test_detached_stream_does_not_write_duplicate_completed_status(monkeyp
             author="runner",
             status="in_progress",
             invocation_id=invocation_id,
+            session_service_provider=lambda: service,
         )
         yield "data: chunk1\n\n"
         await append_run_status_event(
@@ -340,21 +339,23 @@ async def test_detached_stream_does_not_write_duplicate_completed_status(monkeyp
             author="runner",
             status="completed",
             invocation_id=invocation_id,
+            session_service_provider=lambda: service,
         )
         yield "data: chunk2\n\n"
 
     invocation_id = "inv_test_completed"
     session_id = "sess_test_completed"
-    service = resolve_session_service()
+    facade = _ExplicitRuntimeAppFixture()
+    service = facade.app.state.runtime.resolve_session_service()
     await service.create_session(agent_id="a", user_id="u", session_id=session_id)
     detached = _DetachedSSEStream(source(), invocation_id=invocation_id, session_id=session_id)
     # 等后台 _consume 跑完
     await detached._task
     # 查 session 里的 run_status 事件
-    statuses = await _run_statuses(None, session_id, invocation_id)
-    assert _terminal_statuses(statuses) == [
-        "completed"
-    ], f"期望只有 conversation stream 写入一个 completed，实际 statuses: {statuses}"
+    statuses = await _run_statuses(facade.app, session_id, invocation_id)
+    assert _terminal_statuses(statuses) == ["completed"], (
+        f"期望只有 conversation stream 写入一个 completed，实际 statuses: {statuses}"
+    )
 
 
 async def test_detached_stream_writes_failed_fallback_only_when_source_raises(
@@ -363,8 +364,8 @@ async def test_detached_stream_writes_failed_fallback_only_when_source_raises(
     """_DetachedSSEStream 只在源流异常且没有已有终态时兜底写 failed。"""
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
-    from ksadk.server.app import _DetachedSSEStream
-    from ksadk.sessions import resolve_session_service
+    from ksadk.server.routes.streaming import _DetachedSSEStream
+    from tests.test_server_session_app import _ExplicitRuntimeAppFixture
 
     async def source():
         yield "data: chunk1\n\n"
@@ -372,17 +373,27 @@ async def test_detached_stream_writes_failed_fallback_only_when_source_raises(
 
     invocation_id = "inv_test_raw_failed"
     session_id = "sess_test_raw_failed"
-    service = resolve_session_service()
+    facade = _ExplicitRuntimeAppFixture()
+    service = facade.app.state.runtime.resolve_session_service()
     await service.create_session(agent_id="a", user_id="u", session_id=session_id)
     detached = _DetachedSSEStream(source(), invocation_id=invocation_id, session_id=session_id)
 
     with pytest.raises(RuntimeError, match="raw stream failed"):
         await detached._task
 
-    statuses = await _run_statuses(None, session_id, invocation_id)
-    assert _terminal_statuses(statuses) == [
-        "failed"
-    ], f"期望 detached 异常兜底只写一个 failed，实际 statuses: {statuses}"
+    statuses = await _run_statuses(facade.app, session_id, invocation_id)
+    assert _terminal_statuses(statuses) == ["failed"], (
+        f"期望 detached 异常兜底只写一个 failed，实际 statuses: {statuses}"
+    )
+    events = await service.get_events(session_id)
+    failed = next(
+        event
+        for event in events
+        if event.event_type == "run_status"
+        and event.invocation_id == invocation_id
+        and (event.content or {}).get("status") == "failed"
+    )
+    assert (failed.content or {}).get("detail") == "RuntimeError: raw stream failed"
 
 
 @pytest.mark.asyncio
@@ -420,9 +431,8 @@ async def test_run_agent_background_lifecycle_does_not_create_checkpoints(bg_cli
 @pytest.mark.asyncio
 async def test_run_agent_background_cancel_writes_cancelled_status(bg_client):
     """CancelRun 对 background 任务生效，写 run_status=cancelled 终态。"""
-    from ksadk.server.app import _DETACHED_STREAMS_BY_INVOCATION
-
     app, runner = bg_client
+    detached_streams = app.state.runtime.stream_registry.streams_by_invocation
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         # 起 background 任务（慢流 0.3s，cancel 前后台还在 sleep）
@@ -438,7 +448,7 @@ async def test_run_agent_background_cancel_writes_cancelled_status(bg_client):
         )
         assert resp.status_code == 200, resp.text
         invocation_id = resp.json()["Data"]["InvocationId"]
-        assert invocation_id in _DETACHED_STREAMS_BY_INVOCATION
+        assert invocation_id in detached_streams
         # CancelRun：detached 已注册进 dict，开箱即用
         cancel_resp = await client.post(
             "/agentengine/api/v1/CancelRun",
@@ -447,7 +457,7 @@ async def test_run_agent_background_cancel_writes_cancelled_status(bg_client):
         cancel_data = cancel_resp.json()["Data"]
         assert cancel_data["Found"] is True
         # 等 detached task 处理取消 + finally 写终态
-        detached = _DETACHED_STREAMS_BY_INVOCATION.get(invocation_id)
+        detached = detached_streams.get(invocation_id)
         if detached is not None:
             try:
                 await detached._task
@@ -461,9 +471,9 @@ async def test_run_agent_background_cancel_writes_cancelled_status(bg_client):
         for e in events
         if e.event_type == "run_status" and e.invocation_id == invocation_id
     ]
-    assert _terminal_statuses(statuses) == [
-        "cancelled"
-    ], f"期望同一 InvocationId 只有一个 cancelled 终态，实际 statuses: {statuses}"
+    assert _terminal_statuses(statuses) == ["cancelled"], (
+        f"期望同一 InvocationId 只有一个 cancelled 终态，实际 statuses: {statuses}"
+    )
 
 
 @pytest.mark.asyncio
@@ -486,9 +496,9 @@ async def test_run_agent_background_failure_writes_single_terminal_status(failin
         invocation_id = resp.json()["Data"]["InvocationId"]
 
     statuses = await _wait_for_terminal_statuses(app, "sess-bg-failed", invocation_id)
-    assert _terminal_statuses(statuses) == [
-        "failed"
-    ], f"期望同一 InvocationId 只有一个 failed 终态，实际 statuses: {statuses}"
+    assert _terminal_statuses(statuses) == ["failed"], (
+        f"期望同一 InvocationId 只有一个 failed 终态，实际 statuses: {statuses}"
+    )
 
 
 @pytest.mark.asyncio

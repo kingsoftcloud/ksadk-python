@@ -142,26 +142,18 @@ def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
     project_dir = _write_project_config(tmp_path)
     captured: dict[str, object] = {}
 
-    class FakeRunner:
-        def __init__(self) -> None:
-            self.loaded = False
+    class FakeRuntimeAdapter:
+        pass
 
-        def load_agent(self) -> None:
-            self.loaded = True
-
-        async def invoke(self, input_data):
-            return {"output": input_data["input"]}
-
-        async def stream(self, input_data):
-            yield {"type": "final", "output": input_data["input"]}
-
-    fake_runner = FakeRunner()
+    fake_adapter = FakeRuntimeAdapter()
 
     monkeypatch.setattr("ksadk.configs.setup_environment", lambda _path: None)
-    monkeypatch.setattr(
-        "ksadk.cli.cmd_a2a.create_runner",
-        lambda result, project_dir: fake_runner,
-    )
+
+    def fake_create_runtime_adapter(context):
+        captured["runtime_context"] = context
+        return fake_adapter
+
+    monkeypatch.setattr("ksadk.cli.cmd_a2a.create_runtime_adapter", fake_create_runtime_adapter)
 
     def fake_uvicorn_run(app, host, port, **kwargs):
         captured.update({"app": app, "host": host, "port": port, "kwargs": kwargs})
@@ -183,7 +175,7 @@ def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    assert fake_runner.loaded is True
+    assert captured["runtime_context"].runtime_type == "adk"
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 9091
 

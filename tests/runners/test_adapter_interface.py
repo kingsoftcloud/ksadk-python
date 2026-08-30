@@ -13,11 +13,15 @@
 from __future__ import annotations
 
 import inspect
+from importlib import import_module
+from pathlib import Path
 from typing import AsyncIterator
 
 import pytest
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+import ksadk.runtime.adapter as runtime_adapter_module
+from ksadk.events.canonical import EventEnvelope, RunStarted, SourceRef
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -48,15 +52,20 @@ class _FakeAdapter(RuntimeAdapter):
             native_ref={},
         )
 
-    async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-        yield RuntimeEvent.create(
-            EventType.RUN_STARTED,
-            agent_id="a",
-            user_id="u",
-            session_id=handle.session_id,
-            invocation_id=handle.run_id,
-            seq_id=1,
-            payload={"status": "in_progress"},
+    async def stream(self, handle: RunHandle) -> AsyncIterator[EventEnvelope]:
+        framework = "ksadk"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        yield RunStarted(
+            schema_version=2,
+            event_id=stable_event_id(framework, scope_id, item_id, "run.started", "run", run_id, 0),
+            seq=1,
+            timestamp=1.0,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=SourceRef(framework=framework),
+            status="running",
         )
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
@@ -88,6 +97,16 @@ class _FakeAdapter(RuntimeAdapter):
 # ---- 六动词签名 ----
 
 EXPECTED_VERBS = {"start", "stream", "cancel", "resume", "checkpoint", "close"}
+
+
+def test_codex_runtime_adapter_is_the_only_public_codex_execution_type() -> None:
+    """防止 Codex 执行类型再次出现 Runtime/Runner 多套公开命名。"""
+
+    module = import_module("ksadk.codex.runtime")
+    adapter_type = getattr(module, "CodexRuntimeAdapter")
+
+    assert issubclass(adapter_type, RuntimeAdapter)
+    assert not hasattr(module, "CodexRuntime")
 
 
 def test_six_verbs_present_and_abstract():
@@ -169,19 +188,23 @@ def test_start_request_has_session_tenant_dimensions():
 
 def test_registry_register_get_create():
     registry = RuntimeRegistry()
-    registry.register("fake", _FakeAdapter)
-    assert registry.get("fake") is _FakeAdapter
-    adapter = registry.create("fake", _FakeRuntime())
+
+    def factory(_context):
+        return _FakeAdapter(_FakeRuntime())
+
+    registry.register("fake", factory)
+    assert registry.get("fake") is factory
+    adapter = registry.create(
+        runtime_adapter_module.RuntimeLaunchContext(runtime_type="fake", project_dir=Path.cwd())
+    )
     assert isinstance(adapter, _FakeAdapter)
     assert "fake" in registry.registered_types()
 
 
 def test_registry_rejects_invalid():
     registry = RuntimeRegistry()
-    with pytest.raises(TypeError):
-        registry.register("bad", object)  # 非 RuntimeAdapter 子类
     with pytest.raises(ValueError):
-        registry.register("  ", _FakeAdapter)
+        registry.register("  ", lambda _context: _FakeAdapter(_FakeRuntime()))
     with pytest.raises(KeyError):
         registry.get("missing")
 
@@ -197,8 +220,8 @@ async def test_adapter_can_be_driven_end_to_end():
 
     events = [event async for event in adapter.stream(handle)]
     assert len(events) == 1
-    assert isinstance(events[0], RuntimeEvent)
-    assert events[0].event_type == EventType.RUN_STARTED
+    assert isinstance(events[0], EventEnvelope)
+    assert events[0].event_type == "run.started"
 
     assert await adapter.cancel(handle) is CancelResult.INTERRUPTED_ACTIVE_TURN
 

@@ -7,39 +7,116 @@
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-26
+
+### 亮点
+
+- **Agent Runtime V2 Phase 1 基座完成**：冻结 `AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、`RuntimeCapabilityMatrix/v1` 与 `Interaction/v1`，通过 schema digest 和 additive-only gate 防止下游再随意改协议。
+- **可靠执行不再强制 PostgreSQL**：AgentKernelStore 支持 InMemory、SQLite 与 PostgreSQL。普通单副本 Agent 可不配置 PG；需要跨 Pod 恢复、接管和高可用时再启用 PostgreSQL，并使用 lease、fencing 与事务 CAS 保证唯一 owner。
+- **Studio 打通本地创作到云端生命周期**：沿用平台既有 `CreateAgent` / `UpdateAgent` 等接口，支持构建、部署、状态、详情、会话、删除、版本选择与二次确认回滚；账号中由 CLI 部署的高代码 Agent 也可直接选择和管理。
+- **前后端会话统一到真实事件流**：本地 Web UI 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.2`，Studio 对齐同一 Interaction / RuntimeEvent 合同，支持签名 SSE、流式正文、思考、工具、审批、附件、模型、三档审批以及 Goal / Plan 控制；普通前台聊天不依赖 Background 长任务模式。
+
+### 新增与变更
+
+- Gateway 的 Agent Runtime 路由统一经过 Server admission；Runtime 缺少 Server 签发 permit 时 fail closed。permit 绑定 Agent、session、action、TTL 与 durable nonce，避免伪造引用、会话放大和重放。
+- worker 消费真实 RuntimeEvent 流，统一 run identity、handle digest、lease fencing、冷恢复和 resume；事件日志成为 session 状态的单一事实来源。
+- Studio Agent 编辑支持 prompt、模型、Tool、MCP 与 Skill，并以原子方式回写 manifest；ADK、LangGraph、Codex 等 runtime 共用能力矩阵，不把不支持项伪装成可用。
+- Studio 云端目标采用 AK/SK 在本地服务端完成签名，凭证不进入浏览器；Hermes / OpenClaw 在能力不兼容时提供简洁的官方链接入口。
+- 构建输出记录 KsADK 版本、来源和 commit id；Operator 对旧制品缺少三元组时保持兼容并标记未知，不阻止旧 Runtime 启动。
+- 评测完成上传、执行、结果与删除闭环；Trace token 区分完整上报、部分上报和未上报，不再把缺失值当作零。
+- PyPI wheel 与 sdist 同时携带本地 Web UI 和 Studio 的已审计生产静态产物，不携带 Studio 的 React / TypeScript 可编辑源码；公开 clean export 在无前端源码时复用并校验固定静态产物。
+
+### 修复
+
+- 修复账号云端目标 `cloud:account:<agent_id>` 被错误截断，导致旧 CLI 高代码 Agent 在下拉列表可见却无法切换的问题。
+- 修复 Studio 云端会话未保留签名流、只在结束时一次性渲染、第二轮复用错误状态、输入框残留以及会话删除不生效的问题。
+- 修复长回答超过默认 200 条事件后刷新会丢失前置思考和 MCP 工具卡的问题；当前云端 Agent 目标也会跨页面刷新保留。
+- 修复 deployment receipt 覆盖云端权威状态、版本回滚操作互相串扰、详情与版本列表溢出/乱码，以及表单和图标对齐问题。
+- 修复对话创建模型偶发返回非严格 JSON 时无法生成 Agent Draft Patch，并对 provider 原生支持 Responses 但不支持 `web_search` 的场景按工具能力单独协商。
+- 加固 Studio 模型 URL 占位符识别和工作区路径边界，阻断相似域名误判、父目录/同名前缀目录和符号链接逃逸。
+- 合入社区贡献 PR #53（[@pengliang100](https://github.com/pengliang100)，commit author `pengliang3`）：过滤 LangGraph tool message 中的纯文本工具标记，保留原提交作者信息。
+
+### 验证与发布记录
+
+- 当前候选已在真实隔离云环境完成同一 Agent 原地更新，以及系统提示词、MCP 调用、前台 SSE、最终消息去重、刷新后思考/工具回放验证；旧制品兼容、评测、Trace、版本回滚、删除和资源清理由发布门禁分别留证，不以单一 canary 报告代替。
+- Web UI：`@kingsoftcloud/ksadk-web@0.3.2`，source `2136448e038b4d8c475fa20e4722252b1ddb2ebc`，GitHub merge `4854be4fcb5584a799538536372d38b80447f81e`，npm integrity `sha512-Ytjd3pIgy6LfHCmguXUDQr/wy9ClqKjbv+J+NAzH/+UIJjhVl3y1SA2eR7WwsWSn42zxBFme/xniUZMNBV53Aw==`。
+- Python：`ksadk==0.8.2` 与兼容别名 `agentengine-sdk-python==0.8.2`；最终 tag、GitHub Release、PyPI 与公开文档由受信发布 workflow 在全门禁通过后生成。
+
 ## [0.8.1] - 2026-08-10
 
 ### 亮点
 
+- **首次交付 AgentKit Studio**：`0.8.0` 尚未包含 Studio；`0.8.1` 新增 `agentengine studio` 本地 Agent 构建与运行控制台。首版直接采用单一 React shell，统一承载 Agent、会话、构建、部署、工程资源、可观测性、运行资源和任务编排页面；React 是首次交付时的前端选型，不是从既有 vanilla Studio 迁移而来。
+- **Agent 全生命周期在一个本地工作区闭环**：支持快速创建、对话构建、YAML/Agent ZIP 导入、ADK/LangGraph 项目识别，以及 Agent 配置、能力绑定、校验、构建、运行、评估、部署、回滚和操作进度查询。根路径直接进入 Agent 工作区，不引入需要单独维护的 `/chat` 前端入口。
+- **对话运行升级为可暂停、可继续的人机交互状态机**：在 `0.8.0` RuntimeEvent v1、AG-UI/A2UI 和 RuntimeAdapter 基础上，打通 Responses/SSE 增量输出、持久化事件回放、切换会话与刷新恢复、暂停/继续/取消、审批提交和结构化用户输入。ADK、LangGraph 与 Codex 共用运行状态和交互投影，不要求 Studio 为每个框架维护一套私有渲染协议。
+- **本地可观测性成为 Studio 的一等能力**：新增运行概览、趋势卡片、可分页筛选的 Trace 列表、Span 瀑布时间线、详情面板、Attributes/Events/Resource 浏览，以及格式化并高亮的 Raw OTLP 预览；会话运行详情可直接关联完整 Trace。
 - **标准 OTLP 成为唯一远端 trace 通路**：每个 Python Agent 进程使用一个 `TracerProvider`，由两个 OTLP/HTTP `BatchSpanProcessor` 将同一批 spans 写入 Langfuse 主路（标准 `OTEL_EXPORTER_OTLP_*`）和 CloudMonitor 次路（平台 `CLOUD_MONITOR_OTLP_*`），两端保持相同的 `trace_id` / `span_id`。不再部署 CallbackHandler、Langfuse SDK exporter、Collector、sidecar、额外容器或额外 Pod。
 - **托管可观测性默认开启**：`agentengine deploy`、`agentengine launch` 和 `agentengine hermes deploy` 默认请求平台可观测性；CLI 与控制台共用控制面开关，由平台注入主路和次路配置。只有显式选择 `--no-observability` 或在控制台关闭时才禁用。
 
+### 新增
+
+- 新增 Studio 本地控制面与版本化 API，覆盖 workspace、Agent、模板、资源目录、模型配置、凭证引用、构建、运行、会话、Trace、评估、部署和长操作；本地写请求使用随机 session token 与 CSRF 校验，凭证可从当前进程、全局配置或项目配置解析。
+- 新增模型、Python Tool、MCP 与 Skill 资源管理。Python Tool 支持源码上传、只读检查、可复制示例和 schema 校验；Skill 支持候选扫描、逐项复核导入、冲突确认、文件树浏览以及 Markdown/代码高亮预览。
+- 新增 Agent 外观配置和图标资源上传；Agent 本地标识默认使用带随机后缀的稳定 ID，表单统一标明必填、选填和自动生成字段，并提供文件拖放、多选、选择器、数据表、对话框与代码预览等共享 React 组件。
+- 新增 Studio 会话工作区：单行紧凑会话列表、流式正文与思考/工具 activity、上下文窗口用量、附件入口、三档审批策略、`/goal` / `/plan` 命令和运行模式条。审批等级从下一轮实时生效，生成期间发送按钮切换为暂停/停止控制。
+- 新增 A2UI surface 增量归并、持久化回放和交互回传，支持确认、单选、多选与自定义输入；无 A2UI surface 时，工具、审批和 RuntimeEvent 仍以克制的通用 activity 卡片展示。
+- 新增运行资源与任务编排页面，将 Runtime、模型、Tool/MCP/Skill 绑定、路由约束和最近调度投影为可检查的 DAG；节点根据画布宽度自适应布局。
+- 新增 AgentKit manifest、Codex Agent 构建与运行服务、资源/能力目录、操作事件流、Agent 头像资产以及本地 OTLP Trace 存储与查询能力。
+- `agentengine hermes deploy` 新增可重复的 `--env KEY=VALUE` 与 `--env-file`（dotenv 或 JSON 对象），并可自动发现当前目录 `.env`；优先级为 `--env` > `--env-file` > 当前进程环境 > 自动 `.env`。显式环境参数会进入新建或更新 payload，未显式指定时更新已有 Hermes 不覆盖服务端环境配置。OpenClaw deploy 同步复用该解析规则并新增 `--env-file` 与自动 `.env` 加载。
+- 新增 React Studio 专项 CI 门禁，覆盖协议归并、组件行为、TypeScript、生产构建、样式契约、桌面浏览器烟测和常见分辨率响应式烟测，并校验随 Python 包分发的静态产物与 React 源码一致。
+
 ### 变更
 
+- Runtime 启动路径收敛到显式的 factory、adapter 和 conversation execution 边界；CLI、Web、A2A、AG-UI 与 Studio 共用同一运行时装配逻辑，减少模块级全局 runner 和重复 SSE 实现。
+- Codex 从旧 runner 路径收敛到 `CodexRuntimeAdapter` 与官方 app-server transport，补齐模型代理、HOME 隔离、审批/沙箱策略、全局凭证继承、结构化交互事件和中断后的流式 transport 回收。
+- Responses 输入、会话历史、运行事件、tool/approval/A2UI activity 和 usage 在服务端统一投影；`/v1/responses` 保持主要会话接口，`/v1/chat/completions` 继续作为 OpenAI-compatible 协议入口，而不是 Studio 页面路由。
+- Studio 前端源码位于 `ksadk/studio/react-ui`，Python 包中的 `ksadk/studio/static` 只保存其生产构建产物；首次交付不引入另一套 vanilla Studio 前端。
+- Studio 桌面布局统一适配 MacBook 14 英寸及常见 2K/4K 视口；导航、DAG 画布、会话列表、Composer、深浅色主题和 Trace 详情共享设计令牌与响应式规则。手机竖屏不属于 `0.8.1` 支持范围。
 - 删除 `langfuse_exporter.py`、`runners/utils/langfuse.py`、`LANGFUSE_USE_CALLBACK` 和 Langfuse SDK callback 路径；`tracing` extra 不再安装 `langfuse`，仅保留 OpenInference 自动插桩。
 - 调整 Python 包依赖边界：`langchain-openai` 仅随 `langchain`、`langgraph` 和 `deepagents` framework extras 安装，不再由基础 `ksadk` wheel 强制安装。这样 Hermes 等不使用 LangChain OpenAI adapter 的运行时可保留其已验证的 OpenAI SDK 版本；选择这些框架的生成项目仍会声明并安装同一受支持版本范围。
-- `agentengine hermes exec` 增加显式 `--agent` 目标，并将 `--session` 业务会话 ID 写入 terminal start frame；普通 argv 不再被猜测为 Agent 名称。
+- `all` extra 纳入 Codex 支持；Studio 运行与测试依赖补齐 MCP、Pillow 和 Playwright，wheel/sdist 继续只打包 React 生产静态资源而不包含 Node.js 源码依赖。
+- `agentengine hermes exec` 增加显式 `--agent` 目标并改为 argv 原样透传，由远端 Pod 执行最终命令策略；普通 argv 不再被猜测为 Agent 名称，`--session` 业务会话 ID 会写入 terminal start frame。
 - 用户显式调用 `save_memory` 时向 SDK 记忆后端发送 `flush=True`，保证本次数据完成抽取后再返回；自动轮次保存继续使用后端默认批处理语义。
+- `agentengine studio` 默认继续仅监听 loopback，但端口调整为 `8080`；可用 `--port` 覆盖。Studio 前端源码开发代理也使用同一默认端口。
 
-### 修复
+### 修复与性能
 
+- 修复 LangGraph 回调将 ToolGateway 结果序列化为 JSON 文本时，工具审批未被识别为可恢复交互的问题；Responses 客户端现在会收到标准审批项，批准后可继续原工具调用并执行真实副作用。
+- 修复 LangGraph 中 ToolGateway 审批完成后向已结束图发送原生 resume、导致副作用虽已执行却没有后续回复的问题；现在会基于已持久化的真实工具结果继续生成最终回答，同时保留原生 `interrupt()` 的 resume 语义。
+- 修复 Studio 快速创建向导与模板编排 API 的请求契约，并将 ADK/LangGraph 的源码路径和入口变量完全交由服务端生成；“创建后立即构建并打开会话”现在会实际提交 Build、等待成功后再进入会话。Codex、ADK、LangGraph 三种 Runtime 均按同一流程创建和构建。
+- 修复 Codex RuntimeAdapter 事件信封丢失调用方 `agent_id` / `user_id` / `invocation_id` 的问题，避免通过 `/v1/responses` 运行时因作用域校验不一致返回 500。
+- 修复通用 Agent 创建与更新部署 payload 未标记敏感环境变量的问题；模型 API Key、Token、Secret 等现在按统一规则写入 `IsSensitive`，避免控制面将其按普通变量处理。
+- 修复 Codex ManagedRuntime 的本地声明构建与请求组装：部署/`--dry-run` 会加载项目 YAML、计算 manifest SHA-256 并传给控制面，而不把部署参数误当作 Agent manifest。
+- 修复 Codex 中断后 SDK transport 残留后台等待任务，避免事件循环退出阶段挂起。
 - CloudMonitor traces 专用 endpoint、protocol 和 headers 分别优先于通用配置；`CLOUD_MONITOR_OTLP_TRACES_HEADERS` 与 `CLOUD_MONITOR_OTLP_HEADERS` 都支持 RFC 3986 percent-encoded values。
 - `CLOUD_MONITOR_APP_KEY` 降级为一个版本的过渡 fallback：仅当 traces 和通用 headers 环境变量都整体缺失时才翻译为 `Ksc-Appkey`。任一 headers 变量已提供但无有效 `Ksc-Appkey` 时 fail closed，不混入旧 AppKey。
 - AgentEngine 托管 runtime 在模块级 `ksadk.server.app:app` 与 `BaseRunner.run_server()` 两个真实入口都按 `KSADK_A2A_RUNTIME_ID` 挂载 discovery-only `/.well-known/agent-card.json`；卡片明确声明 `streaming=false`，不开放 JSON-RPC、REST Task 或其他 A2A 数据面路由。
 - `A2ASpaceClient.from_env()` 优先读取 `KSADK_A2A_SPACE_ID`，并保留对单元素 `KSADK_A2A_SPACE_IDS` JSON 数组的兼容读取。
 - A2A 核心依赖改为 `a2a-sdk[fastapi]`；PostgreSQL TaskStore 支持移到可选 `ksadk[a2a-postgres]`，discovery-only runtime 不再因 A2A 被强制安装 PostgreSQL adapter。会话系统既有 `asyncpg` 依赖保持不变。
 
-### 兼容性与迁移
+### 兼容性、迁移与评审边界
 
+- `0.8.1` 是 AgentKit Studio 的首次交付，不存在从 `0.8.0` Studio 或 vanilla Studio 迁移的问题。Studio 只有一个 React 前端入口；自研 UI 仍可直接消费 Responses/SSE、RuntimeEvent、AG-UI/A2UI 和运行控制 API，不要求使用 React。
+- RuntimeEvent 主路径升级为 canonical `schema_version=2`：runtime、协议投影、事件存储、回放与最终输出选择统一以 v2 为唯一事实来源，不再沿用 v1 additive 演进。v1 事件转为只读兼容投影，不接受新的 v1 写入；未声明的下游消费者收到终端快照，已升级的消费者显式选择 identity-aware 的 replace 语义。
+- RuntimeEvent 能力描述：`RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`。
+- 本地 Web UI、Studio react-ui 与 Hosted UI 必须配套与本次 Python 发布一致的 identity-aware 版本，才能按 run/scope/item/part identity 正确归并流式与回放输出。
 - 旧 `LANGFUSE_*` 凭证不再创建 SDK callback/exporter。迁移时把 Langfuse OTLP endpoint 与 Authorization header 配置到标准 `OTEL_EXPORTER_OTLP_*`。
 - 新部署使用 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 或 `CLOUD_MONITOR_OTLP_HEADERS` 提供 `Ksc-Appkey`；`CLOUD_MONITOR_APP_KEY` 仅用于旧控制面的短期兼容。
 - A2A 环境变量明确区分部署期 `KSADK_A2A_RUNTIME_ID` 与注册后 `KSADK_A2A_AGENT_ID`；v1 discovery card 只依赖前者。
+- Codex `ksadk init` 的本地 `web`/Responses 运行与 ManagedRuntime 请求组装已验证；真实云端部署仍依赖服务端发布 Runtime catalog、对应 Linux runtime image 和内联 manifest 的公开控制面契约。该服务端能力未在本次 SDK 发布中宣称可用，SDK 不会把 Codex 静默降级为 Code 部署。
 
 ### 文档
 
-- 同步中英文 README、CLI、可观测性、环境变量、知识库与记忆库指南，明确默认双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
+- 同步中英文 README、Studio CLI、可观测性、环境变量、知识库与记忆库指南；新增可从左侧导航进入的 AgentKit Local Studio 指南，补充首次 Studio 交付、React 源码/构建产物边界、运行控制与交互协议、默认 OTLP 双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
 
-内部 `0.8.1` 发版候选；PyPI、tag、GitHub Release 与公开文档站仍须通过受信 workflow 和维护者批准后发布。
+### 发布记录
+
+- Python：`ksadk==0.8.1`
+- 内置 Web UI：`@kingsoftcloud/ksadk-web@0.3.1`（source `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`）
+- AgentKit Studio：首次交付，React 单一前端随 Python wheel 分发生产构建产物
+- 当前状态：内部发版候选；相对 `0.8.0` 的 Studio、Runtime、Codex、可观测性、CLI、依赖与文档变更均记录于本节
+- 本地发版验证：Studio 快速创建、构建和会话入口已覆盖 Codex、ADK、LangGraph；`ksadk init -f <codex|adk|langgraph>` 生成的三套模板均已通过 `ksadk web`、`/v1/responses` 本地对话和 `ksadk deploy --dry-run` 请求规划验证。ADK、LangGraph 另已完成隔离环境中的真实部署和调用；Codex 真实云端部署待上述服务端 Runtime 上线后复验。
+- PyPI、tag、GitHub Release 与公开文档站仍须通过受信 workflow 和维护者批准后发布
 
 ## [0.8.0] - 2026-07-29
 
@@ -694,7 +771,7 @@
 
 - **Web UI 工作区文件管理重构**：右侧文件区改为可调整宽度、可全屏的工作区面板，上传入口和路径展示收敛为更轻量的布局，并保持打开文件区时左侧对话区可继续正常使用。
 - **工作区文件预览能力增强**：支持在 Web UI 内预览文本、Markdown、代码、CSV/TSV、图片与 PDF 文件，便于直接查看上传文件或大模型生成的文件产物。
-- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 ksadk 源码时会尝试从 ezone 拉取，避免硬编码个人路径。
+- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 SDK 源码时会尝试从配置的源码远端拉取，避免硬编码个人路径。
 
 ### 变更
 

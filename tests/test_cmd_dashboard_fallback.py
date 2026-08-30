@@ -27,7 +27,7 @@ async def _fake_create_access_link(*_args, **_kwargs):
     }
 
 
-def test_dashboard_uses_access_link_by_default(monkeypatch):
+def test_dashboard_uses_hosted_interaction_ui_by_default(monkeypatch):
     opened = {}
     captured = {}
     runner = CliRunner()
@@ -45,7 +45,7 @@ def test_dashboard_uses_access_link_by_default(monkeypatch):
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured["path"] is None
+    assert captured["path"] == "/hosted-ui/chat"
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
@@ -69,7 +69,7 @@ def test_dashboard_open_uses_state_region_when_region_is_not_explicit(tmp_path: 
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-test\n" "region: pre-online\n",
+        "agent_id: ar-test\nregion: pre-online\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -99,7 +99,7 @@ def test_dashboard_open_explicit_region_overrides_state_region(tmp_path: Path, m
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-test\n" "region: pre-online\n",
+        "agent_id: ar-test\nregion: pre-online\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -131,7 +131,7 @@ def test_dashboard_open_prefers_state_region_over_global_config_injected_region(
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-test\n" "region: pre-online\n",
+        "agent_id: ar-test\nregion: pre-online\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -162,7 +162,7 @@ def test_dashboard_open_env_region_overrides_state_region(tmp_path: Path, monkey
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-test\n" "region: pre-online\n",
+        "agent_id: ar-test\nregion: pre-online\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -269,7 +269,7 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
 
     state_path = tmp_path / ".agentengine.state"
     state_path.write_text(
-        "agent_id: ar-openclaw-1\n" "name: demo-openclaw\n" "type: openclaw\n",
+        "agent_id: ar-openclaw-1\nname: demo-openclaw\ntype: openclaw\n",
         encoding="utf-8",
     )
 
@@ -456,7 +456,7 @@ def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, mo
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-openclaw-1\n" "name: demo-openclaw\n" "type: openclaw\n",
+        "agent_id: ar-openclaw-1\nname: demo-openclaw\ntype: openclaw\n",
         encoding="utf-8",
     )
 
@@ -539,7 +539,7 @@ def test_dashboard_open_passes_custom_path_to_openclaw_gateway_link(tmp_path: Pa
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-openclaw-1\n" "name: demo-openclaw\n" "type: openclaw\n",
+        "agent_id: ar-openclaw-1\nname: demo-openclaw\ntype: openclaw\n",
         encoding="utf-8",
     )
 
@@ -612,7 +612,7 @@ def test_dashboard_open_passes_force_new_to_openclaw_gateway_link(tmp_path: Path
     captured = {}
 
     (tmp_path / ".agentengine.state").write_text(
-        "agent_id: ar-openclaw-1\n" "name: demo-openclaw\n" "type: openclaw\n",
+        "agent_id: ar-openclaw-1\nname: demo-openclaw\ntype: openclaw\n",
         encoding="utf-8",
     )
 

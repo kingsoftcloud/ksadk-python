@@ -37,7 +37,7 @@
 | `KSYUN_SECRET_KEY` | 是 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 SK。 |
 | `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、权限预检查、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `cn-beijing-6`。 |
-| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
+| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。公网账号通常留空使用产品默认地址；专用地址必须由平台运维方提供，不要写入项目文件。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
 | `AGENTENGINE_SIGN_SERVICE` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP signing service。 |
 | `KSADK_AICP_ENDPOINT_MODE` | 否 | 无 | 否 | 平台 / 开发者 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
@@ -77,7 +77,7 @@
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://aicp.inner.api.ksyun.com`。 |
+| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 使用 `/agentengine/skill/api/v1`；AICP KOP endpoint 由平台环境解析或显式注入。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP endpoint 覆盖，只写 host/path，不含 scheme。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP URL scheme 覆盖；内网 endpoint 默认会使用 `http`。 |
 | `KSADK_SKILL_SPACE_IDS` | 条件必传 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新时注入 / Runner 环境 | 逗号分隔 space id；单 space 兼容变量为 `SKILL_SPACE_ID`。 |
@@ -101,8 +101,9 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_KB_DATASET_ID` | 条件必传 | 无 | 否 | 平台 / 开发者 | 配置后启用知识库检索。 |
-| `KSADK_KB_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY` | 是 | 平台 Secret | SDK 知识库 backend AK。 |
-| `KSADK_KB_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY` | 是 | 平台 Secret | SDK 知识库 backend SK。 |
+| `KSADK_KB_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | 平台 Secret | SDK 知识库 backend AK。 |
+| `KSADK_KB_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | 平台 Secret | SDK 知识库 backend SK。 |
+| `KSADK_KB_SESSION_TOKEN` | 否 | `KSYUN_SESSION_TOKEN` | 是 | 平台 Secret | SDK 知识库 backend 的 STS 临时会话 token。 |
 | `KSADK_KB_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `aicp.api.ksyun.com`。 |
 | `KSADK_KB_REGION` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `cn-beijing-6`。 |
 | `KSADK_KB_SCHEME` | 否 | 无 | 否 | 平台 / 开发者 | KB endpoint 协议。内网 endpoint 默认 `http`，其他默认 `https`。 |
@@ -110,14 +111,14 @@
 | `KSADK_LTM_BACKEND` | 否 | 无 | 否 | 开发者 | 长期记忆 backend，默认 `local`，可选 `http/sdk`。 |
 | `KSADK_LTM_HTTP_URL` | 条件必传 | 无 | 是 | 平台 Secret | `KSADK_LTM_BACKEND=http` 时需要。 |
 | `KSADK_LTM_HTTP_TOKEN` | 条件必传 | 无 | 是 | 平台 Secret | HTTP LTM 鉴权 token。 |
-| `KSADK_LTM_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY` | 是 | 平台 Secret | SDK LTM AK。 |
-| `KSADK_LTM_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY` | 是 | 平台 Secret | SDK LTM SK。 |
+| `KSADK_LTM_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | 平台 Secret | SDK LTM AK。 |
+| `KSADK_LTM_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | 平台 Secret | SDK LTM SK。 |
+| `KSADK_LTM_SESSION_TOKEN` | 否 | `KSYUN_SESSION_TOKEN` | 是 | 平台 Secret | SDK LTM backend 的 STS 临时会话 token。 |
 | `KSADK_LTM_AMBIENT_POLICY` | 否 | 无 | 否 | 平台 / 开发者 | runtime 自动注入长期记忆上下文策略：`on_demand/always/disabled`。 |
 | `KSADK_MEMORY_BACKEND` | 否 | 无 | 否 | 开发者 | 轻量 KV/消息历史 MemoryManager backend，默认 `memory`。 |
 | `KSADK_MEMORY_URL` | 条件必传 | 无 | 是 | 开发者 / Secret | `KSADK_MEMORY_BACKEND=redis` 等远端 backend 连接 URL。 |
 | `KSADK_SESSION_BACKEND` | 否 | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 平台 / 开发者 | 会话 backend，默认 `local`。ADK/STM 也会把它作为兜底。 |
-| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | 平台 Secret | Session PostgreSQL DSN；未显式选择本地 backend 时优先于 `KSADK_CHECKPOINT_DSN`。统一使用 `postgresql://...`，不需要 `+asyncpg`。 |
-| `KSADK_CHECKPOINT_DSN` | 否 | 无 | 是 | 平台 Secret | 框架无关的 PostgreSQL checkpoint DSN；仅配置它时也会作为 Session 持久化 fallback。 |
+| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | 平台 Secret | `postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | 否 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 本地运行时 | 本地 SQLite 会话库路径。 |
 | `KSADK_SESSION_NAMESPACE` | 否 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 / 开发者 | 会话命名空间。 |
 
@@ -261,20 +262,17 @@
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。ADK/STM 也会把它作为兜底。 |
-| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | Secret | 否 | Session PostgreSQL DSN；未显式选择本地 backend 时优先于 `KSADK_CHECKPOINT_DSN`。统一使用 `postgresql://...`，不需要 `+asyncpg`。 |
-| `KSADK_CHECKPOINT_DSN` | 通用 checkpoint | 否 | 未设置 | 无 | 是 | Secret | 否 | 框架无关 PostgreSQL checkpoint DSN。仅配置它时也作为 Session 持久化 fallback。 |
+| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | Secret | 否 | PostgreSQL DSN。`postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | Sessions | 否 | 项目目录下本地 sqlite 路径 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite 会话路径。 |
 | `KSADK_SESSION_CONNECT_TIMEOUT` | Sessions | 否 | `5` | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | 否 | 开发者 / 平台 | 否 | PostgreSQL 会话 backend 连接超时秒数。 |
 | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | Sessions 旧兼容 | 否 | `5` | `KSADK_SESSION_CONNECT_TIMEOUT` | 否 | 兼容旧部署 | 否 | 旧 PostgreSQL session 连接超时变量。新部署优先 `KSADK_SESSION_CONNECT_TIMEOUT`。 |
 | `KSADK_SESSION_NAMESPACE` | Sessions | 否 | 未设置 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 会话 namespace。 |
 | `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
 | `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
-| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | 平台 | 否 | 设为 `1` 时仅通过项目导出的 `ksadk_graph_factory(*, checkpointer)` 安全创建托管 PostgreSQL graph；不会修改 compiled graph 私有字段。 |
-| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | `KSADK_CHECKPOINT_DSN`、`KSADK_SESSION_DSN` | 是 | Secret | 否 | 托管 LangGraph checkpointer PostgreSQL DSN，优先于通用 checkpoint DSN。 |
-| `KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS` | Builder 内部常量 | 否 | 代码常量 | 无 | 否 | KsADK | 否 | 托管 Code Runtime 的 LangGraph PostgreSQL checkpointer 依赖集合，不建议业务覆盖。 |
-| `KSADK_PERSISTENCE_PROBE_TIMEOUT` | Runtime bootstrap | 否 | `2` | 无 | 否 | 平台 | 否 | PostgreSQL readiness 探测超时秒数。 |
-| `KSADK_PERSISTENCE_PROBE_CACHE_TTL` | Runtime bootstrap | 否 | `30` | 无 | 否 | 平台 | 否 | PostgreSQL readiness 结果缓存秒数；缓存键仅含 DSN 的 SHA-256 摘要。 |
-| `KSADK_AGENT_ID` | LangGraph checkpoint | 否 | `default` | `AGENTENGINE_AGENT_ID` 优先 | 否 | 平台 | 否 | 托管 checkpointer namespace 的 Agent id fallback。 |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | `KSADK_CHECKPOINT_BACKEND=postgres` 时的 LangGraph checkpointer PostgreSQL DSN。 |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | Operator / 平台 | 否 | 为 `true` 时，托管 LangGraph runner 仅对导出 `ksadk_graph_factory(*, checkpointer)` 的图注入受控 PostgreSQL saver；失败不回退到内存 checkpoint。 |
+| `KSADK_AGENT_ID` | 平台身份 | 否 | 未设置 | `AGENTENGINE_AGENT_ID` 优先 | 否 | Operator / 平台 | 否 | 稳定 Agent 身份；仅作为未配置 `KSADK_SESSION_NAMESPACE` 时 checkpoint namespace 的 fallback。 |
+| `KSADK_AGENT_KERNEL` | Agent Kernel | 否 | `false` | `AGENT_KERNEL_ENABLED` | 否 | 本地调试 / Operator | 否 | 启用 Kernel ingress。本地灰度使用该变量；托管部署由 Operator 投射 `AGENT_KERNEL_ENABLED`。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
 | `KSADK_WORKSPACE_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_WORKSPACE_ID` | 否 | 平台 | 否 | workspace id。 |
 | `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`，但 ADK/STM 仍可读。 |
@@ -284,7 +282,7 @@
 | `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
 | `KSADK_ADK_SESSION_BACKEND` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session backend。 |
 | `KSADK_ADK_SESSION_PATH` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session sqlite 路径。 |
-| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_CHECKPOINT_DSN`、`KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL，优先于通用 checkpoint DSN。接受 `postgresql://...`、`postgres://...` 和 ADK/SQLAlchemy 使用的 `postgresql+asyncpg://...`；适配层会自动转换为 ADK 所需的 asyncpg 格式，持久化探针也会将驱动 URL 规范化后再探测。 |
+| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
 | `KSADK_ADK_RESUMABLE` | ADK Runner resume | 否 | `false` | 无 | 否 | 开发者 / 平台 | 否 | 显式启用 ADK invocation resume。平台 checkpoint 恢复仍要求共享 database session backend。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
@@ -293,8 +291,9 @@
 | `KSADK_LTM_BACKEND` | Long-term memory | 否 | `local` | 无 | 否 | 开发者 / 平台 | 否 | LTM backend。 |
 | `KSADK_LTM_HTTP_URL` | HTTP LTM | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | HTTP LTM URL。 |
 | `KSADK_LTM_HTTP_TOKEN` | HTTP LTM | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | HTTP LTM token。 |
-| `KSADK_LTM_ACCESS_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | Secret | 否 | SDK LTM AK。 |
-| `KSADK_LTM_SECRET_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | Secret | 否 | SDK LTM SK。 |
+| `KSADK_LTM_ACCESS_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | Secret | 否 | SDK LTM AK。 |
+| `KSADK_LTM_SECRET_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | Secret | 否 | SDK LTM SK。 |
+| `KSADK_LTM_SESSION_TOKEN` | SDK LTM | 否 | 未设置 | `KSYUN_SESSION_TOKEN` | 是 | Secret | 否 | SDK LTM STS 临时会话 token。 |
 | `KSADK_LTM_REGION` | SDK LTM | 否 | `cn-beijing-6` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM region。 |
 | `KSADK_LTM_ENDPOINT` | SDK LTM | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM endpoint。 |
 | `KSADK_LTM_SCHEME` | SDK LTM | 否 | `https` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM scheme。 |
@@ -312,29 +311,15 @@
 | `MEM0_BASE_URL` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEMORY_BACKEND_MANIFEST` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw memory backend manifest，声明 `backend_type` 及其连接配置；视 `backend_type` 不同，对应 backend 专有变量（例如 `mem0` 的 `MEM0_*`）条件必传。 |
 
-### 8.1 Session / Checkpoint 双库拓扑
-
-`KSADK_SESSION_DSN` 管 KsADK 会话、transcript 与运行绑定；`KSADK_CHECKPOINT_DSN` 管框架原生 checkpoint。两者均使用普通 `postgresql://...` DSN，不能在文档或日志中写入真实凭证。
-
-| Session DSN | Checkpoint DSN | 有效 Session | 有效 Checkpoint |
-| --- | --- | --- | --- |
-| 未配置 | 未配置 | 无远端持久化 | 无远端持久化 |
-| 已配置 | 未配置 | Session 库 | Session 库 fallback |
-| 未配置 | 已配置 | Checkpoint 库 fallback | Checkpoint 库 |
-| 已配置 | 已配置 | Session 库 | Checkpoint 库 |
-
-- `KSADK_SESSION_BACKEND=local`、`sqlite` 或 `memory` 是对 Session 的显式本地选择，不会被 checkpoint DSN 覆盖。
-- ADK 原生状态优先级是 `KSADK_ADK_SESSION_URL` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`；LangGraph、LangChain（新 graph 形态）和 DeepAgents 是 `KSADK_LANGGRAPH_CHECKPOINT_DSN` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`。
-- Bootstrap 中 `Capabilities.Persistence` 表示 Session 状态，`Capabilities.CheckpointPersistence` 表示框架 checkpoint 状态。`ResumeRun.Supported` 只有两者都已 ready，且框架原生 saver/session service 已成功初始化时才为 `true`；旧版 LangChain 不声明 checkpoint 恢复能力。
-
 ## 9. 知识库
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_KB` | Knowledge base | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | AICP knowledge-base 连接配置前缀。 |
 | `KSADK_KB_DATASET_ID` | Knowledge base | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 存在时启用知识库。 |
-| `KSADK_KB_ACCESS_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | Secret | 否 | KB AK。 |
-| `KSADK_KB_SECRET_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | Secret | 否 | KB SK。 |
+| `KSADK_KB_ACCESS_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | Secret | 否 | KB AK。 |
+| `KSADK_KB_SECRET_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | Secret | 否 | KB SK。 |
+| `KSADK_KB_SESSION_TOKEN` | Knowledge base | 否 | 未设置 | `KSYUN_SESSION_TOKEN` | 是 | Secret | 否 | KB STS 临时会话 token。 |
 | `KSADK_KB_ENDPOINT` | Knowledge base | 否 | `aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | KB endpoint。 |
 | `KSADK_KB_REGION` | Knowledge base | 否 | `cn-beijing-6` | 无 | 否 | 平台 / 开发者 | 否 | KB region。 |
 | `KSADK_KB_SCHEME` | Knowledge base | 否 | 内网 endpoint 默认 `http`，其他默认 `https` | 无 | 否 | 平台 / 开发者 | 否 | KB endpoint scheme。 |
@@ -350,10 +335,8 @@
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 自动探测：优先 `http://aicp.inner.api.ksyun.com`，不可达时回落 `https://aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议显式设为 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。如果公网 AICP 返回 `InnerAccountCanOnlyAccessThroughIntranet`，客户端会自动切内网重试一次。 |
+| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 产品默认地址 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。公网账号通常留空；如需专用 endpoint，使用平台运维方显式提供的值，不要写入项目文件或公开文档。 |
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
-| `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
-| `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
 | `KSADK_A2A_ACCOUNT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime 归属账号 id（ar-* agent 的 account），v2 inbound 身份校验需要。 |
 | `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册 A2A Agent 的 id，注册后由 reconciler 注入；当前平台生成 `a2a-agent-*`，调用方应按不透明字符串传递。v2 完整 inbound JSON-RPC 装配需要此值，v1 discovery-only card 不依赖它。 |
 | `KSADK_A2A_AGENT_NAME` | A2A Runtime | 否 | fallback `AGENTENGINE_MANAGED_RUNTIME_NAME` → `KSADK_A2A_RUNTIME_ID` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 展示名称；普通 Code runtime 无 `AGENTENGINE_MANAGED_RUNTIME_NAME` 时由部署层用 `agents.name` 注入。 |
@@ -367,6 +350,15 @@
 | `KSADK_A2A_RUNTIME_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 托管 Agent runtime 资源 id（`ar-*`，即 `agents.id`）。v1 discovery-only card 只要此值非空即挂载，部署期注入、注册前可用。 |
 | `KSADK_A2A_TENANT_ID` | A2A Runtime | 否 | fallback `KSADK_A2A_ACCOUNT_ID` | 无 | 否 | 部署层 / 平台 | 否 | Runtime 租户 id；未注入时回退到 account id。 |
 | `KSADK_A2A_TOKEN_DIR` | A2A Runtime | 否 | `/var/run/secrets/agentengine/a2a` | 无 | 否 | 部署层 / token sidecar | 否 | audience JWT 目录，包含 `a2a-registry.jwt`、`a2a-task-sink.jwt`、`credential-broker.jwt`、`a2a-gateway.jwt`；文件必须为 regular、非 symlink、`0400`、最大 16 KiB。 |
+| `KSADK_A2A_ACCESS_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 access key；未设置时回退 `KSYUN_ACCESS_KEY`。 |
+| `KSADK_A2A_SECRET_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 secret key；未设置时回退 `KSYUN_SECRET_KEY`。 |
+| `KSADK_A2A_SERVICE` | A2A Runtime / KOP | 否 | `aicp` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 service 名称。 |
+| `KSADK_A2A_SERVICE_URL` | A2A Runtime / KOP | 否 | 自动探测（inner 优先，回落 public） | 无 | 否 | 部署层 / 平台 | 否 | A2A 控制面 service URL（KOP 公网 API）；未设置时按 AICP 探测默认值。 |
+| `KSADK_A2A_SERVICE_TOKEN` | A2A Runtime / KOP | 否 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A 控制面 Bearer token；平台注入或留空走 AK/SK 签名。 |
+| `KSADK_A2A_SERVICE_ENDPOINT` | A2A Runtime / KOP | 否 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | A2A service endpoint hostname，配合 `KSADK_A2A_SERVICE_SCHEME` 构造 base URL。 |
+| `KSADK_A2A_SERVICE_SCHEME` | A2A Runtime / KOP | 否 | `https` | 无 | 否 | 部署层 / 平台 | 否 | A2A service URL scheme（`http`/`https`）。 |
+| `KSADK_A2A_SERVICE_REGION` | A2A Runtime / KOP | 否 | 回退 `KSYUN_REGION` → `cn-beijing-6` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 region。 |
+| `KSADK_EVAL_JUDGE_API_KEY` | 评测 / LLM Judge | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | LLM Judge 评测后端的 API key。 |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
@@ -375,12 +367,19 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.0` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.2` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
 | `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
+| `KSADK_CODEX_APPROVAL` | Codex runtime | 否 | 由沙箱策略决定 | 无 | 否 | 开发者 / Studio | 否 | Codex 审批模式；只读场景默认拒绝写操作，Studio 可按轮次传入审批等级。 |
+| `KSADK_CODEX_HOME` | Codex runtime | 否 | 自动隔离到工作区 | 无 | 否 | 开发者 | 否 | 显式覆盖原生 Codex 的 HOME 目录；普通用户无需设置。 |
+| `KSADK_CODEX_ISOLATE_HOME` | Codex runtime | 否 | `1` | 无 | 否 | 开发者 / 测试 | 否 | 默认隔离 Codex 状态；仅调试时可设为 `0` 复用进程 HOME。 |
+| `KSADK_CODEX_SANDBOX` | Codex runtime | 否 | `read_only` | 无 | 否 | 开发者 / Studio | 否 | Codex 沙箱模式：`read_only`、`workspace_write` 或 `full_access`。 |
 | `KSADK_CODEX_USE_PROXY` | Codex runtime | 否 | 自动探测 | 无 | 否 | 开发者 / 平台 | 否 | `1` 强制启用本地 Responses-to-Chat proxy，`0` 强制直连；未设置时仅对自定义上游进行保守探测。 |
+| `KSADK_STUDIO_NO_SECURITY` | AgentKit Studio | 否 | `0` | 无 | 否 | 测试环境 | 否 | 仅受控自动化测试可设为 `1`；正常启动必须保留 loopback session 与 CSRF 校验。 |
+| `KSADK_STUDIO_SESSION_TOKEN` | AgentKit Studio | 否 | 随机生成 | 无 | 是 | CLI / 测试 Secret | 否 | 显式指定本地浏览器 session token；正常启动由 CLI 随机生成并写入启动 URL。 |
+| `KSADK_STUDIO_TRACE_CONTENT` | AgentKit Studio | 否 | `1` | 无 | 否 | 开发者 / Studio 设置 | 否 | 是否保存 Trace 事件正文；设为 `0` 时只保留排障所需元数据。 |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex model proxy | 否 | `OPENAI_BASE_URL` / `OPENAI_API_BASE` | 无 | 否 | 开发者 / 平台 | 否 | Codex proxy 上游 base URL 覆盖。 |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex model proxy | 否 | `OPENAI_API_KEY` | 无 | 是 | 开发者 / 平台 | 否 | Codex proxy 上游凭据覆盖。 |
 | `KSADK_PROXY_TOKEN` | Codex model proxy | 否 | 运行时生成 | 无 | 是 | SDK 内部 | 否 | 本地回环 proxy 与 Codex 子进程之间的 bearer token；通常不应手动设置。 |
@@ -395,7 +394,7 @@
 | `KSADK_MODEL_PROXY_DENY` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 denylist；用于紧急关闭代理。 |
 | `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
 | `KSADK_HOSTED_UI_GUIDELINES` | Hosted A2UI（内部常量） | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | Hosted A2UI 的内置生成与设计指引；它不是受支持的环境变量，不应通过部署配置覆盖。 |
-| `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。内部账号 AK 公网访问被拒时，CLI 自动 fallback 到 `http://iam.inner.api.ksyun.com`。 |
+| `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。专用 endpoint 仅在平台运维方明确提供时配置，不要写入项目文件。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_DEBUG` | CLI | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 开启更详细错误输出。 |

@@ -133,11 +133,11 @@ def should_build_artifact(
     mode = (artifact_type or "Code").strip().lower()
     if mode == "code":
         return not bool(ks3_path)
-    # ManagedRuntime is a declarative server-side manifest.  ``ksadk build``
-    # remains available for inspection/offline locking, but ``deploy`` neither
-    # uploads nor needs a local artifact.
+    # ManagedRuntime is a declarative server-side manifest.  Deployment does
+    # not upload an artifact, but it must build the canonical manifest locally
+    # to include its SHA-256 in the control-plane request.
     if mode == "managedruntime":
-        return False
+        return True
     if mode == "container":
         return not bool(image)
     return False
@@ -261,7 +261,7 @@ def resolve_artifact_build_plan(
             reference_is_predicted=False,
         )
 
-    if plan.should_build and dry_run:
+    if plan.should_build and dry_run and not is_managed_runtime:
         return replace(
             plan,
             will_build=False,

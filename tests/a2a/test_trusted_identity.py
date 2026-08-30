@@ -154,7 +154,7 @@ def test_gateway_identity_middleware_exposes_only_verified_identity_to_the_handl
     ],
 )
 def test_gateway_identity_middleware_rejects_invalid_caller_identity(
-    identity_values: dict[str, str]
+    identity_values: dict[str, str],
 ) -> None:
     app = FastAPI()
 

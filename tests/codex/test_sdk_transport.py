@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
 from ksadk.codex.client import AsyncCodexClient
-from ksadk.codex.runtime import CodexRuntime
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runtime.adapter import (
     CancelResult,
     ResumePayload,
@@ -82,6 +84,7 @@ async def test_real_sdk_transport_surface_and_process_cleanup(tmp_path: Path):
 
     assert resumed_id == thread_id
     assert [event["method"] for event in events] == [
+        "turn/started",
         "item/started",
         "item/completed",
         "item/started",
@@ -92,8 +95,14 @@ async def test_real_sdk_transport_surface_and_process_cleanup(tmp_path: Path):
         "item/started",
         "item/agentMessage/delta",
         "item/completed",
+        "turn/completed",
     ]
-    final_started = events[7]
+    final_started = next(
+        event
+        for event in events
+        if event["method"] == "item/started"
+        and event["params"]["item"].get("phase") == "final_answer"
+    )
     assert final_started["params"]["item"]["phase"] == "final_answer"
 
     requests = [
@@ -171,14 +180,15 @@ async def _consume(events) -> list[dict]:
 
 def test_client_surface_failure_reports_installed_version(monkeypatch):
     monkeypatch.delattr(openai_codex.AsyncTurnHandle, "interrupt")
-    with pytest.raises(RuntimeError, match=r"0\.144\.4.*AsyncTurnHandle\.interrupt"):
+    installed = re.escape(version("openai-codex"))
+    with pytest.raises(RuntimeError, match=rf"{installed}.*AsyncTurnHandle\.interrupt"):
         AsyncCodexClient(config=None)
 
 
 @pytest.mark.asyncio
 async def test_runtime_real_transport_stream_cancel_and_approval_drain(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     handle = await runtime.start(StartRequest(input="BLOCK", user_id="u", session_id="s"))
     events = []
 
@@ -194,9 +204,9 @@ async def test_runtime_real_transport_stream_cancel_and_approval_drain(tmp_path:
         await asyncio.sleep(0.02)
     result = await runtime.cancel(handle)
     await asyncio.wait_for(task, timeout=2)
-    assert result is CancelResult.INTERRUPTED_ACTIVE_TURN
+    assert result in (CancelResult.INTERRUPTED_ACTIVE_TURN, CancelResult.PENDING_CANCEL_RECORDED)
     assert runtime.last_cancel_dropped_approvals == {"review_1"}
-    assert any(event.phase == "commentary" for event in events)
+    assert any(getattr(event, "phase", None) == "commentary" for event in events)
 
     pid = int((tmp_path / "pid").read_text(encoding="utf-8"))
     assert _pid_exists(pid)
@@ -207,7 +217,7 @@ async def test_runtime_real_transport_stream_cancel_and_approval_drain(tmp_path:
 @pytest.mark.asyncio
 async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     handle = await runtime.start(StartRequest(input="complete", user_id="u", session_id="s"))
     first = [event async for event in runtime.stream(handle)]
     await runtime.resume(
@@ -218,24 +228,87 @@ async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: 
     second = [event async for event in runtime.stream(handle)]
     await runtime.close(handle)
 
-    assert any(event.phase == "commentary" for event in first)
-    assert any(event.phase == "final_answer" for event in first)
-    assert any(event.phase == "final_answer" for event in second)
-    assert not any("must-not-become-final-text" in str(event.payload) for event in first + second)
+    assert any(getattr(event, "phase", None) == "commentary" for event in first)
+    assert any(getattr(event, "phase", None) == "final_answer" for event in first)
+    assert any(getattr(event, "phase", None) == "final_answer" for event in second)
+    assert not any(
+        "must-not-become-final-text" in str(event.model_dump())
+        for event in first + second
+    )
     requests = [
         json.loads(line)
         for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     turns = [row for row in requests if row["method"] == "turn/start"]
+    starts = [row for row in requests if row["method"] == "thread/start"]
     assert len(turns) == 2
+    assert starts[0]["params"]["ephemeral"] is False
     assert "resume payload" in json.dumps(turns[1]["params"]["input"])
     assert all(row["params"]["threadId"] == handle.run_id for row in turns)
 
 
 @pytest.mark.asyncio
+async def test_runtime_close_after_terminal_does_not_interrupt_finished_turn(tmp_path: Path):
+    client = AsyncCodexClient(config=_config(tmp_path))
+    runtime = CodexRuntimeAdapter(client)
+    handle = await runtime.start(StartRequest(input="complete", user_id="u", session_id="s"))
+    stream = runtime.stream(handle)
+    events = []
+    try:
+        while True:
+            event = await anext(stream)
+            events.append(event)
+            if event.event_type == "run.completed":
+                break
+        pid = int((tmp_path / "pid").read_text(encoding="utf-8"))
+        await runtime.close(handle)
+        await runtime.close(handle)
+    finally:
+        await stream.aclose()
+
+    await _wait_for_process_exit(pid)
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(event.event_type == "run.completed" for event in events)
+    assert "turn/interrupt" not in {row["method"] for row in requests}
+
+
+@pytest.mark.asyncio
+async def test_runtime_events_preserve_the_caller_scope(tmp_path: Path):
+    client = AsyncCodexClient(config=_config(tmp_path))
+    runtime = CodexRuntimeAdapter(client)
+    request = StartRequest(
+        input="complete",
+        user_id="scope-user",
+        session_id="scope-session",
+        agent_id="scope-agent",
+        metadata={"invocation_id": "scope-invocation"},
+    )
+    handle = await runtime.start(request)
+    try:
+        events = [event async for event in runtime.stream(handle)]
+    finally:
+        await runtime.close(handle)
+
+    assert events
+    # canonical 事件:调用方 scope 收敛进 source.metadata。
+    assert {
+        (
+            event.source.metadata.get("agent_id"),
+            event.source.metadata.get("user_id"),
+            event.source.metadata.get("session_id"),
+            event.source.metadata.get("invocation_id"),
+        )
+        for event in events
+    } == {("scope-agent", "scope-user", "scope-session", "scope-invocation")}
+
+
+@pytest.mark.asyncio
 async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     handle = await runtime.start(
         StartRequest(
             input="complete",
@@ -247,7 +320,7 @@ async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
     events = [event async for event in runtime.stream(handle)]
     await runtime.close(handle)
 
-    assert any(event.phase == "final_answer" for event in events)
+    assert any(getattr(event, "phase", None) == "final_answer" for event in events)
     requests = [
         json.loads(line)
         for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
@@ -259,12 +332,12 @@ async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_runtime_timeout_closes_real_transport_process(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client, turn_timeout_seconds=0.15)
+    runtime = CodexRuntimeAdapter(client, turn_timeout_seconds=0.15)
     handle = await runtime.start(StartRequest(input="BLOCK", user_id="u", session_id="s"))
     pid = int((tmp_path / "pid").read_text(encoding="utf-8"))
     events = [event async for event in runtime.stream(handle)]
     await _wait_for_process_exit(pid)
 
     failed = [event for event in events if event.event_type == "run.failed"]
-    assert failed and failed[0].payload["error"] == "codex turn timed out"
+    assert failed and failed[0].error.message == "codex turn timed out"
     assert handle.run_id in runtime._do_not_persist

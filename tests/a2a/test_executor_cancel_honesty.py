@@ -18,7 +18,7 @@ from a2a.utils.errors import TaskNotCancelableError
 
 from ksadk.a2a.executor import A2ARuntimeExecutor
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.events.canonical import RunCanceled, SourceRef
 from ksadk.runtime import CancelResult, RunHandle
 
 
@@ -61,7 +61,7 @@ class _StubTaskAdapter:
 )
 async def test_cancel_marks_canceled_when_underlying_accepted(accepted: CancelResult) -> None:
     adapter = _StubTaskAdapter(accepted)
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=adapter)
+    executor = A2ARuntimeExecutor(task_adapter=adapter)
     queue = _FakeEventQueue()
     await executor.cancel(_FakeContext(), queue)  # type: ignore[arg-type]
     assert adapter.calls == ["t1"]
@@ -76,7 +76,7 @@ async def test_cancel_marks_canceled_when_underlying_accepted(accepted: CancelRe
 )
 async def test_cancel_rejected_when_underlying_not_cancelled(rejected: Any) -> None:
     adapter = _StubTaskAdapter(rejected)
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=adapter)
+    executor = A2ARuntimeExecutor(task_adapter=adapter)
     queue = _FakeEventQueue()
     with pytest.raises(TaskNotCancelableError):
         await executor.cancel(_FakeContext(), queue)  # type: ignore[arg-type]
@@ -86,11 +86,8 @@ async def test_cancel_rejected_when_underlying_not_cancelled(rejected: Any) -> N
 
 @pytest.mark.asyncio
 async def test_cancel_without_adapter_is_rejected() -> None:
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=None)
-    queue = _FakeEventQueue()
-    with pytest.raises(TaskNotCancelableError, match="runtime task adapter"):
-        await executor.cancel(_FakeContext(), queue)  # type: ignore[arg-type]
-    assert queue.events == []
+    with pytest.raises(TypeError, match="task_adapter is required"):
+        A2ARuntimeExecutor(task_adapter=None)
 
 
 class _CancelableRuntimeAdapter:
@@ -115,14 +112,15 @@ class _CancelableRuntimeAdapter:
             self.stream_started.set()
             await self.cancelled.wait()
             if self.emit_canceled_event:
-                yield RuntimeEvent.create(
-                    EventType.RUN_CANCELED,
-                    agent_id="agent-1",
-                    user_id="tenant-1",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={"status": "canceled"},
+                yield RunCanceled(
+                    schema_version=2,
+                    event_id="evt-cancel-emit",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    status="canceled",
                 )
 
         return _events()
@@ -152,7 +150,7 @@ async def test_accepted_runtime_cancel_never_completes_execution(
 ) -> None:
     runtime = _CancelableRuntimeAdapter(emit_canceled_event=emit_canceled_event)
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _FakeContext()
     execute_queue = _FakeEventQueue()
     cancel_queue = _FakeEventQueue()
@@ -174,7 +172,7 @@ async def test_accepted_runtime_cancel_never_completes_execution(
 async def test_cancel_without_real_handle_does_not_call_runtime() -> None:
     runtime = _CancelableRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     queue = _FakeEventQueue()
 
     with pytest.raises(TaskNotCancelableError, match="not_running"):
@@ -188,7 +186,7 @@ async def test_cancel_without_real_handle_does_not_call_runtime() -> None:
 async def test_cancel_after_restart_uses_persisted_runtime_handle() -> None:
     runtime = _CancelableRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _FakeContext()
     context.current_task = Task(
         id=context.task_id,
@@ -221,21 +219,22 @@ async def test_runtime_canceled_event_is_terminal_and_never_completed() -> None:
     class _NaturalCanceledRuntimeAdapter(_CancelableRuntimeAdapter):
         def stream(self, handle: RunHandle):  # noqa: ANN201
             async def _events():
-                yield RuntimeEvent.create(
-                    EventType.RUN_CANCELED,
-                    agent_id="agent-1",
-                    user_id="tenant-1",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={"status": "canceled"},
+                yield RunCanceled(
+                    schema_version=2,
+                    event_id="evt-cancel-natural",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    status="canceled",
                 )
 
             return _events()
 
     runtime = _NaturalCanceledRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     queue = _FakeEventQueue()
 
     await executor.execute(_FakeContext(), queue)  # type: ignore[arg-type]

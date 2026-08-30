@@ -1,0 +1,150 @@
+[
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "idempotency_key": "studio:s1:message-enqueue",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "enqueue",
+    "payload": {
+      "content": {
+        "text": "hello"
+      },
+      "reply_to": "reply-1"
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "5c19f52c-0d3e-4f66-a180-3ed6f787c22a",
+    "idempotency_key": "studio:s1:message-steer",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "steer",
+    "payload": {
+      "content": {
+        "text": "focus on latency"
+      },
+      "run_id": "run-1"
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "6d2a063d-1e4f-4a77-b291-4fe7a898d33b",
+    "idempotency_key": "studio:s1:message-inject",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "inject",
+    "payload": {
+      "context": {
+        "doc": "spec.md"
+      },
+      "run_id": "run-1"
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "7e3b174e-2f50-4b88-c3a2-5af8b909e44c",
+    "idempotency_key": "studio:s1:message-interrupt",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "interrupt",
+    "payload": {
+      "run_id": "run-1",
+      "reason": "user_requested"
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "8f4c285f-3a61-4c99-d4b3-6b09ca21af5d",
+    "idempotency_key": "studio:s1:message-pause",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "pause",
+    "payload": {
+      "run_id": "run-1",
+      "reason": "user_requested"
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "9a5d3960-4b72-4dad-e5c4-7c1adb32ba6e",
+    "idempotency_key": "studio:s1:message-resume",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "resume",
+    "payload": {
+      "target": {
+        "kind": "checkpoint",
+        "id": "ckpt-1"
+      },
+      "input": {
+        "text": "continue"
+      }
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "ab6e4a71-5c83-4ebe-f6d5-8d2bec43cb7f",
+    "idempotency_key": "studio:s1:message-submit_interaction",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "command_type": "submit_interaction",
+    "payload": {
+      "run_id": "run-1",
+      "interaction_id": "interaction-1",
+      "token_ref": "one-time-ref-1",
+      "response": {
+        "choice": "approve"
+      }
+    },
+    "source": {
+      "kind": "studio",
+      "ref": "local-studio"
+    },
+    "authorization_ref": "permit-1",
+    "submitted_at": "2026-08-17T00:00:00Z"
+  }
+]

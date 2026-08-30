@@ -543,11 +543,12 @@ class TestLongTermMemoryInit:
     """LongTermMemory 构造和 from_env() 工厂方法"""
 
     def test_init_local_string(self):
-        from ksadk.memory.adk.backends.inmemory_ltm_backend import InMemoryLTMBackend
+        from ksadk.memory.adk.backends.sqlite_ltm_backend import SqliteLTMBackend
         from ksadk.memory.adk.long_term_memory import LongTermMemory
 
         ltm = LongTermMemory(backend="local", app_name="test_app")
-        assert isinstance(ltm._backend, InMemoryLTMBackend)
+        # local 默认用持久 SqliteLTMBackend（非 InMemory）
+        assert isinstance(ltm._backend, SqliteLTMBackend)
 
     def test_init_backend_instance(self):
         from ksadk.memory.adk.backends.inmemory_ltm_backend import InMemoryLTMBackend
@@ -638,6 +639,25 @@ class TestLongTermMemoryInit:
         ltm = LongTermMemory.from_env()
         assert ltm.backend_config["access_key"] == "fallback_ak"
         assert ltm.backend_config["secret_key"] == "fallback_sk"
+
+    def test_from_env_sdk_supports_aws_style_credentials_and_sts_token(self, monkeypatch):
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
+
+        monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+        monkeypatch.delenv("KSADK_LTM_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("KSADK_LTM_SECRET_KEY", raising=False)
+        monkeypatch.delenv("KSADK_LTM_SESSION_TOKEN", raising=False)
+        monkeypatch.delenv("KSYUN_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("KSYUN_SECRET_KEY", raising=False)
+        monkeypatch.setenv("KSYUN_ACCESS_KEY_ID", "aws-style-ak")
+        monkeypatch.setenv("KSYUN_SECRET_ACCESS_KEY", "aws-style-sk")
+        monkeypatch.setenv("KSYUN_SESSION_TOKEN", "sts-token")
+
+        ltm = LongTermMemory.from_env()
+
+        assert ltm.backend_config["access_key"] == "aws-style-ak"
+        assert ltm.backend_config["secret_key"] == "aws-style-sk"
+        assert ltm.backend_config["session_token"] == "sts-token"
 
     def test_from_env_sdk_prefers_explicit_region_over_ksyun_region(self, monkeypatch):
         from ksadk.memory.adk.long_term_memory import LongTermMemory
@@ -854,12 +874,14 @@ class TestLongTermMemorySearchMemory:
         assert result.memories[0].content.parts[0].text == "just plain text, not json"
         assert result.memories[0].content.role == "user"
 
-    async def test_non_standard_json_skipped(self):
+    async def test_non_standard_json_skipped(self, monkeypatch):
+        # InMemory 特有行为（跳过非标准 JSON）；SqliteLTMBackend 存纯文本 fallback
+        monkeypatch.setenv("KSADK_LTM_FORCE_INMEMORY", "true")
         ltm = self._make_ltm()
         ltm._backend.save_memory("u1", [json.dumps({"invalid": "no parts key"})])
 
         result = await ltm.search_memory(app_name="test", user_id="u1", query="invalid")
-        # Non-standard format is skipped
+        # Non-standard format is skipped (InMemory behavior)
         assert len(result.memories) == 0
 
     async def test_empty_results(self):

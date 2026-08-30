@@ -216,6 +216,7 @@ def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_p
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
@@ -266,6 +267,7 @@ def test_run_invoke_command_single_shot_uses_fresh_session_each_call(monkeypatch
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured_sessions.append(session_id)
 
@@ -327,6 +329,7 @@ def test_run_invoke_command_single_shot_respects_explicit_session(monkeypatch, t
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured.append(session_id)
 
@@ -676,6 +679,8 @@ def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(
 def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(
     monkeypatch, tmp_path: Path
 ):
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -746,6 +751,8 @@ def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(
 def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state(
     monkeypatch, tmp_path: Path
 ):
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -1021,6 +1028,7 @@ def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
@@ -1134,6 +1142,7 @@ def test_run_invoke_command_message_mode_keeps_http_chat_path(monkeypatch, tmp_p
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured["once"] += 1
         captured["endpoint"] = endpoint
@@ -1735,8 +1744,9 @@ def test_run_invoke_command_builds_verbose_workspace_sync_emitter(monkeypatch, t
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", lambda **_kwargs: None)
     monkeypatch.setattr(
         "ksadk.cli.cmd_invoke._build_workspace_sync_progress_emitter",
-        lambda verbose: captured.setdefault("verbose_workspace_sync", verbose)
-        or (lambda _event: None),
+        lambda verbose: (
+            captured.setdefault("verbose_workspace_sync", verbose) or (lambda _event: None)
+        ),
     )
 
     run_invoke_command(
@@ -1936,6 +1946,7 @@ def test_run_invoke_command_passes_explicit_api_format_to_resolver(monkeypatch, 
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         return None
 

@@ -68,3 +68,26 @@ def test_load_agent_module_raises_when_agent_variable_is_missing(tmp_path: Path)
 
     with pytest.raises(AttributeError, match="未找到 root_agent"):
         load_agent_module(str(tmp_path), entry_point, "root_agent")
+
+
+def test_load_agent_module_does_not_reuse_another_bundle_bare_entrypoint(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "agent.py").write_text('root_agent = "first"\n', encoding="utf-8")
+    (second / "agent.py").write_text('root_agent = "second"\n', encoding="utf-8")
+    _cleanup_module("agent")
+
+    try:
+        first_agent, first_module = load_agent_module(str(first), "agent.py", "root_agent")
+        second_agent, second_module = load_agent_module(str(second), "agent.py", "root_agent")
+    finally:
+        _cleanup_module("agent")
+
+    assert first_agent == "first"
+    assert first_module.__file__ == str(first / "agent.py")
+    assert second_agent == "second"
+    assert second_module.__file__ == str(second / "agent.py")

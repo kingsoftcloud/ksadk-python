@@ -1,0 +1,18 @@
+{
+  "phase": "phase0",
+  "title": "RuntimeEvent v2 / Session Tags / 0.8.1 Release 基线",
+  "plan": "docs/superpowers/plans/2026-08-11-runtime-event-schema-v2-release.md",
+  "accepted": true,
+  "accepted_basis": [
+    "行为级 release gate tests/release/test_runtime_event_v2_release_gate.py 于本次复核 8 passed（commit ff6247b3 引入，本次运行仍绿）",
+    "CHANGELOG [0.8.1] - 2026-08-10 已发布且 pyproject version=0.8.1（公开 0.8.1 已通过 Trusted Publishing 上线）",
+    "Phase 0 计划 Task 10（合同/发布文档/候选报告）交付于 commit ff6247b3"
+  ],
+  "verified_at": "2026-08-20T00:00:00Z",
+  "verification_commands": [
+    "uv run pytest tests/release/test_runtime_event_v2_release_gate.py -q  # 8 passed",
+    "git show ff6247b3 --stat  # Task 10 交付"
+  ],
+  "gate_test_commit": "ff6247b36119f8fb811b2e42c4413aef31762aa5",
+  "released_version": "0.8.1"
+}

@@ -164,7 +164,7 @@ async def test_conversation_request_reuses_full_runtime_preprocessing(monkeypatc
 @pytest.mark.asyncio
 async def test_start_without_conversation_request_keeps_frozen_runner_payload():
     runner = _CapturingRunner()
-    adapter = RunnerRuntimeAdapter(runner, runtime_type="fixture")
+    adapter = RunnerRuntimeAdapter(runner, runtime_type="ksadk")
     handle = await adapter.start(
         StartRequest(
             input={"custom": "state"},

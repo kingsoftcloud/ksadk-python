@@ -15,8 +15,10 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.server.factory import get_state
-from ksadk.sessions import ConversationSessionCore, Session, SessionEvent
+from ksadk.events.canonical import ContinuationCreated
+from ksadk.events.canonical_store import session_event_to_runtime_event
+from ksadk.server.factory import get_runtime_execution, get_state
+from ksadk.sessions import Session, SessionEvent
 
 from . import dependencies as deps
 from .common import _sanitize_session_state_for_action
@@ -45,6 +47,7 @@ async def _require_action_session(
     if (
         session is None
         or (agent_id is not None and session.agent_id != agent_id)
+        or (user_id is not None and session.user_id != user_id)
     ):
         logger.warning("Session %s not found", session_id)
         raise HTTPException(status_code=404, detail="Session not found")
@@ -52,7 +55,6 @@ async def _require_action_session(
 
 
 async def _session_to_action_payload(session: Session) -> dict[str, Any]:
-    runner = get_state().runner
     events = list(session.events or [])
     if not events:
         try:
@@ -106,21 +108,56 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
         "Version": session.version,
+        "Continuity": _runtime_continuity_payload(),
     }
-    if runner is not None:
-        try:
-            continuity = await runner.get_session_adapter().describe_continuity(
-                runner=runner,
-                session=session,
-                core=ConversationSessionCore(deps.resolve_session_service()),
-            )
-            payload["Continuity"] = continuity.to_payload()
-        except Exception as exc:
-            logger.debug("Failed to describe continuity for session %s: %s", session.id, exc)
     return payload
 
 
+def _runtime_continuity_payload() -> dict[str, Any]:
+    """Describe continuity from the active RuntimeAdapter capability contract."""
+
+    state = get_state()
+    if state.executor is None or state.launch_context is None:
+        # Session storage is independently useful in route-manifest and
+        # control-plane-only apps. Do not make a metadata projection require a
+        # live runtime execution binding.
+        return {
+            "Level": "semantic",
+            "Path": "replay",
+            "Runtime": "unbound",
+            "Details": {
+                "CheckpointSupported": False,
+                "Reason": "RuntimeAdapter is not bound to this app",
+            },
+        }
+    executor, launch_context = get_runtime_execution()
+    capabilities = executor.native_capabilities(launch_context)
+    continuity = capabilities.get("SessionContinuity")
+    continuity = continuity if isinstance(continuity, Mapping) else {}
+    checkpoint = capabilities.get("Checkpoint")
+    checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+    level = str(continuity.get("Level") or "semantic").strip().lower()
+    if level not in {"ui_only", "semantic", "runtime", "exact"}:
+        level = "semantic"
+    return {
+        "Level": level,
+        "Path": "checkpoint" if checkpoint.get("Supported") else "replay",
+        "Runtime": launch_context.runtime_type,
+        "Details": {
+            "CheckpointSupported": bool(checkpoint.get("Supported")),
+            "Reason": str(continuity.get("Reason") or ""),
+        },
+    }
+
+
 def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
+    """Serialize a stored SessionEvent for the REST action wire.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``）：
+    ``EventId``/``SessionId``/``Author``/``EventType``/``Content``/``Timestamp``/
+    ``SeqId``（有值时附 ``InvocationId``）。这是存储事件形态本身的透传，
+    ``Content``/``Metadata`` 的内部结构不在承诺范围。
+    """
     payload = {
         "EventId": event.id,
         "SessionId": event.session_id,
@@ -203,9 +240,41 @@ async def _iter_with_idle_heartbeat(source: AsyncIterator[Any]):
 
 
 def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
-    if event.event_type != "run_checkpoint":
-        return None
-    metadata = event.metadata or {}
+    """Project a checkpoint-bearing event into the REST checkpoint action payload.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``）：``EventId``/
+    ``SessionId``/``InvocationId``/``SeqId``/``Timestamp``/``RunId``/
+    ``CheckpointId``/``Framework``/``FrameworkRef``/``IsResumable``/
+    ``ResumeStatus``/``IsTerminal``/``NextNode``。来源为显式 ``run_checkpoint``
+    事件元数据，或 ``continuation.created`` canonical 事件的投影。
+    非 checkpoint 事件（或不可识别的 continuation_kind）返回 ``None``。
+    内部不保证字段：其余元数据透传键（``Metadata`` 内容随存储演进可变）。
+    """
+    if event.event_type == "run_checkpoint":
+        metadata = event.metadata or {}
+    else:
+        canonical = session_event_to_runtime_event(event)
+        if not isinstance(canonical, ContinuationCreated):
+            return None
+        if canonical.continuation_kind != "graph_checkpoint":
+            return None
+        framework = canonical.source.framework
+        framework_ref = {framework: dict(canonical.ref)}
+        capability = canonical.source.metadata.get("capability")
+        capability = capability if isinstance(capability, Mapping) else {}
+        metadata = {
+            **dict(event.metadata or {}),
+            **dict(canonical.source.metadata),
+            "continuation_kind": canonical.continuation_kind,
+            "run_id": canonical.run_id,
+            "checkpoint_id": canonical.continuation_id,
+            "framework": framework,
+            "framework_ref": dict(framework_ref),
+            "backend": str(capability.get("backend") or "unknown"),
+            "scope": str(capability.get("scope") or "unknown"),
+            "durable": bool(capability.get("durable", False)),
+            "is_resumable": canonical.resumable,
+        }
     run_id = str(metadata.get("run_id") or "").strip()
     checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
     framework = str(metadata.get("framework") or "").strip()
@@ -528,11 +597,17 @@ def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[st
     )
     return {
         "Code": "checkpoint_not_resumable",
+        "code": "checkpoint_not_resumable",
         "Reason": reason,
+        "reason": reason,
         "CheckpointId": str(checkpoint.get("CheckpointId") or ""),
+        "checkpoint_id": str(checkpoint.get("CheckpointId") or ""),
         "RunId": str(checkpoint.get("RunId") or ""),
+        "run_id": str(checkpoint.get("RunId") or ""),
         "ResumeStatus": str(checkpoint.get("ResumeStatus") or "disabled"),
+        "resume_status": str(checkpoint.get("ResumeStatus") or "disabled"),
         "IsTerminal": bool(checkpoint.get("IsTerminal")),
+        "is_terminal": bool(checkpoint.get("IsTerminal")),
     }
 
 

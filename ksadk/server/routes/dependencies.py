@@ -17,13 +17,13 @@ from typing import Any, Callable, Iterator
 class ServerRouteDependencies:
     resolve_session_service: Callable[[], Any]
     describe_session_backend: Callable[[], dict[str, Any]]
-    get_persistence_status: Callable[..., Any]
     resolve_agent_ui_spec: Callable[[], dict[str, Any]]
     conversation: Callable[[], Any]
     detached_streaming_response: Callable[..., Any]
     detached_stream_class: Callable[[], type[Any]]
     heartbeat_interval: Callable[[], float]
     runtime_app: Callable[[], Any]
+    get_persistence_status: Callable[..., Any] | None = None
 
 
 _dependencies: ServerRouteDependencies | None = None
@@ -79,6 +79,8 @@ async def get_persistence_status(
     *, framework: str | None = None, use_cache: bool = True
 ) -> dict[str, Any]:
     provider = current().get_persistence_status
+    if provider is None:
+        from ksadk.sessions.persistence import get_persistence_status as provider
     try:
         return dict(await provider(framework=framework, use_cache=use_cache))
     except TypeError as exc:

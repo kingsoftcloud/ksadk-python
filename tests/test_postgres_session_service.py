@@ -5,12 +5,13 @@ import logging
 import os
 import sys
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
+from ksadk.events.canonical import RunStarted, SourceRef
+from ksadk.events.canonical_store import RuntimeEventStore, canonical_storage_id
 from ksadk.sessions import create_session_service
-from ksadk.sessions.base import SessionEvent
+from ksadk.sessions.base import SessionEvent, SessionServiceStorageCapabilities
 from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.resilient import ResilientSessionService
@@ -105,40 +106,6 @@ async def test_configured_postgres_backend_fails_open_to_memory(monkeypatch, cap
     assert "session persistence degraded" in caplog.text
 
 
-async def test_checkpoint_written_during_degradation_is_permanently_non_resumable():
-    class _FailingPrimary(InMemorySessionService):
-        async def append_event(self, session_id, event):
-            raise ConnectionError("database unavailable")
-
-    fallback = InMemorySessionService()
-    await fallback.create_session("demo-agent", "user-1", session_id="sess-checkpoint")
-    service = ResilientSessionService(_FailingPrimary(), fallback=fallback)
-    event = SessionEvent(
-        id="evt-checkpoint",
-        event_type="run_checkpoint",
-        metadata={
-            "run_id": "run-1",
-            "checkpoint_id": "ckpt-1",
-            "framework": "langgraph",
-            "framework_ref": {"langgraph": {"checkpoint_id": "ckpt-1"}},
-            "is_resumable": True,
-            "resume_status": "resumable",
-            "backend": "postgres",
-            "durable": True,
-        },
-    )
-
-    stored = await service.append_event("sess-checkpoint", event)
-
-    assert stored.metadata["is_resumable"] is False
-    assert stored.metadata["resume_status"] == "disabled"
-    assert stored.metadata["durable"] is False
-    assert stored.metadata["resume_disabled_reason"] == (
-        "Checkpoint was not written to durable persistence"
-    )
-    await service.aclose()
-
-
 async def test_configured_postgres_backend_fails_open_when_asyncpg_is_missing(
     monkeypatch,
     caplog,
@@ -156,19 +123,48 @@ async def test_configured_postgres_backend_fails_open_when_asyncpg_is_missing(
     assert session.id == "sess-1"
     assert isinstance(service, ResilientSessionService)
     assert service.degraded is True
-    assert any(
-        getattr(record, "session_backend_reason_code", "") == "DEPENDENCY_MISSING"
-        for record in caplog.records
-    )
+    assert "asyncpg is required" in caplog.text
     assert "session persistence degraded" in caplog.text
+
+
+async def test_agent_kernel_postgres_backend_does_not_wrap_durable_events_in_fail_open_memory(
+    monkeypatch,
+):
+    """Kernel RuntimeEvents require one durable fact store, not a dual-write wrapper."""
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test:5432/session")
+
+    service = create_session_service()
+
+    assert isinstance(service, PostgresSessionService)
+    assert service.storage_capabilities.atomic_seq_bindings == frozenset(
+        {"runtime_event.seq", "session_event.seq"}
+    )
 
 
 async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
     executed: list[str] = []
+    shape_results = iter((False, False, True))
+
+    class TransactionContext:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return None
 
     class FakeConnection:
+        async def fetchval(self, _sql, *_args):
+            return next(shape_results)
+
         async def execute(self, sql, *_args):
             executed.append(sql)
+
+        def transaction(self):
+            return TransactionContext()
 
     class AcquireContext:
         async def __aenter__(self):
@@ -193,20 +189,21 @@ async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
 
     schema_sql = "\n".join(executed)
     assert "CREATE OR REPLACE VIEW ksadk_session_events_readable" in schema_sql
+    assert "idx_ksadk_pg_events_session_invocation_seq" in schema_sql
     assert "message_text" in schema_sql
     assert "lifecycle_status" in schema_sql
 
 
-async def test_postgres_checkpoint_scan_pushes_filters_and_bounds_storage_page():
-    from ksadk.sessions.base import CheckpointEventQuery
-    from ksadk.sessions.postgres_service import PostgresSessionService
-
-    calls: list[tuple[str, tuple[object, ...]]] = []
+async def test_postgres_schema_fast_path_skips_ddl_when_core_shape_is_current():
+    observed: list[str] = []
 
     class FakeConnection:
-        async def fetch(self, sql, *args):
-            calls.append((sql, args))
-            return []
+        async def fetchval(self, sql, *_args):
+            observed.append(sql)
+            return True
+
+        async def execute(self, sql, *_args):
+            raise AssertionError(f"current schema must not execute DDL: {sql}")
 
     class AcquireContext:
         async def __aenter__(self):
@@ -219,35 +216,48 @@ async def test_postgres_checkpoint_scan_pushes_filters_and_bounds_storage_page()
         def acquire(self):
             return AcquireContext()
 
-    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
-    service._pool = FakePool()
-    service._schema_ready = True
-
-    await service.scan_checkpoint_events(
-        CheckpointEventQuery(
-            session_ids=["a", "b"], agent_id="agent-a", checkpoint_ids=["cp-a", "cp-b"],
-            run_id="run", framework="langgraph", offset=7, limit=50,
-        )
-    )
-
-    sql, args = calls[0]
-    assert "event_row.event_type = ANY" in sql
-    assert "event_row.session_id = ANY" in sql
-    assert "metadata_json ->> 'checkpoint_id'" in sql
-    assert "metadata_json ->> 'framework'" in sql
-    assert args[-2:] == (50, 7)
-
-
-async def test_postgres_event_query_pushes_invocation_filter_before_limit():
-    from ksadk.sessions.base import SessionEventQuery
     from ksadk.sessions.postgres_service import PostgresSessionService
 
-    calls: list[tuple[str, tuple[object, ...]]] = []
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    service._pool = FakePool()
+    await service._ensure_schema()
+
+    assert service._schema_ready is True
+    assert len(observed) == 1
+    assert "pg_constraint" in observed[0]
+    assert "constraint_row.contype = 'p'" in observed[0]
+    assert "constraint_row.contype = 'u'" in observed[0]
+    assert "constraint_row.contype = 'f'" in observed[0]
+    assert "FOREIGN KEY (namespace, session_id)" in observed[0]
+    assert "idx_ksadk_pg_events_session_invocation_seq" in observed[0]
+
+
+async def test_postgres_schema_migration_takes_advisory_lock_then_rechecks():
+    observed: list[str] = []
+    shape_results = iter((False, False, True))
+
+    class TransactionContext:
+        async def __aenter__(self):
+            observed.append("transaction.begin")
+
+        async def __aexit__(self, *_args):
+            observed.append("transaction.end")
 
     class FakeConnection:
-        async def fetch(self, sql, *args):
-            calls.append((sql, args))
-            return []
+        async def fetchval(self, sql, *_args):
+            observed.append("shape.check")
+            return next(shape_results)
+
+        async def execute(self, sql, *_args):
+            if "pg_advisory_xact_lock" in sql:
+                observed.append("advisory.lock")
+            elif "CREATE TABLE" in sql:
+                observed.append("core.ddl")
+            elif "CREATE OR REPLACE VIEW" in sql:
+                observed.append("view.ddl")
+
+        def transaction(self):
+            return TransactionContext()
 
     class AcquireContext:
         async def __aenter__(self):
@@ -260,71 +270,26 @@ async def test_postgres_event_query_pushes_invocation_filter_before_limit():
         def acquire(self):
             return AcquireContext()
 
-    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
-    service._pool = FakePool()
-    service._schema_ready = True
-
-    await service.query_events(
-        SessionEventQuery(
-            session_ids=["session"],
-            invocation_id="invocation",
-            limit=1,
-            from_start=True,
-            order_by_seq=True,
-        )
-    )
-
-    sql, args = calls[0]
-    assert "event_row.invocation_id =" in sql
-    assert "ORDER BY event_row.seq_id ASC, event_row.id ASC" in sql
-    assert args[-3:] == ("invocation", 1, 0)
-
-
-async def test_postgres_event_query_pushes_checkpoint_ids_before_limit():
-    from ksadk.sessions.base import SessionEventQuery
     from ksadk.sessions.postgres_service import PostgresSessionService
-
-    calls: list[tuple[str, tuple[object, ...]]] = []
-
-    class FakeConnection:
-        async def fetch(self, sql, *args):
-            calls.append((sql, args))
-            return []
-
-    class AcquireContext:
-        async def __aenter__(self):
-            return FakeConnection()
-
-        async def __aexit__(self, *_args):
-            return None
-
-    class FakePool:
-        def acquire(self):
-            return AcquireContext()
 
     service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
     service._pool = FakePool()
-    service._schema_ready = True
+    await service._ensure_schema()
 
-    await service.query_events(
-        SessionEventQuery(
-            session_ids=["session"],
-            checkpoint_ids=["cp-a", "cp-b"],
-            limit=1,
-        )
-    )
+    assert observed == [
+        "shape.check",
+        "transaction.begin",
+        "advisory.lock",
+        "shape.check",
+        "core.ddl",
+        "shape.check",
+        "transaction.end",
+        "view.ddl",
+    ]
 
-    sql, args = calls[0]
-    assert "metadata_json ->> 'checkpoint_id' = ANY" in sql
-    assert args[-3:] == (["cp-a", "cp-b"], 1, 0)
 
-
-async def test_postgres_checkpoint_iterator_reuses_repeatable_read_snapshot_for_stats():
-    from ksadk.sessions.base import CheckpointEventQuery
-    from ksadk.sessions.postgres_service import PostgresSessionService
-
-    transaction_options: list[dict[str, object]] = []
-    scan_calls: list[tuple[str, tuple[object, ...]]] = []
+async def test_postgres_schema_migration_fails_closed_when_shape_stays_incomplete():
+    observed: list[str] = []
 
     class TransactionContext:
         async def __aenter__(self):
@@ -334,70 +299,41 @@ async def test_postgres_checkpoint_iterator_reuses_repeatable_read_snapshot_for_
             return None
 
     class FakeConnection:
-        def __init__(self):
-            self.scan_calls = 0
+        async def fetchval(self, _sql, *_args):
+            observed.append("shape.check")
+            return False
 
-        def transaction(self, **kwargs):
-            transaction_options.append(kwargs)
+        async def execute(self, sql, *_args):
+            if "CREATE TABLE" in sql:
+                observed.append("core.ddl")
+            elif "CREATE OR REPLACE VIEW" in sql:
+                observed.append("view.ddl")
+
+        def transaction(self):
             return TransactionContext()
-
-        async def fetch(self, sql, *_args):
-            if "ORDER BY event_row.timestamp ASC" in sql:
-                scan_calls.append((sql, _args))
-                self.scan_calls += 1
-                if self.scan_calls == 1:
-                    return [
-                        {
-                            "id": f"cp-{index}", "session_id": "clean",
-                            "author": "agent-a", "event_type": "run_checkpoint",
-                            "content_json": {}, "timestamp": index,
-                            "state_delta_json": {}, "seq_id": index + 1,
-                            "invocation_id": None,
-                            "metadata_json": {
-                                "run_id": "run", "checkpoint_id": f"cp-{index}"
-                            },
-                        }
-                        for index in range(50)
-                    ]
-            return []
-
-    connection = FakeConnection()
 
     class AcquireContext:
         async def __aenter__(self):
-            return connection
+            return FakeConnection()
 
         async def __aexit__(self, *_args):
             return None
 
     class FakePool:
-        def __init__(self):
-            self.acquire_count = 0
-
         def acquire(self):
-            self.acquire_count += 1
             return AcquireContext()
 
-    pool = FakePool()
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
     service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
-    service._pool = pool
-    service._schema_ready = True
+    service._pool = FakePool()
 
-    iterator = service.iter_checkpoint_event_chunks(
-        CheckpointEventQuery(session_ids=["clean"], offset=7, limit=50)
-    ).__aiter__()
-    batch = await anext(iterator)
-    stats = await service.get_checkpoint_stats([("clean", "run", "cp-1")])
-    with pytest.raises(StopAsyncIteration):
-        await anext(iterator)
+    with pytest.raises(RuntimeError, match="required core shape"):
+        await service._ensure_schema()
 
-    assert len(batch) == 50
-    assert stats["latest_seq_ids"] == {("clean", "run"): 0}
-    assert transaction_options == [{"isolation": "repeatable_read", "readonly": True}]
-    assert pool.acquire_count == 1
-    assert scan_calls[0][1][-2:] == (50, 7)
-    assert "(event_row.timestamp, event_row.session_id" in scan_calls[1][0]
-    assert scan_calls[1][1][-2:] == (50, 0)
+    assert service._schema_ready is False
+    assert observed == ["shape.check", "shape.check", "core.ddl", "shape.check"]
+    assert "view.ddl" not in observed
 
 
 async def test_postgres_events_for_agent_pushes_user_pagination_and_order_to_sql():
@@ -466,6 +402,63 @@ async def test_postgres_events_for_agent_pushes_user_pagination_and_order_to_sql
     assert "JOIN ksadk_sessions s" in str(observed["count_sql"])
 
 
+async def test_postgres_events_by_invocation_pushes_filter_and_cursor_to_sql():
+    observed: dict[str, object] = {}
+
+    class FakeConnection:
+        async def fetch(self, sql, *params):
+            observed["sql"] = sql
+            observed["params"] = params
+            return [
+                {
+                    "id": "evt-1",
+                    "session_id": "sess-1",
+                    "author": "assistant",
+                    "event_type": "run.started",
+                    "content_json": {},
+                    "timestamp": 1.0,
+                    "state_delta_json": {},
+                    "seq_id": 2,
+                    "invocation_id": "run-1",
+                    "metadata_json": {},
+                }
+            ]
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    service = PostgresSessionService(
+        dsn="postgresql://user@db.example.test/session",
+        namespace="tenant-a",
+    )
+    service._pool = FakePool()
+    service._schema_ready = True
+
+    events = await service.get_events_by_invocation_id(
+        "sess-1",
+        "run-1",
+        after_seq_id=1,
+        before_seq_id=3,
+    )
+
+    assert [event.id for event in events] == ["evt-1"]
+    assert observed["params"] == ("tenant-a", "sess-1", "run-1", 1, 3)
+    assert "invocation_id = $3" in str(observed["sql"])
+    assert "seq_id > $4" in str(observed["sql"])
+    assert "seq_id < $5" in str(observed["sql"])
+    assert "ORDER BY seq_id ASC" in str(observed["sql"])
+
+
 async def test_resilient_session_keeps_hydrated_history_when_primary_fails(caplog):
     primary = InMemorySessionService()
     await primary.create_session("demo-agent", "user-1", session_id="sess-1")
@@ -526,10 +519,25 @@ async def test_resilient_session_refreshes_healthy_primary_history():
 
 
 async def test_postgres_readable_view_failure_does_not_disable_core_schema(monkeypatch, caplog):
+    shape_results = iter((False, False, True))
+
+    class TransactionContext:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return None
+
     class FakeConnection:
+        async def fetchval(self, _sql, *_args):
+            return next(shape_results)
+
         async def execute(self, sql, *_args):
             if "CREATE OR REPLACE VIEW" in sql:
                 raise PermissionError("view creation denied")
+
+        def transaction(self):
+            return TransactionContext()
 
     class AcquireContext:
         async def __aenter__(self):
@@ -619,59 +627,6 @@ async def test_postgres_session_service_two_instances_share_sessions_events_and_
         await service_a.delete_session(session_id)
         await service_a.aclose()
         await service_b.aclose()
-
-
-async def test_postgres_batch_events_return_existing_data_when_some_session_ids_are_missing():
-    dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
-    if not dsn:
-        pytest.skip("Set KSADK_TEST_POSTGRES_DSN to run Postgres session integration tests")
-
-    from ksadk.sessions.postgres_service import PostgresSessionService
-
-    asyncpg_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
-    service = PostgresSessionService(
-        dsn=asyncpg_dsn,
-        namespace="pytest_partial_session_events",
-    )
-    suffix = uuid4().hex
-    existing_id = f"pytest-partial-existing-{suffix}"
-    missing_id = f"pytest-partial-missing-{suffix}"
-    event_id = f"pytest-partial-event-{suffix}"
-
-    try:
-        await service.create_session("demo-agent", "user-1", session_id=existing_id)
-        await service.append_event(
-            existing_id,
-            SessionEvent(
-                id=event_id,
-                author="user",
-                event_type="user_message",
-                content={
-                    "role": "user",
-                    "parts": [{"text": "partial postgres"}],
-                },
-            ),
-        )
-
-        sessions = await service.get_sessions_by_ids([missing_id, existing_id])
-        events = await service.get_events_batch(
-            [missing_id, existing_id],
-            agent_id="demo-agent",
-            limit=100,
-        )
-        total = await service.count_events_batch(
-            [missing_id, existing_id],
-            agent_id="demo-agent",
-        )
-
-        assert [session.id for session in sessions] == [existing_id]
-        assert [(event.session_id, event.id) for event in events] == [
-            (existing_id, event_id),
-        ]
-        assert total == 1
-    finally:
-        await service.delete_session(existing_id)
-        await service.aclose()
 
 
 async def test_postgres_session_create_is_idempotent_across_instances():
@@ -895,20 +850,6 @@ async def test_resilient_service_recovers_after_probe(monkeypatch, caplog):
     await asyncio.sleep(0.15)
     assert service.degraded is False
     assert "session persistence recovered" in caplog.text
-
-
-async def test_resilient_service_can_refresh_persistence_without_waiting_for_probe_loop():
-    primary = _RecoverablePrimary(fail_count=1)
-    service = ResilientSessionService(primary)
-
-    await service.get_session("missing")
-    assert service.degraded is True
-
-    recovered = await service.refresh_persistence_capability()
-
-    assert recovered is True
-    assert service.degraded is False
-    await service.aclose()
     await service.aclose()
 
 
@@ -987,3 +928,178 @@ async def test_degraded_session_resumes_pg_writes_after_recovery(caplog):
     pg_event_ids = [e.id for e in pg_events]
     assert "evt-2" in pg_event_ids
     await service.aclose()
+
+
+async def test_resilient_canonical_write_rejects_capability_mismatch_before_dual_write():
+    class UnsupportedPrimary(InMemorySessionService):
+        storage_capabilities = SessionServiceStorageCapabilities()
+
+    primary = UnsupportedPrimary()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback=fallback)
+    await service.create_session("agent-1", "user-1", session_id="capability-mismatch")
+    event = RunStarted(
+        schema_version=2,
+        event_id="event-1",
+        seq=0,
+        timestamp=1.0,
+        run_id="run-1",
+        scope_id="scope-1",
+        source=SourceRef(framework="adk", native_event_id="native-1"),
+        status="running",
+    )
+
+    with pytest.raises(RuntimeError, match="atomic runtime_event.seq"):
+        await RuntimeEventStore(service).append_one("capability-mismatch", event)
+
+    assert await fallback.get_events("capability-mismatch") == []
+    assert await primary.get_events("capability-mismatch") == []
+
+
+async def test_resilient_canonical_write_rejects_two_capable_backends_before_dual_write():
+    primary = InMemorySessionService()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback=fallback)
+    await service.create_session("agent-1", "user-1", session_id="dual-capable")
+    event = RunStarted(
+        schema_version=2,
+        event_id="event-1",
+        seq=0,
+        timestamp=1.0,
+        run_id="run-1",
+        scope_id="scope-1",
+        source=SourceRef(framework="adk", native_event_id="native-1"),
+        status="running",
+    )
+
+    with pytest.raises(RuntimeError, match="atomic runtime_event.seq"):
+        await RuntimeEventStore(service).append_one("dual-capable", event)
+
+    assert await fallback.get_events("dual-capable") == []
+    assert await primary.get_events("dual-capable") == []
+
+
+async def test_resilient_invocation_read_uses_hydrated_live_authority():
+    primary = InMemorySessionService()
+    await primary.create_session("agent-1", "user-1", session_id="resilient-read")
+    for event_id, invocation_id in (("event-1", "run-1"), ("event-2", "run-2")):
+        await primary.append_event(
+            "resilient-read",
+            SessionEvent(
+                id=event_id,
+                author="assistant",
+                event_type="run_status",
+                invocation_id=invocation_id,
+            ),
+        )
+    service = ResilientSessionService(primary)
+
+    events = await service.get_events_by_invocation_id("resilient-read", "run-1")
+
+    assert [event.id for event in events] == ["event-1"]
+
+
+async def test_postgres_canonical_store_roundtrip_and_concurrent_idempotency():
+    dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("Set KSADK_TEST_POSTGRES_DSN to run Postgres session integration tests")
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    namespace = "pytest_canonical_runtime_event"
+    session_id = "pytest-canonical-session"
+    service_a = PostgresSessionService(dsn=dsn, namespace=namespace)
+    service_b = PostgresSessionService(dsn=dsn, namespace=namespace)
+    store_a = RuntimeEventStore(service_a)
+    store_b = RuntimeEventStore(service_b)
+    event = RunStarted(
+        schema_version=2,
+        event_id="canonical-event-1",
+        seq=0,
+        timestamp=1.0,
+        run_id="run-1",
+        scope_id="scope-1",
+        source=SourceRef(
+            framework="adk",
+            native_event_id="native-1",
+            native_cursor="cursor-1",
+        ),
+        status="running",
+    )
+    second = event.model_copy(
+        update={
+            "event_id": "canonical-event-2",
+            "source": event.source.model_copy(update={"native_event_id": "native-2"}),
+        }
+    )
+
+    try:
+        await service_a.delete_session(session_id)
+        await service_a.create_session("agent-1", "user-1", session_id=session_id)
+        left, right = await asyncio.gather(
+            store_a.append_one(session_id, event),
+            store_b.append_one(session_id, event),
+        )
+        persisted_second = await store_b.append_one(session_id, second)
+        raw = await service_a.get_event_by_id(
+            session_id, canonical_storage_id(session_id, left.event_id)
+        )
+
+        assert left == right
+        assert left.seq == 1
+        assert persisted_second.seq == 2
+        assert raw is not None
+        assert raw.content["runtime_event"]["seq"] == raw.seq_id == 1
+        assert raw.metadata["schema_version"] == 2
+        assert "_ksadk_bind_session_seq" not in raw.metadata
+        assert raw.seq_binding is None
+        assert [item.seq_id for item in await service_a.get_events(session_id)] == [1, 2]
+        assert [
+            item.id for item in await service_a.get_events_by_invocation_id(session_id, "run-1")
+        ] == [
+            canonical_storage_id(session_id, "canonical-event-1"),
+            canonical_storage_id(session_id, "canonical-event-2"),
+        ]
+    finally:
+        await service_a.delete_session(session_id)
+        await service_a.aclose()
+        await service_b.aclose()
+
+
+async def test_postgres_ready_writer_and_cold_schema_check_do_not_deadlock():
+    dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("Set KSADK_TEST_POSTGRES_DSN to run Postgres session integration tests")
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    namespace = "pytest_schema_ready_writer"
+    session_id = "pytest-schema-ready-writer"
+    ready = PostgresSessionService(dsn=dsn, namespace=namespace)
+    cold = PostgresSessionService(dsn=dsn, namespace=namespace)
+    try:
+        await ready.delete_session(session_id)
+        await ready.create_session("agent-1", "user-1", session_id=session_id)
+        stored, looked_up = await asyncio.wait_for(
+            asyncio.gather(
+                ready.append_event(
+                    session_id,
+                    SessionEvent(
+                        id="schema-race-event",
+                        author="assistant",
+                        event_type="run_status",
+                        content={"status": "running"},
+                    ),
+                ),
+                cold.get_event_by_id(session_id, "schema-race-event"),
+            ),
+            timeout=10,
+        )
+
+        assert stored.id == "schema-race-event"
+        assert looked_up is None or looked_up.id == stored.id
+        assert [event.id for event in await cold.get_events(session_id)] == [stored.id]
+    finally:
+        await ready.delete_session(session_id)
+        await ready.aclose()
+        await cold.aclose()

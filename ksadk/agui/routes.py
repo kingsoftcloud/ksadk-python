@@ -9,17 +9,8 @@ from fastapi import FastAPI
 
 from ksadk.agui.agent import KsadkAGUIAgent
 from ksadk.agui.config import AGUIConfig, require_agui_dependencies
-from ksadk.runners.base_runner import BaseRunner
-from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
-from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
-
-
-def build_runtime_adapter(runner: BaseRunner, *, runtime_type: str):
-    if runtime_type == "langgraph":
-        return LangGraphRuntimeAdapter(runner)
-    if runtime_type == "adk":
-        return ADKRuntimeAdapter(runner)
-    return RunnerRuntimeAdapter(runner, runtime_type=runtime_type)
+from ksadk.runtime.adapter import RuntimeLaunchContext
+from ksadk.runtime.executor import RuntimeExecutor
 
 
 def _fastapi_endpoint_helper() -> Callable[..., Any]:
@@ -33,7 +24,8 @@ def _fastapi_endpoint_helper() -> Callable[..., Any]:
 
 def add_ksadk_agui_endpoint(
     app: FastAPI,
-    runner: BaseRunner,
+    executor: RuntimeExecutor,
+    launch_context: RuntimeLaunchContext,
     config: AGUIConfig,
     *,
     event_store_factory=None,
@@ -41,10 +33,10 @@ def add_ksadk_agui_endpoint(
 ) -> KsadkAGUIAgent:
     require_agui_dependencies()
 
-    adapter = build_runtime_adapter(runner, runtime_type=config.runtime_type)
     agent = KsadkAGUIAgent(
         name=config.agent_name,
-        adapter=adapter,
+        executor=executor,
+        launch_context=launch_context,
         event_store_factory=event_store_factory,
         session_service_factory=session_service_factory,
     )
@@ -52,4 +44,4 @@ def add_ksadk_agui_endpoint(
     return agent
 
 
-__all__ = ["add_ksadk_agui_endpoint", "build_runtime_adapter"]
+__all__ = ["add_ksadk_agui_endpoint"]

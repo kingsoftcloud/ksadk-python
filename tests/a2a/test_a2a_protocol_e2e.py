@@ -34,13 +34,34 @@ from a2a.types import (
 )
 from fastapi import FastAPI
 
+import ksadk.evaluation.a2a_adapter as evaluation_a2a
 from ksadk.a2a import (
     A2AConfig,
     A2ARuntimeTaskAdapter,
     add_a2a_protocol_routes,
     build_agent_card,
 )
-from ksadk.events import EventPhase, EventType, RuntimeEvent
+from ksadk.evaluation import (
+    A2ATargetAdapter,
+    EvalCase,
+    EvalRunSpec,
+    EvalSetVersion,
+    TargetKind,
+    TargetRef,
+    TargetRunStatus,
+)
+from ksadk.events.canonical import (
+    ApprovalRequest,
+    ContentSnapshot,
+    ContinuationCreated,
+    InteractionRequested,
+    ItemCompleted,
+    RunCanceled,
+    RunCompleted,
+    RunInterrupted,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -103,10 +124,9 @@ def _build_app(task_dsn: str, runner=None) -> tuple[FastAPI, object]:
     )
     server = add_a2a_protocol_routes(
         app,
-        runner,
         config,
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
     return app, server
@@ -240,7 +260,7 @@ def test_production_routes_require_runtime_adapter(tmp_path):
     )
 
     with pytest.raises(TypeError, match="task_adapter"):
-        add_a2a_protocol_routes(app, _BlockingRunner(), config)
+        add_a2a_protocol_routes(app, config)
 
 
 @pytest.mark.asyncio
@@ -324,9 +344,9 @@ async def test_hosted_to_hosted(tmp_path):
     """hosted→hosted:hosted agent A 的 runner 经 A2A 协议调用 hosted agent B。"""
     # agent B(hosted,echo)
     app_b = FastAPI()
+    runner_b = _EchoRunner()
     add_a2a_protocol_routes(
         app_b,
-        (runner_b := _EchoRunner()),
         A2AConfig(
             enabled=True,
             base_url="http://agent-b",
@@ -336,15 +356,15 @@ async def test_hosted_to_hosted(tmp_path):
             create_table=True,
         ),
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner_b, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner_b, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
     card_b = build_agent_card(name="agent-b", base_url="http://agent-b", skills=["echo"])
     # agent A(hosted),runner 委托调 B
     app_a = FastAPI()
+    runner_a = _DelegatingRunner(app_b, card_b)
     add_a2a_protocol_routes(
         app_a,
-        (runner_a := _DelegatingRunner(app_b, card_b)),
         A2AConfig(
             enabled=True,
             base_url="http://agent-a",
@@ -353,7 +373,7 @@ async def test_hosted_to_hosted(tmp_path):
             create_table=True,
         ),
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner_a, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner_a, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
     client, hc = await _client_for(
@@ -423,43 +443,60 @@ class _HitlRuntimeAdapter(RuntimeAdapter):
     def stream(self, handle: RunHandle):  # noqa: ANN201
         async def _events():
             if self.resume_payload is None:
-                yield RuntimeEvent.create(
-                    EventType.RUN_INTERRUPTED,
-                    agent_id="hitl-agent",
-                    user_id="tenant",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={"status": "input_required", "prompt": "需要审批才能继续"},
+                yield RunInterrupted(
+                    schema_version=2,
+                    event_id="evt-interrupted-1",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    status="interrupted",
+                    reason="需要审批才能继续",
                 )
-                yield RuntimeEvent.create(
-                    EventType.CHECKPOINT_CREATED,
-                    agent_id="hitl-agent",
-                    user_id="tenant",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=2,
-                    payload={"checkpoint_id": "ck-1", "granularity": "snapshot"},
+                yield ContinuationCreated(
+                    schema_version=2,
+                    event_id="evt-checkpoint-1",
+                    seq=2,
+                    timestamp=2.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    continuation_id="ck-1",
+                    continuation_kind="graph_checkpoint",
+                    resumable=True,
+                    ref={"granularity": "snapshot"},
                 )
                 return
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                agent_id="hitl-agent",
-                user_id="tenant",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=3,
-                phase=EventPhase.FINAL_ANSWER.value,
-                payload={"text": f"approved:{self.resume_payload.data}"},
+            yield ItemCompleted(
+                schema_version=2,
+                event_id="evt-text-completed-1",
+                seq=3,
+                timestamp=3.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(
+                        TextContent(
+                            part_id="text-0",
+                            text=f"approved:{self.resume_payload.data}",
+                        ),
+                    )
+                ),
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="hitl-agent",
-                user_id="tenant",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=4,
-                payload={"status": "completed"},
+            yield RunCompleted(
+                schema_version=2,
+                event_id="evt-run-completed-1",
+                seq=4,
+                timestamp=4.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="completed",
+                output_refs=(),
             )
 
         return _events()
@@ -495,7 +532,6 @@ async def test_input_required_then_resume(tmp_path):
     runtime_adapter = _HitlRuntimeAdapter()
     add_a2a_protocol_routes(
         app,
-        object(),
         A2AConfig(
             enabled=True,
             base_url="http://testserver",
@@ -562,14 +598,15 @@ class _RecordingRuntimeAdapter(RuntimeAdapter):
     def stream(self, handle):  # noqa: ANN201
         async def _events():
             await self.cancelled.wait()
-            yield RuntimeEvent.create(
-                EventType.RUN_CANCELED,
-                agent_id="echo-agent",
-                user_id="tenant",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={"status": "canceled"},
+            yield RunCanceled(
+                schema_version=2,
+                event_id="evt-canceled-1",
+                seq=1,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="canceled",
             )
 
         return _events()
@@ -599,7 +636,6 @@ class _NoopRuntime(BaseRuntime):
 @pytest.mark.asyncio
 async def test_cancel_routes_through_runtime_adapter(tmp_path):
     """goal-05 硬性要求:A2A cancel 走 RuntimeAdapter.cancel(G0.3),不在 executor 自造。"""
-    runner = _BlockingRunner()
     adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(adapter, runtime_type="test")
     app = FastAPI()
@@ -610,7 +646,7 @@ async def test_cancel_routes_through_runtime_adapter(tmp_path):
         task_store_dsn=f"sqlite+aiosqlite:///{tmp_path}/t.db",
         create_table=True,
     )
-    add_a2a_protocol_routes(app, runner, config, task_adapter=task_adapter)
+    add_a2a_protocol_routes(app, config, task_adapter=task_adapter)
     client, httpx_client = await _client_for(app)
 
     async def _consume():
@@ -660,3 +696,40 @@ async def test_taskstore_restart_recovery(tmp_path):
         assert fetched.id == task_id
     finally:
         await _close(client2, httpx_client2)
+
+
+@pytest.mark.asyncio
+async def test_evaluation_a2a_adapter_roundtrip(tmp_path, monkeypatch):
+    app, _ = _build_app(f"sqlite+aiosqlite:///{tmp_path}/evaluation.db")
+
+    def _evaluation_http_client(*, headers, timeout_seconds):
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            headers=headers,
+            timeout=httpx.Timeout(timeout_seconds),
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(evaluation_a2a, "_new_http_client", _evaluation_http_client)
+    adapter = A2ATargetAdapter(timeout_seconds=5)
+    target = TargetRef(kind=TargetKind.A2A, locator="http://testserver")
+
+    snapshot = await adapter.snapshot(target)
+    result = await adapter.run_case(
+        EvalRunSpec(
+            id="evaluation-e2e",
+            evalset=EvalSetVersion(
+                name="evaluation-e2e",
+                cases=[EvalCase(id="case-1", input="ping")],
+            ),
+            target=snapshot,
+        ),
+        EvalCase(id="case-1", input="ping"),
+        attempt=1,
+    )
+
+    assert snapshot.kind is TargetKind.A2A
+    assert result.status is TargetRunStatus.PASSED
+    assert result.output == "echo:ping"
+    assert result.metadata["remoteTaskIds"]

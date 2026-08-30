@@ -10,7 +10,6 @@ import base64
 import inspect
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -24,6 +23,7 @@ from ksadk.conversations.attachments import classify_attachment_kind, read_attac
 from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.usage_accumulator import accumulate_usage
+from ksadk.runners.utils import load_agent_module
 from ksadk.sessions.continuity import ADKSessionAdapter
 
 logger = logging.getLogger(__name__)
@@ -973,26 +973,12 @@ class ADKRunner(BaseRunner):
         self._apply_json_patch()
         self._apply_mcp_result_patch()
 
-        # 添加项目目录到 Python 路径
-        project_path = Path(self.project_dir).resolve()
-        if str(project_path) not in sys.path:
-            sys.path.insert(0, str(project_path))
-
-        # 确定模块名: 从 entry_point 获取
-        # (e.g. "smart_assistant_adk/agent.py" -> "smart_assistant_adk.agent")
-        entry_point = self.detection_result.entry_point
-        if entry_point.endswith(".py"):
-            module_name = entry_point[:-3]  # 移除 .py 后缀
-        else:
-            module_name = entry_point
-
-        # 转换路径为模块路径 (e.g., "subdir/agent" -> "subdir.agent")
-        module_name = module_name.replace("/", ".").replace("\\", ".")
-
         try:
-            module = __import__(module_name, fromlist=[self.detection_result.agent_variable])
-            self._module = module
-            self._agent = getattr(module, self.detection_result.agent_variable)
+            self._agent, self._module = load_agent_module(
+                self.project_dir,
+                self.detection_result.entry_point,
+                self.detection_result.agent_variable,
+            )
 
             # Inject safety instruction for DeepSeek/LLMs to prevent empty tool names
             if hasattr(self._agent, "instruction"):
@@ -1002,12 +988,8 @@ class ADKRunner(BaseRunner):
                 else:
                     self._agent.instruction = safety_prompt
 
-        except ImportError as e:
-            raise ImportError(f"无法导入模块 {module_name}: {e}")
-        except AttributeError:
-            raise AttributeError(
-                f"模块 {module_name} 中未找到 {self.detection_result.agent_variable}"
-            )
+        except (ImportError, AttributeError):
+            raise
         except Exception as exc:
             name_error = self._invalid_agent_name_load_error(exc)
             if name_error is not None:
@@ -1318,6 +1300,7 @@ class ADKRunner(BaseRunner):
             "current_attachments",
             "current_attachment_results",
             "has_current_files",
+            "metadata",
         ):
             if key in input_data:
                 state_delta[key] = input_data.get(key)
@@ -2155,9 +2138,7 @@ class ADKRunner(BaseRunner):
                                 # partial=False；这可能是一个此前 partial thought
                                 # 的终态快照。只补发新增内容，避免正文之后再显示一遍
                                 # 相同的思考块；若此前没有 partial thought，仍完整透传。
-                                previous_thought = sub_agent_thought_snapshots.get(
-                                    author_key, ""
-                                )
+                                previous_thought = sub_agent_thought_snapshots.get(author_key, "")
                                 if part.text.startswith(previous_thought):
                                     thought_delta = part.text[len(previous_thought) :]
                                     sub_agent_thought_snapshots[author_key] = part.text
@@ -2173,8 +2154,10 @@ class ADKRunner(BaseRunner):
                         snapshot = ""
                         replace_snapshot = False
                         for part in event.content.parts:
-                            if hasattr(part, "text") and part.text and not getattr(
-                                part, "thought", False
+                            if (
+                                hasattr(part, "text")
+                                and part.text
+                                and not getattr(part, "thought", False)
                             ):
                                 snapshot += part.text
                                 replace_snapshot = replace_snapshot or _part_metadata_flag(

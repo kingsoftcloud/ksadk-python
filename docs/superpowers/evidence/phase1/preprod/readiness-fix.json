@@ -1,0 +1,60 @@
+{
+ "scenario": "P0 readiness flip fix: renew heartbeat across waiting/idle runs",
+ "executed_at": "2026-08-20T04:31-04:35 +08:00",
+ "environment": {
+  "cluster": "pre-online manage cluster, namespace agent-kernel-phase1",
+  "deployment": "agent-runtime-codex-fake (instance codex-fake-1, agent phase1-codex-fake-agent)",
+  "image": "hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-fake-approval-v5-0bdbb62e (digest sha256:f6a66d74fb5278623f759c64516120764e25f55c641646d206b5e73d3cb61953; base fake-approval-v4 + ksadk 0.8.1 wheel from commit 0bdbb62e)",
+  "lease_ttl_seconds": 30,
+  "gateway_chain": "gateway router :8082 -> agentengine-kernel server (permit) -> runtime /agent-kernel/v1",
+  "path": "fake codex app-server drill (real kernel/ledger/gateway/server path, fake model), consistent with real-interaction-closure.json"
+ },
+ "root_causes_fixed": {
+  "1_heartbeat_non_renewal": "ksadk/kernel/bootstrap.py: lease renewal only happened for sessions with pending inbox work; completed/waiting-approval sessions stayed in the heartbeat set without renewal, so after TTL readiness flipped not-ready. Fix: dedicated heartbeat background task renews all held leases on a TTL/3 cadence; renewal also cannot be starved by a slow adapter.start() in the run loop (commit bb2fe85c + 8891ebd4).",
+  "2_readiness_ownership": "readiness now treats a lease owned by a different activation as lost (truthful not-ready on takeover).",
+  "3_interaction_guard_row_scoping": "ksadk/kernel/postgres_store.py + memory_store.py: interaction ledger fence lookup selected an activation row by activation_id alone; one pod holds leases for multiple sessions, so the wrong session's row could be returned and every interaction request failed StaleFenceError (runs stuck in 'running'). Fix: scope lookup to (activation_id, agent_instance_id, session_id) (commit 0bdbb62e).",
+  "4_typed_runtime_store_reads": "ksadk/events/canonical_store.py: hosted PG fenced session event store has no session_service; RuntimeEventStore reads (cold recovery scan / resolve_existing) raised AttributeError so takeover recovery always failed and a fresh pod entered degraded on restart with any open run. Fix: envelope-store read fallback (commit 663e5363).",
+  "5_observability": "background stream task failures are now logged at ERROR instead of silently captured (commit 01584d14) - this is what made 3 diagnosable."
+ },
+ "commits": {
+  "bb2fe85c": "fix(kernel): renew heartbeat across waiting runs",
+  "663e5363": "fix(events): typed RuntimeEventStore reads via envelope store fallback",
+  "01584d14": "chore(kernel): log background stream task failures",
+  "8891ebd4": "fix(kernel): renew leases on an independent heartbeat task",
+  "0bdbb62e": "fix(kernel): scope interaction guard lookup to the session row"
+ },
+ "tests": {
+  "new": [
+   "tests/kernel/test_production_bootstrap.py::test_readiness_stays_ready_across_idle_lease_ttl (TDD red first)",
+   "tests/kernel/test_production_bootstrap.py::test_readiness_flips_not_ready_when_lease_truly_lost",
+   "tests/kernel/test_production_bootstrap.py::test_heartbeat_renews_while_run_loop_blocked_in_slow_start",
+   "tests/kernel/test_production_bootstrap.py::test_typed_runtime_store_reads_without_session_service",
+   "tests/kernel/test_memory_store.py::test_interaction_guard_scopes_to_session_under_shared_activation"
+  ],
+  "suites": "uv run pytest tests/kernel tests/phase1 tests/interaction -> 232 passed, 3 failed (pre-existing on clean tip: ingress_convergence a2a/agui sqlalchemy-missing, phase1_gate CLI) ; verified pre-existing via git stash"
+ },
+ "preprod_verification": {
+  "timeline": [
+   "04:31:51 RunAgent accepted (session codex-ready-1e11ba50, message 908a9320)",
+   "04:31:52 interaction.requested (seq 6), run state waiting, kernel_interactions pending",
+   "04:31:52-04:33:07 GetAgentStatus x5 (every 15s, 75s > 2x TTL 30s) -> instance_state=ready on every sample; runtime /agent-kernel/v1/health ready:true, lease_healthy:true, degraded:false throughout",
+   "04:33:07 SubmitInteraction approve accepted (200, message 0224bdbe)",
+   "after approve: interaction.resolved (seq 16), run.completed (seq 22), kernel_runs.state=completed, both inbox messages completed",
+   "04:33:07-04:34:20 post-completion GetAgentStatus x3 after a further 70s idle -> instance_state=ready (no flip after run completion)"
+  ],
+  "readiness_samples_while_pending": [
+   "ready",
+   "ready",
+   "ready",
+   "ready",
+   "ready"
+  ],
+  "pod_restart_check": "fresh pod (new POD_UID) boots to ready:true / worker_running:true / degraded:false with a clean inbox; takeover recovery for open runs verified in unit tests after fix 4",
+  "driver_artifact": "/tmp/readiness_fix_driver.py pattern: RunAgent -> SSE wait interaction.requested -> poll GetAgentStatus 75s -> approve -> tail to terminal -> poll 70s more; exit 0 (DRIVER PASS)"
+ },
+ "notes": [
+  "prior drill sessions (codex-ready-*, codex-fake-reject-e2e-*, dbg-*) with stuck 'running' runs and stale claimed inbox rows were deleted from the drill database before final verification; they were leftovers of the bug being fixed",
+  "an unrelated intermittent gateway/server 500 (runtime JWKS fetch ConnectTimeout) appeared around 04:08-04:26 and cleared after restarting agentengine-kernel; not caused by these commits",
+  "no credentials recorded"
+ ]
+}

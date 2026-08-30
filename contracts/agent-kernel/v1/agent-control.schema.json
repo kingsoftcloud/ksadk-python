@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/agent-kernel/v1/agent-control.schema.json",
+  "title": "AgentControlChannel/v1",
+  "type": "object",
+  "anyOf": [
+    {"$ref": "#/$defs/agentControlCommand"},
+    {"$ref": "#/$defs/agentControlPermit"},
+    {"$ref": "#/$defs/agentControlReceipt"},
+    {"$ref": "#/$defs/interactionCommand"},
+    {"$ref": "#/$defs/agentStatusQuery"},
+    {"$ref": "#/$defs/sessionEventSubscription"},
+    {"$ref": "#/$defs/agentStatusSnapshot"}
+  ],
+  "$defs": {
+    "controlSource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": ["studio", "responses", "agui", "a2a", "parent_agent", "scheduler", "workflow", "channel", "system"]
+        },
+        "ref": {"type": "string", "minLength": 1}
+      },
+      "required": ["kind", "ref"]
+    },
+    "enqueuePayload": {
+      "type": "object",
+      "properties": {"content": true, "reply_to": {"type": ["string", "null"]}},
+      "required": ["content"]
+    },
+    "steerPayload": {
+      "type": "object",
+      "properties": {"content": true, "run_id": {"type": ["string", "null"]}},
+      "required": ["content"]
+    },
+    "injectPayload": {
+      "type": "object",
+      "properties": {"context": true, "run_id": {"type": ["string", "null"]}},
+      "required": ["context"]
+    },
+    "interruptPayload": {
+      "type": "object",
+      "properties": {"run_id": {"type": ["string", "null"]}, "reason": {"type": ["string", "null"]}}
+    },
+    "pausePayload": {
+      "type": "object",
+      "properties": {"run_id": {"type": ["string", "null"]}, "reason": {"type": ["string", "null"]}}
+    },
+    "resumeTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["checkpoint", "continuation", "run"]},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "required": ["kind", "id"]
+    },
+    "resumePayload": {
+      "type": "object",
+      "properties": {"target": {"$ref": "#/$defs/resumeTarget"}, "input": true},
+      "required": ["target"]
+    },
+    "submitInteractionPayload": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "interaction_id": {"type": "string", "minLength": 1},
+        "token_ref": {"type": "string", "minLength": 1},
+        "response": true
+      },
+      "required": ["run_id", "interaction_id", "token_ref", "response"]
+    },
+    "interactionCommand": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "command_id": {"type": "string", "format": "uuid"},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "interaction_id": {"type": "string", "minLength": 1},
+        "expected_revision": {"type": "integer", "minimum": 1},
+        "action": {"enum": ["approve", "reject", "submit", "cancel"]},
+        "response": true,
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "actor": {
+          "type": "object",
+          "properties": {
+            "subject_ref": {"type": "string", "minLength": 1},
+            "kind": {"enum": ["user", "service", "system"]}
+          },
+          "required": ["subject_ref", "kind"],
+          "additionalProperties": false
+        },
+        "authorization_ref": {"type": "string", "minLength": 1}
+      },
+      "required": [
+        "schema_version", "command_id", "tenant_id", "agent_instance_id", "session_id",
+        "run_id", "interaction_id", "expected_revision", "action", "response",
+        "idempotency_key", "actor", "authorization_ref"
+      ],
+      "additionalProperties": false
+    },
+    "agentControlCommand": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "command_id": {"type": "string", "format": "uuid"},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "command_type": {
+          "enum": ["enqueue", "steer", "inject", "interrupt", "pause", "resume", "submit_interaction"]
+        },
+        "payload": {"type": "object"},
+        "source": {"$ref": "#/$defs/controlSource"},
+        "authorization_ref": {"type": "string", "minLength": 1},
+        "submitted_at": {"type": "string", "format": "date-time"},
+        "causation_id": {"type": ["string", "null"]},
+        "correlation_id": {"type": ["string", "null"]}
+      },
+      "required": [
+        "schema_version", "command_id", "idempotency_key", "tenant_id",
+        "agent_instance_id", "session_id", "command_type", "payload",
+        "source", "authorization_ref", "submitted_at"
+      ]
+    },
+    "agentControlPermit": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "permit_id": {"type": "string", "minLength": 1},
+        "subject_ref": {"type": "string", "minLength": 1},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": ["string", "null"]},
+        "allowed_operations": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "enqueue", "steer", "inject", "interrupt", "pause", "resume",
+              "submit_interaction", "get_status", "subscribe_events"
+            ]
+          }
+        },
+        "issued_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "nonce": {"type": "string", "minLength": 1},
+        "key_id": {"type": "string", "minLength": 1},
+        "alg": {"const": "Ed25519"},
+        "claims_digest": {"type": "string", "minLength": 1},
+        "signature": {"type": "string", "minLength": 1}
+      },
+      "required": [
+        "schema_version", "permit_id", "subject_ref", "tenant_id",
+        "agent_instance_id", "session_id", "allowed_operations", "issued_at",
+        "expires_at", "nonce", "key_id", "alg", "claims_digest", "signature"
+      ]
+    },
+    "controlError": {
+      "type": "object",
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"},
+        "details": {"type": "object"}
+      },
+      "required": ["code", "message", "retryable"]
+    },
+    "agentControlReceipt": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "command_id": {"type": "string", "format": "uuid"},
+        "status": {
+          "enum": ["accepted", "duplicate", "rejected", "unsupported", "queue_full", "persistence_uncertain"]
+        },
+        "message_id": {"type": ["string", "null"], "format": "uuid"},
+        "run_id": {"type": ["string", "null"]},
+        "accepted_seq": {"type": ["integer", "null"], "minimum": 0},
+        "error": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/controlError"}]}
+      },
+      "required": ["schema_version", "command_id", "status"],
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["accepted", "duplicate"]}}},
+          "then": {"properties": {"message_id": {"type": "string", "format": "uuid"}}}
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["rejected", "unsupported", "queue_full", "persistence_uncertain"]}}},
+          "then": {"properties": {"error": {"$ref": "#/$defs/controlError"}}}
+        }
+      ]
+    },
+    "agentStatusQuery": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "authorization_ref": {"type": "string", "minLength": 1},
+        "session_id": {"type": ["string", "null"]}
+      },
+      "required": ["schema_version", "tenant_id", "agent_instance_id", "authorization_ref"]
+    },
+    "sessionEventSubscription": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "authorization_ref": {"type": "string", "minLength": 1},
+        "after_seq": {"type": "integer", "minimum": 0}
+      },
+      "required": ["schema_version", "tenant_id", "agent_instance_id", "session_id", "authorization_ref"]
+    },
+    "runtimeCapability": {
+      "type": "object",
+      "properties": {
+        "supported": {"type": "boolean"},
+        "mode": {"enum": ["native", "emulated", "unavailable"]},
+        "reason": {"type": ["string", "null"]}
+      },
+      "required": ["supported", "mode"]
+    },
+    "runtimeCapabilityMatrix": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "cancel": {"$ref": "#/$defs/runtimeCapability"},
+        "pause": {"$ref": "#/$defs/runtimeCapability"},
+        "resume": {"$ref": "#/$defs/runtimeCapability"},
+        "submit_interaction": {"$ref": "#/$defs/runtimeCapability"},
+        "attach": {"$ref": "#/$defs/runtimeCapability"},
+        "steer": {"$ref": "#/$defs/runtimeCapability"},
+        "inject": {"$ref": "#/$defs/runtimeCapability"},
+        "checkpoint": {"$ref": "#/$defs/runtimeCapability"},
+        "durable_restore": {"$ref": "#/$defs/runtimeCapability"}
+      },
+      "required": [
+        "schema_version", "cancel", "pause", "resume", "submit_interaction",
+        "attach", "steer", "inject", "checkpoint", "durable_restore"
+      ]
+    },
+    "agentStatusSnapshot": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "instance_state": {"enum": ["ready", "degraded", "unavailable"]},
+        "session_id": {"type": ["string", "null"]},
+        "active_run_id": {"type": ["string", "null"]},
+        "active_run_state": {"enum": ["pending", "running", "paused", "waiting", null]},
+        "inbox_depth": {"type": "integer", "minimum": 0},
+        "activation_id": {"type": ["string", "null"]},
+        "lease_expires_at": {"type": ["string", "null"], "format": "date-time"},
+        "capability": {"$ref": "#/$defs/runtimeCapabilityMatrix"}
+      },
+      "required": [
+        "schema_version", "agent_instance_id", "instance_state",
+        "session_id", "active_run_id", "active_run_state", "inbox_depth",
+        "activation_id", "lease_expires_at", "capability"
+      ]
+    }
+  }
+}

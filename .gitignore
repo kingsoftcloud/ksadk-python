@@ -22,7 +22,13 @@ dist/
 downloads/
 eggs/
 lib/
+# Studio React uses `src/lib` for checked-in browser helpers; keep the
+# packaging ignore above without hiding these source files.
+!ksadk/studio/react-ui/src/lib/
+!ksadk/studio/react-ui/src/lib/*.ts
 lib64/
+!ksadk/studio/react-ui/src/lib/
+!ksadk/studio/react-ui/src/lib/**
 parts/
 sdist/
 var/
@@ -83,9 +89,15 @@ webui
 
 # Generated from @kingsoftcloud/ksadk-web during release/build.
 ksadk/server/static/**
+# Generated from the tracked React Studio source during release/build.
+ksadk/studio/static/**
+ksadk/studio/web/node_modules/
+ksadk/studio/web/dist/
 site/
 
 # Legacy local UI source is owned by kingsoftcloud/ksadk-web.
 ksadk/server/web-ui/
 examples
 e2e-codex-agent/
+ksadk/studio/react-ui/node_modules/
+.agentkit/secrets.env

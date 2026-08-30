@@ -2,6 +2,7 @@ import importlib
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
@@ -123,6 +124,20 @@ def test_built_wheel_excludes_web_ui_node_modules():
     assert leaked == []
 
 
+def test_built_wheel_excludes_studio_frontend_sources_and_node_modules():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        leaked = [
+            name
+            for name in archive.namelist()
+            if name.startswith(("ksadk/studio/web/", "ksadk/studio/react-ui/"))
+        ]
+
+    assert leaked == []
+
+
 def test_built_wheel_includes_synced_web_static_entrypoint():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
@@ -132,6 +147,79 @@ def test_built_wheel_includes_synced_web_static_entrypoint():
 
     assert "ksadk/server/static/index.html" in names
     assert any(name.startswith("ksadk/server/static/assets/") for name in names)
+
+
+def test_built_wheel_includes_react_studio_static_entrypoint():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        names = set(archive.namelist())
+        studio_index = archive.read("ksadk/studio/static/index.html").decode("utf-8")
+
+    assert '<div id="root"></div>' in studio_index
+    assert "/static/assets/" in studio_index
+    assert "ksadk/studio/static/shared-chat.css" not in names
+    assert any(name.startswith("ksadk/studio/static/assets/") for name in names)
+
+
+def test_built_sdist_includes_react_studio_static_entrypoint():
+    sdists = sorted((REPO_ROOT / "dist").glob("ksadk-*.tar.gz"))
+    assert sdists, "请先运行受控构建生成 dist/ksadk-*.tar.gz"
+
+    with tarfile.open(sdists[-1]) as archive:
+        names = set(archive.getnames())
+
+    assert any(name.endswith("/ksadk/studio/static/index.html") for name in names)
+    assert any("/ksadk/studio/static/assets/" in name for name in names)
+
+
+def test_release_build_generates_ignored_react_studio_static_assets():
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "ksadk/studio/static/**" in gitignore
+    studio_source = REPO_ROOT / "ksadk/studio/react-ui"
+    if studio_source.exists():
+        tracked_static_files = subprocess.run(
+            ["git", "ls-files", "ksadk/studio/static"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        assert tracked_static_files == []
+    else:
+        assert (REPO_ROOT / "ksadk/studio/static/index.html").is_file()
+        assert any((REPO_ROOT / "ksadk/studio/static/assets").iterdir())
+    assert "STUDIO_REACT_DIR := ksadk/studio/react-ui" in makefile
+    assert "STUDIO_STATIC_DIR := ksadk/studio/static" in makefile
+    target = makefile.split("build-studio-static:\n", 1)[1].split("\n\n", 1)[0]
+    assert 'npm --prefix "$(STUDIO_REACT_DIR)" ci' in target
+    assert 'npm --prefix "$(STUDIO_REACT_DIR)" run build' in target
+    assert '$(STUDIO_STATIC_DIR)/index.html' in target
+    build_target = makefile.split("build: check-build-deps", 1)[1].split("\n", 1)[0]
+    public_build_target = makefile.split("public-build-check: clean-dist", 1)[1].split(
+        "\n", 1
+    )[0]
+    assert "build-studio-static" in build_target
+    assert "build-studio-static" in public_build_target
+    assert "build-studio-static" in makefile.split("build-frontend:", 1)[1].split("\n", 1)[0]
+
+
+def test_ci_installs_node_before_building_generated_studio_static_assets():
+    ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    release_workflow = (REPO_ROOT / ".github/workflows/release-check.yml").read_text(
+        encoding="utf-8"
+    )
+
+    adk_matrix_job = ci_workflow.split("  test-adk-matrix:\n", 1)[1].split(
+        "  test-", 1
+    )[0]
+    assert "actions/setup-node@v4" in adk_matrix_job
+    assert "make build-frontend" in adk_matrix_job
+    assert "actions/setup-node@v4" in release_workflow
+    assert "make build-frontend" in release_workflow
 
 
 def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
@@ -144,19 +232,35 @@ def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
     assert leaked == []
 
 
-def test_pyproject_keeps_only_synced_static_as_ksadk_web_package_data():
+def test_pyproject_keeps_generated_static_as_package_data():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     package_data = pyproject["tool"]["setuptools"]["package-data"]["ksadk"]
     assert "server/static/**/*" in package_data
+    assert "studio/static/**/*" in package_data
     assert all("server/web-ui" not in entry for entry in package_data)
 
 
-def test_pyproject_excludes_legacy_web_ui_from_package_discovery():
+def test_pyproject_excludes_non_python_frontend_sources_from_package_discovery():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
     assert "ksadk.server.web-ui*" in package_find["exclude"]
+    assert "ksadk.studio.react-ui*" in package_find["exclude"]
+    assert "ksadk.studio.web*" not in package_find["exclude"]
+
+
+def test_react_is_the_only_studio_frontend_source_tree():
+    studio_root = REPO_ROOT / "ksadk/studio"
+
+    assert not (studio_root / "web").exists()
+    assert not (studio_root / "static-react").exists()
+    if (studio_root / "react-ui").exists():
+        assert (studio_root / "react-ui/src/main.tsx").is_file()
+        assert (studio_root / "react-ui/src/studio.css").is_file()
+    else:
+        assert not (studio_root / "react-ui").exists()
+        assert (studio_root / "static/index.html").is_file()
 
 
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
@@ -228,7 +332,7 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
         )
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
 
-    assert metadata["Version"] == "0.8.1"
+    assert metadata["Version"] == "0.8.2"
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
     assert all(
         requirement.name != "langchain-openai" or requirement.marker is not None

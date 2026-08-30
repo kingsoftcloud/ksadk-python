@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/agent-kernel/v1/session-event.schema.json",
+  "title": "SessionEventEnvelope/v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "format": "uuid"},
+    "session_id": {"type": "string", "minLength": 1},
+    "seq": {"type": "integer", "minimum": 0},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "family": {"enum": ["control", "runtime", "interaction", "workflow", "schedule", "job", "relationship"]},
+    "family_version": {"type": "integer", "minimum": 1},
+    "event_type": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"},
+    "run_id": {"type": ["string", "null"]},
+    "causation_id": {"type": ["string", "null"]},
+    "correlation_id": {"type": ["string", "null"]},
+    "actor_ref": {"type": ["string", "null"]}
+  },
+  "required": [
+    "schema_version", "event_id", "session_id", "seq", "timestamp",
+    "family", "family_version", "event_type", "payload"
+  ],
+  "allOf": [
+    {
+      "if": {"properties": {"family": {"const": "runtime"}}},
+      "then": {"properties": {"family_version": {"const": 2}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "control"}}},
+      "then": {"properties": {"family_version": {"const": 1}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "interaction"}}},
+      "then": {
+        "properties": {
+          "family_version": {"const": 1},
+          "event_type": {
+            "enum": [
+              "interaction.requested", "interaction.resolved", "interaction.cancelled", "interaction.expired"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

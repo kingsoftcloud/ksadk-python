@@ -152,6 +152,23 @@ def test_wheel_audit_blocks_hosted_ui_bundle_and_zread_snapshot():
     ]
 
 
+def test_public_and_package_audits_block_editable_studio_source():
+    audit = _load_audit_module()
+    paths = [
+        "ksadk/studio/react-ui/src/App.tsx",
+        "ksadk/studio/react-ui/package.json",
+        "ksadk/studio/static/index.html",
+        "ksadk/studio/static/assets/app.js",
+    ]
+
+    for target in ("public-repo", "sdist", "wheel"):
+        result = audit.audit_paths(target, paths)
+        assert [violation.rule for violation in result.violations] == [
+            "studio-frontend-source",
+            "studio-frontend-source",
+        ]
+
+
 def test_github_pages_audit_allows_public_docs_but_blocks_zread_site():
     audit = _load_audit_module()
 
@@ -283,9 +300,7 @@ def test_discover_files_falls_back_to_filesystem_for_non_git_directory(tmp_path)
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / ".venv" / "bin" / "python").write_text("generated\n", encoding="utf-8")
     (tmp_path / ".cache" / "ksadk-web").mkdir(parents=True)
-    (tmp_path / ".cache" / "ksadk-web" / "bundle.tgz").write_text(
-        "generated\n", encoding="utf-8"
-    )
+    (tmp_path / ".cache" / "ksadk-web" / "bundle.tgz").write_text("generated\n", encoding="utf-8")
 
     assert audit.discover_files(tmp_path) == ["README.md", "src/App.tsx"]
 
@@ -296,14 +311,13 @@ def test_content_audit_blocks_private_doc_domains_and_secret_shapes(tmp_path):
     aws_access_key_id = "AKIA" + "1234567890ABCDEF"
     openai_key = "sk-" + "A" * 48
     github_token = "ghp_" + "B" * 40
+    long_lived_secret = "SECRET" + "_KEY=" + "prod_live_value_1234567890abcdef\n"
 
     (tmp_path / "README.md").write_text(f"Docs: {private_docs_url}\n", encoding="utf-8")
     (tmp_path / "config.yml").write_text(f"AWS key {aws_access_key_id}\n", encoding="utf-8")
     (tmp_path / "llm.env").write_text(f"OPENAI_API_KEY={openai_key}\n", encoding="utf-8")
     (tmp_path / "repo.env").write_text(f"GITHUB_TOKEN={github_token}\n", encoding="utf-8")
-    (tmp_path / "prod.env").write_text(
-        "SECRET_KEY=prod_live_value_1234567890abcdef\n", encoding="utf-8"
-    )
+    (tmp_path / "prod.env").write_text(long_lived_secret, encoding="utf-8")
     (tmp_path / "tests.py").write_text(
         "SECRET_KEY=dummy-secret-value\nTOKEN=secret-token\n", encoding="utf-8"
     )
@@ -356,6 +370,51 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
     assert result.ok is False
     assert [(violation.path, violation.rule) for violation in result.violations] == [
         ("other.py", "internal-service-endpoint")
+    ]
+
+
+def test_content_audit_blocks_private_platform_details_in_public_docs(tmp_path):
+    audit = _load_audit_module()
+    (tmp_path / "docs-site" / "content").mkdir(parents=True)
+    (tmp_path / "docs-site" / "content" / "guide.mdx").write_text(
+        "\n".join(
+            [
+                "endpoint: http://aicp.inner.api.ksyun.com",
+                "demo: 0611agent-xiayu",
+                "source: ezone",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    # The runtime may implement a platform-provided endpoint, but curated public
+    # documentation must not publish its private hostname.
+    (tmp_path / "ksadk" / "client.py").parent.mkdir(parents=True)
+    (tmp_path / "ksadk" / "client.py").write_text(
+        'DEFAULT = "aicp.inner.api.ksyun.com"\n', encoding="utf-8"
+    )
+
+    result = audit.audit_file_contents(
+        tmp_path,
+        ["docs-site/content/guide.mdx", "ksadk/client.py"],
+    )
+
+    assert [(violation.path, violation.rule) for violation in result.violations] == [
+        ("docs-site/content/guide.mdx", "public-doc-internal-endpoint"),
+        ("docs-site/content/guide.mdx", "public-doc-personal-agent-name"),
+        ("docs-site/content/guide.mdx", "public-doc-internal-scm"),
+    ]
+
+
+def test_content_audit_applies_public_doc_rules_inside_sdist_root(tmp_path):
+    audit = _load_audit_module()
+    path = tmp_path / "ksadk-0.8.2" / "CHANGELOG.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("synced from ezone\n", encoding="utf-8")
+
+    result = audit.audit_file_contents(tmp_path, ["ksadk-0.8.2/CHANGELOG.md"])
+
+    assert [(violation.path, violation.rule) for violation in result.violations] == [
+        ("ksadk-0.8.2/CHANGELOG.md", "public-doc-internal-scm")
     ]
 
 

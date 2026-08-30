@@ -129,7 +129,7 @@ e2b==2.24.0
 1. **安装依赖**
 
 ```bash
-cd 0611agent-xiayu
+cd langgraph-toolsets-demo
 uv venv
 uv pip install -r requirements.txt
 ```
@@ -174,11 +174,11 @@ space 下有哪些 skill?
 ## 项目结构
 
 <Files>
-  <Folder name="0611agent-xiayu/" defaultOpen>
+  <Folder name="langgraph-toolsets-demo/" defaultOpen>
     <File name="agentengine.yaml" />
     <File name="requirements.txt" />
     <File name=".env.example" />
-    <Folder name="0611agent/">
+    <Folder name="toolsets_agent/">
       <File name="agent.py" />
       <File name="__init__.py" />
     </Folder>
@@ -194,10 +194,10 @@ space 下有哪些 skill?
 `agentengine.yaml` 声明框架与入口,AgentEngine 据此加载 `root_agent`:
 
 ```yaml title="agentengine.yaml"
-name: 0611agent-xiayu
+name: langgraph-toolsets-demo
 version: "1.0.0"
 framework: langgraph
-entry_point: 0611agent-xiayu/agent.py
+entry_point: toolsets_agent/agent.py
 agent_variable: root_agent
 ```
 

@@ -20,7 +20,8 @@ from ksadk.a2a.resume_store import InMemoryA2AResumeStateStore
 from ksadk.a2a.task_event_outbox import SQLiteA2ATaskEventOutbox
 from ksadk.a2a.task_store import build_a2a_task_store
 from ksadk.harness import HarnessApp
-from ksadk.server.app import _configure_runtime_app
+from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+from ksadk.server.composition import configure_runtime_app
 from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 
 SPACE_A = "a2a-space-00000000000040008000000000000041"
@@ -310,9 +311,10 @@ def test_managed_bootstrap_wires_runtime_lifecycle_and_shared_space_clients(tmp_
         hosted_http_client=hosted_client,
         event_outbox=SQLiteA2ATaskEventOutbox(tmp_path / "events.sqlite3"),
     )
+    adapter = RunnerRuntimeAdapter(_Runner(), runtime_type="fixture")
     app = create_runtime_app(
-        RuntimeAppConfig(runner=_Runner(), a2a=bootstrap),  # type: ignore[arg-type]
-        _configure_runtime_app,
+        RuntimeAppConfig(a2a=bootstrap, a2a_runtime_adapter=adapter),
+        configure_runtime_app,
     )
 
     try:
@@ -369,9 +371,10 @@ def test_outbound_only_bootstrap_does_not_require_inbound_dependencies(tmp_path)
         event_outbox=SQLiteA2ATaskEventOutbox(tmp_path / "events.sqlite3"),
         inbound_enabled=False,
     )
+    adapter = RunnerRuntimeAdapter(_Runner(), runtime_type="fixture")
     app = create_runtime_app(
-        RuntimeAppConfig(runner=_Runner(), a2a=bootstrap),  # type: ignore[arg-type]
-        _configure_runtime_app,
+        RuntimeAppConfig(a2a=bootstrap, a2a_runtime_adapter=adapter),
+        configure_runtime_app,
     )
 
     try:

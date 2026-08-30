@@ -30,6 +30,10 @@ class LangGraphRunner(BaseRunner):
     透传原生 LangGraph 功能，支持任意 State 格式
     """
 
+    # ToolGateway approvals can occur after a terminal-looking tool call, so
+    # the semantic stream must remain resumable for a follow-up decision.
+    supports_gateway_approval_semantic_resume = True
+
     def __init__(self, detection_result: Any, project_dir: str):
         super().__init__(detection_result, project_dir)
         self._managed_checkpoint_lock = asyncio.Lock()
@@ -292,12 +296,15 @@ class LangGraphRunner(BaseRunner):
                 "Reason": "LangGraph graph has no configured checkpointer",
             }
         backend = self._checkpoint_backend_from_saver(checkpointer)
-        return self._checkpoint_capability_for_backend(backend, checkpointer=checkpointer)
-        backend = self._checkpoint_backend_from_saver(checkpointer)
+        if backend == "unknown":
+            configured_backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
+            if configured_backend in {"postgres", "sqlite", "memory"}:
+                backend = configured_backend
         return self._checkpoint_capability_for_backend(backend, checkpointer=checkpointer)
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
+        capabilities["model_call_boundaries"] = True
         reason_code = str(capabilities["Checkpoint"].get("ReasonCode") or "")
         if reason_code:
             capabilities["ResumeRun"]["ReasonCode"] = reason_code

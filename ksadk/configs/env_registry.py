@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class EnvVarSpec:
-    name: str
-    module: str
-    purpose: str
-    default: str = ""
-    sensitive: bool = False
-
+from ksadk.configs.env_registry_pcm import PCM_ENV_VAR_REGISTRY_ITEMS
+from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec(
+        "KSADK_AGENT_EVAL",
+        "evaluation",
+        "Enable internal Agent evaluation integration.",
+        "0",
+        documented=False,
+    ),
     EnvVarSpec("KSADK_ADK_RESUMABLE", "runners", "Enable ADK invocation resume support.", "false"),
     EnvVarSpec("KSADK_ADK_SESSION_BACKEND", "sessions", "ADK-native session backend selector."),
     EnvVarSpec("KSADK_ADK_SESSION_PATH", "sessions", "ADK-native SQLite session database path."),
@@ -98,6 +96,55 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec(
+        "KSADK_A2A_SERVICE_URL",
+        "a2a",
+        "A2A control plane service URL (KOP public API); auto-detected if unset.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_TOKEN",
+        "a2a",
+        "Bearer token for A2A control plane service authentication.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_ENDPOINT",
+        "a2a",
+        "A2A service endpoint hostname (used for auto-detection with scheme).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_SCHEME",
+        "a2a",
+        "A2A service URL scheme (http/https) for auto-detection.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_REGION",
+        "a2a",
+        "A2A service region for KOP signing.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCESS_KEY",
+        "a2a",
+        "A2A KOP access key for signing; falls back to KSYUN_ACCESS_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SECRET_KEY",
+        "a2a",
+        "A2A KOP secret key for signing; falls back to KSYUN_SECRET_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE",
+        "a2a",
+        "A2A KOP signing service name (default: aicp).",
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_JUDGE_API_KEY",
+        "eval",
+        "API key for the LLM Judge evaluation backend.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
         "agui",
         "A2UI structured-generation deadline in seconds; values are clamped to 1 through 120.",
@@ -168,6 +215,55 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "0 forces direct mode.",
     ),
     EnvVarSpec(
+        "KSADK_CODEX_SANDBOX",
+        "codex",
+        "Codex sandbox mode: read_only (default, no writes) / workspace_write "
+        "(write inside workspace) / full_access (write anywhere).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_APPROVAL",
+        "codex",
+        "Codex approval mode: deny_all (default for read_only) / auto_review "
+        "(auto-approve with review log).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_HOME",
+        "codex",
+        "Explicit Codex home directory override for the native runtime.",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_ISOLATE_HOME",
+        "codex",
+        "Isolate native Codex state under the project workspace; set to 0 for debugging only.",
+        "1",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NO_SECURITY",
+        "studio",
+        "Disable Studio loopback session and CSRF checks for controlled tests only.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_AUTHORIZER",
+        "studio",
+        "Internal authoring backend selector; bounded chat is the default and the "
+        "filesystem-capable Codex authorizer requires an explicit opt-in.",
+        "chat",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_SESSION_TOKEN",
+        "studio",
+        "Explicit local Studio browser session token; generated randomly when unset.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_TRACE_CONTENT",
+        "studio",
+        "Persist Studio trace event content; set to 0 to retain metadata only.",
+        "1",
+    ),
+    EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
     ),
     EnvVarSpec(
@@ -192,6 +288,19 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "runtime",
         "Enable L2 snip deterministic redundancy removal in compaction pipeline.",
         "true",
+    ),
+    *PCM_ENV_VAR_REGISTRY_ITEMS,
+    EnvVarSpec(
+        "KSADK_DEPLOYMENT_MODE",
+        "runtime",
+        "Deployment-mode ownership declaration.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_COMMIT",
+        "evaluation",
+        "Source commit recorded by evaluation runs.",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",
@@ -235,6 +344,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec(
         "KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_KB_SESSION_TOKEN",
+        "knowledge_base",
+        "Knowledge-base STS session token.",
+        sensitive=True,
     ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
@@ -290,6 +405,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
     EnvVarSpec(
         "KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_LTM_SESSION_TOKEN",
+        "memory",
+        "Long-term-memory STS session token.",
+        sensitive=True,
     ),
     EnvVarSpec("KSADK_LTM_TOP_K", "memory", "Long-term-memory retrieval result count.", "5"),
     EnvVarSpec(
@@ -386,10 +507,28 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Header name for remote Responses session propagation.",
     ),
     EnvVarSpec(
+        "KSADK_RUNTIME_IMAGE_SOURCE_COMMIT",
+        "runtime",
+        "Build-injected source commit for Runtime image provenance.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_RUNTIME_IMAGE_WHEEL_SHA256",
+        "runtime",
+        "Build-injected wheel digest for Runtime image provenance.",
+        documented=False,
+    ),
+    EnvVarSpec(
         "KSADK_RUNTIME_PORT", "cli", "Runtime HTTP port exported to template runtimes.", "8080"
     ),
     EnvVarSpec(
         "KSADK_RUNTIME_REQUIREMENTS", "builders", "Internal bundled runtime requirements constant."
+    ),
+    EnvVarSpec(
+        "KSADK_RUNTIME_STATE_DIR",
+        "runtime",
+        "Internal Runtime state directory override.",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_ALLOW_POD_PROCESS_TOOLS",
@@ -521,6 +660,17 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True
     ),
     EnvVarSpec("KSADK_SESSION_NAMESPACE", "sessions", "Conversation session namespace."),
+    EnvVarSpec(
+        "KSADK_AGENT_ID",
+        "platform",
+        "Stable AgentEngine agent identity used only as a fallback checkpoint namespace.",
+    ),
+    EnvVarSpec(
+        "KSADK_AGENT_KERNEL",
+        "kernel",
+        "Opt in to Agent Kernel ingress locally; managed deployment may use AGENT_KERNEL_ENABLED instead.",
+        "false",
+    ),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
     EnvVarSpec(
         "KSADK_SESSION_PG_CONNECT_TIMEOUT",
@@ -688,7 +838,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.0",
+        "0.3.2",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

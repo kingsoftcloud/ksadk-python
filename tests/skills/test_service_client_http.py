@@ -394,7 +394,7 @@ def test_service_client_uses_registered_kop_action_for_available_premade_skills(
     method, url, headers = requests[0]
     assert method == "GET"
     assert url == (
-        "http://aicp.inner.api.ksyun.com/" "?Action=ListAvailablePremadeSkills&Version=2024-06-12"
+        "http://aicp.inner.api.ksyun.com/?Action=ListAvailablePremadeSkills&Version=2024-06-12"
     )
     assert headers["x-action"] == "ListAvailablePremadeSkills"
     assert headers["x-version"] == "2024-06-12"

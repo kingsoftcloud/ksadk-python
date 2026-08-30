@@ -22,7 +22,12 @@ from ksadk.a2a.credential import (
 )
 from ksadk.a2a.space_client import A2ASpaceClient, DiscoveredAgent
 from ksadk.a2a.task_event_outbox import SQLiteA2ATaskEventOutbox
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ItemCompleted,
+    ItemStarted,
+    RunCompleted,
+    RunProgress,
+)
 from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -153,9 +158,8 @@ def test_task_to_event_uses_event_adapter() -> None:
     client = _client()
     task = Task(id="t1", context_id="c1", status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED))
     event = client.task_to_event(task, _agent())
-    assert isinstance(event, RuntimeEvent)
-    assert event.event_type == EventType.RUN_COMPLETED
-    assert event.invocation_id == "t1"
+    assert isinstance(event, RunCompleted)
+    assert event.run_id == "t1"
 
 
 def test_stream_item_to_events_converts_status_and_artifact() -> None:
@@ -181,11 +185,14 @@ def test_stream_item_to_events_converts_status_and_artifact() -> None:
         task_id = "t1"
 
     events = client._stream_item_to_events(_Item(), agent)
-    types = {e.event_type for e in events}
-    assert EventType.RUN_PROGRESS in types  # status_update WORKING
-    assert EventType.ARTIFACT_CREATED in types  # artifact_update
-    assert EventType.TEXT_COMPLETED in types  # response artifact last chunk
-    assert all(isinstance(e, RuntimeEvent) for e in events)
+    assert any(isinstance(e, RunProgress) for e in events)  # status_update WORKING
+    assert any(
+        isinstance(e, ItemStarted) and e.item_kind == "artifact" for e in events
+    )  # artifact_update
+    assert any(
+        isinstance(e, ItemCompleted) and e.item_kind == "message" for e in events
+    )  # response artifact last chunk
+    assert all(e.schema_version == 2 for e in events)
 
 
 def test_terminal_task_status_message_precedes_run_completed() -> None:
@@ -205,10 +212,8 @@ def test_terminal_task_status_message_precedes_run_completed() -> None:
 
     events = client._stream_item_to_events(task, _agent())
 
-    assert [event.event_type for event in events] == [
-        EventType.TEXT_COMPLETED,
-        EventType.RUN_COMPLETED,
-    ]
+    assert isinstance(events[0], ItemCompleted) and events[0].item_kind == "message"
+    assert isinstance(events[1], RunCompleted)
 
 
 def test_platform_event_ids_track_occurrence_and_remain_stable_for_outbox_retry() -> None:
@@ -357,14 +362,12 @@ async def test_terminal_status_message_is_persisted_before_run_completed() -> No
             },
         )()
 
-    await store.append(client._stream_item_to_events(_Item(), agent))
+    await store.append(SPACE_ID, client._stream_item_to_events(_Item(), agent))
     streamed = [event async for event in store.subscribe_run(SPACE_ID, "t1", timeout=0.1)]
 
-    assert [event.event_type for event in streamed] == [
-        EventType.TEXT_COMPLETED,
-        EventType.RUN_COMPLETED,
-    ]
-    seq_ids = [event.seq_id for event in streamed]
+    assert isinstance(streamed[0], ItemCompleted) and streamed[0].item_kind == "message"
+    assert isinstance(streamed[1], RunCompleted)
+    seq_ids = [event.seq for event in streamed]
     assert seq_ids == sorted(set(seq_ids))
 
 
@@ -390,5 +393,5 @@ async def test_persist_events_returns_store_assigned_cursor() -> None:
 
     persisted = await client._persist_events([event])
 
-    assert event.seq_id == 1
-    assert [item.seq_id for item in persisted] == [2]
+    assert event.seq == 1
+    assert [item.seq for item in persisted] == [2]

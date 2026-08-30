@@ -1,0 +1,53 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "executed_at": "2026-08-18T05:07:40Z",
+  "checks": {
+    "audit": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-audit-84f315ba",
+        "path": "server-pod service layer AgentControlService.submit -> runtime /agent-kernel/v1/SubmitAgentControl (server-signed permit) -> agent_control_audits row; gateway SSE replay correlation",
+        "receipt": {
+          "status": "accepted",
+          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
+          "message_id": "dba59199-ce28-4456-8432-2c250c21ab59",
+          "accepted_seq": 1
+        },
+        "audit_row": {
+          "table": "agent_control_audits",
+          "id": "audit-18d1239b57e14d1fab4e0395",
+          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
+          "permit_id": "permit-6809bfc8-7ba7-4173-be1b-b5a68e2a1db9",
+          "receipt_status": "accepted",
+          "principal_ref": "user:phase1-sre",
+          "command_type": "enqueue",
+          "session_id": "v2-audit-84f315ba",
+          "claims_digest": "cfbcb70e9c6463cbbc77bb32ba157bd3f685f37857e473866c7851ba044a550d",
+          "details": {
+            "accepted_seq": 1,
+            "message_id": "dba59199-ce28-4456-8432-2c250c21ab59"
+          }
+        },
+        "audit_row_written": true,
+        "receipt_matches_audit": true,
+        "gateway_chain_accepted_event": {
+          "seq": 1,
+          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
+          "message_id": "dba59199-ce28-4456-8432-2c250c21ab59",
+          "accepted_seq": 1
+        },
+        "gateway_chain_contains_command": true,
+        "submit_seconds": 0.114,
+        "runtime_event_types": {
+          "control/v1:control.command_accepted": 1,
+          "control/v1:control.message_claimed": 1,
+          "control/v1:control.run_transition": 3,
+          "runtime/v2:run.started": 1,
+          "runtime/v2:run.progress": 1,
+          "control/v1:control.message_completed": 1
+        },
+        "server_contract_digest_passed": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+      }
+    }
+  }
+}

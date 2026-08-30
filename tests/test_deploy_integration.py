@@ -4,6 +4,7 @@ CLI 部署集成测试
 测试 Agent 部署的本地状态文件机制
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -43,7 +44,10 @@ def sample_package_info(temp_project_dir):
         framework="langgraph",
         build_dir=str(temp_project_dir / ".agentengine" / "build"),
         project_dir=str(temp_project_dir),
-        metadata={"ks3_path": "ks3://test-bucket/agents/test-agent/code.zip"},
+        metadata={
+            "ks3_path": "ks3://test-bucket/agents/test-agent/code.zip",
+            "code_checksum": "a" * 64,
+        },
     )
 
 
@@ -164,7 +168,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -175,6 +178,17 @@ class TestDeployLogic:
         assert "首次部署" in result.message
         create_payload = mock_client.create_agent.await_args.args[0]
         assert create_payload["network"] == {"enable_public_access": True}
+        assert create_payload["code_checksum"] == "a" * 64
+        assert create_payload["code_command"] == [
+            "ksadk",
+            "web",
+            "/app/code/runtime",
+            "--port",
+            "8080",
+            "--host",
+            "0.0.0.0",
+            "--no-open",
+        ]
 
         # 验证状态文件已创建
         state_file = temp_project_dir / ".agentengine.state"
@@ -225,7 +239,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -287,7 +300,6 @@ class TestDeployLogic:
             patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning,
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -339,7 +351,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -350,6 +361,50 @@ class TestDeployLogic:
 
         # 验证调用了 update_agent 而不是 create_agent
         mock_client.update_agent.assert_called_once()
+        mock_client.create_agent.assert_not_called()
+        update_payload = mock_client.update_agent.await_args.args[1]
+        assert update_payload["code_checksum"] == "a" * 64
+        assert update_payload["code_command"][:3] == ["ksadk", "web", "/app/code/runtime"]
+
+    @pytest.mark.asyncio
+    async def test_deploy_explicit_agent_id_updates_the_resolved_agent(
+        self, temp_project_dir, sample_package_info, sample_deploy_target
+    ):
+        """``--agent-id`` must use UpdateAgent after its existence check."""
+        provider = ServerlessProvider()
+        sample_deploy_target.extra["agent_id"] = "ar-20260119-explicit"
+
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            return_value={
+                "basic": {"agent_id": "ar-20260119-explicit", "name": "test-agent"},
+                "quick_access": {"public_endpoint": "https://explicit.example.com"},
+            }
+        )
+        mock_client.update_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-explicit",
+                "name": "test-agent",
+                "endpoint": "https://explicit.example.com",
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with (
+            patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}),
+            patch(
+                "ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client
+            ),
+            patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
+        ):
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+            result = await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert result.status == DeployStatus.DEPLOYING
+        mock_client.update_agent.assert_called_once()
+        assert mock_client.update_agent.await_args.args[0] == "ar-20260119-explicit"
         mock_client.create_agent.assert_not_called()
 
     @pytest.mark.asyncio
@@ -407,7 +462,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -478,7 +532,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -618,7 +671,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -680,7 +732,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -723,13 +774,20 @@ class TestDeployLogic:
         mock_client.__aexit__ = AsyncMock()
 
         with (
-            patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}),
+            patch.dict(
+                os.environ,
+                {"AGENTENGINE_SERVER_URL": "http://localhost:8080"},
+                clear=True,
+            ),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={},
+            ),
             patch(
                 "ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -771,7 +829,11 @@ class TestDeployLogic:
         mock_client.__aexit__ = AsyncMock()
 
         with (
-            patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}),
+            patch.dict(
+                os.environ,
+                {"AGENTENGINE_SERVER_URL": "http://localhost:8080"},
+                clear=True,
+            ),
             patch(
                 "ksadk.deployment.providers.serverless.get_env_from_global_config",
                 return_value={
@@ -784,7 +846,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -860,13 +921,121 @@ class TestDeployLogic:
             env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
 
         assert env_vars["TZ"] == "Asia/Shanghai"
+        assert env_vars["KSADK_DEPLOYMENT_MODE"] == "ksadk_managed_cloud"
+
+    def test_managed_runtime_manifest_model_overrides_reused_credential_env(self):
+        provider = ServerlessProvider()
+
+        env_vars = provider._bind_managed_runtime_contract_env(
+            {
+                "OPENAI_API_KEY": "credential-only",
+                "OPENAI_MODEL_NAME": "stale-model-from-shared-env",
+            },
+            {
+                "manifest": (
+                    "artifact_type: ManagedRuntime\n"
+                    "framework: codex\n"
+                    "model: qwen3.7-flash\n"
+                )
+            },
+        )
+
+        assert env_vars == {
+            "OPENAI_API_KEY": "credential-only",
+            "OPENAI_MODEL_NAME": "qwen3.7-flash",
+        }
+
+    def test_deploy_env_vars_do_not_implicitly_forward_control_plane_credentials(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text(
+            "KSYUN_ACCESS_KEY=project-ak\n"
+            "KSYUN_SECRET_KEY=project-sk\n"
+            "KCR_REGISTRY=registry.example.com/ns\n"
+            "KCR_PASSWORD=project-registry-password\n"
+            "OPENAI_API_KEY=project-model-key\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "KSYUN_ACCESS_KEY": "shell-ak",
+                    "KSYUN_SECRET_KEY": "shell-sk",
+                    "KCR_USERNAME": "shell-user",
+                },
+                clear=True,
+            ),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={
+                    "KSYUN_ACCESS_KEY": "global-ak",
+                    "KSYUN_SECRET_KEY": "global-sk",
+                    "KSYUN_ACCOUNT_ID": "global-account",
+                    "OPENAI_BASE_URL": "https://model.example.com/v1",
+                },
+            ),
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
+
+        assert env_vars["OPENAI_API_KEY"] == "project-model-key"
+        assert env_vars["OPENAI_BASE_URL"] == "https://model.example.com/v1"
+        assert not {
+            "KSYUN_ACCESS_KEY",
+            "KSYUN_SECRET_KEY",
+            "KSYUN_ACCOUNT_ID",
+            "KCR_PASSWORD",
+            "KCR_REGISTRY",
+            "KCR_USERNAME",
+        }.intersection(env_vars)
+
+    def test_deploy_env_vars_allow_explicit_runtime_credential_opt_in(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={},
+            ),
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(
+                temp_project_dir,
+                {"KSYUN_ACCESS_KEY": "dedicated-runtime-ak"},
+            )
+
+        assert env_vars["KSYUN_ACCESS_KEY"] == "dedicated-runtime-ak"
+
+    def test_deploy_env_vars_preserve_explicit_deployment_mode(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={},
+            ),
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(
+                temp_project_dir,
+                {"KSADK_DEPLOYMENT_MODE": "external_managed"},
+            )
+
+        assert env_vars["KSADK_DEPLOYMENT_MODE"] == "external_managed"
 
     def test_deploy_env_vars_preserve_explicit_timezone(
         self,
         temp_project_dir,
     ):
         provider = ServerlessProvider()
-        (temp_project_dir / ".env").write_text("TZ=UTC\n", encoding="utf-8")
 
         with (
             patch.dict(os.environ, {"TZ": "Asia/Shanghai"}, clear=True),
@@ -877,12 +1046,12 @@ class TestDeployLogic:
         ):
             env_vars, _, _ = provider._load_deploy_env_vars(
                 temp_project_dir,
-                {"CUSTOM_RUNTIME_FLAG": "enabled"},
+                {"TZ": "UTC", "CUSTOM_RUNTIME_FLAG": "enabled"},
             )
 
         assert env_vars["TZ"] == "UTC"
 
-    def test_deploy_project_env_overrides_process_env_allowlist(
+    def test_deploy_shell_env_overrides_project_env(
         self,
         temp_project_dir,
     ):
@@ -908,8 +1077,8 @@ class TestDeployLogic:
         ):
             env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
 
-        assert env_vars["OPENAI_API_KEY"] == "project-key"
-        assert env_vars["OPENAI_MODEL_NAME"] == "project-model"
+        assert env_vars["OPENAI_API_KEY"] == "shell-key"
+        assert env_vars["OPENAI_MODEL_NAME"] == "shell-model"
 
     @pytest.mark.asyncio
     async def test_deploy_forwards_network_configuration_to_create_agent(
@@ -950,7 +1119,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1000,7 +1168,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1031,9 +1198,12 @@ class TestDeployLogic:
             extra={"artifact_type": "Code", "no_cache": False},
         )
 
+        archive = temp_project_dir / ".agentengine" / "code_build" / "test-agent.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"hosted-code-archive")
         fake_build_result = BuildResult(
             success=True,
-            artifact_path=temp_project_dir / ".agentengine" / "code_build" / "test-agent.zip",
+            artifact_path=archive,
             artifact_size=1234,
             metadata={"agent_name": "test-agent", "framework": "langgraph"},
         )
@@ -1055,6 +1225,9 @@ class TestDeployLogic:
         assert metadata_file.exists()
         metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
         assert metadata["metadata"]["ks3_path"] == result.metadata["ks3_path"]
+        assert metadata["metadata"]["code_checksum"] == hashlib.sha256(
+            b"hosted-code-archive"
+        ).hexdigest()
 
         class _PackageDetectionType:
             value = "langgraph"
@@ -1115,7 +1288,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 

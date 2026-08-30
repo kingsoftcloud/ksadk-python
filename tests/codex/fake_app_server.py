@@ -217,6 +217,17 @@ def main() -> None:
         elif method == "turn/start":
             result = {"turn": _turn()}
         elif method == "turn/interrupt":
+            if not blocked_turn:
+                _write(
+                    {
+                        "id": request_id,
+                        "error": {
+                            "code": -32600,
+                            "message": "no active turn to interrupt",
+                        },
+                    }
+                )
+                continue
             result = {}
         else:
             _write({"id": request_id, "error": {"code": -32601, "message": str(method)}})

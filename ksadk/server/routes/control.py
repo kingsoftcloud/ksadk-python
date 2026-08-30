@@ -18,10 +18,14 @@ from ksadk.conversations.run_kinds import (
     RUN_MODE_FOREGROUND,
     RUN_TRIGGER_CHECKPOINT_RESUME,
 )
+from ksadk.conversations.runtime_payloads import build_responses_payload
+from ksadk.conversations.runtime_streaming import stream_runtime_responses_conversation_turn
+from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
+from ksadk.server.factory import get_runtime_execution
 
 from . import dependencies as deps
 from .checkpoint_resolution import _find_session_checkpoint
-from .common import _action_response, _prepare_runner_for_model, _resolve_active_runner
+from .common import _action_response
 from .models import (
     _MAX_PREVIEW_TOOL_RECEIPTS,
     _RUN_TERMINAL_STATUSES,
@@ -48,6 +52,17 @@ from .streaming import (
     _detached_resume_key_from_input,
     _reject_if_detached_resume_active,
 )
+
+
+def _resolve_active_runner() -> Any:
+    """Expose the adapter-owned runner for persistence capability probing."""
+
+    executor, launch_context = get_runtime_execution()
+    adapter = executor.create_adapter(launch_context)
+    runner = getattr(adapter, "_runner", None)
+    if runner is None:
+        raise HTTPException(status_code=500, detail="Runtime runner is unavailable")
+    return runner
 
 
 @control_router.post("/agentengine/api/v1/GetCheckpointResumePreview")
@@ -101,30 +116,6 @@ async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePrevi
         side_effect_receipt_count=side_effect_receipt_count,
         failed_receipt_count=failed_receipt_count,
     )
-    snapshot = await _runtime_capability_snapshot(force=False)
-    if preview.get("CanResume") is True and not snapshot.resume_supported:
-        gate = dict(snapshot.persistence_gate)
-        checkpoint_capability = snapshot.runtime_capabilities.get("Checkpoint") or {}
-        reason = str(
-            gate.get("Reason")
-            or (
-                checkpoint_capability.get("Reason")
-                if isinstance(checkpoint_capability, Mapping)
-                else ""
-            )
-            or "Runtime checkpoint persistence is unavailable"
-        )
-        preview = {
-            **preview,
-            "Capabilities": {
-                **dict(preview.get("Capabilities") or {}),
-                "CheckpointResume": False,
-            },
-            "CanResume": False,
-            "Reason": reason,
-            "ExpectedAction": "disabled",
-        }
-
     return _action_response(
         "GetCheckpointResumePreview",
         {"Preview": preview},
@@ -133,6 +124,7 @@ async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePrevi
 
 @control_router.post("/agentengine/api/v1/ResumeRun")
 async def resume_run_action(request: ResumeRunActionRequest):
+    executor, launch_context = get_runtime_execution()
     service = deps.resolve_session_service()
     session = await _require_action_session(
         service,
@@ -179,15 +171,17 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 "ResumeRun",
                 {
                     "Status": "noop",
+                    "status": "noop",
                     "Reason": disabled_detail["Reason"],
+                    "reason": disabled_detail["Reason"],
                     "CheckpointId": disabled_detail["CheckpointId"],
+                    "checkpoint_id": disabled_detail["CheckpointId"],
                     "RunId": disabled_detail["RunId"],
+                    "run_id": disabled_detail["RunId"],
                     "ResumeAttemptId": resume_attempt_id,
                 },
             )
         raise HTTPException(status_code=409, detail=disabled_detail)
-
-    await _require_runtime_checkpoint_persistence()
 
     resume_input = {
         "type": "agentengine.resume_checkpoint",
@@ -201,7 +195,6 @@ async def resume_run_action(request: ResumeRunActionRequest):
         "resume_instruction_enabled": bool(getattr(request, "ResumeInstructionEnabled", False)),
         "resume_instruction": str(getattr(request, "ResumeInstruction", "") or "").strip(),
     }
-    active_runner = _resolve_active_runner()
     user_id = session.user_id or "user"
     custom_metadata, _metadata_runtime_controls = _split_custom_metadata(request.Metadata)
     resume_request_metadata = {
@@ -304,8 +297,9 @@ async def resume_run_action(request: ResumeRunActionRequest):
             run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
         )
         return deps.detached_streaming_response(
-            deps.conversation().stream_responses_conversation_turn(
-                runner=active_runner,
+            stream_runtime_responses_conversation_turn(
+                executor=executor,
+                launch_context=launch_context,
                 agent_id=request.AgentId,
                 user_id=user_id,
                 messages=[],
@@ -318,7 +312,6 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 include_agentengine_metadata=True,
                 resume_input=resume_input,
                 invocation_id=resume_invocation_id,
-                prepare_runner=_prepare_runner_for_model,
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_BACKGROUND,
             ),
@@ -329,8 +322,9 @@ async def resume_run_action(request: ResumeRunActionRequest):
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
-    resolved_session_id, result = await deps.conversation().invoke_conversation_once(
-        runner=active_runner,
+    resolved_session_id, result = await invoke_runtime_conversation_once(
+        executor=executor,
+        launch_context=launch_context,
         agent_id=request.AgentId,
         user_id=user_id,
         messages=[],
@@ -343,11 +337,10 @@ async def resume_run_action(request: ResumeRunActionRequest):
         resume_input=resume_input,
         response_id=response_id,
         invocation_id=str(resume_input["resume_attempt_id"]),
-        prepare_runner=_prepare_runner_for_model,
         session_service_provider=deps.resolve_session_service,
         run_mode=RUN_MODE_FOREGROUND,
     )
-    payload = deps.conversation().build_responses_payload(
+    payload = build_responses_payload(
         output_text=result["output_text"],
         model=request.Model,
         session_id=resolved_session_id,

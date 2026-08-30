@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+  "idempotency_key": "studio:s1:message-enqueue",
+  "tenant_id": "tenant-1",
+  "agent_instance_id": "agent-instance-1",
+  "session_id": "session-1",
+  "command_type": "enqueue",
+  "payload": {
+    "content": {
+      "text": "hello"
+    },
+    "reply_to": "reply-1"
+  },
+  "source": {
+    "kind": "studio",
+    "ref": "local-studio"
+  },
+  "authorization_ref": "permit-1",
+  "submitted_at": "2026-08-17T00:00:00Z"
+}
