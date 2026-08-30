@@ -360,9 +360,10 @@ def verify_usage_accounting(events: list[RuntimeEvent], report: ConformanceRepor
 def verify_capability_state_transitions(
     events: list[RuntimeEvent], report: ConformanceReport
 ) -> None:
-    """能力健康事件只能表达真实状态转换，不能重复刷同一状态。
+    """能力健康事件只能表达声明或真实状态转换，不能重复刷同一状态。
 
-    首个事件允许是 ``recovered``：能力状态可能来自上一轮 Run、持久化 Runtime
+    ``declared`` 只表明 Revision 已绑定，初始状态必须是 ``unknown``，不等于
+    探测成功。首个观测事件允许是 ``recovered``：能力状态可能来自上一轮 Run、持久化 Runtime
     或外部健康探针，本段事件流不一定包含它此前的 ``degraded``。一旦本流观察到
     某项能力的状态，后续相同状态事件就属于不诚实或重复上报。
 
@@ -371,6 +372,7 @@ def verify_capability_state_transitions(
     """
     observed: dict[str, str] = {}
     expected_states = {
+        EventType.CAPABILITY_DECLARED: "unknown",
         EventType.CAPABILITY_DEGRADED: "degraded",
         EventType.CAPABILITY_RECOVERED: "available",
     }

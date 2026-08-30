@@ -63,6 +63,7 @@ from ksadk.runtime import (
 )
 
 _MAX_REASONING_TURNS = 8
+_SANDBOX_TOOL_PREFIX = "sandbox_"
 
 
 class _GraphState(TypedDict, total=False):
@@ -353,6 +354,46 @@ class ManagedLangGraphEngine:
         except Exception:  # noqa: BLE001 - 登记失败不阻断对话主流程
             pass
 
+    def _capability_declarations(self, run: _EngineRun) -> list[RuntimeEvent]:
+        """把 Revision 已绑定能力声明为 ``unknown``，供平台完整展示。
+
+        声明不等同于健康探测。能力只有在披露、调用或显式健康事件之后，
+        才会从 unknown 转为 available/degraded。
+        """
+        spec = run.compiled.spec
+        declarations: list[tuple[str, str, bool, str]] = []
+        declarations.extend(
+            (binding.capability_ref, "mcp", binding.required, binding.load_policy)
+            for binding in spec.capabilities.mcp_bindings
+        )
+        declarations.extend(
+            (binding.capability_ref, "skill", binding.required, binding.load_policy)
+            for binding in spec.capabilities.skill_bindings
+        )
+        if any(name.startswith(_SANDBOX_TOOL_PREFIX) for name in self._tools):
+            declarations.append(
+                (
+                    f"sandbox://{spec.sandbox_policy.backend}@1",
+                    "sandbox",
+                    True,
+                    "on_demand",
+                )
+            )
+        return [
+            self._event(
+                run,
+                EventType.CAPABILITY_DECLARED,
+                {
+                    "capability_ref": capability_ref,
+                    "kind": kind,
+                    "state": "unknown",
+                    "required": required,
+                    "load_policy": load_policy,
+                },
+            )
+            for capability_ref, kind, required, load_policy in declarations
+        ]
+
     async def _execute(
         self,
         run: _EngineRun,
@@ -369,6 +410,7 @@ class ManagedLangGraphEngine:
             run.events.append(
                 self._event(run, EventType.AGENT_STARTED, {"agent_id": run.state.agent_id})
             )
+            run.events.extend(self._capability_declarations(run))
         try:
             graph = self._build_graph(run)
             instructions = spec.prompt.instructions or ""

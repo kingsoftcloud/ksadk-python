@@ -10,13 +10,19 @@ from ksadk.harness.insights import HarnessInsightsRegistry, mount_insights
 from ksadk.harness.observability import capability_health
 
 
-def _event(event_type: str, seq: int, payload: dict) -> RuntimeEvent:
+def _event(
+    event_type: str,
+    seq: int,
+    payload: dict,
+    *,
+    run_id: str = "run-1",
+) -> RuntimeEvent:
     return RuntimeEvent.create(
         event_type,
         agent_id="agent-1",
         user_id="user-1",
         session_id="session-1",
-        invocation_id="run-1",
+        invocation_id=run_id,
         seq_id=seq,
         timestamp=float(seq),
         payload=payload,
@@ -144,8 +150,133 @@ def test_policy_denial_does_not_mark_sandbox_degraded():
     assert capability_health(events) == {
         "overall_status": "unknown",
         "counts": {"available": 0, "degraded": 0, "unknown": 0},
+        "open_alerts": 0,
+        "resolved_alerts": 0,
         "items": [],
     }
+
+
+def test_declared_capabilities_remain_unknown_until_observed():
+    events = [
+        _event(
+            EventType.CAPABILITY_DECLARED,
+            index,
+            {
+                "capability_ref": capability_ref,
+                "kind": kind,
+                "state": "unknown",
+                "required": required,
+                "load_policy": "on_demand",
+            },
+        )
+        for index, (capability_ref, kind, required) in enumerate(
+            (
+                ("mcp://finance@1", "mcp", True),
+                ("skill://budget-review@1", "skill", False),
+                ("sandbox://local-readonly@1", "sandbox", True),
+            ),
+            start=1,
+        )
+    ]
+
+    snapshot = capability_health(events)
+
+    assert snapshot["overall_status"] == "unknown"
+    assert snapshot["counts"] == {"available": 0, "degraded": 0, "unknown": 3}
+    assert snapshot["open_alerts"] == 0
+    by_ref = {item["capability_ref"]: item for item in snapshot["items"]}
+    assert by_ref["mcp://finance@1"]["required"] is True
+    assert by_ref["skill://budget-review@1"]["required"] is False
+    assert by_ref["sandbox://local-readonly@1"]["load_policy"] == "on_demand"
+    assert all(item["history"][0]["status"] == "unknown" for item in snapshot["items"])
+
+
+def test_degradation_alert_is_resolved_with_transition_history():
+    events = [
+        _event(
+            EventType.CAPABILITY_DECLARED,
+            1,
+            {
+                "capability_ref": "mcp://finance@1",
+                "kind": "mcp",
+                "state": "unknown",
+                "required": True,
+                "load_policy": "on_demand",
+            },
+        ),
+        _event(
+            EventType.CAPABILITY_DEGRADED,
+            2,
+            {
+                "capability_ref": "mcp://finance@1",
+                "kind": "mcp",
+                "operation": "tools/list",
+                "reason": "timeout",
+            },
+        ),
+        _event(
+            EventType.CAPABILITY_RECOVERED,
+            3,
+            {
+                "capability_ref": "mcp://finance@1",
+                "kind": "mcp",
+                "operation": "tools/list",
+                "reason": "operation_succeeded",
+            },
+        ),
+    ]
+
+    snapshot = capability_health(events)
+    item = snapshot["items"][0]
+
+    assert snapshot["open_alerts"] == 0
+    assert snapshot["resolved_alerts"] == 1
+    assert item["status"] == "available"
+    assert item["alert_status"] == "resolved"
+    assert item["recovery_confirmed"] is True
+    assert item["degraded_since"] == 2.0
+    assert item["recovered_at"] == 3.0
+    assert [entry["status"] for entry in item["history"]] == [
+        "unknown",
+        "degraded",
+        "available",
+    ]
+
+
+def test_repeated_degradation_across_runs_keeps_one_open_alert():
+    events = [
+        _event(
+            EventType.CAPABILITY_DEGRADED,
+            1,
+            {"capability_ref": "mcp://finance@1", "kind": "mcp", "reason": "timeout"},
+            run_id="run-1",
+        ),
+        _event(
+            EventType.CAPABILITY_DECLARED,
+            2,
+            {
+                "capability_ref": "mcp://finance@1",
+                "kind": "mcp",
+                "state": "unknown",
+            },
+            run_id="run-2",
+        ),
+        _event(
+            EventType.CAPABILITY_DEGRADED,
+            3,
+            {"capability_ref": "mcp://finance@1", "kind": "mcp", "reason": "timeout"},
+            run_id="run-2",
+        ),
+    ]
+
+    snapshot = capability_health(events)
+    item = snapshot["items"][0]
+
+    assert snapshot["open_alerts"] == 1
+    assert item["status"] == "degraded"
+    assert item["transition_count"] == 1
+    assert item["consecutive_degraded_runs"] == 2
+    assert item["degraded_since"] == 1.0
 
 
 def test_capability_health_http_run_and_session_contracts():

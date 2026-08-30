@@ -119,7 +119,10 @@ class EventType:
     # 召回注入（长任务方案 §8）：Memory ID、分数、是否进入模型输入。
     # payload: scope, query; items 增补 memory_id/score/injected
     MEMORY_RECALLED = "memory.recalled"
-    # capability 降级/恢复。payload: capability_ref, state
+    # capability 声明/降级/恢复。
+    # declared payload: capability_ref, kind, required, load_policy, state=unknown
+    # degraded/recovered payload: capability_ref, state
+    CAPABILITY_DECLARED = "capability.declared"
     CAPABILITY_DEGRADED = "capability.degraded"
     CAPABILITY_RECOVERED = "capability.recovered"
     # --- 事件树（收口 5）：Run → Agent → Turn → Node → Model/Tool/Usage ---
@@ -182,6 +185,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.MEMORY_WRITE,
         EventType.MEMORY_CONFLICT,
         EventType.MEMORY_RECALLED,
+        EventType.CAPABILITY_DECLARED,
         EventType.CAPABILITY_DEGRADED,
         EventType.CAPABILITY_RECOVERED,
         EventType.AGENT_STARTED,
@@ -244,6 +248,7 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.MEMORY_WRITE: frozenset({"scope"}),
     EventType.MEMORY_CONFLICT: frozenset({"scope", "conflicting_ref"}),
     EventType.MEMORY_RECALLED: frozenset({"scope", "query"}),
+    EventType.CAPABILITY_DECLARED: frozenset({"capability_ref", "kind", "state"}),
     EventType.CAPABILITY_DEGRADED: frozenset({"capability_ref"}),
     EventType.CAPABILITY_RECOVERED: frozenset({"capability_ref"}),
     # --- 事件树（收口 5）---

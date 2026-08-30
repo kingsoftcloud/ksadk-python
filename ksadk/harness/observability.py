@@ -103,6 +103,7 @@ def capability_health(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
     """
     states: dict[tuple[str, str], dict[str, Any]] = {}
     begins: dict[str, tuple[str, dict[str, Any]]] = {}
+    sandbox_capability_ref = _SANDBOX_CAPABILITY_REF
 
     def observe(
         event: RuntimeEvent,
@@ -112,15 +113,62 @@ def capability_health(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
         status: str,
         operation: str,
         reason_code: str,
+        metadata: dict[str, Any] | None = None,
+        declaration: bool = False,
     ) -> None:
         if not capability_ref:
             return
         key = (kind, capability_ref)
         previous = states.get(key)
-        transitions = int(previous.get("transition_count", 0)) if previous else 0
-        if previous is None or previous["status"] != status:
-            transitions += 1
-        states[key] = {
+        run_id = event.run_id or event.invocation_id
+        if declaration and previous is not None:
+            previous.update(metadata or {})
+            previous["last_declared_event_id"] = event.event_id
+            previous["last_declared_at"] = event.timestamp
+            return
+
+        changed = previous is None or previous["status"] != status
+        history = list(previous.get("history", ())) if previous else []
+        if changed:
+            history.append(
+                {
+                    "status": status,
+                    "operation": operation,
+                    "reason_code": reason_code,
+                    "event_id": event.event_id,
+                    "seq_id": event.seq_id,
+                    "timestamp": event.timestamp,
+                    "run_id": run_id,
+                }
+            )
+            history = history[-20:]
+
+        degraded_runs = set(previous.get("_degraded_run_ids", ())) if previous else set()
+        alert_status = str(previous.get("alert_status") or "none") if previous else "none"
+        degraded_since = previous.get("degraded_since") if previous else None
+        recovered_at = previous.get("recovered_at") if previous else None
+        recovery_confirmed = bool(previous.get("recovery_confirmed")) if previous else False
+        if status == "degraded":
+            degraded_runs.add(run_id)
+            if alert_status != "open":
+                degraded_since = event.timestamp
+            alert_status = "open"
+            recovered_at = None
+            recovery_confirmed = False
+        elif status == "available":
+            if previous and (
+                previous.get("status") == "degraded" or previous.get("alert_status") == "open"
+            ):
+                alert_status = "resolved"
+                recovered_at = event.timestamp
+                recovery_confirmed = True
+            elif alert_status != "resolved":
+                alert_status = "none"
+                recovered_at = None
+                recovery_confirmed = False
+            degraded_runs.clear()
+
+        item = {
             "capability_ref": capability_ref,
             "kind": kind,
             "status": status,
@@ -128,11 +176,24 @@ def capability_health(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
             "reason_code": reason_code,
             "last_event_id": event.event_id,
             "last_seq_id": event.seq_id,
-            "last_observed_at": event.timestamp,
-            "run_id": event.run_id or event.invocation_id,
+            "last_observed_at": None if declaration else event.timestamp,
+            "run_id": run_id,
             "scope_id": event.scope_id or f"agent:{event.agent_id}",
-            "transition_count": transitions,
+            "transition_count": len(history),
+            "history": history,
+            "alert_status": alert_status,
+            "degraded_since": degraded_since,
+            "recovered_at": recovered_at,
+            "recovery_confirmed": recovery_confirmed,
+            "consecutive_degraded_runs": len(degraded_runs),
+            "_degraded_run_ids": sorted(degraded_runs),
         }
+        if previous:
+            for field in ("required", "load_policy", "last_declared_event_id", "last_declared_at"):
+                if field in previous:
+                    item[field] = previous[field]
+        item.update(metadata or {})
+        states[key] = item
 
     for event in events:
         payload = event.payload
@@ -140,6 +201,28 @@ def capability_health(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
             begins[str(payload.get("call_id") or "")] = (
                 str(payload.get("name") or ""),
                 dict(payload.get("args") or {}),
+            )
+            continue
+
+        if event.event_type == EventType.CAPABILITY_DECLARED:
+            declared_ref = str(payload.get("capability_ref") or "")
+            declared_kind = str(payload.get("kind") or _kind_from_ref(declared_ref))
+            if declared_kind == "sandbox" and declared_ref:
+                sandbox_capability_ref = declared_ref
+            observe(
+                event,
+                kind=declared_kind,
+                capability_ref=declared_ref,
+                status="unknown",
+                operation="declared",
+                reason_code="not_observed",
+                metadata={
+                    "required": bool(payload.get("required", True)),
+                    "load_policy": str(payload.get("load_policy") or "on_demand"),
+                    "last_declared_event_id": event.event_id,
+                    "last_declared_at": event.timestamp,
+                },
+                declaration=True,
             )
             continue
 
@@ -212,19 +295,33 @@ def capability_health(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
             observe(
                 event,
                 kind="sandbox",
-                capability_ref=_SANDBOX_CAPABILITY_REF,
+                capability_ref=sandbox_capability_ref,
                 status="degraded" if error else "available",
                 operation=name,
                 reason_code=_tool_reason_code(error),
             )
 
-    items = sorted(states.values(), key=lambda item: (item["kind"], item["capability_ref"]))
+    items = []
+    for item in sorted(states.values(), key=lambda value: (value["kind"], value["capability_ref"])):
+        public_item = dict(item)
+        public_item.pop("_degraded_run_ids", None)
+        items.append(public_item)
     counts = {
         status: sum(1 for item in items if item["status"] == status)
         for status in ("available", "degraded", "unknown")
     }
-    overall = "degraded" if counts["degraded"] else ("available" if items else "unknown")
-    return {"overall_status": overall, "counts": counts, "items": items}
+    overall = (
+        "degraded"
+        if counts["degraded"]
+        else ("available" if counts["available"] else "unknown")
+    )
+    return {
+        "overall_status": overall,
+        "counts": counts,
+        "open_alerts": sum(1 for item in items if item["alert_status"] == "open"),
+        "resolved_alerts": sum(1 for item in items if item["alert_status"] == "resolved"),
+        "items": items,
+    }
 
 
 def _kind_from_ref(value: Any) -> str:
@@ -235,6 +332,7 @@ def _kind_from_ref(value: Any) -> str:
 def _safe_reason_code(value: Any, *, default: str) -> str:
     candidate = str(value or "").strip().lower()
     if candidate in {
+        "not_observed",
         "operation_succeeded",
         "timeout",
         "transport_error",

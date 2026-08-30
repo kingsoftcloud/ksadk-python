@@ -981,6 +981,7 @@ Run
 - `policy.decision`
 - `approval.requested/resolved`
 - `memory.read/write/conflict`
+- `capability.declared/degraded/recovered`
 - `usage.reported`
 - `artifact.created`
 - `checkpoint.created`
@@ -1001,13 +1002,18 @@ Run
 Studio 与控制面通过公开的 `RuntimeEvent` 投影 MCP、Skill 和 Sandbox 健康状态，
 不得读取 Harness Engine、Transport 或 Backend 的私有对象：
 
+- Revision 启动时先发出 `capability.declared(state=unknown)`，完整声明已绑定的
+  MCP、Skill 与已装配 Sandbox；声明不等于健康探测；
 - MCP 以 `capability.degraded/recovered` 为权威状态，并结合渐进披露成功事件；
 - Skill 结合 `skill.disclosed` 和披露工具调用结果形成最近状态；
 - Sandbox 结合实际执行工具结果形成最近状态；
 - 审批拒绝和策略拒绝是治理决策，不计为能力故障；
-- 快照只覆盖事件流中已经观测到的能力。尚未调用或披露的能力保持未观测，
-  不得被推断为可用；
-- 跨系统接口只返回稳定 `reason_code`、最近事件、作用域和状态转换次数，
+- 已声明但尚未调用或披露的能力显示为 `unknown`，不得被推断为可用；
+- 跨系统接口只返回稳定 `reason_code`、最近事件、作用域、最近 20 次状态迁移，
+  以及告警打开/恢复确认信息；
+- 同一能力连续降级时保持打开告警，观测到成功披露、调用或显式恢复事件后
+  标记为已恢复；该结论完全由持久化事件推导，不在查询层主动探测；
+- 查询结果
   不返回原始异常、工具参数或结果正文。
 
 稳定查询合同为：

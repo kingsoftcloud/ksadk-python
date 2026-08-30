@@ -318,6 +318,14 @@ def test_capability_state_transitions_are_honest_and_deduplicated():
     ok = [
         make(EventType.RUN_STARTED, {"status": "running"}),
         make(
+            EventType.CAPABILITY_DECLARED,
+            {
+                "capability_ref": "mcp://finance@1",
+                "kind": "mcp",
+                "state": "unknown",
+            },
+        ),
+        make(
             EventType.CAPABILITY_DEGRADED,
             {"capability_ref": "mcp://finance@1", "state": "degraded"},
         ),
@@ -352,6 +360,22 @@ def test_capability_state_transitions_are_honest_and_deduplicated():
         make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
     ]
     assert "capability-state" in _violation_rules(run_conformance_suite(wrong_state))
+
+    invalid_declaration = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(
+            EventType.CAPABILITY_DECLARED,
+            {
+                "capability_ref": "mcp://finance@1",
+                "kind": "mcp",
+                "state": "available",
+            },
+        ),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    assert "capability-state" in _violation_rules(
+        run_conformance_suite(invalid_declaration)
+    )
 
 
 def test_first_capability_recovered_event_can_inherit_prior_runtime_state():

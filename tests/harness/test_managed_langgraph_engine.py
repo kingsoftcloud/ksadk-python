@@ -74,6 +74,30 @@ def test_no_tool_run_is_conformant():
     assert events[-1].event_type == EventType.RUN_COMPLETED
 
 
+def test_bound_sandbox_is_declared_before_first_observation():
+    async def sandbox_read_file(arguments):
+        return "unused"
+
+    engine = ManagedLangGraphEngine(
+        reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="ok")]),
+        tools={"sandbox_read_file": sandbox_read_file},
+    )
+    events = _run(engine, _start_request())
+    declarations = [
+        event for event in events if event.event_type == EventType.CAPABILITY_DECLARED
+    ]
+
+    assert len(declarations) == 1
+    assert declarations[0].payload == {
+        "capability_ref": "sandbox://local-readonly@1",
+        "kind": "sandbox",
+        "state": "unknown",
+        "required": True,
+        "load_policy": "on_demand",
+    }
+    assert run_conformance_suite(events).ok
+
+
 def test_single_tool_run_emits_paired_events_in_order():
     engine = ManagedLangGraphEngine(
         reasoner=_ScriptedReasoner(
