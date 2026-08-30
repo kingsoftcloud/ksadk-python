@@ -663,6 +663,9 @@ Harness 对 discovery 与 Tool Call 分别设置超时边界；调用方主动�
 `capability.degraded`，把半开试探成功投影为 `capability.recovered`；仅状态
 转换时发事件，避免连续失败刷屏。状态事件只包含能力引用、操作类型和脱敏失败
 分类，Transport 异常原文仍留在受控调用日志，不进入跨系统观测事件。
+Harness Conformance 同时校验同一能力不得连续上报相同状态，且事件携带的
+`state` 必须与降级/恢复语义一致；首个事件允许是恢复，以兼容跨 Run 持久化
+Runtime 或外部健康探针已经观察到的历史状态。
 
 ### 10.3 MCP 降级策略
 

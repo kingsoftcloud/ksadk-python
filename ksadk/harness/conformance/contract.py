@@ -357,6 +357,46 @@ def verify_usage_accounting(events: list[RuntimeEvent], report: ConformanceRepor
             )
 
 
+def verify_capability_state_transitions(
+    events: list[RuntimeEvent], report: ConformanceReport
+) -> None:
+    """能力健康事件只能表达真实状态转换，不能重复刷同一状态。
+
+    首个事件允许是 ``recovered``：能力状态可能来自上一轮 Run、持久化 Runtime
+    或外部健康探针，本段事件流不一定包含它此前的 ``degraded``。一旦本流观察到
+    某项能力的状态，后续相同状态事件就属于不诚实或重复上报。
+
+    ``state`` 是增量字段，为兼容早期 RuntimeEvent v2 生产者暂不设为信封硬必填；
+    生产者一旦提供，就必须与 event_type 一致。
+    """
+    observed: dict[str, str] = {}
+    expected_states = {
+        EventType.CAPABILITY_DEGRADED: "degraded",
+        EventType.CAPABILITY_RECOVERED: "available",
+    }
+    for event in events:
+        expected = expected_states.get(event.event_type)
+        if expected is None:
+            continue
+        payload = _payload(event)
+        capability_ref = str(payload.get("capability_ref") or "")
+        if not capability_ref:
+            report.fail("capability-state", f"{event.event_type} 缺少 capability_ref")
+            continue
+        declared = payload.get("state")
+        if declared is not None and str(declared) != expected:
+            report.fail(
+                "capability-state",
+                f"{capability_ref} 的 {event.event_type} 声明了非法状态 {declared!r}",
+            )
+        if observed.get(capability_ref) == expected:
+            report.fail(
+                "capability-state",
+                f"{capability_ref} 重复上报状态 {expected}",
+            )
+        observed[capability_ref] = expected
+
+
 def run_conformance_suite(
     events: list[RuntimeEvent],
     *,
@@ -377,6 +417,7 @@ def run_conformance_suite(
     verify_checkpoint_honesty(events, report)
     verify_compaction_honesty(events, report)
     verify_usage_accounting(events, report)
+    verify_capability_state_transitions(events, report)
     return report
 
 

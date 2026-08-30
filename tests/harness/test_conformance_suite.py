@@ -311,3 +311,57 @@ def test_usage_accounting_mismatch_fails():
         make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
     ]
     assert run_conformance_suite(ok).ok, run_conformance_suite(ok).violations
+
+
+def test_capability_state_transitions_are_honest_and_deduplicated():
+    make = make_event_factory()
+    ok = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(
+            EventType.CAPABILITY_DEGRADED,
+            {"capability_ref": "mcp://finance@1", "state": "degraded"},
+        ),
+        make(
+            EventType.CAPABILITY_RECOVERED,
+            {"capability_ref": "mcp://finance@1", "state": "available"},
+        ),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    assert run_conformance_suite(ok).ok, run_conformance_suite(ok).violations
+
+    duplicate = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(
+            EventType.CAPABILITY_DEGRADED,
+            {"capability_ref": "mcp://finance@1", "state": "degraded"},
+        ),
+        make(
+            EventType.CAPABILITY_DEGRADED,
+            {"capability_ref": "mcp://finance@1", "state": "degraded"},
+        ),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    assert "capability-state" in _violation_rules(run_conformance_suite(duplicate))
+
+    wrong_state = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(
+            EventType.CAPABILITY_RECOVERED,
+            {"capability_ref": "mcp://finance@1", "state": "degraded"},
+        ),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    assert "capability-state" in _violation_rules(run_conformance_suite(wrong_state))
+
+
+def test_first_capability_recovered_event_can_inherit_prior_runtime_state():
+    make = make_event_factory()
+    events = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(
+            EventType.CAPABILITY_RECOVERED,
+            {"capability_ref": "mcp://finance@1", "state": "available"},
+        ),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    assert run_conformance_suite(events).ok, run_conformance_suite(events).violations
