@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from ksadk.harness.context_engine import HarnessContextEngine
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.insights import HarnessInsightsRegistry, mount_insights
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
@@ -54,14 +55,14 @@ def _drive(registry: HarnessInsightsRegistry) -> str:
     )
 
     async def drive() -> str:
-        compiled = await engine.compile(
-            HarnessSpec(
-                agent_revision_ref="agent-revision://proj-1@2",
-                model=ModelBinding(profile_ref="model-profile://kimi-k3@1.0.0"),
-                prompt=PromptSpec(instructions="你是财务分析助手。"),
-            )
+        spec = HarnessSpec(
+            agent_revision_ref="agent-revision://proj-1@2",
+            model=ModelBinding(profile_ref="model-profile://kimi-k3@1.0.0"),
+            prompt=PromptSpec(instructions="你是财务分析助手。"),
         )
+        compiled = await engine.compile(spec)
         handle = await engine.start(request, compiled)
+        registry.register_spec(request.session_id, handle.run_id, spec)
         async for _ in engine.stream(handle):
             pass
         return handle.run_id
@@ -108,6 +109,39 @@ def test_insights_compaction_trace_and_session_report():
     assert compactions["items"][-1]["compaction_id"].startswith("cmp_")
     assert "quality_checks" in compactions["items"][-1]
     assert session_report["actual_total_input_tokens"] == 640
+
+
+def test_insights_runtime_readiness_for_run_and_session():
+    registry = HarnessInsightsRegistry()
+    run_id = _drive(registry)
+    with _client(registry) as client:
+        run_report = client.get(f"/insights/runs/{run_id}/runtime-readiness")
+        session_report = client.get("/insights/sessions/sess-1/runtime-readiness")
+    assert run_report.status_code == 200
+    assert session_report.status_code == 200
+    assert run_report.json()["status"] == "warning"  # 未配置正式审批角色
+    assert run_report.json()["deployable"] is True
+    assert session_report.json()["spec_hash"] == run_report.json()["spec_hash"]
+
+
+def test_runtime_readiness_requires_registered_public_spec():
+    registry = HarnessInsightsRegistry()
+    registry.record(
+        "sess-x",
+        "run-x",
+        RuntimeEvent.create(
+            EventType.RUN_COMPLETED,
+            agent_id="agent-x",
+            user_id="user-x",
+            session_id="sess-x",
+            invocation_id="run-x",
+            seq_id=1,
+            payload={"status": "completed"},
+        ),
+    )
+    with _client(registry) as client:
+        response = client.get("/insights/runs/run-x/runtime-readiness")
+    assert response.status_code == 404
 
 
 def test_insights_unknown_run_404():

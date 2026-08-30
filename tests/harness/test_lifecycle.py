@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.lifecycle import (
     BuildPipeline,
     LifecycleError,
@@ -76,6 +77,43 @@ class TestLifecycleClosedLoop:
         )
         with pytest.raises(LifecycleError, match="no active deployment"):
             manager.invoke(route="local/finance", invocation_id="run-1")
+
+    def test_deploy_blocks_observed_failed_smoke_run(self):
+        manager = LocalLifecycleManager()
+        manifest = manager.build(
+            revision_payload=_revision_payload(),
+            revision_ref="agent-revision://proj-1@3",
+        )
+        failed = RuntimeEvent.create(
+            EventType.RUN_FAILED,
+            agent_id="agent-1",
+            user_id="user-1",
+            session_id="session-1",
+            invocation_id="run-1",
+            seq_id=1,
+            payload={"status": "failed", "error": "private detail"},
+        )
+        with pytest.raises(LifecycleError, match="smoke_run_failed"):
+            manager.deploy(
+                manifest=manifest,
+                revision_payload=_revision_payload(),
+                route="local/finance",
+                readiness_events=[failed],
+            )
+
+    def test_deploy_keeps_readiness_report_for_studio(self):
+        manager = LocalLifecycleManager()
+        manifest = manager.build(
+            revision_payload=_revision_payload(),
+            revision_ref="agent-revision://proj-1@3",
+        )
+        deployment = manager.deploy(
+            manifest=manifest,
+            revision_payload=_revision_payload(),
+            route="local/finance",
+        )
+        assert deployment.readiness_report["deployable"] is True
+        assert deployment.readiness_report["revision_ref"] == manifest.revision_ref
 
     def test_invoke_rejected_on_unknown_route(self):
         with pytest.raises(LifecycleError):

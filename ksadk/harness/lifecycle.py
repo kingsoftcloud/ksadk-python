@@ -24,9 +24,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ksadk.harness.compiler import compile_revision_payload
+from ksadk.harness.events import RuntimeEvent
+from ksadk.harness.readiness import runtime_readiness
 from ksadk.harness.spec import HarnessSpec
 
 
@@ -120,7 +122,14 @@ class LocalDeployment:
     进程内形态保留用于单测/调试（无 IO 副作用）。
     """
 
-    def __init__(self, *, deployment_id: str, manifest: BuildManifest, spec: HarnessSpec) -> None:
+    def __init__(
+        self,
+        *,
+        deployment_id: str,
+        manifest: BuildManifest,
+        spec: HarnessSpec,
+        readiness_report: dict[str, Any] | None = None,
+    ) -> None:
         self.deployment_id = deployment_id
         self.manifest = manifest
         self.spec = spec
@@ -128,6 +137,7 @@ class LocalDeployment:
         self.health_checked: bool = False
         self.invocations: list[str] = []
         self.run_results: list[dict[str, Any]] = []
+        self.readiness_report = readiness_report or runtime_readiness(spec)
         # 进程形态字段。
         self.port: int | None = None
         self.base_url: str = ""
@@ -440,13 +450,24 @@ class LocalLifecycleManager:
         launch_process: bool = False,
         health_timeout: float = 20.0,
         server_command: list[str] | None = None,
+        readiness_events: Sequence[RuntimeEvent] = (),
     ) -> LocalDeployment:
         if manifest.build_id not in self._manifests:
             raise LifecycleError("unknown manifest: build first")
+        spec = compile_revision_payload(revision_payload, revision_ref=manifest.revision_ref)
+        readiness_report = runtime_readiness(spec, readiness_events)
+        if not readiness_report["deployable"]:
+            blockers = ", ".join(
+                str(check["reason_code"])
+                for check in readiness_report["checks"]
+                if check["status"] == "blocked"
+            )
+            raise LifecycleError(f"deploy blocked by runtime readiness: {blockers}")
         deployment = LocalDeployment(
             deployment_id=f"dep_{manifest.build_id}",
             manifest=manifest,
-            spec=compile_revision_payload(revision_payload, revision_ref=manifest.revision_ref),
+            spec=spec,
+            readiness_report=readiness_report,
         )
         # 创建本地 Runtime 实例 + Health Check（§12.4：真实完成，不能只改状态）。
         deployment.status = LifecycleStatus.BUILT

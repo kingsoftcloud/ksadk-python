@@ -1026,6 +1026,30 @@ GET /insights/sessions/{session_id}/capability-health
 Run 视图用于定位单次执行中的能力状态；Session 视图按持久化事件时序投影
 跨 Run 最近状态。事件为空时返回未找到，而不是伪造“健康”。
 
+### 13.5 Runtime Readiness
+
+Capability Health 不能直接等同于“允许部署”。Harness 将不可变 `HarnessSpec`
+与同一 Revision 的 Draft/Smoke Run 公开事件合并，输出统一的
+`ready / warning / blocked`：
+
+- 配置已经编译为合法 Spec 是静态基础；
+- 模型调用失败、Smoke Run 失败或已观测到的必需能力降级会阻断部署；
+- 可选能力降级只产生 warning；
+- 渐进披露能力尚未被使用时为 `unknown`，只产生 warning，不能误判为故障；
+- 未配置正式审批角色产生 warning，本地调试仍可继续；
+- 报告只包含稳定 `reason_code`，不回显模型、Transport 或 Tool 原始异常。
+
+稳定查询合同为：
+
+```text
+GET /insights/runs/{run_id}/runtime-readiness
+GET /insights/sessions/{session_id}/runtime-readiness
+```
+
+生命周期在 Deploy 前消费同一报告；`blocked` 时拒绝部署，`warning` 可继续但
+必须在 Studio 展示原因。这样 Build 校验、运行观测和部署门禁使用同一事实口径，
+不会由前端自行猜测状态。
+
 ---
 
 ## 14. 多 Agent 作为可选策略

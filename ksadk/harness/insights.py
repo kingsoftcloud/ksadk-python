@@ -30,6 +30,8 @@ from ksadk.harness.observability import (
     context_trace,
     token_report,
 )
+from ksadk.harness.readiness import runtime_readiness
+from ksadk.harness.spec import HarnessSpec
 
 #: 引擎事件回调类型：``event_sink(session_id, run_id, event)``。
 EventSink = Callable[[str, str, RuntimeEvent], None]
@@ -46,6 +48,15 @@ class HarnessInsightsRegistry:
         self._lock = threading.Lock()
         self._by_run: dict[str, list[RuntimeEvent]] = defaultdict(list)
         self._by_session: dict[str, list[RuntimeEvent]] = defaultdict(list)
+        self._spec_by_run: dict[str, HarnessSpec] = {}
+        self._run_ids_by_session: dict[str, list[str]] = defaultdict(list)
+
+    def register_spec(self, session_id: str, run_id: str, spec: HarnessSpec) -> None:
+        """登记 Run 实际使用的公开 HarnessSpec（不接受 Engine 私有对象）。"""
+        with self._lock:
+            self._spec_by_run[run_id] = spec
+            if run_id not in self._run_ids_by_session[session_id]:
+                self._run_ids_by_session[session_id].append(run_id)
 
     def record(self, session_id: str, run_id: str, event: RuntimeEvent) -> None:
         """登记一个事件（引擎 event_sink 以位置参数调用）。"""
@@ -76,6 +87,20 @@ class HarnessInsightsRegistry:
         with self._lock:
             events = list(self._by_session.get(session_id) or [])
         return project_v2(events)
+
+    def run_readiness(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            spec = self._spec_by_run.get(run_id)
+        if spec is None:
+            return None
+        return runtime_readiness(spec, self.run_events(run_id))
+
+    def session_readiness(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            run_ids = list(self._run_ids_by_session.get(session_id) or ())
+        if not run_ids:
+            return None
+        return self.run_readiness(run_ids[-1])
 
 
 def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
@@ -109,6 +134,14 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         """Run 级 MCP / Skill / Sandbox 健康快照。"""
         return capability_health(_events_or_404(run_id))
 
+    @router.get("/runs/{run_id}/runtime-readiness")
+    async def get_runtime_readiness(run_id: str) -> dict[str, Any]:
+        """Run 使用的 Spec + smoke 观测 → ready/warning/blocked。"""
+        report = registry.run_readiness(run_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail=f"unknown run spec: {run_id}")
+        return report
+
     @router.get("/sessions/{session_id}/token-report")
     async def get_session_token_report(session_id: str) -> dict[str, Any]:
         """会话级 Token 闭环汇总（跨 Run 聚合）。"""
@@ -124,6 +157,14 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         if not events:
             raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
         return capability_health(events)
+
+    @router.get("/sessions/{session_id}/runtime-readiness")
+    async def get_session_runtime_readiness(session_id: str) -> dict[str, Any]:
+        """会话最近一次 Run 的运行就绪度。"""
+        report = registry.session_readiness(session_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail=f"unknown session spec: {session_id}")
+        return report
 
     return router
 
