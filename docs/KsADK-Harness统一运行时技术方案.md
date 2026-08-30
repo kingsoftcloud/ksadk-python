@@ -996,6 +996,30 @@ Run
 - Context Trace 记录 section、token、hash，不默认记录敏感正文；
 - 事件必须支持顺序恢复和幂等写入。
 
+### 13.4 Capability Health Snapshot
+
+Studio 与控制面通过公开的 `RuntimeEvent` 投影 MCP、Skill 和 Sandbox 健康状态，
+不得读取 Harness Engine、Transport 或 Backend 的私有对象：
+
+- MCP 以 `capability.degraded/recovered` 为权威状态，并结合渐进披露成功事件；
+- Skill 结合 `skill.disclosed` 和披露工具调用结果形成最近状态；
+- Sandbox 结合实际执行工具结果形成最近状态；
+- 审批拒绝和策略拒绝是治理决策，不计为能力故障；
+- 快照只覆盖事件流中已经观测到的能力。尚未调用或披露的能力保持未观测，
+  不得被推断为可用；
+- 跨系统接口只返回稳定 `reason_code`、最近事件、作用域和状态转换次数，
+  不返回原始异常、工具参数或结果正文。
+
+稳定查询合同为：
+
+```text
+GET /insights/runs/{run_id}/capability-health
+GET /insights/sessions/{session_id}/capability-health
+```
+
+Run 视图用于定位单次执行中的能力状态；Session 视图按持久化事件时序投影
+跨 Run 最近状态。事件为空时返回未找到，而不是伪造“健康”。
+
 ---
 
 ## 14. 多 Agent 作为可选策略

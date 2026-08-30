@@ -8,7 +8,8 @@ Studio/控制面此前只有 SDK 查询函数（:mod:`ksadk.harness.observabilit
   API 层按 ``run_id`` / ``session_id`` 查询；
 - :func:`build_insights_router`：FastAPI 路由，输出纯 dict 投影
   （context-trace / token-report / compaction-trace）——Studio 不解析
-  Harness 私有对象，直接消费 JSON。
+  Harness 私有对象，直接消费 JSON；
+- Capability Health Snapshot：统一查询 MCP / Skill / Sandbox 健康状态。
 
 输出边界：事件经 :func:`ksadk.harness.events.project_v2` 整流为 v2 信封
 （长任务方案 §8），再交给 observability 投影函数。
@@ -23,7 +24,12 @@ from typing import Any, Callable
 from fastapi import APIRouter, FastAPI, HTTPException
 
 from ksadk.harness.events import RuntimeEvent, project_v2
-from ksadk.harness.observability import compaction_trace, context_trace, token_report
+from ksadk.harness.observability import (
+    capability_health,
+    compaction_trace,
+    context_trace,
+    token_report,
+)
 
 #: 引擎事件回调类型：``event_sink(session_id, run_id, event)``。
 EventSink = Callable[[str, str, RuntimeEvent], None]
@@ -98,6 +104,11 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         """压缩历史（前后 Token、触发原因、质量校验、Memory Flush 候选）。"""
         return {"items": compaction_trace(_events_or_404(run_id))}
 
+    @router.get("/runs/{run_id}/capability-health")
+    async def get_capability_health(run_id: str) -> dict[str, Any]:
+        """Run 级 MCP / Skill / Sandbox 健康快照。"""
+        return capability_health(_events_or_404(run_id))
+
     @router.get("/sessions/{session_id}/token-report")
     async def get_session_token_report(session_id: str) -> dict[str, Any]:
         """会话级 Token 闭环汇总（跨 Run 聚合）。"""
@@ -105,6 +116,14 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         if not events:
             raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
         return token_report(events)
+
+    @router.get("/sessions/{session_id}/capability-health")
+    async def get_session_capability_health(session_id: str) -> dict[str, Any]:
+        """会话级最新健康快照（跨 Run 按事件时序投影）。"""
+        events = registry.session_events(session_id)
+        if not events:
+            raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
+        return capability_health(events)
 
     return router
 
