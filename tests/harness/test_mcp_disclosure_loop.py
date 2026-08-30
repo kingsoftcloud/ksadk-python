@@ -19,6 +19,7 @@ from ksadk.harness.events import EventType
 from ksadk.harness.mcp_runtime import (
     McpCapabilityRuntime,
     McpRuntimeError,
+    McpRuntimeOptions,
     McpServerBinding,
     McpToolCallContext,
     McpTransport,
@@ -86,6 +87,18 @@ class _IdempotentTransport(_FakeTransport):
     ) -> Any:
         self.contexts.append(context)
         return await self.call_tool(name, arguments)
+
+
+class _RecoveringTransport(_FakeTransport):
+    def __init__(self, tools: dict[str, dict]):
+        super().__init__(tools)
+        self.list_attempts = 0
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        self.list_attempts += 1
+        if self.list_attempts == 1:
+            raise ConnectionError("private endpoint must not enter capability event")
+        return await super().list_tools()
 
 
 class _ScriptedReasoner:
@@ -164,7 +177,10 @@ def _drive(reasoner, runtime, spec):
         compiled = await engine.compile(spec)
         handle = await engine.start(
             StartRequest(
-                agent_id="a1", user_id="u1", session_id="s1", input="查发票",
+                agent_id="a1",
+                user_id="u1",
+                session_id="s1",
+                input="查发票",
                 runtime_type="managed-langgraph",
             ),
             compiled,
@@ -200,8 +216,11 @@ def test_full_chain_l1_l2_l3_emits_events_and_calls_transport():
             (MCP_READ_SCHEMA_TOOL, {"server_id": _FINANCE, "tool_name": "get_invoice"}),
             (
                 MCP_CALL_TOOL_TOOL,
-                {"server_id": _FINANCE, "tool_name": "get_invoice",
-                 "arguments": {"invoice_id": "INV-1"}},
+                {
+                    "server_id": _FINANCE,
+                    "tool_name": "get_invoice",
+                    "arguments": {"invoice_id": "INV-1"},
+                },
             ),
         ]
     )
@@ -218,14 +237,63 @@ def test_full_chain_l1_l2_l3_emits_events_and_calls_transport():
     assert events[-1].event_type == EventType.RUN_COMPLETED
 
 
+def test_transport_degradation_and_recovery_emit_single_sanitized_transitions():
+    transport = _RecoveringTransport(_TOOLS)
+    runtime = McpCapabilityRuntime(
+        options=McpRuntimeOptions(failure_threshold=1, cooldown_seconds=0)
+    )
+    runtime.bind(
+        McpServerBinding(
+            descriptor=_descriptor(),
+            transport=transport,
+            required=False,
+        )
+    )
+    # 首次 tools/list 失败，下一轮由默认 Loop 自主重试并触发半开恢复。
+    reasoner = _ScriptedReasoner(
+        [
+            (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
+            (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
+        ]
+    )
+
+    _engine, events = _drive(reasoner, runtime, _spec(risk_binding=False))
+
+    transitions = [
+        event
+        for event in events
+        if event.event_type
+        in {
+            EventType.CAPABILITY_DEGRADED,
+            EventType.CAPABILITY_RECOVERED,
+        }
+    ]
+    assert [event.event_type for event in transitions] == [
+        EventType.CAPABILITY_DEGRADED,
+        EventType.CAPABILITY_RECOVERED,
+    ]
+    assert [event.payload["state"] for event in transitions] == [
+        "degraded",
+        "available",
+    ]
+    assert all(event.payload["capability_ref"] == _FINANCE for event in transitions)
+    assert transitions[0].payload["reason"] == "transport_error"
+    assert "private endpoint" not in str(transitions[0].payload)
+    assert transport.list_attempts == 2
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+
+
 def test_call_without_schema_is_rejected():
     reasoner = _ScriptedReasoner(
         [
             (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
             (
                 MCP_CALL_TOOL_TOOL,
-                {"server_id": _FINANCE, "tool_name": "get_invoice",
-                 "arguments": {"invoice_id": "INV-1"}},
+                {
+                    "server_id": _FINANCE,
+                    "tool_name": "get_invoice",
+                    "arguments": {"invoice_id": "INV-1"},
+                },
             ),
         ]
     )
@@ -233,13 +301,14 @@ def test_call_without_schema_is_rejected():
     _engine, events = _drive(reasoner, runtime, _spec())
     # 越级调用被拒：无 L2/L3 披露事件（L1 列表合法），transport 未被调用。
     assert not [
-        e for e in events
-        if e.event_type == EventType.MCP_DISCLOSED and e.payload["level"] >= 2
+        e for e in events if e.event_type == EventType.MCP_DISCLOSED and e.payload["level"] >= 2
     ]
     assert transport.calls == []
     failures = [
-        e for e in events
-        if e.event_type == EventType.TOOL_CALL_END and e.payload.get("name") == MCP_CALL_TOOL_TOOL
+        e
+        for e in events
+        if e.event_type == EventType.TOOL_CALL_END
+        and e.payload.get("name") == MCP_CALL_TOOL_TOOL
         and "须先 mcp_read_tool_schema" in str(e.payload.get("error") or "")
     ]
     assert failures, "跳过 Schema 的调用必须被拒绝并产生错误事件"
@@ -252,7 +321,8 @@ def test_schema_requires_list_first():
     _engine, events = _drive(reasoner, _runtime()[0], _spec())
     assert not [e for e in events if e.event_type == EventType.MCP_DISCLOSED]
     assert any(
-        "须先 mcp_list_tools" in str(e.payload.get("error") or "") for e in events
+        "须先 mcp_list_tools" in str(e.payload.get("error") or "")
+        for e in events
         if e.event_type == EventType.TOOL_CALL_END
     )
 
@@ -261,7 +331,8 @@ def test_unbound_server_rejected():
     reasoner = _ScriptedReasoner([(MCP_LIST_TOOLS_TOOL, {"server_id": _HR})])
     _engine, events = _drive(reasoner, _runtime()[0], _spec())
     assert any(
-        "未绑定" in str(e.payload.get("error") or "") for e in events
+        "未绑定" in str(e.payload.get("error") or "")
+        for e in events
         if e.event_type == EventType.TOOL_CALL_END
     )
 
@@ -282,8 +353,11 @@ def test_high_risk_server_routes_call_tool_through_approval():
             (MCP_READ_SCHEMA_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice"}),
             (
                 MCP_CALL_TOOL_TOOL,
-                {"server_id": _FINANCE, "tool_name": "pay_invoice",
-                 "arguments": {"invoice_id": "INV-1", "amount": 100}},
+                {
+                    "server_id": _FINANCE,
+                    "tool_name": "pay_invoice",
+                    "arguments": {"invoice_id": "INV-1", "amount": 100},
+                },
             ),
         ]
     )
@@ -298,7 +372,8 @@ def test_high_risk_server_routes_call_tool_through_approval():
     assert detail["name"] == MCP_CALL_TOOL_TOOL
     assert detail["args"]["tool_name"] == "pay_invoice"
     assert any(
-        e.payload.get("reason") == "tool_approval" for e in events
+        e.payload.get("reason") == "tool_approval"
+        for e in events
         if e.event_type == EventType.RUN_INTERRUPTED
     )
 
@@ -313,8 +388,13 @@ def test_list_tools_refresh_invalidates_cache():
         )
         compiled = await engine.compile(_spec())
         handle = await engine.start(
-            StartRequest(agent_id="a", user_id="u", session_id="s", input="x",
-                         runtime_type="managed-langgraph"),
+            StartRequest(
+                agent_id="a",
+                user_id="u",
+                session_id="s",
+                input="x",
+                runtime_type="managed-langgraph",
+            ),
             compiled,
         )
         _ = [e async for e in engine.stream(handle)]
@@ -341,8 +421,14 @@ def test_cross_process_approval_resume_preserves_cursors(tmp_path):
     calls = [
         (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
         (MCP_READ_SCHEMA_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice"}),
-        (MCP_CALL_TOOL_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice",
-                               "arguments": {"invoice_id": "INV-9", "amount": 5}}),
+        (
+            MCP_CALL_TOOL_TOOL,
+            {
+                "server_id": _FINANCE,
+                "tool_name": "pay_invoice",
+                "arguments": {"invoice_id": "INV-9", "amount": 5},
+            },
+        ),
     ]
 
     def runtime(transport):
@@ -350,10 +436,15 @@ def test_cross_process_approval_resume_preserves_cursors(tmp_path):
         rt.bind(
             McpServerBinding(
                 descriptor=CapabilityDescriptor(
-                    id=_FINANCE, kind="mcp", name="财务工具", description="发票",
-                    version="1.0.0", risk_level=RiskLevel.HIGH,
+                    id=_FINANCE,
+                    kind="mcp",
+                    name="财务工具",
+                    description="发票",
+                    version="1.0.0",
+                    risk_level=RiskLevel.HIGH,
                 ),
-                transport=transport, required=True,
+                transport=transport,
+                required=True,
             )
         )
         return rt
@@ -369,8 +460,13 @@ def test_cross_process_approval_resume_preserves_cursors(tmp_path):
             )
             compiled = await engine.compile(spec)
             handle = await engine.start(
-                StartRequest(agent_id="a", user_id="u", session_id="s", input="x",
-                             runtime_type="managed-langgraph"),
+                StartRequest(
+                    agent_id="a",
+                    user_id="u",
+                    session_id="s",
+                    input="x",
+                    runtime_type="managed-langgraph",
+                ),
                 compiled,
             )
             events = [e async for e in engine.stream(handle)]
@@ -422,19 +518,29 @@ def test_mixed_risk_servers_dynamic_approval():
     runtime.bind(
         McpServerBinding(
             descriptor=CapabilityDescriptor(
-                id=_LOW, kind="mcp", name="低风险站", description="低风险工具",
-                version="1.0.0", risk_level=RiskLevel.LOW,
+                id=_LOW,
+                kind="mcp",
+                name="低风险站",
+                description="低风险工具",
+                version="1.0.0",
+                risk_level=RiskLevel.LOW,
             ),
-            transport=low_transport, required=False,
+            transport=low_transport,
+            required=False,
         )
     )
     runtime.bind(
         McpServerBinding(
             descriptor=CapabilityDescriptor(
-                id=_FINANCE, kind="mcp", name="高风险站", description="高风险工具",
-                version="1.0.0", risk_level=RiskLevel.HIGH,
+                id=_FINANCE,
+                kind="mcp",
+                name="高风险站",
+                description="高风险工具",
+                version="1.0.0",
+                risk_level=RiskLevel.HIGH,
             ),
-            transport=high_transport, required=False,
+            transport=high_transport,
+            required=False,
         )
     )
     spec = HarnessSpec(
@@ -453,13 +559,25 @@ def test_mixed_risk_servers_dynamic_approval():
             # 低风险 Server：全链路（L1→L2→L3）无需审批，直通执行。
             (MCP_LIST_TOOLS_TOOL, {"server_id": _LOW}),
             (MCP_READ_SCHEMA_TOOL, {"server_id": _LOW, "tool_name": "get_invoice"}),
-            (MCP_CALL_TOOL_TOOL, {"server_id": _LOW, "tool_name": "get_invoice",
-                                   "arguments": {"invoice_id": "INV-L"}}),
+            (
+                MCP_CALL_TOOL_TOOL,
+                {
+                    "server_id": _LOW,
+                    "tool_name": "get_invoice",
+                    "arguments": {"invoice_id": "INV-L"},
+                },
+            ),
             # 高风险 Server：调用触发审批中断。
             (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
             (MCP_READ_SCHEMA_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice"}),
-            (MCP_CALL_TOOL_TOOL, {"server_id": _FINANCE, "tool_name": "pay_invoice",
-                                   "arguments": {"invoice_id": "INV-H", "amount": 1}}),
+            (
+                MCP_CALL_TOOL_TOOL,
+                {
+                    "server_id": _FINANCE,
+                    "tool_name": "pay_invoice",
+                    "arguments": {"invoice_id": "INV-H", "amount": 1},
+                },
+            ),
         ]
     )
 
@@ -467,8 +585,13 @@ def test_mixed_risk_servers_dynamic_approval():
         engine = ManagedLangGraphEngine(reasoner=reasoner, mcp_runtime=runtime)
         compiled = await engine.compile(spec)
         handle = await engine.start(
-            StartRequest(agent_id="a", user_id="u", session_id="s", input="x",
-                         runtime_type="managed-langgraph"),
+            StartRequest(
+                agent_id="a",
+                user_id="u",
+                session_id="s",
+                input="x",
+                runtime_type="managed-langgraph",
+            ),
             compiled,
         )
         events = [e async for e in engine.stream(handle)]
@@ -482,7 +605,8 @@ def test_mixed_risk_servers_dynamic_approval():
     assert requested
     assert requested[0].payload["detail"]["args"]["server_id"] == _FINANCE
     assert any(
-        e.payload.get("reason") == "tool_approval" for e in events
+        e.payload.get("reason") == "tool_approval"
+        for e in events
         if e.event_type == EventType.RUN_INTERRUPTED
     )
     del handle
@@ -524,10 +648,13 @@ def test_idempotent_transport_receives_stable_loop_identity_without_schema_injec
     assert len(transport.contexts) == 1
     context = transport.contexts[0]
     assert context.call_id == "c3"
-    assert context.idempotency_key == McpToolCallContext.create(
-        invocation_id=context.invocation_id,
-        call_id="c3",
-    ).idempotency_key
+    assert (
+        context.idempotency_key
+        == McpToolCallContext.create(
+            invocation_id=context.invocation_id,
+            call_id="c3",
+        ).idempotency_key
+    )
     assert "idempotency_key" not in transport.calls[0][1]
 
 

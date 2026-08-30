@@ -146,6 +146,19 @@ class McpCapabilityRuntime:
         except KeyError:
             raise McpRuntimeError(f"unknown mcp binding: {server_id}") from None
 
+    def availability(self, server_id: str) -> Literal["unknown", "available", "degraded"]:
+        """返回 Harness 当前观察到的 Server 可用性。
+
+        该投影只暴露稳定的平台语义，不把失败计数、时间戳等熔断器私有状态
+        泄漏给 Studio。调用方可用它识别 ``available ↔ degraded`` 转换并产出
+        RuntimeEvent；初次绑定但尚未发生任何 I/O 时为 ``unknown``。
+        """
+        self.binding(server_id)
+        healthy = self._health[server_id].healthy
+        if healthy is None:
+            return "unknown"
+        return "available" if healthy else "degraded"
+
     # ------------------------------------------------------------- 健康
 
     async def health(self, server_id: str, *, now: float | None = None) -> McpHealthReport:

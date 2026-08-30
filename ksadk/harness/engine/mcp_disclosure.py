@@ -24,11 +24,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from ksadk.harness.artifact_store import ArtifactStore
 from ksadk.harness.capabilities import RiskLevel
@@ -56,6 +58,8 @@ _DEFAULT_SENSITIVE_PATTERNS = (
     r"\b\d{16,19}\b",
     r"(?<!\d)1[3-9]\d{9}(?!\d)",
 )
+
+_T = TypeVar("_T")
 
 
 class McpDisclosureError(RuntimeError):
@@ -203,9 +207,7 @@ class McpDisclosureBridge:
             self._TOOL_NAMES.intersection(sub_agent_names)
         )
         if collisions:
-            raise ExecutionEngineError(
-                f"工具名与 Harness MCP 披露工具冲突: {sorted(collisions)}"
-            )
+            raise ExecutionEngineError(f"工具名与 Harness MCP 披露工具冲突: {sorted(collisions)}")
         if self._runtime is None:
             for binding in spec.capabilities.mcp_bindings:
                 if binding.required and binding.load_policy != "explicit":
@@ -362,8 +364,7 @@ class McpDisclosureBridge:
             # 列出合法引用：模型可能用短名（如 finance-tools）而非完整
             # 固定版本引用（mcp://finance-tools@1.0.0），错误信息给出可重试的值。
             raise McpDisclosureError(
-                f"MCP Server {server_id!r} 未绑定到当前 Agent Revision；"
-                f"可用引用: {sorted(allowed)}"
+                f"MCP Server {server_id!r} 未绑定到当前 Agent Revision；可用引用: {sorted(allowed)}"
             )
 
     async def _list_tools(
@@ -376,7 +377,13 @@ class McpDisclosureBridge:
     ) -> dict[str, Any]:
         if arguments.get("refresh"):
             self._runtime.invalidate_tools(server_id)
-        tools = await self._runtime.tools(server_id)
+        tools = await self._observe_runtime_operation(
+            run,
+            pending_events,
+            server_id,
+            operation="tools/list",
+            awaitable=self._runtime.tools(server_id),
+        )
         cursors.listed.add((run.handle.run_id, server_id))
         entries = [
             {
@@ -403,10 +410,14 @@ class McpDisclosureBridge:
         pending_events: dict[str, list[RuntimeEvent]],
     ) -> dict[str, Any]:
         if (run.handle.run_id, server_id) not in cursors.listed:
-            raise McpDisclosureError(
-                f"MCP {server_id!r} 须先 mcp_list_tools 再读取 Tool Schema"
-            )
-        tools = await self._runtime.tools(server_id)
+            raise McpDisclosureError(f"MCP {server_id!r} 须先 mcp_list_tools 再读取 Tool Schema")
+        tools = await self._observe_runtime_operation(
+            run,
+            pending_events,
+            server_id,
+            operation="schema/read",
+            awaitable=self._runtime.tools(server_id),
+        )
         match = next((tool for tool in tools if tool.get("name") == tool_name), None)
         if match is None:
             raise McpDisclosureError(f"MCP {server_id!r} 无 Tool {tool_name!r}")
@@ -454,14 +465,22 @@ class McpDisclosureBridge:
             if call_id
             else None
         )
-        result = await self._runtime.call(
+        result = await self._observe_runtime_operation(
+            run,
+            pending_events,
             server_id,
-            tool_name,
-            call_arguments,
-            context=context,
+            operation="tool/call",
+            awaitable=self._runtime.call(
+                server_id,
+                tool_name,
+                call_arguments,
+                context=context,
+            ),
         )
-        rendered = result if isinstance(result, (str, int, float, bool)) else json.dumps(
-            result, ensure_ascii=False, default=str
+        rendered = (
+            result
+            if isinstance(result, (str, int, float, bool))
+            else json.dumps(result, ensure_ascii=False, default=str)
         )
         self._emit(
             run,
@@ -472,13 +491,96 @@ class McpDisclosureBridge:
             tool_name=tool_name,
         )
         payload = self._offload_if_needed(
-            run, pending_events, server_id, tool_name, rendered,
+            run,
+            pending_events,
+            server_id,
+            tool_name,
+            rendered,
             mime=_mime_for(result),
         )
         if payload.get("offloaded"):
             # 大结果不回 Context：只保留摘要与引用（完整内容在 Artifact URI）。
             return {"server_id": server_id, "tool_name": tool_name, **payload}
         return {"server_id": server_id, "tool_name": tool_name, "result": rendered}
+
+    async def _observe_runtime_operation(
+        self,
+        run: Any,
+        pending_events: dict[str, list[RuntimeEvent]],
+        server_id: str,
+        *,
+        operation: str,
+        awaitable: Awaitable[_T],
+    ) -> _T:
+        """执行 MCP I/O，并把可用性**转换**投影为平台事件。
+
+        普通 Tool 错误仍由 ``tool.call.end`` 表达；这里仅在状态发生变化时
+        追加 ``capability.degraded/recovered``，避免连续失败刷屏。调用方取消
+        不改变 Runtime 状态，因此也不会误报降级。
+        """
+        if self._runtime is None:  # pragma: no cover - invoke() 已守住该边界
+            raise McpDisclosureError("未装配 McpCapabilityRuntime")
+        before = self._runtime.availability(server_id)
+        try:
+            result = await awaitable
+        except asyncio.CancelledError:
+            # Runtime 会把调用方取消与 Transport 故障分开处理；取消不改变
+            # availability，也不应被投影为能力降级。
+            raise
+        except Exception as exc:
+            after = self._runtime.availability(server_id)
+            if after == "degraded" and before != "degraded":
+                self._emit_capability_state(
+                    run,
+                    pending_events,
+                    server_id,
+                    event_type=EventType.CAPABILITY_DEGRADED,
+                    state="degraded",
+                    operation=operation,
+                    reason=_failure_reason(exc),
+                )
+            raise
+        after = self._runtime.availability(server_id)
+        if before == "degraded" and after == "available":
+            self._emit_capability_state(
+                run,
+                pending_events,
+                server_id,
+                event_type=EventType.CAPABILITY_RECOVERED,
+                state="available",
+                operation=operation,
+                reason="operation_succeeded",
+            )
+        return result
+
+    @staticmethod
+    def _emit_capability_state(
+        run: Any,
+        pending_events: dict[str, list[RuntimeEvent]],
+        server_id: str,
+        *,
+        event_type: str,
+        state: str,
+        operation: str,
+        reason: str,
+    ) -> None:
+        pending_events.setdefault(run.handle.run_id, []).append(
+            RuntimeEvent.create(
+                event_type,
+                agent_id=run.state.agent_id,
+                user_id=run.state.user_id,
+                session_id=run.state.session_id,
+                invocation_id=run.handle.run_id,
+                seq_id=0,
+                payload={
+                    "capability_ref": server_id,
+                    "kind": "mcp",
+                    "state": state,
+                    "operation": operation,
+                    "reason": reason,
+                },
+            )
+        )
 
     def _offload_if_needed(
         self,
@@ -521,7 +623,9 @@ class McpDisclosureBridge:
         name = f"mcp_{server_id}_{tool_name}"
         try:
             record = self._artifact_store.save(
-                run_id=run_id, name=name, content=content.encode("utf-8"),
+                run_id=run_id,
+                name=name,
+                content=content.encode("utf-8"),
                 mime=mime,
             )
         except (OSError, ValueError) as exc:
@@ -606,6 +710,18 @@ def _mime_for(rendered: Any) -> str:
     if isinstance(rendered, (dict, list)):
         return "application/json"
     return "text/plain"
+
+
+def _failure_reason(exc: Exception) -> str:
+    """稳定、脱敏的 MCP 失败分类；不把 Transport 异常原文写入状态事件。"""
+    message = str(exc).lower()
+    if "circuit open" in message:
+        return "circuit_open"
+    if "timeout" in message:
+        return "timeout"
+    if isinstance(exc, McpRuntimeError):
+        return "transport_error"
+    return "operation_failed"
 
 
 __all__ = [

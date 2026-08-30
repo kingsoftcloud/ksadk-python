@@ -190,3 +190,20 @@ def test_invalid_runtime_options_are_rejected(field: str, value: float):
     kwargs = {field: value}
     with pytest.raises(ValueError, match=field):
         McpRuntimeOptions(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_availability_projects_only_stable_platform_states():
+    transport = _ControllableTransport()
+    runtime = _runtime(transport, cooldown_seconds=0)
+    server_id = "mcp://finance@1.0.0"
+
+    assert runtime.availability(server_id) == "unknown"
+    transport.call_mode = "error"
+    with pytest.raises(McpRuntimeError):
+        await runtime.call(server_id, "lookup", {})
+    assert runtime.availability(server_id) == "degraded"
+
+    transport.call_mode = "success"
+    await runtime.call(server_id, "lookup", {})
+    assert runtime.availability(server_id) == "available"
