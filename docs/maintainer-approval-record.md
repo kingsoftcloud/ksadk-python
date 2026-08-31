@@ -32,14 +32,14 @@ The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
 - `ksadk-python`: Pending final reviewed internal source commit and clean public export.
-- `ksadk-web`: Pending Trusted Publishing of `@kingsoftcloud/ksadk-web@0.3.3`, registry integrity, and final Python source binding.
+- `ksadk-web`: Pending Trusted Publishing of `@kingsoftcloud/ksadk-web@0.3.4`, registry integrity, and final Python source binding.
 
 Both approved source references include the reviewed Python source commit SHA.
 This prevents a stale approval record from passing after candidate changes.
 
 ## Recorded Evidence for Approval
 
-- The reviewed `@kingsoftcloud/ksadk-web@0.3.3` source candidate passed its
+- The reviewed `@kingsoftcloud/ksadk-web@0.3.4` source candidate passed its
   source tests and browser E2E; the Python candidate verified all 265 embedded
   static files from the explicit reviewed tarball. This does not substitute for
   the registry-backed rebuild required after Trusted Publishing.
@@ -53,12 +53,13 @@ This prevents a stale approval record from passing after candidate changes.
   Python package may already contain version `0.8.3` at approval time.
 - Branch protection and publish environment are configured according to
   `.github/BRANCH_PROTECTION.md`.
-- Web 0.3.3 source tests, lint, build, npm pack, audit and browser E2E are green;
+- Web 0.3.4 source tests, lint, build, npm pack, audit, Pages demo E2E and browser E2E are green;
   npm publication, registry verification and the final registry-backed consumer
   rebuild are still pending approval.
-- Real browser E2E on the reviewed candidate covered a Studio-created Codex
-  Agent and a historical 0.8.2 Agent: streaming text, reasoning/tool cards,
-  multi-turn context and final-message de-duplication.
+- Real browser E2E for 0.3.4 against a Studio-created Codex Agent and a
+  historical 0.8.2 Agent remains a pre-production gate: streaming text,
+  reasoning/tool cards, approval, multi-turn context, refresh replay and
+  final-message de-duplication must all bind to the final deployment digest.
 - Release notes, `CHANGELOG.md`, public README and docs were reviewed for the
   complete 0.8.3 summary, sensitive environment names, internal endpoints,
   tokens, customer data and inaccurate claims.

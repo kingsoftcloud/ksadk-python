@@ -22,7 +22,7 @@
 - 新增本地 Scheduler Lite：支持 once、interval、cron、IANA 时区、启停、编辑、删除、立即运行、misfire 策略、并发保护和 occurrence 历史。Studio 提供全局自动化页和 Agent 详情页自动化 Tab；浏览器纵切已通过真实本地 Kernel、Codex RuntimeAdapter + App Server 以及 KsADK Harness 生产模型客户端验证 new/follow-up、accepted、run identity、terminal 状态和刷新后历史对账；测试仅以本地确定性 HTTP 模型端替代外部模型服务。
 - 冻结 `ConversationSurface`、`ConversationInput` 和 `ConversationItem` 合同，统一文本、reasoning、工具、审批、A2UI 与未知 item 的 identity-aware 归并和回放边界。
 - 新增核心 Conversation Renderer 与受控 A2UI action bridge。自定义前端可以消费同一会话表面；未知类型保持安全的通用降级，不要求客户端理解某个 Provider 的私有事件。
-- Hosted UI 与 Studio 固定到 `@kingsoftcloud/ksadk-web@0.3.3`。该版本新增可在 Node/SSR 环境安全导入的 headless conversation 入口、严格的 Conversation v1 解码、SSE 有界重连、按 item/event identity 归并、思考/工具/审批/产物/A2UI 的统一时间线，以及附件、模型、推理、审批、Goal/Plan 的统一输入合同；只有明确的 404 才回退旧 Responses/AG-UI，畸形响应与 5xx 继续 fail closed。
+- Hosted UI 与 Studio 固定到 `@kingsoftcloud/ksadk-web@0.3.4`。该版本在 0.3.3 的 headless Conversation v1、SSE 有界重连和统一时间线基础上，修复 item 完成被误判为整轮完成的问题，等待显式 run terminal 才解锁下一轮；“正在思考”改为持续可见的文字流光，并提供可独立运行的 GitHub Pages 演示，覆盖逐字流式、工具状态、输入框上方审批卡片与反馈卡片。只有明确的 404 才回退旧 Responses/AG-UI，畸形响应与 5xx 继续 fail closed。
 - 修复基础安装把 `agentengine studio` 整体误降级为不可用的问题：Studio 所需的 `google-adk` 现在随基础包安装；LiteLLM 与 JSON 修复等仅在 `[adk]` 扩展中保留。
 
 ### 兼容与尚未关闭的门禁
@@ -30,7 +30,7 @@
 - Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
 - Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
 - Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
-- `ksadk-web@0.3.3` 的源码门禁、独立浏览器 E2E 和显式 tarball 消费已通过；绑定该制品的真实部署 Hosted UI 已完成 Studio 创建 Codex Agent 与 0.8.2 历史 Agent 的两轮会话，验证了正文、思考、工具卡片和上下文续接。正式发布仍要求先完成 npm Trusted Publishing，再从公开 registry 重建 Studio/Hosted UI，并以最终 clean commit 通过 wheel/sdist provenance、公开内容审计和维护者审批；在这些外部写入完成前本节保持 `Unreleased`。
+- `ksadk-web@0.3.4` 的源码门禁、独立浏览器 E2E、GitHub Pages 演示 E2E 和显式 tarball 消费已通过；候选 tarball SHA-256 为 `8ff8c69147ff9ac9f340292390129b3a96f364212500c45aec26f4cf720dc436`。正式发布仍要求先完成 npm Trusted Publishing，再从公开 registry 重建 Studio、预发 Hosted UI 和线上 Hosted UI；随后必须在预发重新完成 Studio 新 Agent 与 0.8.2 历史 Agent 的多轮流式、思考、工具、审批、刷新回放和上下文续接，并以最终 clean commit 通过 wheel/sdist provenance、公开内容审计和维护者审批。在这些外部写入和部署证据完成前本节保持 `Unreleased`。
 - 新增 Phase 2 最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
 
 ## [0.8.2] - 2026-08-26
