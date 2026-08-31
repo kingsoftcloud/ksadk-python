@@ -133,6 +133,13 @@ class _FakeTransport:
         }
 
 
+class _UnreportedVersionTransport(_FakeTransport):
+    async def initialize(self) -> dict[str, str]:
+        # The App Server's lifecycle RPC is authoritative; userAgent is only
+        # display metadata and may be absent on a newer host implementation.
+        return {"userAgent": "codex-python-sdk"}
+
+
 @pytest.mark.asyncio
 async def test_codex_bridge_lists_reads_and_prefers_local_version() -> None:
     transport = _FakeTransport()
@@ -151,6 +158,15 @@ async def test_codex_bridge_lists_reads_and_prefers_local_version() -> None:
         assert detail.apps == ("fixture-app",)
         assert detail.scheduled_tasks == ("daily",)
 
+    assert transport.closed is True
+
+
+@pytest.mark.asyncio
+async def test_codex_bridge_keeps_lifecycle_available_when_host_version_is_unreported() -> None:
+    transport = _UnreportedVersionTransport()
+    async with CodexAppServerPluginBridge(transport=transport) as bridge:
+        assert bridge.host.version == "unreported"
+        assert await bridge.add_marketplace("/tmp/fixture-market") == "fixture-market"
     assert transport.closed is True
 
 

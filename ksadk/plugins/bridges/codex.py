@@ -209,7 +209,26 @@ class _CodexTransport(Protocol):
     ) -> ResponseT: ...
 
 
-_HOST_VERSION = re.compile(r"(?:Codex(?: Desktop)?/)(\d+\.\d+\.\d+)")
+_HOST_VERSION = re.compile(r"(?:Codex(?: Desktop)?/)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)")
+
+
+def _reported_host_version(metadata: Any) -> str:
+    """Return an App Server version without making its user-agent a gate.
+
+    App Server exposes plugin lifecycle methods as the compatibility contract.
+    Its ``userAgent`` field is diagnostic metadata and has changed shape across
+    CLI, Desktop, and SDK launches.  A missing or unfamiliar value must remain
+    visible to callers, but must not prevent an otherwise compatible host from
+    listing, installing, or removing a plugin.
+    """
+    raw = getattr(metadata, "user_agent", None) or getattr(metadata, "userAgent", None)
+    if raw is None and isinstance(metadata, dict):
+        raw = metadata.get("userAgent") or metadata.get("user_agent")
+    if raw is None and isinstance(metadata, BaseModel):
+        payload = metadata.model_dump(by_alias=True)
+        raw = payload.get("userAgent") or payload.get("user_agent")
+    match = _HOST_VERSION.search(str(raw or ""))
+    return match.group(1) if match is not None else "unreported"
 
 
 class CodexAppServerPluginBridge:
@@ -255,15 +274,7 @@ class CodexAppServerPluginBridge:
         try:
             await self._transport.start()
             metadata = await self._transport.initialize()
-            raw = getattr(metadata, "user_agent", None) or getattr(metadata, "userAgent", None)
-            if raw is None and isinstance(metadata, dict):
-                raw = metadata.get("userAgent")
-            if raw is None and isinstance(metadata, BaseModel):
-                raw = metadata.model_dump(by_alias=True).get("userAgent")
-            match = _HOST_VERSION.search(str(raw or ""))
-            if match is None:
-                raise CodexBridgeError("Codex App Server did not report a parseable host version")
-            self._host = CodexBridgeHost(version=match.group(1))
+            self._host = CodexBridgeHost(version=_reported_host_version(metadata))
             self._started = True
             return self._host
         except BaseException:
@@ -365,9 +376,7 @@ class CodexAppServerPluginBridge:
                     )
             except BaseException as install_error:
                 try:
-                    restored = await asyncio.shield(
-                        self._restore_failed_install(before)
-                    )
+                    restored = await asyncio.shield(self._restore_failed_install(before))
                 except BaseException as rollback_error:
                     raise CodexBridgeError(
                         "Codex plugin install failed and its previous inventory "
@@ -381,9 +390,7 @@ class CodexAppServerPluginBridge:
                 inventory=observed,
                 auth_policy=response.auth_policy,
                 apps_needing_auth=tuple(
-                    str(item.get("id", ""))
-                    for item in response.apps_needing_auth
-                    if item.get("id")
+                    str(item.get("id", "")) for item in response.apps_needing_auth if item.get("id")
                 ),
             )
 
@@ -511,9 +518,7 @@ class CodexAppServerPluginBridge:
             before.installed,
             before.enabled,
         ):
-            raise CodexBridgeError(
-                "Codex host inventory differs from the pre-install snapshot"
-            )
+            raise CodexBridgeError("Codex host inventory differs from the pre-install snapshot")
         return observed
 
     @staticmethod
