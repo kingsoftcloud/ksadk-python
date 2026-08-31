@@ -8,6 +8,7 @@ import pytest
 
 from ksadk.harness.model_matrix_eval import (
     DiscoveredModel,
+    OpenAICompatibleStreamingProbe,
     discover_models,
     evaluate_model_matrix,
     select_models,
@@ -107,3 +108,104 @@ def test_evaluate_model_matrix_reports_incompatible_model_without_aborting_matri
     assert report["results"][0]["errors"][0].startswith("basic_chat:RuntimeError")
     assert fake_key not in json.dumps(report)
     assert "expected_tool_call_missing" in report["results"][1]["errors"]
+
+
+def test_streaming_probe_reassembles_text_and_fragmented_tool_arguments() -> None:
+    responses = iter(
+        (
+            (
+                'data: {"choices":[{"delta":{"content":"STREAM_"},'
+                '"finish_reason":null}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"MATRIX_OK"},'
+                '"finish_reason":"stop"}],'
+                '"usage":{"prompt_tokens":7,"completion_tokens":2}}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            (
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call-1","function":{"name":"record_model_",'
+                '"arguments":"{\\"code\\":\\"KS"}}]},"finish_reason":null}]}\n\n'
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"function":{"name":"matrix_probe",'
+                '"arguments":"ADK-42\\"}"}}]},"finish_reason":"tool_calls"}],'
+                '"usage":{"prompt_tokens":11,"completion_tokens":5}}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer test-secret"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=next(responses),
+        )
+
+    probe = OpenAICompatibleStreamingProbe(
+        base_url="https://models.example/v1",
+        api_key="test-secret",
+        transport=httpx.MockTransport(handler),
+    )
+
+    class Reasoner:
+        async def complete(self, *, tools, **_):
+            if tools:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="call-1",
+                            name="record_model_matrix_probe",
+                            arguments={"code": "KSADK-42"},
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="MODEL_MATRIX_OK")
+
+    report = asyncio.run(
+        evaluate_model_matrix(
+            (DiscoveredModel("model-a"),),
+            reasoner_factory=Reasoner,
+            streaming_probe=probe,
+        )
+    )
+    result = report["results"][0]
+    assert report["all_passed"] is True
+    assert result["stream_text"] is True
+    assert result["stream_text_details"]["chunk_count"] == 2
+    assert result["stream_tool_calling"] is True
+    assert result["stream_tool_details"]["fragment_count"] == 2
+    assert result["stream_tool_details"]["finish_reason"] == "tool_calls"
+
+
+def test_streaming_probe_reports_malformed_tool_json_without_leaking_credentials() -> None:
+    fake_key = "sk-" + "stream-secret-value"
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"function":{"name":"record_model_matrix_probe",'
+                '"arguments":"{bad"}}]},"finish_reason":"tool_calls"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    probe = OpenAICompatibleStreamingProbe(
+        base_url="https://models.example/v1",
+        api_key=fake_key,
+        transport=httpx.MockTransport(handler),
+    )
+    tool = type(
+        "Tool",
+        (),
+        {
+            "name": "record_model_matrix_probe",
+            "openai_schema": {"type": "function", "function": {"name": "x"}},
+        },
+    )()
+    with pytest.raises(RuntimeError, match="invalid JSON tool arguments") as caught:
+        asyncio.run(probe.probe_tool(model="model-a", tool=tool))  # type: ignore[arg-type]
+    assert fake_key not in str(caught.value)

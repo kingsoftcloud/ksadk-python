@@ -20,7 +20,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 import httpx
 
@@ -37,6 +37,187 @@ class DiscoveredModel:
     owned_by: str = ""
     input_modalities: tuple[str, ...] = ()
     context_window: int | None = None
+
+
+class StreamingCompatibilityProbe(Protocol):
+    """Provider-neutral probe for OpenAI-compatible streaming semantics."""
+
+    async def probe_text(self, *, model: str) -> dict[str, Any]: ...
+
+    async def probe_tool(self, *, model: str, tool: HarnessTool) -> dict[str, Any]: ...
+
+
+class OpenAICompatibleStreamingProbe:
+    """Verify SSE text and fragmented Tool Calling against a real gateway.
+
+    The parser intentionally lives outside the production Reasoner.  This makes the
+    matrix capable of detecting provider drift before the Harness starts depending
+    on a provider-specific chunk type.  Credentials remain request-only and never
+    enter returned reports.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+        timeout_seconds: float = 60.0,
+    ) -> None:
+        if not base_url.strip():
+            raise ValueError("OPENAI_BASE_URL is required")
+        if not api_key.strip():
+            raise ValueError("OPENAI_API_KEY is required")
+        self._url = f"{base_url.rstrip('/')}/chat/completions"
+        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._transport = transport
+        self._timeout_seconds = timeout_seconds
+
+    async def probe_text(self, *, model: str) -> dict[str, Any]:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "只回复 STREAM_MATRIX_OK，不要补充其他内容。",
+                }
+            ],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        parsed = await self._stream(payload)
+        text = "".join(parsed["text_chunks"])
+        return {
+            "passed": "STREAM_MATRIX_OK" in text,
+            "chunk_count": len(parsed["text_chunks"]),
+            "finish_reason": parsed["finish_reason"],
+            "usage_reported": bool(parsed["usage"]),
+        }
+
+    async def probe_tool(self, *, model: str, tool: HarnessTool) -> dict[str, Any]:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "调用 record_model_matrix_probe 工具，并把 code 精确设置为 KSADK-42。"
+                    ),
+                }
+            ],
+            "tools": [tool.openai_schema],
+            "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        parsed = await self._stream(payload)
+        calls = parsed["tool_calls"]
+        matched = any(
+            call["name"] == tool.name and call["arguments"].get("code") == "KSADK-42"
+            for call in calls
+        )
+        return {
+            "passed": matched,
+            "tool_call_count": len(calls),
+            "fragment_count": parsed["tool_fragment_count"],
+            "finish_reason": parsed["finish_reason"],
+            "usage_reported": bool(parsed["usage"]),
+        }
+
+    async def _stream(self, payload: dict[str, Any]) -> dict[str, Any]:
+        text_chunks: list[str] = []
+        tool_fragments: dict[int, dict[str, str]] = {}
+        usage: dict[str, int] = {}
+        finish_reason: str | None = None
+        fragment_count = 0
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            timeout=self._timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            async with client.stream(
+                "POST",
+                self._url,
+                headers=self._headers,
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("stream returned malformed SSE JSON") from exc
+                    if not isinstance(chunk, dict):
+                        raise RuntimeError("stream returned a non-object SSE chunk")
+                    raw_usage = chunk.get("usage")
+                    if isinstance(raw_usage, dict):
+                        usage = {
+                            "input_tokens": int(raw_usage.get("prompt_tokens") or 0),
+                            "output_tokens": int(raw_usage.get("completion_tokens") or 0),
+                        }
+                    choices = chunk.get("choices") or []
+                    if not isinstance(choices, list):
+                        raise RuntimeError("stream returned invalid choices")
+                    for choice in choices:
+                        if not isinstance(choice, dict):
+                            continue
+                        if choice.get("finish_reason") is not None:
+                            finish_reason = str(choice["finish_reason"])
+                        delta = choice.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            continue
+                        content = delta.get("content")
+                        if content is not None:
+                            text_chunks.append(str(content))
+                        for call in delta.get("tool_calls") or []:
+                            if not isinstance(call, dict):
+                                continue
+                            fragment_count += 1
+                            index = int(call.get("index") or 0)
+                            current = tool_fragments.setdefault(
+                                index,
+                                {"id": "", "name": "", "arguments": ""},
+                            )
+                            current["id"] += str(call.get("id") or "")
+                            function = call.get("function") or {}
+                            if isinstance(function, dict):
+                                current["name"] += str(function.get("name") or "")
+                                current["arguments"] += str(function.get("arguments") or "")
+
+        tool_calls: list[dict[str, Any]] = []
+        for index in sorted(tool_fragments):
+            call = tool_fragments[index]
+            raw_arguments = call["arguments"] or "{}"
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("stream emitted invalid JSON tool arguments") from exc
+            if not call["name"] or not isinstance(arguments, dict):
+                raise RuntimeError("stream emitted an invalid tool call")
+            tool_calls.append(
+                {
+                    "call_id": call["id"] or f"stream-tool-call-{index}",
+                    "name": call["name"],
+                    "arguments": arguments,
+                }
+            )
+        if not text_chunks and not tool_calls:
+            raise RuntimeError("stream completed without text or tool calls")
+        return {
+            "text_chunks": text_chunks,
+            "tool_calls": tool_calls,
+            "tool_fragment_count": fragment_count,
+            "finish_reason": finish_reason,
+            "usage": usage,
+        }
 
 
 def _models_url(base_url: str) -> str:
@@ -130,6 +311,7 @@ async def _probe_one(
     model: DiscoveredModel,
     *,
     reasoner_factory: Callable[[], HarnessReasoner],
+    streaming_probe: StreamingCompatibilityProbe | None,
 ) -> dict[str, Any]:
     reasoner = reasoner_factory()
     result: dict[str, Any] = {
@@ -138,6 +320,8 @@ async def _probe_one(
         "basic_chat": False,
         "tool_calling": False,
         "usage_reported": False,
+        "stream_text": None,
+        "stream_tool_calling": None,
         "input_modalities": list(model.input_modalities),
         "context_window": model.context_window,
         "errors": [],
@@ -204,7 +388,34 @@ async def _probe_one(
         result["errors"].append(
             f"tool_calling:{type(exc).__name__}:{safe_model_error_message(exc, limit=240)}"
         )
-    result["passed"] = bool(result["basic_chat"] and result["tool_calling"])
+    if streaming_probe is not None:
+        try:
+            streaming_text = await streaming_probe.probe_text(model=model.model_id)
+            result["stream_text"] = bool(streaming_text.get("passed"))
+            result["stream_text_details"] = streaming_text
+            if not result["stream_text"]:
+                result["errors"].append("stream_text_marker_missing")
+        except Exception as exc:  # noqa: BLE001 - report provider compatibility
+            result["stream_text"] = False
+            result["errors"].append(
+                f"stream_text:{type(exc).__name__}:{safe_model_error_message(exc, limit=240)}"
+            )
+        try:
+            streaming_tool = await streaming_probe.probe_tool(model=model.model_id, tool=tool)
+            result["stream_tool_calling"] = bool(streaming_tool.get("passed"))
+            result["stream_tool_details"] = streaming_tool
+            if not result["stream_tool_calling"]:
+                result["errors"].append("stream_expected_tool_call_missing")
+        except Exception as exc:  # noqa: BLE001 - report provider compatibility
+            result["stream_tool_calling"] = False
+            result["errors"].append(
+                f"stream_tool_calling:{type(exc).__name__}:"
+                f"{safe_model_error_message(exc, limit=240)}"
+            )
+    required_checks = [result["basic_chat"], result["tool_calling"]]
+    if streaming_probe is not None:
+        required_checks.extend([result["stream_text"], result["stream_tool_calling"]])
+    result["passed"] = all(bool(check) for check in required_checks)
     return result
 
 
@@ -212,12 +423,19 @@ async def evaluate_model_matrix(
     models: Sequence[DiscoveredModel],
     *,
     reasoner_factory: Callable[[], HarnessReasoner] = LiteLLMHarnessReasoner,
+    streaming_probe: StreamingCompatibilityProbe | None = None,
 ) -> dict[str, Any]:
     """Run basic chat and tool-calling probes for each selected model."""
 
     results = []
     for model in models:
-        results.append(await _probe_one(model, reasoner_factory=reasoner_factory))
+        results.append(
+            await _probe_one(
+                model,
+                reasoner_factory=reasoner_factory,
+                streaming_probe=streaming_probe,
+            )
+        )
     return {
         "model_count": len(results),
         "passed_count": sum(1 for item in results if item["passed"]),
@@ -232,6 +450,7 @@ def run_model_matrix(
     api_key: str,
     requested_models: Sequence[str] = (),
     limit: int = 4,
+    include_streaming: bool = False,
 ) -> dict[str, Any]:
     discovered = discover_models(base_url=base_url, api_key=api_key)
     selected = select_models(discovered, requested_models, limit=limit)
@@ -239,7 +458,14 @@ def run_model_matrix(
     os.environ["OPENAI_BASE_URL"] = base_url
     os.environ["OPENAI_API_KEY"] = api_key
     try:
-        evaluated = asyncio.run(evaluate_model_matrix(selected))
+        streaming_probe = (
+            OpenAICompatibleStreamingProbe(base_url=base_url, api_key=api_key)
+            if include_streaming
+            else None
+        )
+        evaluated = asyncio.run(
+            evaluate_model_matrix(selected, streaming_probe=streaming_probe)
+        )
     finally:
         if old_base is None:
             os.environ.pop("OPENAI_BASE_URL", None)
@@ -253,6 +479,7 @@ def run_model_matrix(
         "endpoint": base_url,
         "discovered_count": len(discovered),
         "selected_models": [item.model_id for item in selected],
+        "streaming_enabled": include_streaming,
         **evaluated,
     }
 
@@ -262,6 +489,11 @@ def main() -> None:
     parser.add_argument("--models", default="", help="Comma-separated model identifiers")
     parser.add_argument("--limit", type=int, default=4)
     parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Also verify SSE text and fragmented Tool Calling semantics",
+    )
     args = parser.parse_args()
     base_url = os.getenv("OPENAI_BASE_URL", "")
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -270,6 +502,7 @@ def main() -> None:
         api_key=api_key,
         requested_models=args.models.split(","),
         limit=args.limit,
+        include_streaming=args.streaming,
     )
     safe = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out:
@@ -285,6 +518,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "DiscoveredModel",
+    "OpenAICompatibleStreamingProbe",
+    "StreamingCompatibilityProbe",
     "discover_models",
     "evaluate_model_matrix",
     "run_model_matrix",

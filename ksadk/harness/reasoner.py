@@ -79,6 +79,11 @@ def resolve_model_identifier(model: str) -> str:
 class LiteLLMHarnessReasoner:
     """Use the project's OpenAI-compatible LiteLLM configuration for tool reasoning."""
 
+    def __init__(self, *, streaming: bool | None = None) -> None:
+        # None keeps compatibility while allowing deployments to turn streaming on
+        # without changing an immutable Agent Revision.
+        self._streaming = streaming
+
     async def complete(
         self,
         *,
@@ -109,13 +114,97 @@ class LiteLLMHarnessReasoner:
             kwargs["base_url"] = base_url
         if api_key:
             kwargs["api_key"] = api_key
+        streaming = self._streaming
+        if streaming is None:
+            streaming = os.getenv("KSADK_MODEL_STREAMING", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        if streaming:
+            kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
         response = await acompletion(**kwargs)
+        if streaming:
+            return await self._consume_stream(response, model=model)
+        return self._consume_response(response, model=model)
+
+    @classmethod
+    def _consume_response(cls, response: Any, *, model: str) -> HarnessReasoningTurn:
         choices = getattr(response, "choices", None) or []
         if not choices:
             raise RuntimeError(f"Harness model {model!r} returned no choices")
         message = choices[0].message
+        calls = cls._parse_tool_calls(getattr(message, "tool_calls", None) or [])
+        content = getattr(message, "content", None)
+        final_text = str(content) if content is not None else None
+        return HarnessReasoningTurn(
+            final_text=final_text,
+            tool_calls=calls,
+            usage=cls._usage_payload(getattr(response, "usage", None)),
+        )
+
+    @classmethod
+    async def _consume_stream(cls, response: Any, *, model: str) -> HarnessReasoningTurn:
+        if not hasattr(response, "__aiter__"):
+            raise RuntimeError(f"Harness model {model!r} returned a non-stream response")
+        text_chunks: list[str] = []
+        tool_fragments: dict[int, dict[str, str]] = {}
+        usage_payload: dict[str, int] | None = None
+        saw_choice = False
+        async for chunk in response:
+            usage = cls._usage_payload(getattr(chunk, "usage", None))
+            if usage is not None:
+                usage_payload = usage
+            choices = getattr(chunk, "choices", None) or []
+            for choice in choices:
+                saw_choice = True
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if content is not None:
+                    text_chunks.append(str(content))
+                for call in getattr(delta, "tool_calls", None) or []:
+                    index = int(getattr(call, "index", 0) or 0)
+                    current = tool_fragments.setdefault(
+                        index,
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    current["id"] += str(getattr(call, "id", "") or "")
+                    function = getattr(call, "function", None)
+                    if function is not None:
+                        current["name"] += str(getattr(function, "name", "") or "")
+                        current["arguments"] += str(
+                            getattr(function, "arguments", "") or ""
+                        )
+        if not saw_choice and not usage_payload:
+            raise RuntimeError(f"Harness model {model!r} returned an empty stream")
+        raw_calls = [
+            SimpleToolCall(
+                id=fragment["id"] or f"stream-tool-call-{index}",
+                function=SimpleFunctionCall(
+                    name=fragment["name"],
+                    arguments=fragment["arguments"] or "{}",
+                ),
+            )
+            for index, fragment in sorted(tool_fragments.items())
+        ]
+        calls = cls._parse_tool_calls(raw_calls)
+        final_text = "".join(text_chunks) or None
+        if final_text is None and not calls:
+            raise RuntimeError(f"Harness model {model!r} stream produced no content")
+        return HarnessReasoningTurn(
+            final_text=final_text,
+            tool_calls=calls,
+            usage=usage_payload,
+        )
+
+    @staticmethod
+    def _parse_tool_calls(raw_calls: Sequence[Any]) -> tuple[HarnessToolCall, ...]:
         calls: list[HarnessToolCall] = []
-        for index, call in enumerate(getattr(message, "tool_calls", None) or []):
+        for index, call in enumerate(raw_calls):
             function = getattr(call, "function", None)
             name = str(getattr(function, "name", "") or "").strip()
             raw_arguments = getattr(function, "arguments", None) or "{}"
@@ -136,20 +225,32 @@ class LiteLLMHarnessReasoner:
                     arguments=dict(arguments),
                 )
             )
-        content = getattr(message, "content", None)
-        final_text = str(content) if content is not None else None
-        usage = getattr(response, "usage", None)
-        usage_payload = None
+        return tuple(calls)
+
+    @staticmethod
+    def _usage_payload(usage: Any) -> dict[str, int] | None:
         if usage is not None:
-            usage_payload = {
+            return {
                 "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
                 "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
             }
-        return HarnessReasoningTurn(
-            final_text=final_text,
-            tool_calls=tuple(calls),
-            usage=usage_payload,
-        )
+        return None
+
+
+@dataclass(frozen=True)
+class SimpleFunctionCall:
+    """Internal normalized call fragment; never exposed as a public contract."""
+
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class SimpleToolCall:
+    """Internal normalized Tool Call used by the streaming assembler."""
+
+    id: str
+    function: SimpleFunctionCall
 
 
 __all__ = [

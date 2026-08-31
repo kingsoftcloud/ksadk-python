@@ -7,7 +7,7 @@ import pytest
 
 from ksadk.harness import HarnessApp, HarnessConfig
 from ksadk.harness.config import McpToolSpec
-from ksadk.harness.reasoner import resolve_model_identifier
+from ksadk.harness.reasoner import LiteLLMHarnessReasoner, resolve_model_identifier
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime import StartRequest
 
@@ -76,6 +76,99 @@ def test_invalid_model_profile_map_fails_honestly(monkeypatch):
     monkeypatch.setenv("KSADK_MODEL_PROFILE_MAP", "not-json")
     with pytest.raises(RuntimeError, match="valid JSON"):
         resolve_model_identifier("model-profile://glm-5.3@live")
+
+
+@pytest.mark.asyncio
+async def test_production_reasoner_reassembles_streaming_text_and_usage(monkeypatch):
+    import litellm
+
+    async def chunks():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="stream ", tool_calls=[]))],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="ok", tool_calls=[]))],
+            usage=SimpleNamespace(prompt_tokens=9, completion_tokens=2),
+        )
+
+    async def fake_acompletion(**kwargs):
+        assert kwargs["stream"] is True
+        assert kwargs["stream_options"] == {"include_usage": True}
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    turn = await LiteLLMHarnessReasoner(streaming=True).complete(
+        model="glm-5.3",
+        prompt="",
+        messages=({"role": "user", "content": "x"},),
+        tools=(),
+    )
+    assert turn.final_text == "stream ok"
+    assert turn.usage == {"input_tokens": 9, "output_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_production_reasoner_reassembles_fragmented_streaming_tool_call(monkeypatch):
+    import litellm
+
+    async def chunks():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call-1",
+                                function=SimpleNamespace(
+                                    name="sandbox_read_",
+                                    arguments='{"path":"facts',
+                                ),
+                            )
+                        ],
+                    )
+                )
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(
+                                    name="file",
+                                    arguments='.txt"}',
+                                ),
+                            )
+                        ],
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+    async def fake_acompletion(**kwargs):
+        assert kwargs["stream"] is True
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    turn = await LiteLLMHarnessReasoner(streaming=True).complete(
+        model="glm-5.3",
+        prompt="",
+        messages=({"role": "user", "content": "x"},),
+        tools=(),
+    )
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].call_id == "call-1"
+    assert turn.tool_calls[0].name == "sandbox_read_file"
+    assert turn.tool_calls[0].arguments == {"path": "facts.txt"}
 
 
 @pytest.mark.asyncio
