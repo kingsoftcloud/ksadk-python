@@ -8,6 +8,7 @@ dataclass、_EngineRun）。本模块把事件流投影为纯 dict 报告：
 - :func:`compaction_trace`：压缩历史（前后 Token、触发原因、质量校验、
   Memory Flush 候选引用）；
 - :func:`token_report`：单 Run 的 Token 闭环汇总（可作门禁输入）。
+- :func:`context_inspection`：面向 Studio 的单页 Context 可视化投影；
 - :func:`capability_health`：MCP / Skill / Sandbox 的统一健康快照。
 
 输入是 ``RuntimeEvent`` 列表（server 已持久化的事实源），输出 JSON 兼容。
@@ -105,6 +106,155 @@ def token_report(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
         "prompt_cache_breaks": sum(bool(d.get("cache_break")) for d in cache_diagnostics),
         "compactions": len(compaction_trace(events)),
     }
+
+
+def context_inspection(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
+    """把分散的 Context 事件投影为 Studio 可直接渲染的安全报告。
+
+    该合同刻意不返回 Prompt/消息/Memory/Tool 正文，也不返回召回 query、
+    关键事实原文或底层异常文本。Studio 只需展示预算、Section 构成、压缩
+    质量、缓存、召回与渐进披露进度，不应重新解释 Harness 私有状态。
+    """
+    manifests = context_trace(events)
+    token_usage = token_report(events)
+    compactions = compaction_trace(events)
+    planned = [event for event in events if event.event_type == EventType.CONTEXT_PLANNED]
+    recoveries = [event for event in events if event.event_type == EventType.CONTEXT_RECOVERED]
+    recalls = [event for event in events if event.event_type == EventType.MEMORY_RECALLED]
+
+    latest_manifest = manifests[-1] if manifests else {}
+    latest_plan = dict(planned[-1].payload) if planned else {}
+    actual = dict(latest_manifest.get("actual") or {})
+    planned_tokens = int(latest_manifest.get("planned_tokens") or 0)
+    projected_tokens = int(latest_manifest.get("projected_tokens") or 0)
+    actual_input = int(actual.get("input_tokens") or 0)
+    budget_tokens = int(
+        latest_plan.get("budget_tokens")
+        or latest_manifest.get("context_window_tokens")
+        or 0
+    )
+    section_source = latest_plan.get("sections") or {}
+    sections = [
+        {"kind": str(kind), "tokens": int(tokens or 0)}
+        for kind, tokens in sorted(dict(section_source).items())
+    ]
+
+    quality_failures: list[dict[str, Any]] = []
+    total_before = 0
+    total_after = 0
+    for record in compactions:
+        total_before += int(record.get("before_tokens") or 0)
+        total_after += int(record.get("after_tokens") or 0)
+        for check, passed in dict(record.get("quality_checks") or {}).items():
+            if not passed:
+                quality_failures.append(
+                    {
+                        "compaction_id": str(record.get("compaction_id") or ""),
+                        "check": str(check),
+                    }
+                )
+
+    memory_items = [item for event in recalls for item in event.payload.get("items") or ()]
+    skill_disclosures = [
+        event for event in events if event.event_type == EventType.SKILL_DISCLOSED
+    ]
+    mcp_disclosures = [
+        event for event in events if event.event_type == EventType.MCP_DISCLOSED
+    ]
+    warnings: list[dict[str, str]] = []
+    if quality_failures:
+        warnings.append(
+            {
+                "code": "compaction_quality_failed",
+                "message": "至少一次压缩质量检查未通过",
+            }
+        )
+    if recoveries:
+        warnings.append(
+            {
+                "code": "context_recovered",
+                "message": "本次运行发生过 Context 降级或恢复",
+            }
+        )
+    if budget_tokens and max(projected_tokens, actual_input) > budget_tokens:
+        warnings.append(
+            {
+                "code": "context_budget_exceeded",
+                "message": "模型输入超过规划预算",
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "status": "warning" if warnings else "healthy",
+        "current": {
+            "manifest_id": str(latest_manifest.get("manifest_id") or ""),
+            "supersedes": str(latest_manifest.get("supersedes") or ""),
+            "stable_prompt_hash": str(latest_manifest.get("stable_prompt_hash") or ""),
+            "budget_tokens": budget_tokens,
+            "planned_tokens": planned_tokens,
+            "projected_tokens": projected_tokens,
+            "actual_input_tokens": actual_input,
+            "actual_output_tokens": int(actual.get("output_tokens") or 0),
+            "utilization_ratio": (
+                max(projected_tokens, actual_input) / budget_tokens if budget_tokens else 0.0
+            ),
+            "sections": sections,
+        },
+        "cache": {
+            "provider_hit_ratio": token_usage["provider_cache_hit_ratio"],
+            "cached_tokens": token_usage["actual_total_cached_tokens"],
+            "diagnostic_count": len(token_usage["prompt_cache_diagnostics"]),
+            "break_count": token_usage["prompt_cache_breaks"],
+        },
+        "compaction": {
+            "count": len(compactions),
+            "input_tokens": total_before,
+            "output_tokens": total_after,
+            "saved_tokens": max(total_before - total_after, 0),
+            "quality_failures": quality_failures,
+            "reinjected_fact_count": sum(
+                len(record.get("reinjected_critical_facts") or ()) for record in compactions
+            ),
+        },
+        "memory": {
+            "recall_count": len(recalls),
+            "candidate_count": len(memory_items),
+            "injected_count": sum(bool(item.get("injected")) for item in memory_items),
+        },
+        "disclosure": {
+            "skills": _disclosure_summary(skill_disclosures, ref_field="skill_ref"),
+            "mcp": _disclosure_summary(mcp_disclosures, ref_field="server_id"),
+        },
+        "recoveries": {
+            "count": len(recoveries),
+            "reason_codes": sorted(
+                {_safe_recovery_reason(event.payload.get("reason")) for event in recoveries}
+            ),
+        },
+        "warnings": warnings,
+    }
+
+
+def _disclosure_summary(
+    events: Sequence[RuntimeEvent], *, ref_field: str
+) -> dict[str, Any]:
+    levels = {str(level): 0 for level in range(1, 4)}
+    refs: set[str] = set()
+    for event in events:
+        level = str(int(event.payload.get("level") or 0))
+        if level in levels:
+            levels[level] += 1
+        ref = str(event.payload.get(ref_field) or "")
+        if ref:
+            refs.add(ref)
+    return {"resource_count": len(refs), "events": len(events), "levels": levels}
+
+
+def _safe_recovery_reason(value: Any) -> str:
+    reason = str(value or "unknown").partition(":")[0].strip().lower()
+    safe = "".join(char for char in reason if char.isalnum() or char in {"_", "-"})
+    return (safe or "unknown")[:64]
 
 
 def capability_health(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
@@ -369,4 +519,10 @@ def _tool_reason_code(error: Any) -> str:
     return (safe or "operation_failed")[:64]
 
 
-__all__ = ["capability_health", "compaction_trace", "context_trace", "token_report"]
+__all__ = [
+    "capability_health",
+    "compaction_trace",
+    "context_inspection",
+    "context_trace",
+    "token_report",
+]

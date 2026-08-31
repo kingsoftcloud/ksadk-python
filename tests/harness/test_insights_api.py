@@ -100,6 +100,20 @@ def test_insights_token_report_e2e():
     assert all(u["manifest_id"] for u in report["usage_events"])
 
 
+def test_insights_context_inspection_e2e():
+    registry = HarnessInsightsRegistry()
+    run_id = _drive(registry)
+    with _client(registry) as client:
+        run_response = client.get(f"/insights/runs/{run_id}/context-inspection")
+        session_response = client.get("/insights/sessions/sess-1/context-inspection")
+    assert run_response.status_code == 200
+    assert session_response.status_code == 200
+    report = run_response.json()
+    assert report["schema_version"] == 1
+    assert report["current"]["actual_input_tokens"] == 640
+    assert report["compaction"]["count"] >= 1
+
+
 def test_insights_compaction_trace_and_session_report():
     registry = HarnessInsightsRegistry()
     run_id = _drive(registry)

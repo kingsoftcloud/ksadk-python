@@ -6,7 +6,12 @@ import asyncio
 
 from ksadk.harness.context_engine import HarnessContextEngine
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
-from ksadk.harness.observability import compaction_trace, context_trace, token_report
+from ksadk.harness.observability import (
+    compaction_trace,
+    context_inspection,
+    context_trace,
+    token_report,
+)
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 from ksadk.memory.models import (
@@ -100,6 +105,23 @@ def test_compaction_trace_and_token_report():
     # 有 usage 的 manifest 必须能按 manifest_id 配对回 usage 事件。
     by_manifest = {u["manifest_id"] for u in report["usage_events"]}
     assert last["manifest_id"] in by_manifest
+
+
+def test_context_inspection_is_safe_studio_projection():
+    events = _run_engine()
+    report = context_inspection(events)
+    assert report["schema_version"] == 1
+    assert report["current"]["manifest_id"].startswith("ctxm_")
+    assert report["current"]["actual_input_tokens"] == 640
+    assert report["compaction"]["count"] >= 1
+    assert report["compaction"]["saved_tokens"] > 0
+    assert report["memory"]["candidate_count"] == 0
+    assert set(report["disclosure"]) == {"skills", "mcp"}
+    # 不得把用户输入、Prompt、摘要或关键事实正文带进稳定查询合同。
+    serialized = __import__("json").dumps(report, ensure_ascii=False)
+    assert "总结" not in serialized
+    assert "财务分析助手" not in serialized
+    assert "AP-1024" not in serialized
 
 
 # ------------------------------------------------------------- Store 适配

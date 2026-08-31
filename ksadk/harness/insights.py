@@ -27,6 +27,7 @@ from ksadk.harness.events import RuntimeEvent, project_v2
 from ksadk.harness.observability import (
     capability_health,
     compaction_trace,
+    context_inspection,
     context_trace,
     token_report,
 )
@@ -124,6 +125,11 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         """单 Run 的 Token 闭环汇总（门禁 / 计费对账输入）。"""
         return token_report(_events_or_404(run_id))
 
+    @router.get("/runs/{run_id}/context-inspection")
+    async def get_context_inspection(run_id: str) -> dict[str, Any]:
+        """Studio 单页 Context 检查视图（不含 Prompt/Memory/Tool 正文）。"""
+        return context_inspection(_events_or_404(run_id))
+
     @router.get("/runs/{run_id}/compaction-trace")
     async def get_compaction_trace(run_id: str) -> dict[str, Any]:
         """压缩历史（前后 Token、触发原因、质量校验、Memory Flush 候选）。"""
@@ -149,6 +155,14 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         if not events:
             raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
         return token_report(events)
+
+    @router.get("/sessions/{session_id}/context-inspection")
+    async def get_session_context_inspection(session_id: str) -> dict[str, Any]:
+        """会话级 Context 检查视图（跨 Run 聚合）。"""
+        events = registry.session_events(session_id)
+        if not events:
+            raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
+        return context_inspection(events)
 
     @router.get("/sessions/{session_id}/capability-health")
     async def get_session_capability_health(session_id: str) -> dict[str, Any]:
