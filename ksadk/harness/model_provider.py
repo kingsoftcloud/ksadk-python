@@ -96,6 +96,10 @@ def classify_model_failure(error: Exception) -> ClassifiedModelFailure:
             "context window",
             "too many tokens",
             "context_length_exceeded",
+            # 真实网关实测：HTTP 400 "input token limit is N"（见
+            # model_matrix_eval 的 overflow 探针）。
+            "input token limit",
+            "token limit exceeded",
         )
     ):
         return ClassifiedModelFailure(ModelFailureKind.CONTEXT_LENGTH, status_code)

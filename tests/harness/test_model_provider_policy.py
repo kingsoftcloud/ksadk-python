@@ -232,3 +232,19 @@ def test_total_attempt_budget_caps_retry_and_failover_chain() -> None:
         )
     assert reasoner.models == ["primary", "primary"]
     assert caught.value.events[-1].payload["action"] == "budget_exhausted"
+
+
+def test_http_400_input_token_limit_is_context_length_for_real_gateways() -> None:
+    # 真实网关实测文案：HTTP 400 "input token limit is 1048576"。
+    failure = classify_model_failure(_HTTPError(400, "input token limit is 1048576"))
+    assert failure.kind == ModelFailureKind.CONTEXT_LENGTH
+    assert (
+        decide_model_failure_action(
+            failure,
+            policy=_policy(),
+            model_attempt=1,
+            total_attempt=1,
+            has_fallback=True,
+        )
+        == ModelFailureAction.RECOVER_CONTEXT
+    )
