@@ -39,6 +39,8 @@ def context_trace(events: Sequence[RuntimeEvent]) -> list[dict[str, Any]]:
                 "input_tokens": int(event.payload.get("input_tokens") or 0),
                 "output_tokens": int(event.payload.get("output_tokens") or 0),
                 "total_tokens": int(event.payload.get("total_tokens") or 0),
+                "cached_tokens": int(event.payload.get("cached_tokens") or 0),
+                "reasoning_tokens": int(event.payload.get("reasoning_tokens") or 0),
             }
     manifests: list[dict[str, Any]] = []
     for event in events:
@@ -75,9 +77,18 @@ def token_report(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
             "input_tokens": int(e.payload.get("input_tokens") or 0),
             "output_tokens": int(e.payload.get("output_tokens") or 0),
             "total_tokens": int(e.payload.get("total_tokens") or 0),
+            "cached_tokens": int(e.payload.get("cached_tokens") or 0),
+            "reasoning_tokens": int(e.payload.get("reasoning_tokens") or 0),
         }
         for e in events
         if e.event_type == EventType.USAGE_REPORTED
+    ]
+    input_total = sum(u["input_tokens"] for u in usages)
+    cached_total = sum(u["cached_tokens"] for u in usages)
+    cache_diagnostics = [
+        {**dict(e.payload), "seq_id": e.seq_id, "event_id": e.event_id}
+        for e in events
+        if e.event_type == EventType.PROMPT_CACHE_DIAGNOSTIC
     ]
     return {
         "manifest_count": len(manifests),
@@ -85,8 +96,13 @@ def token_report(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
         "projected_tokens": [m.get("projected_tokens") for m in manifests],
         "actual": [m.get("actual") for m in manifests if m.get("actual")],
         "usage_events": usages,
-        "actual_total_input_tokens": sum(u["input_tokens"] for u in usages),
+        "actual_total_input_tokens": input_total,
         "actual_total_output_tokens": sum(u["output_tokens"] for u in usages),
+        "actual_total_cached_tokens": cached_total,
+        "actual_total_reasoning_tokens": sum(u["reasoning_tokens"] for u in usages),
+        "provider_cache_hit_ratio": cached_total / input_total if input_total else 0.0,
+        "prompt_cache_diagnostics": cache_diagnostics,
+        "prompt_cache_breaks": sum(bool(d.get("cache_break")) for d in cache_diagnostics),
         "compactions": len(compaction_trace(events)),
     }
 

@@ -229,12 +229,50 @@ class LiteLLMHarnessReasoner:
 
     @staticmethod
     def _usage_payload(usage: Any) -> dict[str, int] | None:
-        if usage is not None:
-            return {
-                "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-            }
-        return None
+        if usage is None:
+            return None
+
+        def _value(obj: Any, *names: str) -> int:
+            if obj is None:
+                return 0
+            for name in names:
+                raw = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+                if raw is not None:
+                    try:
+                        return max(0, int(raw))
+                    except (TypeError, ValueError):
+                        continue
+            return 0
+
+        prompt_details = (
+            usage.get("prompt_tokens_details")
+            if isinstance(usage, dict)
+            else getattr(usage, "prompt_tokens_details", None)
+        )
+        completion_details = (
+            usage.get("completion_tokens_details")
+            if isinstance(usage, dict)
+            else getattr(usage, "completion_tokens_details", None)
+        )
+        cached = _value(prompt_details, "cached_tokens", "cache_read_input_tokens") or _value(
+            usage, "cache_read_input_tokens", "cached_tokens"
+        )
+        reasoning = _value(completion_details, "reasoning_tokens") or _value(
+            usage, "reasoning_tokens"
+        )
+        input_tokens = _value(usage, "prompt_tokens", "input_tokens")
+        output_tokens = _value(usage, "completion_tokens", "output_tokens")
+        payload = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+        if cached:
+            payload["cached_tokens"] = min(cached, input_tokens) if input_tokens else cached
+        if reasoning:
+            payload["reasoning_tokens"] = (
+                min(reasoning, output_tokens) if output_tokens else reasoning
+            )
+        return payload
 
 
 @dataclass(frozen=True)

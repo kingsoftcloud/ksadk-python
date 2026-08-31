@@ -28,11 +28,13 @@ class EngineContextPipeline:
         reasoner: Any,
         event_fn: EventFn,
         memory_runtime: Any | None = None,
+        prompt_cache_tracker: Any | None = None,
     ) -> None:
         self._context_engine = context_engine
         self._reasoner = reasoner
         self._event = event_fn
         self._memory_runtime = memory_runtime
+        self._prompt_cache_tracker = prompt_cache_tracker
 
     # ------------------------------------------------------------ 主入口
 
@@ -328,6 +330,24 @@ class EngineContextPipeline:
                 },
             )
         )
+        if self._prompt_cache_tracker is not None:
+            diagnostic = self._prompt_cache_tracker.observe(
+                scope=(
+                    f"{run.state.tenant_id}:{run.state.agent_id}:"
+                    f"{run.compiled.spec.model.profile_ref}"
+                ),
+                stable_prompt_hash=manifest.stable_prompt_hash,
+            )
+            run.events.append(
+                self._event(
+                    run,
+                    EventType.PROMPT_CACHE_DIAGNOSTIC,
+                    {
+                        **diagnostic.to_payload(),
+                        "manifest_id": manifest.manifest_id,
+                    },
+                )
+            )
 
     # ------------------------------------------------------------ 压缩
 

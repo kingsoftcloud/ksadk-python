@@ -106,6 +106,9 @@ class EventType:
     # context 构建完成（长任务方案 §8）：manifest 引用 + Section Token 构成。
     # payload: manifest_id, planned_tokens, projected_tokens, sections
     CONTEXT_BUILT = "context.built"
+    # 稳定 Prompt 前缀缓存诊断（仅 Hash）。payload: stable_prompt_hash,
+    # previous_stable_prompt_hash, cache_break, reason
+    PROMPT_CACHE_DIAGNOSTIC = "prompt.cache.diagnostic"
     # model 调用。payload: model, attempt; completed 增补 usage
     MODEL_CALL_STARTED = "model.call.started"
     MODEL_CALL_COMPLETED = "model.call.completed"
@@ -177,6 +180,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.CONTEXT_PLANNED,
         EventType.CONTEXT_RECOVERED,
         EventType.CONTEXT_BUILT,
+        EventType.PROMPT_CACHE_DIAGNOSTIC,
         EventType.MODEL_CALL_STARTED,
         EventType.MODEL_CALL_COMPLETED,
         EventType.MODEL_CALL_FAILED,
@@ -239,6 +243,9 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.CONTEXT_RECOVERED: frozenset({"reason"}),
     EventType.CONTEXT_BUILT: frozenset(
         {"manifest_id", "planned_tokens", "projected_tokens", "sections"}
+    ),
+    EventType.PROMPT_CACHE_DIAGNOSTIC: frozenset(
+        {"stable_prompt_hash", "cache_break", "reason"}
     ),
     EventType.MODEL_CALL_STARTED: frozenset({"model"}),
     EventType.MODEL_CALL_COMPLETED: frozenset({"model"}),

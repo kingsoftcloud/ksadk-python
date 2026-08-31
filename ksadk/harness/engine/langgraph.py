@@ -49,6 +49,7 @@ from ksadk.harness.loop import (
 )
 from ksadk.harness.loop.reason import ReasoningLimitError
 from ksadk.harness.mcp_runtime import McpCapabilityRuntime
+from ksadk.harness.prompt_cache import PromptCacheTracker
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
 from ksadk.harness.skill_runtime import SkillRuntime
 from ksadk.harness.spec import HarnessSpec
@@ -146,6 +147,7 @@ class ManagedLangGraphEngine:
         self._max_reasoning_turns = max_reasoning_turns
         # 长任务方案 §6.4：压缩前受控 Memory Flush 用的 Memory Runtime（可选）。
         self._memory_runtime = memory_runtime
+        self._prompt_cache_tracker = PromptCacheTracker()
         # SkillRuntime 只消费已绑定、已校验的 Skill 内容；L0 摘要常驻动态
         # Context，L1/L2/L3 由默认 Agent Loop 的受限工具渐进披露。
         self._skill_runtime = skill_runtime
@@ -170,6 +172,7 @@ class ManagedLangGraphEngine:
                 reasoner=self._reasoner,
                 event_fn=self._event,
                 memory_runtime=self._memory_runtime,
+                prompt_cache_tracker=self._prompt_cache_tracker,
             )
             if self._context_engine is not None
             else None

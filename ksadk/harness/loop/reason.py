@@ -228,24 +228,29 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
 
     if turn.usage:
         usage = dict(turn.usage)
+        usage_payload = {
+            "model": selected_model_ref,
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "total_tokens": int(
+                usage.get("total_tokens")
+                or (
+                    int(usage.get("input_tokens") or 0)
+                    + int(usage.get("output_tokens") or 0)
+                )
+            ),
+        }
+        if usage.get("cached_tokens") is not None:
+            usage_payload["cached_tokens"] = int(usage.get("cached_tokens") or 0)
+        if usage.get("reasoning_tokens") is not None:
+            usage_payload["reasoning_tokens"] = int(usage.get("reasoning_tokens") or 0)
         seq += 1
         out.events.append(
             _event(
                 EventType.USAGE_REPORTED,
                 inp,
                 seq,
-                {
-                    "model": selected_model_ref,
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
-                    "total_tokens": int(
-                        usage.get("total_tokens")
-                        or (
-                            int(usage.get("input_tokens") or 0)
-                            + int(usage.get("output_tokens") or 0)
-                        )
-                    ),
-                },
+                usage_payload,
             )
         )
         out.usage = usage
