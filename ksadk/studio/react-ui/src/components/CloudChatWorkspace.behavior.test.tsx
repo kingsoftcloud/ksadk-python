@@ -37,6 +37,46 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     vi.stubGlobal("localStorage", storage);
   });
 
+  it("ignores a slow message response from the previously selected session", async () => {
+    let resolveOldMessages!: (response: Response) => void;
+    const oldMessages = new Promise<Response>((resolve) => {
+      resolveOldMessages = resolve;
+    });
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === `${base}/sessions`) {
+        return jsonResponse({ sessions: [
+          { session_id: "sess-old", title: "旧会话" },
+          { session_id: "sess-new", title: "新会话" },
+        ] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path === `${base}/sessions/sess-old/messages`) return oldMessages;
+      if (path === `${base}/sessions/sess-new/messages`) {
+        return jsonResponse({ messages: [{
+          message_id: "new-message",
+          role: "assistant",
+          content: "新会话内容",
+        }] });
+      }
+      if (path.endsWith("/events?limit=1000")) return jsonResponse({ events: [] });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+    await screen.findByText("旧会话");
+    await userEvent.click(screen.getByRole("button", { name: /^新会话$/ }));
+    expect(await screen.findByText("新会话内容")).toBeInTheDocument();
+
+    resolveOldMessages(jsonResponse({ messages: [{
+      message_id: "old-message",
+      role: "assistant",
+      content: "不应覆盖当前会话",
+    }] }));
+
+    await waitFor(() => expect(screen.queryByText("不应覆盖当前会话")).not.toBeInTheDocument());
+    expect(screen.getByText("新会话内容")).toBeInTheDocument();
+  });
+
   it("keeps terminal sessions quiet and marks only active work with a subtle ring", async () => {
     apiFetch.mockImplementation(async (path: string) => {
       if (path === `${base}/sessions`) {

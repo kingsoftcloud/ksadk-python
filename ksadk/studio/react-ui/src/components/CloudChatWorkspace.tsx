@@ -898,6 +898,7 @@ export function CloudChatWorkspace({
     const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`);
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json() as { messages?: unknown[] };
+    if (currentSessionIdRef.current !== sessionId) return;
     const rows = (payload.messages || [])
       .map(normalizeMessage)
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
@@ -935,6 +936,7 @@ export function CloudChatWorkspace({
     );
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
+    if (currentSessionIdRef.current !== sessionId) return;
     const events: unknown[] = Array.isArray(payload.events) ? payload.events : [];
     sessionCursorRef.current.set(
       sessionId,
