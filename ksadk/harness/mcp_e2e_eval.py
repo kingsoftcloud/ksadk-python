@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import tempfile
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -251,6 +253,9 @@ class McpE2ECaseReport:
     first_input_tokens: int
     preload_baseline_tokens: int
     token_reduction: float
+    first_request_estimated_tokens: int
+    preload_estimated_tokens: int
+    estimated_token_reduction: float
     approval_entered: bool
     degraded_gracefully: bool
     expected_outcome_met: bool
@@ -265,6 +270,8 @@ def analyze_case(
     final_answer: str,
     *,
     preload_baseline_tokens: int,
+    first_request_estimated_tokens: int = 0,
+    preload_estimated_tokens: int = 0,
 ) -> McpE2ECaseReport:
     """从事件流统计 P0 验收指标（纯函数，离线可测）。"""
     disclosed = [e for e in events if e.event_type == EventType.MCP_DISCLOSED]
@@ -295,10 +302,10 @@ def analyze_case(
     )
     if case.expect_call is not None:
         server, tool, args = case.expect_call
-        matched = any(
+        matched = bool(transport.calls) and any(
             name == tool and all(arguments.get(k) == v for k, v in args.items())
             for name, arguments in transport.calls
-        ) and transport.calls
+        )
     else:
         matched = False
     usage = [e for e in events if e.event_type == EventType.USAGE_REPORTED]
@@ -343,6 +350,11 @@ def analyze_case(
         if preload_baseline_tokens and first_input
         else 0.0
     )
+    estimated_reduction = (
+        round(1 - first_request_estimated_tokens / preload_estimated_tokens, 4)
+        if preload_estimated_tokens and first_request_estimated_tokens
+        else 0.0
+    )
     return McpE2ECaseReport(
         case_id=case.case_id,
         tool_selection_success=matched,
@@ -352,6 +364,9 @@ def analyze_case(
         first_input_tokens=first_input,
         preload_baseline_tokens=preload_baseline_tokens,
         token_reduction=reduction,
+        first_request_estimated_tokens=first_request_estimated_tokens,
+        preload_estimated_tokens=preload_estimated_tokens,
+        estimated_token_reduction=estimated_reduction,
         approval_entered=approval_entered,
         degraded_gracefully=degraded,
         expected_outcome_met=outcome_met,
@@ -379,14 +394,44 @@ class _DirectTool:
         return {"status": "ok", "tool": self._spec["name"], "echo": arguments}
 
 
-async def measure_preload_baseline(*, reasoner: Any) -> int:
-    """全量预加载基线：同样的任务，所有 MCP Tool Schema 直接作为工具注入，
-    取真实模型首轮输入 Token（apples-to-apples，对比 deferred 首轮）。"""
+class _FirstRequestCapture:
+    """Capture a provider-independent first-request footprint.
+
+    Provider-reported usage is still retained as the billing truth.  This
+    deterministic estimate exists to measure deferred disclosure itself: some
+    OpenAI-compatible gateways omit tool schemas from prompt-token accounting
+    or apply provider-side caching, which otherwise makes the optimization
+    appear ineffective.
+    """
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+        self.estimated_tokens = 0
+
+    async def complete(self, *, model: Any, prompt: Any, messages: Any, tools: Any) -> Any:
+        if not self.estimated_tokens:
+            payload = {
+                "prompt": prompt,
+                "messages": list(messages),
+                "tools": [tool.openai_schema for tool in tools],
+            }
+            encoded = json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            # A stable comparison estimate, not a claim about provider billing.
+            self.estimated_tokens = max(1, math.ceil(len(encoded) / 4))
+        return await self._delegate.complete(
+            model=model, prompt=prompt, messages=messages, tools=tools
+        )
+
+
+async def _measure_preload_baseline(*, reasoner: Any) -> tuple[int, int]:
+    capture = _FirstRequestCapture(reasoner)
     tools = {
         spec["name"]: _DirectTool(spec)
         for spec in list(_FINANCE_TOOLS.values()) + list(_HR_TOOLS.values())
     }
-    engine = ManagedLangGraphEngine(reasoner=reasoner, tools=tools)
+    engine = ManagedLangGraphEngine(reasoner=capture, tools=tools)
     compiled = await engine.compile(_spec_without_mcp())
     handle = await engine.start(
         StartRequest(
@@ -398,12 +443,23 @@ async def measure_preload_baseline(*, reasoner: Any) -> int:
         ),
         compiled,
     )
-    async for event in engine.stream(handle):
-        if event.event_type == EventType.USAGE_REPORTED:
-            await engine.close(handle)
-            return int(event.payload.get("input_tokens") or 0)
-    await engine.close(handle)
-    return 0
+    input_tokens = 0
+    try:
+        async with aclosing(engine.stream(handle)) as stream:
+            async for event in stream:
+                if event.event_type == EventType.USAGE_REPORTED:
+                    input_tokens = int(event.payload.get("input_tokens") or 0)
+                    break
+    finally:
+        await engine.close(handle)
+    return input_tokens, capture.estimated_tokens
+
+
+async def measure_preload_baseline(*, reasoner: Any) -> int:
+    """全量预加载基线：同样的任务，所有 MCP Tool Schema 直接作为工具注入，
+    取真实模型首轮输入 Token（apples-to-apples，对比 deferred 首轮）。"""
+    input_tokens, _ = await _measure_preload_baseline(reasoner=reasoner)
+    return input_tokens
 
 
 def _spec_without_mcp() -> HarnessSpec:
@@ -415,10 +471,15 @@ def _spec_without_mcp() -> HarnessSpec:
 
 
 async def run_case(
-    case: McpE2ECase, *, reasoner: Any, preload_baseline_tokens: int = 0
+    case: McpE2ECase,
+    *,
+    reasoner: Any,
+    preload_baseline_tokens: int = 0,
+    preload_estimated_tokens: int = 0,
 ) -> McpE2ECaseReport:
     runtime, transport = _runtime(case)
-    engine_kwargs: dict[str, Any] = {"reasoner": reasoner, "mcp_runtime": runtime}
+    capture = _FirstRequestCapture(reasoner)
+    engine_kwargs: dict[str, Any] = {"reasoner": capture, "mcp_runtime": runtime}
     if case.big_result:
         # P1：大结果外置到临时 Artifact Store（单结果阈值 4KB）。
         from ksadk.harness.artifact_store import ArtifactStore
@@ -444,13 +505,22 @@ async def run_case(
     )
     final_answer = ""
     events: list[RuntimeEvent] = []
-    async for event in engine.stream(handle):
-        events.append(event)
-        if event.event_type == EventType.TEXT_COMPLETED and event.phase == "final_answer":
-            final_answer = str(event.payload.get("text") or "")
+    try:
+        async with aclosing(engine.stream(handle)) as stream:
+            async for event in stream:
+                events.append(event)
+                if (
+                    event.event_type == EventType.TEXT_COMPLETED
+                    and event.phase == "final_answer"
+                ):
+                    final_answer = str(event.payload.get("text") or "")
+    finally:
+        await engine.close(handle)
     return analyze_case(
         case, events, transport, final_answer,
         preload_baseline_tokens=preload_baseline_tokens,
+        first_request_estimated_tokens=capture.estimated_tokens,
+        preload_estimated_tokens=preload_estimated_tokens,
     )
 
 
@@ -458,9 +528,18 @@ def run_mcp_e2e(*, output_path: str = "") -> dict[str, Any]:
     from ksadk.harness.real_model_eval import RealModelReasoner
 
     reasoner = RealModelReasoner()
-    baseline = asyncio.run(measure_preload_baseline(reasoner=reasoner))
+    baseline, preload_estimate = asyncio.run(
+        _measure_preload_baseline(reasoner=reasoner)
+    )
     reports = [
-        asyncio.run(run_case(case, reasoner=reasoner, preload_baseline_tokens=baseline))
+        asyncio.run(
+            run_case(
+                case,
+                reasoner=reasoner,
+                preload_baseline_tokens=baseline,
+                preload_estimated_tokens=preload_estimate,
+            )
+        )
         for case in MCP_E2E_DATASET
     ]
     actionable = [r for r in reports if r.case_id == "invoice-query"]
@@ -479,6 +558,15 @@ def run_mcp_e2e(*, output_path: str = "") -> dict[str, Any]:
         "first_input_token_reduction": (
             actionable[0].token_reduction if actionable else 0.0
         ),
+        "first_request_estimated_tokens_deferred": (
+            actionable[0].first_request_estimated_tokens if actionable else 0
+        ),
+        "preload_estimated_tokens": (
+            actionable[0].preload_estimated_tokens if actionable else 0
+        ),
+        "first_request_estimated_token_reduction": (
+            actionable[0].estimated_token_reduction if actionable else 0.0
+        ),
         "approval_entered": any(r.approval_entered for r in reports),
         "degraded_gracefully": any(r.degraded_gracefully for r in reports),
         "outcome_met_rate": _ratio(r.expected_outcome_met for r in reports),
@@ -494,6 +582,8 @@ def run_mcp_e2e(*, output_path: str = "") -> dict[str, Any]:
                 "unrelated_schema_loads": r.unrelated_schema_loads,
                 "first_input_tokens": r.first_input_tokens,
                 "token_reduction": r.token_reduction,
+                "first_request_estimated_tokens": r.first_request_estimated_tokens,
+                "estimated_token_reduction": r.estimated_token_reduction,
                 "approval_entered": r.approval_entered,
                 "degraded_gracefully": r.degraded_gracefully,
                 "expected_outcome_met": r.expected_outcome_met,

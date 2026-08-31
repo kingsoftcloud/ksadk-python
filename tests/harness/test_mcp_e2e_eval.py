@@ -65,13 +65,15 @@ def test_good_path_selection_success():
     case = MCP_E2E_DATASET[0]
     report = asyncio.run(
         run_case(case, reasoner=_ScriptedReasoner(_good_calls()),
-                 preload_baseline_tokens=1000)
+                 preload_baseline_tokens=1000, preload_estimated_tokens=5000)
     )
     assert report.tool_selection_success
     assert report.level_violations == 0
     assert report.unauthorized_calls == 0
     assert report.unrelated_schema_loads == 0
     assert report.expected_outcome_met
+    assert 0 < report.first_request_estimated_tokens < 5000
+    assert report.estimated_token_reduction > 0
     # Token 削减口径由真实模型回填（脚本 reasoner 无 usage 事件）。
 
 

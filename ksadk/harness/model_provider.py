@@ -100,6 +100,10 @@ def classify_model_failure(error: Exception) -> ClassifiedModelFailure:
             # model_matrix_eval 的 overflow 探针）。
             "input token limit",
             "token limit exceeded",
+            # 金山云 OpenAI-compatible 网关实测文案。
+            "prompt exceeds max length",
+            "prompt exceeds maximum length",
+            "prompt is too long",
         )
     ):
         return ClassifiedModelFailure(ModelFailureKind.CONTEXT_LENGTH, status_code)

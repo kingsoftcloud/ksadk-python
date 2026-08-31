@@ -33,7 +33,7 @@ def test_discover_models_projects_gateway_metadata_without_credentials() -> None
                         "architecture": {"input_modalities": ["text", "image"]},
                         "context_window": "200000",
                     },
-                    {"id": "kimi-k3", "context_length": 131072},
+                    {"id": "kimi-k3", "context_length": "1024k"},
                     {"object": "model"},
                 ]
             },
@@ -47,8 +47,64 @@ def test_discover_models_projects_gateway_metadata_without_credentials() -> None
     assert [item.model_id for item in models] == ["glm-5.3", "kimi-k3"]
     assert models[0].input_modalities == ("text", "image")
     assert models[0].context_window == 200000
+    assert models[1].context_window == 1024 * 1024
     assert observed["authorization"] == "Bearer secret-value"
     assert "secret-value" not in json.dumps([item.__dict__ for item in models])
+
+
+def test_discover_models_retries_transient_gateway_failure() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(400, json={"error": {"message": "temporary routing drift"}})
+        return httpx.Response(200, json={"data": [{"id": "glm-5.3"}]})
+
+    models = discover_models(
+        base_url="https://models.example/v1",
+        api_key="test-secret",
+        transport=httpx.MockTransport(handler),
+        max_attempts=3,
+        initial_backoff_seconds=0.1,
+        sleep=delays.append,
+    )
+
+    assert models == (DiscoveredModel("glm-5.3"),)
+    assert attempts == 3
+    assert delays == [0.1, 0.2]
+
+
+def test_discover_models_rejects_invalid_retry_budget() -> None:
+    with pytest.raises(ValueError, match="max_attempts"):
+        discover_models(
+            base_url="https://models.example/v1",
+            api_key="test-secret",
+            max_attempts=0,
+        )
+
+
+def test_discover_models_does_not_retry_authentication_failure() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(401, json={"error": {"message": "invalid key"}})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        discover_models(
+            base_url="https://models.example/v1",
+            api_key="bad-secret",
+            transport=httpx.MockTransport(handler),
+            sleep=delays.append,
+        )
+
+    assert attempts == 1
+    assert delays == []
 
 
 def test_select_models_is_explicit_and_rejects_gateway_drift() -> None:
@@ -299,6 +355,31 @@ def test_overflow_probe_requires_classified_context_length_failure() -> None:
     assert result["failure_kind"] == "context_length"
     assert result["status_code"] == 400
     assert "test-key" not in str(result)
+
+
+def test_overflow_probe_builds_payload_beyond_large_declared_window() -> None:
+    observed_chars = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observed_chars
+        payload = json.loads(request.content)
+        observed_chars = len(payload["messages"][0]["content"])
+        return httpx.Response(
+            400,
+            json={"error": {"message": "input token limit is 1048576"}},
+        )
+
+    probe = OpenAICompatibleOverflowProbe(
+        base_url="http://gateway.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(
+        probe.probe_overflow(model="model-a", context_window=1024 * 1024)
+    )
+
+    assert result["passed"] is True
+    assert observed_chars > 4 * 1024 * 1024
 
 
 def test_overflow_probe_fails_when_provider_accepts_oversized_prompt() -> None:

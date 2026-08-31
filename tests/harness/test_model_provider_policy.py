@@ -248,3 +248,16 @@ def test_http_400_input_token_limit_is_context_length_for_real_gateways() -> Non
         )
         == ModelFailureAction.RECOVER_CONTEXT
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Prompt exceeds max length",
+        "prompt exceeds maximum length",
+        "Prompt is too long",
+    ),
+)
+def test_http_400_prompt_length_variants_are_context_length(message: str) -> None:
+    failure = classify_model_failure(_HTTPError(400, message))
+    assert failure.kind == ModelFailureKind.CONTEXT_LENGTH

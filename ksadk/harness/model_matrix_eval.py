@@ -19,6 +19,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, Sequence
 
@@ -275,8 +277,10 @@ class OpenAICompatibleOverflowProbe:
         self, *, model: str, context_window: int | None
     ) -> dict[str, Any]:
         tokens = context_window or self._fallback_context_tokens
-        # 保守按 1 token ≈ 2 字符估算，翻倍确保越界（中文多字 1 token）。
-        target_chars = int(tokens * 2) + 4096
+        # 兼容网关对重复文本的 tokenizer 合并。真实 1M 窗口实测表明
+        # 2 chars/token 可能仍被接受；使用 4 chars/token 并增加安全余量，
+        # 让“Provider 接受过长输入”不再是探针自身的假阴性。
+        target_chars = int(tokens * 4) + 16_384
         filler_chars = len(self._FILLER)
         prompt = self._FILLER * (target_chars // filler_chars + 1)
         payload = {
@@ -347,6 +351,30 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+_SCALED_INTEGER = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kKmMgG])?\s*$")
+
+
+def _context_length(value: Any) -> int | None:
+    """Parse provider context metadata such as ``131072`` or ``\"1024k\"``.
+
+    OpenAI-compatible gateways do not agree on the wire type.  Keep parsing
+    deliberately narrow: decimal numbers plus k/m/g suffixes are accepted;
+    prose and non-positive values remain unknown rather than being guessed.
+    """
+
+    direct = _positive_int(value)
+    if direct is not None:
+        return direct
+    if not isinstance(value, str):
+        return None
+    match = _SCALED_INTEGER.fullmatch(value)
+    if match is None:
+        return None
+    scale = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+    parsed = int(float(match.group(1)) * scale[(match.group(2) or "").lower()])
+    return parsed if parsed > 0 else None
+
+
 def _model_from_wire(value: dict[str, Any]) -> DiscoveredModel | None:
     model_id = str(value.get("id") or "").strip()
     if not model_id:
@@ -369,7 +397,7 @@ def _model_from_wire(value: dict[str, Any]) -> DiscoveredModel | None:
         model_id=model_id,
         owned_by=str(value.get("owned_by") or ""),
         input_modalities=tuple(str(item) for item in modalities if str(item).strip()),
-        context_window=_positive_int(context_window),
+        context_window=_context_length(context_window),
     )
 
 
@@ -379,6 +407,9 @@ def discover_models(
     api_key: str,
     transport: httpx.BaseTransport | None = None,
     timeout_seconds: float = 30.0,
+    max_attempts: int = 3,
+    initial_backoff_seconds: float = 0.25,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[DiscoveredModel, ...]:
     """Discover models without persisting or returning the credential."""
 
@@ -386,20 +417,40 @@ def discover_models(
         raise ValueError("OPENAI_BASE_URL is required")
     if not api_key.strip():
         raise ValueError("OPENAI_API_KEY is required")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
     headers = {"Authorization": f"Bearer {api_key}"}
     with httpx.Client(
         transport=transport,
         timeout=timeout_seconds,
         follow_redirects=True,
     ) as client:
-        response = client.get(_models_url(base_url), headers=headers)
-        response.raise_for_status()
-        payload = response.json()
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = client.get(_models_url(base_url), headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except (httpx.HTTPError, json.JSONDecodeError) as exc:
+                if attempt >= max_attempts or not _retryable_discovery_error(exc):
+                    raise
+                sleep(initial_backoff_seconds * (2 ** (attempt - 1)))
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise RuntimeError("model endpoint returned an invalid /models payload")
     models = [item for row in rows if isinstance(row, dict) if (item := _model_from_wire(row))]
     return tuple(sorted(models, key=lambda item: item.model_id))
+
+
+def _retryable_discovery_error(error: Exception) -> bool:
+    if isinstance(error, json.JSONDecodeError):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        # 部分兼容网关在模型路由目录刷新时会短暂返回 400；鉴权、权限和
+        # Not Found 等确定性错误不得通过重试掩盖。
+        status = error.response.status_code
+        return status in {400, 408, 409, 425, 429} or status >= 500
+    return isinstance(error, (httpx.TimeoutException, httpx.TransportError))
 
 
 def select_models(
