@@ -156,14 +156,14 @@ class DeploymentRuntime:
         if self.engine is not None:
             return
         if self._state_dir is None:
-            from langgraph.checkpoint.memory import InMemorySaver
+            from ksadk.harness.engine.langgraph import memory_checkpointer
 
-            checkpointer: Any = InMemorySaver()
+            checkpointer: Any = memory_checkpointer()
         else:
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+            from ksadk.harness.engine.langgraph import sqlite_checkpointer
 
             checkpoint_path = self._state_dir / "checkpoints.sqlite"
-            self._checkpointer_context = AsyncSqliteSaver.from_conn_string(str(checkpoint_path))
+            self._checkpointer_context = sqlite_checkpointer(str(checkpoint_path))
             checkpointer = await self._checkpointer_context.__aenter__()
         engine_kwargs = dict(self._engine_kwargs)
         if self._state_dir is not None and "capability_runtime" not in engine_kwargs:

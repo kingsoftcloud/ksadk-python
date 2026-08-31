@@ -58,11 +58,15 @@ def test_contract_modules_do_not_import_engine_frameworks() -> None:
 
 
 def test_engine_langgraph_is_the_only_langgraph_entrypoint() -> None:
-    """LangGraph 只允许出现在 engine/langgraph.py（Phase 1 落地后）。"""
+    """LangGraph 只允许出现在 engine 的图构建模块（Phase 1 落地后）。
+
+    langgraph.py（引擎主体）与 graph_builder.py（图组装拆分，同属
+    engine 包的 LangGraph 职责）之外，任何 harness 模块不得 import langgraph。
+    """
     harness_root = ROOT / "ksadk" / "harness"
     offenders: list[str] = []
     for path in harness_root.rglob("*.py"):
-        if path.name == "langgraph.py":
+        if path.name in ("langgraph.py", "graph_builder.py") and path.parent.name == "engine":
             continue
         for module in _imported_modules(path):
             if module.startswith("langgraph"):
