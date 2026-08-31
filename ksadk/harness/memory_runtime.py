@@ -27,6 +27,7 @@ from ksadk.harness.spec import HarnessSpec
 from ksadk.memory.coordinator import MemoryCoordinator
 from ksadk.memory.models import (
     CoreMemoryRequest,
+    MemoryArtifactRef,
     MemoryCandidate,
     MemoryOperation,
     MemoryRecord,
@@ -69,6 +70,7 @@ class MemoryWriteRequest:
     reason: str = ""
     # ---- 长任务方案 §7.2 兼容扩展 ----
     source_artifact_refs: tuple[str, ...] = ()
+    source_artifacts: tuple[MemoryArtifactRef, ...] = ()
     sensitivity: str = "none"
     write_policy: str = "auto"
     #: TTL（ISO 日期；空 = 不过期）。时效数据必须有来源和 TTL。
@@ -358,6 +360,7 @@ class HarnessMemoryRuntime:
             reason=request.reason or f"source={request.source}",
             slot_key=request.slot_key,
             source_artifact_refs=request.source_artifact_refs,
+            source_artifacts=request.source_artifacts,
             sensitivity=request.sensitivity,  # type: ignore[arg-type]
             write_policy=request.write_policy,  # type: ignore[arg-type]
             expires_at=request.expires_at,

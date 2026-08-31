@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ksadk.harness.memory_runtime import HarnessMemoryRuntime, MemoryWriteRequest
 from ksadk.harness.spec import HarnessSpec, MemoryPolicy, ModelBinding, PromptSpec
-from ksadk.memory.models import MemorySearchRequest
+from ksadk.memory.models import MemoryArtifactRef, MemorySearchRequest
 
 
 def _spec() -> HarnessSpec:
@@ -35,6 +35,15 @@ def test_record_carries_source_artifact_sensitivity_ttl():
         runtime,
         "Q3 预算口径以财务系统为准",
         source_artifact_refs=("artifact://run_gov/budget-summary@1",),
+        source_artifacts=(
+            MemoryArtifactRef(
+                uri="artifact://run_gov/budget-chart@1",
+                mime_type="image/png",
+                content_hash="sha256:0123456789abcdef",
+                size_bytes=4096,
+                modality="image",
+            ),
+        ),
         sensitivity="low",
         write_policy="user_confirm",
         expires_at="2027-01-01T00:00:00Z",
@@ -47,9 +56,26 @@ def test_record_carries_source_artifact_sensitivity_ttl():
     assert result.records
     record = result.records[0]
     assert record.source_artifact_refs == ("artifact://run_gov/budget-summary@1",)
+    assert record.source_artifacts[0].modality == "image"
+    assert record.source_artifacts[0].mime_type == "image/png"
     assert record.sensitivity == "low"
     assert record.write_policy == "user_confirm"
     assert record.expires_at == "2027-01-01T00:00:00Z"
+
+
+def test_multimodal_memory_rejects_inline_or_temporary_source():
+    try:
+        MemoryArtifactRef(
+            uri="data:image/png;base64,AAAA",
+            mime_type="image/png",
+            content_hash="sha256:0123456789abcdef",
+            size_bytes=4,
+            modality="image",
+        )
+    except ValueError as exc:
+        assert "artifact://" in str(exc)
+    else:  # pragma: no cover - safety invariant
+        raise AssertionError("inline media must never enter Memory")
 
 
 def test_expired_records_filtered_from_recall():

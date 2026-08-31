@@ -378,6 +378,7 @@ class MemoryCoordinator:
             updated_at=now_iso,
             # 长任务方案 §7.2：来源 Artifact / 敏感级别 / 写策略 / TTL / supersede 链。
             source_artifact_refs=tuple(candidate.source_artifact_refs),
+            source_artifacts=tuple(candidate.source_artifacts),
             sensitivity=candidate.sensitivity,
             write_policy=candidate.write_policy,
             supersedes=tuple(

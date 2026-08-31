@@ -119,6 +119,7 @@ class LangGraphStoreAdapter:
                 )
         payload = asdict(record)
         payload["source_artifact_refs"] = list(record.source_artifact_refs)
+        payload["source_artifacts"] = [asdict(item) for item in record.source_artifacts]
         payload["supersedes"] = list(record.supersedes)
         await self._store.aput(self._ns(record.scope, record.scope_id), record.memory_id, payload)
         return record
