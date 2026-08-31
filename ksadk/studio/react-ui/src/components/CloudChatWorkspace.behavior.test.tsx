@@ -122,10 +122,46 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
 
     expect(await screen.findByText(/第一段\s+第二段/)).toBeInTheDocument();
     expect(screen.getAllByText(/第一段/)).toHaveLength(1);
-    const pending = screen.getByText(/正在等待云端响应/);
-    expect(pending).toBeInTheDocument();
-    expect(pending.querySelector("svg")).toHaveClass("animate-spin");
+    expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
     directStreamController?.enqueue(encoder.encode("data: [DONE]\n\n"));
+    await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
+  });
+
+  it("renders the legacy bare RunAgent delta frames used by deployed Agents", async () => {
+    let directStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const directStream = new ReadableStream<Uint8Array>({ start(controller) { directStreamController = controller; } });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-bare-delta", title: "现网兼容流" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+    await screen.findByText("现网兼容流");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "验证裸增量");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    directStreamController?.enqueue(new TextEncoder().encode(
+      'data: {"delta":"流"}\n\n'
+      + 'data: {"delta":"式验证通过。"}\n\n',
+    ));
+
+    expect(await screen.findByText("流式验证通过。")).toBeInTheDocument();
+    expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
+    directStreamController?.enqueue(new TextEncoder().encode(
+      'data: {"id":"resp-legacy","object":"response","status":"completed","output_text":"流式验证通过。"}\n\n',
+    ));
+    directStreamController?.close();
     await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
   });
 
@@ -209,7 +245,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
         event_type: "runtime_event",
         seq_id: 11 + index,
         invocation_id: "inv-qwen",
-        content: { runtime_event: { ...runtimeEvent, run_id: "run-qwen", scope_id: "scope-qwen" } },
+        // The cloud SessionEvent API accepts both historic snake_case and
+        // current camelCase envelopes.  The chat surface must give either
+        // form the same canonical ConversationItem treatment.
+        content: { runtimeEvent: { ...runtimeEvent, run_id: "run-qwen", scope_id: "scope-qwen" } },
       })}\n\n`
     )).join("");
     directStreamController?.enqueue(new TextEncoder().encode(encoded));
@@ -218,7 +257,62 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(screen.getByText(/正在分析问题/)).toBeInTheDocument();
     expect(screen.getByText("web_search")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "待处理确认" })).toHaveTextContent("允许查询天气");
-    expect(screen.getByText(/正在等待云端响应/)).toBeInTheDocument();
+    expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
+    directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+  });
+
+  it("projects a canonical reasoning delta only once when both cloud streams deliver it", async () => {
+    let sessionStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let directStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const sessionStream = new ReadableStream<Uint8Array>({ start(controller) { sessionStreamController = controller; } });
+    const directStream = new ReadableStream<Uint8Array>({ start(controller) { directStreamController = controller; } });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-dedup", title: "双流去重" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response(sessionStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("双流去重");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "不要重复思考");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    const frame = [
+      "event: session.event",
+      `data: ${JSON.stringify({
+        event_type: "runtime_event",
+        seq_id: 1,
+        invocation_id: "inv-dedup",
+        content: { runtime_event: {
+          schema_version: 2,
+          event_id: "event-dedup-1",
+          run_id: "run-dedup",
+          scope_id: "scope-dedup",
+          event_type: "item.updated",
+          item_id: "reason-dedup",
+          item_kind: "reasoning",
+          op: "append",
+          update: { text: "只显示一次" },
+        } },
+      })}`,
+      "",
+      "",
+    ].join("\n");
+    sessionStreamController?.enqueue(new TextEncoder().encode(frame));
+    expect(await screen.findByText("只显示一次")).toBeInTheDocument();
+    directStreamController?.enqueue(new TextEncoder().encode(frame));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(screen.getByText("只显示一次")).toBeInTheDocument();
+    expect(screen.queryByText("只显示一次只显示一次")).not.toBeInTheDocument();
     directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
   });
 
@@ -292,6 +386,44 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(await screen.findByText(/刷新后仍保留的思考/)).toBeInTheDocument();
     expect(screen.getByText("metaso_web_search")).toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith(`${base}/sessions/sess-long/events?limit=1000`);
+  });
+
+  it("uses typed ConversationItems for cloud plans and keeps hidden extensions out of chat", async () => {
+    const item = (kind: string, itemId: string, visibility = "public") => ({
+      apiVersion: "conversation.ksadk.io/v1",
+      kindVersion: 1,
+      itemId,
+      sourceEventIds: [`event-${itemId}`],
+      sessionId: "sess-typed",
+      runId: "run-typed",
+      kind,
+      operation: "replace",
+      lifecycle: "completed",
+      visibility,
+      payloadSchemaRef: kind === "plan" ? "conversation.item.plan/v1" : "conversation.item.unknown/v1",
+      payload: kind === "plan" ? { text: "先核对接口，再部署验证" } : { summary: "future extension" },
+      nativeRef: {},
+    });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-typed", title: "类型化会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
+        return jsonResponse({ events: [
+          { seq_id: 1, conversationItem: item("plan", "plan-1") },
+          { seq_id: 2, conversationItem: item("future_extension", "future-1", "hidden") },
+        ] });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    expect(await screen.findByText("先核对接口，再部署验证")).toBeInTheDocument();
+    expect(screen.queryByText("future extension")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂不支持的内容")).not.toBeInTheDocument();
   });
 
   it("ends foreground waiting when SessionEvent reports an approval interrupt", async () => {
@@ -389,7 +521,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
         directBodies.push(JSON.parse(String(init.body)));
         const body = directCalls === 1
           ? [
-            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"先分析","content":"第一轮回答","tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"q\\":\\"one\\"}"}}]},"finish_reason":null}]}',
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"先分析","content":"第一轮回答","tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"q\\":\\"one\\"}"}},{"index":1,"id":"call-2","function":{"name":"fetch_detail","arguments":"{\\"id\\":\\"two\\"}"}}]},"finish_reason":null}]}',
             "data: [DONE]",
             "",
           ].join("\n\n")
@@ -413,6 +545,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(await screen.findByText("第一轮回答")).toBeInTheDocument();
     expect(screen.getByText("先分析")).toBeInTheDocument();
     expect(screen.getByText("lookup")).toBeInTheDocument();
+    expect(screen.getByText("fetch_detail")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("textbox", { name: "消息" })).not.toBeDisabled());
 
     await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "第二轮");

@@ -12,6 +12,25 @@ def _exports(module: str, *names: str) -> dict[str, tuple[str, str]]:
 
 _EXPORTS = {
     **_exports(
+        "ksadk.conversations.contracts",
+        "ConversationCapability",
+        "ConversationInput",
+        "ConversationAttachmentPart",
+        "ConversationItem",
+        "ConversationSurface",
+        "ConversationTextPart",
+        "validate_conversation_input",
+        "validate_surface_input",
+    ),
+    **_exports(
+        "ksadk.conversations.projector",
+        "project_conversation_item",
+    ),
+    **_exports(
+        "ksadk.conversations.reducer",
+        "ConversationItemReducer",
+    ),
+    **_exports(
         "ksadk.conversations.attachments",
         "decode_inline_data",
         "resolve_attachment_storage_path",

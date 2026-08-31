@@ -67,6 +67,109 @@ def _assert_rejected(studio: StudioService, build) -> None:
     assert captured.value.code == "BUILD_ARTIFACT_INVALID"
 
 
+def test_legacy_bundle_manifest_without_phase2_fields_remains_readable() -> None:
+    manifest = BundleManifest.model_validate(
+        {
+            "bundleFormat": "agentkit.bundle/v1",
+            "agentId": "legacy-agent",
+            "sourceRevision": 1,
+            "resolvedDigest": "sha256:legacy",
+            "files": [],
+        }
+    )
+
+    assert manifest.bundle_format == "agentkit.bundle/v1"
+    assert manifest.plugin_lock_digest == ""
+    assert manifest.composition_profile_digest is None
+
+
+def test_legacy_v1_bundle_runs_without_phase2_sidecars(tmp_path: Path) -> None:
+    """A deployed v1 Code bundle must not acquire a PluginHost requirement.
+
+    The fixture starts from a verified runnable bundle, removes the files that
+    Phase 2 adds, and rewrites a valid v1 manifest.  The established resolver
+    must still select its original ADK/LangGraph launch path rather than
+    requiring a PluginLock, Soul source, or hosted-kernel requirement.
+    """
+
+    studio, build, bundle_root = _build_langgraph_bundle(tmp_path)
+    for relative in (
+        "plugin-lock.json",
+        "hosted-kernel-requirements.json",
+        "provenance.json",
+    ):
+        (bundle_root / relative).unlink()
+
+    checksums = []
+    files = []
+    for path in sorted(
+        (candidate for candidate in bundle_root.rglob("*") if candidate.is_file()),
+        key=lambda candidate: candidate.relative_to(bundle_root).as_posix(),
+    ):
+        relative = path.relative_to(bundle_root).as_posix()
+        if relative == "manifest.json":
+            continue
+        content = path.read_bytes()
+        checksums.append(f"{hashlib.sha256(content).hexdigest()}  {relative}")
+        files.append(
+            {
+                "path": relative,
+                "sha256": f"sha256:{hashlib.sha256(content).hexdigest()}",
+                "size": len(content),
+            }
+        )
+    # The old checksums member is a normal declared file.  Update it and then
+    # make the manifest list reflect the exact archive membership again.
+    checksum_path = bundle_root / "checksums.txt"
+    checksum_path.write_text("\n".join(checksums) + "\n", encoding="utf-8")
+    files = []
+    for path in sorted(
+        (candidate for candidate in bundle_root.rglob("*") if candidate.is_file()),
+        key=lambda candidate: candidate.relative_to(bundle_root).as_posix(),
+    ):
+        relative = path.relative_to(bundle_root).as_posix()
+        if relative == "manifest.json":
+            continue
+        content = path.read_bytes()
+        files.append(
+            {
+                "path": relative,
+                "sha256": f"sha256:{hashlib.sha256(content).hexdigest()}",
+                "size": len(content),
+            }
+        )
+    legacy = BundleManifest(
+        bundle_format="agentkit.bundle/v1",
+        agent_id=build.agent_id,
+        source_revision=build.source_revision,
+        resolved_digest=build.resolved_digest,
+        files=files,
+    )
+    legacy.bundle_digest = compute_bundle_digest(legacy)
+    wire = legacy.model_dump(by_alias=True, exclude_none=True)
+    # These values were not present in historic manifests; model defaults are
+    # intentionally used only while reading them back.
+    for field in (
+        "runtimeType",
+        "sourceDigest",
+        "runtimeContract",
+        "pluginLockDigest",
+        "hostedKernelRequirementDigest",
+    ):
+        wire.pop(field, None)
+    (bundle_root / "manifest.json").write_text(json.dumps(wire), encoding="utf-8")
+    build.bundle_digest = legacy.bundle_digest
+    studio.builds.save(build)
+
+    run_spec = FrameworkRunSpecResolver(
+        studio.workspace,
+        build_repository=studio.builds,
+    ).resolve(build.id)
+
+    assert run_spec.launch_context.runtime_type == "langgraph"
+    assert run_spec.request_config["agent_system"] == "Answer with evidence."
+
+
 def test_resolve_rejects_tampered_resolved_spec(tmp_path: Path) -> None:
     studio, build, bundle_root = _build_langgraph_bundle(tmp_path)
     spec_path = bundle_root / "resolved-agent-spec.json"

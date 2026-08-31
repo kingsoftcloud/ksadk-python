@@ -32,6 +32,9 @@ def test_export_plan_includes_public_preflight_contract_files():
     plan = module.build_export_plan(Path(__file__).resolve().parents[1])
 
     required_paths = {
+        "contracts/plugin/v1/manifest.json",
+        "contracts/conversation/v1/manifest.json",
+        "contracts/scheduler/v1/manifest.json",
         ".github/BRANCH_PROTECTION.md",
         ".github/workflows/publish-pypi.yml",
         "scripts/build_alias_distribution.py",
@@ -39,8 +42,18 @@ def test_export_plan_includes_public_preflight_contract_files():
         "docs/reference/ksadk环境变量参考.md",
         "scripts/check_release_version.py",
         "scripts/open_source_audit.py",
+        "scripts/phase2_release_preflight.py",
         "scripts/public_secret_audit.py",
+        "tests/compat/test_phase2_legacy_compat.py",
+        "tests/e2e/fixtures/codex-marketplace/.agents/plugins/marketplace.json",
+        "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-check/SKILL.md",
+        "tests/e2e/test_dsh_managed_toolchain_e2e.py",
+        "tests/fixtures/dsh-node-agent-provider/provider-host.mjs",
+        "tests/plugins/test_dsh_node_provider_e2e.py",
         "tests/events/fixtures/runtime_projection_golden.json",
+        "tests/packaging/test_phase2_release_preflight.py",
+        "tests/studio/e2e/conversation_items_browser_e2e.py",
+        "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
         "tests/studio/e2e/studio_browser_smoke.py",
         "tests/studio/e2e/studio_e2e_support.py",
         "tests/studio/e2e/studio_responsive_smoke.py",

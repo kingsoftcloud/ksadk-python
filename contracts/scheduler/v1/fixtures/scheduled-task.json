@@ -1,0 +1,30 @@
+{
+  "apiVersion": "schedule.ksadk.io/v1",
+  "kind": "ScheduledTask",
+  "schemaVersion": 1,
+  "taskId": "daily-report",
+  "displayName": "工作日销售日报",
+  "target": {
+    "agentId": "sales-report-agent",
+    "tenantId": "local",
+    "agentInstanceId": "agent-local",
+    "agentVersionRef": "build_123",
+    "authorizationRef": "credential://scheduler-local"
+  },
+  "schedule": {
+    "kind": "cron",
+    "timezone": "Asia/Shanghai",
+    "expression": "0 9 * * 1-5",
+    "misfirePolicy": "run_once"
+  },
+  "command": {
+    "commandType": "enqueue",
+    "payload": {"content": "生成昨日运行摘要"}
+  },
+  "enabled": true,
+  "continuity": "new_session",
+  "concurrencyPolicy": "forbid",
+  "nextRunAt": "2026-08-28T01:00:00Z",
+  "createdAt": "2026-08-27T00:00:00Z",
+  "updatedAt": "2026-08-27T00:00:00Z"
+}

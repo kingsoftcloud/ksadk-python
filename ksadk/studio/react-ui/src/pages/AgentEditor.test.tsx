@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { apiFetch } from "../api";
@@ -152,7 +153,7 @@ describe("AgentEditor form", () => {
     ));
   });
 
-  it("normalizes an enabled legacy memory configuration to real writes when saved", async () => {
+  it("shows legacy Memory defaults without silently changing its rollout on save", async () => {
     mockedFetch.mockImplementation(async (input, init) => {
       if (init?.method === "PUT") {
         return {
@@ -209,7 +210,9 @@ describe("AgentEditor form", () => {
       />,
     );
 
-    expect(await screen.findByText("当前旧配置仅召回或观察；保存修改后将正式启用记忆写入。")).toBeVisible();
+    expect(await screen.findByRole("group", { name: "Memory · 跨会话策略" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: /Memory Provider/ })).toHaveValue("local-default");
+    expect(screen.getByRole("combobox", { name: "Memory 写入 Rollout" })).toHaveTextContent("仅观察");
     expect(screen.getByText("运行上下文（高级）")).toBeVisible();
     fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
@@ -217,12 +220,179 @@ describe("AgentEditor form", () => {
     await waitFor(() => {
       const updateCall = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
       const spec = JSON.parse(String(updateCall?.[1]?.body));
-      expect(spec.context.rollout.memoryWrite).toBe("enabled");
+      expect(spec.context.rollout.memoryWrite).toBe("shadow");
       expect(spec.context.ownership).toBe("native");
       expect(spec.context.rollout.contextEngine).toBe("shadow");
-      expect(spec.memory.enabled).toBe(true);
-      expect(spec.memory.recall.enabled).toBe(true);
-      expect(spec.memory.write.mode).toBe("candidate");
+      expect(spec.memory).toEqual({
+        enabled: true,
+        recall: { enabled: true },
+        write: { mode: "candidate" },
+      });
+    });
+  });
+
+  it("edits a reviewed Soul and the complete Memory policy in aligned accessible fields", async () => {
+    const user = userEvent.setup();
+    mockedFetch.mockImplementation(async (_input, init) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => ({
+            metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 4 },
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          draft: {
+            metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 3 },
+            spec: {
+              runtime: { type: "adk", projectPath: ".", entryPoint: "agent.py", agentVariable: "root_agent" },
+              instructions: { system: "你是一个研究助手。", task: "保留任务契约。" },
+              soul: {
+                schemaVersion: "agentkit.soul/v1",
+                identity: "可靠的研究助手",
+                principles: ["先展示证据"],
+                boundaries: ["不编造来源"],
+                tone: "清晰、克制",
+              },
+              bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a"] },
+              context: { rollout: { contextEngine: "shadow", memoryWrite: "shadow" } },
+              memory: {
+                enabled: true,
+                providerRef: "memory://team",
+                recall: { enabled: true, maxTokens: 900, topK: 6, minScore: 0.55 },
+                write: { mode: "candidate", flushBeforeCompaction: true },
+              },
+            },
+          },
+          soulProjection: {
+            present: true,
+            source: "AgentSpec.soul",
+            sourceRevision: 3,
+            digest: "sha256:abc123",
+            compileTarget: "resolved-agent-spec.instructions.system",
+            compileOrder: "before-instructions.system",
+          },
+        }),
+      } as Response;
+    });
+
+    render(
+      <AgentEditor
+        agentId="agentkit-a1b2c3d4"
+        catalog={[{
+          resourceId: "model-a",
+          kind: "model",
+          name: "model-a",
+          displayName: "Model A",
+          version: "1",
+          status: "ready",
+          contract: { model: "model-a" },
+        }]}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    const soulGroup = await screen.findByRole("group", { name: "Soul · 稳定人格" });
+    expect(soulGroup).toBeVisible();
+    expect(screen.getByRole("textbox", { name: /身份定义/ })).toHaveValue("可靠的研究助手");
+    expect(screen.getByRole("textbox", { name: /原则/ })).toHaveValue("先展示证据");
+    expect(screen.getByRole("textbox", { name: /边界/ })).toHaveValue("不编造来源");
+    expect(screen.getByRole("status", { name: "Soul 编译来源" })).toHaveTextContent("sha256:abc123");
+    expect(soulGroup.querySelector(".soul-list-grid")).toHaveClass("form-grid", "two-columns");
+
+    await user.clear(screen.getByRole("textbox", { name: /身份定义/ }));
+    await user.type(screen.getByRole("textbox", { name: /身份定义/ }), "审慎的发布助手");
+    await user.clear(screen.getByRole("textbox", { name: /原则/ }));
+    await user.type(screen.getByRole("textbox", { name: /原则/ }), "先展示证据\n再给出建议");
+    expect(screen.getByRole("status", { name: "Soul 编译来源" })).toHaveTextContent("保存后重新计算");
+
+    await user.click(screen.getByRole("button", { name: "运行策略" }));
+    const memoryGroup = screen.getByRole("group", { name: "Memory · 跨会话策略" });
+    expect(memoryGroup).toBeVisible();
+    expect(memoryGroup.querySelector(".memory-policy-grid")).toHaveClass("form-grid", "two-columns");
+    expect(screen.getByRole("spinbutton", { name: /召回 Token 上限/ })).toHaveValue(900);
+    expect(screen.getByRole("spinbutton", { name: /召回条数/ })).toHaveValue(6);
+    expect(screen.getByRole("spinbutton", { name: /最小相关度/ })).toHaveValue(0.55);
+
+    const provider = screen.getByRole("textbox", { name: /Memory Provider/ });
+    await user.clear(provider);
+    await user.type(provider, "memory://reviewed");
+    await user.click(screen.getByRole("combobox", { name: "Memory 写入模式" }));
+    await user.click(await screen.findByRole("option", { name: "仅显式写入" }));
+    await user.click(screen.getByRole("combobox", { name: "Memory 写入 Rollout" }));
+    await user.click(await screen.findByRole("option", { name: "正式启用" }));
+
+    await user.click(screen.getByRole("button", { name: "基础与 Prompt" }));
+    await user.click(screen.getByRole("checkbox", { name: /保存后/ }));
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => {
+      const updateCall = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+      const spec = JSON.parse(String(updateCall?.[1]?.body));
+      expect(spec.soul).toEqual({
+        schemaVersion: "agentkit.soul/v1",
+        identity: "审慎的发布助手",
+        principles: ["先展示证据", "再给出建议"],
+        boundaries: ["不编造来源"],
+        tone: "清晰、克制",
+      });
+      expect(spec.memory).toMatchObject({
+        enabled: true,
+        providerRef: "memory://reviewed",
+        recall: { enabled: true, maxTokens: 900, topK: 6, minScore: 0.55 },
+        write: { mode: "explicit_only", flushBeforeCompaction: true },
+      });
+      expect(spec.context.rollout.memoryWrite).toBe("enabled");
+    });
+  });
+
+  it("shows the Codex Soul in the ManagedRuntime manifest and base_instructions target", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    mockedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        draft: {
+          metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 3 },
+          spec: {
+            runtime: { type: "codex", version: "0.144.4" },
+            instructions: { system: "Answer with evidence.", task: "" },
+            soul: {
+              schemaVersion: "agentkit.soul/v1",
+              identity: "A careful release reviewer.",
+              principles: ["Prefer evidence"],
+              boundaries: ["Never expose credentials"],
+              tone: "Concise and direct.",
+            },
+            bindings: {},
+          },
+        },
+        soulProjection: {
+          present: true,
+          source: "AgentSpec.soul",
+          sourceRevision: 3,
+          digest,
+          compileTarget: "managed-runtime.base_instructions",
+          compileOrder: "before-instructions.system",
+        },
+      }),
+    } as Response);
+
+    render(<AgentEditor agentId="agentkit-a1b2c3d4" catalog={[]} onSaved={vi.fn()} />);
+
+    expect(await screen.findByRole("status", { name: "Soul 编译来源" })).toHaveTextContent(
+      "managed-runtime.base_instructions",
+    );
+    expect(screen.getByText(/ManagedRuntime 启动时会把 Soul 确定性编译到 base_instructions/)).toBeVisible();
+    const manifest = screen.getByRole("region", { name: "agentkit.yaml 源码" });
+    await waitFor(() => {
+      expect(manifest).toHaveTextContent("soul:");
+      expect(manifest).toHaveTextContent("identity:");
+      expect(manifest).toHaveTextContent("A careful release reviewer.");
+      expect(manifest).toHaveTextContent("soul_source: AgentSpec.soul");
+      expect(manifest).toHaveTextContent(`soul_digest: ${digest}`);
     });
   });
 
@@ -496,6 +666,73 @@ describe("AgentEditor form", () => {
       const spec = JSON.parse(String(updateCall?.[1]?.body));
       expect(spec.bindings.modelProfileId).toBeNull();
       expect(spec.bindings.modelProfileIds).toEqual([]);
+    });
+  });
+
+  it("edits an installed external AgentProvider reference and secret-safe config", async () => {
+    mockedFetch.mockImplementation(async (_input, init) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => ({ metadata: { id: "agentkit-provider", name: "Provider Agent", revision: 4 } }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          draft: {
+            metadata: { id: "agentkit-provider", name: "Provider Agent", revision: 3 },
+            spec: {
+              runtime: {
+                type: "plugin",
+                providerRef: "plugin://io.example.provider@1.2.3",
+                providerConfig: { apiKeyRef: "env://OLD_PROVIDER_KEY" },
+              },
+              instructions: { system: "Use the provider.", task: "" },
+              bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a"] },
+              security: { toolPolicy: "deny-by-default", allowedPermissions: [] },
+            },
+          },
+        }),
+      } as Response;
+    });
+
+    render(<AgentEditor
+      agentId="agentkit-provider"
+      catalog={[{ resourceId: "model-a", kind: "model", name: "model-a", displayName: "Model A", version: "1", status: "ready", contract: { model: "model-a" } }]}
+      providers={[{
+        providerRef: "plugin://io.example.provider@1.2.3",
+        pluginId: "io.example.provider",
+        resolvedVersion: "1.2.3",
+        displayName: "Example Provider",
+        state: "enabled",
+        compatible: true,
+        selectable: true,
+        reason: null,
+        permissions: ["process:host-user"],
+        isolation: "process",
+        configSchemaDeclared: false,
+        secretFields: ["apiKeyRef"],
+      }]}
+      onSaved={vi.fn()}
+    />);
+
+    expect(await screen.findByRole("combobox", { name: "AgentProvider" })).toHaveTextContent("Example Provider");
+    const config = screen.getByRole("textbox", { name: /Provider 配置/ });
+    fireEvent.change(config, { target: { value: '{"apiKeyRef":"env://NEW_PROVIDER_KEY","mode":"strict"}' } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /确认 Provider 请求的权限/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => {
+      const updateCall = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+      const spec = JSON.parse(String(updateCall?.[1]?.body));
+      expect(spec.runtime).toEqual({
+        type: "plugin",
+        providerRef: "plugin://io.example.provider@1.2.3",
+        providerConfig: { apiKeyRef: "env://NEW_PROVIDER_KEY", mode: "strict" },
+      });
+      expect(spec.security.allowedPermissions).toEqual(["process:host-user"]);
     });
   });
 });

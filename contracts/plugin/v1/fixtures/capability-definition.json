@@ -1,0 +1,15 @@
+{
+  "apiVersion": "capability.ksadk.io/v1",
+  "kind": "CapabilityDefinition",
+  "metadata": {
+    "id": "agent.provider",
+    "version": "1.0.0"
+  },
+  "spec": {
+    "definition": "agent.provider/v1",
+    "slot": "agent.execution",
+    "multiplicity": "unique",
+    "ownerRequired": true,
+    "configSchema": "schemas/agent-provider-config.json"
+  }
+}

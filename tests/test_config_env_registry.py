@@ -25,7 +25,14 @@ def test_env_registry_has_unique_sorted_names():
 def test_env_registry_covers_ksadk_env_vars_in_source():
     registry_names = {item.name for item in ENV_VAR_REGISTRY}
 
-    assert _source_ksadk_env_names() <= registry_names
+    # These are protocol/provider identifiers, not environment-variable inputs.
+    # The broad source scan intentionally finds their constant names too, so keep
+    # the exception explicit rather than documenting fictional configuration.
+    non_environment_symbols = {
+        "KSADK_DSH_CORDIS_MODULE",
+        "KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID",
+    }
+    assert _source_ksadk_env_names() - non_environment_symbols <= registry_names
 
 
 def test_env_registry_docs_cover_registered_names():
@@ -54,7 +61,7 @@ def test_internal_env_registry_items_do_not_expand_the_public_reference():
 def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "0.3.2"
+    assert specs["KSADK_WEB_VERSION"].default == "0.3.3"
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

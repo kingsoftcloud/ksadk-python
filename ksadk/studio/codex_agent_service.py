@@ -377,9 +377,17 @@ class CodexAgentService:
     def detail(self, agent_id: str | None = None) -> dict:
         snapshot = self.studio.codex_manifests.load(agent_id)
         _mcp_bindings, unresolved_mcp = self._mcp_bindings(snapshot.manifest)
+        builds_view: list[dict] = []
+        for item in self._builds(snapshot.manifest.name):
+            view = self.build_view(item)
+            try:
+                view["isCurrent"] = self.studio.codex_builder.is_current(item)
+            except Exception:
+                view["isCurrent"] = True
+            builds_view.append(view)
         return {
             "draft": self._project(snapshot),
-            "builds": [self.build_view(item) for item in self._builds(snapshot.manifest.name)],
+            "builds": builds_view,
             "validation": {"valid": True, "level": "build", "diagnostics": []},
             "manifestSha256": snapshot.manifest_sha256,
             "sourcePath": self.studio.workspace.relative(snapshot.source_path),
@@ -505,6 +513,7 @@ class CodexAgentService:
                 system=manifest.prompt,
                 task=manifest.task_prompt or "",
             )
+            draft.spec.soul = manifest.soul
             draft.spec.bindings.model_profile_id = bindings[0]
             draft.spec.bindings.model_profile_ids = bindings[1]
             draft.spec.bindings.skills = skill_bindings
@@ -527,6 +536,7 @@ class CodexAgentService:
                     system=manifest.prompt,
                     task=manifest.task_prompt or "",
                 ),
+                soul=manifest.soul,
                 bindings=AgentBindings(
                     model_profile_id=default_profile,
                     model_profile_ids=profiles,
@@ -576,6 +586,7 @@ class CodexAgentService:
             models=models if len(models) > 1 else None,
             prompt=prompt,
             task_prompt=task_prompt,
+            soul=spec.soul,
             skills=skill_ids or None,
             mcp_servers=mcp_servers or None,
             sandbox=spec.execution.sandbox,

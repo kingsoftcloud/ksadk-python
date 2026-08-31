@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SquarePen, Package, MessagesSquare, Check, ShieldCheck, CloudUpload } from "lucide-react";
+import { SquarePen, Package, MessagesSquare, Check, ShieldCheck, CloudUpload, CalendarClock } from "lucide-react";
 import { type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Drawer } from "../components/Drawer";
@@ -7,6 +7,7 @@ import { MoreActionsMenu } from "../components/MoreActionsMenu";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
 import { CodeViewer } from "../components/ui/CodeViewer";
+import { AutomationsPage } from "./AutomationsPage";
 import {
   deploymentCreateRoute,
   deploymentDetailRoute,
@@ -135,11 +136,15 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
   const [invocationOpen, setInvocationOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const [scheduleCount, setScheduleCount] = useState<number | null>(null);
+  const [section, setSection] = useState<"overview" | "automations">("overview");
 
   useEffect(() => {
+    setSection("overview");
     apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`).then(r => r.json()).then(setDetail).catch(() => setDetail(null));
     apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()).then(d => setCatalog(d.items || [])).catch(() => {});
     apiFetch("/api/v1/deployments").then(r => r.json()).then(d => setDeployments(d.items || [])).catch(() => {});
+    apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/schedules`).then(r => r.ok ? r.json() : null).then(d => setScheduleCount(d?.items?.length ?? 0)).catch(() => setScheduleCount(null));
   }, [agentId]);
 
   async function doDelete() {
@@ -221,6 +226,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
               { label: "编辑", onSelect: () => onEdit(agentId) },
               { label: "校验并构建", onSelect: onBuild },
               { label: latestDeployment ? "查看云端部署" : "部署到云端", onSelect: openCloudDeployment, disabled: !latestBuild },
+              { label: "管理定时任务", onSelect: () => setSection("automations") },
               { label: "调用方式", onSelect: () => setInvocationOpen(true) },
               { label: "删除 Agent", danger: true, onSelect: () => setConfirmDelete(true) },
             ]}
@@ -228,7 +234,11 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
       </PageHeaderActions>
 
       {error && <div className="form-error" style={{ marginBottom: 16 }}>{error}</div>}
-      <div className="detail-layout">
+      <div className="automation-tabs agent-detail-tabs" role="tablist" aria-label="Agent 详情">
+        <button type="button" role="tab" aria-selected={section === "overview"} className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}>概览</button>
+        <button type="button" role="tab" aria-selected={section === "automations"} className={section === "automations" ? "active" : ""} onClick={() => setSection("automations")}>自动化</button>
+      </div>
+      {section === "overview" && <div className="detail-layout">
         <div className="detail-main">
           <section className="detail-section block">
             <div className="section-heading"><h2>角色与任务</h2></div>
@@ -252,6 +262,19 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
                 <button className="button secondary small" type="button" onClick={() => onEdit(agentId)}>绑定能力</button>
               </div>
             )}
+          </section>
+          <section className="detail-section block">
+            <div className="section-heading">
+              <CalendarClock size={18} />
+              <div className="section-heading-copy">
+                <h2>自动化</h2>
+                <p>定时任务仅在本地 Studio 与该 Agent 的 Kernel Runtime 精确绑定时执行。</p>
+              </div>
+            </div>
+            <div className="capability-empty-state">
+              <span>{scheduleCount === null ? "正在读取定时任务…" : scheduleCount ? `已配置 ${scheduleCount} 个定时任务` : "还没有定时任务"}</span>
+              <button className="button secondary small" type="button" onClick={() => setSection("automations")}>管理定时任务</button>
+            </div>
           </section>
         </div>
         <aside className="detail-aside block">
@@ -287,7 +310,17 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
             </div>
           )}
         </aside>
-      </div>
+      </div>}
+      {section === "automations" && (
+        <AutomationsPage
+          currentAgentId={agentId}
+          agents={[{ metadata: { id: agentId, name: draft.metadata.name } }]}
+          onSelectAgent={() => {}}
+          scopedAgentId={agentId}
+          embedded
+          onTaskCountChanged={setScheduleCount}
+        />
+      )}
 
       {confirmDelete && (
         <ConfirmDialog

@@ -20,6 +20,7 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.resource_catalog import LocalResourceCatalog
+from ksadk.studio.soul import compose_system_instruction
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
 
@@ -72,7 +73,11 @@ class AgentCompiler:
         resolved = ResolvedAgentSpec(
             agent_id=draft.metadata.id,
             source_revision=draft.metadata.revision,
-            instructions=materialized.spec.instructions,
+            instructions=compose_system_instruction(
+                materialized.spec.instructions,
+                materialized.spec.soul,
+            ),
+            soul=materialized.spec.soul,
             model=self.resolver.resolve_model(materialized.spec.model),
             capabilities=ResolvedCapabilities(
                 skills=skills,

@@ -1750,6 +1750,15 @@ details.build-log,
   }
 }
 
+/* At the narrowest desktop width the expanded product rail leaves a 538px
+   quick-create stage. Keep every action visible while reclaiming the excess
+   horizontal padding that would otherwise widen the document by seven pixels. */
+@media (min-width: 1024px) and (max-width: 1100px) {
+  .create-shell .wizard-actions {
+    padding-inline: 16px;
+  }
+}
+
 /* Keep the desktop console usable under moderate browser zoom. True narrow
    screens receive a single-pane product shell in the final breakpoint below. */
 @media (max-width: 1023px) {

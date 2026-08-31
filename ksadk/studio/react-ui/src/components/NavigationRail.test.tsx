@@ -120,7 +120,8 @@ describe("NavigationRail", () => {
 
     expect(screen.getByRole("button", { name: "工程资源" }).querySelector("svg")).toHaveClass("lucide-boxes");
     expect(screen.getByRole("button", { name: "运行资源" }).querySelector("svg")).toHaveClass("lucide-server-cog");
-    expect(screen.getByRole("button", { name: "任务编排" }).querySelector("svg")).toHaveClass("lucide-workflow");
+    expect(screen.getByRole("button", { name: "插件" }).querySelector("svg")).toHaveClass("lucide-plug");
+    expect(screen.getByRole("button", { name: "自动化" }).querySelector("svg")).toHaveClass("lucide-clock-3");
     expect(screen.getByRole("button", { name: "可观测" }).querySelector("svg")).toHaveClass("lucide-chart-spline");
     expect(screen.getByRole("button", { name: "评测" }).querySelector("svg")).toHaveClass("lucide-clipboard-check");
   });

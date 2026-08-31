@@ -30,7 +30,15 @@ def materialize_generated_runtime_source(
     """
 
     runtime = draft.spec.runtime
-    if runtime is None or runtime.type == "codex" or not runtime.project_path:
+    # Only the two legacy Python-framework runtimes own generated source.
+    # Harness and externally installed AgentProviders are bundle compositions;
+    # treating either as the ``else`` branch here would silently generate a
+    # LangGraph project and change the selected provider's execution model.
+    if (
+        runtime is None
+        or runtime.type not in {"adk", "langgraph"}
+        or not runtime.project_path
+    ):
         return
     root = workspace.resolve(runtime.project_path)
     marker = root / _GENERATED_MARKER

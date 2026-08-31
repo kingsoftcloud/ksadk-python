@@ -351,6 +351,14 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
   `make build` / `make build-wheel` automatically run `sync-ksadk-web-static`; no manual sync needed.
 </Callout>
 
+## DSH Plugin Bridge
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_DSH_HOME` | Isolated managed DSH Profile directory; defaults to `.agentkit/dsh-home` in the workspace. Studio never mutates an explicitly configured directory. |
+| `KSADK_DSH_PROFILE` | DSH Profile name to use; defaults to `studio`. |
+| `KSADK_DSH_BIN` | Optional absolute DSH command path for fixed-toolchain core development or CI verification; version mismatches fail closed. |
+
 ## Observability
 
 | Variable | Purpose |
