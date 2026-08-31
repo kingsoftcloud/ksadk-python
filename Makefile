@@ -373,7 +373,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
+PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -464,7 +464,8 @@ public-audit: public-secret-audit
 docs-site-build:
 	@echo "==> docs-site (Fumadocs) build"
 	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
-		cd docs-site && pnpm install --frozen-lockfile && NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static; \
+		cd docs-site && pnpm install --frozen-lockfile && NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static && \
+		cd .. && python3 scripts/audit_docs_site_output.py --out docs-site/out --base-path /ksadk-python; \
 	else \
 		echo "⚠️  docs-site 不存在，跳过 Fumadocs build"; \
 	fi
