@@ -52,7 +52,8 @@ DEFAULT_SCENE_ID = "_sys_general"
 # "记忆不存在"识别模式（方案 §17.4：准确错误码待真实 fixture 固化，
 # 首版按保守中英文模式匹配，fixture 到位后收敛为精确匹配）。
 _NOT_EXIST_RE = re.compile(
-    r"not[ _]?exist|does not exist|memory.*不存在|记忆不存在|记忆已被删除|resourcenotfound|notfound",
+    r"not[ _]?exist|does not exist|memory.*不存在|记忆不存在|"
+    r"记忆已被删除|resourcenotfound|notfound",
     re.IGNORECASE,
 )
 
@@ -556,7 +557,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 message="Session 状态未知",
             )
         state = item.get("State")
-        state_int = int(state) if isinstance(state, (int, float, str)) and str(state).lstrip("-").isdigit() else None
+        numeric = isinstance(state, (int, float, str)) and str(state).lstrip("-").isdigit()
+        state_int = int(state) if numeric else None
         status = map_session_state(state_int)
         message = {
             "queued": "排队中",
