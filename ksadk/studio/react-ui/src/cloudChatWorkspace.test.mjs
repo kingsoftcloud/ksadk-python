@@ -39,9 +39,12 @@ test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent a
   assert.match(source, /delta\.tool_calls/);
   assert.match(source, /response\.output_text\.delta/);
   assert.match(source, /directStreamActiveRef/);
-  // A replay event is suppressed only when it has the same stable item id as
-  // a directly received event.  Distinct tool/reasoning items must survive.
-  assert.match(source, /item\.kind === "message" \|\| directItemIdsSeenRef/);
+  // The foreground stream owns assistant text. SessionEvent only contributes
+  // non-message recovery items, and cross-source duplicates are suppressed by
+  // stable event identity rather than broad kind/text matching.
+  assert.match(source, /if \(item\.kind === "message"\) return/);
+  assert.match(source, /projectedStreamEventIdsRef/);
+  assert.match(source, /const alreadyProjected = Boolean\(eventIdentity/);
   assert.doesNotMatch(source, /directKindsSeenRef/);
 });
 

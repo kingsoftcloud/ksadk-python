@@ -55,7 +55,7 @@ Phase 2 正在把 KsADK 的可扩展能力收敛为受控插件体系，同时�
 - 本地目录或 `.tgz` 会先按 SHA-256 固化为不可变安装源；投影前发现来源漂移会 fail closed，升级失败会恢复旧 manifest、lock、状态与仍可执行的旧包。一个真实仓外 DSH AgentProvider 已通过同一 Profile 的安装、连续两轮、停用、失败升级回滚、重新启用和卸载 E2E。
 - Codex 官方插件继续由 Codex App Server 管理，KsADK 不复制其实现或接管宿主权限。DSH Codex Bundle/child Provider、Claude Code 以及任意未经 conformance 的第三方 Provider 仍不属于已完成能力。
 - Studio Scheduler Lite 已覆盖本地 once、interval、cron、时区、立即运行和历史，并同时进入全局自动化页与 Agent 详情页；云端 24×7 调度留在后续端云阶段。
-- `ConversationSurface`、`ConversationInput`、`ConversationItem`、核心 Renderer 与 A2UI bridge 统一 Studio、Hosted UI 和自定义前端的输入输出边界；共享 Web 包和浏览器交互闭环仍须通过发布门禁。
+- `ConversationSurface`、`ConversationInput`、`ConversationItem`、核心 Renderer 与 A2UI bridge 统一 Studio、Hosted UI 和自定义前端的输入输出边界。`ksadk-web@0.3.3` 的源码/浏览器门禁以及真实部署的新、历史 Agent 两轮会话已经通过；正式版仍须从公开 npm 制品重建并完成最终公开审计。
 
 当前内容是未发布预览。能力边界、命令和兼容策略见[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)和 [0.8.3 CHANGELOG 草案](CHANGELOG.md#083---unreleased)。
 
