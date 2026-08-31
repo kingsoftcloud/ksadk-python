@@ -241,7 +241,7 @@ def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     assert "padding: 0" in assistant
     assert "ChatWorkspace" in source
     assert 'apiFetch("/v1/responses"' in source
-    assert '"@kingsoftcloud/ksadk-web": "0.3.3"' in package
+    assert '"@kingsoftcloud/ksadk-web": "0.3.4"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
     # 强制重定向到创建页。

@@ -838,7 +838,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.3",
+        "0.3.4",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",
