@@ -382,6 +382,34 @@ def test_overflow_probe_builds_payload_beyond_large_declared_window() -> None:
     assert observed_chars > 4 * 1024 * 1024
 
 
+def test_overflow_probe_blocks_before_allocating_payload_beyond_safety_budget() -> None:
+    requests = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(400, text="should not be called")
+
+    probe = OpenAICompatibleOverflowProbe(
+        base_url="http://gateway.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+        max_prompt_chars=1024,
+    )
+    result = asyncio.run(
+        probe.probe_overflow(model="model-a", context_window=1024 * 1024)
+    )
+
+    assert requests == 0
+    assert result == {
+        "passed": False,
+        "overflow_detected": False,
+        "failure_kind": "probe_safety_limit",
+        "status_code": None,
+        "detail": "overflow probe requires 4210688 chars, exceeding safety limit 1024",
+    }
+
+
 def test_overflow_probe_fails_when_provider_accepts_oversized_prompt() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})

@@ -253,6 +253,7 @@ class OpenAICompatibleOverflowProbe:
     """
 
     _FILLER = "上下文溢出探针填充段落 OVERFLOW_MATRIX_PADDING "
+    _DEFAULT_MAX_PROMPT_CHARS = 8 * 1024 * 1024
 
     def __init__(
         self,
@@ -262,16 +263,20 @@ class OpenAICompatibleOverflowProbe:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_seconds: float = 120.0,
         fallback_context_tokens: int = 200_000,
+        max_prompt_chars: int = _DEFAULT_MAX_PROMPT_CHARS,
     ) -> None:
         if not base_url.strip():
             raise ValueError("OPENAI_BASE_URL is required")
         if not api_key.strip():
             raise ValueError("OPENAI_API_KEY is required")
+        if max_prompt_chars < 1:
+            raise ValueError("max_prompt_chars must be positive")
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._transport = transport
         self._timeout_seconds = timeout_seconds
         self._fallback_context_tokens = fallback_context_tokens
+        self._max_prompt_chars = max_prompt_chars
 
     async def probe_overflow(
         self, *, model: str, context_window: int | None
@@ -281,14 +286,30 @@ class OpenAICompatibleOverflowProbe:
         # 2 chars/token 可能仍被接受；使用 4 chars/token 并增加安全余量，
         # 让“Provider 接受过长输入”不再是探针自身的假阴性。
         target_chars = int(tokens * 4) + 16_384
-        filler_chars = len(self._FILLER)
-        prompt = self._FILLER * (target_chars // filler_chars + 1)
+        # context_window 来自 Provider 元数据，不能在未设上限时直接用于
+        # 字符串分配。异常或恶意元数据应让兼容性探针明确失败，而不是
+        # 触发进程 OOM，也不能被误判为 Provider 兼容。
+        if target_chars > self._max_prompt_chars:
+            return {
+                "passed": False,
+                "overflow_detected": False,
+                "failure_kind": "probe_safety_limit",
+                "status_code": None,
+                "detail": (
+                    f"overflow probe requires {target_chars} chars, "
+                    f"exceeding safety limit {self._max_prompt_chars}"
+                ),
+            }
+        suffix = "\n只回复 OK。"
+        filler_budget = target_chars - len(suffix)
+        repeats, remainder = divmod(filler_budget, len(self._FILLER))
+        prompt = self._FILLER * repeats + self._FILLER[:remainder] + suffix
         payload = {
             "model": model,
             "messages": [
                 {
                     "role": "user",
-                    "content": prompt + "\n只回复 OK。",
+                    "content": prompt,
                 }
             ],
             "max_tokens": 8,
