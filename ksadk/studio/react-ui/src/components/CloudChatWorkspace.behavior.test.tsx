@@ -77,6 +77,52 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(screen.getByText("新会话内容")).toBeInTheDocument();
   });
 
+  it("ignores an older response after returning to the same cloud session", async () => {
+    let resolveFirstOldMessages!: (response: Response) => void;
+    const firstOldMessages = new Promise<Response>((resolve) => {
+      resolveFirstOldMessages = resolve;
+    });
+    let oldMessageReads = 0;
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === `${base}/sessions`) {
+        return jsonResponse({ sessions: [
+          { session_id: "sess-old", title: "旧会话" },
+          { session_id: "sess-new", title: "新会话" },
+        ] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path === `${base}/sessions/sess-old/messages`) {
+        oldMessageReads += 1;
+        if (oldMessageReads === 1) return firstOldMessages;
+        return jsonResponse({ messages: [{
+          message_id: "fresh-old-message",
+          role: "assistant",
+          content: "回到旧会话后的最新内容",
+        }] });
+      }
+      if (path === `${base}/sessions/sess-new/messages`) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000")) return jsonResponse({ events: [] });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+    await screen.findByText("旧会话");
+    await userEvent.click(screen.getByRole("button", { name: /^新会话$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^旧会话$/ }));
+    expect(await screen.findByText("回到旧会话后的最新内容")).toBeInTheDocument();
+
+    resolveFirstOldMessages(jsonResponse({ messages: [{
+      message_id: "stale-old-message",
+      role: "assistant",
+      content: "过期响应不应覆盖新内容",
+    }] }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("过期响应不应覆盖新内容")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("回到旧会话后的最新内容")).toBeInTheDocument();
+  });
+
   it("keeps terminal sessions quiet and marks only active work with a subtle ring", async () => {
     apiFetch.mockImplementation(async (path: string) => {
       if (path === `${base}/sessions`) {
@@ -934,8 +980,12 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }] });
       if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({
         events: [
-          item(1, "userMessage", "user-1", "最新用户问题"),
-          item(2, "agentMessage", "assistant-1", "Canonical 最终回答"),
+          // Identity, not role + text, is the deduplication contract. Two
+          // identical user items are distinct turns and must both survive a
+          // cloud-history reconstruction.
+          item(1, "userMessage", "user-1", "重复但独立的用户输入"),
+          item(2, "userMessage", "user-2", "重复但独立的用户输入"),
+          item(3, "agentMessage", "assistant-1", "Canonical 最终回答"),
         ],
       });
       throw new Error(`unexpected request: ${path}`);
@@ -943,7 +993,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
 
     render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
 
-    expect(await screen.findByText("最新用户问题")).toBeInTheDocument();
+    expect(await screen.findAllByText("重复但独立的用户输入")).toHaveLength(2);
     expect(screen.getByText("Canonical 最终回答")).toBeInTheDocument();
     expect(screen.queryByText("过时的消息投影")).not.toBeInTheDocument();
   });

@@ -983,6 +983,11 @@ export function CloudChatWorkspace({
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
   const currentSessionIdRef = useRef("");
+  // A session id alone is not a sufficient request ownership key: the user
+  // can select A, select B, then return to A before A's first history read
+  // resolves.  Increment this generation at every selection boundary so an
+  // older A response cannot overwrite a newer A projection.
+  const sessionReadGenerationRef = useRef(0);
   const waitingForResponseRef = useRef(false);
   const assistantIdsBeforeSendRef = useRef<Set<string>>(new Set());
   const awaitingRunIdRef = useRef("");
@@ -1005,6 +1010,14 @@ export function CloudChatWorkspace({
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
     [deploymentId],
   );
+
+  const selectSession = useCallback((sessionId: string) => {
+    if (currentSessionIdRef.current !== sessionId) {
+      sessionReadGenerationRef.current += 1;
+    }
+    currentSessionIdRef.current = sessionId;
+    setCurrentSessionId(sessionId);
+  }, []);
 
   const settleCloudRun = useCallback((error = "", title = "云端运行未完成") => {
     const wasWaiting = waitingForResponseRef.current;
@@ -1037,16 +1050,17 @@ export function CloudChatWorkspace({
         selected.error || "这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。",
       );
     }
-    setCurrentSessionId(previous => {
-      const next = rows.some(item => item.id === previous)
-        ? previous
-        : selectFallback ? rows[0]?.id || "" : "";
-      currentSessionIdRef.current = next;
-      return next;
-    });
-  }, [base, settleCloudRun]);
+    const selectedId = currentSessionIdRef.current;
+    const next = rows.some(item => item.id === selectedId)
+      ? selectedId
+      : selectFallback ? rows[0]?.id || "" : "";
+    selectSession(next);
+  }, [base, selectSession, settleCloudRun]);
 
-  const refreshMessages = useCallback(async (sessionId: string) => {
+  const refreshMessages = useCallback(async (
+    sessionId: string,
+    readGeneration = sessionReadGenerationRef.current,
+  ) => {
     if (!sessionId) {
       setMessages([]);
       return;
@@ -1054,7 +1068,10 @@ export function CloudChatWorkspace({
     const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`);
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json() as { messages?: unknown[] };
-    if (currentSessionIdRef.current !== sessionId) return;
+    if (
+      currentSessionIdRef.current !== sessionId
+      || sessionReadGenerationRef.current !== readGeneration
+    ) return;
     const rows = (payload.messages || [])
       .map(normalizeMessage)
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
@@ -1091,7 +1108,10 @@ export function CloudChatWorkspace({
     }
   }, [base, settleCloudRun]);
 
-  const refreshInteractions = useCallback(async (sessionId: string) => {
+  const refreshInteractions = useCallback(async (
+    sessionId: string,
+    readGeneration = sessionReadGenerationRef.current,
+  ) => {
     if (!sessionId) {
       setInteractions([]);
       return;
@@ -1101,7 +1121,10 @@ export function CloudChatWorkspace({
     // Read the complete supported history window so a reload cannot discard
     // the reasoning/tool items that precede a long assistant response.
     const events = await loadCompleteCloudSessionEvents(base, sessionId);
-    if (currentSessionIdRef.current !== sessionId) return;
+    if (
+      currentSessionIdRef.current !== sessionId
+      || sessionReadGenerationRef.current !== readGeneration
+    ) return;
     durableEventsRef.current = events;
     const canonicalHistory = canonicalCloudHistory(
       fallbackMessagesRef.current,
@@ -1178,6 +1201,7 @@ export function CloudChatWorkspace({
     setSessions([]);
     setCurrentSessionId("");
     currentSessionIdRef.current = "";
+    sessionReadGenerationRef.current += 1;
     setMessages([]);
     fallbackMessagesRef.current = [];
     durableEventsRef.current = [];
@@ -1259,12 +1283,13 @@ export function CloudChatWorkspace({
   }, [reasoningEffort, selectedCloudModel]);
 
   useEffect(() => {
+    const readGeneration = sessionReadGenerationRef.current;
     fallbackMessagesRef.current = [];
     durableEventsRef.current = [];
-    refreshMessages(currentSessionId).catch(error => {
+    refreshMessages(currentSessionId, readGeneration).catch(error => {
       showToast("云端消息加载失败", error.message, "error");
     });
-    refreshInteractions(currentSessionId).catch(error => {
+    refreshInteractions(currentSessionId, readGeneration).catch(error => {
       showToast("云端交互加载失败", error.message, "error");
     });
   }, [currentSessionId, refreshInteractions, refreshMessages]);
@@ -1282,8 +1307,7 @@ export function CloudChatWorkspace({
     const session = normalizeSession(raw);
     if (!session) throw new Error("云端未返回有效会话标识");
     setSessions(previous => [session, ...previous.filter(item => item.id !== session.id)]);
-    currentSessionIdRef.current = session.id;
-    setCurrentSessionId(session.id);
+    selectSession(session.id);
     setMessages([]);
     fallbackMessagesRef.current = [];
     durableEventsRef.current = [];
@@ -1523,8 +1547,7 @@ export function CloudChatWorkspace({
       if (deletedCurrent) {
         streamAbortRef.current?.abort();
         streamAbortRef.current = null;
-        currentSessionIdRef.current = "";
-        setCurrentSessionId("");
+        selectSession("");
         setMessages([]);
         fallbackMessagesRef.current = [];
         durableEventsRef.current = [];
@@ -1594,8 +1617,7 @@ export function CloudChatWorkspace({
             return (
             <div className={`chat-session-item${session.id === currentSessionId ? " active" : ""}${activity === "running" ? " running" : ""}`} key={session.id} role="listitem">
               <button className="chat-session-main" type="button" onClick={() => {
-                currentSessionIdRef.current = session.id;
-                setCurrentSessionId(session.id);
+                selectSession(session.id);
                 setRunError(session.error);
                 setSessionPanelOpen(false);
               }}>
