@@ -12,9 +12,10 @@ from ksadk.configs import ModelConfig
 from ksadk.runtime import RuntimeLaunchContext
 from ksadk.studio.codex_builder import CodexBuildRepository
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
-from ksadk.studio.contracts import ModelSpec
+from ksadk.studio.contracts import Instructions, ModelSpec
 from ksadk.studio.errors import StudioError
 from ksadk.studio.run_service import StudioRunSpec
+from ksadk.studio.soul import compose_system_instruction
 from ksadk.studio.workspace import Workspace
 from ksadk.tools.gateway import normalize_tool_approval_mode
 
@@ -87,18 +88,22 @@ class CodexRunSpecResolver:
         if runtime_env:
             launch_config["env"] = runtime_env
         agent_task = str(manifest.task_prompt or "").strip()
+        agent_system = compose_system_instruction(
+            Instructions(system=manifest.prompt),
+            manifest.soul,
+        ).system
         # PCM 策略从不可变 Manifest 读取（方案 §5.1：Build 锁定后 sidecar 修改不影响旧 Build）
         # manifest.context/memory 由 _manifest() 从 AgentSpec 写入，随 Build 进入 Artifact
         resolved_context = manifest.context
         resolved_memory = manifest.memory
-        base_instructions = manifest.prompt
+        base_instructions = agent_system
         if agent_task:
-            base_instructions = f"{manifest.prompt}\n\n{agent_task}"
+            base_instructions = f"{agent_system}\n\n{agent_task}"
         request_config: dict[str, Any] = {
             # Codex 原生只接收 base_instructions，因此运行前合并；PCM 证据仍使用下面
             # 两个独立来源生成 agent_identity / agent_policy 的分段 hash。
             "base_instructions": base_instructions,
-            "agent_system": manifest.prompt,
+            "agent_system": agent_system,
             "agent_task": agent_task,
             "cwd": str(project_dir),
             "skills": skills,
@@ -136,6 +141,13 @@ class CodexRunSpecResolver:
         }
         if approval_profile:
             request_config["tool_approval_mode"] = approval_profile
+        if manifest.soul is not None:
+            request_config.update(
+                {
+                    "soul_source": manifest.soul_source,
+                    "soul_digest": manifest.soul_digest,
+                }
+            )
         return StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type="codex",

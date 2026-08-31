@@ -8,7 +8,9 @@ import { DeploymentsPage } from "./pages/DeploymentsPage";
 import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
+import { PluginsPage } from "./pages/PluginsPage";
 import { OrchestrationPage } from "./pages/OrchestrationPage";
+import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { ChannelsPage } from "./pages/ChannelsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
@@ -34,6 +36,14 @@ import {
   type NavigationView,
 } from "./components/NavigationRail";
 import { Bot, RefreshCw, PanelLeftClose, PanelLeftOpen, PanelRight } from "lucide-react";
+import { DshWorkspaceSurface } from "./dsh-runtime/DshWorkspaceSurface";
+import {
+  STUDIO_DSH_SLOTS,
+  type StudioRouteContribution,
+  useStudioDshContributions,
+} from "./dsh-runtime/studioContributions";
+import { studioDshRuntime } from "./dsh-runtime/studioDshRuntime";
+import { studioDshCompositionHost } from "./dsh-runtime/studioDshCompositionHost";
 
 type View = NavigationView;
 
@@ -49,12 +59,15 @@ const VIEW_TITLE: Record<View, string> = {
   evaluations: "评测",
   channels: "消息渠道",
   "runtime-resources": "运行资源",
+  plugins: "已安装插件",
+  automations: "自动化",
   orchestration: "任务编排",
+  extension: "插件",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
 const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
-const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "orchestration"]);
+const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "automations", "orchestration"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
 
 function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
@@ -79,6 +92,7 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
+  extensionPath: string;
 } {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
@@ -91,17 +105,22 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
+  const extensionPath = parts[0] === "extensions" && parts[1]
+    ? `/extensions/${decodeURIComponent(parts[1])}`
+    : "";
   const view = editingAgentId
     ? "create"
     : detailAgentId
       ? "agent-detail"
-      : VALID_VIEWS.includes(candidate)
+      : extensionPath
+        ? "extension"
+        : VALID_VIEWS.includes(candidate)
         ? candidate
         : "agents";
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId };
+  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, extensionPath };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -113,6 +132,14 @@ export function parseChatTargetValue(value: string): {
   const kind = value.slice(0, separator);
   if (kind !== "cloud" && kind !== "local") return { kind: "", id: "" };
   return { kind, id: value.slice(separator + 1) };
+}
+
+export function shouldResetUnavailableExtension(
+  view: NavigationView,
+  extensionPath: string,
+  routes: readonly StudioRouteContribution[],
+): boolean {
+  return view === "extension" && !routes.some(route => route.path === extensionPath);
 }
 
 interface AgentSummary {
@@ -127,10 +154,12 @@ export default function App() {
   const initialRoute = parseStudioLocationHash(window.location.hash);
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
+  const [extensionPath, setExtensionPath] = useState(initialRoute.extensionPath);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId || "");
+  const [automationAgentScopeId, setAutomationAgentScopeId] = useState("");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
@@ -148,6 +177,20 @@ export default function App() {
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
+  const extensionNavigation = useStudioDshContributions(
+    studioDshRuntime.contributions,
+    STUDIO_DSH_SLOTS.sidebarNavigation,
+  );
+  const extensionRoutes = useStudioDshContributions(
+    studioDshRuntime.contributions,
+    STUDIO_DSH_SLOTS.route,
+  );
+
+  useEffect(() => {
+    void studioDshCompositionHost.refresh().catch(error => {
+      console.warn("DSH Profile client graph was not activated", error);
+    });
+  }, []);
 
   useEffect(() => {
     document.body.classList.toggle("create-mode", view === "create");
@@ -162,6 +205,7 @@ export default function App() {
       setEditingAgentId(route.editingAgentId);
       setDetailAgentId(route.detailAgentId);
       setEvaluationRunId(route.evaluationRunId);
+      setExtensionPath(route.extensionPath);
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -181,6 +225,7 @@ export default function App() {
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
     setEvaluationRunId("");
+    if (v !== "extension") setExtensionPath("");
     const nextHash = v === "resources" ? `#/resources/${resourceKind}` : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
@@ -283,6 +328,7 @@ export default function App() {
   function switchAgent(id: string) {
     if (!id) return;
     setCurrentAgentId(id);
+    if (view === "automations" && automationAgentScopeId) setAutomationAgentScopeId(id);
     if (view === "conversations") setChatMounted(true);
   }
 
@@ -313,6 +359,11 @@ export default function App() {
       || !chatMounted
       || !agentsLoaded
       || !cloudDeploymentsLoaded
+      // A newly created local Agent is selected before the asynchronous
+      // directory refresh has returned it.  Do not mistake that short window
+      // for "no local target" and replace the explicit selection with the
+      // remembered cloud target.
+      || Boolean(currentAgentId)
       || currentAgent
       || selectedCloudDeployment
     ) return;
@@ -324,6 +375,7 @@ export default function App() {
     agentsLoaded,
     chatMounted,
     cloudDeploymentsLoaded,
+    currentAgentId,
     currentAgent,
     selectedCloudDeployment,
     studioCloudDeployments,
@@ -448,8 +500,30 @@ export default function App() {
   function navigateFromRail(nextView: NavigationView, kind?: ResourceKind) {
     if (nextView === "conversations") enterChat();
     else if (nextView === "resources") openResources(kind || "model");
-    else setView(nextView);
+    else {
+      if (nextView === "automations") setAutomationAgentScopeId("");
+      setView(nextView);
+    }
   }
+
+  function navigateToExtension(path: string) {
+    const route = extensionRoutes.find(item => item.path === path);
+    if (!route) return;
+    setViewState("extension");
+    setExtensionPath(path);
+    setEvaluationRunId("");
+    const nextHash = `#/extensions/${encodeURIComponent(path.replace(/^\/extensions\//, ""))}`;
+    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
+  }
+
+  const activeExtensionRoute = extensionRoutes.find(item => item.path === extensionPath);
+
+  useEffect(() => {
+    if (!shouldResetUnavailableExtension(view, extensionPath, extensionRoutes)) return;
+    setExtensionPath("");
+    setViewState("agents");
+    window.history.replaceState(null, "", "#/agents");
+  }, [extensionPath, extensionRoutes, view]);
 
   return (
     <>
@@ -463,6 +537,9 @@ export default function App() {
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
         onNavigate={navigateFromRail}
+        extensionItems={extensionNavigation}
+        activeExtensionPath={extensionPath}
+        onNavigateExtension={item => navigateToExtension(item.path)}
         onOpenSettings={() => {
           setSettingsSection("general");
           setSettingsOpen(true);
@@ -650,7 +727,12 @@ export default function App() {
             )}
             {view === "channels" && <ChannelsPage refreshTick={refreshTick} />}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
+            {view === "plugins" && <PluginsPage />}
+            {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
+            {view === "extension" && activeExtensionRoute && (
+              <DshWorkspaceSurface currentAgentId={currentAgentId} route={activeExtensionRoute} />
+            )}
           </div>
         </main>
       </div>

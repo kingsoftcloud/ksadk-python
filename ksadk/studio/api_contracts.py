@@ -6,8 +6,10 @@ from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator
 
+from ksadk.conversations.contracts import ConversationInput
 from ksadk.evaluation import EvaluationConfig as PublicEvaluationConfig
 from ksadk.evaluation import TargetRef
+from ksadk.scheduler.contracts import ScheduleSpec
 from ksadk.studio.contracts import (
     AgentBindings,
     AgentSpec,
@@ -78,7 +80,7 @@ class MessageInput(ContractModel):
 class QuickAuthoringRequest(ContractModel):
     name: str = Field(min_length=1, max_length=128)
     slug: str | None = Field(default=None, min_length=1, max_length=63)
-    runtime_type: Literal["codex", "adk", "langgraph"]
+    runtime_type: Literal["codex", "adk", "langgraph", "plugin"]
     template: Literal["blank", "research"] = "blank"
     description: str = Field(default="", max_length=1024)
     spec: AgentSpec | None = None
@@ -135,9 +137,40 @@ class RunRequest(ContractModel):
     sandbox: str | None = None
 
 
+class ConversationTurnRequest(ContractModel):
+    """A capability-gated local Studio turn.
+
+    Unlike the compatibility ``RunRequest`` this request deliberately contains
+    only the provider-neutral ConversationInput. The server resolves the
+    active Build's ConversationSurface and rejects undeclared intent before it
+    reaches a framework-specific runtime request.
+    """
+
+    input: ConversationInput
+    sandbox: str | None = None
+
+
+class AgentScheduleRequest(ContractModel):
+    """Browser-safe authoring input for one local ``ScheduledTask``.
+
+    Stable Agent/Build/Kernel target fields are intentionally absent.  Studio
+    resolves those from the active local Runtime binding and refuses creation
+    when it cannot prove that binding.
+    """
+
+    display_name: str = Field(min_length=1, max_length=128)
+    prompt: str = Field(min_length=1, max_length=32_768)
+    schedule: ScheduleSpec
+    enabled: bool = True
+    continuity: Literal["new_session", "continue_session"] = "new_session"
+    session_id: str | None = Field(default=None, min_length=1, max_length=256)
+
+
 class InteractionSubmitRequest(ContractModel):
     name: str = Field(min_length=1, max_length=64)
     data: dict[str, Any] = Field(default_factory=dict)
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=256)
 
 
 class CloudChatMessageRequest(ContractModel):

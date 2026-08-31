@@ -15,12 +15,32 @@ import pytest
 
 from ksadk.codex.client import AsyncCodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
+from ksadk.events.canonical import ItemCompleted, ItemStarted, ItemUpdated, RuntimeEvent
+from ksadk.events.content import TextContent
 from ksadk.runtime.adapter import CancelResult, ResumePayload, ResumeTarget, StartRequest
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("KSADK_CODEX_E2E") != "1",
     reason="set KSADK_CODEX_E2E=1 in an environment with a configured Codex provider",
 )
+
+
+def _text(event: RuntimeEvent) -> str:
+    if isinstance(event, ItemUpdated) and isinstance(event.update, TextContent):
+        return event.update.text
+    if isinstance(event, ItemCompleted):
+        return "".join(
+            part.text for part in event.snapshot.parts if isinstance(part, TextContent)
+        )
+    return ""
+
+
+def _summary(event: RuntimeEvent) -> dict[str, object]:
+    return {
+        "event_type": event.event_type,
+        "phase": event.phase if isinstance(event, ItemStarted) else None,
+        "text": _text(event)[:80],
+    }
 
 
 @pytest.mark.asyncio
@@ -53,30 +73,22 @@ async def test_live_cli_one_turn_resume_and_process_exit() -> None:
                     "sdk_version": client.sdk_version,
                     "thread_id": handle.run_id,
                     "process_pid": process.pid if process is not None else None,
-                    "first_turn": [
-                        {
-                            "event_type": event.event_type,
-                            "phase": event.phase,
-                            "text": str(event.payload.get("text", ""))[:80],
-                        }
-                        for event in first
-                    ],
-                    "resume_turn": [
-                        {
-                            "event_type": event.event_type,
-                            "phase": event.phase,
-                            "text": str(event.payload.get("text", ""))[:80],
-                        }
-                        for event in second
-                    ],
+                    "first_turn": [_summary(event) for event in first],
+                    "resume_turn": [_summary(event) for event in second],
                 },
                 sort_keys=True,
             )
         )
-        assert any(event.event_type == "text.delta" for event in first)
-        assert any(event.phase == "final_answer" for event in first)
-        assert any("KSADK_CODEX_E2E_OK" in str(event.payload) for event in first)
-        assert any("KSADK_CODEX_RESUME_OK" in str(event.payload) for event in second)
+        assert any(
+            isinstance(event, ItemUpdated) and isinstance(event.update, TextContent)
+            for event in first
+        )
+        assert any(
+            isinstance(event, ItemStarted) and event.phase == "final_answer"
+            for event in first
+        )
+        assert any("KSADK_CODEX_E2E_OK" in _text(event) for event in first)
+        assert any("KSADK_CODEX_RESUME_OK" in _text(event) for event in second)
     finally:
         if process is not None:
             print(f"codex_pid={process.pid} before_close={process.poll()}")
@@ -102,7 +114,7 @@ async def test_live_cli_pending_cancel_is_consumed_without_persisting_thread() -
         )
         assert await runtime.cancel(handle) is CancelResult.PENDING_CANCEL_RECORDED
         events = [event async for event in runtime.stream(handle)]
-        assert [event.event_type for event in events] == ["run.cancelled"]
+        assert [event.event_type for event in events] == ["run.canceled"]
         assert handle.run_id not in runtime._do_not_persist
     finally:
         await runtime.close(handle)

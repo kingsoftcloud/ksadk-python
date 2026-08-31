@@ -39,7 +39,13 @@ test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent a
   assert.match(source, /delta\.tool_calls/);
   assert.match(source, /response\.output_text\.delta/);
   assert.match(source, /directStreamActiveRef/);
-  assert.match(source, /item\.kind === "message" \|\| directKindsSeenRef/);
+  // The foreground stream owns assistant text. SessionEvent only contributes
+  // non-message recovery items, and cross-source duplicates are suppressed by
+  // stable event identity rather than broad kind/text matching.
+  assert.match(source, /if \(item\.kind === "message"\) return/);
+  assert.match(source, /projectedStreamEventIdsRef/);
+  assert.match(source, /const alreadyProjected = Boolean\(eventIdentity/);
+  assert.doesNotMatch(source, /directKindsSeenRef/);
 });
 
 test("cloud chat exposes a failed run without implementation or credential copy", () => {

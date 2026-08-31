@@ -185,6 +185,18 @@ def test_codex_capability_matrix_distinguishes_controls_from_internal_loop() -> 
     assert matrix.loop.supported is False
     assert matrix.loop.mode == "unavailable"
     assert matrix.loop.reason == "codex_loop_requires_run_control_spec"
+    assert matrix.interaction_mode == "live_submit"
+
+
+def test_interaction_mode_tracks_real_provider_delivery_path() -> None:
+    """Provider delivery must not be inferred from the submit verb alone."""
+
+    assert ADKRuntimeAdapter(_FakeRunner()).capabilities().interaction_mode == "unavailable"
+    assert LangGraphRuntimeAdapter(_FakeRunner()).capabilities().interaction_mode == "unavailable"
+    assert (
+        LangGraphRuntimeAdapter(_FakeRunner(checkpoint=True)).capabilities().interaction_mode
+        == "durable_resume"
+    )
 
 
 _CAPABILITY_METHODS = {

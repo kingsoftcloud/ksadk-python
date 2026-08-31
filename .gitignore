@@ -91,6 +91,9 @@ webui
 ksadk/server/static/**
 # Generated from the tracked React Studio source during release/build.
 ksadk/studio/static/**
+# Generated immediately before packaging and embedded in wheel/sdist.  Release
+# gates verify it against the checked-out source commit; it is never source.
+ksadk/_build_provenance.json
 ksadk/studio/web/node_modules/
 ksadk/studio/web/dist/
 site/
@@ -100,3 +103,4 @@ ksadk/server/web-ui/
 e2e-codex-agent/
 ksadk/studio/react-ui/node_modules/
 .agentkit/secrets.env
+agentkit.yaml

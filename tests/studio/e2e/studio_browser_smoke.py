@@ -86,10 +86,12 @@ def _assert_core_navigation(page: Page) -> None:
         "部署",
         "可观测",
         "运行资源",
-        "任务编排",
+        "自动化",
     ):
         page.get_by_role("button", name=label, exact=True).click()
-        expect(page.get_by_role("banner", name="当前页面").get_by_text(label, exact=True)).to_be_visible()
+        expect(
+            page.get_by_role("banner", name="当前页面").get_by_text(label, exact=True)
+        ).to_be_visible()
         page.wait_for_load_state("networkidle")
 
 

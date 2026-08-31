@@ -7,6 +7,7 @@ import asyncio
 
 import pytest
 
+from ksadk.kernel.contracts import ControlSource
 from ksadk.kernel.errors import (
     AgentKernelError,
     InvalidCommandError,
@@ -57,6 +58,39 @@ async def test_fifo_order_is_stable_within_session():
     assert len(starts) == 3
     for message in await stack.store.list_messages(AGENT, "s1"):
         assert message.status == InboxState.COMPLETED
+
+
+async def test_worker_preserves_admitted_command_identity_on_run_transition():
+    """A scheduler reconciles by identity, never by prompt text or timestamp."""
+
+    stack = await kernel_stack()
+    lease = await stack.lease()
+    submitted = command(idempotency_key="schedule-occurrence", content="write report").model_copy(
+        update={
+            "source": ControlSource(kind="scheduler", ref="occ_12345678"),
+            "correlation_id": "occ_12345678",
+        }
+    )
+    await stack.kernel.submit(submitted, permit=stack.permit("enqueue"))
+
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    result = await AgentKernelWorker(
+        stack.store, adapter_factory=lambda: stack.adapter
+    ).run_once(AGENT, lease)
+
+    assert result.run_id is not None
+    run = await stack.store.load_run(result.run_id)
+    assert run is not None
+    assert run.metadata["command_id"] == str(submitted.command_id)
+    assert run.metadata["source_kind"] == "scheduler"
+    transitions = [
+        event
+        for event in await stack.events.read("s1", 0, 30)
+        if event.event_type == "control.run_transition" and event.run_id == result.run_id
+    ]
+    assert transitions
+    assert {event.causation_id for event in transitions} == {str(submitted.command_id)}
 
 
 @pytest.mark.parametrize(

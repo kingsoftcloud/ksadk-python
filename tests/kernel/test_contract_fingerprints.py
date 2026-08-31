@@ -42,6 +42,7 @@ def test_execution_modes_are_bound_into_runtime_capability_digest() -> None:
     legacy = default_matrix()
     codex_modes = legacy.model_copy(
         update={
+            "interaction_mode": "live_submit",
             "goal": RuntimeCapability(supported=True, mode="native"),
             "loop": RuntimeCapability(
                 supported=False,
@@ -53,11 +54,11 @@ def test_execution_modes_are_bound_into_runtime_capability_digest() -> None:
     )
 
     legacy_digest = runtime_capability_matrix_digest(legacy)
-    assert legacy_digest == "f06f693d4e9faf4aa2f01e8c45f1407d365b8dd57406709b5c70b7dd00a01e3e"
+    assert legacy_digest == "b36b6ac71ef531c53d3f7d0a6b593ec6e9289d357bcc50b9ee2df6f4e1877a8d"
     assert runtime_capability_matrix_digest(codex_modes) != legacy_digest
-    assert {"goal", "loop", "plan"}.isdisjoint(
-        runtime_capability_matrix_wire_value(legacy)
-    )
-    assert {"goal", "loop", "plan"} <= set(
+    legacy_wire = runtime_capability_matrix_wire_value(legacy)
+    assert legacy_wire["interaction_mode"] == "unavailable"
+    assert {"goal", "loop", "plan"}.isdisjoint(legacy_wire)
+    assert {"interaction_mode", "goal", "loop", "plan"} <= set(
         runtime_capability_matrix_wire_value(codex_modes)
     )

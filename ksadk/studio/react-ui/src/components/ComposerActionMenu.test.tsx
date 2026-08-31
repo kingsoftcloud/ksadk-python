@@ -50,4 +50,41 @@ describe("ComposerActionMenu", () => {
     rerender(<ComposerActionMenu {...props} active={false} />);
     expect(screen.queryByText("添加附件")).not.toBeInTheDocument();
   });
+
+  it("renders only actions permitted by the active conversation surface", async () => {
+    const user = userEvent.setup();
+    render(
+      <ComposerActionMenu
+        disabled={false}
+        allowAttachments={false}
+        allowPlan={false}
+        allowGoal
+        onTogglePlan={vi.fn()}
+        onStartGoal={vi.fn()}
+        onFiles={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "添加附件或运行控制" }));
+    expect(screen.queryByText("添加附件")).not.toBeInTheDocument();
+    expect(screen.queryByText("计划模式")).not.toBeInTheDocument();
+    expect(screen.getByText("设定长期目标")).toBeInTheDocument();
+  });
+
+  it("removes the plus entry when the surface declares no matching action", () => {
+    render(
+      <ComposerActionMenu
+        disabled={false}
+        allowAttachments={false}
+        allowPlan={false}
+        allowGoal={false}
+        onTogglePlan={vi.fn()}
+        onStartGoal={vi.fn()}
+        onFiles={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "添加附件或运行控制" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("选择本轮附件")).not.toBeInTheDocument();
+  });
 });

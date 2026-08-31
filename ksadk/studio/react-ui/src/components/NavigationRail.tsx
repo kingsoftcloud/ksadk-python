@@ -4,12 +4,15 @@ import {
   Bot,
   Boxes,
   ChartSpline,
+  Clock3,
   ClipboardCheck,
   CloudUpload,
   Folder,
   MessagesSquare,
   MessageSquare,
   PackageCheck,
+  Plug,
+  Puzzle,
   ServerCog,
   Settings,
   Workflow,
@@ -31,13 +34,23 @@ export type NavigationView =
   | "evaluations"
   | "channels"
   | "runtime-resources"
-  | "orchestration";
+  | "plugins"
+  | "automations"
+  | "orchestration"
+  | "extension";
+
+export interface ExtensionNavigationItem {
+  id: string;
+  label: string;
+  path: string;
+}
 
 interface NavigationItem {
   id: NavigationView;
   label: string;
   icon: LucideIcon;
   kind?: ResourceKind;
+  beta?: boolean;
 }
 
 const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
@@ -53,6 +66,7 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
     items: [
       { id: "resources", label: "工程资源", icon: Boxes },
       { id: "runtime-resources", label: "运行资源", icon: ServerCog },
+      { id: "plugins", label: "插件", icon: Plug, beta: true },
     ],
   },
   {
@@ -60,9 +74,10 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
     items: [
       { id: "builds", label: "构建", icon: PackageCheck },
       { id: "deployments", label: "部署", icon: CloudUpload },
-      { id: "orchestration", label: "任务编排", icon: Workflow },
+      { id: "automations", label: "自动化", icon: Clock3, beta: true },
+      { id: "orchestration", label: "编排", icon: Workflow, beta: true },
       { id: "observability", label: "可观测", icon: ChartSpline },
-      { id: "evaluations", label: "评测", icon: ClipboardCheck },
+      { id: "evaluations", label: "评测", icon: ClipboardCheck, beta: true },
       { id: "channels", label: "消息渠道", icon: MessageSquare },
     ],
   },
@@ -121,6 +136,9 @@ export interface NavigationRailProps {
   workspacePath: string;
   runtimeReady: boolean;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
+  extensionItems?: readonly ExtensionNavigationItem[];
+  activeExtensionPath?: string;
+  onNavigateExtension?: (item: ExtensionNavigationItem) => void;
   onOpenSettings: () => void;
 }
 
@@ -132,6 +150,9 @@ export function NavigationRail({
   workspacePath,
   runtimeReady,
   onNavigate,
+  extensionItems = [],
+  activeExtensionPath = "",
+  onNavigateExtension = () => undefined,
   onOpenSettings,
 }: NavigationRailProps) {
   return (
@@ -175,6 +196,7 @@ export function NavigationRail({
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>
+                    {item.beta && <span className="nav-beta-badge" title="Beta">Beta</span>}
                   </button>
                 );
                 return expanded ? button : (
@@ -185,6 +207,30 @@ export function NavigationRail({
               })}
             </div>
           ))}
+          {extensionItems.length > 0 && (
+            <div className="nav-group" data-testid="dsh-extension-navigation">
+              <div className="nav-label">插件</div>
+              {extensionItems.map(item => {
+                const active = view === "extension" && activeExtensionPath === item.path;
+                const button = (
+                  <button
+                    key={item.id}
+                    className={`nav-item${active ? " active" : ""}`}
+                    type="button"
+                    aria-label={item.label}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => onNavigateExtension(item)}
+                  >
+                    <Puzzle size={18} />
+                    <span>{item.label}</span>
+                  </button>
+                );
+                return expanded ? button : (
+                  <RailTooltip key={item.id} label={item.label}>{button}</RailTooltip>
+                );
+              })}
+            </div>
+          )}
         </nav>
 
         <div className="sidebar-footer">

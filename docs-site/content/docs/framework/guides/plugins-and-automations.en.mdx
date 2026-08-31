@@ -1,0 +1,132 @@
+---
+title: Plugins and automations
+status: experimental
+---
+
+Phase 2 adds local-first plugin lifecycle operations, ecosystem host bridges, Scheduler Lite, and a shared conversation surface. These features are still behind unreleased gates. Released Agents and precisely identified historical Bundles remain on their original paths and do not require a Runtime rebuild or upgrade.
+
+Studio and Hosted UI pin the versioned Conversation v1 headless module from
+`@kingsoftcloud/ksadk-web@0.3.3`. Candidate source, independent browser, and
+deployed two-turn checks for both a new and a historical Agent are green;
+the stable release still requires a rebuild from the public npm artifact and
+the final artifact audit.
+
+<Callout type="warning" title="Unreleased preview">
+  This page is not a stable-release announcement. Cloud PluginHost, cloud 24x7 scheduling, the P2-06 DSH Codex Bundle/child Provider, Claude Code, and game-plugin execution are outside the current support claim. One passing reference DSH AgentProvider E2E does not make arbitrary third-party Providers supported.
+</Callout>
+
+## Choose an integration mode
+
+| Mode | Owner | Current use |
+| --- | --- | --- |
+| `dsh` | DeepSeek Harness / Cordis | Default plugin format; Bundles may contribute AgentProviders, tools, renderers, and Studio slots |
+| `codex` | Codex App Server | Preserve the native host and permission semantics of official Codex plugins |
+| `linked` | External host | Discovery or navigation only; it must not appear installed and executable |
+
+KsADK does not define a third private package, manifest, or ABI. Plugins do not change Kernel contracts: a new Runtime is a coarse-grained AgentProvider in a standard DSH Bundle, while Codex plugins stay under App Server ownership.
+
+## Develop a DSH Bundle
+
+Developers do not need a DeepSeek Harness source checkout or local build. Install the pinned, managed DSH CLI from public npm, then create, validate, test, and pack a standard DSH Bundle:
+
+```bash title="shell"
+agentengine plugin toolchain status
+agentengine plugin toolchain install
+agentengine plugin create ./my-provider --name @example/my-provider
+agentengine plugin validate ./my-provider
+agentengine plugin test ./my-provider
+agentengine plugin pack ./my-provider --output-dir ./artifacts
+```
+
+The generated project is an ordinary npm package using DSH `dsh.bundle.patch` and Cordis composition; it does not contain `ksadk-plugin.yaml`. `validate` and `test` exercise install, projection, disable, enable, and uninstall in a temporary Profile. `pack` uses the pinned pnpm toolchain and npm `files` semantics to produce a `.tgz`.
+
+Install the packed Bundle into an isolated Profile and use the same DSH lifecycle commands:
+
+```bash title="shell"
+agentengine plugin install ./artifacts/example-my-provider-0.1.0.tgz \
+  --accept-host-permissions
+agentengine plugin disable @example/my-provider
+agentengine plugin enable @example/my-provider
+agentengine plugin uninstall @example/my-provider
+```
+
+The release gate installs the pinned DSH toolchain from public npm and validates a generated Bundle, its `.tgz`, and the package-format and installation boundary of the official Codex subagent package:
+
+```bash title="shell"
+KSADK_DSH_TOOLCHAIN_E2E=1 \
+uv run --extra all pytest -q tests/e2e/test_dsh_managed_toolchain_e2e.py
+```
+
+This check does not claim that the P2-06 DSH Codex Bundle/child Provider execution path is complete. A separate real external Node AgentProvider runs install, two stateful turns, disable, a broken update with rollback, re-enable of the old executable package, and uninstall in one managed Profile.
+
+A local DSH source build may differ when it contains unreleased changes. Normal plugin development, CI, and publishing always use the pinned npm version as the compatibility baseline. Only DSH core contributors validating the next release should set `KSADK_DSH_BIN` explicitly; a version mismatch fails closed. KsADK wraps the official commands and does not copy the DSH compiler.
+
+## Manage Codex plugins
+
+Codex App Server owns plugin discovery, installation state, and uninstall operations. KsADK calls the host protocol and does not interpret or execute plugin code:
+
+```bash title="shell"
+agentengine plugin codex list
+agentengine plugin codex info <plugin-id>
+agentengine plugin codex install <plugin-id> --accept-host-permissions
+agentengine plugin codex uninstall <plugin-id>
+```
+
+The bridge returns a typed unavailable error when Codex App Server is missing. Installation confirms that the plugin runs with the current system user's host permissions; plugin authentication remains in Codex.
+
+## Manage a DSH Profile
+
+An isolated DeepSeek Harness Profile owns DSH plugins. Install, enable/disable, update, and uninstall operations call managed native `dsh plugin`; each mutation runs host configuration preflight. A directory or `.tgz` is frozen into a SHA-256-addressed immutable source. Digest drift fails closed before enable, update, or projection, and a failed update restores the old manifest, lock, state, and executable package:
+
+```bash title="shell"
+export KSADK_DSH_HOME=/path/to/isolated/dsh-home
+export KSADK_DSH_PROFILE=studio
+
+agentengine plugin list
+agentengine plugin install <bundle> --accept-host-permissions
+agentengine plugin disable <bundle-name>
+agentengine plugin enable <bundle-name>
+agentengine plugin profile
+agentengine plugin uninstall <bundle-name>
+```
+
+`agentengine plugin dsh ...` remains only as a compatibility alias for early scripts.
+
+A DSH bundle may run install scripts, so host permissions require explicit confirmation. An AgentProvider appears in the Runtime selector only after handshake, permission, conversation-projection, and execution conformance pass.
+
+## Create a local scheduled task
+
+Studio's **Automations** page supports once, interval, and cron schedules with IANA timezones. A task can be enabled, disabled, edited, deleted, or run immediately; its detail view shows the next run and occurrence history. The **Automations** tab on an Agent detail page scopes both listing and creation to that Agent.
+
+| Capability | Current behavior |
+| --- | --- |
+| Storage | Workspace-local SQLite |
+| Trigger | Scheduler Lite inside the local Studio process |
+| Continuity | New session, or continuation after explicitly binding an existing session |
+| Concurrency | Overlapping executions of one task are forbidden |
+| Misfire | `skip` or `run_once` |
+| History | Accepted state, run identity, terminal state, and errors are retained |
+
+<Callout type="info" title="Local scheduler boundary">
+  Stopping Studio stops 24x7 wakeups. A cloud ScheduleStore, independent scheduler workers, and cross-Pod claims belong to a later cloud-projection phase.
+</Callout>
+
+## Integrate the conversation surface
+
+`ConversationSurface` advertises accepted inputs, `ConversationInput` submits only allowed fields, and `ConversationItem` represents text, reasoning, tools, approvals, A2UI, and unknown output. Studio, Hosted UI, and custom clients merge live and replayed data with the same item identity.
+
+The core renderer provides a generic fallback. Provider-specific UI uses a controlled Renderer or A2UI surface. Unknown items remain visible and non-interactive: clients must not drop them or turn unrecognized data into an action. An approval item is writable only when it carries a durable revision; clients keep an item read-only when revision is missing.
+
+The surface becomes stable and writable only after the shared Web package, Studio, Hosted UI, and independent-client browser E2E gates pass.
+
+## Compatibility and release gates
+
+| Area | Current boundary |
+| --- | --- |
+| Existing Agents | The real 0.8.2 LangGraph Bundle v2 and older framework Bundles stay on the old Runtime path. A historical Harness enters the legacy adapter only when its exact source digest is explicitly registered; unknown v1 Bundles fail closed |
+| New Harness v2 | A ready DSH registration is mandatory; missing registration fails closed and never falls back to the legacy adapter |
+| Local storage | SQLite or memory remains available without PostgreSQL; high availability is not implied |
+| Third-party ecosystems | Claude Code, games, and arbitrary capabilities must use a standard DSH Bundle or native Codex App Server ownership and pass conformance |
+| Stable release | DSH, conversation browser, existing-Agent, clean-provenance, and public artifact audits in `make phase2-release-preflight` must all pass |
+
+A game extension can use one DSH Bundle to combine Tool, Store, Renderer/A2UI, and Studio slots, or contribute a dedicated AgentProvider for a complete game loop. It does not change the Kernel protocol and is not marked supported before permission, lifecycle, conversation-projection, and rollback tests pass.

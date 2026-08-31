@@ -89,6 +89,11 @@ def register_catalog_routes(
     async def catalog_runtimes():
         return {"items": studio.runtime_catalog(), "nextCursor": None}
 
+    @app.get("/api/v1/agent-providers")
+    async def agent_providers():
+        await studio.start()
+        return {"items": studio.agent_provider_catalog(), "nextCursor": None}
+
     @app.get("/api/v1/catalog/resources/{resource_id}")
     async def get_catalog_resource(resource_id: str):
         return studio.catalog.get(resource_id)

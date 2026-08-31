@@ -72,6 +72,19 @@ class _HarnessRun:
     done: bool = False
 
 
+@dataclass
+class _HarnessSession:
+    """Process-local transcript and serialization boundary for one Session.
+
+    The public capability matrix deliberately advertises process-scoped,
+    non-durable continuity.  Keeping this state on the adapter makes that
+    declaration true without pretending that a restart can recover it.
+    """
+
+    messages: list[dict[str, Any]]
+    lock: asyncio.Lock
+
+
 class HarnessRuntimeAdapter(RuntimeAdapter):
     """Execute a YAML Harness config directly as RuntimeEvent streams."""
 
@@ -95,6 +108,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         self._tools: tuple[HarnessTool, ...] | None = None
         self._tool_lock = asyncio.Lock()
         self._mcp_toolsets: list[Any] = []
+        self._sessions: dict[tuple[str, str, str], _HarnessSession] = {}
 
     @property
     def harness_config(self) -> HarnessConfig:
@@ -167,16 +181,43 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         if not self._runs:
             await self._close_tools()
 
+    async def close_all(self) -> None:
+        """Dispose every process-local run owned by this adapter instance."""
+
+        for run_id, run in list(self._runs.items()):
+            await self.close(
+                RunHandle(
+                    run_id=run_id,
+                    session_id=run.request.session_id,
+                    runtime_type="harness",
+                    native_ref={
+                        "user_id": run.request.user_id,
+                        "agent_id": run.request.agent_id,
+                    },
+                )
+            )
+
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return handle.run_id in self._runs
 
     async def execute_request(self, request: StartRequest) -> dict[str, Any]:
+        session = self._session_for(request)
+        async with session.lock:
+            return await self._execute_session_request(request, session)
+
+    async def _execute_session_request(
+        self,
+        request: StartRequest,
+        session: _HarnessSession,
+    ) -> dict[str, Any]:
         tools = await self._ensure_tools()
         model, prompt = self._effective(request)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": str(request.input or "")},
+            *[dict(message) for message in session.messages],
         ]
+        user_message = {"role": "user", "content": str(request.input or "")}
+        messages.append(user_message)
         execution_log: list[dict[str, Any]] = []
 
         for _turn_number in range(_MAX_REASONING_TURNS):
@@ -235,6 +276,12 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 raise RuntimeError(
                     "Harness reasoner returned neither a final response nor a tool call"
                 )
+            final_message = {"role": "assistant", "content": turn.final_text}
+            messages.append(final_message)
+            # Failed or cancelled turns never commit a partial transcript.
+            # A successful turn atomically replaces the process-local history
+            # while the per-session lock is still held.
+            session.messages[:] = [dict(message) for message in messages[1:]]
             return {
                 "output": turn.final_text,
                 "model": model,
@@ -243,6 +290,18 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 "sandbox_read_only": self._config.sandbox.read_only,
             }
         raise RuntimeError(f"Harness reasoning exceeded {_MAX_REASONING_TURNS} turns")
+
+    def _session_for(self, request: StartRequest) -> _HarnessSession:
+        key = (
+            str(request.agent_id or self._agent_name),
+            str(request.user_id),
+            str(request.session_id),
+        )
+        session = self._sessions.get(key)
+        if session is None:
+            session = _HarnessSession(messages=[], lock=asyncio.Lock())
+            self._sessions[key] = session
+        return session
 
     def _effective(self, request: StartRequest) -> tuple[str, str]:
         metadata = request.metadata or {}

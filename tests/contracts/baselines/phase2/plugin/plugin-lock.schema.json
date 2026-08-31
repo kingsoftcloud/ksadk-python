@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/plugin-lock.schema.json",
+  "title": "PluginLock/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "definition": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*/v[1-9][0-9]*$"},
+        "slot": {"type": "string", "minLength": 3},
+        "owner": {"type": "string", "minLength": 3}
+      },
+      "required": ["definition", "slot", "owner"]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+        "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["id", "version", "digest"]
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+        "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "source": {"enum": ["builtin", "registry", "local", "market", "runtime-native"]},
+        "signatureRef": {"type": ["string", "null"]},
+        "license": {"type": ["string", "null"]},
+        "provides": {"type": "array", "items": {"$ref": "#/$defs/capability"}},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}}
+      },
+      "required": ["id", "version", "digest", "source"]
+    }
+  },
+  "properties": {
+    "lockFormat": {"const": "agentkit.plugin-lock/v1"},
+    "plugins": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
+  },
+  "required": ["lockFormat", "plugins"]
+}
