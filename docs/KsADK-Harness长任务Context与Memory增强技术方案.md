@@ -1,8 +1,8 @@
 # KsADK Harness 长任务 Context 与 Memory 增强技术方案
 
-> 文档状态：实施中（P0–P3 基础能力已落地）
+> 文档状态：实现基线（仓内能力已收口，持续真实环境验证）
 > 适用分支：`feat-ksadk-harness`
-> 更新日期：2026-08-27
+> 更新日期：2026-08-31
 
 ## 1. 文档目的
 
@@ -116,13 +116,13 @@ Harness 需要提供稳定的数据与事件合同，由 Studio 和控制面消�
 8. Context Trace、Token Report 等稳定 Insights 查询合同；
 9. LangGraph Store 到 MemoryProvider 的适配层。
 
-仍需继续收口的项目：
+后续需要跨服务或真实环境继续验证的项目：
 
-1. 将 Insights 从进程内 Registry 接入可持久化、多实例的平台事件存储；
-2. 完成 Studio 对 Insights 稳定合同的真实页面接入；
-3. 扩展真实模型长任务评测和不少于 100 条标注样本的 Memory 评估集；
-4. 完善仅依赖 Transcript 的语义 Working Context 冷恢复；
-5. 补充真实 LangGraph Store 与企业 Memory Service 的 E2E 验证。
+1. 将 Insights 稳定投影接入可持久化、多实例的平台事件存储和 Studio 页面；
+2. 100 条冻结 Memory 金标集已经落地，继续在目标模型网关运行完整真实模型评测；
+3. 在真实 LangGraph Store 与企业 Memory Service 环境验证跨进程冷恢复；
+4. 使用生产授权数据扩大语义召回、Reranker 和多模态来源评测；
+5. 由平台控制面完成组织权限、Memory 审批和治理闭环。
 
 ## 5. 目标架构
 
@@ -629,16 +629,16 @@ load_session
 9. Harness 对 Studio 只暴露稳定合同，不依赖 Studio 领域模型；
 10. Memory Backend 可替换但不改变 KsADK 公共协议。
 
-## 14. 后续收口优先级
+## 14. 后续验证优先级
 
-当前分支建议按以下顺序继续收口：
+仓内 Context 与 Memory 主能力已经收口，后续按以下顺序完成真实环境闭环：
 
 ```text
-持久化 Insights 与 Studio 真实接入
-  -> Transcript 语义状态冷恢复
-  -> 真实模型长任务与 Memory 标注评测
-  -> 真实 LangGraph Store / 企业 Memory Service E2E
+平台事件存储与 Studio Insights 接入
+  -> 目标模型网关运行 100 条 Memory 金标集
+  -> 真实 LangGraph Store / 企业 Memory Service 冷恢复 E2E
+  -> 生产授权数据的语义召回、Reranker 与多模态评测
   -> 预发发布门禁与回归基线
 ```
 
-该顺序优先将已实现的 Harness 合同连入真实平台和评测环境，再扩大 Memory 智能程度，避免继续横向增加未经 E2E 验证的抽象。
+该顺序优先将已实现的 Harness 合同连入真实平台和评测环境，再扩大数据规模与智能程度，避免继续横向增加未经 E2E 验证的抽象。

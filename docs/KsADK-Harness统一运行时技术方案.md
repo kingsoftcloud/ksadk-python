@@ -1,15 +1,15 @@
 # KsADK Harness 统一运行时技术方案
 
-> 文档状态：设计基线（已评审修订）  
-> 适用仓库：`ksadk-python`  
-> 当前基线分支：`feat-studio-workbench`（基线测试：后端 `pytest tests/ -q` 全绿、React `npm test` + `run test:ui` 全绿）  
-> 盘点日期：2026-08-25
+> 文档状态：实现基线（持续验证）
+> 适用仓库：`ksadk-python`
+> 当前基线分支：`feat-ksadk-harness`
+> 盘点日期：2026-08-31
 
 ## 1. 文档目的
 
 本文定义 KsADK Harness 的目标、边界、现状、开源借鉴、核心协议、默认执行引擎、迁移路径和验收标准。
 
-KsADK 当前已经具备 RuntimeAdapter、Conversation、Session、Memory、MCP、Skill、Sandbox、Studio 生命周期和多 Agent 样板等能力，但这些能力分散在多条执行路径中，尚未形成一个由 KsADK 统一掌控的默认 Harness。
+KsADK 已将 RuntimeAdapter、Conversation、Session、Memory、MCP、Skill、Sandbox、生命周期和多 Agent 等能力收口到默认 Harness 主线。当前工作重点是持续验证真实模型、企业 MCP、远程 Sandbox 和云控制面的兼容性，而不是再建设一套平行 Agent Loop。
 
 本文要解决的核心问题不是“再写一个 Agent Loop”，而是：
 
@@ -100,18 +100,18 @@ Studio / CLI / RuntimeAdapter
 
 | 能力 | 当前实现 | 主要缺口 |
 |---|---|---|
-| Agent Loop | 默认 ManagedLangGraphEngine 已接入 Reason/Tool/Approval/Resume | 多模型与真实远程 Sandbox 仍需扩大一致性验证 |
+| Agent Loop | 默认 ManagedLangGraphEngine 已接入 Reason/Tool/Approval/Resume、流式 Tool Call 重组、Provider 回退与 Context Overflow 恢复 | 更多模型厂商仍需在真实端点持续扩大兼容矩阵 |
 | Runtime Contract | HarnessSpec、RuntimeAdapter、Capability 声明 | ADK/Codex 深接管程度仍不同 |
 | Session/恢复 | Checkpoint、跨进程 attach/resume、Transcript 投影 | 云端 Session 事实源属于控制面协同范围 |
-| Context | Manifest、预算、WorkingContext Patch、压缩与关键事实重注入 | 更大规模长任务数据集仍需持续评测 |
-| 长期 Memory | Scope 检索、纠错/遗忘/锁定、审计、真实模型评测 | 生产数据治理与规模化评测仍需平台服务配合 |
-| MCP Runtime | L0-L3 渐进披露、健康/熔断、超时/取消、半开恢复、审批、幂等、结果外置 | 更多真实 MCP Transport 与网关故障矩阵仍需在联调环境持续扩大 |
-| Skill Runtime | L0-L3 渐进披露、三级解析、父子 Agent 透传 | Skill 管理面仍由 Skill Service 负责 |
-| Sandbox | 异步 Backend 合同、能力声明、本地只读/进程后端、超时/取消/Artifact/清理 Conformance | E2B/平台私有后端仍需在真实模板和凭证环境跑远程矩阵 |
+| Context | Manifest、预算、WorkingContext Patch、压缩与关键事实重注入、Cache 诊断、可视化投影、调优建议与安全后台整理 | 线上多实例事件存储和长期调优仍需平台观测服务配合 |
+| 长期 Memory | Scope、纠错/遗忘/锁定、审计、关键词+语义混检、专用 Reranker、异步整理、多模态来源、100 条冻结金标集 | 企业生产数据授权与更大规模在线评测仍需平台服务配合 |
+| MCP Runtime | L0-L3 渐进披露、健康/熔断、超时/取消、半开恢复、动态审批、凭证轮换、Schema 刷新、幂等、结果外置、兼容矩阵 | 更多真实企业 Transport 与网关故障矩阵仍需联调环境持续扩大 |
+| Skill Runtime | L0-L3 渐进披露、三级解析、父子 Agent 透传、意图推荐、反馈投影和发布就绪矩阵 | 安装、升级、市场和版本治理仍由 Skill Service 负责 |
+| Sandbox | 异步 Backend 合同、能力声明、租约/Fence/Journal、重连恢复、本地后端 Conformance 和就绪矩阵 | E2B/KOP/平台私有后端仍需真实模板和凭证环境跑远程矩阵 |
 | Tool Approval | Interrupt/Resume、Receipt、动态风险判定 | 外部副作用仍取决于 Transport 幂等合同 |
-| Observability | Run/Turn/Tool/Context/Memory/Usage/Artifact 统一事件 | Studio 的聚合展示仍可继续增强 |
-| Lifecycle | DraftRuntime 即时调试与 Revision/Build/Deploy/Activate 正式链路隔离 | 云端准入、路由和回滚由控制面完成 |
-| 多 Agent | 可选 Strategy、子 Agent 事件与能力继承 | 不固化进业务模板，更多策略后续按需增加 |
+| Observability | Run/Turn/Tool/Context/Memory/Usage/Artifact 统一事件和稳定只读投影 | Studio 与云端多实例聚合展示仍需控制面接入 |
+| Lifecycle | DraftRuntime 即时调试、正式链路隔离、控制面构建/部署/激活/调用/回滚 Conformance | 云端实现和生产 E2E 由 `agentengine-server` 与网关完成 |
+| 多 Agent | 可选 Strategy、动态子 Agent、父子事件、并行调度、独立 Checkpoint 命名空间、并发预算、超时和失败策略 | 更复杂的跨服务分布式调度按业务需要扩展 |
 | Tool Reliability | Receipt、Transport 幂等、四级诚实交付语义 | 不承诺跨系统事务意义的 exactly-once |
 
 ### 3.3 当前边界
