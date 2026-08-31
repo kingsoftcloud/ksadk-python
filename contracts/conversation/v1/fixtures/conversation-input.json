@@ -1,0 +1,24 @@
+{
+  "apiVersion": "conversation.ksadk.io/v1",
+  "kind": "ConversationInput",
+  "inputId": "input-example",
+  "sessionId": "session-example",
+  "idempotencyKey": "turn-example",
+  "parts": [
+    {"kind": "text", "text": "请总结这张图片"},
+    {
+      "kind": "attachment",
+      "attachmentRef": "attachment://image-example",
+      "mediaType": "image/png",
+      "name": "example.png"
+    }
+  ],
+  "modelRef": "model:example",
+  "reasoning": "high",
+  "extensions": {
+    "ksadk.approval": "risk",
+    "ksadk.collaboration": "plan",
+    "ksadk.goal": "完成可验证的图片总结",
+    "vendor.preview": true
+  }
+}

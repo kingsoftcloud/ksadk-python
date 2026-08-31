@@ -170,7 +170,14 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
         },
         body: JSON.stringify({ revision: draft.metadata.revision, runEvaluation: false }),
       });
-      if (!response.ok) throw new Error(`构建提交失败（${response.status}）`);
+      if (!response.ok) {
+        if (response.status === 409) {
+          // Revision is stale — reload agent detail so the next attempt uses the fresh revision.
+          await loadDetail();
+          throw new Error("Agent 信息已更新，请重新点击构建");
+        }
+        throw new Error(`构建提交失败（${response.status}）`);
+      }
       const operation = await response.json();
       setOperationId(operation.id);
       let cursor = 0;

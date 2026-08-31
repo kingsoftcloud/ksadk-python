@@ -1373,7 +1373,7 @@ class LangGraphRunner(BaseRunner):
                                 content = content[len(reasoning) :]
                         if content:
                             for part in inline_reasoning_parser.feed(content):
-                                if not part.text or not part.text.strip():
+                                if not part.text:
                                     continue
                                 if part.kind == "thinking":
                                     accumulated_reasoning += part.text
@@ -1529,7 +1529,7 @@ class LangGraphRunner(BaseRunner):
             return
 
         for part in inline_reasoning_parser.flush():
-            if not part.text or not part.text.strip():
+            if not part.text:
                 continue
             if part.kind == "thinking":
                 accumulated_reasoning += part.text

@@ -20,6 +20,7 @@ import {
   type ReasoningEffort,
 } from "./ChatComposer";
 import { showToast } from "./Toast";
+import { decodeConversationItem, type ConversationItem } from "../conversationProtocol";
 
 interface CloudChatWorkspaceProps {
   deploymentId: string;
@@ -70,7 +71,7 @@ interface RuntimeEnvelope {
 
 interface CloudRuntimeItem {
   id: string;
-  kind: "message" | "reasoning" | "tool" | "approval";
+  kind: "message" | "reasoning" | "tool" | "approval" | "plan" | "goal" | "artifact" | "a2ui" | "error";
   title: string;
   text: string;
   detail: string;
@@ -135,9 +136,19 @@ function runtimeEnvelope(value: unknown): RuntimeEnvelope | null {
   const frame = value as Record<string, unknown>;
   const payload = Object.keys(recordValue(frame.payload)).length ? recordValue(frame.payload) : frame;
   const content = recordValue(payload.content);
-  const nested = Object.keys(recordValue(content.runtime_event)).length
-    ? recordValue(content.runtime_event)
-    : recordValue(payload.runtime_event);
+  // Server-side SessionEvent history has used both snake_case and camelCase
+  // during the RuntimeEvent/v2 rollout.  Treat those transport spellings as
+  // the same envelope before any presentation fallback is considered.  A
+  // provider event must not lose its identity merely because its enclosing
+  // REST projection chose a different JSON casing.
+  const nested = [
+    content.runtime_event,
+    content.runtimeEvent,
+    payload.runtime_event,
+    payload.runtimeEvent,
+    frame.runtime_event,
+    frame.runtimeEvent,
+  ].map(recordValue).find(candidate => Object.keys(candidate).length > 0) || {};
   const event = Object.keys(nested).length ? nested : payload;
   const outerType = scalarText(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType).toLowerCase();
   const nestedType = scalarText(event.event_type ?? event.eventType ?? event.type).toLowerCase();
@@ -183,7 +194,69 @@ function jsonDetail(value: unknown): string {
   }
 }
 
+function conversationItemFromFrame(value: unknown): ConversationItem | null {
+  const frame = recordValue(value);
+  const payload = recordValue(frame.payload);
+  const content = recordValue(payload.content);
+  const event = runtimeEnvelope(value)?.event || {};
+  const candidates = [
+    frame.conversationItem,
+    payload.conversationItem,
+    content.conversationItem,
+    event.conversationItem,
+  ];
+  for (const candidate of candidates) {
+    const decoded = decodeConversationItem(candidate);
+    if (decoded) return decoded;
+  }
+  return null;
+}
+
+function conversationItemPatch(value: unknown): CloudRuntimeItem | null {
+  const item = conversationItemFromFrame(value);
+  // Additive providers must not turn every unrecognised event into a chat
+  // error.  The canonical projector makes them hidden; raw diagnostics remain
+  // available in the run/event inspector.
+  if (!item || item.visibility !== "public" || item.kind === "unknown" || item.kind === "progress") return null;
+  const text = valueText(item.payload.text ?? item.payload.objective ?? item.payload.error ?? "");
+  const status: CloudRuntimeItem["status"] = item.lifecycle === "failed"
+    ? "failed"
+    : item.lifecycle === "completed"
+      ? "completed"
+      : item.kind === "approval" && item.lifecycle === "pending"
+        ? "waiting"
+        : "running";
+  const kind: CloudRuntimeItem["kind"] = item.kind === "assistant_text"
+    ? "message"
+    : item.kind === "reasoning"
+      ? "reasoning"
+      : item.kind === "tool_call"
+        ? "tool"
+        : item.kind;
+  const title = valueText(
+    item.payload.tool ?? item.payload.title ?? item.payload.name ?? item.payload.kind,
+  ) || (kind === "reasoning" ? "思考过程"
+    : kind === "approval" ? "等待确认"
+      : kind === "plan" ? "计划"
+        : kind === "goal" ? "目标"
+          : kind === "artifact" ? "运行产物"
+            : kind === "a2ui" ? "交互卡片"
+              : kind === "error" ? "运行失败"
+                : kind === "tool" ? "工具调用" : "回复");
+  return {
+    id: `${item.runId}/${item.itemId}`,
+    kind,
+    title,
+    text,
+    detail: text || jsonDetail(item.payload),
+    status,
+    operation: item.operation === "append" ? "append" : "replace",
+  };
+}
+
 function runtimeItemPatch(value: unknown): CloudRuntimeItem | null {
+  const typed = conversationItemPatch(value);
+  if (typed) return typed;
   const envelope = runtimeEnvelope(value);
   if (!envelope) return null;
   const event = envelope.event;
@@ -296,6 +369,24 @@ function directStreamItemPatches(value: unknown): CloudRuntimeItem[] {
     });
   });
 
+  // Historical RunAgent deployments stream assistant text as a minimal
+  // `{"delta":"..."}` frame before returning the terminal Responses object.
+  // The direct stream has no item id in that shape, so keep one stable item
+  // per foreground request and append each fragment as it arrives.  Typed
+  // Responses events also carry `delta`, but have an event type and are
+  // handled by their dedicated branches below.
+  if (!eventType && choices.length === 0 && typeof event.delta === "string" && event.delta) {
+    patches.push({
+      id: `${streamId}//message:0`,
+      kind: "message",
+      title: "回复",
+      text: event.delta,
+      detail: event.delta,
+      status: "running",
+      operation: "append",
+    });
+  }
+
   if (eventType.includes("reasoning") && eventType.endsWith(".delta")) {
     const text = valueText(event.delta ?? event.text ?? recordValue(event.part).text);
     if (text) {
@@ -365,11 +456,29 @@ function directStreamItemPatches(value: unknown): CloudRuntimeItem[] {
   return patches;
 }
 
+function streamEventIdentity(value: unknown): string {
+  const envelope = runtimeEnvelope(value);
+  if (!envelope) return "";
+  const eventId = scalarText(envelope.event.event_id ?? envelope.event.eventId);
+  if (!eventId) return "";
+  return `${envelope.runId || envelope.invocationId}/${eventId}`;
+}
+
 function directStreamTerminal(value: unknown): TerminalRunResult | null {
   const envelope = runtimeEnvelope(value);
   if (!envelope) return null;
   const event = envelope.event;
   const eventType = envelope.eventType;
+  if (scalarText(event.object).toLowerCase() === "response") {
+    const status = scalarText(event.status).toLowerCase();
+    if (status === "completed") return { status: "completed", error: "" };
+    if (["failed", "cancelled", "canceled", "incomplete"].includes(status)) {
+      return {
+        status: "failed",
+        error: errorText(event.error, event.incomplete_details) || "云端流式响应失败",
+      };
+    }
+  }
   if (["stream.done", "response.completed", "response.done", "done"].includes(eventType)) {
     return { status: "completed", error: "" };
   }
@@ -659,12 +768,12 @@ async function fileDataUrl(file: File): Promise<string> {
 
 function CloudRuntimeProgress({ items, streaming }: { items: CloudRuntimeItem[]; streaming: boolean }) {
   const reasoning = items.filter(item => item.kind === "reasoning").map(item => item.text).join("");
-  const activities = items.filter(item => item.kind === "tool" || item.kind === "approval");
+  const activities = items.filter(item => item.kind !== "reasoning" && item.kind !== "message");
   if (!reasoning && !activities.length) return null;
   const running = activities.find(item => item.status === "running" || item.status === "waiting");
   const title = running
     ? `${running.status === "waiting" ? "等待确认" : "正在处理"} · ${running.title}`
-    : reasoning ? (streaming ? "正在思考" : "已思考") : `已处理 ${activities.length} 次工具调用`;
+    : reasoning ? (streaming ? "正在思考" : "已思考") : `已更新 ${activities.length} 个运行事件`;
   return (
     <details className="chat-processing-group" open={streaming} data-ui="think">
       <summary>
@@ -677,8 +786,8 @@ function CloudRuntimeProgress({ items, streaming }: { items: CloudRuntimeItem[];
         {activities.map(item => (
           <div className={`chat-activity-card ${item.kind}`} key={item.id}>
             <div className="chat-activity-row">
-              <span className="chat-activity-icon">{item.kind === "approval" ? <ShieldAlert size={15} /> : <Wrench size={15} />}</span>
-              <span className="chat-activity-copy"><small>{item.kind === "approval" ? "批准" : "工具"}</small><strong>{item.title}</strong></span>
+              <span className="chat-activity-icon">{item.kind === "approval" ? <ShieldAlert size={15} /> : item.kind === "plan" || item.kind === "goal" ? <BrainCircuit size={15} /> : <Wrench size={15} />}</span>
+              <span className="chat-activity-copy"><small>{item.kind === "approval" ? "批准" : item.kind === "plan" ? "计划" : item.kind === "goal" ? "目标" : item.kind === "artifact" ? "产物" : item.kind === "a2ui" ? "交互" : item.kind === "error" ? "错误" : "工具"}</small><strong>{item.title}</strong></span>
               <span className={`chat-activity-status ${item.status}`}>
                 {item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : item.status === "waiting" ? "等待确认" : "运行中"}
               </span>
@@ -730,7 +839,10 @@ export function CloudChatWorkspace({
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamedFramesRef = useRef<unknown[]>([]);
   const directStreamActiveRef = useRef(false);
-  const directKindsSeenRef = useRef<Set<CloudRuntimeItem["kind"]>>(new Set());
+  // RunAgent and the durable SessionEvent stream can carry the same canonical
+  // RuntimeEvent concurrently. De-duplicate the event, never the item kind or
+  // item id: one item legitimately receives many distinct delta events.
+  const projectedStreamEventIdsRef = useRef<Set<string>>(new Set());
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
@@ -880,7 +992,7 @@ export function CloudChatWorkspace({
     setRunError("");
     waitingForResponseRef.current = false;
     directStreamActiveRef.current = false;
-    directKindsSeenRef.current = new Set();
+    projectedStreamEventIdsRef.current = new Set();
     setWaitingForResponse(false);
     awaitingRunIdRef.current = "";
     awaitingInvocationIdRef.current = "";
@@ -1069,22 +1181,17 @@ export function CloudChatWorkspace({
       const streamController = new AbortController();
       streamAbortRef.current = streamController;
       directStreamActiveRef.current = true;
-      directKindsSeenRef.current = new Set();
+      projectedStreamEventIdsRef.current = new Set();
       const projectStreamItem = (item: CloudRuntimeItem, source: "direct" | "session") => {
         if (source === "session") {
           // The foreground RunAgent stream owns assistant text. SessionEvent
           // remains the reconnect/history channel and a fallback for runtime
           // activity that the direct provider stream does not expose.
-          if (item.kind === "message" || directKindsSeenRef.current.has(item.kind)) return;
+          if (item.kind === "message") return;
           setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
           return;
         }
-        const firstDirectItemOfKind = !directKindsSeenRef.current.has(item.kind);
-        directKindsSeenRef.current.add(item.kind);
-        setStreamingRuntimeItems(previous => mergeRuntimeItem(
-          firstDirectItemOfKind ? previous.filter(existing => existing.kind !== item.kind) : previous,
-          item,
-        ));
+        setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
       };
       const streamUrl = `${base}/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${awaitingAcceptedSeqRef.current}`;
       apiFetch(streamUrl, {
@@ -1110,7 +1217,12 @@ export function CloudChatWorkspace({
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
         const item = runtimeItemPatch(frame);
-        if (item) projectStreamItem(item, "session");
+        if (item && item.kind !== "message") {
+          const eventIdentity = streamEventIdentity(frame);
+          const alreadyProjected = Boolean(eventIdentity && projectedStreamEventIdsRef.current.has(eventIdentity));
+          if (eventIdentity) projectedStreamEventIdsRef.current.add(eventIdentity);
+          if (!alreadyProjected) projectStreamItem(item, "session");
+        }
         const terminal = terminalRunEvent(
           [frame],
           awaitingRunIdRef.current,
@@ -1146,7 +1258,12 @@ export function CloudChatWorkspace({
       await consumeSseResponse(response, frame => {
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
-        directStreamItemPatches(frame).forEach(item => projectStreamItem(item, "direct"));
+        const eventIdentity = streamEventIdentity(frame);
+        const alreadyProjected = Boolean(eventIdentity && projectedStreamEventIdsRef.current.has(eventIdentity));
+        if (eventIdentity) projectedStreamEventIdsRef.current.add(eventIdentity);
+        if (!alreadyProjected) {
+          directStreamItemPatches(frame).forEach(item => projectStreamItem(item, "direct"));
+        }
         const terminal = directStreamTerminal(frame);
         if (terminal) {
           settleCloudRun(
@@ -1336,7 +1453,7 @@ export function CloudChatWorkspace({
               <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{streamingAssistantText}</ReactMarkdown></div>
             </article>
           )}
-          {(sending || waitingForResponse) && <div className="cloud-chat-pending"><Loader2 size={15} className="animate-spin" /> 正在等待云端响应…</div>}
+          {(sending || waitingForResponse) && !streamingAssistantText && streamingRuntimeItems.length === 0 && <div className="cloud-chat-pending"><Loader2 size={15} className="animate-spin" /> 正在等待云端响应…</div>}
         </div>
         <div className="chat-composer-wrap">
           {interactions.length > 0 && (

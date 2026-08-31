@@ -233,6 +233,7 @@ def test_legacy_capability_fixture_may_omit_execution_modes():
     assert matrix.goal is None
     assert matrix.loop is None
     assert matrix.plan is None
+    assert matrix.interaction_mode is None
 
 
 def test_legacy_runtime_parser_preserves_additive_execution_modes():
@@ -257,6 +258,7 @@ def test_legacy_runtime_parser_preserves_additive_execution_modes():
     assert round_trip["loop"]["mode"] == "unavailable"
     assert round_trip["loop"]["reason"] == "codex_loop_requires_run_control_spec"
     assert round_trip["plan"]["mode"] == "native"
+    assert round_trip["interaction_mode"] == "live_submit"
 
 
 def test_unsupported_capability_requires_unavailable_mode():

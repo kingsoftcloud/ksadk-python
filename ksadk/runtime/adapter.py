@@ -417,6 +417,7 @@ class RuntimeAdapter(ABC):
             inject=_unavailable("runtime_no_native_inject"),
             checkpoint=_unavailable(),
             durable_restore=_unavailable(),
+            interaction_mode="unavailable",
         )
 
     def native_capabilities(self) -> dict[str, object]:

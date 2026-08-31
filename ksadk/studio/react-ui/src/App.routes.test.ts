@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseChatTargetValue, parseStudioLocationHash } from "./App";
+import {
+  parseChatTargetValue,
+  parseStudioLocationHash,
+  shouldResetUnavailableExtension,
+} from "./App";
 
 describe("Studio route parsing", () => {
   it("preserves Agent detail, edit and resource deep links", () => {
@@ -18,6 +22,24 @@ describe("Studio route parsing", () => {
     expect(parseStudioLocationHash("#/deployments/new?buildId=build-1&agentId=demo-agent")).toMatchObject({
       view: "deployments",
     });
+    expect(parseStudioLocationHash("#/plugins")).toMatchObject({
+      view: "plugins",
+    });
+  });
+
+  it("keeps DSH extension deep links only while their live route contribution exists", () => {
+    expect(parseStudioLocationHash("#/extensions/tasks")).toMatchObject({
+      view: "extension",
+      extensionPath: "/extensions/tasks",
+    });
+    const routes = [{
+      id: "tasks.route",
+      path: "/extensions/tasks",
+      title: "Tasks",
+      workspaceTabId: "tasks.tab",
+    }];
+    expect(shouldResetUnavailableExtension("extension", "/extensions/tasks", routes)).toBe(false);
+    expect(shouldResetUnavailableExtension("extension", "/extensions/tasks", [])).toBe(true);
   });
 
   it("preserves an account-scoped CLI Agent id when selecting a cloud chat target", () => {

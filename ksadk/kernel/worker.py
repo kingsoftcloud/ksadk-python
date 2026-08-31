@@ -356,6 +356,17 @@ class AgentKernelWorker:
             agent_instance_id=command.agent_instance_id,
             session_id=command.session_id,
             state=RunState.PENDING,
+            # Keep the admitted control identity on the durable run.  This is
+            # not user-supplied metadata: it is copied from the trusted
+            # command that the worker actually claimed.  Consumers such as the
+            # local Scheduler can therefore reconcile a runtime terminal fact
+            # back to one occurrence without matching text or wall-clock time.
+            metadata={
+                "command_id": str(command.command_id),
+                "source_kind": command.source.kind,
+                "source_ref": command.source.ref,
+                "correlation_id": command.correlation_id,
+            },
         )
         created = await self._store.save_run_transition(pending, expected_fence=fence)
         continuation_metadata = await self._session_continuation_metadata(command.session_id)

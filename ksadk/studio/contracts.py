@@ -43,6 +43,28 @@ class Instructions(ContractModel):
     task: str = Field(default="", max_length=32768)
 
 
+class SoulDocument(ContractModel):
+    """Reviewed identity/boundary source that compiles ahead of task prompts.
+
+    This is deliberately an immutable revision input, not a mutable memory
+    file.  Runtime may read the compiled snapshot but cannot promote a new
+    SoulDocument from a conversation.
+    """
+
+    schema_version: Literal["agentkit.soul/v1"] = "agentkit.soul/v1"
+    identity: str = Field(min_length=1, max_length=4096)
+    principles: list[str] = Field(default_factory=list, max_length=64)
+    boundaries: list[str] = Field(default_factory=list, max_length=64)
+    tone: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("principles", "boundaries")
+    @classmethod
+    def validate_nonempty_items(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("soul principles and boundaries must not contain empty items")
+        return value
+
+
 class ModelParameters(ContractModel):
     # 三者 None=未配置：请求 payload 一律不携带该字段，使用服务端默认，
     # 规避各模型族对 temperature/max_tokens 的硬约束（如 kimi 只接受默认温度）。
@@ -292,6 +314,13 @@ class MemoryWriteSpec(ContractModel):
     flush_before_compaction: bool = True
 
 
+MemoryScope = Literal["tenant", "workspace", "agent", "user"]
+
+
+def _default_memory_scopes() -> list[MemoryScope]:
+    return ["workspace", "agent", "user"]
+
+
 class MemorySpec(ContractModel):
     """AgentVersion 级 Memory 策略（方案 §5.1 / §10）。Build 只存 providerRef，不存凭证。"""
 
@@ -299,9 +328,7 @@ class MemorySpec(ContractModel):
     provider_ref: str = Field(default="local-default", max_length=128)
     recall: MemoryRecallSpec = Field(default_factory=MemoryRecallSpec)
     write: MemoryWriteSpec = Field(default_factory=MemoryWriteSpec)
-    scopes: list[Literal["tenant", "workspace", "agent", "user"]] = Field(
-        default_factory=lambda: ["workspace", "agent", "user"]
-    )
+    scopes: list[MemoryScope] = Field(default_factory=_default_memory_scopes)
 
 
 class NetworkPolicy(ContractModel):
@@ -329,12 +356,17 @@ class RuntimeRef(ContractModel):
     project entrypoint that is snapshotted by its Build.
     """
 
-    type: Literal["codex", "adk", "langgraph"]
+    type: Literal["codex", "adk", "langgraph", "harness", "plugin"]
     project_path: str | None = Field(default=None, min_length=1, max_length=1024)
     entry_point: str | None = Field(default=None, min_length=1, max_length=1024)
     agent_variable: str = Field(default="root_agent", min_length=1, max_length=256)
     version: str | None = Field(default=None, min_length=1, max_length=64)
     detection: Literal["declared", "auto"] = "declared"
+    provider_ref: str | None = Field(default=None, min_length=12, max_length=256)
+    provider_config: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
 
     @field_validator("project_path", "entry_point")
     @classmethod
@@ -352,8 +384,32 @@ class RuntimeRef(ContractModel):
             raise ValueError("Runtime 路径必须是工作区内的相对路径")
         return normalized
 
+    @field_validator("provider_ref")
+    @classmethod
+    def validate_provider_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.fullmatch(
+            r"plugin://[a-z0-9]+(?:[._-][a-z0-9]+)*@"
+            r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            value,
+        ):
+            raise ValueError("Provider 引用必须固定为 plugin://<id>@<exact-version>")
+        return value
+
+    @field_validator("provider_config")
+    @classmethod
+    def validate_provider_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _reject_clear_runtime_secrets(value)
+        return value
+
     @model_validator(mode="after")
     def validate_framework_source(self) -> "RuntimeRef":
+        if self.type == "plugin":
+            if not self.provider_ref:
+                raise ValueError("plugin Runtime 必须配置 providerRef")
+        elif self.provider_ref is not None or self.provider_config:
+            raise ValueError("只有 plugin Runtime 可以配置 providerRef/providerConfig")
         if self.type in {"adk", "langgraph"}:
             if not self.project_path:
                 raise ValueError(f"{self.type} Runtime 必须配置 projectPath")
@@ -362,10 +418,39 @@ class RuntimeRef(ContractModel):
         return self
 
 
+_RUNTIME_SECRET_KEY = re.compile(
+    r"(?:secret|password|token|api[_-]?key)", re.IGNORECASE
+)
+_RUNTIME_SECRET_REF_PREFIXES = (
+    "secret://",
+    "env://",
+    "credential://",
+    "vault://",
+)
+
+
+def _reject_clear_runtime_secrets(value: Any, *, path: str = "providerConfig") -> None:
+    """Provider config is revision data: it may only retain secret references."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if _RUNTIME_SECRET_KEY.search(str(key)) and child is not None:
+                if not isinstance(child, str) or not child.startswith(
+                    _RUNTIME_SECRET_REF_PREFIXES
+                ):
+                    raise ValueError(f"{child_path} 必须保存 Secret 引用，不能保存明文")
+            _reject_clear_runtime_secrets(child, path=child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_clear_runtime_secrets(child, path=f"{path}[{index}]")
+
+
 class AgentSpec(ContractModel):
     description: str = Field(default="", max_length=1024)
     runtime: RuntimeRef | None = None
     instructions: Instructions = Field(default_factory=Instructions)
+    soul: SoulDocument | None = None
     model: ModelSpec | None = None
     capabilities: CapabilitiesSpec = Field(default_factory=CapabilitiesSpec)
     bindings: AgentBindings = Field(default_factory=AgentBindings)
@@ -498,6 +583,7 @@ class ResolvedAgentSpec(ContractModel):
     source_revision: int
     compiler_version: str = "1"
     instructions: Instructions
+    soul: SoulDocument | None = None
     model: ResolvedModel
     capabilities: ResolvedCapabilities
     execution: ExecutionSpec
@@ -545,10 +631,43 @@ class BundleManifest(ContractModel):
     source_digest: str = ""
     runtime_contract: Literal["agentkit.runtime/v1"] = "agentkit.runtime/v1"
     plugin_lock_digest: str = ""
+    # A v0.8.2 bundle already used the v2 envelope without a composition.
+    # Keep that wire shape readable as the explicit legacy execution profile;
+    # newly built bundles write ``composition_mode`` so consumers never need
+    # to infer whether PluginHost admission is required from missing files.
+    composition_mode: Literal["legacy", "composed"] | None = None
+    composition_profile_digest: str | None = None
     hosted_kernel_requirement_digest: str = ""
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
     bundle_digest: str = ""
+
+    @model_validator(mode="after")
+    def validate_composition_mode(self) -> "BundleManifest":
+        if self.composition_mode == "composed" and not self.composition_profile_digest:
+            raise ValueError("composed Bundle v2 requires compositionProfileDigest")
+        if self.composition_mode == "legacy" and self.composition_profile_digest:
+            raise ValueError("legacy Bundle v2 cannot declare compositionProfileDigest")
+        return self
+
+    @property
+    def execution_profile(self) -> Literal["legacy", "composed"]:
+        """Normalize historical v2 manifests without rewriting their bytes.
+
+        ``compositionMode`` was added after the v0.8.2 envelope.  Its absence
+        remains a backward-compatible projection: an embedded composition
+        digest is composed; its absence selects the established runtime path.
+        """
+
+        if self.composition_mode is not None:
+            return self.composition_mode
+        return "composed" if self.composition_profile_digest else "legacy"
+
+
+# ``BundleManifest`` is the existing, installed source type.  The explicit
+# name documents that its ``agentkit.bundle/v2`` branch is the Phase 2
+# AgentBundleManifest/v2 contract; it is an alias, not a parallel manifest.
+AgentBundleManifest = BundleManifest
 
 
 class BuildRecord(ContractModel):

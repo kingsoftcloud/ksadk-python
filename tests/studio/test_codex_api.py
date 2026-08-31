@@ -575,6 +575,21 @@ def test_openai_responses_endpoint_is_the_public_runtime_contract(tmp_path: Path
         )
         assert created.status_code == 201
         bound_model = created.json()["metadata"]["labels"]["agentkit.ksyun.com/model"]
+        surface = client.get(
+            "/api/v1/agents/review-helper/conversation-surface",
+            params={"sessionId": "ses-openai-responses"},
+        )
+        assert surface.status_code == 200, surface.text
+        assert {item["name"] for item in surface.json()["surface"]["inputs"]} == {
+            "text",
+            "attachment.image",
+            "attachment.file",
+            "model.select",
+            "reasoning.effort",
+            "approval",
+            "goal",
+            "plan",
+        }
 
         with client.stream(
             "POST",
@@ -761,6 +776,73 @@ def test_openai_responses_forwards_plan_goal_and_structured_attachments(
         {"type": "text", "text": "分析这张图"},
         {"type": "image", "url": "data:image/png;base64,AAAA"},
     ]
+
+
+def test_conversation_input_attachment_ref_reaches_the_bound_codex_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        uploaded = client.post(
+            "/api/v1/conversation-attachments",
+            files={"file": ("notes.md", b"verified attachment", "text/markdown")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        attachment = uploaded.json()
+        surface = client.get(
+            "/api/v1/agents/review-helper/conversation-surface",
+            params={"sessionId": "ses-conversation-attachment"},
+        )
+        assert surface.status_code == 200, surface.text
+        build_id = surface.json()["buildId"]
+        with client.stream(
+            "POST",
+            f"/api/v1/builds/{build_id}/conversation:stream",
+            headers={"Idempotency-Key": "conversation-attachment-turn"},
+            json={
+                "input": {
+                    "inputId": "input-attachment",
+                    "sessionId": "ses-conversation-attachment",
+                    "idempotencyKey": "conversation-attachment-turn",
+                    "parts": [
+                        {"kind": "text", "text": "请检查附件"},
+                        {
+                            "kind": "attachment",
+                            "attachmentRef": attachment["attachmentRef"],
+                            "mediaType": attachment["mediaType"],
+                            "name": attachment["name"],
+                        },
+                    ],
+                    "modelRef": "glm-5.2",
+                    "reasoning": "high",
+                    "extensions": {
+                        "ksadk.approval": "risk",
+                        "ksadk.collaboration": "plan",
+                        "ksadk.goal": "检查附件并形成计划",
+                    },
+                }
+            },
+        ) as response:
+            stream = "".join(response.iter_text())
+
+    assert response.status_code == 200, stream
+    request = runtime_fixture.start_requests[0]
+    assert request.config["effort"] == "high"
+    assert request.config["tool_approval_mode"] == "risk"
+    assert request.config["collaboration_mode"] == "plan"
+    assert request.config["goal_objective"] == "检查附件并形成计划"
+    assert request.input[0] == {"type": "text", "text": "请检查附件"}
+    assert request.input[1]["type"] == "input_file"
+    assert request.input[1]["filename"] == "notes.md"
+    assert request.input[1]["file_data"].startswith("data:text/markdown;base64,")
 
 
 def test_openai_responses_rejects_unknown_collaboration_mode(tmp_path: Path) -> None:

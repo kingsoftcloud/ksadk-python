@@ -106,7 +106,8 @@ def test_build_with_immutable_model_snapshot_survives_removed_live_catalog_resou
                     "endpointUrl": "https://model.example.com/v1/responses",
                     "credentialRef": "env://OPENAI_API_KEY",
                 }
-            }
+            },
+            "model_profile_ids": ["model:removed"],
         }
     )
 
@@ -127,6 +128,101 @@ def test_build_with_immutable_model_snapshot_survives_removed_live_catalog_resou
     )
 
     assert builder.is_current(build) is True
+
+
+def test_new_build_records_model_resource_ids_without_persisting_catalog_metadata(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    CodexManifestRepository(workspace).save(_manifest())
+
+    class Catalog:
+        def get(self, _resource_id: str):
+            return SimpleNamespace(
+                contract={
+                    "model": "glm-5.2",
+                    "baseUrl": "https://model.example.com/v1",
+                    "credentialRef": "env://OPENAI_API_KEY",
+                    "metadata": {"pricing": {"prompt": "display-only"}},
+                    "discovery": {"source": "provider"},
+                }
+            )
+
+    resource_id = "model:provider:glm-5-2:live"
+    drafts = SimpleNamespace(
+        get=lambda _agent_id: SimpleNamespace(
+            spec=SimpleNamespace(
+                bindings=SimpleNamespace(
+                    model_profile_id=resource_id,
+                    model_profile_ids=[resource_id],
+                )
+            )
+        )
+    )
+    builder = CodexStudioBuilder(
+        workspace,
+        runtime_inspector=_inspector,
+        resource_catalog=Catalog(),
+        draft_repository=drafts,
+    )
+    build = builder.build()
+
+    assert build.model_profile_ids == [resource_id]
+    assert build.model_profiles == {
+        "glm-5.2": {
+            "model": "glm-5.2",
+            "baseUrl": "https://model.example.com/v1",
+            "credentialRef": "env://OPENAI_API_KEY",
+        }
+    }
+
+    assert builder.is_current(build) is True
+    assert builder.is_current(build.model_copy(update={"model_profile_ids": None})) is False
+
+
+def test_catalog_restart_does_not_hide_a_changed_model_resource_binding(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    CodexManifestRepository(workspace).save(_manifest())
+    original_id = "model:provider:glm-5-2:live"
+    replacement_id = "model:provider:qwen3-max:live"
+    bound_ids = [original_id]
+
+    class Catalog:
+        def get(self, resource_id: str):
+            if resource_id != original_id:
+                raise StudioError("resource not found")
+            return SimpleNamespace(
+                contract={
+                    "model": "glm-5.2",
+                    "baseUrl": "https://model.example.com/v1",
+                    "credentialRef": "env://OPENAI_API_KEY",
+                }
+            )
+
+    drafts = SimpleNamespace(
+        get=lambda _agent_id: SimpleNamespace(
+            spec=SimpleNamespace(
+                bindings=SimpleNamespace(
+                    model_profile_id=bound_ids[0],
+                    model_profile_ids=list(bound_ids),
+                )
+            )
+        )
+    )
+    builder = CodexStudioBuilder(
+        workspace,
+        runtime_inspector=_inspector,
+        resource_catalog=Catalog(),
+        draft_repository=drafts,
+    )
+    build = builder.build()
+    bound_ids[:] = [replacement_id]
+
+    assert builder.is_current(build) is False
 
 
 def test_rebuild_skips_stale_provider_model_binding_after_catalog_restart(

@@ -16,6 +16,17 @@ const columns: StudioDataColumn<Row>[] = [
 ];
 
 describe("StudioDataTable", () => {
+  it("marks the table viewport as the independently scrollable data region", () => {
+    const { container } = render(
+      <StudioDataTable
+        columns={columns}
+        data={[{ id: "1", name: "Model A" }]}
+        getRowId={row => row.id}
+      />,
+    );
+    expect(container.querySelector(".studio-data-table-scroll")).toHaveClass("data-scroll-region");
+  });
+
   it("renders a shared loading state instead of stale rows", () => {
     render(
       <StudioDataTable

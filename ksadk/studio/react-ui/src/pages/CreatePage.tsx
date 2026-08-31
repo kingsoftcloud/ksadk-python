@@ -22,6 +22,11 @@ import { CodeViewer } from "../components/ui/CodeViewer";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { applyApiFieldErrors } from "../lib/formErrors";
 import {
+  parseProviderConfig,
+  providerOptionDescription,
+  type AgentProviderCatalogItem,
+} from "../agentProviders";
+import {
   agentImportSchema,
   conversationCommitSchema,
   projectImportSchema,
@@ -31,6 +36,12 @@ import {
   type ProjectImportFormValues,
   type QuickAgentFormValues,
 } from "../schemas/agentForms";
+import {
+  STUDIO_DSH_SLOTS,
+  useStudioDshContributions,
+} from "../dsh-runtime/studioContributions";
+import { studioDshRuntime } from "../dsh-runtime/studioDshRuntime";
+import { createStudioRuntimeOptions } from "../dsh-runtime/runtimeOptions";
 
 /* 四种创建方式；quick 模式即四步向导。 */
 type Mode = "quick" | "conversation" | "import" | "project";
@@ -66,7 +77,6 @@ const RUNTIME_OPTIONS = [
   { value: "adk", label: "Google ADK · Python source" },
   { value: "langgraph", label: "LangGraph · Python graph" },
 ];
-
 const WIZARD_STEP_META = [
   ["定义 Agent", "模板与系统提示词"],
   ["绑定能力", "Model · Tool · MCP · Skill"],
@@ -182,7 +192,15 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [createRailOpen, setCreateRailOpen] = useState(false);
   const [draftState, setDraftState] = useState("尚未保存");
   const [catalog, setCatalog] = useState<ResItem[]>([]);
+  const [agentProviders, setAgentProviders] = useState<AgentProviderCatalogItem[]>([]);
+  const [selectedProviderRef, setSelectedProviderRef] = useState("");
+  const [providerConfigText, setProviderConfigText] = useState("{}");
+  const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
+  const dshAgentProviders = useStudioDshContributions(
+    studioDshRuntime.contributions,
+    STUDIO_DSH_SLOTS.agentProvider,
+  );
 
   /* 向导状态 */
   const [step, setStep] = useState(1);
@@ -325,14 +343,22 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
 
   const loadCatalog = useCallback(async () => {
     try {
-      const [d, discovered] = await Promise.all([
+      const [d, discovered, providerCatalog] = await Promise.all([
       apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()),
       apiFetch("/api/v1/catalog/models").then(r => r.json()).catch(() => null),
+      apiFetch("/api/v1/agent-providers").then(r => r.json()).catch(() => null),
       ]);
       const items: ResItem[] = d.items || [];
       const localModels = items.filter(i => i.kind === "model" && (i.source === "local" || i.source === "market"));
       const modelItems = discovered?.items?.length ? [...localModels, ...discovered.items] : items.filter(i => i.kind === "model");
       setCatalog([...modelItems, ...items.filter((i: ResItem) => i.kind !== "model")]);
+      const providerItems: AgentProviderCatalogItem[] = providerCatalog?.items || [];
+      setAgentProviders(providerItems);
+      setSelectedProviderRef(current => (
+        providerItems.some(item => item.providerRef === current && item.selectable)
+          ? current
+          : providerItems.find(item => item.selectable)?.providerRef || ""
+      ));
 
       const references = [...new Set(
         modelItems.map(credentialReference).filter(ref => ref.startsWith("env://")),
@@ -363,6 +389,47 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const tools = useMemo(() => catalog.filter(i => i.kind === "tool" && i.status === "ready"), [catalog]);
   const mcps = useMemo(() => catalog.filter(i => i.kind === "mcp"), [catalog]);
   const skills = useMemo(() => catalog.filter(i => i.kind === "skill" && i.status === "ready"), [catalog]);
+  const effectiveAgentProviders = useMemo<AgentProviderCatalogItem[]>(() => {
+    const known = new Set(agentProviders.map(item => item.providerRef));
+    return [
+      ...agentProviders,
+      ...dshAgentProviders.filter(item => (
+        item.state === "ready" && item.compatible && !known.has(item.providerRef)
+      )).map(item => ({
+        providerRef: item.providerRef,
+        pluginId: item.id,
+        resolvedVersion: "cordis",
+        displayName: item.displayName,
+        state: "enabled" as const,
+        compatible: true,
+        selectable: true,
+        reason: null,
+        permissions: [],
+        isolation: "cordis",
+        configSchemaDeclared: false,
+        secretFields: [],
+      })),
+    ];
+  }, [agentProviders, dshAgentProviders]);
+  const selectedProvider = useMemo(
+    () => effectiveAgentProviders.find(item => item.providerRef === selectedProviderRef),
+    [effectiveAgentProviders, selectedProviderRef],
+  );
+  const providerOptions = useMemo(() => effectiveAgentProviders.map(item => ({
+    value: item.providerRef,
+    label: item.displayName,
+    description: providerOptionDescription(item),
+    disabled: !item.selectable,
+  })), [effectiveAgentProviders]);
+  const quickRuntimeOptions = useMemo(
+    () => createStudioRuntimeOptions(dshAgentProviders, agentProviders),
+    [agentProviders, dshAgentProviders],
+  );
+
+  useEffect(() => {
+    if (selectedProviderRef && effectiveAgentProviders.some(item => item.providerRef === selectedProviderRef && item.selectable)) return;
+    setSelectedProviderRef(effectiveAgentProviders.find(item => item.selectable)?.providerRef || "");
+  }, [effectiveAgentProviders, selectedProviderRef]);
   const resourceById = useCallback((id: string) => catalog.find(i => i.resourceId === id), [catalog]);
   const credentialOf = useCallback((item?: ResItem) => {
     const ref = credentialReference(item);
@@ -424,6 +491,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           step, maxStep, template, runtime, depth, selectedTools, selectedSkills,
           selectedMcp, selectedModels, policy, contextOwnership,
           contextEngineRollout, memoryEnabled, memoryWriteRollout,
+          selectedProviderRef, providerConfigText,
+          providerPermissionsApproved,
         },
         fields: { name, slug, description, prompt, audience, language, format, systemPrompt, taskPrompt, buildAfterCreate },
       }));
@@ -521,7 +590,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         body: JSON.stringify({
           messages: [{ role: "user", content: optimizationBrief }],
           modelProfileId: authoringModel,
-          runtimeType: runtime,
+          runtimeType: runtime === "plugin" ? "codex" : runtime,
           agentModelProfileIds: selectedModels,
           agentDefaultModelProfileId: authoringModel,
           toolResourceIds: runtime === "codex" ? [] : selectedTools,
@@ -587,6 +656,22 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (step === 1) {
         const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
+        if (runtime === "plugin") {
+          if (!selectedProvider?.selectable) {
+            setCreateError(selectedProvider?.reason?.message || "请先在插件中心安装并启用一个兼容的 AgentProvider。");
+            return;
+          }
+          try {
+            parseProviderConfig(providerConfigText, selectedProvider.secretFields);
+          } catch (error: any) {
+            setCreateError(error.message || "Provider 配置无效");
+            return;
+          }
+          if (selectedProvider.permissions.length && !providerPermissionsApproved) {
+            setCreateError("请先确认 AgentProvider 请求的权限。");
+            return;
+          }
+        }
       }
       if (step === 2 && !selectedModels.length) {
         setCreateError("请至少选择一个模型后继续。");
@@ -630,6 +715,26 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         enabled: memoryEnabled,
         recall: { ...(spec.memory?.recall || {}), enabled: memoryEnabled },
       };
+      if (values.runtimeType === "plugin") {
+        if (!selectedProvider?.selectable) {
+          throw new Error(selectedProvider?.reason?.message || "所选 AgentProvider 当前不可用");
+        }
+        if (selectedProvider.permissions.length && !providerPermissionsApproved) {
+          throw new Error("请先确认 AgentProvider 请求的权限");
+        }
+        spec.runtime = {
+          type: "plugin",
+          providerRef: selectedProvider.providerRef,
+          providerConfig: parseProviderConfig(providerConfigText, selectedProvider.secretFields),
+        };
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []),
+            ...selectedProvider.permissions,
+          ])].sort(),
+        };
+      }
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -933,7 +1038,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }
 
   const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
-  const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph" } as Record<string, string>)[runtime] || runtime;
+  const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
@@ -1072,6 +1177,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
             <AgentEditor
               agentId={editingAgentId}
               catalog={catalog}
+              providers={agentProviders}
               onSaved={(id, openChat) => onCreated(id, openChat)}
               onAppearanceSaved={onAgentsChanged}
             />
@@ -1477,13 +1583,73 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       id="quickRuntime"
                       ariaLabel="Runtime"
                       value={runtime}
-                      options={RUNTIME_OPTIONS}
+                      options={quickRuntimeOptions}
                       onValueChange={value => {
                         quickForm.setValue("runtimeType", value as QuickAgentFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true });
                         markDirty();
                       }}
                     />
                   </FormField>
+                  {runtime === "plugin" && (
+                    <div className="template-specific" data-testid="external-provider-config">
+                      <FormField
+                        label="AgentProvider"
+                        requirement="required"
+                        htmlFor="quickAgentProvider"
+                        hint="选项来自本机已安装的 agent.provider/v1；不可用版本会保留原因但不能选择。"
+                      >
+                        <StudioSelect
+                          id="quickAgentProvider"
+                          ariaLabel="AgentProvider"
+                          value={selectedProviderRef}
+                          placeholder="没有可用的 AgentProvider"
+                          options={providerOptions}
+                          disabled={!providerOptions.some(option => !option.disabled)}
+                          onValueChange={value => {
+                            setSelectedProviderRef(value);
+                            setProviderPermissionsApproved(false);
+                            markDirty();
+                          }}
+                        />
+                      </FormField>
+                      {!selectedProvider?.selectable && (
+                        <div className="inline-alert warning" role="status">
+                          <CircleAlert size={16} />
+                          <div>
+                            <strong>AgentProvider 当前不可用</strong>
+                            <p>{selectedProvider?.reason?.message || "请先在插件中心安装并启用兼容的 AgentProvider。"}</p>
+                          </div>
+                        </div>
+                      )}
+                      <FormField
+                        label="Provider 配置"
+                        requirement="optional"
+                        htmlFor="quickProviderConfig"
+                        hint="填写 JSON 对象；密码、Token、API Key 只能使用 env://、secret://、credential:// 或 vault:// 引用。"
+                      >
+                        <textarea
+                          id="quickProviderConfig"
+                          className="mono"
+                          rows={5}
+                          value={providerConfigText}
+                          onChange={event => { setProviderConfigText(event.target.value); markDirty(); }}
+                        />
+                      </FormField>
+                      {selectedProvider?.permissions.length ? (
+                        <label className="post-create-option">
+                          <input
+                            type="checkbox"
+                            checked={providerPermissionsApproved}
+                            onChange={event => { setProviderPermissionsApproved(event.target.checked); markDirty(); }}
+                          />
+                          <span>
+                            <strong>确认 Provider 请求的权限</strong>
+                            <small>{selectedProvider.permissions.join("、")}；确认后才会写入本 Revision。</small>
+                          </span>
+                        </label>
+                      ) : null}
+                    </div>
+                  )}
                   <FormField label="描述" requirement="optional" htmlFor="quickDescription" error={quickForm.formState.errors.description?.message}>
                     <input id="quickDescription" maxLength={1024} placeholder="简要说明这个 Agent 解决什么问题" {...quickForm.register("description", { onChange: markDirty })} />
                   </FormField>

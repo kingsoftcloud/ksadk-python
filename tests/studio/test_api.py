@@ -15,7 +15,6 @@ from ksadk.events.canonical import (
     OutputRef,
     RunCompleted,
     RunStarted,
-    RuntimeEvent,
     SourceRef,
     UsageReported,
 )
@@ -52,6 +51,23 @@ def _avatar_png(*, size: tuple[int, int] = (96, 96)) -> bytes:
     stream = io.BytesIO()
     Image.new("RGB", size, color=(68, 104, 162)).save(stream, format="PNG")
     return stream.getvalue()
+
+
+def test_generic_api_error_does_not_echo_exception_details(tmp_path: Path) -> None:
+    app = create_studio_app(tmp_path, security_enabled=False)
+
+    @app.get("/api/v1/test-generic-error")
+    async def raise_generic_error():
+        raise RuntimeError("Bearer secret-should-never-reach-the-browser")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v1/test-generic-error")
+
+    assert response.status_code == 500
+    payload = response.json()["error"]
+    assert payload["code"] == "INTERNAL_ERROR"
+    assert "secret-should-never-reach-the-browser" not in response.text
+    assert "请求 ID" in payload["message"]
 
 
 def test_agent_avatar_asset_and_appearance_round_trip(tmp_path: Path) -> None:
@@ -390,6 +406,142 @@ def test_framework_stream_forwards_created_event_to_the_browser(tmp_path: Path):
     assert '"sessionId":"ses-framework-stream"' in stream
     assert "event: message.completed" in stream
     assert "event: run.completed" in stream
+
+
+def test_conversation_surface_gates_the_local_turn_before_runtime(tmp_path: Path) -> None:
+    runtime_fixture = RuntimeFixture(
+        _runtime_events,
+        runtime_types=("langgraph",),
+    )
+    service = StudioService(
+        tmp_path,
+        model_client=FakeModelClient(),
+        runtime_executor=runtime_fixture.executor,
+    )
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/v1/agents",
+                json={"id": "surface-agent", "name": "Surface Agent", "template": "blank"},
+            ).status_code
+            == 201
+        )
+        assert (
+            client.put(
+                "/api/v1/agents/surface-agent",
+                headers={"If-Match": '"1"'},
+                json=_valid_spec(),
+            ).status_code
+            == 200
+        )
+        build_operation = client.post(
+            "/api/v1/agents/surface-agent/builds",
+            headers={"Idempotency-Key": "surface-build"},
+            json={"revision": 2},
+        ).json()
+        build_id = _wait(client, build_operation["id"])["resourceId"]
+
+        surface = client.get(
+            f"/api/v1/builds/{build_id}/conversation-surface",
+            params={"sessionId": "ses-surface"},
+        )
+        assert surface.status_code == 200, surface.text
+        assert surface.json()["sessionId"] == "ses-surface"
+        assert {item["name"] for item in surface.json()["inputs"]} == {
+            "text",
+            "model.select",
+            "approval",
+        }
+        assert surface.json()["outputs"] == [
+            {"name": "text", "mode": "native", "reason": None},
+            {"name": "streaming", "mode": "translated", "reason": None}
+        ]
+
+        with client.stream(
+            "POST",
+            f"/api/v1/builds/{build_id}/conversation:stream",
+            headers={"Idempotency-Key": "conversation-turn-1"},
+            json={
+                "input": {
+                    "inputId": "input-1",
+                    "sessionId": "ses-surface",
+                    "idempotencyKey": "conversation-turn-1",
+                    "parts": [{"kind": "text", "text": "reply using the surface"}],
+                    "modelRef": "glm-5.1",
+                }
+            },
+        ) as response:
+            stream = "".join(response.iter_text())
+        assert response.status_code == 200, stream
+        assert "event: run.completed" in stream
+        assert '"conversationItem":{"apiVersion":"conversation.ksadk.io/v1"' in stream
+        assert '"sessionId":"ses-surface"' in stream
+
+        unsupported = client.post(
+            f"/api/v1/builds/{build_id}/conversation:stream",
+            headers={"Idempotency-Key": "conversation-turn-2"},
+            json={
+                "input": {
+                    "inputId": "input-2",
+                    "sessionId": "ses-surface",
+                    "idempotencyKey": "conversation-turn-2",
+                    "parts": [
+                        {
+                            "kind": "attachment",
+                            "attachmentRef": "attachment://report.pdf",
+                            "mediaType": "application/pdf",
+                        }
+                    ],
+                }
+            },
+        )
+        assert unsupported.status_code == 422
+        assert unsupported.json()["error"]["code"] == "CONVERSATION_INPUT_UNSUPPORTED"
+
+        # The OpenAI-compatible entry point is only a wire adapter.  It must
+        # not bypass the same active Surface used by the native conversation
+        # endpoint and send Codex-only controls to another Runtime.
+        unsupported_compat = client.post(
+            "/v1/responses",
+            json={
+                "input": "不要进入 Runtime",
+                "metadata": {
+                    "agent_id": "surface-agent",
+                    "session_id": "ses-surface-compat",
+                    "collaboration_mode": "plan",
+                },
+            },
+        )
+        assert unsupported_compat.status_code == 422
+        assert unsupported_compat.json()["error"]["code"] == "CONVERSATION_INPUT_UNSUPPORTED"
+        assert len(runtime_fixture.start_requests) == 1
+
+        agent_surface = client.get(
+            "/api/v1/agents/surface-agent/conversation-surface",
+            params={"sessionId": "ses-agent-surface"},
+        )
+        assert agent_surface.status_code == 200, agent_surface.text
+        assert agent_surface.json() == {
+            "buildId": build_id,
+            "surface": {
+                "apiVersion": "conversation.ksadk.io/v1",
+                "kind": "ConversationSurface",
+                "surfaceId": f"studio.build.{build_id}",
+                "sessionId": "ses-agent-surface",
+                "providerRef": "studio.runtime.langgraph",
+                "inputs": [
+                    {"name": "text", "mode": "native", "reason": None},
+                    {"name": "model.select", "mode": "translated", "reason": None},
+                    {"name": "approval", "mode": "translated", "reason": None},
+                ],
+                "outputs": [
+                    {"name": "text", "mode": "native", "reason": None},
+                    {"name": "streaming", "mode": "translated", "reason": None}
+                ],
+            },
+        }
 
 
 def test_api_revision_idempotency_and_validation_errors(tmp_path: Path):

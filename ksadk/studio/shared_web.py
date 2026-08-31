@@ -9,7 +9,16 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from ksadk.studio.contracts import BuildStatus, OperationStatus, RunRecord, RunStatus
+from ksadk.conversations.contracts import (
+    APPROVAL_MODE_EXTENSION,
+    COLLABORATION_MODE_EXTENSION,
+    GOAL_OBJECTIVE_EXTENSION,
+    ConversationAttachmentPart,
+    ConversationInput,
+    ConversationTextPart,
+    validate_conversation_input,
+)
+from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.service import StudioService
 from ksadk.tools.gateway import tool_approval_capability
@@ -247,12 +256,38 @@ class StudioSharedWebBridge:
         prompt = self._input_text(payload)
         runtime_input = self._runtime_input(payload)
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
+        model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
         approval_mode = str(payload.get("ApprovalMode") or "")
         collaboration_mode = str(payload.get("CollaborationMode") or "")
         goal_objective = str(payload.get("GoalObjective") or "")
         reasoning_effort = str(payload.get("ReasoningEffort") or "")
+        try:
+            build = await self._ensure_build(agent_id)
+            self._validate_conversation_turn(
+                build_id=build.id,
+                session_id=session_id,
+                invocation_id=invocation_id,
+                prompt=prompt,
+                runtime_input=runtime_input,
+                model=model if model_explicit else "",
+                approval_mode=approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
+            )
+        except StudioError as exc:
+            # StreamingResponse starts the HTTP response before advancing this
+            # generator.  Preflight failures therefore belong in the stream;
+            # raising here would turn an actionable Studio error into Starlette's
+            # "response already started" RuntimeError.
+            yield self._failed_sse(invocation_id, exc.message)
+            return
+        except Exception:
+            yield self._failed_sse(invocation_id, "本地 Agent 运行失败")
+            return
         execution = asyncio.create_task(
             self._execute_run(
+                build=build,
                 agent_id=agent_id,
                 session_id=session_id,
                 invocation_id=invocation_id,
@@ -355,17 +390,34 @@ class StudioSharedWebBridge:
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
+        model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
         approval_mode = str(payload.get("ApprovalMode") or "")
         collaboration_mode = str(payload.get("CollaborationMode") or "")
         goal_objective = str(payload.get("GoalObjective") or "")
         reasoning_effort = str(payload.get("ReasoningEffort") or "")
+        build = await self._ensure_build(agent_id)
+        prompt = self._input_text(payload)
+        runtime_input = self._runtime_input(payload)
+        self._validate_conversation_turn(
+            build_id=build.id,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            prompt=prompt,
+            runtime_input=runtime_input,
+            model=model if model_explicit else "",
+            approval_mode=approval_mode,
+            collaboration_mode=collaboration_mode,
+            goal_objective=goal_objective,
+            reasoning_effort=reasoning_effort,
+        )
         try:
             run = await self._execute_run(
+                build=build,
                 agent_id=agent_id,
                 session_id=session_id,
                 invocation_id=invocation_id,
-                prompt=self._input_text(payload),
-                runtime_input=self._runtime_input(payload),
+                prompt=prompt,
+                runtime_input=runtime_input,
                 model=model,
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
@@ -383,6 +435,7 @@ class StudioSharedWebBridge:
     async def _execute_run(
         self,
         *,
+        build: Any = None,
         agent_id: str,
         session_id: str,
         invocation_id: str,
@@ -394,7 +447,17 @@ class StudioSharedWebBridge:
         goal_objective: str = "",
         reasoning_effort: str = "",
     ) -> RunRecord:
-        build = await self._ensure_build(agent_id)
+        if build is None:
+            build = await self._ensure_build(agent_id)
+        bound_agent = str(
+            getattr(build, "agent_name", None) or getattr(build, "agent_id", "")
+        )
+        if bound_agent != agent_id:
+            raise StudioError(
+                "CONVERSATION_BUILD_MISMATCH",
+                "会话 Build 不属于当前 Agent",
+                status_code=409,
+            )
 
         def observe(event: Any) -> None:
             if event.type == "run.created":
@@ -659,29 +722,94 @@ class StudioSharedWebBridge:
         }
 
     async def _ensure_build(self, agent_id: str):
-        if self.studio.is_codex_agent(agent_id):
-            self.studio.codex_agent_detail(agent_id)
-            builds = [
-                record
-                for record in self.studio.codex_builds.list()
-                if record.agent_name == agent_id and self.studio.codex_builder.is_current(record)
-            ]
-            if builds:
-                return builds[0]
-            return await asyncio.to_thread(self.studio.codex_builder.build, agent_id)
-        for record in self.studio.builds.list_for_agent(agent_id):
-            if record.status == BuildStatus.SUCCEEDED:
-                return record
-        draft = self.studio.drafts.get(agent_id)
-        if draft.spec.model is None and not draft.spec.bindings.model_profile_id:
+        return await self.studio.ensure_current_build(agent_id)
+
+    def _validate_conversation_turn(
+        self,
+        *,
+        build_id: str,
+        session_id: str,
+        invocation_id: str,
+        prompt: str,
+        runtime_input: Any,
+        model: str,
+        approval_mode: str,
+        collaboration_mode: str,
+        goal_objective: str,
+        reasoning_effort: str,
+    ) -> None:
+        """Revalidate compatibility requests against the active Surface.
+
+        `/v1/responses` and the legacy RunAgent action remain supported wire
+        shapes, but neither may smuggle provider-only input past the shared
+        ConversationInput contract.
+        """
+
+        surface = self.studio.conversation_surface(build_id, session_id=session_id)
+        parts: list[ConversationTextPart | ConversationAttachmentPart] = [
+            ConversationTextPart(text=prompt)
+        ]
+        for index, item in enumerate(runtime_input if isinstance(runtime_input, list) else []):
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("type") or "")
+            if kind in {"image", "input_image"}:
+                media_type = self._data_url_media_type(
+                    str(item.get("url") or item.get("image_url") or ""),
+                    fallback="image/*",
+                )
+                parts.append(
+                    ConversationAttachmentPart(
+                        attachment_ref=f"attachment://inline/{invocation_id}/{index}",
+                        media_type=media_type,
+                        name=str(item.get("filename") or "image"),
+                    )
+                )
+            elif kind == "input_file":
+                parts.append(
+                    ConversationAttachmentPart(
+                        attachment_ref=f"attachment://inline/{invocation_id}/{index}",
+                        media_type=self._data_url_media_type(
+                            str(item.get("file_data") or item.get("file_url") or ""),
+                            fallback="application/octet-stream",
+                        ),
+                        name=str(item.get("filename") or "attachment"),
+                    )
+                )
+        conversation_input = ConversationInput(
+            input_id=invocation_id,
+            session_id=session_id,
+            idempotency_key=f"responses:{invocation_id}",
+            parts=tuple(parts),
+            model_ref=model or None,
+            reasoning=reasoning_effort or None,
+            extensions={
+                key: value
+                for key, value in (
+                    (APPROVAL_MODE_EXTENSION, approval_mode or None),
+                    (COLLABORATION_MODE_EXTENSION, collaboration_mode or None),
+                    (GOAL_OBJECTIVE_EXTENSION, goal_objective or None),
+                )
+                if value is not None
+            },
+        )
+        try:
+            validate_conversation_input(surface, conversation_input)
+        except ValueError as exc:
             raise StudioError(
-                "AGENT_MODEL_REQUIRED",
-                "当前 Agent 未绑定 Model Profile，请先在 Agent 配置中选择模型；"
-                "API Key 只提供访问凭证，不会自动绑定模型。",
+                "CONVERSATION_INPUT_UNSUPPORTED",
+                "当前 Agent 不支持此会话输入",
                 status_code=422,
-                field="spec.bindings.modelProfileId",
-            )
-        return await asyncio.to_thread(self.studio.builder.build, draft)
+                details={"reason": str(exc), "surfaceId": surface.surface_id},
+            ) from exc
+
+    @staticmethod
+    def _data_url_media_type(value: str, *, fallback: str) -> str:
+        if value.startswith("data:"):
+            media_type = value[5:].split(";", 1)[0].strip().lower()
+            if media_type:
+                return media_type
+        return fallback
 
     def _sessions(self, agent_id: str) -> list[dict[str, Any]]:
         grouped: dict[str, list[RunRecord]] = {}
@@ -939,7 +1067,7 @@ class StudioSharedWebBridge:
             if not isinstance(content, list):
                 continue
             items: list[dict[str, str]] = []
-            has_image = False
+            has_attachment = False
             for part in content:
                 if not isinstance(part, dict):
                     continue
@@ -954,8 +1082,19 @@ class StudioSharedWebBridge:
                     )
                     if url:
                         items.append({"type": "image", "url": url})
-                        has_image = True
-            if items and has_image:
+                        has_attachment = True
+                elif kind == "input_file":
+                    data = str(part.get("file_data") or part.get("file_url") or "")
+                    if data:
+                        items.append(
+                            {
+                                "type": "input_file",
+                                "file_data": data,
+                                "filename": str(part.get("filename") or "attachment"),
+                            }
+                        )
+                        has_attachment = True
+            if items and has_attachment:
                 return items
         return []
 

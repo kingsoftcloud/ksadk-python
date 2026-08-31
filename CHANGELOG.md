@@ -5,7 +5,31 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [Unreleased]
+## [0.8.3] - Unreleased
+
+> 本节是 Agent Runtime V2 Phase 2 的开发中草案，不代表已经发布或通过稳定版门禁。
+
+### 插件化基础
+
+- 新增统一的 `agentengine plugin` 产品入口，但不定义第三种 KsADK 私有插件格式。DSH Bundle/Profile 是唯一默认生态；受管理的固定版本 DSH/pnpm 工具链覆盖 `create`、`validate`、`test`、`pack`，开发者无需检出或编译 DeepSeek Harness 源码。
+- 新增事务化 PluginHost、能力注册与组合合同。一个真实仓外 DSH AgentProvider 已在同一受管 Profile 中通过安装、连续两轮状态延续、停用阻断、损坏升级失败回滚、重新启用旧版本继续执行以及卸载的完整 E2E。SQLite Store 与 Renderer 保持 host-owned，MCP、Skill 和 Context 只投影经过边界校验的安全数据；数据库路径和已解析 Secret 不越界。
+- DSH 本地目录和 `.tgz` 安装源按 SHA-256 固化到受管不可变存储；目录使用固定 pnpm 按 npm `files` 语义打包。启用、更新和投影前发现来源或制品摘要漂移会 fail closed；升级失败恢复旧 manifest、lock、状态和可执行旧包。
+- 新增 Codex App Server 插件桥接。Codex 插件的发现、详情、安装和卸载均交给 Codex 宿主，KsADK 不复制插件实现，也不接管其认证或宿主权限。
+- 新增 DeepSeek Harness Profile 管理桥接。DSH Bundle 的发现、安装、启停、升级、卸载和配置预检均委托给受管理的原生 `dsh plugin`，KsADK 只保存无 Secret 的 inventory、来源摘要与配置摘要。
+
+### Studio 自动化与会话表面
+
+- 新增本地 Scheduler Lite：支持 once、interval、cron、IANA 时区、启停、编辑、删除、立即运行、misfire 策略、并发保护和 occurrence 历史。Studio 提供全局自动化页和 Agent 详情页自动化 Tab；浏览器纵切已通过真实本地 Kernel 与 Codex RuntimeAdapter 验证 accepted、run identity、terminal 状态和刷新后历史对账。
+- 冻结 `ConversationSurface`、`ConversationInput` 和 `ConversationItem` 合同，统一文本、reasoning、工具、审批、A2UI 与未知 item 的 identity-aware 归并和回放边界。
+- 新增核心 Conversation Renderer 与受控 A2UI action bridge。自定义前端可以消费同一会话表面；未知类型保持安全的通用降级，不要求客户端理解某个 Provider 的私有事件。
+- 修复基础安装把 `agentengine studio` 整体误降级为不可用的问题：Studio 所需的 `google-adk` 现在随基础包安装；LiteLLM 与 JSON 修复等仅在 `[adk]` 扩展中保留。
+
+### 兼容与尚未关闭的门禁
+
+- Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
+- Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
+- Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
+- 稳定发布前仍需关闭共享 Web 包依赖、可写审批 revision、Studio/Hosted UI/独立前端会话浏览器 E2E、历史 Agent 非破坏验证，以及基于最终 clean commit 的 wheel/sdist provenance 和公开内容审计。任一门禁未通过时，本节保持 `Unreleased`。
 
 ## [0.8.2] - 2026-08-26
 

@@ -246,7 +246,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
   }, [loadPage, nextCursor, pageIndex]);
 
   return (
-    <div className="page-container resources-page" data-layout="data">
+    <div className="page-container resources-page" data-layout="data" data-scroll-mode="data">
       <PageHeaderActions>
         <button className="button accent" type="button" onClick={handleAdd}>
           <Plus size={15} /><span>{meta.addLabel}</span>

@@ -39,7 +39,10 @@ test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent a
   assert.match(source, /delta\.tool_calls/);
   assert.match(source, /response\.output_text\.delta/);
   assert.match(source, /directStreamActiveRef/);
-  assert.match(source, /item\.kind === "message" \|\| directKindsSeenRef/);
+  // A replay event is suppressed only when it has the same stable item id as
+  // a directly received event.  Distinct tool/reasoning items must survive.
+  assert.match(source, /item\.kind === "message" \|\| directItemIdsSeenRef/);
+  assert.doesNotMatch(source, /directKindsSeenRef/);
 });
 
 test("cloud chat exposes a failed run without implementation or credential copy", () => {

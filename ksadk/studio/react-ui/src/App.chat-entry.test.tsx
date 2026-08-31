@@ -18,6 +18,11 @@ vi.mock("./components/ChatWorkspace", () => ({
     <div data-testid="local-chat-workspace">{agentName}</div>
   ),
 }));
+vi.mock("./pages/CreatePage", () => ({
+  CreatePage: ({ onCreated }: { onCreated: (id?: string, openChat?: boolean) => void }) => (
+    <button type="button" onClick={() => onCreated("local-created", true)}>完成创建</button>
+  ),
+}));
 
 const mockedFetch = vi.mocked(apiFetch);
 
@@ -107,5 +112,49 @@ describe("Studio chat entry", () => {
       );
     });
     expect(screen.queryByTestId("local-chat-workspace")).not.toBeInTheDocument();
+  });
+
+  it("keeps an explicitly created local Agent selected while its directory refreshes", async () => {
+    window.history.replaceState(null, "", "#/create");
+    window.localStorage.setItem(
+      "agentkit-studio:chat-target:v1",
+      "cloud:account:ar-cloud-chat",
+    );
+    let agentListReads = 0;
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        agentListReads += 1;
+        return response({
+          items: agentListReads === 1
+            ? []
+            : [{ metadata: { id: "local-created", name: "新建本地 Agent" } }],
+        });
+      }
+      if (path === "/api/v1/agents/local-created") return response({ builds: [] });
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") {
+        return response({
+          items: [{
+            agentId: "ar-cloud-chat",
+            name: "云端客服 Agent",
+            status: "RUNNING",
+            framework: "langgraph",
+          }],
+        });
+      }
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+    await screen.getByRole("button", { name: "完成创建" }).click();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent("新建本地 Agent");
+    });
+    expect(screen.queryByTestId("cloud-chat-workspace")).not.toBeInTheDocument();
   });
 });
