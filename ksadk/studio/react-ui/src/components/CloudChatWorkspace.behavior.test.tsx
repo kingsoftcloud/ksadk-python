@@ -288,6 +288,40 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await waitFor(() => expect(streamPosted).toBe(true));
   });
 
+  it("admits only one cloud run when send is clicked twice before React rerenders", async () => {
+    let directPosts = 0;
+    const directStream = new ReadableStream<Uint8Array>({ start() {} });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-single-admission", title: "单次准入" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        directPosts += 1;
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+    await screen.findByText("单次准入");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "禁止重复提交");
+
+    const send = screen.getByRole("button", { name: "发送消息" });
+    // Dispatch both browser events in one task. `sending` has not committed
+    // yet, so only the synchronous admission fence can prevent a second run.
+    fireEvent.click(send);
+    fireEvent.click(send);
+
+    await waitFor(() => expect(directPosts).toBe(1));
+    expect(send).toBeDisabled();
+  });
+
   it("projects canonical nested RuntimeEvent items before RunAgent returns", async () => {
     let directStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const directStream = new ReadableStream<Uint8Array>({ start(controller) { directStreamController = controller; } });
