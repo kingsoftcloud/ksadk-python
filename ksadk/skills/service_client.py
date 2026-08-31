@@ -272,17 +272,19 @@ def _normalize_base_url(base_url: str) -> str:
 
 
 def _rewrite_ks3_to_internal(url: str) -> str:
-    """Rewrite a KS3 public endpoint to its internal counterpart (198 public-service-net).
+    """Rewrite a KS3 public endpoint to internal only when public is unreachable.
 
     AICP Skill Service returns pre-signed download URLs with public KS3 domains
     (e.g. skill.ks3-cn-beijing.ksyuncs.com -> 60.x public IP). On private_only
-    compute pods those public IPs are unreachable. This replaces the public domain
-    with the internal one (ks3-cn-beijing-internal.ksyuncs.com -> 198.18.96.x)
-    which is reachable from all compute nodes via the 198 public-service-net.
+    compute pods those public IPs are unreachable. This probes the public domain
+    first; if reachable keeps it, otherwise rewrites to the internal domain
+    (ks3-cn-beijing-internal.ksyuncs.com -> 198.18.96.x).
     """
     if not url:
         return url
     try:
+        from urllib.parse import urlsplit
+
         from ksadk.common.constants import get_ks3_endpoints
 
         region = os.environ.get(
@@ -291,8 +293,26 @@ def _rewrite_ks3_to_internal(url: str) -> str:
         public_ep, internal_ep = get_ks3_endpoints(region)
         if not public_ep or not internal_ep:
             return url
-        if public_ep in url:
-            return url.replace(public_ep, internal_ep)
+        if public_ep not in url:
+            return url
+
+        # Public reachable => keep it.
+        import socket
+
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            s = socket.socket()
+            s.settimeout(1.5)
+            s.connect((host, port))
+            s.close()
+            return url
+        except OSError:
+            pass
+
+        # Public unreachable => rewrite to internal.
+        return url.replace(public_ep, internal_ep)
     except Exception:
         pass
     return url

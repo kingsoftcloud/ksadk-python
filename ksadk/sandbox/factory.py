@@ -17,12 +17,13 @@ def bool_env(name: str, default: bool = True) -> bool:
 
 
 def _resolve_sandbox_api_url() -> str:
-    """Probe sandbox control-plane internal URL at runtime (in-Pod).
+    """Probe sandbox control-plane URL at runtime (in-Pod).
 
-    agentengine-server injects public E2B_API_URL on the management cluster;
-    private_only compute pods have no public egress. This function probes the
-    198 public-service-net internal address and overrides if reachable.
-    Mirrors KSPMAS get_kspmas_api_base(): probe runs in-Pod, reflects Pod network.
+    agentengine-server injects public E2B_API_URL on the management cluster.
+    public_only compute pods can reach the public address directly; private_only
+    pods have no public egress. Strategy: try the original (public) URL first;
+    if reachable keep it, otherwise fall back to the 198 public-service-net
+    internal address. Mirrors KSPMAS get_kspmas_api_base(): probe runs in-Pod.
     """
     raw = (os.environ.get("E2B_API_URL") or "").strip()
     if not raw:
@@ -46,13 +47,23 @@ def _resolve_sandbox_api_url() -> str:
     if not region:
         return raw
 
-    internal_host = f"sandbox.{region}.sandbox.sdns.ksyun.com"
-    internal_url = urlunsplit((parsed.scheme or "https", internal_host, parsed.path, parsed.query, ""))
+    import socket
 
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    # 1) Try the original (public) URL first; reachable => keep it.
     try:
-        import socket
+        s = socket.socket()
+        s.settimeout(1.5)
+        s.connect((host, port))
+        s.close()
+        return raw
+    except OSError:
+        pass
 
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    # 2) Public unreachable (e.g. private_only node) => fall back to internal.
+    internal_host = f"sandbox.{region}.sandbox.sdns.ksyun.com"
+    try:
         s = socket.socket()
         s.settimeout(1.5)
         s.connect((internal_host, port))
@@ -60,6 +71,7 @@ def _resolve_sandbox_api_url() -> str:
     except OSError:
         return raw
 
+    internal_url = urlunsplit((parsed.scheme or "https", internal_host, parsed.path, parsed.query, ""))
     return internal_url
 
 
