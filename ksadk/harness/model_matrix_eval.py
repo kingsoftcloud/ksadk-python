@@ -39,6 +39,15 @@ class DiscoveredModel:
     context_window: int | None = None
 
 
+@dataclass(frozen=True)
+class ModelMatrixRequirements:
+    """Release requirements evaluated without guessing provider capabilities."""
+
+    require_streaming: bool = False
+    min_context_window: int | None = None
+    required_input_modalities: tuple[str, ...] = ()
+
+
 class StreamingCompatibilityProbe(Protocol):
     """Provider-neutral probe for OpenAI-compatible streaming semantics."""
 
@@ -312,6 +321,7 @@ async def _probe_one(
     *,
     reasoner_factory: Callable[[], HarnessReasoner],
     streaming_probe: StreamingCompatibilityProbe | None,
+    requirements: ModelMatrixRequirements,
 ) -> dict[str, Any]:
     reasoner = reasoner_factory()
     result: dict[str, Any] = {
@@ -412,10 +422,47 @@ async def _probe_one(
                 f"stream_tool_calling:{type(exc).__name__}:"
                 f"{safe_model_error_message(exc, limit=240)}"
             )
+    elif requirements.require_streaming:
+        result["errors"].append("streaming_probe_not_configured")
+
+    capability_findings: list[dict[str, Any]] = []
+    if requirements.min_context_window is not None:
+        actual = model.context_window
+        passed = actual is not None and actual >= requirements.min_context_window
+        capability_findings.append(
+            {
+                "capability": "context_window",
+                "status": "passed" if passed else "failed",
+                "required": requirements.min_context_window,
+                "actual": actual,
+                "reason": "metadata_missing" if actual is None else "below_minimum",
+            }
+        )
+        if not passed:
+            result["errors"].append("required_context_window_unavailable")
+    if requirements.required_input_modalities:
+        available = set(model.input_modalities)
+        missing = [
+            item for item in requirements.required_input_modalities if item not in available
+        ]
+        capability_findings.append(
+            {
+                "capability": "input_modalities",
+                "status": "failed" if missing else "passed",
+                "required": list(requirements.required_input_modalities),
+                "actual": list(model.input_modalities),
+                "missing": missing,
+            }
+        )
+        if missing:
+            result["errors"].append("required_input_modality_unavailable")
+    result["capability_findings"] = capability_findings
     required_checks = [result["basic_chat"], result["tool_calling"]]
-    if streaming_probe is not None:
+    if streaming_probe is not None or requirements.require_streaming:
         required_checks.extend([result["stream_text"], result["stream_tool_calling"]])
-    result["passed"] = all(bool(check) for check in required_checks)
+    result["passed"] = all(bool(check) for check in required_checks) and not any(
+        item["status"] == "failed" for item in capability_findings
+    )
     return result
 
 
@@ -424,9 +471,11 @@ async def evaluate_model_matrix(
     *,
     reasoner_factory: Callable[[], HarnessReasoner] = LiteLLMHarnessReasoner,
     streaming_probe: StreamingCompatibilityProbe | None = None,
+    requirements: ModelMatrixRequirements | None = None,
 ) -> dict[str, Any]:
     """Run basic chat and tool-calling probes for each selected model."""
 
+    requirements = requirements or ModelMatrixRequirements()
     results = []
     for model in models:
         results.append(
@@ -434,12 +483,27 @@ async def evaluate_model_matrix(
                 model,
                 reasoner_factory=reasoner_factory,
                 streaming_probe=streaming_probe,
+                requirements=requirements,
             )
         )
+    passed_count = sum(1 for item in results if item["passed"])
+    status = "ready" if results and passed_count == len(results) else "blocked"
     return {
+        "schemaVersion": 1,
+        "status": status,
         "model_count": len(results),
-        "passed_count": sum(1 for item in results if item["passed"]),
+        "passed_count": passed_count,
         "all_passed": bool(results) and all(item["passed"] for item in results),
+        "summary": {
+            "passed": passed_count,
+            "failed": len(results) - passed_count,
+            "skipped": 0,
+        },
+        "requirements": {
+            "require_streaming": requirements.require_streaming,
+            "min_context_window": requirements.min_context_window,
+            "required_input_modalities": list(requirements.required_input_modalities),
+        },
         "results": results,
     }
 
@@ -451,6 +515,7 @@ def run_model_matrix(
     requested_models: Sequence[str] = (),
     limit: int = 4,
     include_streaming: bool = False,
+    requirements: ModelMatrixRequirements | None = None,
 ) -> dict[str, Any]:
     discovered = discover_models(base_url=base_url, api_key=api_key)
     selected = select_models(discovered, requested_models, limit=limit)
@@ -464,7 +529,11 @@ def run_model_matrix(
             else None
         )
         evaluated = asyncio.run(
-            evaluate_model_matrix(selected, streaming_probe=streaming_probe)
+            evaluate_model_matrix(
+                selected,
+                streaming_probe=streaming_probe,
+                requirements=requirements,
+            )
         )
     finally:
         if old_base is None:
@@ -518,6 +587,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "DiscoveredModel",
+    "ModelMatrixRequirements",
     "OpenAICompatibleStreamingProbe",
     "StreamingCompatibilityProbe",
     "discover_models",

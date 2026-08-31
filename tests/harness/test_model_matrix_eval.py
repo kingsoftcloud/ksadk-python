@@ -8,6 +8,7 @@ import pytest
 
 from ksadk.harness.model_matrix_eval import (
     DiscoveredModel,
+    ModelMatrixRequirements,
     OpenAICompatibleStreamingProbe,
     discover_models,
     evaluate_model_matrix,
@@ -84,6 +85,75 @@ def test_evaluate_model_matrix_checks_chat_tool_calling_and_usage() -> None:
     assert report["all_passed"] is True
     assert report["passed_count"] == 2
     assert all(item["usage_reported"] for item in report["results"])
+    assert report["schemaVersion"] == 1
+    assert report["status"] == "ready"
+    assert report["summary"] == {"passed": 2, "failed": 0, "skipped": 0}
+
+
+def test_declared_capability_requirements_never_guess_missing_metadata() -> None:
+    class Reasoner:
+        async def complete(self, *, tools, **_):
+            if tools:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="call-1",
+                            name="record_model_matrix_probe",
+                            arguments={"code": "KSADK-42"},
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="MODEL_MATRIX_OK")
+
+    report = asyncio.run(
+        evaluate_model_matrix(
+            (
+                DiscoveredModel(
+                    "known", input_modalities=("text", "image"), context_window=200000
+                ),
+                DiscoveredModel("metadata-missing"),
+            ),
+            reasoner_factory=Reasoner,
+            requirements=ModelMatrixRequirements(
+                min_context_window=131072,
+                required_input_modalities=("text", "image"),
+            ),
+        )
+    )
+
+    assert report["status"] == "blocked"
+    assert report["passed_count"] == 1
+    missing = report["results"][1]
+    assert "required_context_window_unavailable" in missing["errors"]
+    assert "required_input_modality_unavailable" in missing["errors"]
+    assert missing["capability_findings"][0]["reason"] == "metadata_missing"
+
+
+def test_required_streaming_without_probe_is_explicit_blocker() -> None:
+    class Reasoner:
+        async def complete(self, *, tools, **_):
+            if tools:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="call-1",
+                            name="record_model_matrix_probe",
+                            arguments={"code": "KSADK-42"},
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="MODEL_MATRIX_OK")
+
+    report = asyncio.run(
+        evaluate_model_matrix(
+            (DiscoveredModel("model-a"),),
+            reasoner_factory=Reasoner,
+            requirements=ModelMatrixRequirements(require_streaming=True),
+        )
+    )
+
+    assert report["status"] == "blocked"
+    assert report["results"][0]["errors"][-1] == "streaming_probe_not_configured"
 
 
 def test_evaluate_model_matrix_reports_incompatible_model_without_aborting_matrix() -> None:
