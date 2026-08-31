@@ -650,6 +650,7 @@ def run_model_matrix(
     include_streaming: bool = False,
     include_overflow: bool = False,
     requirements: ModelMatrixRequirements | None = None,
+    declare_out: str = "",
 ) -> dict[str, Any]:
     discovered = discover_models(base_url=base_url, api_key=api_key)
     selected = select_models(discovered, requested_models, limit=limit)
@@ -684,6 +685,18 @@ def run_model_matrix(
             os.environ.pop("OPENAI_API_KEY", None)
         else:
             os.environ["OPENAI_API_KEY"] = old_key
+    if declare_out:
+        # 矩阵结果落成 Provider 能力声明文件；运行时通过
+        # KSADK_MODEL_CAPABILITY_FILE 装配并据此自动选择受支持模式。
+        from ksadk.harness.model_capability import ModelCapabilityStore, apply_matrix_report
+
+        store = ModelCapabilityStore()
+        applied = apply_matrix_report(evaluated, store)
+        store.save(declare_out)
+        evaluated["capabilityDeclarations"] = {
+            "file": declare_out,
+            "applied": applied,
+        }
     return {
         "endpoint": base_url,
         "discovered_count": len(discovered),
@@ -709,6 +722,15 @@ def main() -> None:
         action="store_true",
         help="Also verify context-overflow failures are classified as context_length",
     )
+    parser.add_argument(
+        "--declare-out",
+        default="",
+        help=(
+            "Write matrix results as a provider capability declaration file; "
+            "point KSADK_MODEL_CAPABILITY_FILE at it so the runtime picks "
+            "supported modes per model"
+        ),
+    )
     args = parser.parse_args()
     base_url = os.getenv("OPENAI_BASE_URL", "")
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -719,6 +741,7 @@ def main() -> None:
         limit=args.limit,
         include_streaming=args.streaming,
         include_overflow=args.overflow,
+        declare_out=args.declare_out,
     )
     safe = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out:

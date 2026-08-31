@@ -442,6 +442,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Enable streaming model responses when supported (unset = auto).",
     ),
     EnvVarSpec(
+        "KSADK_MODEL_CAPABILITY_FILE",
+        "models",
+        "Provider capability declaration file produced by the model matrix.",
+    ),
+    EnvVarSpec(
         "KSADK_MODEL_PROXY_AGENTS",
         "model_proxy",
         "Comma-separated agent allowlist for the experimental model proxy.",

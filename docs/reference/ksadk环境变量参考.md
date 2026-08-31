@@ -396,6 +396,7 @@
 | `AGENTENGINE_MANIFEST_SHA256` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端规范化 `agentengine.yaml` 的 SHA-256；镜像启动时校验挂载内容。 |
 | `KSADK_MODEL_PROFILE_MAP` | 模型 | 否 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | JSON 对象，把 model profile ref 映射到 provider 模型 id。 |
 | `KSADK_MODEL_STREAMING` | 模型 | 否 | 自动 | 无 | 否 | 开发者 / 平台 | 否 | 开启流式模型响应（未设置时按 provider 能力自动）。 |
+| `KSADK_MODEL_CAPABILITY_FILE` | 模型 | 否 | 无 | 无 | 否 | 开发者 / 平台 | 否 | 模型矩阵产出的 Provider 能力声明文件；运行时据此自动选择各模型受支持的模式（如流式降级）。 |
 | `KSADK_MODEL_PROXY_ENABLED` | Model proxy | 否 | `0` | 无 | 否 | 开发者 / 平台 | 否 | 启用实验性模型协议转换层。 |
 | `KSADK_MODEL_PROXY_AGENTS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 agent allowlist。 |
 | `KSADK_MODEL_PROXY_MODELS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 model allowlist。 |

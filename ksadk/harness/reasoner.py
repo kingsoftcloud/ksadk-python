@@ -79,10 +79,18 @@ def resolve_model_identifier(model: str) -> str:
 class LiteLLMHarnessReasoner:
     """Use the project's OpenAI-compatible LiteLLM configuration for tool reasoning."""
 
-    def __init__(self, *, streaming: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        streaming: bool | None = None,
+        capability_store: Any | None = None,
+    ) -> None:
         # None keeps compatibility while allowing deployments to turn streaming on
         # without changing an immutable Agent Revision.
         self._streaming = streaming
+        self._capability_store = capability_store
+        #: 最近一次调用实际使用的模式（供审计/测试断言能力裁决结果）。
+        self.last_streaming_mode: bool | None = None
 
     async def complete(
         self,
@@ -115,13 +123,35 @@ class LiteLLMHarnessReasoner:
         if api_key:
             kwargs["api_key"] = api_key
         streaming = self._streaming
+        explicit_off = False
         if streaming is None:
-            streaming = os.getenv("KSADK_MODEL_STREAMING", "").strip().lower() in {
+            raw = os.getenv("KSADK_MODEL_STREAMING", "").strip().lower()
+            streaming = raw in {
                 "1",
                 "true",
                 "yes",
                 "on",
             }
+            explicit_off = raw != "" and not streaming
+        store = self._capability_store
+        if store is None:
+            from ksadk.harness.model_capability import global_capability_store
+
+            store = global_capability_store()
+        if store is not None:
+            # 模型兼容策略：矩阵实测声明按模型自动选择受支持的模式——
+            # 不支持流式（或流式 Tool Call）的模型降级为非流式；默认
+            # 非流式但非流式 Tool Call 不可靠的模型升级为流式。显式
+            # 关闭流式（构造参数或环境变量）不升级。
+            from ksadk.harness.model_capability import resolve_streaming_mode
+
+            streaming = resolve_streaming_mode(
+                requested=streaming,
+                model_id=resolved_model,
+                store=store,
+                allow_upgrade=not explicit_off and self._streaming is None,
+            )
+        self.last_streaming_mode = streaming
         if streaming:
             kwargs["stream"] = True
             kwargs["stream_options"] = {"include_usage": True}
