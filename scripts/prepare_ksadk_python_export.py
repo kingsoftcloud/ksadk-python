@@ -102,6 +102,7 @@ REQUIRED_PUBLIC_FILES = {
 }
 
 SCRIPT_EXPORT_FILES = {
+    "scripts/audit_docs_site_output.py",
     "scripts/audit_release_artifacts.py",
     "scripts/build_alias_distribution.py",
     "scripts/check_approval_record.py",
@@ -154,6 +155,7 @@ PUBLIC_TEST_FILES = {
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
     "tests/test_config_env_registry.py",
+    "tests/test_docs_site_output_audit.py",
     "tests/test_markdown_repair.py",
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",

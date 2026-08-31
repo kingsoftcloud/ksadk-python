@@ -30,7 +30,7 @@
 - Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
 - Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
 - Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
-- `ksadk-web@0.3.4` 的源码门禁、独立浏览器 E2E、GitHub Pages 演示 E2E 和显式 tarball 消费已通过；候选 tarball SHA-256 为 `8ff8c69147ff9ac9f340292390129b3a96f364212500c45aec26f4cf720dc436`。正式发布仍要求先完成 npm Trusted Publishing，再从公开 registry 重建 Studio、预发 Hosted UI 和线上 Hosted UI；随后必须在预发重新完成 Studio 新 Agent 与 0.8.2 历史 Agent 的多轮流式、思考、工具、审批、刷新回放和上下文续接，并以最终 clean commit 通过 wheel/sdist provenance、公开内容审计和维护者审批。在这些外部写入和部署证据完成前本节保持 `Unreleased`。
+- `ksadk-web@0.3.4` 的源码门禁、独立浏览器 E2E、GitHub Pages 演示 E2E 和显式 tarball 消费已通过；候选 tarball SHA-256 为 `8ff8c69147ff9ac9f340292390129b3a96f364212500c45aec26f4cf720dc436`。正式发布仍要求先完成 npm Trusted Publishing，再从公开 registry 重建 Studio、受控发布验证环境与正式环境的 Hosted UI；随后必须重新完成 Studio 新 Agent 与 0.8.2 历史 Agent 的多轮流式、思考、工具、审批、刷新回放和上下文续接，并以最终 clean commit 通过 wheel/sdist provenance、公开内容审计和维护者审批。在这些外部写入和部署证据完成前本节保持 `Unreleased`。
 - 新增 Phase 2 最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
 
 ## [0.8.2] - 2026-08-26
