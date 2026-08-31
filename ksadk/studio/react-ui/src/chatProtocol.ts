@@ -383,6 +383,34 @@ export function applyConversationStreamResult(
   );
 }
 
+function applyExplicitRunTerminalEvent(
+  state: ChatStreamState,
+  event: ResponseStreamEvent,
+  type: string,
+): ChatStreamState | null {
+  const runId = String(event.runId || event.run_id || state.runId);
+  if (type === "run.completed") {
+    return { ...state, runId, status: "completed" };
+  }
+  if (type === "run.cancelled" || type === "run.canceled") {
+    return { ...state, runId, status: "cancelled" };
+  }
+  if (type === "run.failed" || type === "run.interrupted") {
+    const error = recordOf(event.error);
+    return {
+      ...state,
+      runId,
+      status: "failed",
+      error: String(
+        error.message
+        || event.message
+        || (type === "run.interrupted" ? "Agent 运行中断" : "Agent 运行失败"),
+      ),
+    };
+  }
+  return null;
+}
+
 export function reduceChatStreamEvent(
   state: ChatStreamState,
   event: ResponseStreamEvent,
@@ -391,31 +419,30 @@ export function reduceChatStreamEvent(
   const conversationItem = decodeConversationItem(event.conversationItem);
   if (conversationItem) {
     const conversationItems = reduceConversationItem(state.conversationItems, conversationItem);
-    if (conversationItems === state.conversationItems) return state;
-    const projection = projectConversationItems(conversationItems);
-    return applyConversationProjection(state, conversationItems, projection);
+    const projectedState = conversationItems === state.conversationItems
+      ? state
+      : applyConversationProjection(
+        state,
+        conversationItems,
+        projectConversationItems(conversationItems),
+      );
+    // A ConversationItem describes one renderer item. Even when that item is
+    // valid (or replayed), the outer stream event remains authoritative for
+    // the lifecycle of the whole run.
+    return applyExplicitRunTerminalEvent(projectedState, event, type) || projectedState;
   }
   if (event.conversationItem !== undefined) {
     // The conversationItem was present but didn't pass strict schema validation.
     // Instead of spamming the UI with "暂不支持" cards, silently update run status.
-    const terminal = type === "run.failed" || type === "run.completed";
-    const failed = type === "run.failed";
+    const terminalState = applyExplicitRunTerminalEvent(state, event, type);
+    if (terminalState) return terminalState;
     return {
       ...state,
-      status: failed ? "failed" : type === "run.completed" ? "completed" : state.status,
-      error: failed ? "运行失败" : state.error,
-      ...(terminal ? {} : { runId: String(event.runId || event.run_id || state.runId) }),
+      runId: String(event.runId || event.run_id || state.runId),
     };
   }
-  if (type === "run.completed") return { ...state, status: "completed" };
-  if (type === "run.failed") {
-    const error = recordOf(event.error);
-    return {
-      ...state,
-      status: "failed",
-      error: String(error.message || event.message || "Agent 运行失败"),
-    };
-  }
+  const terminalState = applyExplicitRunTerminalEvent(state, event, type);
+  if (terminalState) return terminalState;
   if (type === "response.created" || type === "response.in_progress") {
     const response = recordOf(event.response);
     return { ...state, responseId: String(response.id || state.responseId) };
