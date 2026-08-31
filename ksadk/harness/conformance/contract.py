@@ -205,6 +205,55 @@ def verify_model_call_pairing(events: list[RuntimeEvent], report: ConformanceRep
         report.fail("model-pair", f"model.call.started {open_model!r} 未闭合")
 
 
+def verify_model_provider_policy(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """重试/降级事件必须诚实声明动作，且下一次调用与动作一致。"""
+
+    model_events = [
+        event
+        for event in events
+        if event.event_type
+        in {
+            EventType.MODEL_CALL_STARTED,
+            EventType.MODEL_CALL_COMPLETED,
+            EventType.MODEL_CALL_FAILED,
+        }
+    ]
+    for index, event in enumerate(model_events):
+        payload = _payload(event)
+        attempt = payload.get("attempt")
+        if attempt is not None and (not isinstance(attempt, int) or attempt < 1):
+            report.fail("model-policy", f"模型调用 attempt 非法: {attempt!r}")
+        if event.event_type != EventType.MODEL_CALL_FAILED or "action" not in payload:
+            continue
+        action = str(payload.get("action") or "")
+        if action not in {"retry_same_model", "failover", "abort", "budget_exhausted"}:
+            report.fail("model-policy", f"失败动作非法: {action!r}")
+            continue
+        next_started = next(
+            (
+                candidate
+                for candidate in model_events[index + 1 :]
+                if candidate.event_type == EventType.MODEL_CALL_STARTED
+            ),
+            None,
+        )
+        if action in {"abort", "budget_exhausted"}:
+            if next_started is not None:
+                report.fail("model-policy", f"动作 {action} 后仍发起模型调用")
+            continue
+        if next_started is None:
+            report.fail("model-policy", f"动作 {action} 后缺少下一次模型调用")
+            continue
+        next_payload = _payload(next_started)
+        if isinstance(attempt, int) and next_payload.get("attempt") != attempt + 1:
+            report.fail("model-policy", "重试/降级 attempt 未连续递增")
+        same_model = next_payload.get("model") == payload.get("model")
+        if action == "retry_same_model" and not same_model:
+            report.fail("model-policy", "retry_same_model 却切换了模型")
+        if action == "failover" and same_model:
+            report.fail("model-policy", "failover 却仍调用同一模型")
+
+
 def verify_tool_failure_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:
     """tool.call.end 带 error 时不允许同时携带 result（失败不得伪装成功）。"""
     for event in events:
@@ -421,6 +470,7 @@ def run_conformance_suite(
     verify_cancel_honesty(events, report, cancel_requested=cancel_requested)
     # 加固（plan §15 conformance 补齐：恢复/检查点/幂等/工具失败/压缩）。
     verify_model_call_pairing(events, report)
+    verify_model_provider_policy(events, report)
     verify_tool_failure_honesty(events, report)
     verify_tool_reliability_honesty(events, report)
     verify_approval_flow(events, report)

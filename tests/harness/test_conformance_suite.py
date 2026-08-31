@@ -238,6 +238,39 @@ def test_model_call_nesting_and_unclosed_fail():
     ]
     assert "model-pair" in _violation_rules(run_conformance_suite(nested))
 
+
+def test_model_provider_policy_action_must_match_next_attempt():
+    make = make_event_factory()
+    events = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(
+            EventType.MODEL_CALL_STARTED,
+            {"model": "primary", "attempt": 1, "model_attempt": 1},
+        ),
+        make(
+            EventType.MODEL_CALL_FAILED,
+            {
+                "model": "primary",
+                "attempt": 1,
+                "model_attempt": 1,
+                "failure_category": "unavailable",
+                "action": "retry_same_model",
+                "error": "provider unavailable",
+            },
+        ),
+        make(
+            EventType.MODEL_CALL_STARTED,
+            {"model": "backup", "attempt": 3, "model_attempt": 1},
+        ),
+        make(
+            EventType.MODEL_CALL_COMPLETED,
+            {"model": "backup", "attempt": 3, "model_attempt": 1},
+        ),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    report = run_conformance_suite(events)
+    assert "model-policy" in _violation_rules(report)
+
     unclosed = [
         make(EventType.RUN_STARTED, {"status": "running"}),
         make(EventType.MODEL_CALL_STARTED, {"model": "m"}),

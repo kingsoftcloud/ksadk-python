@@ -64,6 +64,7 @@ class BuildManifest:
     engine: str
     model_profile_ref: str
     fallback_model_profile_refs: tuple[str, ...] = ()
+    model_provider_policy: dict[str, Any] = field(default_factory=dict)
     mcp_refs: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
@@ -78,6 +79,7 @@ class BuildManifest:
             "engine": self.engine,
             "modelProfileRef": self.model_profile_ref,
             "fallbackModelProfileRefs": list(self.fallback_model_profile_refs),
+            "modelProviderPolicy": self.model_provider_policy,
             "mcpRefs": list(self.mcp_refs),
             "skillRefs": list(self.skill_refs),
             "policyRefs": list(self.policy_refs),
@@ -107,6 +109,7 @@ class BuildPipeline:
             engine="managed-langgraph",
             model_profile_ref=spec.model.profile_ref,
             fallback_model_profile_refs=spec.model.fallback_profile_refs,
+            model_provider_policy=spec.model.provider_policy.model_dump(mode="json"),
             mcp_refs=tuple(b.capability_ref for b in spec.capabilities.mcp_bindings),
             skill_refs=tuple(b.capability_ref for b in spec.capabilities.skill_bindings),
             content_hash=content_hash,

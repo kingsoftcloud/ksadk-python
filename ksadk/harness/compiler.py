@@ -19,6 +19,8 @@ from ksadk.harness.spec import (
     HarnessSpec,
     MemoryPolicy,
     ModelBinding,
+    ModelFailureCategory,
+    ModelProviderPolicy,
     PromptSpec,
     SandboxPolicy,
     SubAgentBinding,
@@ -49,9 +51,21 @@ class OrchestrationInput(_RevisionInputModel):
     config_ref: str | None = None
 
 
+class RevisionModelProviderPolicyInput(_RevisionInputModel):
+    max_attempts_per_model: int = Field(default=2, ge=1, le=5)
+    total_attempt_budget: int = Field(default=6, ge=1, le=20)
+    initial_backoff_ms: int = Field(default=200, ge=0, le=30_000)
+    max_backoff_ms: int = Field(default=2_000, ge=0, le=60_000)
+    retryable_categories: tuple[ModelFailureCategory, ...] = tuple(ModelFailureCategory)
+    failover_categories: tuple[ModelFailureCategory, ...] = tuple(ModelFailureCategory)
+
+
 class RevisionModelInput(_RevisionInputModel):
     profile_ref: str
     fallback_profile_refs: tuple[str, ...] = Field(default=(), max_length=4)
+    provider_policy: RevisionModelProviderPolicyInput = Field(
+        default_factory=RevisionModelProviderPolicyInput
+    )
 
 
 class MCPBindingInput(_RevisionInputModel):
@@ -134,6 +148,7 @@ def compile_revision_to_spec(
     model_binding = ModelBinding(
         profile_ref=spec.model.profile_ref,
         fallback_profile_refs=spec.model.fallback_profile_refs,
+        provider_policy=ModelProviderPolicy(**spec.model.provider_policy.model_dump()),
     )
 
     prompt = (

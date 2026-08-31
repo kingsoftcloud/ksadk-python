@@ -260,6 +260,7 @@ class EngineContextPipeline:
                 ReasonInput(
                     model_ref=spec.model.profile_ref,
                     fallback_model_refs=spec.model.fallback_profile_refs,
+                    provider_policy=spec.model.provider_policy,
                     instructions=(
                         "你是上下文压缩器。请把以下对话历史压缩为要点摘要，"
                         "必须保留所有 ID、金额、日期、审批号等关键事实。"

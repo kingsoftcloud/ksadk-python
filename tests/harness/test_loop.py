@@ -24,6 +24,7 @@ from ksadk.harness.loop.tools import (
     execute_tool_calls,
 )
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
+from ksadk.harness.spec import ModelProviderPolicy
 from ksadk.harness.state import WorkingContext
 
 
@@ -144,9 +145,7 @@ def test_reason_model_failure_emits_failed_then_raises():
         async def complete(self, **_):  # type: ignore[no-untyped-def]
             raise RuntimeError("provider 500")
 
-    with pytest.raises(
-        ModelFailoverExhausted, match="all configured model profiles failed"
-    ) as error:
+    with pytest.raises(ModelFailoverExhausted, match="model invocation aborted") as error:
         _run(
             reason_turn_async(
                 1,
@@ -156,6 +155,7 @@ def test_reason_model_failure_emits_failed_then_raises():
                     messages=[{"role": "user", "content": "x"}],
                     tools=[],
                     reasoner=_Boom(),
+                    provider_policy=ModelProviderPolicy(max_attempts_per_model=1),
                 ),
             )
         )
@@ -191,6 +191,11 @@ def test_reason_falls_back_and_audits_effective_model():
                 messages=[{"role": "user", "content": "x"}],
                 tools=[],
                 reasoner=reasoner,
+                provider_policy=ModelProviderPolicy(
+                    max_attempts_per_model=1,
+                    initial_backoff_ms=0,
+                    max_backoff_ms=0,
+                ),
             ),
         )
     )
@@ -211,7 +216,11 @@ def test_reason_falls_back_and_audits_effective_model():
         (EventType.MODEL_CALL_STARTED, "backup"),
         (EventType.MODEL_CALL_COMPLETED, "backup"),
     ]
-    assert model_events[-1].payload == {"model": "backup", "attempt": 2, "fallback": True}
+    assert model_events[-1].payload["model"] == "backup"
+    assert model_events[-1].payload["attempt"] == 2
+    assert model_events[-1].payload["model_attempt"] == 1
+    assert model_events[-1].payload["candidate_index"] == 2
+    assert model_events[-1].payload["fallback"] is True
     assert out.selected_model_ref == "backup"
     usage = next(event for event in out.events if event.event_type == EventType.USAGE_REPORTED)
     assert usage.payload["model"] == "backup"

@@ -1502,7 +1502,14 @@ KsADK Harness MVP 不是“页面上能发送一句话”，而是满足以下�
 - 支持基础 Context 压缩；
 - 支持失败降级：Revision 固定主模型与最多四个备用 Model Profile，默认
   Agent Loop、上下文压缩和子 Agent 共用同一降级链；每次失败尝试与最终
-  生效模型分别进入 RuntimeEvent、Usage 和就绪度报告，禁止静默换模。
+  生效模型分别进入 RuntimeEvent、Usage 和就绪度报告，禁止静默换模；
+- 降级链由不可变 `ModelProviderPolicy` 约束：仅限流、超时、服务不可用和
+  传输故障允许同模型重试或切换备用模型；鉴权、权限、非法请求、上下文超限
+  与未知错误立即终止，避免用换模掩盖配置或安全问题；
+- Policy 同时限制单模型尝试次数、指数退避和整次调用总预算。每次失败事件
+  记录稳定分类、策略动作、尝试序号和退避时间，原始异常先脱敏再进入事件；
+  Harness Conformance 校验 `retry_same_model`、`failover`、`abort` 与
+  `budget_exhausted` 的事件序列，保证不同入口和子 Agent 行为一致。
 
 ### 22.3 生命周期
 

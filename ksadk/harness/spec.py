@@ -24,11 +24,52 @@ class _SpecModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ModelFailureCategory(str, Enum):
+    """平台稳定分类，避免按厂商异常类直接决定重试与降级。"""
+
+    RATE_LIMIT = "rate_limit"
+    TIMEOUT = "timeout"
+    UNAVAILABLE = "unavailable"
+    TRANSPORT = "transport"
+
+
+class ModelProviderPolicy(_SpecModel):
+    """模型提供方失败策略。
+
+    只允许对瞬时故障配置重试/降级。鉴权、权限、请求参数、上下文超限和
+    未知错误不会被此合同静默包装为可重试故障。
+    """
+
+    max_attempts_per_model: int = Field(default=2, ge=1, le=5)
+    total_attempt_budget: int = Field(default=6, ge=1, le=20)
+    initial_backoff_ms: int = Field(default=200, ge=0, le=30_000)
+    max_backoff_ms: int = Field(default=2_000, ge=0, le=60_000)
+    retryable_categories: tuple[ModelFailureCategory, ...] = (
+        ModelFailureCategory.RATE_LIMIT,
+        ModelFailureCategory.TIMEOUT,
+        ModelFailureCategory.UNAVAILABLE,
+        ModelFailureCategory.TRANSPORT,
+    )
+    failover_categories: tuple[ModelFailureCategory, ...] = (
+        ModelFailureCategory.RATE_LIMIT,
+        ModelFailureCategory.TIMEOUT,
+        ModelFailureCategory.UNAVAILABLE,
+        ModelFailureCategory.TRANSPORT,
+    )
+
+    @model_validator(mode="after")
+    def validate_backoff(self) -> "ModelProviderPolicy":
+        if self.max_backoff_ms < self.initial_backoff_ms:
+            raise ValueError("max_backoff_ms 不得小于 initial_backoff_ms")
+        return self
+
+
 class ModelBinding(_SpecModel):
     """模型绑定：profile_ref 固定版本，可选降级链。"""
 
     profile_ref: str = Field(min_length=1, max_length=512)
     fallback_profile_refs: tuple[str, ...] = Field(default=(), max_length=4)
+    provider_policy: ModelProviderPolicy = Field(default_factory=ModelProviderPolicy)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
 
@@ -199,6 +240,7 @@ def build_manifest(spec: HarnessSpec, *, engine: str = "managed-langgraph") -> d
         "engine": engine,
         "modelProfileRef": spec.model.profile_ref,
         "fallbackModelProfileRefs": list(spec.model.fallback_profile_refs),
+        "modelProviderPolicy": spec.model.provider_policy.model_dump(mode="json"),
         "mcpRefs": [b.capability_ref for b in spec.capabilities.mcp_bindings],
         "skillRefs": [b.capability_ref for b in spec.capabilities.skill_bindings],
         "memoryPolicyRef": None,
@@ -220,6 +262,8 @@ __all__ = [
     "HarnessSpec",
     "MemoryPolicy",
     "ModelBinding",
+    "ModelFailureCategory",
+    "ModelProviderPolicy",
     "ObservabilityPolicy",
     "PromptSpec",
     "SandboxPolicy",

@@ -10,12 +10,21 @@ append 引擎事件队列——把事件作为列表返回，由引擎节点收�
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ksadk.harness.events import EventType, RuntimeEvent
+from ksadk.harness.model_provider import (
+    ModelFailureAction,
+    classify_model_failure,
+    decide_model_failure_action,
+    retry_delay_ms,
+    safe_model_error_message,
+)
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
+from ksadk.harness.spec import ModelProviderPolicy
 
 #: reason 节点的路由结果。引擎据此走 tool_calls 或 final 出口。
 ROUTE_TOOL_CALLS = "tool_calls"
@@ -32,6 +41,7 @@ class ReasonInput:
     tools: Sequence[Any]
     reasoner: HarnessReasoner
     fallback_model_refs: tuple[str, ...] = ()
+    provider_policy: ModelProviderPolicy = field(default_factory=ModelProviderPolicy)
     #: 用于 RuntimeEvent 标识的锚点（由引擎注入）。
     agent_id: str = ""
     user_id: str = ""
@@ -65,7 +75,7 @@ class ReasoningLimitError(RuntimeError):
 
 
 class ModelFailoverExhausted(RuntimeError):
-    """主模型及全部备用模型均失败，并携带已闭合的审计事件。"""
+    """模型调用被策略终止，并携带已闭合的审计事件。"""
 
     def __init__(
         self,
@@ -73,13 +83,24 @@ class ModelFailoverExhausted(RuntimeError):
         events: Sequence[RuntimeEvent],
         attempted_models: Sequence[str],
         last_error: Exception,
+        stop_reason: ModelFailureAction,
     ) -> None:
-        super().__init__(
-            f"all configured model profiles failed ({len(attempted_models)} attempts): {last_error}"
-        )
+        safe_error = safe_model_error_message(last_error)
+        if stop_reason == ModelFailureAction.ABORT:
+            message = (
+                "model invocation aborted by provider policy "
+                f"({len(attempted_models)} attempts): {safe_error}"
+            )
+        else:
+            message = (
+                "all configured model profiles failed "
+                f"({len(attempted_models)} attempts): {safe_error}"
+            )
+        super().__init__(message)
         self.events = tuple(events)
         self.attempted_models = tuple(attempted_models)
         self.last_error = last_error
+        self.stop_reason = stop_reason
 
 
 def reason_turn(turn_count: int, inp: ReasonInput) -> ReasonOutput | None:
@@ -111,39 +132,91 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
     candidates = tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
     turn: HarnessReasoningTurn | None = None
     selected_model_ref: str | None = None
-    for attempt, model_ref in enumerate(candidates, start=1):
-        event_meta = {"model": model_ref, "attempt": attempt, "fallback": attempt > 1}
-        seq += 1
-        out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta))
-        try:
-            turn = await inp.reasoner.complete(
-                model=model_ref,
-                prompt=inp.instructions,
-                messages=tuple(inp.messages),
-                tools=list(inp.tools),
-            )
-        except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
+    total_attempt = 0
+    attempted_models: list[str] = []
+    last_error: Exception | None = None
+    stop_reason = ModelFailureAction.ABORT
+    stop = False
+    for candidate_index, model_ref in enumerate(candidates, start=1):
+        for model_attempt in range(1, inp.provider_policy.max_attempts_per_model + 1):
+            if total_attempt >= inp.provider_policy.total_attempt_budget:
+                stop = True
+                break
+            total_attempt += 1
+            attempted_models.append(model_ref)
+            event_meta = {
+                "model": model_ref,
+                "attempt": total_attempt,
+                "model_attempt": model_attempt,
+                "candidate_index": candidate_index,
+                "fallback": candidate_index > 1,
+            }
             seq += 1
-            out.events.append(
-                _event(
-                    EventType.MODEL_CALL_FAILED,
-                    inp,
-                    seq,
-                    {**event_meta, "error": str(exc), "error_type": type(exc).__name__},
+            out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta))
+            try:
+                turn = await inp.reasoner.complete(
+                    model=model_ref,
+                    prompt=inp.instructions,
+                    messages=tuple(inp.messages),
+                    tools=list(inp.tools),
                 )
-            )
-            if attempt == len(candidates):
-                raise ModelFailoverExhausted(
-                    events=out.events,
-                    attempted_models=candidates,
-                    last_error=exc,
-                ) from exc
-            continue
+            except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
+                last_error = exc
+                failure = classify_model_failure(exc)
+                action = decide_model_failure_action(
+                    failure,
+                    policy=inp.provider_policy,
+                    model_attempt=model_attempt,
+                    total_attempt=total_attempt,
+                    has_fallback=candidate_index < len(candidates),
+                )
+                stop_reason = action
+                delay_ms = (
+                    retry_delay_ms(inp.provider_policy, model_attempt=model_attempt)
+                    if action == ModelFailureAction.RETRY
+                    else 0
+                )
+                seq += 1
+                out.events.append(
+                    _event(
+                        EventType.MODEL_CALL_FAILED,
+                        inp,
+                        seq,
+                        {
+                            **event_meta,
+                            "error": safe_model_error_message(exc),
+                            "error_type": type(exc).__name__,
+                            "failure_category": failure.kind.value,
+                            "status_code": failure.status_code,
+                            "action": action.value,
+                            "retry_delay_ms": delay_ms,
+                        },
+                    )
+                )
+                if action == ModelFailureAction.RETRY:
+                    if delay_ms:
+                        await asyncio.sleep(delay_ms / 1000)
+                    continue
+                if action == ModelFailureAction.FAILOVER:
+                    break
+                stop = True
+                break
 
-        selected_model_ref = model_ref
-        seq += 1
-        out.events.append(_event(EventType.MODEL_CALL_COMPLETED, inp, seq, event_meta))
-        break
+            selected_model_ref = model_ref
+            seq += 1
+            out.events.append(_event(EventType.MODEL_CALL_COMPLETED, inp, seq, event_meta))
+            break
+        if turn is not None or stop:
+            break
+
+    if turn is None or selected_model_ref is None:
+        assert last_error is not None
+        raise ModelFailoverExhausted(
+            events=out.events,
+            attempted_models=attempted_models,
+            last_error=last_error,
+            stop_reason=stop_reason,
+        ) from last_error
 
     assert turn is not None and selected_model_ref is not None
     out.selected_model_ref = selected_model_ref

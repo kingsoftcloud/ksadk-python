@@ -39,6 +39,24 @@ class TestBuild:
         assert payload["artifactDigest"].startswith("sha256:")
         assert payload["modelProfileRef"] == "model-profile://kimi-k3@1.0.0"
         assert payload["fallbackModelProfileRefs"] == ["model-profile://glm@1.0.0"]
+        assert payload["modelProviderPolicy"] == {
+            "max_attempts_per_model": 2,
+            "total_attempt_budget": 6,
+            "initial_backoff_ms": 200,
+            "max_backoff_ms": 2000,
+            "retryable_categories": [
+                "rate_limit",
+                "timeout",
+                "unavailable",
+                "transport",
+            ],
+            "failover_categories": [
+                "rate_limit",
+                "timeout",
+                "unavailable",
+                "transport",
+            ],
+        }
         assert manifest.build_id
 
     def test_build_fails_on_invalid_refs(self):

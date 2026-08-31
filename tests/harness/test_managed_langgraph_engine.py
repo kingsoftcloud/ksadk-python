@@ -8,7 +8,12 @@ from ksadk.harness.conformance import run_conformance_suite
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
 from ksadk.harness.events import EventType
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, HarnessToolCall
-from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
+from ksadk.harness.spec import (
+    HarnessSpec,
+    ModelBinding,
+    ModelProviderPolicy,
+    PromptSpec,
+)
 from ksadk.runtime import ResumePayload, ResumeTarget, StartRequest
 
 
@@ -155,6 +160,11 @@ def test_primary_model_failure_uses_fallback_and_preserves_audit_events():
         model=ModelBinding(
             profile_ref="model-profile://primary@1.0.0",
             fallback_profile_refs=("model-profile://backup@1.0.0",),
+            provider_policy=ModelProviderPolicy(
+                max_attempts_per_model=1,
+                initial_backoff_ms=0,
+                max_backoff_ms=0,
+            ),
         ),
         prompt=PromptSpec(instructions="助手"),
     )

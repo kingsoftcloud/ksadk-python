@@ -578,6 +578,7 @@ class ManagedLangGraphEngine:
                     ReasonInput(
                         model_ref=spec.model.profile_ref,
                         fallback_model_refs=spec.model.fallback_profile_refs,
+                        provider_policy=spec.model.provider_policy,
                         instructions=spec.prompt.instructions or "",
                         messages=state["messages"],
                         tools=(
