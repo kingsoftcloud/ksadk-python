@@ -29,6 +29,7 @@ class ModelFailureKind(str, Enum):
 class ModelFailureAction(str, Enum):
     RETRY = "retry_same_model"
     FAILOVER = "failover"
+    RECOVER_CONTEXT = "recover_context"
     ABORT = "abort"
     BUDGET_EXHAUSTED = "budget_exhausted"
 
@@ -81,12 +82,25 @@ def classify_model_failure(error: Exception) -> ClassifiedModelFailure:
         return ClassifiedModelFailure(ModelFailureKind.PERMISSION, status_code)
     if status_code == 404:
         return ClassifiedModelFailure(ModelFailureKind.NOT_FOUND, status_code)
-    if status_code is not None and 400 <= status_code < 500:
-        return ClassifiedModelFailure(ModelFailureKind.INVALID_REQUEST, status_code)
-
     name = type(error).__name__.lower()
     message = str(error).lower()
     combined = f"{name} {message}"
+    # OpenAI-compatible providers commonly report context overflow as HTTP 400.
+    # Inspect the structured/message semantics before the generic 4xx bucket;
+    # otherwise the Harness cannot enter its one-shot emergency compaction path.
+    if any(
+        token in combined
+        for token in (
+            "context length",
+            "maximum context",
+            "context window",
+            "too many tokens",
+            "context_length_exceeded",
+        )
+    ):
+        return ClassifiedModelFailure(ModelFailureKind.CONTEXT_LENGTH, status_code)
+    if status_code is not None and 400 <= status_code < 500:
+        return ClassifiedModelFailure(ModelFailureKind.INVALID_REQUEST, status_code)
     if any(token in combined for token in ("ratelimit", "rate limit", "too many requests")):
         kind = ModelFailureKind.RATE_LIMIT
     elif any(token in combined for token in ("timeout", "timed out", "deadline exceeded")):
@@ -111,10 +125,6 @@ def classify_model_failure(error: Exception) -> ClassifiedModelFailure:
         kind = ModelFailureKind.AUTHENTICATION
     elif any(token in combined for token in ("permission", "forbidden")):
         kind = ModelFailureKind.PERMISSION
-    elif any(
-        token in combined for token in ("context length", "maximum context", "too many tokens")
-    ):
-        kind = ModelFailureKind.CONTEXT_LENGTH
     elif any(token in combined for token in ("bad request", "invalid request", "invalid json")):
         kind = ModelFailureKind.INVALID_REQUEST
     elif "not found" in combined:
@@ -134,6 +144,10 @@ def decide_model_failure_action(
 ) -> ModelFailureAction:
     """根据分类、当前尝试与预算作出唯一动作。"""
 
+    # 相同的超长输入切换 Provider/模型通常仍会失败。Context Engine 必须先
+    # 重新规划并紧急压缩；是否重试由默认 Agent Loop 的一次性门禁决定。
+    if failure.kind is ModelFailureKind.CONTEXT_LENGTH:
+        return ModelFailureAction.RECOVER_CONTEXT
     category = failure.policy_category
     if category is None:
         return ModelFailureAction.ABORT

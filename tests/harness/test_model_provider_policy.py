@@ -58,6 +58,23 @@ def test_classifier_prefers_structured_status_and_blocks_permanent_errors() -> N
     )
 
 
+def test_http_400_context_overflow_enters_context_recovery_not_failover() -> None:
+    failure = classify_model_failure(
+        _HTTPError(400, "maximum context length exceeded: too many tokens")
+    )
+    assert failure.kind == ModelFailureKind.CONTEXT_LENGTH
+    assert (
+        decide_model_failure_action(
+            failure,
+            policy=_policy(),
+            model_attempt=1,
+            total_attempt=1,
+            has_fallback=True,
+        )
+        == ModelFailureAction.RECOVER_CONTEXT
+    )
+
+
 def test_transient_failure_retries_same_model_before_failover() -> None:
     class _Reasoner:
         def __init__(self) -> None:
@@ -109,6 +126,53 @@ def test_transient_failure_exhausts_model_then_uses_fallback() -> None:
         "failover",
     ]
     assert result.selected_model_ref == "backup"
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (TimeoutError("provider timed out"), "timeout"),
+        (ConnectionError("connection reset by peer"), "transport"),
+    ],
+)
+def test_timeout_and_disconnect_follow_retry_then_fallback_policy(
+    error: Exception, category: str
+) -> None:
+    class _Reasoner:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        async def complete(self, *, model: str, **_: object) -> HarnessReasoningTurn:
+            self.models.append(model)
+            if model == "primary":
+                raise error
+            return HarnessReasoningTurn(final_text="recovered")
+
+    reasoner = _Reasoner()
+    result = asyncio.run(
+        reason_turn_async(1, _input(reasoner, policy=_policy(max_attempts_per_model=2)))
+    )
+    assert reasoner.models == ["primary", "primary", "backup"]
+    failed = [event for event in result.events if event.event_type == EventType.MODEL_CALL_FAILED]
+    assert {event.payload["failure_category"] for event in failed} == {category}
+    assert [event.payload["action"] for event in failed] == ["retry_same_model", "failover"]
+
+
+@pytest.mark.parametrize("status_code", [400, 403, 404])
+def test_permanent_client_errors_never_try_fallback(status_code: int) -> None:
+    class _Reasoner:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        async def complete(self, *, model: str, **_: object) -> HarnessReasoningTurn:
+            self.models.append(model)
+            raise _HTTPError(status_code, "permanent client error")
+
+    reasoner = _Reasoner()
+    with pytest.raises(ModelFailoverExhausted) as caught:
+        asyncio.run(reason_turn_async(1, _input(reasoner, policy=_policy())))
+    assert reasoner.models == ["primary"]
+    assert caught.value.events[-1].payload["action"] == "abort"
 
 
 def test_authentication_failure_does_not_try_fallback() -> None:

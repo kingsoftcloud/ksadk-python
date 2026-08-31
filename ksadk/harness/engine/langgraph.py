@@ -572,37 +572,56 @@ class ManagedLangGraphEngine:
                     {"turn_id": turn_id, "turn_number": state["turn_count"]},
                 )
             )
-            try:
-                out = await reason_turn_async(
-                    state["turn_count"],
-                    ReasonInput(
-                        model_ref=spec.model.profile_ref,
-                        fallback_model_refs=spec.model.fallback_profile_refs,
-                        provider_policy=spec.model.provider_policy,
-                        instructions=spec.prompt.instructions or "",
-                        messages=state["messages"],
-                        tools=(
-                            list(self._tools.values())
-                            + self._skill_disclosure.tools(run.skill_catalog)
-                            + self._mcp_disclosure.tools(run.mcp_catalog)
-                            + list(self._sub_agents.values())
-                        ),
-                        reasoner=self._reasoner,
-                        agent_id=run.state.agent_id,
-                        user_id=run.state.user_id,
-                        session_id=run.state.session_id,
-                        run_id=run.handle.run_id,
-                        seq_start=run.seq,
-                        max_turns=_MAX_REASONING_TURNS,
+
+            def _reason_input() -> ReasonInput:
+                return ReasonInput(
+                    model_ref=spec.model.profile_ref,
+                    fallback_model_refs=spec.model.fallback_profile_refs,
+                    provider_policy=spec.model.provider_policy,
+                    instructions=spec.prompt.instructions or "",
+                    messages=state["messages"],
+                    tools=(
+                        list(self._tools.values())
+                        + self._skill_disclosure.tools(run.skill_catalog)
+                        + self._mcp_disclosure.tools(run.mcp_catalog)
+                        + list(self._sub_agents.values())
                     ),
+                    reasoner=self._reasoner,
+                    agent_id=run.state.agent_id,
+                    user_id=run.state.user_id,
+                    session_id=run.state.session_id,
+                    run_id=run.handle.run_id,
+                    seq_start=run.seq,
+                    max_turns=_MAX_REASONING_TURNS,
                 )
+
+            try:
+                out = await reason_turn_async(state["turn_count"], _reason_input())
             except ModelFailoverExhausted as exc:
                 # reason_turn 在最后一次失败时仍必须把每次 started/failed
                 # 审计事件交还引擎，不能因异常路径丢失配对事实。
                 for event in exc.events:
                     run.events.append(event)
                     run.seq = max(run.seq, event.seq_id)
-                raise RuntimeError(str(exc)) from exc
+                if (
+                    exc.stop_reason.value == "recover_context"
+                    and self._context_engine is not None
+                ):
+                    state["messages"] = await self._context_pipeline.recover_model_overflow(
+                        run,
+                        state["messages"],
+                        spec.prompt.instructions or "",
+                    )
+                    # 恢复调用仍属于同一个 Turn，但使用压缩后输入及新的 seq 起点。
+                    try:
+                        out = await reason_turn_async(state["turn_count"], _reason_input())
+                    except ModelFailoverExhausted as retry_exc:
+                        for event in retry_exc.events:
+                            run.events.append(event)
+                            run.seq = max(run.seq, event.seq_id)
+                        raise RuntimeError(str(retry_exc)) from retry_exc
+                else:
+                    raise RuntimeError(str(exc)) from exc
             except ReasoningLimitError as exc:
                 raise RuntimeError(str(exc)) from exc
             for ev in out.events:

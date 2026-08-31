@@ -363,6 +363,131 @@ class TestContextEngineControlsModelInput:
         assert any("历史摘要" in str(m.get("content")) for m in main_messages)
         assert kinds[-1] == "run.completed"
 
+    def test_provider_overflow_emergency_compacts_and_retries_once(self):
+        import asyncio
+
+        from ksadk.harness.events import EventType
+        from ksadk.harness.reasoner import HarnessReasoningTurn
+        from ksadk.runtime import StartRequest
+
+        class _ContextLengthError(RuntimeError):
+            status_code = 400
+
+        class _OverflowThenSuccess:
+            def __init__(self) -> None:
+                self.main_inputs: list[list[dict]] = []
+
+            async def complete(self, *, prompt, messages, **kwargs):
+                if "上下文压缩器" in prompt:
+                    return HarnessReasoningTurn(final_text="历史摘要：审批号 AP-1024。")
+                self.main_inputs.append([dict(message) for message in messages])
+                if len(self.main_inputs) == 1:
+                    raise _ContextLengthError("maximum context length exceeded")
+                return HarnessReasoningTurn(
+                    final_text="恢复成功",
+                    usage={"input_tokens": 32, "output_tokens": 4},
+                )
+
+        reasoner = _OverflowThenSuccess()
+        engine = self._engine_with(reasoner)
+        history = [
+            {"role": "user", "content": f"历史问题 {index}"}
+            if index % 2 == 0
+            else {"role": "assistant", "content": f"历史回答 {index}"}
+            for index in range(8)
+        ]
+
+        async def drive():
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(
+                StartRequest(
+                    input="当前问题",
+                    user_id="u1",
+                    session_id="s1",
+                    agent_id="a1",
+                    runtime_type="managed-langgraph",
+                    metadata={
+                        "invocation_id": "run-provider-overflow",
+                        "context_window_tokens": 65536,
+                        "conversation_history": history,
+                    },
+                ),
+                compiled,
+            )
+            events = [event async for event in engine.stream(handle)]
+            state = await engine.snapshot_state(handle)
+            return events, state
+
+        events, state = asyncio.run(drive())
+        kinds = [event.event_type for event in events]
+        assert len(reasoner.main_inputs) == 2
+        assert len(reasoner.main_inputs[1]) < len(reasoner.main_inputs[0])
+        assert reasoner.main_inputs[1][0] == reasoner.main_inputs[0][0]
+        assert reasoner.main_inputs[1][0]["content"] == "你是财务分析助手。"
+        assert any("历史摘要" in str(m.get("content")) for m in reasoner.main_inputs[1])
+        assert EventType.CONTEXT_COMPACTION_COMPLETED in kinds
+        recovered = [event for event in events if event.event_type == EventType.CONTEXT_RECOVERED]
+        assert recovered[-1].payload["reason"] == "provider_context_overflow"
+        failed = [event for event in events if event.event_type == EventType.MODEL_CALL_FAILED]
+        assert failed[0].payload["failure_category"] == "context_length"
+        assert failed[0].payload["action"] == "recover_context"
+        assert state is not None
+        assert state.retry_state.emergency_compaction_retries == 1
+        assert events[-1].event_type == EventType.RUN_COMPLETED
+
+    def test_provider_overflow_does_not_retry_more_than_once(self):
+        import asyncio
+
+        from ksadk.harness.events import EventType
+        from ksadk.harness.reasoner import HarnessReasoningTurn
+        from ksadk.runtime import StartRequest
+
+        class _AlwaysOverflow:
+            def __init__(self) -> None:
+                self.main_calls = 0
+
+            async def complete(self, *, prompt, **kwargs):
+                if "上下文压缩器" in prompt:
+                    return HarnessReasoningTurn(final_text="压缩摘要")
+                self.main_calls += 1
+                error = RuntimeError("context window exceeded")
+                error.status_code = 400  # type: ignore[attr-defined]
+                raise error
+
+        reasoner = _AlwaysOverflow()
+        engine = self._engine_with(reasoner)
+
+        async def drive():
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(
+                StartRequest(
+                    input="当前问题",
+                    user_id="u1",
+                    session_id="s1",
+                    agent_id="a1",
+                    runtime_type="managed-langgraph",
+                    metadata={
+                        "invocation_id": "run-provider-overflow-twice",
+                        "context_window_tokens": 65536,
+                        "conversation_history": [
+                            {"role": "user", "content": f"历史 {index}"}
+                            for index in range(6)
+                        ],
+                    },
+                ),
+                compiled,
+            )
+            return [event async for event in engine.stream(handle)]
+
+        events = asyncio.run(drive())
+        assert reasoner.main_calls == 2
+        assert sum(
+            event.event_type == EventType.CONTEXT_RECOVERED
+            and event.payload.get("reason") == "provider_context_overflow"
+            for event in events
+        ) == 1
+        assert events[-1].event_type == EventType.RUN_FAILED
+
     def test_no_context_engine_falls_back_to_legacy_history(self):
         import asyncio
 

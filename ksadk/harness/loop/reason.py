@@ -91,6 +91,11 @@ class ModelFailoverExhausted(RuntimeError):
                 "model invocation aborted by provider policy "
                 f"({len(attempted_models)} attempts): {safe_error}"
             )
+        elif stop_reason == ModelFailureAction.RECOVER_CONTEXT:
+            message = (
+                "model context overflow requires emergency context recovery "
+                f"({len(attempted_models)} attempts): {safe_error}"
+            )
         else:
             message = (
                 "all configured model profiles failed "

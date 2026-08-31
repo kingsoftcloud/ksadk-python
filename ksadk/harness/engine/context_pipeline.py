@@ -109,6 +109,86 @@ class EngineContextPipeline:
         self._emit_context_built(run, plan, projected, window)
         return assembled.messages
 
+    async def recover_model_overflow(
+        self,
+        run: Any,
+        messages: list[dict[str, Any]],
+        instructions: str,
+    ) -> list[dict[str, Any]]:
+        """模型明确拒绝上下文后执行一次更强压缩并重建输入。
+
+        这是 provider 真实 overflow 的恢复路径，不是首次调用前的预算预测。
+        重试预算保存在 HarnessState，避免模型/备用模型之间形成无限循环；
+        最近 Tool Call/Result 作为完整尾部原样保留，不能被重建成残缺消息。
+        """
+        from ksadk.harness.context_engine import ContextEngineError
+
+        retries = run.state.retry_state.emergency_compaction_retries
+        limit = run.compiled.spec.context_policy.emergency_retry_limit
+        if retries >= limit:
+            raise ContextEngineError(
+                f"模型上下文溢出已执行 {retries} 次紧急压缩，达到上限 {limit}"
+            )
+
+        # Stable Prompt 是高信任、不参与摘要的固定前缀；只压缩其后的动态消息。
+        stable_prefix: list[dict[str, Any]] = []
+        dynamic_messages = messages
+        if messages and str(messages[0].get("role") or "") == "system":
+            stable_prefix = [dict(messages[0])]
+            dynamic_messages = messages[1:]
+        converted = [_chat_message(message) for message in dynamic_messages]
+        # 保留至少最后两条，并把边界向前移动到 Tool Pair 之前。
+        cutoff = max(0, len(dynamic_messages) - 2)
+        while cutoff > 0 and str(dynamic_messages[cutoff].get("role") or "") == "tool":
+            cutoff -= 1
+        if cutoff <= 0:
+            raise ContextEngineError("上下文溢出但没有可继续压缩的历史消息")
+
+        run.state.retry_state = run.state.retry_state.model_copy(
+            update={
+                "emergency_compaction_retries": retries + 1,
+                "last_error_kind": "context_length",
+            }
+        )
+        compacted = await self._compact_history(
+            run,
+            converted,
+            trigger="emergency",
+            keep_recent=len(dynamic_messages) - cutoff,
+            budget_tokens=self._plan_context(run, converted).budget.max_input_tokens,
+        )
+        if compacted is None:
+            raise ContextEngineError("上下文溢出但紧急压缩没有产生新输入")
+
+        summary = compacted[0].content
+        recovered: list[dict[str, Any]] = list(stable_prefix)
+        recovered.append({"role": "system", "content": summary})
+        recovered.extend(dict(message) for message in dynamic_messages[cutoff:])
+        if not recovered or recovered[0].get("role") != "system":
+            recovered.insert(0, {"role": "system", "content": instructions})
+
+        # 为恢复后的真实模型输入生成新的 Manifest 世代；正文仍不落 Manifest。
+        recovered_state = [_chat_message(message) for message in recovered[len(stable_prefix) :]]
+        plan = self._plan_context(run, recovered_state)
+        window, _source = self._resolve_window(run)
+        projected = sum(count_tokens(str(m.get("content") or "")) for m in recovered)
+        self._emit_context_built(run, plan, projected, window)
+        run.events.append(
+            self._event(
+                run,
+                EventType.CONTEXT_RECOVERED,
+                {
+                    "reason": "provider_context_overflow",
+                    "trigger": "emergency",
+                    "retry": retries + 1,
+                    "retry_limit": limit,
+                    "message_count_before": len(messages),
+                    "message_count_after": len(recovered),
+                },
+            )
+        )
+        return recovered
+
     # ------------------------------------------------------------ Memory 召回
 
     def _recall_memory(self, run: Any, messages: list[Message]) -> list[Message]:
@@ -431,6 +511,26 @@ def count_tokens(text: str) -> int:
     from ksadk.context_engine.tokenizer import get_default_token_counter
 
     return get_default_token_counter().count_text(text)
+
+
+def _chat_message(message: dict[str, Any]) -> Message:
+    """把 OpenAI 消息投影为压缩/规划使用的稳定 Message 形态。"""
+    role_value = str(message.get("role") or "user")
+    try:
+        role = MessageRole(role_value)
+    except ValueError:
+        role = MessageRole.USER
+    tool_call_id = str(message.get("tool_call_id") or "") or None
+    if role is MessageRole.ASSISTANT and not tool_call_id:
+        calls = message.get("tool_calls")
+        if isinstance(calls, list) and calls and isinstance(calls[0], dict):
+            tool_call_id = str(calls[0].get("id") or "") or None
+    return Message(
+        role=role,
+        content=str(message.get("content") or ""),
+        tool_call_id=tool_call_id,
+        name=str(message.get("name") or "") or None,
+    )
 
 
 def _keyword_score(query: str, content: str) -> float:
