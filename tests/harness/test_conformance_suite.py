@@ -247,6 +247,14 @@ def test_model_call_nesting_and_unclosed_fail():
     ]
     assert "model-pair" in _violation_rules(run_conformance_suite(unclosed))
 
+    mismatched = [
+        make(EventType.RUN_STARTED, {"status": "running"}),
+        make(EventType.MODEL_CALL_STARTED, {"model": "primary"}),
+        make(EventType.MODEL_CALL_COMPLETED, {"model": "backup"}),
+        make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
+    ]
+    assert "model-pair" in _violation_rules(run_conformance_suite(mismatched))
+
 
 def test_compaction_pairing_and_budget():
     make = make_event_factory()

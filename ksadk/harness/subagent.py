@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ksadk.harness.events import RuntimeEvent
-from ksadk.harness.spec import CapabilityBindings, HarnessSpec, ModelBinding, PromptSpec
+from ksadk.harness.spec import CapabilityBindings, HarnessSpec, PromptSpec
 from ksadk.runtime import StartRequest
 
 
@@ -56,7 +56,7 @@ def child_spec(parent_spec: HarnessSpec, sub: SubAgentSpec) -> HarnessSpec:
     # SkillRuntime 由父引擎透传（skill_composition 装配一次，全家共用）。
     return HarnessSpec(
         agent_revision_ref=parent_spec.agent_revision_ref,
-        model=ModelBinding(profile_ref=parent_spec.model.profile_ref),
+        model=parent_spec.model,
         prompt=PromptSpec(instructions=sub.instructions),
         capabilities=CapabilityBindings(
             skill_bindings=parent_spec.capabilities.skill_bindings

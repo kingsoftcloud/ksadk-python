@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from ksadk.harness.compaction_record import build_compaction_record
 from ksadk.harness.events import EventType, RuntimeEvent
-from ksadk.harness.loop import ReasonInput, reason_turn_async
+from ksadk.harness.loop import ModelFailoverExhausted, ReasonInput, reason_turn_async
 from ksadk.harness.state import Message, MessageRole
 
 #: 事件构造函数签名（引擎的 _event）。
@@ -259,6 +259,7 @@ class EngineContextPipeline:
                 0,
                 ReasonInput(
                     model_ref=spec.model.profile_ref,
+                    fallback_model_refs=spec.model.fallback_profile_refs,
                     instructions=(
                         "你是上下文压缩器。请把以下对话历史压缩为要点摘要，"
                         "必须保留所有 ID、金额、日期、审批号等关键事实。"
@@ -275,6 +276,10 @@ class EngineContextPipeline:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - 摘要失败降级为截断拼接，不阻断 Run
+            if isinstance(exc, ModelFailoverExhausted):
+                for event in exc.events:
+                    run.events.append(event)
+                    run.seq = max(run.seq, event.seq_id)
             text = "\n".join(m.content for m in head)
             # 降级不静默（§6.4 "不静默丢弃"）：真实模型评测曾把摘要失败
             # 吞成 0-token Run；发 context.recovered 让降级可观测可告警。

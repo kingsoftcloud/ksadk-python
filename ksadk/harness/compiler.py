@@ -51,6 +51,7 @@ class OrchestrationInput(_RevisionInputModel):
 
 class RevisionModelInput(_RevisionInputModel):
     profile_ref: str
+    fallback_profile_refs: tuple[str, ...] = Field(default=(), max_length=4)
 
 
 class MCPBindingInput(_RevisionInputModel):
@@ -130,7 +131,10 @@ def compile_revision_to_spec(
         raise HarnessCompileError("Revision 缺少指令（role.instructionsRef 或内联 objective）")
 
     strategy = _compile_strategy(spec.orchestration)
-    model_binding = ModelBinding(profile_ref=spec.model.profile_ref)
+    model_binding = ModelBinding(
+        profile_ref=spec.model.profile_ref,
+        fallback_profile_refs=spec.model.fallback_profile_refs,
+    )
 
     prompt = (
         PromptSpec(

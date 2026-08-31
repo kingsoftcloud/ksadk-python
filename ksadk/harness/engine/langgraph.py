@@ -41,6 +41,7 @@ from ksadk.harness.engine.spans import wrap_node_span
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.loop import (
+    ModelFailoverExhausted,
     ReasonInput,
     ToolCallInput,
     execute_tool_calls,
@@ -576,6 +577,7 @@ class ManagedLangGraphEngine:
                     state["turn_count"],
                     ReasonInput(
                         model_ref=spec.model.profile_ref,
+                        fallback_model_refs=spec.model.fallback_profile_refs,
                         instructions=spec.prompt.instructions or "",
                         messages=state["messages"],
                         tools=(
@@ -593,6 +595,13 @@ class ManagedLangGraphEngine:
                         max_turns=_MAX_REASONING_TURNS,
                     ),
                 )
+            except ModelFailoverExhausted as exc:
+                # reason_turn 在最后一次失败时仍必须把每次 started/failed
+                # 审计事件交还引擎，不能因异常路径丢失配对事实。
+                for event in exc.events:
+                    run.events.append(event)
+                    run.seq = max(run.seq, event.seq_id)
+                raise RuntimeError(str(exc)) from exc
             except ReasoningLimitError as exc:
                 raise RuntimeError(str(exc)) from exc
             for ev in out.events:

@@ -181,20 +181,28 @@ _MODEL_CALL_CLOSERS = (EventType.MODEL_CALL_COMPLETED, EventType.MODEL_CALL_FAIL
 
 
 def verify_model_call_pairing(events: list[RuntimeEvent], report: ConformanceReport) -> None:
-    """model.call.started 必须被 completed/failed 之一闭合；不允许交叉嵌套。"""
-    open_calls = 0
+    """模型调用必须闭合且闭合事件对应同一模型；不允许交叉嵌套。"""
+    open_model: str | None = None
     for event in events:
         if event.event_type == EventType.MODEL_CALL_STARTED:
-            open_calls += 1
-            if open_calls > 1:
+            if open_model is not None:
                 report.fail("model-pair", "model.call.started 嵌套：上一个调用尚未闭合")
+            else:
+                open_model = str(_payload(event).get("model") or "")
         elif event.event_type in _MODEL_CALL_CLOSERS:
-            if open_calls == 0:
+            if open_model is None:
                 report.fail("model-pair", f"{event.event_type} 无对应 started")
             else:
-                open_calls -= 1
-    if open_calls:
-        report.fail("model-pair", f"{open_calls} 个 model.call.started 未闭合")
+                closed_model = str(_payload(event).get("model") or "")
+                if closed_model != open_model:
+                    report.fail(
+                        "model-pair",
+                        f"{event.event_type} 模型 {closed_model!r} "
+                        f"与 started {open_model!r} 不一致",
+                    )
+                open_model = None
+    if open_model is not None:
+        report.fail("model-pair", f"model.call.started {open_model!r} 未闭合")
 
 
 def verify_tool_failure_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:

@@ -143,3 +143,30 @@ def test_latest_model_failure_and_failed_run_block_without_exposing_error():
     assert _check(report, "smoke-run")["reason_code"] == "smoke_run_failed"
     assert "secret-url" not in str(report)
     assert "private-host" not in str(report)
+
+
+def test_successful_fallback_reports_effective_model_without_blocking():
+    events = [
+        _event(
+            1,
+            EventType.MODEL_CALL_FAILED,
+            {"model": "model-profile://glm@1", "attempt": 1, "fallback": False, "error": "x"},
+        ),
+        _event(
+            2,
+            EventType.MODEL_CALL_COMPLETED,
+            {
+                "model": "model-profile://backup@1",
+                "attempt": 2,
+                "fallback": True,
+            },
+        ),
+        _event(3, EventType.RUN_COMPLETED, {"status": "completed"}),
+    ]
+    report = runtime_readiness(_spec(approval_roles=("admin",)), events)
+    model = _check(report, "model")
+    assert report["deployable"] is True
+    assert model["resource_ref"] == "model-profile://backup@1"
+    assert model["configured_resource_ref"] == "model-profile://glm@1"
+    assert model["fallback_used"] is True
+    assert model["attempt"] == 2

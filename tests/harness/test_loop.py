@@ -14,6 +14,7 @@ from ksadk.harness.events import EventType
 from ksadk.harness.loop.reason import (
     ROUTE_FINAL,
     ROUTE_TOOL_CALLS,
+    ModelFailoverExhausted,
     ReasoningLimitError,
     ReasonInput,
     reason_turn_async,
@@ -143,7 +144,9 @@ def test_reason_model_failure_emits_failed_then_raises():
         async def complete(self, **_):  # type: ignore[no-untyped-def]
             raise RuntimeError("provider 500")
 
-    with pytest.raises(RuntimeError, match="provider 500"):
+    with pytest.raises(
+        ModelFailoverExhausted, match="all configured model profiles failed"
+    ) as error:
         _run(
             reason_turn_async(
                 1,
@@ -156,8 +159,62 @@ def test_reason_model_failure_emits_failed_then_raises():
                 ),
             )
         )
-    # 校验由调用方自己拿 events（本测试用返回前 raise：started 已闭合需在调用方收集，
-    # 这里验证 raise 行为；事件收集由 engine 节点负责）
+    assert [event.event_type for event in error.value.events] == [
+        EventType.MODEL_CALL_STARTED,
+        EventType.MODEL_CALL_FAILED,
+    ]
+    assert error.value.events[-1].payload["error"] == "provider 500"
+
+
+def test_reason_falls_back_and_audits_effective_model():
+    class _FallbackReasoner:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        async def complete(self, *, model, **_):  # type: ignore[no-untyped-def]
+            self.models.append(model)
+            if model == "primary":
+                raise RuntimeError("primary unavailable")
+            return HarnessReasoningTurn(
+                final_text="备用模型完成",
+                usage={"input_tokens": 7, "output_tokens": 3},
+            )
+
+    reasoner = _FallbackReasoner()
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="primary",
+                fallback_model_refs=("backup",),
+                instructions="",
+                messages=[{"role": "user", "content": "x"}],
+                tools=[],
+                reasoner=reasoner,
+            ),
+        )
+    )
+    model_events = [
+        event
+        for event in out.events
+        if event.event_type
+        in {
+            EventType.MODEL_CALL_STARTED,
+            EventType.MODEL_CALL_FAILED,
+            EventType.MODEL_CALL_COMPLETED,
+        }
+    ]
+    assert reasoner.models == ["primary", "backup"]
+    assert [(event.event_type, event.payload["model"]) for event in model_events] == [
+        (EventType.MODEL_CALL_STARTED, "primary"),
+        (EventType.MODEL_CALL_FAILED, "primary"),
+        (EventType.MODEL_CALL_STARTED, "backup"),
+        (EventType.MODEL_CALL_COMPLETED, "backup"),
+    ]
+    assert model_events[-1].payload == {"model": "backup", "attempt": 2, "fallback": True}
+    assert out.selected_model_ref == "backup"
+    usage = next(event for event in out.events if event.event_type == EventType.USAGE_REPORTED)
+    assert usage.payload["model"] == "backup"
 
 
 def test_reason_turn_limit_raises():

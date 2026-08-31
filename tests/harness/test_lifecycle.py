@@ -20,7 +20,10 @@ def _revision_payload() -> dict:
             "objective": "财务分析",
             "instructionsRef": "skill://finance-instructions@1",
         },
-        "model": {"profileRef": "model-profile://kimi-k3@1.0.0"},
+        "model": {
+            "profileRef": "model-profile://kimi-k3@1.0.0",
+            "fallbackProfileRefs": ["model-profile://glm@1.0.0"],
+        },
     }
 
 
@@ -35,6 +38,7 @@ class TestBuild:
         assert payload["contentHash"].startswith("sha256:")
         assert payload["artifactDigest"].startswith("sha256:")
         assert payload["modelProfileRef"] == "model-profile://kimi-k3@1.0.0"
+        assert payload["fallbackModelProfileRefs"] == ["model-profile://glm@1.0.0"]
         assert manifest.build_id
 
     def test_build_fails_on_invalid_refs(self):

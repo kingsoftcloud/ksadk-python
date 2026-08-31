@@ -8,7 +8,10 @@ def test_compiler_accepts_full_control_plane_revision_shape() -> None:
         {
             "role": {"name": "Finance", "objective": "Analyze a budget."},
             "orchestration": {"pattern": "single-agent"},
-            "model": {"profileRef": "model-profile://finance@1.0.0"},
+            "model": {
+                "profileRef": "model-profile://finance@1.0.0",
+                "fallbackProfileRefs": ["model-profile://backup@1.0.0"],
+            },
             "capabilities": {
                 "mcpBindings": [],
                 "skillBindings": [],
@@ -24,3 +27,4 @@ def test_compiler_accepts_full_control_plane_revision_shape() -> None:
 
     assert compiled.agent_revision_ref == "agent-revision://finance@1.0.0"
     assert compiled.model.profile_ref == "model-profile://finance@1.0.0"
+    assert compiled.model.fallback_profile_refs == ("model-profile://backup@1.0.0",)

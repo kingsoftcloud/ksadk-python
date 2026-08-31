@@ -93,6 +93,10 @@ class TestHarnessSpec:
 
     def test_manifest_shape(self):
         spec = _spec(
+            model=ModelBinding(
+                profile_ref="model-profile://kimi-k3@1.0.0",
+                fallback_profile_refs=("model-profile://glm@1.0.0",),
+            ),
             capabilities=CapabilityBindings(
                 mcp_bindings=(CapabilityBinding(capability_ref="mcp-binding://budget@1.2.0"),),
                 skill_bindings=(
@@ -103,6 +107,7 @@ class TestHarnessSpec:
         manifest = build_manifest(spec)
         assert manifest["engine"] == "managed-langgraph"
         assert manifest["modelProfileRef"] == "model-profile://kimi-k3@1.0.0"
+        assert manifest["fallbackModelProfileRefs"] == ["model-profile://glm@1.0.0"]
         assert manifest["mcpRefs"] == ["mcp-binding://budget@1.2.0"]
         assert manifest["skillRefs"] == ["skill://analysis@0.3.1"]
         assert manifest["contentHash"] == spec.content_hash()

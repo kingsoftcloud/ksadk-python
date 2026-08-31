@@ -204,6 +204,7 @@ def test_active_process_executes_real_runs_endpoint(monkeypatch):
         assert result["events"][-1]["event_type"] == "run.completed"
         usage = [event for event in result["events"] if event["event_type"] == "usage.reported"]
         assert usage[-1]["payload"] == {
+            "model": "model-profile://kimi-k3@1.0.0",
             "input_tokens": 7,
             "output_tokens": 3,
             "total_tokens": 10,

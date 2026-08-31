@@ -1500,7 +1500,9 @@ KsADK Harness MVP 不是“页面上能发送一句话”，而是满足以下�
 - 支持 Cancel；
 - 支持 Approval Interrupt/Resume；
 - 支持基础 Context 压缩；
-- 支持失败降级。
+- 支持失败降级：Revision 固定主模型与最多四个备用 Model Profile，默认
+  Agent Loop、上下文压缩和子 Agent 共用同一降级链；每次失败尝试与最终
+  生效模型分别进入 RuntimeEvent、Usage 和就绪度报告，禁止静默换模。
 
 ### 22.3 生命周期
 

@@ -10,6 +10,7 @@ interrupt 映射到 LangGraph ``interrupt()``。
 """
 
 from ksadk.harness.loop.reason import (
+    ModelFailoverExhausted,
     ReasoningLimitError,
     ReasonInput,
     ReasonOutput,
@@ -28,6 +29,7 @@ from ksadk.harness.loop.tools import (
 __all__ = [
     "ApprovalResolver",
     "ContextualToolExecutor",
+    "ModelFailoverExhausted",
     "ReasonInput",
     "ReasonOutput",
     "ReasoningLimitError",

@@ -31,6 +31,7 @@ class ReasonInput:
     messages: Sequence[dict[str, Any]]
     tools: Sequence[Any]
     reasoner: HarnessReasoner
+    fallback_model_refs: tuple[str, ...] = ()
     #: 用于 RuntimeEvent 标识的锚点（由引擎注入）。
     agent_id: str = ""
     user_id: str = ""
@@ -55,10 +56,30 @@ class ReasonOutput:
     pending_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     #: 本轮 usage（供引擎发 usage.reported，已含在 events 中）。
     usage: dict[str, int] | None = None
+    #: 本轮实际完成调用的模型；发生降级时不同于主模型引用。
+    selected_model_ref: str | None = None
 
 
 class ReasoningLimitError(RuntimeError):
     """超过最大推理轮数（§7.1），引擎应终止而非继续自环。"""
+
+
+class ModelFailoverExhausted(RuntimeError):
+    """主模型及全部备用模型均失败，并携带已闭合的审计事件。"""
+
+    def __init__(
+        self,
+        *,
+        events: Sequence[RuntimeEvent],
+        attempted_models: Sequence[str],
+        last_error: Exception,
+    ) -> None:
+        super().__init__(
+            f"all configured model profiles failed ({len(attempted_models)} attempts): {last_error}"
+        )
+        self.events = tuple(events)
+        self.attempted_models = tuple(attempted_models)
+        self.last_error = last_error
 
 
 def reason_turn(turn_count: int, inp: ReasonInput) -> ReasonOutput | None:
@@ -87,29 +108,45 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
     seq = inp.seq_start
     out = ReasonOutput()
 
-    seq += 1
-    out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, {"model": inp.model_ref}))
-    try:
-        turn: HarnessReasoningTurn = await inp.reasoner.complete(
-            model=inp.model_ref,
-            prompt=inp.instructions,
-            messages=tuple(inp.messages),
-            tools=list(inp.tools),
-        )
-    except Exception as exc:  # noqa: BLE001 - started 必被闭合
+    candidates = tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
+    turn: HarnessReasoningTurn | None = None
+    selected_model_ref: str | None = None
+    for attempt, model_ref in enumerate(candidates, start=1):
+        event_meta = {"model": model_ref, "attempt": attempt, "fallback": attempt > 1}
         seq += 1
-        out.events.append(
-            _event(
-                EventType.MODEL_CALL_FAILED,
-                inp,
-                seq,
-                {"model": inp.model_ref, "error": str(exc)},
+        out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta))
+        try:
+            turn = await inp.reasoner.complete(
+                model=model_ref,
+                prompt=inp.instructions,
+                messages=tuple(inp.messages),
+                tools=list(inp.tools),
             )
-        )
-        raise
+        except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.MODEL_CALL_FAILED,
+                    inp,
+                    seq,
+                    {**event_meta, "error": str(exc), "error_type": type(exc).__name__},
+                )
+            )
+            if attempt == len(candidates):
+                raise ModelFailoverExhausted(
+                    events=out.events,
+                    attempted_models=candidates,
+                    last_error=exc,
+                ) from exc
+            continue
 
-    seq += 1
-    out.events.append(_event(EventType.MODEL_CALL_COMPLETED, inp, seq, {"model": inp.model_ref}))
+        selected_model_ref = model_ref
+        seq += 1
+        out.events.append(_event(EventType.MODEL_CALL_COMPLETED, inp, seq, event_meta))
+        break
+
+    assert turn is not None and selected_model_ref is not None
+    out.selected_model_ref = selected_model_ref
 
     if turn.usage:
         usage = dict(turn.usage)
@@ -120,6 +157,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 inp,
                 seq,
                 {
+                    "model": selected_model_ref,
                     "input_tokens": int(usage.get("input_tokens") or 0),
                     "output_tokens": int(usage.get("output_tokens") or 0),
                     "total_tokens": int(
@@ -187,6 +225,7 @@ __all__ = [
     "ReasonInput",
     "ReasonOutput",
     "ReasoningLimitError",
+    "ModelFailoverExhausted",
     "ROUTE_FINAL",
     "ROUTE_TOOL_CALLS",
     "reason_turn",

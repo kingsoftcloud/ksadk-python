@@ -198,6 +198,7 @@ def build_manifest(spec: HarnessSpec, *, engine: str = "managed-langgraph") -> d
         "schemaVersion": spec.schema_version,
         "engine": engine,
         "modelProfileRef": spec.model.profile_ref,
+        "fallbackModelProfileRefs": list(spec.model.fallback_profile_refs),
         "mcpRefs": [b.capability_ref for b in spec.capabilities.mcp_bindings],
         "skillRefs": [b.capability_ref for b in spec.capabilities.skill_bindings],
         "memoryPolicyRef": None,

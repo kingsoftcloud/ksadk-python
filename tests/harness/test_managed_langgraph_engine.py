@@ -134,6 +134,62 @@ def test_model_failure_maps_to_run_failed():
     assert run_conformance_suite(events).ok
 
 
+def test_primary_model_failure_uses_fallback_and_preserves_audit_events():
+    class _FailoverReasoner(HarnessReasoner):
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        async def complete(self, *, model, **kwargs):
+            self.models.append(model)
+            if model == "model-profile://primary@1.0.0":
+                raise RuntimeError("primary unavailable")
+            return HarnessReasoningTurn(
+                final_text="fallback ok",
+                usage={"input_tokens": 9, "output_tokens": 2},
+            )
+
+    reasoner = _FailoverReasoner()
+    engine = ManagedLangGraphEngine(reasoner=reasoner)
+    spec = HarnessSpec(
+        agent_revision_ref="agent-revision://proj-1@2",
+        model=ModelBinding(
+            profile_ref="model-profile://primary@1.0.0",
+            fallback_profile_refs=("model-profile://backup@1.0.0",),
+        ),
+        prompt=PromptSpec(instructions="助手"),
+    )
+
+    async def drive():
+        compiled = await engine.compile(spec)
+        handle = await engine.start(_start_request(), compiled)
+        return [event async for event in engine.stream(handle)]
+
+    events = asyncio.run(drive())
+    model_events = [
+        event
+        for event in events
+        if event.event_type
+        in {
+            EventType.MODEL_CALL_STARTED,
+            EventType.MODEL_CALL_FAILED,
+            EventType.MODEL_CALL_COMPLETED,
+        }
+    ]
+    assert reasoner.models == [
+        "model-profile://primary@1.0.0",
+        "model-profile://backup@1.0.0",
+    ]
+    assert [event.event_type for event in model_events] == [
+        EventType.MODEL_CALL_STARTED,
+        EventType.MODEL_CALL_FAILED,
+        EventType.MODEL_CALL_STARTED,
+        EventType.MODEL_CALL_COMPLETED,
+    ]
+    assert model_events[-1].payload["model"] == "model-profile://backup@1.0.0"
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+    assert run_conformance_suite(events).ok
+
+
 def test_cancel_during_run_yields_run_canceled():
     started = asyncio.Event()
 

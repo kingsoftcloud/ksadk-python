@@ -102,14 +102,18 @@ def _model_check(spec: HarnessSpec, events: Sequence[RuntimeEvent]) -> dict[str,
         )
     latest = observed[-1]
     failed = latest.event_type == EventType.MODEL_CALL_FAILED
-    return _check(
+    check = _check(
         check_id="model",
         category="model",
         status="blocked" if failed else "ready",
         reason_code="model_call_failed" if failed else "model_call_succeeded",
-        resource_ref=spec.model.profile_ref,
+        resource_ref=str(latest.payload.get("model") or spec.model.profile_ref),
         required=True,
     )
+    check["configured_resource_ref"] = spec.model.profile_ref
+    check["fallback_used"] = bool(latest.payload.get("fallback", False))
+    check["attempt"] = int(latest.payload.get("attempt") or 1)
+    return check
 
 
 def _capability_check(

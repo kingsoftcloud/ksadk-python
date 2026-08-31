@@ -11,7 +11,7 @@ from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
 from ksadk.harness.event_tree import build_event_tree
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
-from ksadk.harness.subagent import SubAgentSpec
+from ksadk.harness.subagent import SubAgentSpec, child_spec
 from ksadk.runtime import StartRequest
 
 
@@ -116,3 +116,16 @@ def test_mixed_agent_stream_still_conformant():
     events = _drive()
     report = run_conformance_suite(events, cancel_requested=False)
     assert report.ok, [(v.rule, v.detail) for v in report.violations]
+
+
+def test_child_agent_inherits_model_fallback_chain():
+    parent = HarnessSpec(
+        agent_revision_ref="agent-revision://proj-1@1",
+        model=ModelBinding(
+            profile_ref="model-profile://primary@1.0.0",
+            fallback_profile_refs=("model-profile://backup@1.0.0",),
+        ),
+        prompt=PromptSpec(instructions="主 Agent"),
+    )
+    child = child_spec(parent, SubAgentSpec(name="researcher", instructions="研究"))
+    assert child.model == parent.model

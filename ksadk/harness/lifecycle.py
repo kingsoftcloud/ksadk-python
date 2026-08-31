@@ -63,6 +63,7 @@ class BuildManifest:
     harness_version: str
     engine: str
     model_profile_ref: str
+    fallback_model_profile_refs: tuple[str, ...] = ()
     mcp_refs: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
@@ -76,6 +77,7 @@ class BuildManifest:
             "harnessVersion": self.harness_version,
             "engine": self.engine,
             "modelProfileRef": self.model_profile_ref,
+            "fallbackModelProfileRefs": list(self.fallback_model_profile_refs),
             "mcpRefs": list(self.mcp_refs),
             "skillRefs": list(self.skill_refs),
             "policyRefs": list(self.policy_refs),
@@ -104,6 +106,7 @@ class BuildPipeline:
             harness_version=self._harness_version,
             engine="managed-langgraph",
             model_profile_ref=spec.model.profile_ref,
+            fallback_model_profile_refs=spec.model.fallback_profile_refs,
             mcp_refs=tuple(b.capability_ref for b in spec.capabilities.mcp_bindings),
             skill_refs=tuple(b.capability_ref for b in spec.capabilities.skill_bindings),
             content_hash=content_hash,
