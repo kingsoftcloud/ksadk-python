@@ -119,6 +119,7 @@ class SkillServiceClient:
         download_url = self.get_skill_download_url(skill)
         if not download_url:
             raise ValueError(f"Skill Service did not return DownloadUrl for {skill.skill_id}")
+        download_url = _rewrite_ks3_to_internal(download_url)
         with httpx.Client(**self._client_kwargs()) as client:
             response = client.get(download_url)
             response.raise_for_status()
@@ -268,3 +269,30 @@ def _normalize_base_url(base_url: str) -> str:
     elif path.endswith("/docs"):
         path = path[: -len("/docs")] + "/api/v1"
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+def _rewrite_ks3_to_internal(url: str) -> str:
+    """Rewrite a KS3 public endpoint to its internal counterpart (198 public-service-net).
+
+    AICP Skill Service returns pre-signed download URLs with public KS3 domains
+    (e.g. skill.ks3-cn-beijing.ksyuncs.com -> 60.x public IP). On private_only
+    compute pods those public IPs are unreachable. This replaces the public domain
+    with the internal one (ks3-cn-beijing-internal.ksyuncs.com -> 198.18.96.x)
+    which is reachable from all compute nodes via the 198 public-service-net.
+    """
+    if not url:
+        return url
+    try:
+        from ksadk.common.constants import get_ks3_endpoints
+
+        region = os.environ.get(
+            "KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION"
+        ) or "cn-beijing-6"
+        public_ep, internal_ep = get_ks3_endpoints(region)
+        if not public_ep or not internal_ep:
+            return url
+        if public_ep in url:
+            return url.replace(public_ep, internal_ep)
+    except Exception:
+        pass
+    return url

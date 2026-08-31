@@ -16,11 +16,71 @@ def bool_env(name: str, default: bool = True) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_sandbox_api_url() -> str:
+    """Probe sandbox control-plane internal URL at runtime (in-Pod).
+
+    agentengine-server injects public E2B_API_URL on the management cluster;
+    private_only compute pods have no public egress. This function probes the
+    198 public-service-net internal address and overrides if reachable.
+    Mirrors KSPMAS get_kspmas_api_base(): probe runs in-Pod, reflects Pod network.
+    """
+    raw = (os.environ.get("E2B_API_URL") or "").strip()
+    if not raw:
+        return raw
+
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower()
+    if host.endswith(".sdns.ksyun.com"):
+        return raw
+    if not host.endswith(".sandbox.ksyun.com"):
+        return raw
+
+    parts = host.split(".")
+    region = ""
+    if len(parts) >= 4 and parts[0] == "mgr":
+        region = parts[1]
+    elif len(parts) >= 4:
+        region = parts[1] if parts[1] != "sandbox" else ""
+    if not region:
+        return raw
+
+    internal_host = f"sandbox.{region}.sandbox.sdns.ksyun.com"
+    internal_url = urlunsplit((parsed.scheme or "https", internal_host, parsed.path, parsed.query, ""))
+
+    try:
+        import socket
+
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        s = socket.socket()
+        s.settimeout(1.5)
+        s.connect((internal_host, port))
+        s.close()
+    except OSError:
+        return raw
+
+    return internal_url
+
+
+def setup_sandbox_api_url_if_needed() -> None:
+    """Override E2B_API_URL to internal address before creating E2B backend.
+
+    Only runs in managed runtime (AGENT_RUNTIME_ID / K8S); local dev unaffected.
+    """
+    if not os.environ.get("AGENT_RUNTIME_ID") and not os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return
+    resolved = _resolve_sandbox_api_url()
+    if resolved != (os.environ.get("E2B_API_URL") or ""):
+        os.environ["E2B_API_URL"] = resolved
+
+
 def create_sandbox_backend(
     backend: str | None = None,
     *,
     sandbox_cls: Any | None = None,
 ) -> SandboxBackend:
+    setup_sandbox_api_url_if_needed()
     resolved = (backend or os.environ.get("KSADK_SANDBOX_BACKEND") or "e2b").strip().lower()
     if resolved in {"local", "local_process"}:
         return LocalProcessSandboxBackend(
