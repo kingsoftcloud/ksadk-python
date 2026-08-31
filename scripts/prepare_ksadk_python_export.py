@@ -128,6 +128,7 @@ PUBLIC_TEST_FILES = {
     "tests/compat/test_release_082_asset_compat.py",
     "tests/e2e/test_codex_plugin_bridge_e2e.py",
     "tests/e2e/test_codex_provider_app_server_e2e.py",
+    "tests/e2e/test_codex_subagent_provider_e2e.py",
     "tests/e2e/fixtures/codex-marketplace/.agents/plugins/marketplace.json",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/plugin.json",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-check/SKILL.md",

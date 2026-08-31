@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -277,6 +278,30 @@ def test_artifact_gate_rejects_mismatched_wheel_and_sdist_provenance(
 
 def test_generated_static_payload_is_not_tracked() -> None:
     validate_generated_static_is_untracked()
+
+
+def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "export-manifest.json").write_text(
+        json.dumps({"sourceCommit": SOURCE_COMMIT, "sourceTree": "clean"}),
+        encoding="utf-8",
+    )
+    tracked = "\n".join(
+        (
+            "ksadk/server/static/index.html",
+            "ksadk/server/static/assets/server.js",
+            "ksadk/studio/static/index.html",
+            "ksadk/studio/static/assets/studio.js",
+        )
+    )
+
+    monkeypatch.setattr(
+        "scripts.phase2_release_preflight.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout=tracked, stderr=""
+        ),
+    )
+
+    validate_generated_static_is_untracked(tmp_path)
 
 
 def test_git_free_clean_export_uses_attested_source_identity(tmp_path: Path) -> None:

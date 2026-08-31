@@ -302,6 +302,37 @@ def validate_generated_static_is_untracked(root: Path = ROOT) -> None:
             "cannot verify generated static tracking without Git metadata"
         )
     tracked = [line for line in completed.stdout.splitlines() if line.strip()]
+    is_clean_public_export = (
+        (root / "export-manifest.json").is_file()
+        and not (root / "ksadk/studio/react-ui/package.json").is_file()
+    )
+    if is_clean_public_export:
+        tracked_set = set(tracked)
+        required_files = {
+            "ksadk/server/static/index.html",
+            "ksadk/studio/static/index.html",
+        }
+        missing_files = sorted(required_files - tracked_set)
+        missing_asset_trees = [
+            prefix
+            for prefix in ("ksadk/server/static/assets/", "ksadk/studio/static/assets/")
+            if not any(path.startswith(prefix) for path in tracked)
+        ]
+        leaked_sources = sorted(
+            path
+            for path in tracked
+            if path.endswith((".map", ".ts", ".tsx"))
+        )
+        if missing_files or missing_asset_trees or leaked_sources:
+            details = []
+            if missing_files:
+                details.append("missing tracked static files: " + ", ".join(missing_files))
+            if missing_asset_trees:
+                details.append("missing tracked static trees: " + ", ".join(missing_asset_trees))
+            if leaked_sources:
+                details.append("tracked frontend source leaked: " + ", ".join(leaked_sources[:5]))
+            raise Phase2PreflightError("invalid public static export: " + "; ".join(details))
+        return
     if tracked:
         raise Phase2PreflightError(
             "generated frontend static files must remain untracked: " + ", ".join(tracked[:5])
