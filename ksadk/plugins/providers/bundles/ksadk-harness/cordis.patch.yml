@@ -1,0 +1,3 @@
+- insert:
+    - id: ksadk-harness-provider
+      name: '@kingsoftcloud/ksadk-harness-provider'

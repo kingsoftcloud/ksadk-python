@@ -20,6 +20,7 @@
     "guides/agentkit-local-studio",
     "guides/evaluation-observability",
     "guides/hosted-ui-events",
+    "guides/plugins-and-automations",
     "---[Blocks]运行时能力---",
     "guides/agent-context",
     "guides/attachments-multimodal",

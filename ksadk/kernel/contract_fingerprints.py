@@ -15,7 +15,7 @@ from typing import Any
 
 AGENT_KERNEL_V1_CONTRACT_SET = "agent-kernel/v1"
 AGENT_KERNEL_V1_AGGREGATE_DIGEST = (
-    "47e1003e03d97abeba232cc3e03a14b9cbcf78b1109870ccd2ce371f073b6211"
+    "b610a25aae957306b9f84a2cc2c948b30d1ce6218585cfd2a91f96736b92d102"
 )
 
 
@@ -23,12 +23,13 @@ def runtime_capability_matrix_wire_value(matrix: Any) -> dict[str, Any]:
     """Serialize the additive matrix without materializing absent v2 modes.
 
     Pydantic includes optional ``None`` defaults in ``model_dump``.  Omitting
-    those three top-level keys preserves the exact pre-extension wire value and
-    capability digest for runtimes that do not publish goal/loop/plan.
+    those additive top-level keys preserves the exact pre-extension wire value
+    and capability digest for runtimes that do not publish execution controls
+    or an interaction delivery mode.
     """
 
     dump = matrix.model_dump(mode="json")
-    for key in ("goal", "loop", "plan"):
+    for key in ("interaction_mode", "goal", "loop", "plan"):
         if dump.get(key) is None:
             dump.pop(key, None)
     return dump

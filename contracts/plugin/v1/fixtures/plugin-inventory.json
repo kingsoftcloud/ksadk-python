@@ -1,0 +1,15 @@
+{
+  "apiVersion": "plugin.ksadk.io/v1",
+  "kind": "PluginInventory",
+  "profileDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pluginLockDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "plugins": [
+    {
+      "id": "io.ksadk.codex-provider",
+      "version": "1.0.0",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "state": "ready",
+      "health": "healthy"
+    }
+  ]
+}

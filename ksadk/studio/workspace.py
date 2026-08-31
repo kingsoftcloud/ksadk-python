@@ -32,6 +32,7 @@ class Workspace:
             ".agentkit/runs",
             ".agentkit/traces",
             ".agentkit/assets/agent-avatars",
+            ".agentkit/assets/conversation-attachments",
             ".agentkit/cache",
             ".agentkit/trash",
             "dist",

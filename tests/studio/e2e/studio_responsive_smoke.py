@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
+from ksadk.studio.service import StudioService
+
 VIEWPORTS = (
     (768, 768),
     (1024, 768),
@@ -28,6 +30,20 @@ def assert_no_root_overflow(page: Page) -> None:
         """() => ({
           viewport: window.innerWidth,
           scrollWidth: document.documentElement.scrollWidth,
+          overflowing: [...document.querySelectorAll('*')]
+            .map(element => {
+              const rect = element.getBoundingClientRect();
+              return {
+                tag: element.tagName,
+                className: typeof element.className === 'string' ? element.className : '',
+                left: Math.round(rect.left),
+                right: Math.round(rect.right),
+                width: Math.round(rect.width),
+                scrollWidth: element.scrollWidth,
+              };
+            })
+            .filter(item => item.right > innerWidth + 1 || item.scrollWidth > item.width + 1)
+            .slice(0, 12),
         })"""
     )
     assert metrics["scrollWidth"] <= metrics["viewport"] + 1, metrics
@@ -281,13 +297,17 @@ def assert_page_matrix(page: Page, width: int) -> None:
         ("工程资源", "工程资源", "data", "Skill"),
         ("可观测", "可观测", "workbench", None),
         ("运行资源", "运行资源", "document", None),
-        ("任务编排", "任务编排", "document", None),
+        ("自动化", "自动化", "document", None),
     )
     for nav_label, page_title, layout, tab_label in pages:
         navigation.get_by_role("button", name=nav_label, exact=True).click()
         if tab_label is not None:
             page.get_by_role("tab").filter(has_text=tab_label).click()
-        expect(page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)).to_be_visible()
+        expect(
+            page.get_by_role("banner", name="当前页面").get_by_text(
+                page_title, exact=True
+            )
+        ).to_be_visible()
         page_root = page.locator("#mainContent > div:not(.chat-wrap) > [data-layout]").first
         expect(page_root).to_have_attribute("data-layout", layout)
         try:
@@ -318,7 +338,19 @@ def assert_page_matrix(page: Page, width: int) -> None:
 
 def main() -> None:
     with TemporaryDirectory(prefix="ksadk-responsive-studio-") as temp_dir:
-        with studio_server(Path(temp_dir)) as base_url, sync_playwright() as playwright:
+        workspace = Path(temp_dir)
+        service = StudioService(
+            workspace,
+            codex_runtime_inspector=lambda _runtime: (
+                "0.8.2",
+                "0.144.4",
+                "codex-cli 0.144.4",
+            ),
+        )
+        with (
+            studio_server(workspace, service=service) as base_url,
+            sync_playwright() as playwright,
+        ):
             browser = playwright.chromium.launch(headless=True)
             try:
                 context = browser.new_context(

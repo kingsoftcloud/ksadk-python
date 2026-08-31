@@ -1,0 +1,17 @@
+[
+  {
+    "schema_version": 1,
+    "event_type": "interaction.resolved",
+    "interaction_id": "int-1",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "kind": "approval",
+    "revision": 2,
+    "timestamp": "2026-08-19T00:03:00Z",
+    "outcome": "rejected",
+    "response": {"approved": false, "comment": "needs changes"},
+    "actor_ref": "account:123"
+  }
+]

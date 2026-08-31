@@ -1,0 +1,14 @@
+{
+  "contractFormat": "ksadk.dsh-agent-provider-host/v1",
+  "handshake": {"protocolVersion": "ksadk.dsh-agent-provider-host/v1", "methods": ["handshake", "describe", "preflight", "activate", "inventory", "execute", "cancel", "health", "drain", "dispose"], "hostVersion": "0.1.2-alpha.1"},
+  "descriptor": {"descriptorFormat": "dsh.agent-provider-descriptor/v1", "ecosystem": "dsh", "providerId": "io.example.dsh-provider", "providerVersion": "1.2.3", "displayName": "Example DSH provider", "pluginName": "@example/dsh-agent-provider", "profile": "studio", "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "definition": "agent.provider/v1", "slot": "agent.execution", "runtimeProtocols": ["agentkit.runtime/v1"]},
+  "preflight": {"ready": true, "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+  "inventory": {"providerId": "io.example.dsh-provider", "providerVersion": "1.2.3", "profile": "studio", "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "state": "ready", "activationCount": 1},
+  "requests": [
+    {"id": "dsh-1", "method": "handshake", "params": {"profile": {}}}, {"id": "dsh-2", "method": "describe", "params": {"profile": {}}}, {"id": "dsh-3", "method": "preflight", "params": {"profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"}}, {"id": "dsh-4", "method": "activate", "params": {"descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "bundle": {}, "capabilities": {}}}, {"id": "dsh-5", "method": "inventory", "params": {"descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"}},
+    {"id": "dsh-6", "method": "execute", "params": {"activationId": "activation-01", "request": {"input": "hello"}}}, {"id": "dsh-7", "method": "cancel", "params": {"activationId": "activation-01"}}, {"id": "dsh-8", "method": "health", "params": {"scope": "activation", "activationId": "activation-01"}}, {"id": "dsh-9", "method": "drain", "params": {"scope": "activation", "activationId": "activation-01"}}, {"id": "dsh-10", "method": "dispose", "params": {"scope": "host"}}
+  ],
+  "responses": [
+    {"id": "dsh-1", "result": {}}, {"id": "dsh-2", "result": {}}, {"id": "dsh-3", "result": {}}, {"id": "dsh-4", "result": {"activationId": "activation-01"}}, {"id": "dsh-5", "result": {}}, {"id": "dsh-6", "result": {"output": "hello"}}, {"id": "dsh-7", "result": {"ok": true}}, {"id": "dsh-8", "result": {"healthy": true}}, {"id": "dsh-9", "result": {"ok": true}}, {"id": "dsh-10", "result": {"ok": true}}
+  ]
+}

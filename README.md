@@ -47,6 +47,18 @@ agentengine web . --no-open
 
 完整操作见 [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/)，详细变更见 [CHANGELOG](CHANGELOG.md)。
 
+## 0.8.3 Agent Runtime V2 Phase 2（发布准备中）
+
+Phase 2 正在把 KsADK 的可扩展能力收敛为受控插件体系，同时保持已发布 Agent 与历史 Bundle 的原路径可用：
+
+- DSH Bundle/Profile 是唯一默认插件生态；`agentengine plugin` 使用固定版本的受管理 DSH/pnpm 工具链完成创建、校验、测试和打包，开发者无需检出 DeepSeek Harness 源码。KsADK 不再定义“原生 KsADK 插件”包格式。
+- 本地目录或 `.tgz` 会先按 SHA-256 固化为不可变安装源；投影前发现来源漂移会 fail closed，升级失败会恢复旧 manifest、lock、状态与仍可执行的旧包。一个真实仓外 DSH AgentProvider 已通过同一 Profile 的安装、连续两轮、停用、失败升级回滚、重新启用和卸载 E2E。
+- Codex 官方插件继续由 Codex App Server 管理，KsADK 不复制其实现或接管宿主权限。DSH Codex Bundle/child Provider、Claude Code 以及任意未经 conformance 的第三方 Provider 仍不属于已完成能力。
+- Studio Scheduler Lite 已覆盖本地 once、interval、cron、时区、立即运行和历史，并同时进入全局自动化页与 Agent 详情页；云端 24×7 调度留在后续端云阶段。
+- `ConversationSurface`、`ConversationInput`、`ConversationItem`、核心 Renderer 与 A2UI bridge 统一 Studio、Hosted UI 和自定义前端的输入输出边界。`ksadk-web@0.3.3` 的源码/浏览器门禁以及真实部署的新、历史 Agent 两轮会话已经通过；正式版仍须从公开 npm 制品重建并完成最终公开审计。
+
+当前内容是未发布预览。能力边界、命令和兼容策略见[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)和 [0.8.3 CHANGELOG 草案](CHANGELOG.md#083---unreleased)。
+
 ## 0.8.1 可观测性契约
 
 - 远端 trace 统一使用标准 OTLP/HTTP：Langfuse 读取 `OTEL_EXPORTER_OTLP_*`，CloudMonitor 读取 `CLOUD_MONITOR_OTLP_*`；同一 span 在两端保持相同的 `trace_id` / `span_id`。

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/agent-kernel/v1/activation-lease.schema.json",
+  "title": "ActivationLease/v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "agent_instance_id": {"type": "string", "minLength": 1},
+    "activation_id": {"type": "string", "minLength": 1},
+    "fencing_token": {"type": "integer", "minimum": 0},
+    "lease_expires_at": {"type": "string", "format": "date-time"},
+    "bundle_digest": {"type": "string", "minLength": 1},
+    "runtime_type": {"type": "string", "minLength": 1},
+    "capability_digest": {"type": "string", "minLength": 1}
+  },
+  "required": [
+    "schema_version", "agent_instance_id", "activation_id", "fencing_token",
+    "lease_expires_at", "bundle_digest", "runtime_type", "capability_digest"
+  ]
+}

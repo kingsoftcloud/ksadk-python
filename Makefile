@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
 
 PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
 # Phase 1 runtime drills must run beside real Agent workloads in the preprod
@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.2"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.3"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -53,6 +53,8 @@ help:
 	@echo "    make public-version-gate  版本号门禁(防降版/重复发版,对比 PyPI 已发版本)"
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
+	@echo "    make phase2-release-preflight  Phase 2 兼容/原生宿主/浏览器/制品门禁"
+	@echo "    make phase2-release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
 	@echo "    make public-publish-gate  PyPI/GitHub Release 写操作前的审批门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
@@ -184,7 +186,7 @@ studio-react-install-browser:
 
 studio-react-test:
 	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
-		npm --prefix ksadk/studio/react-ui ci; \
+		$(KSADK_WEB_NPM) --prefix ksadk/studio/react-ui ci; \
 		npm --prefix ksadk/studio/react-ui test; \
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
@@ -269,6 +271,7 @@ check-build-deps:
 
 build: check-build-deps sync-ksadk-web-static build-studio-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
+	@python scripts/write_build_provenance.py
 	python -m build
 	@# 删除 tar.gz 和临时目录，只保留 whl
 	@rm -f dist/*.tar.gz
@@ -284,6 +287,7 @@ build-only: check-build-deps build-studio-static
 		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
 	fi
+	@python scripts/write_build_provenance.py
 	python -m build
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
@@ -431,6 +435,10 @@ public-sync-check:
 
 public-secret-audit:
 	@echo "==> secret and sensitive-file audit"
+	@# Docs static output is generated, untracked release byproduct.  Remove it
+	@# before scanning so a second public-preflight checks the same source tree
+	@# as the first one instead of scanning bundled third-party source maps.
+	@rm -rf docs-site/.next docs-site/out
 	@if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
 		if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
 			echo "❌ 发现禁止跟踪的敏感文件"; \
@@ -478,6 +486,7 @@ public-sync-ksadk-web-static: sync-ksadk-web-static
 
 public-build-check: clean-dist sync-ksadk-web-static build-studio-static
 	@echo "==> build and twine check"
+	@uv run python scripts/write_build_provenance.py
 	@uv build
 	@$(MAKE) verify-ksadk-web-wheel-static
 	@uv run pytest tests/test_runtime_common_packaging.py -q
@@ -513,7 +522,27 @@ public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
 	uv run python scripts/check_release_version.py
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build public-build-check
+phase2-release-preflight: public-build-check
+	@echo "==> Phase 2 compatibility, native host, browser, and artifact preflight"
+	@uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist
+
+PHASE2_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
+PHASE2_LOCAL_EVIDENCE ?= dist/phase2-evidence.json
+PHASE2_WEB_REGISTRY_EVIDENCE ?= dist/evidence/ksadk-web-registry.json
+PHASE2_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
+PHASE2_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
+PHASE2_FINAL_EVIDENCE ?= dist/phase2-release-candidate.json
+
+phase2-release-candidate-gate:
+	@uv run python scripts/phase2_release_candidate_gate.py \
+		--expected-commit "$(PHASE2_FINAL_COMMIT)" \
+		--local "$(PHASE2_LOCAL_EVIDENCE)" \
+		--web-registry "$(PHASE2_WEB_REGISTRY_EVIDENCE)" \
+		--deployment "$(PHASE2_DEPLOYMENT_EVIDENCE)" \
+		--preprod "$(PHASE2_PREPROD_EVIDENCE)" \
+		--output "$(PHASE2_FINAL_EVIDENCE)"
+
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build phase2-release-preflight
 	@echo "✅ public preflight passed"
 
 public-publish-check:
@@ -668,17 +697,18 @@ STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# Interaction/v1 Web 0.3.2 release; a normal release build must fail rather
-# than silently substituting an older npm package when that release is not
+# The shared Conversation v1 Web 0.3.3 release; a normal release build must
+# fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.2
+KSADK_WEB_VERSION ?= 0.3.3
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=
 KSADK_WEB_RELEASE_URL ?=
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
+KSADK_WEB_NPM := npm --registry="$(KSADK_WEB_REGISTRY)"
 
 sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
@@ -698,7 +728,7 @@ sync-ksadk-web-static:
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	elif command -v npm >/dev/null 2>&1; then \
 		echo "Using npm pack (npm found in PATH)"; \
-		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+		$(KSADK_WEB_NPM) pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	else \
 		echo "npm not found; resolving tarball from registry $(KSADK_WEB_REGISTRY)"; \
 		REGISTRY_JSON=$$(curl -fsSL "$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)"); \
@@ -735,8 +765,17 @@ verify-ksadk-web-wheel-static:
 
 build-studio-static:
 	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
+		set -eu; \
 		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
-		npm --prefix "$(STUDIO_REACT_DIR)" ci; \
+		if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
+			WEB_TARBALL_PATH="$(KSADK_WEB_TARBALL)"; \
+			case "$$WEB_TARBALL_PATH" in /*) ;; *) WEB_TARBALL_PATH="$(CURDIR)/$$WEB_TARBALL_PATH" ;; esac; \
+			test -f "$$WEB_TARBALL_PATH" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $$WEB_TARBALL_PATH" >&2; exit 1; }; \
+			echo "Install Studio dependencies with the reviewed KsADK Web tarball: $$WEB_TARBALL_PATH"; \
+			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --package-lock=false "$$WEB_TARBALL_PATH"; \
+		else \
+			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci; \
+		fi; \
 		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
 	else \
 		echo "React Studio source is intentionally absent; using reviewed compiled assets from $(STUDIO_STATIC_DIR)"; \
@@ -751,6 +790,7 @@ build-frontend: sync-ksadk-web-static build-studio-static
 	@echo "Frontend static assets prepared for packaging"
 
 build-wheel: build-frontend
+	@uv run python scripts/write_build_provenance.py
 	uv build
 	@$(MAKE) --no-print-directory print-build-provenance
 

@@ -1,0 +1,40 @@
+{
+  "lockFormat": "agentkit.plugin-lock/v1",
+  "plugins": [
+    {
+      "id": "io.ksadk.event-store",
+      "version": "1.0.0",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "source": "builtin",
+      "provides": [
+        {
+          "definition": "session.event-store/v1",
+          "slot": "session.events",
+          "owner": "io.ksadk.event-store"
+        }
+      ]
+    },
+    {
+      "id": "io.ksadk.codex-provider",
+      "version": "1.0.0",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "source": "builtin",
+      "signatureRef": "signature://io.ksadk.codex-provider/1.0.0",
+      "license": "Apache-2.0",
+      "provides": [
+        {
+          "definition": "agent.provider/v1",
+          "slot": "agent.execution",
+          "owner": "io.ksadk.codex-provider"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "io.ksadk.event-store",
+          "version": "1.0.0",
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ]
+    }
+  ]
+}
