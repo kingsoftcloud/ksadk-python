@@ -11,6 +11,7 @@ fresh source snapshot.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -404,29 +405,35 @@ def copy_export(plan: ExportPlan, output_dir: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
+    policy_payload = {
+        "rootFiles": sorted(ROOT_EXPORT_FILES),
+        "prefixes": list(EXPORT_PREFIXES),
+        "curatedDocs": sorted(CURATED_DOCS),
+        "curatedReferenceDocs": sorted(CURATED_REFERENCE_DOCS),
+        "scripts": sorted(SCRIPT_EXPORT_FILES),
+        "tests": sorted(PUBLIC_TEST_FILES),
+    }
+    policy_digest = hashlib.sha256(
+        json.dumps(
+            policy_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     manifest = {
+        "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "sourceCommit": source_commit,
         "sourceTree": source_tree,
         "targetRepository": TARGET_REPOSITORY,
         "documentation": DOCUMENTATION_URL,
         "exportPathCount": len(plan.export_paths),
-        "excludedPathCount": len(plan.excluded_paths),
-        "excludedPaths": plan.excluded_paths,
-        "includePolicy": {
-            "rootFiles": sorted(ROOT_EXPORT_FILES),
-            "prefixes": list(EXPORT_PREFIXES),
-            "curatedDocs": sorted(CURATED_DOCS),
-            "curatedReferenceDocs": sorted(CURATED_REFERENCE_DOCS),
-            "scripts": sorted(SCRIPT_EXPORT_FILES),
-            "tests": sorted(PUBLIC_TEST_FILES),
+        "exportPolicy": {
+            "mode": "allowlist",
+            "schemaVersion": 1,
+            "sha256": policy_digest,
         },
-        "notes": [
-            "Local-only clean export candidate.",
-            "Clean export uses an allowlist policy for the first public GitHub snapshot.",
-            "Run public-repo audit before importing to GitHub.",
-            "Do not include PyPI/TestPyPI credentials, .pypirc files, or CI secrets.",
-        ],
     }
     (output_dir / "export-manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
