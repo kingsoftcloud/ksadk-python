@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -105,6 +105,66 @@ describe("ChatWorkspace ConversationSurface behavior", () => {
       "Idempotency-Key": body.input.idempotencyKey,
     });
     expect(apiFetch.mock.calls.some(([path]) => path === "/v1/responses")).toBe(false);
+  });
+
+  it("submits one turn when send is triggered twice before React commits state", async () => {
+    let resolveStream!: (response: Response) => void;
+    const pendingStream = new Promise<Response>((resolve) => {
+      resolveStream = resolve;
+    });
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
+      if (path === "/api/v1/agents/double-send-agent/models") {
+        return jsonResponse({
+          Current: "qwen3.7-flash",
+          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
+        });
+      }
+      if (path.startsWith(
+        "/api/v1/agents/double-send-agent/conversation-surface?sessionId=",
+      )) {
+        const sessionId = decodeURIComponent(path.split("sessionId=")[1]);
+        return jsonResponse({
+          buildId: "build-double-send",
+          surface: {
+            apiVersion: "conversation.ksadk.io/v1",
+            kind: "ConversationSurface",
+            surfaceId: "studio.build.build-double-send",
+            sessionId,
+            providerRef: "studio.runtime.codex",
+            inputs: [{ name: "text", mode: "native" }],
+            outputs: [{ name: "streaming", mode: "native" }],
+          },
+        });
+      }
+      if (path === "/api/v1/builds/build-double-send/conversation:stream") {
+        return pendingStream;
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    render(<ChatWorkspace agentId="double-send-agent" agentName="Double Send Agent" />);
+    const textbox = await screen.findByRole("textbox", { name: "消息" });
+    await user.type(textbox, "只提交一次");
+    const send = screen.getByRole("button", { name: "发送消息" });
+
+    act(() => {
+      fireEvent.click(send);
+      fireEvent.click(send);
+    });
+
+    await waitFor(() => expect(apiFetch.mock.calls.filter(([path]) => (
+      path === "/api/v1/builds/build-double-send/conversation:stream"
+    ))).toHaveLength(1));
+
+    await act(async () => {
+      resolveStream(new Response(
+        'id: 1\nevent: run.completed\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"run-end","sourceEventIds":["event-1"],"sessionId":"session","runId":"run-1","kind":"progress","operation":"completed","lifecycle":"completed","visibility":"public","payloadSchemaRef":"conversation.item.progress/v1","payload":{"status":"completed"},"nativeRef":{}}}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+      await pendingStream;
+    });
   });
 
   it("keeps the legacy composer when an older Studio has no surface endpoint", async () => {

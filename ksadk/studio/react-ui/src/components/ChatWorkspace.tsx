@@ -844,6 +844,7 @@ export function ChatWorkspace({
   const messageListRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const submissionInFlightRef = useRef(false);
   const followBottomRef = useRef(true);
   const scrollBySessionRef = useRef(new Map<string, number>());
   const previewSurfaceSessionId = useMemo(() => uniqueId("ses_surface"), [agentId]);
@@ -1179,7 +1180,7 @@ export function ChatWorkspace({
     const sourceInput = retrying ? inputOverride : input;
     const turnSourceAttachments = retrying ? [] : attachments;
     const submission = parseComposerSubmission(sourceInput);
-    if (isGenerating) return;
+    if (isGenerating || submissionInFlightRef.current) return;
     if (surfaceLoading) {
       showToast("正在确认会话能力", "请稍后再发送。", "error");
       return;
@@ -1225,6 +1226,7 @@ export function ChatWorkspace({
       return;
     }
     if (!content && !turnSourceAttachments.length) return;
+    submissionInFlightRef.current = true;
     const sessionId = currentSessionId
       || (conversationSurface.status === "declared"
         ? conversationSurface.surface.sessionId
@@ -1345,6 +1347,7 @@ export function ChatWorkspace({
       }
     } finally {
       abortRef.current = null;
+      submissionInFlightRef.current = false;
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }
