@@ -206,9 +206,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       + "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n第二段\"}}]}\n\n",
     ));
 
-    expect(await screen.findByText("第一段")).toBeInTheDocument();
-    expect(await screen.findByText("第二段")).toBeInTheDocument();
-    expect(screen.getAllByText(/第一段/)).toHaveLength(1);
+    const foregroundReply = await screen.findByLabelText("云端流式回复");
+    expect(foregroundReply).toHaveTextContent("第一段");
+    expect(foregroundReply).toHaveTextContent("第二段");
+    expect(screen.getAllByLabelText("云端流式回复")).toHaveLength(1);
     expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
     directStreamController?.enqueue(encoder.encode("data: [DONE]\n\n"));
     await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
@@ -373,6 +374,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await screen.findByText("双流去重");
     await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "不要重复思考");
     await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-dedup/events/stream?afterSeqId=0`,
+      expect.anything(),
+    ));
     const frame = [
       "event: session.event",
       `data: ${JSON.stringify({
@@ -677,6 +682,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
       `${base}/sessions/sess-approval/messages/stream`,
       expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-approval/events/stream?afterSeqId=0`,
+      expect.anything(),
     ));
 
     eventStreamController?.enqueue(new TextEncoder().encode(
@@ -1029,6 +1038,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
       `${base}/sessions/sess-invocation/messages/stream`,
       expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-invocation/events/stream?afterSeqId=5`,
+      expect.anything(),
     ));
     streamController?.enqueue(new TextEncoder().encode(
       "event: session.event\n"

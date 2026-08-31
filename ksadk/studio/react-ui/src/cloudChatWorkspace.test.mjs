@@ -10,7 +10,11 @@ const settingsSource = readFileSync(resolve(import.meta.dirname, "components/Set
 test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent as recovery", () => {
   assert.match(source, /const \[waitingForResponse, setWaitingForResponse\] = useState\(false\)/);
   assert.match(source, /rebuildPersistedSessionHistory/);
-  assert.match(source, /canonicalCloudMessages/);
+  // Message read-model and SessionEvents are committed by one projection
+  // boundary.  This prevents two asynchronous writers from blanking or
+  // replaying a cloud transcript during a live foreground stream.
+  assert.match(source, /const refreshSessionProjection = useCallback/);
+  assert.match(source, /const \[rows, events\] = await Promise\.all/);
   assert.doesNotMatch(source, /window\.setInterval/);
   assert.match(source, /awaitingAcceptedSeqRef\.current/);
   assert.match(source, /\[runId, invocationId\]\.filter\(Boolean\)\.includes\(eventRunId\)/);
@@ -30,7 +34,7 @@ test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent a
   assert.match(source, /\.map\(message => message\.id\)/);
   assert.match(source, /refreshSessions\(\)\.catch\(\(\) => \{\}\)/);
   assert.match(source, /const sessionId = currentSessionIdRef\.current \|\| await createSession\(\)/);
-  assert.match(source, /currentSessionIdRef\.current = session\.id/);
+  assert.match(source, /selectSession\(session\.id\)/);
   assert.match(source, /waitingForResponseRef\.current = true/);
   assert.match(source, /waitingForResponseRef\.current = false/);
   assert.match(source, /messages\/stream/);
@@ -40,12 +44,13 @@ test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent a
   assert.match(source, /delta\.tool_calls/);
   assert.match(source, /response\.output_text\.delta/);
   assert.match(source, /directStreamActiveRef/);
-  // The direct stream gives the fastest first token while SessionEvent owns
-  // durable item boundaries. Both remain identity-aware and the renderer only
-  // exposes a non-overlapping direct suffix during convergence.
-  assert.match(source, /const canonicalMessages = items\.filter/);
-  assert.match(source, /const directMessages = items\.filter/);
-  assert.match(source, /directText\.slice\(sharedPrefix\)/);
+  // A foreground item claims an identical durable event by identity.  No
+  // content-prefix or text-suffix heuristic is allowed: repeated text can be
+  // valid output and must never be silently removed.
+  assert.match(source, /const directMessageVisible = items\.some/);
+  assert.match(source, /claimExisting = false/);
+  assert.match(source, /Only change its transport ownership/);
+  assert.doesNotMatch(source, /directText\.slice\(sharedPrefix\)/);
   assert.match(source, /projectedStreamEventIdsRef/);
   assert.match(source, /const alreadyProjected = Boolean\(eventIdentity/);
   assert.doesNotMatch(source, /directKindsSeenRef/);

@@ -224,7 +224,17 @@ function conversationItemPatch(value: unknown): CloudRuntimeItem | null {
   // Additive providers must not turn every unrecognised event into a chat
   // error.  The canonical projector makes them hidden; raw diagnostics remain
   // available in the run/event inspector.
-  if (!item || item.visibility !== "public" || item.kind === "unknown" || item.kind === "progress") return null;
+  // The submitted user message is already represented by the optimistic
+  // message row (and then by durable history).  A public user_message item is
+  // useful to the canonical reducer but must not become a second activity
+  // card in the assistant timeline.
+  if (
+    !item
+    || item.visibility !== "public"
+    || item.kind === "unknown"
+    || item.kind === "progress"
+    || item.kind === "user_message"
+  ) return null;
   const text = valueText(item.payload.text ?? item.payload.objective ?? item.payload.error ?? "");
   const status: CloudRuntimeItem["status"] = item.lifecycle === "failed"
     ? "failed"
@@ -617,25 +627,21 @@ function canonicalCloudHistory(
     events.map(canonicalSessionEvent) as Parameters<typeof rebuildPersistedSessionHistory>[1],
     sessionId,
   );
-  const messages = rebuilt.messages
+  const messages: CloudMessage[] = rebuilt.messages
     .filter(message => message.role === "user" || message.role === "model" || message.role === "system")
     .map(message => ({
       id: message.id,
-      role: message.role === "model" ? "assistant" : message.role,
+      role: message.role === "model"
+        ? "assistant"
+        : message.role === "user"
+          ? "user"
+          : "system",
       content: message.content,
       timestamp: new Date(Number(message.timestamp) || 0).toISOString(),
       invocationId: message.invocationId,
       blocks: message.blocks,
     }));
   return { messages, canonicalRunIds: new Set(rebuilt.canonicalRunIds) };
-}
-
-function canonicalCloudMessages(
-  fallback: CloudMessage[],
-  events: unknown[],
-  sessionId: string,
-): CloudMessage[] {
-  return canonicalCloudHistory(fallback, events, sessionId).messages;
 }
 
 function pendingInteractions(events: unknown[]): CloudInteraction[] {
@@ -843,6 +849,15 @@ async function responseError(response: Response): Promise<string> {
   }
 }
 
+async function loadCloudMessages(base: string, sessionId: string): Promise<CloudMessage[]> {
+  const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`);
+  if (!response.ok) throw new Error(await responseError(response));
+  const payload = await response.json() as { messages?: unknown[] };
+  return (payload.messages || [])
+    .map(normalizeMessage)
+    .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
+}
+
 async function fileDataUrl(file: File): Promise<string> {
   if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} 超过 10 MB 限制`);
   return await new Promise((resolve, reject) => {
@@ -917,27 +932,19 @@ function CloudMessageBody({ message }: { message: CloudMessage }) {
 
 function CloudRuntimeTimeline({ items, agentName, streaming }: { items: CloudRuntimeItem[]; agentName: string; streaming: boolean }) {
   if (!items.length) return null;
-  const canonicalMessages = items.filter(item => item.kind === "message" && item.source === "session");
-  const directMessages = items.filter(item => item.kind === "message" && item.source === "direct");
-  let visibleItems = items;
-  if (canonicalMessages.length && directMessages.length) {
-    const canonicalText = canonicalMessages.map(item => item.text).join("");
-    const directText = directMessages.map(item => item.text).join("");
-    let sharedPrefix = 0;
-    while (sharedPrefix < canonicalText.length
-      && sharedPrefix < directText.length
-      && canonicalText[sharedPrefix] === directText[sharedPrefix]) sharedPrefix += 1;
-    const directRemainder = directText.slice(sharedPrefix);
-    visibleItems = items.filter(item => !(item.kind === "message" && item.source === "direct"));
-    if (directRemainder) {
-      visibleItems = [...visibleItems, {
-        ...directMessages[0],
-        id: `${directMessages[0].id}:remainder`,
-        text: directRemainder,
-        detail: directRemainder,
-      }];
-    }
-  }
+  // A turn has exactly one *visible* writer. The foreground RunAgent stream
+  // owns the live preview; durable SessionEvents own recovery only after the
+  // foreground stream has settled.  Never compare text prefixes here: a
+  // repeated phrase is valid output and can never establish event identity.
+  // SessionEvents can win the network race.  Show them as a low-latency
+  // fallback until an equivalent foreground item arrives.  The foreground
+  // then claims the same stable item id; for old text-only streams, it owns
+  // only the assistant body while durable reasoning/tool cards remain useful.
+  const directMessageVisible = items.some(item => item.source === "direct" && item.kind === "message");
+  const visibleItems = items.filter(item => (
+    item.source === "direct"
+    || (item.source === "session" && (item.kind !== "message" || !directMessageVisible))
+  ));
   return (
     <div className="cloud-runtime-timeline" data-ui="runtime-timeline">
       {visibleItems.map(item => item.kind === "message" ? (
@@ -1057,82 +1064,42 @@ export function CloudChatWorkspace({
     selectSession(next);
   }, [base, selectSession, settleCloudRun]);
 
-  const refreshMessages = useCallback(async (
+  // The message read and SessionEvent read describe one conversation
+  // projection.  Fetch and commit them together.  Independent callbacks
+  // previously raced: an empty /messages response could replace a richer
+  // RuntimeEvent projection, then the next polling result put it back.
+  // This is the state-machine boundary: transports update refs; this method
+  // alone promotes durable data into the visible transcript.
+  const refreshSessionProjection = useCallback(async (
     sessionId: string,
     readGeneration = sessionReadGenerationRef.current,
   ) => {
     if (!sessionId) {
+      fallbackMessagesRef.current = [];
+      durableEventsRef.current = [];
       setMessages([]);
-      return;
-    }
-    const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`);
-    if (!response.ok) throw new Error(await responseError(response));
-    const payload = await response.json() as { messages?: unknown[] };
-    if (
-      currentSessionIdRef.current !== sessionId
-      || sessionReadGenerationRef.current !== readGeneration
-    ) return;
-    const rows = (payload.messages || [])
-      .map(normalizeMessage)
-      .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
-    fallbackMessagesRef.current = rows;
-    const rebuiltRows = canonicalCloudMessages(rows, durableEventsRef.current, sessionId);
-    setMessages(rebuiltRows);
-    const hasNewAssistant = rebuiltRows.some(
-      message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
-    );
-    const durableRunIds = new Set(durableEventsRef.current.flatMap(event => {
-      const envelope = runtimeEnvelope(event);
-      return envelope ? [envelope.runId, envelope.invocationId].filter(Boolean) : [];
-    }));
-    const canonicalCaughtUp = rebuiltRows.some(message => (
-      message.role === "assistant"
-      && !assistantIdsBeforeSendRef.current.has(message.id)
-      && Boolean(message.invocationId && durableRunIds.has(message.invocationId))
-      && Boolean(message.blocks?.length)
-    ));
-    if (hasNewAssistant) {
-      // ListSessionMessages may land before canonical RuntimeEvents. Keep
-      // transient reasoning/tool order until the shared reducer can own the
-      // complete run, but never render the streamed assistant body twice.
-      setStreamingRuntimeItems(previous => canonicalCaughtUp
-        ? []
-        : previous.filter(item => item.kind !== "message"));
-      if (!directStreamActiveRef.current) {
-        streamedFramesRef.current = [];
-      }
-    }
-    if (waitingForResponseRef.current && hasNewAssistant && !directStreamActiveRef.current) {
-      setRunError("");
-      settleCloudRun();
-    }
-  }, [base, settleCloudRun]);
-
-  const refreshInteractions = useCallback(async (
-    sessionId: string,
-    readGeneration = sessionReadGenerationRef.current,
-  ) => {
-    if (!sessionId) {
       setInteractions([]);
-      return;
+      setStreamingRuntimeItems([]);
+      return { messages: [] as CloudMessage[], canonicalCaughtUp: false };
     }
-    // A single Codex turn can easily exceed the Server's default 200-event
-    // window because text and reasoning deltas are canonical RuntimeEvents.
-    // Read the complete supported history window so a reload cannot discard
-    // the reasoning/tool items that precede a long assistant response.
-    const events = await loadCompleteCloudSessionEvents(base, sessionId);
+    const [rows, events] = await Promise.all([
+      loadCloudMessages(base, sessionId),
+      // A single Codex turn can exceed the Server's default 200-event window
+      // because text and reasoning deltas are canonical RuntimeEvents.
+      loadCompleteCloudSessionEvents(base, sessionId),
+    ]);
     if (
       currentSessionIdRef.current !== sessionId
       || sessionReadGenerationRef.current !== readGeneration
-    ) return;
+    ) return { messages: [] as CloudMessage[], canonicalCaughtUp: false };
+    fallbackMessagesRef.current = rows;
     durableEventsRef.current = events;
     const canonicalHistory = canonicalCloudHistory(
-      fallbackMessagesRef.current,
+      rows,
       events,
       sessionId,
     );
     const rebuiltRows = canonicalHistory.messages;
-    setMessages(rebuiltRows);
     sessionCursorRef.current.set(
       sessionId,
       Math.max(sessionCursorRef.current.get(sessionId) || 0, latestEventSeq(events)),
@@ -1182,9 +1149,15 @@ export function CloudChatWorkspace({
         // enough: older RuntimeEvent producers can mix canonical messages
         // with legacy tool projections in one run.
         if (ownedByCanonicalBlocks) return items;
-        return mergeRuntimeItem(items, patch);
+        return mergeRuntimeItem(items, { ...patch, source: "session" });
     }, []);
-    if (canonicalCaughtUp || (!directStreamActiveRef.current && durableCompatibilityItems.length)) {
+    const hasNewAssistant = rebuiltRows.some(
+      message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
+    );
+    if (!directStreamActiveRef.current) {
+      setMessages(rebuiltRows);
+    }
+    if (!directStreamActiveRef.current && (canonicalCaughtUp || durableCompatibilityItems.length)) {
       setStreamingRuntimeItems(previous => {
         if (canonicalCaughtUp) return durableCompatibilityItems;
         // A clean foreground EOF can precede both durable projections.
@@ -1193,6 +1166,11 @@ export function CloudChatWorkspace({
         return durableCompatibilityItems;
       });
     }
+    if (waitingForResponseRef.current && hasNewAssistant && !directStreamActiveRef.current) {
+      setRunError("");
+      settleCloudRun();
+    }
+    return { messages: rebuiltRows, canonicalCaughtUp };
   }, [base, settleCloudRun]);
 
   useEffect(() => {
@@ -1286,13 +1264,10 @@ export function CloudChatWorkspace({
     const readGeneration = sessionReadGenerationRef.current;
     fallbackMessagesRef.current = [];
     durableEventsRef.current = [];
-    refreshMessages(currentSessionId, readGeneration).catch(error => {
-      showToast("云端消息加载失败", error.message, "error");
+    refreshSessionProjection(currentSessionId, readGeneration).catch(error => {
+      showToast("云端会话加载失败", error.message, "error");
     });
-    refreshInteractions(currentSessionId, readGeneration).catch(error => {
-      showToast("云端交互加载失败", error.message, "error");
-    });
-  }, [currentSessionId, refreshInteractions, refreshMessages]);
+  }, [currentSessionId, refreshSessionProjection]);
 
   useEffect(() => {
     const list = messageListRef.current;
@@ -1397,20 +1372,36 @@ export function CloudChatWorkspace({
       streamAbortRef.current = streamController;
       directStreamActiveRef.current = true;
       projectedStreamEventIdsRef.current = new Set();
-      const projectStreamItem = (item: CloudRuntimeItem, source: "direct" | "session") => {
+      // Do not block RunAgent on history, but do establish the durable cursor
+      // before opening its SessionEvent companion stream.  Opening at cursor
+      // 0 while a refresh is still in flight replays completed history into a
+      // live turn; that was the source of duplicate/stale terminal races.
+      const baselineProjection = refreshSessionProjection(sessionId);
+      const projectStreamItem = (
+        item: CloudRuntimeItem,
+        source: "direct" | "session",
+        claimExisting = false,
+      ) => {
         const sourcedItem = { ...item, source };
         setStreamingRuntimeItems(previous => {
-          // Keep both transports in state. Rendering prefers canonical
-          // SessionEvent item identities and exposes only the not-yet-caught-
-          // up suffix from the faster identity-less direct stream.
+          if (claimExisting) {
+            const existingIndex = previous.findIndex(candidate => candidate.id === sourcedItem.id);
+            if (existingIndex >= 0) {
+              const next = [...previous];
+              // The identical canonical event already updated the session
+              // fallback.  Only change its transport ownership: appending
+              // the same delta a second time is the exact duplication bug
+              // this handoff prevents.
+              next[existingIndex] = { ...next[existingIndex], source };
+              return next;
+            }
+          }
+          // Source ownership is selected by the turn lifecycle above.  This
+          // helper only reduces patches with a stable runtime-item identity.
           return mergeRuntimeItem(previous, sourcedItem);
         });
       };
-      const streamUrl = `${base}/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${awaitingAcceptedSeqRef.current}`;
-      apiFetch(streamUrl, {
-        headers: { Accept: "text/event-stream" },
-        signal: streamController.signal,
-      }).then(response => consumeSseResponse(response, frame => {
+      const consumeDurableEvents = (response: Response) => consumeSseResponse(response, frame => {
         const envelope = runtimeEnvelope(frame);
         if (!envelope) return;
         if (envelope.seq) {
@@ -1430,6 +1421,9 @@ export function CloudChatWorkspace({
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
         const item = runtimeItemPatch(frame);
+        // Durable events may win the network race, so render them as a
+        // fallback.  A matching foreground event claims this item identity
+        // without appending its delta again; the timeline exposes one owner.
         if (item) {
           const eventIdentity = streamEventIdentity(frame);
           const alreadyProjected = Boolean(eventIdentity && projectedStreamEventIdsRef.current.has(eventIdentity));
@@ -1446,15 +1440,33 @@ export function CloudChatWorkspace({
           settleCloudRun(terminal.status === "failed"
             ? terminal.error || "本次请求已结束，未得到回复。"
             : "");
-          refreshMessages(sessionId).catch(() => {});
-          refreshInteractions(sessionId).catch(() => {});
+          refreshSessionProjection(sessionId).catch(() => {});
           refreshSessions().catch(() => {});
         }
-      }, streamController.signal)).catch(() => {
-        // Timed polling remains the compatibility fallback if the canonical
-        // event stream is unavailable, but the stream is opened before the
-        // blocking RunAgent response so real deltas can render immediately.
-      });
+      }, streamController.signal);
+      void baselineProjection
+        .catch(() => {
+          // A legacy cloud endpoint may not expose complete durable history.
+          // The direct stream is still valid; use the last known cursor rather
+          // than replaying the entire transcript as a second live source.
+        })
+        .then(() => {
+          if (
+            streamController.signal.aborted
+            || !waitingForResponseRef.current
+            || currentSessionIdRef.current !== sessionId
+          ) return;
+          const acceptedSeq = sessionCursorRef.current.get(sessionId) || 0;
+          awaitingAcceptedSeqRef.current = acceptedSeq;
+          const streamUrl = `${base}/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${acceptedSeq}`;
+          return apiFetch(streamUrl, {
+            headers: { Accept: "text/event-stream" },
+            signal: streamController.signal,
+          }).then(consumeDurableEvents).catch(() => {
+            // The foreground RunAgent stream remains the active transport.
+            // The next explicit refresh is the recovery path.
+          });
+        });
       const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
@@ -1468,38 +1480,54 @@ export function CloudChatWorkspace({
           goalObjective: goalObjective || undefined,
         }),
       });
-      let foregroundTerminal: TerminalRunResult | null = null;
+      let foregroundFailure = "";
       await consumeSseResponse(response, frame => {
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
         const eventIdentity = streamEventIdentity(frame);
         const alreadyProjected = Boolean(eventIdentity && projectedStreamEventIdsRef.current.has(eventIdentity));
         if (eventIdentity) projectedStreamEventIdsRef.current.add(eventIdentity);
-        if (!alreadyProjected) {
-          directStreamItemPatches(frame).forEach(item => projectStreamItem(item, "direct"));
-        }
+        directStreamItemPatches(frame).forEach(item => projectStreamItem(item, "direct", alreadyProjected));
         const terminal = directStreamTerminal(frame);
         if (terminal) {
-          foregroundTerminal = terminal;
           if (terminal.status === "failed") {
+            foregroundFailure = terminal.error;
             settleCloudRun(terminal.error, "云端流式响应失败");
           }
         }
       }, streamController.signal);
-      // Do not expose the terminal idle state until foreground deltas have
-      // converged with the durable SessionEvent projection. Otherwise React
-      // briefly renders the same assistant item once from each source and the
-      // user sees a duplicate flash immediately before history settles.
+      // Reconcile behind the foreground owner, then make one atomic handoff.
+      // There is deliberately no foreground/canonical text-prefix merge: the
+      // server event identities, not text coincidence, decide ownership.
       if (waitingForResponseRef.current) {
+        let recoveredMessages: CloudMessage[] = [];
         try {
-          await refreshInteractions(sessionId);
-          await refreshMessages(sessionId);
+          const recovery = await refreshSessionProjection(sessionId);
+          recoveredMessages = recovery.messages;
         } catch {
           // The foreground answer remains usable when an older deployment has
           // no durable history endpoints; the next explicit reload can retry.
         }
+        const recoveredAssistant = recoveredMessages.some(message => (
+          message.role === "assistant"
+          && !assistantIdsBeforeSendRef.current.has(message.id)
+          && Boolean(message.content || message.blocks?.length)
+        ));
+        if (recoveredAssistant) {
+          setMessages(recoveredMessages);
+          setStreamingRuntimeItems([]);
+        } else {
+          // A legacy deployment may finish before its read model catches up.
+          // Preserve the one foreground transcript instead of blanking it;
+          // mark it terminal so the composer can accept the next turn.
+          setStreamingRuntimeItems(previous => previous.map(item => (
+            item.source === "direct" && item.status === "running"
+              ? { ...item, status: "completed" }
+              : item
+          )));
+        }
         settleCloudRun(
-          foregroundTerminal?.status === "failed" ? foregroundTerminal.error : "",
+          foregroundFailure,
           "云端流式响应失败",
         );
       }
@@ -1586,7 +1614,7 @@ export function CloudChatWorkspace({
         }),
       });
       if (!response.ok) throw new Error(await responseError(response));
-      await Promise.all([refreshInteractions(currentSessionId), refreshMessages(currentSessionId)]);
+      await refreshSessionProjection(currentSessionId);
       showToast("已提交确认", "云端 Agent 将继续当前对话。", "success");
     } catch (error) {
       showToast("提交确认失败", error instanceof Error ? error.message : String(error), "error");
