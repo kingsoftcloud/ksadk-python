@@ -46,6 +46,7 @@ from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
 from ksadk.cli.resource_common import (
+    build_component_config,
     CONTEXT_SETTINGS,
     ResourceActionDescriptor,
     ResourceDescriptor,
@@ -271,6 +272,7 @@ def _build_openclaw_update_payload(
     network_payload: dict[str, Any] | None,
     include_env: bool,
     include_storage: bool,
+    component_config: dict[str, Any] | None = None,
 ):
     """构建已有 OpenClaw 的最小更新请求，默认保留服务端现有配置。"""
     update_payload: dict[str, Any] = {
@@ -290,6 +292,8 @@ def _build_openclaw_update_payload(
         update_payload["storage"] = storage_config
     if network_payload:
         update_payload["network"] = network_payload
+    if component_config:
+        update_payload["component_config"] = component_config
     return update_payload
 
 
@@ -2952,6 +2956,9 @@ def channel_doctor(
     "--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）"
 )
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@click.option("--skill-space-id", "skill_space_ids", multiple=True, help="Skill 中心空间 ID（可重复传入多个）")
+@click.option("--sandbox-template-id", default=None, help="沙箱模板 ID（启用 E2B 沙箱执行 execute_skills）")
+@click.option("--sandbox-api-key", default=None, help="沙箱 API Key（可选，默认从服务端注入）")
 @click.option(
     "--agent-id",
     "agent_id_opt",
@@ -2987,6 +2994,9 @@ def deploy(
     subnet_id: Optional[str],
     security_group_id: Optional[str],
     availability_zone: Optional[str],
+    skill_space_ids: tuple[str, ...],
+    sandbox_template_id: Optional[str],
+    sandbox_api_key: Optional[str],
     dry_run: bool,
 ):
     """部署 OpenClaw 到云端
@@ -3052,6 +3062,9 @@ def deploy(
                 mem0_region=mem0_region,
                 extra_env=extra_env,
                 env_file=env_file,
+                skill_space_ids=skill_space_ids,
+                sandbox_template_id=sandbox_template_id,
+                sandbox_api_key=sandbox_api_key,
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
@@ -3101,6 +3114,9 @@ async def _deploy_openclaw(
     subnet_id: Optional[str] = None,
     security_group_id: Optional[str] = None,
     availability_zone: Optional[str] = None,
+    skill_space_ids: tuple[str, ...] = (),
+    sandbox_template_id: str | None = None,
+    sandbox_api_key: str | None = None,
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
@@ -3233,6 +3249,13 @@ async def _deploy_openclaw(
         "auth_type": "None",
         "inbound_identity_auth": "None",
     }
+    component_config = build_component_config(
+        skill_space_ids=skill_space_ids,
+        sandbox_template_id=sandbox_template_id,
+        sandbox_api_key=sandbox_api_key,
+    )
+    if component_config:
+        request_data["component_config"] = component_config
     if memory_config:
         request_data["memory_config"] = memory_config
     storage_config = build_storage_config(
@@ -3307,6 +3330,7 @@ async def _deploy_openclaw(
                     network_payload=network_payload,
                     include_env=include_env_on_update,
                     include_storage=include_storage_on_update,
+                    component_config=component_config,
                 )
                 await client.update_agent(existing_agent_id, update_payload)
             else:
@@ -3364,6 +3388,7 @@ async def _deploy_openclaw(
                         network_payload=network_payload,
                         include_env=include_env_on_update,
                         include_storage=include_storage_on_update,
+                        component_config=component_config,
                     )
                     res = await client.update_agent(existing_agent_id, update_payload)
                     agent_id = existing_agent_id
