@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import HTTPException
 
+from ksadk.runtime.executor import project_legacy_runtime_capabilities
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import SessionEvent
 from ksadk.tools.gateway import tool_approval_capability
@@ -66,8 +68,38 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     framework = launch_context.runtime_type.strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = _resolve_agent_ui_spec()
-    runtime_capabilities = executor.native_capabilities(launch_context)
-    runtime_capability_matrix = executor.capability_matrix(launch_context)
+    capability_subject = executor.capability_subject(launch_context)
+    if capability_subject is not None:
+        wait_timeout = max(
+            0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2")
+        )
+        capability_snapshot = await state.persistence_capability.get_snapshot(
+            runner=capability_subject,
+            framework=framework,
+            status_provider=deps.get_persistence_status,
+            session_service_provider=deps.resolve_session_service,
+            wait_timeout=wait_timeout,
+        )
+        persistence = dict(capability_snapshot.session_persistence)
+        checkpoint_persistence = dict(capability_snapshot.checkpoint_persistence)
+        runtime_capabilities = dict(capability_snapshot.runtime_capabilities)
+        runtime_capability_matrix = executor.capability_matrix(launch_context)
+    else:
+        runtime_capability_matrix = executor.capability_matrix(launch_context)
+        persistence_status = dict(
+            await deps.get_persistence_status(framework=framework)
+        )
+        if isinstance(persistence_status.get("Session"), Mapping):
+            persistence = dict(persistence_status["Session"])
+            checkpoint_persistence = dict(
+                persistence_status.get("Checkpoint") or {}
+            )
+        else:
+            persistence = persistence_status
+            checkpoint_persistence = dict(persistence_status)
+        runtime_capabilities = project_legacy_runtime_capabilities(
+            executor.native_capabilities(launch_context), runtime_capability_matrix
+        )
     resume_capability = (
         runtime_capabilities.get("ResumeRun")
         if isinstance(runtime_capabilities, Mapping)
@@ -148,6 +180,8 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Thinking": True,
                 "StopRun": cancel_run_supported,
                 "ResumeRun": checkpoint_resume_supported,
+                "Persistence": persistence,
+                "CheckpointPersistence": checkpoint_persistence,
                 "RuntimeCapabilities": runtime_capabilities,
                 "RuntimeCapabilityMatrix": runtime_capability_matrix,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
