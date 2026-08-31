@@ -18,12 +18,25 @@ Memory Service / 向量库适配器提供）；缺失时退化为纯关键词管
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 from ksadk.memory.models import MemoryRecord
 
 #: 多样性控制：同 slot_key 保留的最高分条数。
 _PER_SLOT_LIMIT = 1
+
+
+class MemorySemanticScorer(Protocol):
+    """Optional semantic scoring boundary for a Memory Service or embedding backend.
+
+    Implementations return normalized scores in ``[0, 1]`` keyed by ``memory_id``.
+    The runtime treats the scorer as an optional enhancement: failures must degrade
+    to keyword retrieval instead of failing the conversation.
+    """
+
+    def score(
+        self, *, query: str, records: Sequence[MemoryRecord]
+    ) -> Mapping[str, float]: ...
 
 
 @dataclass(frozen=True)
@@ -115,4 +128,9 @@ def _box_by_tokens(records: list[MemoryRecord], max_tokens: int) -> list[MemoryR
     return out
 
 
-__all__ = ["RetrievalConfig", "keyword_coverage", "rerank_records"]
+__all__ = [
+    "MemorySemanticScorer",
+    "RetrievalConfig",
+    "keyword_coverage",
+    "rerank_records",
+]

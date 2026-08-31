@@ -290,6 +290,10 @@ class MemorySearchResult:
     latency_ms: int
     accounting_accuracy: str
     truncated_by_budget: bool = False
+    #: Harness-side retrieval projection. Additive fields keep Provider contracts
+    #: stable while making semantic fallback visible to Studio/observability.
+    retrieval_strategy: str = "provider"
+    reranker_status: str = "not_configured"
 
 
 @dataclass(frozen=True)

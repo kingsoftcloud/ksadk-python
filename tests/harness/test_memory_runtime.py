@@ -41,6 +41,7 @@ class TestControlledWrite:
         assert event is not None and event.event_type == "memory.write"
         assert event.payload["scope"] == "user"
         assert event.payload["source"] == "user_explicit"
+        assert rt.consolidation_queue.pending_count == 1
 
     def test_write_without_source_rejected(self):
         rt = HarnessMemoryRuntime.local_sqlite()
@@ -108,6 +109,51 @@ class TestIsolation:
         rt1.write(_write(content="corp-a 的预算口径"), _spec(), run_id="r1")
         b_hits = rt2.recall(query="预算口径", scopes=[("user", "user:u1")])
         assert len(b_hits.records) == 0
+
+
+class TestSemanticRecall:
+    class _Scorer:
+        def score(self, *, query, records):
+            return {
+                record.memory_id: (1.0 if "冻结数" in record.content else 0.0)
+                for record in records
+            }
+
+    class _FailingScorer:
+        def score(self, *, query, records):
+            raise TimeoutError("semantic backend timeout")
+
+    @staticmethod
+    def _seed(runtime: HarnessMemoryRuntime) -> None:
+        runtime.write(_write(content="预算口径文档"), _spec(), run_id="semantic-1")
+        runtime.write(
+            _write(content="预算冻结数是最终财务事实"), _spec(), run_id="semantic-2"
+        )
+
+    def test_optional_semantic_scorer_is_wired_into_default_recall(self):
+        runtime = HarnessMemoryRuntime.local_sqlite(
+            semantic_scorer=self._Scorer(), semantic_weight=0.9
+        )
+        self._seed(runtime)
+
+        result = runtime.recall(query="预算", scopes=[("user", "user:u1")])
+
+        assert result.records[0].content == "预算冻结数是最终财务事实"
+        assert result.retrieval_strategy == "hybrid"
+        assert result.reranker_status == "applied"
+
+    def test_semantic_failure_degrades_without_failing_recall(self):
+        runtime = HarnessMemoryRuntime.local_sqlite(
+            semantic_scorer=self._FailingScorer(), semantic_weight=0.9
+        )
+        self._seed(runtime)
+
+        result = runtime.recall(query="预算", scopes=[("user", "user:u1")])
+
+        assert result.status == "ok"
+        assert result.records
+        assert result.retrieval_strategy == "keyword"
+        assert result.reranker_status == "degraded"
 
 
 class TestCoreMemory:

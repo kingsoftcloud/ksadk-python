@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ksadk.harness.events import EventType, RuntimeEvent
+from ksadk.harness.memory_consolidation import MemoryConsolidationQueue
 from ksadk.harness.spec import HarnessSpec
 from ksadk.memory.coordinator import MemoryCoordinator
 from ksadk.memory.models import (
@@ -35,6 +36,7 @@ from ksadk.memory.models import (
 )
 from ksadk.memory.policy import MemoryEvaluation
 from ksadk.memory.providers.local_sqlite import SqliteMemoryProvider
+from ksadk.memory.retrieval import MemorySemanticScorer
 
 #: MemoryScope（PCM）→ Harness memory_policy scope allowlist 值。
 _SCOPE_MAP: dict[str, str] = {
@@ -82,10 +84,18 @@ class HarnessMemoryRuntime:
         *,
         max_core_blocks: int = 8,
         max_core_tokens: int = 4096,
+        semantic_scorer: MemorySemanticScorer | None = None,
+        semantic_weight: float = 0.35,
+        consolidation_queue: MemoryConsolidationQueue | None = None,
     ) -> None:
         self._coordinator = coordinator
         self._max_core_blocks = max_core_blocks
         self._max_core_tokens = max_core_tokens
+        self._semantic_scorer = semantic_scorer
+        self._semantic_weight = min(1.0, max(0.0, float(semantic_weight)))
+        self._consolidation_queue = consolidation_queue or MemoryConsolidationQueue(
+            coordinator.provider
+        )
 
     @classmethod
     def local_sqlite(
@@ -106,6 +116,10 @@ class HarnessMemoryRuntime:
     @property
     def coordinator(self) -> MemoryCoordinator:
         return self._coordinator
+
+    @property
+    def consolidation_queue(self) -> MemoryConsolidationQueue:
+        return self._consolidation_queue
 
     # ------------------------------------------------------------- 读取
 
@@ -270,12 +284,41 @@ class HarnessMemoryRuntime:
         if result.status == "ok" and result.records:
             from ksadk.memory.retrieval import RetrievalConfig, rerank_records
 
+            vector_scores: dict[str, float] | None = None
+            reranker_status = "not_configured"
+            if self._semantic_scorer is not None and self._semantic_weight > 0:
+                try:
+                    raw_scores = self._semantic_scorer.score(
+                        query=query, records=tuple(result.records)
+                    )
+                    vector_scores = {
+                        str(memory_id): min(1.0, max(0.0, float(score)))
+                        for memory_id, score in raw_scores.items()
+                    }
+                    reranker_status = "applied"
+                except Exception:  # noqa: BLE001 - optional enhancement must degrade
+                    reranker_status = "degraded"
             reranked = rerank_records(
                 result.records,
                 query=query,
-                config=RetrievalConfig(top_k=top_k, max_tokens=request.max_tokens),
+                config=RetrievalConfig(
+                    top_k=top_k,
+                    max_tokens=request.max_tokens,
+                    vector_weight=self._semantic_weight,
+                ),
+                vector_score=(
+                    (lambda record: vector_scores.get(record.memory_id, 0.0))
+                    if vector_scores is not None
+                    else None
+                ),
             )
-            result = replace(result, records=reranked)
+            strategy = "hybrid" if vector_scores is not None else "keyword"
+            result = replace(
+                result,
+                records=reranked,
+                retrieval_strategy=strategy,
+                reranker_status=reranker_status,
+            )
         return result
 
     def list_core(self, *, scopes: list[tuple[MemoryScope, str]]) -> list[MemoryRecord]:
@@ -320,6 +363,15 @@ class HarnessMemoryRuntime:
             expires_at=request.expires_at,
         )
         evaluation = self._commit_controlled(candidate)
+        if evaluation.decision == "commit":
+            # The Agent Loop only enqueues. A local worker or cloud task runner drains
+            # the queue, so consolidation can never extend user-visible turn latency.
+            try:
+                self._consolidation_queue.submit(
+                    scope=request.scope, scope_id=request.scope_id
+                )
+            except Exception:  # noqa: BLE001 - optional maintenance must not block writes
+                pass
         event = self._audit_event(run_id, request, evaluation)
         return evaluation, event
 
