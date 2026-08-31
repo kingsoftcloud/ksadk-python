@@ -8,6 +8,7 @@ Level 3 引用资源仅执行时加载。Skill 管理面（包校验/安全解�
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -118,6 +119,40 @@ class SkillRuntime:
         manifest = self._source.manifest(skill_id)
         return {"skill_id": skill_id, "name": manifest.name, "summary": manifest.summary}
 
+    def recommend(
+        self,
+        skill_ids: tuple[str, ...],
+        *,
+        query: str,
+        limit: int = 5,
+    ) -> tuple[dict[str, str], ...]:
+        """Rank bound Skills without loading L1/L2/L3 content.
+
+        This is deliberately deterministic and metadata-only: it improves discovery
+        while keeping model execution, installation and version selection outside of
+        the recommender.  A zero-score catalog keeps Revision order.
+        """
+        entries = [self.catalog_entry(skill_id) for skill_id in skill_ids]
+        query_terms = _search_terms(query)
+        ranked: list[tuple[float, int, dict[str, str]]] = []
+        for index, entry in enumerate(entries):
+            name_terms = _search_terms(entry["name"])
+            summary_terms = _search_terms(entry["summary"])
+            name_hits = len(query_terms.intersection(name_terms))
+            summary_hits = len(query_terms.intersection(summary_terms))
+            score = float(name_hits * 3 + summary_hits)
+            ranked.append((score, index, entry))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        positive = {id(entry) for score, _index, entry in ranked[:limit] if score > 0}
+        return tuple(
+            {
+                **entry,
+                "recommended": "true" if id(entry) in positive else "false",
+                "recommendation_score": f"{score:g}",
+            }
+            for score, _index, entry in ranked
+        )
+
     def level1(self, run_id: str, skill_id: str) -> SkillManifest:
         manifest = self._source.manifest(skill_id)
         self._levels[(run_id, skill_id)] = max(self.level(run_id, skill_id), 1)
@@ -198,6 +233,18 @@ class SkillRuntime:
     def content_digest(content: str | bytes) -> str:
         raw = content.encode("utf-8") if isinstance(content, str) else content
         return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _search_terms(value: str) -> set[str]:
+    """Produce small English tokens and CJK bi-grams for metadata matching."""
+    normalized = value.casefold()
+    terms = set(re.findall(r"[a-z0-9][a-z0-9._-]*", normalized))
+    for chunk in re.findall(r"[\u3400-\u9fff]+", normalized):
+        if len(chunk) == 1:
+            terms.add(chunk)
+        else:
+            terms.update(chunk[index : index + 2] for index in range(len(chunk) - 1))
+    return terms
 
 
 __all__ = [

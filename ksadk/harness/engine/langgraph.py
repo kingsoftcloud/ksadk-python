@@ -267,7 +267,9 @@ class ManagedLangGraphEngine:
             compiled=compiled,
             state=state,
             thread_id=thread_id,
-            skill_catalog=self._skill_disclosure.catalog(compiled.spec),
+            skill_catalog=self._skill_disclosure.catalog(
+                compiled.spec, query=str(request.input or "")
+            ),
             mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
             sub_agents=effective_sub_agents,
         )

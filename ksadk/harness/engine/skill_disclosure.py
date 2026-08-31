@@ -57,21 +57,22 @@ class SkillDisclosureBridge:
                         f"Revision 要求的 Skill 不可用: {binding.capability_ref!r}: {exc}"
                     ) from exc
 
-    def catalog(self, spec: HarnessSpec) -> tuple[dict[str, str], ...]:
+    def catalog(self, spec: HarnessSpec, *, query: str = "") -> tuple[dict[str, str], ...]:
         if self._runtime is None:
             return ()
-        result: list[dict[str, str]] = []
+        bindings: dict[str, str] = {}
         for binding in spec.capabilities.skill_bindings:
             if binding.load_policy == "explicit":
                 continue
             try:
-                entry = self._runtime.catalog_entry(binding.capability_ref)
+                self._runtime.catalog_entry(binding.capability_ref)
             except Exception:  # 可选 Skill 不可用时降级，不阻断主对话
                 if binding.required:
                     raise
                 continue
-            result.append({**entry, "load_policy": binding.load_policy})
-        return tuple(result)
+            bindings[binding.capability_ref] = binding.load_policy
+        ranked = self._runtime.recommend(tuple(bindings), query=query)
+        return tuple({**entry, "load_policy": bindings[entry["skill_id"]]} for entry in ranked)
 
     def tools(self, catalog: tuple[dict[str, str], ...]) -> list[Any]:
         if self._runtime is None or not catalog:
@@ -88,7 +89,9 @@ class SkillDisclosureBridge:
             "skill_read_instructions；仅在说明引用资源时调用 skill_read_resource。",
         ]
         lines.extend(
-            f"- {item['skill_id']}: {item['name']} — {item['summary']}" for item in catalog
+            f"- {'[推荐] ' if item.get('recommended') == 'true' else ''}"
+            f"{item['skill_id']}: {item['name']} — {item['summary']}"
+            for item in catalog
         )
         # 未装配 ContextEngine 时也保持低信任，不能退化进稳定 system 指令层。
         return {"role": "assistant", "content": "\n".join(lines)}
@@ -154,6 +157,14 @@ class SkillDisclosureBridge:
             "level": level,
             "content_hash": self._runtime.content_digest(content),
             "size_bytes": raw_size,
+            "recommended": next(
+                (
+                    item.get("recommended") == "true"
+                    for item in run.skill_catalog
+                    if item.get("skill_id") == skill_ref
+                ),
+                False,
+            ),
         }
         if resource_ref is not None:
             event_payload["resource_ref"] = resource_ref
