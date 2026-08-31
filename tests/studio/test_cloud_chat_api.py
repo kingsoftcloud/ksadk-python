@@ -317,7 +317,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
         )
         events = client.get(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/events",
-            params={"afterSeqId": 4},
+            params={"afterSeqId": 4, "offset": 200},
         )
         sent = client.post(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
@@ -383,6 +383,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
                 "agent_id": "ar-receipt-bound",
                 "session_id": "sess-existing",
                 "after_seq_id": 4,
+                "offset": 200,
                 "limit": 200,
             },
         ),

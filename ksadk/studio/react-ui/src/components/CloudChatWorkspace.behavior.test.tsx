@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -160,7 +160,8 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       + "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n第二段\"}}]}\n\n",
     ));
 
-    expect(await screen.findByText(/第一段\s+第二段/)).toBeInTheDocument();
+    expect(await screen.findByText("第一段")).toBeInTheDocument();
+    expect(await screen.findByText("第二段")).toBeInTheDocument();
     expect(screen.getAllByText(/第一段/)).toHaveLength(1);
     expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
     directStreamController?.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -356,6 +357,81 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
   });
 
+  it("appends implicit item.updated reasoning deltas instead of replacing earlier thought", async () => {
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-reasoning", title: "增量思考" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response([
+          'event: item.updated\ndata: {"event_type":"item.updated","run_id":"run-reasoning","item_id":"reason-1","item_kind":"reasoning","update":{"text":"先核对上下文"}}',
+          'event: item.updated\ndata: {"event_type":"item.updated","run_id":"run-reasoning","item_id":"reason-1","item_kind":"reasoning","update":{"text":"，再检查工具"}}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"), { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+    await screen.findByText("增量思考");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "检查过程");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText("先核对上下文，再检查工具")).toBeInTheDocument();
+  });
+
+  it("does not pull the user back to the tail after they scroll up during streaming", async () => {
+    let directStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const directStream = new ReadableStream<Uint8Array>({ start(controller) { directStreamController = controller; } });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-scroll", title: "滚动会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    const { container } = render(
+      <CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />,
+    );
+    await screen.findByText("滚动会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "生成长回复");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    directStreamController?.enqueue(new TextEncoder().encode(
+      'data: {"choices":[{"index":0,"delta":{"content":"第一段"}}]}\n\n',
+    ));
+    await screen.findByText("第一段");
+
+    const list = container.querySelector(".chat-message-list") as HTMLDivElement;
+    Object.defineProperties(list, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    });
+    fireEvent.scroll(list);
+    directStreamController?.enqueue(new TextEncoder().encode(
+      'data: {"choices":[{"index":0,"delta":{"content":"第二段"}}]}\n\n',
+    ));
+    await screen.findByText("第一段第二段");
+    expect(list.scrollTop).toBe(100);
+    directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+  });
+
   it("replays reasoning and tools that precede more than 200 message events", async () => {
     const nestedEvent = (
       seq: number,
@@ -426,6 +502,68 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(await screen.findByText(/刷新后仍保留的思考/)).toBeInTheDocument();
     expect(screen.getByText("metaso_web_search")).toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith(`${base}/sessions/sess-long/events?limit=1000`);
+  });
+
+  it("paginates durable cloud events and preserves their cross-kind order", async () => {
+    const nestedEvent = (
+      seq: number,
+      eventType: string,
+      runtimeEvent: Record<string, unknown>,
+    ) => ({
+      event_type: eventType,
+      seq_id: seq,
+      content: {
+        runtime_event: {
+          schema_version: 2,
+          event_id: `event-${seq}`,
+          seq,
+          timestamp: seq,
+          run_id: "run-paged",
+          scope_id: "scope-paged",
+          source: { framework: "codex" },
+          event_type: eventType,
+          ...runtimeEvent,
+        },
+      },
+    });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-paged", title: "分页会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
+        return jsonResponse({
+          total: 2,
+          events: [nestedEvent(1, "item.completed", {
+            item_id: "reason-first",
+            item_kind: "reasoning",
+            snapshot: { parts: [{ text: "先分析" }] },
+          })],
+        });
+      }
+      if (path.endsWith("/events?limit=1000&offset=1") && !init?.method) {
+        return jsonResponse({
+          total: 2,
+          events: [nestedEvent(2, "item.completed", {
+            item_id: "tool-second",
+            item_kind: "tool_call",
+            snapshot: { parts: [{ name: "读取版本", output: "Python 3.12" }] },
+          })],
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(
+      <CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />,
+    );
+    const reasoning = await screen.findByText("先分析");
+    const tool = await screen.findByText("读取版本");
+    expect(reasoning.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-paged/events?limit=1000&offset=1`,
+    );
   });
 
   it("uses typed ConversationItems for cloud plans and keeps hidden extensions out of chat", async () => {
@@ -726,44 +864,88 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     );
   });
 
-  it("stops polling when the selected session projects active_run_status failed", async () => {
+  it("does not repeatedly reload the complete cloud transcript while idle", async () => {
     let listCalls = 0;
-    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
-    const directStream = new ReadableStream<Uint8Array>({ start() {} });
+    let messageCalls = 0;
+    let eventCalls = 0;
     apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === `${base}/sessions` && !init?.method) {
         listCalls += 1;
         return jsonResponse({ sessions: [{
-          session_id: "sess-session-failed",
-          title: "状态失败会话",
-          active_run_status: listCalls === 1 ? "running" : "failed",
-          active_run_error: "worker exited before producing a reply",
+          session_id: "sess-idle",
+          title: "空闲会话",
+          active_run_status: "completed",
         }] });
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
-      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
-      if (path.endsWith("/events/stream?afterSeqId=0")) {
-        return new Response(eventStream, { headers: { "Content-Type": "text/event-stream" } });
+      if (path.endsWith("/messages") && !init?.method) {
+        messageCalls += 1;
+        return jsonResponse({ messages: [] });
       }
-      if (path.endsWith("/messages/stream") && init?.method === "POST") {
-        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
+        eventCalls += 1;
+        return jsonResponse({ events: [] });
       }
       throw new Error(`unexpected request: ${path}`);
     });
     render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
 
-    await screen.findByText("状态失败会话");
-    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "触发失败状态");
-    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("空闲会话");
+    await waitFor(() => expect(eventCalls).toBe(1));
+    await new Promise(resolve => setTimeout(resolve, 4200));
+    expect(listCalls).toBe(1);
+    expect(messageCalls).toBe(1);
+    expect(eventCalls).toBe(1);
+  });
 
-    expect(await screen.findByText(/worker exited before producing a reply/, {}, { timeout: 2500 })).toBeInTheDocument();
-    expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
-    expect(showToast).toHaveBeenCalledWith(
-      "云端运行未完成",
-      "worker exited before producing a reply",
-      "error",
-    );
+  it("rebuilds a stale message projection from canonical RuntimeEvents", async () => {
+    const item = (
+      seq: number,
+      kind: "userMessage" | "agentMessage",
+      itemId: string,
+      text: string,
+    ) => ({
+      seq_id: seq,
+      event_type: "runtime_event",
+      invocation_id: "run-canonical-history",
+      content: { runtime_event: {
+        schema_version: 2,
+        family: "runtime",
+        event_id: `event-${seq}`,
+        event_type: "item.completed",
+        run_id: "run-canonical-history",
+        scope_id: "scope-canonical-history",
+        item_id: itemId,
+        item_kind: kind === "agentMessage" ? "message" : "data",
+        source: { framework: "codex", metadata: { native_item_kind: kind } },
+        snapshot: { parts: [{ part_id: `${itemId}-part`, text, data: { type: kind } }] },
+      } },
+    });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-canonical-history", title: "Canonical 历史" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [{
+        message_id: "stale-assistant",
+        role: "assistant",
+        content: "过时的消息投影",
+        invocation_id: "run-canonical-history",
+      }] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({
+        events: [
+          item(1, "userMessage", "user-1", "最新用户问题"),
+          item(2, "agentMessage", "assistant-1", "Canonical 最终回答"),
+        ],
+      });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    expect(await screen.findByText("最新用户问题")).toBeInTheDocument();
+    expect(screen.getByText("Canonical 最终回答")).toBeInTheDocument();
+    expect(screen.queryByText("过时的消息投影")).not.toBeInTheDocument();
   });
 
   it("correlates the first server-owned invocation terminal while the direct stream is active", async () => {

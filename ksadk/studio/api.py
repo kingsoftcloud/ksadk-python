@@ -1780,12 +1780,14 @@ def create_studio_app(
         deployment_id: str,
         session_id: str,
         after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
+        offset: int | None = Query(default=None, ge=0),
         limit: int = Query(default=200, ge=1, le=1000),
     ):
         return await studio.cloud.list_cloud_chat_events(
             deployment_id,
             session_id=session_id,
             after_seq_id=after_seq_id,
+            offset=offset,
             limit=limit,
         )
 

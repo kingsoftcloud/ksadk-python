@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { Bot, BrainCircuit, Loader2, MessageSquarePlus, PanelLeftOpen, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { Bot, BrainCircuit, MessageSquarePlus, PanelLeftOpen, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { apiFetch } from "../api";
 import {
   approvalModeStorageKey,
@@ -21,6 +21,10 @@ import {
 } from "./ChatComposer";
 import { showToast } from "./Toast";
 import { decodeConversationItem, type ConversationItem } from "../conversationProtocol";
+import {
+  rebuildPersistedSessionHistory,
+  type ProcessingBlock,
+} from "@kingsoftcloud/ksadk-web/conversation";
 
 interface CloudChatWorkspaceProps {
   deploymentId: string;
@@ -45,6 +49,8 @@ interface CloudMessage {
   timestamp: string;
   pending?: boolean;
   streaming?: boolean;
+  invocationId?: string;
+  blocks?: ProcessingBlock[];
 }
 
 interface CloudInteraction {
@@ -77,6 +83,7 @@ interface CloudRuntimeItem {
   detail: string;
   status: "running" | "waiting" | "completed" | "failed";
   operation: "append" | "replace";
+  source?: "direct" | "session";
 }
 
 function explicitReasoningEfforts(model?: CloudModel): ReasoningEffort[] {
@@ -310,7 +317,11 @@ function runtimeItemPatch(value: unknown): CloudRuntimeItem | null {
     status: envelope.eventType === "item.failed" ? "failed"
       : kind === "approval" && envelope.eventType !== "item.completed" ? "waiting"
         : envelope.eventType === "item.completed" ? "completed" : "running",
-    operation: scalarText(event.op).toLowerCase() === "append" ? "append" : "replace",
+    operation: scalarText(event.op).toLowerCase() === "replace"
+      ? "replace"
+      : envelope.eventType === "item.updated"
+        ? "append"
+        : "replace",
   };
 }
 
@@ -510,6 +521,26 @@ function mergeRuntimeItem(items: CloudRuntimeItem[], patch: CloudRuntimeItem): C
   return next;
 }
 
+async function loadCompleteCloudSessionEvents(base: string, sessionId: string): Promise<unknown[]> {
+  const path = `${base}/sessions/${encodeURIComponent(sessionId)}/events`;
+  const firstResponse = await apiFetch(`${path}?limit=1000`);
+  if (!firstResponse.ok) throw new Error(await responseError(firstResponse));
+  const firstPayload = await firstResponse.json() as Record<string, unknown>;
+  const events = Array.isArray(firstPayload.events) ? [...firstPayload.events] : [];
+  const total = Number(firstPayload.total ?? firstPayload.Total ?? events.length);
+  let offset = events.length;
+  while (offset < total) {
+    const response = await apiFetch(`${path}?limit=1000&offset=${offset}`);
+    if (!response.ok) throw new Error(await responseError(response));
+    const payload = await response.json() as Record<string, unknown>;
+    const page = Array.isArray(payload.events) ? payload.events : [];
+    if (!page.length) break;
+    events.push(...page);
+    offset += page.length;
+  }
+  return events;
+}
+
 function normalizeSession(value: unknown): CloudSession | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
@@ -548,7 +579,63 @@ function normalizeMessage(value: unknown): CloudMessage | null {
     role,
     content: valueText(item.content),
     timestamp: String(item.timestamp ?? ""),
+    invocationId: scalarText(item.invocation_id ?? item.invocationId ?? item.run_id ?? item.runId),
   };
+}
+
+function canonicalSessionEvent(value: unknown): Record<string, unknown> {
+  const event = recordValue(value);
+  return {
+    ...event,
+    SeqId: event.SeqId ?? event.seq_id ?? event.seqId ?? 0,
+    EventId: event.EventId ?? event.event_id ?? event.eventId ?? "",
+    EventType: event.EventType ?? event.event_type ?? event.eventType ?? "",
+    InvocationId: event.InvocationId ?? event.invocation_id ?? event.invocationId ?? event.run_id ?? event.runId ?? "",
+    Timestamp: event.Timestamp ?? event.timestamp ?? "",
+    Content: event.Content ?? event.content ?? {},
+    Metadata: event.Metadata ?? event.metadata ?? {},
+  };
+}
+
+function canonicalCloudHistory(
+  fallback: CloudMessage[],
+  events: unknown[],
+  sessionId: string,
+): { messages: CloudMessage[]; canonicalRunIds: Set<string> } {
+  if (!events.length) return { messages: fallback, canonicalRunIds: new Set() };
+  const compatibleFallback = fallback.map((message, index) => ({
+    id: message.id,
+    role: message.role === "assistant" ? "model" : message.role,
+    content: message.content,
+    timestamp: Number.isFinite(Date.parse(message.timestamp))
+      ? Date.parse(message.timestamp)
+      : index,
+    invocationId: message.invocationId || undefined,
+  })) as Parameters<typeof rebuildPersistedSessionHistory>[0];
+  const rebuilt = rebuildPersistedSessionHistory(
+    compatibleFallback,
+    events.map(canonicalSessionEvent) as Parameters<typeof rebuildPersistedSessionHistory>[1],
+    sessionId,
+  );
+  const messages = rebuilt.messages
+    .filter(message => message.role === "user" || message.role === "model" || message.role === "system")
+    .map(message => ({
+      id: message.id,
+      role: message.role === "model" ? "assistant" : message.role,
+      content: message.content,
+      timestamp: new Date(Number(message.timestamp) || 0).toISOString(),
+      invocationId: message.invocationId,
+      blocks: message.blocks,
+    }));
+  return { messages, canonicalRunIds: new Set(rebuilt.canonicalRunIds) };
+}
+
+function canonicalCloudMessages(
+  fallback: CloudMessage[],
+  events: unknown[],
+  sessionId: string,
+): CloudMessage[] {
+  return canonicalCloudHistory(fallback, events, sessionId).messages;
 }
 
 function pendingInteractions(events: unknown[]): CloudInteraction[] {
@@ -766,37 +853,104 @@ async function fileDataUrl(file: File): Promise<string> {
   });
 }
 
-function CloudRuntimeProgress({ items, streaming }: { items: CloudRuntimeItem[]; streaming: boolean }) {
-  const reasoning = items.filter(item => item.kind === "reasoning").map(item => item.text).join("");
-  const activities = items.filter(item => item.kind !== "reasoning" && item.kind !== "message");
-  if (!reasoning && !activities.length) return null;
-  const running = activities.find(item => item.status === "running" || item.status === "waiting");
-  const title = running
-    ? `${running.status === "waiting" ? "等待确认" : "正在处理"} · ${running.title}`
-    : reasoning ? (streaming ? "正在思考" : "已思考") : `已更新 ${activities.length} 个运行事件`;
+function CloudThinkingBlock({ content, running }: { content: string; running: boolean }) {
   return (
-    <details className="chat-processing-group" open={streaming} data-ui="think">
+    <details className="chat-processing-group" open={running} data-ui="think">
       <summary>
         <BrainCircuit size={15} className="chat-processing-icon" />
-        <span>{title}</span>
-        {streaming && <Loader2 size={13} className="animate-spin" />}
+        <span className={running ? "text-shimmer" : ""}>{running ? "正在思考" : "已思考"}</span>
       </summary>
       <div className="chat-processing-content">
-        {reasoning && <div className="chat-reasoning-content">{reasoning}</div>}
-        {activities.map(item => (
-          <div className={`chat-activity-card ${item.kind}`} key={item.id}>
-            <div className="chat-activity-row">
-              <span className="chat-activity-icon">{item.kind === "approval" ? <ShieldAlert size={15} /> : item.kind === "plan" || item.kind === "goal" ? <BrainCircuit size={15} /> : <Wrench size={15} />}</span>
-              <span className="chat-activity-copy"><small>{item.kind === "approval" ? "批准" : item.kind === "plan" ? "计划" : item.kind === "goal" ? "目标" : item.kind === "artifact" ? "产物" : item.kind === "a2ui" ? "交互" : item.kind === "error" ? "错误" : "工具"}</small><strong>{item.title}</strong></span>
-              <span className={`chat-activity-status ${item.status}`}>
-                {item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : item.status === "waiting" ? "等待确认" : "运行中"}
-              </span>
-            </div>
-            {item.detail && <pre>{item.detail}</pre>}
-          </div>
-        ))}
+        <div className="chat-reasoning-content">{content}</div>
       </div>
     </details>
+  );
+}
+
+function CloudActivityBlock({ item }: { item: CloudRuntimeItem }) {
+  return (
+    <div className={`chat-activity-card ${item.kind}`}>
+      <div className="chat-activity-row">
+        <span className="chat-activity-icon">{item.kind === "approval" ? <ShieldAlert size={15} /> : item.kind === "plan" || item.kind === "goal" ? <BrainCircuit size={15} /> : <Wrench size={15} />}</span>
+        <span className="chat-activity-copy"><small>{item.kind === "approval" ? "批准" : item.kind === "plan" ? "计划" : item.kind === "goal" ? "目标" : item.kind === "artifact" ? "产物" : item.kind === "a2ui" ? "交互" : item.kind === "error" ? "错误" : "工具"}</small><strong>{item.title}</strong></span>
+        <span className={`chat-activity-status ${item.status}`}>
+          {item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : item.status === "waiting" ? "等待确认" : "运行中"}
+        </span>
+      </div>
+      {item.detail && <pre>{item.detail}</pre>}
+    </div>
+  );
+}
+
+function CloudMessageBody({ message }: { message: CloudMessage }) {
+  const blocks = message.role === "assistant" ? message.blocks || [] : [];
+  if (!blocks.length) {
+    return <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.content || "…"}</ReactMarkdown></div>;
+  }
+  return (
+    <div className="message-blocks">
+      {blocks.map(block => {
+        if (block.type === "thinking") {
+          return <CloudThinkingBlock key={block.id} content={block.content} running={block.status === "streaming"} />;
+        }
+        if (block.type === "tool") {
+          return (
+            <CloudActivityBlock
+              key={block.id}
+              item={{
+                id: block.id,
+                kind: "tool",
+                title: block.toolName || "工具调用",
+                text: "",
+                detail: block.output || block.args,
+                status: block.status === "error" ? "failed" : block.status === "paused" ? "waiting" : block.status === "completed" ? "completed" : "running",
+                operation: "replace",
+              }}
+            />
+          );
+        }
+        return <div className="message-content" key={block.id}><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{block.content}</ReactMarkdown></div>;
+      })}
+    </div>
+  );
+}
+
+function CloudRuntimeTimeline({ items, agentName, streaming }: { items: CloudRuntimeItem[]; agentName: string; streaming: boolean }) {
+  if (!items.length) return null;
+  const canonicalMessages = items.filter(item => item.kind === "message" && item.source === "session");
+  const directMessages = items.filter(item => item.kind === "message" && item.source === "direct");
+  let visibleItems = items;
+  if (canonicalMessages.length && directMessages.length) {
+    const canonicalText = canonicalMessages.map(item => item.text).join("");
+    const directText = directMessages.map(item => item.text).join("");
+    let sharedPrefix = 0;
+    while (sharedPrefix < canonicalText.length
+      && sharedPrefix < directText.length
+      && canonicalText[sharedPrefix] === directText[sharedPrefix]) sharedPrefix += 1;
+    const directRemainder = directText.slice(sharedPrefix);
+    visibleItems = items.filter(item => !(item.kind === "message" && item.source === "direct"));
+    if (directRemainder) {
+      visibleItems = [...visibleItems, {
+        ...directMessages[0],
+        id: `${directMessages[0].id}:remainder`,
+        text: directRemainder,
+        detail: directRemainder,
+      }];
+    }
+  }
+  return (
+    <div className="cloud-runtime-timeline" data-ui="runtime-timeline">
+      {visibleItems.map(item => item.kind === "message" ? (
+        <article key={item.id} className="message assistant streaming" aria-label="云端流式回复">
+          <div className="message-meta">{agentName}</div>
+          <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{item.text}</ReactMarkdown></div>
+        </article>
+      ) : item.kind === "reasoning" ? (
+        <CloudThinkingBlock key={item.id} content={item.text} running={streaming && item.status === "running"} />
+      ) : (
+        <CloudActivityBlock key={item.id} item={item} />
+      ))}
+    </div>
   );
 }
 
@@ -843,6 +997,9 @@ export function CloudChatWorkspace({
   // RuntimeEvent concurrently. De-duplicate the event, never the item kind or
   // item id: one item legitimately receives many distinct delta events.
   const projectedStreamEventIdsRef = useRef<Set<string>>(new Set());
+  const followTailRef = useRef(true);
+  const fallbackMessagesRef = useRef<CloudMessage[]>([]);
+  const durableEventsRef = useRef<unknown[]>([]);
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
@@ -857,7 +1014,6 @@ export function CloudChatWorkspace({
     awaitingRunIdRef.current = "";
     awaitingInvocationIdRef.current = "";
     awaitingAcceptedSeqRef.current = 0;
-    assistantIdsBeforeSendRef.current = new Set();
     setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
@@ -902,16 +1058,29 @@ export function CloudChatWorkspace({
     const rows = (payload.messages || [])
       .map(normalizeMessage)
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
-    setMessages(rows);
-    const hasNewAssistant = rows.some(
+    fallbackMessagesRef.current = rows;
+    const rebuiltRows = canonicalCloudMessages(rows, durableEventsRef.current, sessionId);
+    setMessages(rebuiltRows);
+    const hasNewAssistant = rebuiltRows.some(
       message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
     );
+    const durableRunIds = new Set(durableEventsRef.current.flatMap(event => {
+      const envelope = runtimeEnvelope(event);
+      return envelope ? [envelope.runId, envelope.invocationId].filter(Boolean) : [];
+    }));
+    const canonicalCaughtUp = rebuiltRows.some(message => (
+      message.role === "assistant"
+      && !assistantIdsBeforeSendRef.current.has(message.id)
+      && Boolean(message.invocationId && durableRunIds.has(message.invocationId))
+      && Boolean(message.blocks?.length)
+    ));
     if (hasNewAssistant) {
-      // The durable message projection can land before the foreground SSE
-      // closes. Remove only the transient assistant body at that point so the
-      // same answer is never rendered twice. Reasoning/tool items remain as
-      // expandable run history after completion.
-      setStreamingRuntimeItems(previous => previous.filter(item => item.kind !== "message"));
+      // ListSessionMessages may land before canonical RuntimeEvents. Keep
+      // transient reasoning/tool order until the shared reducer can own the
+      // complete run, but never render the streamed assistant body twice.
+      setStreamingRuntimeItems(previous => canonicalCaughtUp
+        ? []
+        : previous.filter(item => item.kind !== "message"));
       if (!directStreamActiveRef.current) {
         streamedFramesRef.current = [];
       }
@@ -931,13 +1100,16 @@ export function CloudChatWorkspace({
     // window because text and reasoning deltas are canonical RuntimeEvents.
     // Read the complete supported history window so a reload cannot discard
     // the reasoning/tool items that precede a long assistant response.
-    const response = await apiFetch(
-      `${base}/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`,
-    );
-    if (!response.ok) throw new Error(await responseError(response));
-    const payload = await response.json();
+    const events = await loadCompleteCloudSessionEvents(base, sessionId);
     if (currentSessionIdRef.current !== sessionId) return;
-    const events: unknown[] = Array.isArray(payload.events) ? payload.events : [];
+    durableEventsRef.current = events;
+    const canonicalHistory = canonicalCloudHistory(
+      fallbackMessagesRef.current,
+      events,
+      sessionId,
+    );
+    const rebuiltRows = canonicalHistory.messages;
+    setMessages(rebuiltRows);
     sessionCursorRef.current.set(
       sessionId,
       Math.max(sessionCursorRef.current.get(sessionId) || 0, latestEventSeq(events)),
@@ -959,24 +1131,43 @@ export function CloudChatWorkspace({
     const interactionFrames = [...streamedFramesRef.current, ...events].slice(-500);
     streamedFramesRef.current = interactionFrames;
     setInteractions(pendingInteractions(interactionFrames));
-    if (!directStreamActiveRef.current) {
-      const durableRuntimeItems = events.reduce<CloudRuntimeItem[]>((items, event) => {
+    const durableRunIds = new Set(events.flatMap(event => {
+      const envelope = runtimeEnvelope(event);
+      return envelope ? [envelope.runId, envelope.invocationId].filter(Boolean) : [];
+    }));
+    const canonicalCaughtUp = rebuiltRows.some(message => (
+      message.role === "assistant"
+      && !assistantIdsBeforeSendRef.current.has(message.id)
+      && Boolean(message.invocationId && durableRunIds.has(message.invocationId))
+      && Boolean(message.blocks?.length)
+    ));
+    const durableCompatibilityItems = events.reduce<CloudRuntimeItem[]>((items, event) => {
         const patch = runtimeItemPatch(event);
-        return patch && patch.kind !== "message" ? mergeRuntimeItem(items, patch) : items;
-      }, []);
-      // The durable projection can lag a foreground EOF. Preserve the
-      // just-rendered run history until Server returns its canonical items;
-      // otherwise reasoning/tool cards flash away on completion.
+        if (!patch || patch.kind === "message") return items;
+        const envelope = runtimeEnvelope(event);
+        const runId = envelope?.runId || envelope?.invocationId || "";
+        const runBlocks = rebuiltRows
+          .filter(message => message.invocationId === runId)
+          .flatMap(message => message.blocks || []);
+        const ownedByCanonicalBlocks = patch.kind === "reasoning"
+          ? runBlocks.some(block => block.type === "thinking")
+          : patch.kind === "tool"
+            ? runBlocks.some(block => block.type === "tool" && block.toolName === patch.title)
+            : false;
+        // Suppress a compatibility card only when the shared reducer really
+        // materialised the same block. Run-level membership alone is not
+        // enough: older RuntimeEvent producers can mix canonical messages
+        // with legacy tool projections in one run.
+        if (ownedByCanonicalBlocks) return items;
+        return mergeRuntimeItem(items, patch);
+    }, []);
+    if (canonicalCaughtUp || (!directStreamActiveRef.current && durableCompatibilityItems.length)) {
       setStreamingRuntimeItems(previous => {
-        // Message ownership is reconciled only by refreshMessages after an
-        // actual durable assistant row exists.  The event projection may lag
-        // a clean foreground EOF, so it must never delete the sole streamed
-        // assistant body.  It only replaces the expandable run-history items.
-        if (!durableRuntimeItems.length) return previous;
-        return [
-          ...previous.filter(item => item.kind === "message"),
-          ...durableRuntimeItems,
-        ];
+        if (canonicalCaughtUp) return durableCompatibilityItems;
+        // A clean foreground EOF can precede both durable projections.
+        // Never replace the only visible streamed answer with older history.
+        if (previous.some(item => item.kind === "message")) return previous;
+        return durableCompatibilityItems;
       });
     }
   }, [base, settleCloudRun]);
@@ -988,6 +1179,8 @@ export function CloudChatWorkspace({
     setCurrentSessionId("");
     currentSessionIdRef.current = "";
     setMessages([]);
+    fallbackMessagesRef.current = [];
+    durableEventsRef.current = [];
     setStreamingRuntimeItems([]);
     streamedFramesRef.current = [];
     setInteractions([]);
@@ -1066,6 +1259,8 @@ export function CloudChatWorkspace({
   }, [reasoningEffort, selectedCloudModel]);
 
   useEffect(() => {
+    fallbackMessagesRef.current = [];
+    durableEventsRef.current = [];
     refreshMessages(currentSessionId).catch(error => {
       showToast("云端消息加载失败", error.message, "error");
     });
@@ -1075,18 +1270,8 @@ export function CloudChatWorkspace({
   }, [currentSessionId, refreshInteractions, refreshMessages]);
 
   useEffect(() => {
-    if (!active || !currentSessionId) return;
-    const timer = window.setInterval(() => {
-      refreshMessages(currentSessionId).catch(() => {});
-      refreshInteractions(currentSessionId).catch(() => {});
-      refreshSessions().catch(() => {});
-    }, sending || waitingForResponse ? 1200 : 4000);
-    return () => window.clearInterval(timer);
-  }, [active, currentSessionId, refreshInteractions, refreshMessages, refreshSessions, sending, waitingForResponse]);
-
-  useEffect(() => {
     const list = messageListRef.current;
-    if (list) list.scrollTop = list.scrollHeight;
+    if (list && followTailRef.current) list.scrollTop = list.scrollHeight;
   }, [messages, sending, streamingRuntimeItems, waitingForResponse]);
 
   async function createSession(): Promise<string> {
@@ -1100,10 +1285,13 @@ export function CloudChatWorkspace({
     currentSessionIdRef.current = session.id;
     setCurrentSessionId(session.id);
     setMessages([]);
+    fallbackMessagesRef.current = [];
+    durableEventsRef.current = [];
     setStreamingRuntimeItems([]);
     streamedFramesRef.current = [];
     setInteractions([]);
     setRunError("");
+    followTailRef.current = true;
     assistantIdsBeforeSendRef.current = new Set();
     sessionCursorRef.current.set(session.id, 0);
     return session.id;
@@ -1143,6 +1331,7 @@ export function CloudChatWorkspace({
     // Clear the draft immediately and keep failures in the timeline instead
     // of silently putting stale input back into the composer.
     setInput("");
+    followTailRef.current = true;
     sendInFlightRef.current = true;
     setSending(true);
     waitingForResponseRef.current = true;
@@ -1185,15 +1374,13 @@ export function CloudChatWorkspace({
       directStreamActiveRef.current = true;
       projectedStreamEventIdsRef.current = new Set();
       const projectStreamItem = (item: CloudRuntimeItem, source: "direct" | "session") => {
-        if (source === "session") {
-          // The foreground RunAgent stream owns assistant text. SessionEvent
-          // remains the reconnect/history channel and a fallback for runtime
-          // activity that the direct provider stream does not expose.
-          if (item.kind === "message") return;
-          setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
-          return;
-        }
-        setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
+        const sourcedItem = { ...item, source };
+        setStreamingRuntimeItems(previous => {
+          // Keep both transports in state. Rendering prefers canonical
+          // SessionEvent item identities and exposes only the not-yet-caught-
+          // up suffix from the faster identity-less direct stream.
+          return mergeRuntimeItem(previous, sourcedItem);
+        });
       };
       const streamUrl = `${base}/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${awaitingAcceptedSeqRef.current}`;
       apiFetch(streamUrl, {
@@ -1219,7 +1406,7 @@ export function CloudChatWorkspace({
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
         const item = runtimeItemPatch(frame);
-        if (item && item.kind !== "message") {
+        if (item) {
           const eventIdentity = streamEventIdentity(frame);
           const alreadyProjected = Boolean(eventIdentity && projectedStreamEventIdsRef.current.has(eventIdentity));
           if (eventIdentity) projectedStreamEventIdsRef.current.add(eventIdentity);
@@ -1257,6 +1444,7 @@ export function CloudChatWorkspace({
           goalObjective: goalObjective || undefined,
         }),
       });
+      let foregroundTerminal: TerminalRunResult | null = null;
       await consumeSseResponse(response, frame => {
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
@@ -1268,18 +1456,31 @@ export function CloudChatWorkspace({
         }
         const terminal = directStreamTerminal(frame);
         if (terminal) {
-          settleCloudRun(
-            terminal.status === "failed" ? terminal.error : "",
-            "云端流式响应失败",
-          );
+          foregroundTerminal = terminal;
+          if (terminal.status === "failed") {
+            settleCloudRun(terminal.error, "云端流式响应失败");
+          }
         }
       }, streamController.signal);
-      // A clean EOF is terminal even for providers that omit [DONE].
-      if (waitingForResponseRef.current) settleCloudRun();
+      // Do not expose the terminal idle state until foreground deltas have
+      // converged with the durable SessionEvent projection. Otherwise React
+      // briefly renders the same assistant item once from each source and the
+      // user sees a duplicate flash immediately before history settles.
+      if (waitingForResponseRef.current) {
+        try {
+          await refreshInteractions(sessionId);
+          await refreshMessages(sessionId);
+        } catch {
+          // The foreground answer remains usable when an older deployment has
+          // no durable history endpoints; the next explicit reload can retry.
+        }
+        settleCloudRun(
+          foregroundTerminal?.status === "failed" ? foregroundTerminal.error : "",
+          "云端流式响应失败",
+        );
+      }
       setAttachments([]);
       refreshSessions().catch(() => {});
-      refreshMessages(sessionId).catch(() => {});
-      refreshInteractions(sessionId).catch(() => {});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (waitingForResponseRef.current) settleCloudRun(message, "云端消息发送失败");
@@ -1325,6 +1526,8 @@ export function CloudChatWorkspace({
         currentSessionIdRef.current = "";
         setCurrentSessionId("");
         setMessages([]);
+        fallbackMessagesRef.current = [];
+        durableEventsRef.current = [];
         setStreamingRuntimeItems([]);
         streamedFramesRef.current = [];
         setInteractions([]);
@@ -1368,11 +1571,6 @@ export function CloudChatWorkspace({
       setResolvingInteractionId("");
     }
   }
-
-  const streamingAssistantText = streamingRuntimeItems
-    .filter(item => item.kind === "message")
-    .map(item => item.text)
-    .join("");
 
   return (
     <section className={`studio-chat-shell cloud-chat-shell${sessionPanelOpen ? " sessions-open" : ""}`} aria-label="云端会话">
@@ -1429,7 +1627,17 @@ export function CloudChatWorkspace({
           </button>
           <div><h1>{agentName}</h1><span>云端 Agent · {agentId}</span></div>
         </header>
-        <div ref={messageListRef} className="chat-message-list" role="log" aria-live="polite" aria-busy={sending || waitingForResponse}>
+        <div
+          ref={messageListRef}
+          className="chat-message-list"
+          role="log"
+          aria-live="polite"
+          aria-busy={sending || waitingForResponse}
+          onScroll={event => {
+            const target = event.currentTarget;
+            followTailRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 64;
+          }}
+        >
           {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2></div>}
           {(runError || cloudSessionActivity(sessions.find(session => session.id === currentSessionId)?.state || "") === "failed") && (
             <div className="cloud-chat-run-warning">
@@ -1445,17 +1653,11 @@ export function CloudChatWorkspace({
           {messages.map(message => (
             <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}${message.streaming ? " streaming" : ""}`}>
               <div className="message-meta">{message.role === "user" ? "你" : agentName}</div>
-              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.content || "…"}</ReactMarkdown></div>
+              <CloudMessageBody message={message} />
             </article>
           ))}
-          <CloudRuntimeProgress items={streamingRuntimeItems} streaming={waitingForResponse} />
-          {streamingAssistantText && (
-            <article className="message assistant streaming" aria-label="云端流式回复">
-              <div className="message-meta">{agentName}</div>
-              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{streamingAssistantText}</ReactMarkdown></div>
-            </article>
-          )}
-          {(sending || waitingForResponse) && !streamingAssistantText && streamingRuntimeItems.length === 0 && <div className="cloud-chat-pending"><Loader2 size={15} className="animate-spin" /> 正在等待云端响应…</div>}
+          <CloudRuntimeTimeline items={streamingRuntimeItems} agentName={agentName} streaming={waitingForResponse} />
+          {(sending || waitingForResponse) && streamingRuntimeItems.length === 0 && <div className="cloud-chat-pending"><span className="text-shimmer">正在等待云端响应…</span></div>}
         </div>
         <div className="chat-composer-wrap">
           {interactions.length > 0 && (

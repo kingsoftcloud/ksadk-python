@@ -9,8 +9,9 @@ const settingsSource = readFileSync(resolve(import.meta.dirname, "components/Set
 
 test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent as recovery", () => {
   assert.match(source, /const \[waitingForResponse, setWaitingForResponse\] = useState\(false\)/);
-  assert.match(source, /if \(!active \|\| !currentSessionId\) return/);
-  assert.match(source, /sending \|\| waitingForResponse \? 1200 : 4000/);
+  assert.match(source, /rebuildPersistedSessionHistory/);
+  assert.match(source, /canonicalCloudMessages/);
+  assert.doesNotMatch(source, /window\.setInterval/);
   assert.match(source, /awaitingAcceptedSeqRef\.current/);
   assert.match(source, /\[runId, invocationId\]\.filter\(Boolean\)\.includes\(eventRunId\)/);
   assert.match(source, /const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq/);
@@ -39,10 +40,12 @@ test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent a
   assert.match(source, /delta\.tool_calls/);
   assert.match(source, /response\.output_text\.delta/);
   assert.match(source, /directStreamActiveRef/);
-  // The foreground stream owns assistant text. SessionEvent only contributes
-  // non-message recovery items, and cross-source duplicates are suppressed by
-  // stable event identity rather than broad kind/text matching.
-  assert.match(source, /if \(item\.kind === "message"\) return/);
+  // The direct stream gives the fastest first token while SessionEvent owns
+  // durable item boundaries. Both remain identity-aware and the renderer only
+  // exposes a non-overlapping direct suffix during convergence.
+  assert.match(source, /const canonicalMessages = items\.filter/);
+  assert.match(source, /const directMessages = items\.filter/);
+  assert.match(source, /directText\.slice\(sharedPrefix\)/);
   assert.match(source, /projectedStreamEventIdsRef/);
   assert.match(source, /const alreadyProjected = Boolean\(eventIdentity/);
   assert.doesNotMatch(source, /directKindsSeenRef/);
