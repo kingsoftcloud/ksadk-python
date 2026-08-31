@@ -134,6 +134,15 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "A2A KOP signing service name (default: aicp).",
     ),
     EnvVarSpec(
+        "KSADK_EVAL_API_KEY", "evaluation", "Evaluation model API key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_BASE_URL", "evaluation", "Evaluation model base URL.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_LITELLM_MODEL", "evaluation", "Evaluation LiteLLM model id.",
+    ),
+    EnvVarSpec(
         "KSADK_EVAL_JUDGE_API_KEY",
         "eval",
         "API key for the LLM Judge evaluation backend.",
@@ -356,8 +365,14 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_LANGGRAPH_AUTO_CHECKPOINT",
         "sessions",
-        "Allow a hosted LangGraph runner to rebuild a factory-exported graph with the managed PostgreSQL saver.",
+        "Allow a hosted LangGraph runner to rebuild a factory-exported graph"
+        " with the managed PostgreSQL saver.",
         "false",
+    ),
+    EnvVarSpec(
+        "KSADK_HARNESS_STATE_DIR",
+        "harness",
+        "Runtime server durable state directory (checkpoints and receipts).",
     ),
     EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
@@ -415,6 +430,17 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_MEMORY_PREFIX", "memory", "Generic memory key prefix.", "ksadk:memory:"),
     EnvVarSpec("KSADK_MEMORY_TTL", "memory", "Generic memory default TTL seconds."),
     EnvVarSpec("KSADK_MEMORY_URL", "memory", "Generic memory backend URL.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_MODEL_PROFILE_MAP",
+        "models",
+        "JSON object mapping model profile refs to provider model ids.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_STREAMING",
+        "models",
+        "Enable streaming model responses when supported (unset = auto).",
+    ),
     EnvVarSpec(
         "KSADK_MODEL_PROXY_AGENTS",
         "model_proxy",
@@ -640,7 +666,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_AGENT_KERNEL",
         "kernel",
-        "Opt in to Agent Kernel ingress locally; managed deployment may use AGENT_KERNEL_ENABLED instead.",
+        "Opt in to Agent Kernel ingress locally; managed deployment may use"
+        " AGENT_KERNEL_ENABLED instead.",
         "false",
     ),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
@@ -667,6 +694,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec(
         "KSADK_SKILL_CACHE_DIR", "skills", "Skill package download and extraction cache directory."
+    ),
+    EnvVarSpec(
+        "KSADK_REAL_MODEL_EVAL",
+        "evaluation",
+        "Gate real-model evaluation entrypoints (requires live endpoints).",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_SKILL_MANIFEST_LIMIT",

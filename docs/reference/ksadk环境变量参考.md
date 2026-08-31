@@ -55,6 +55,7 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_SKILLS_MODE` | 否 | 无 | 否 | 开发者 / Runner 环境 | `auto/local/sandbox`。本地调试可显式设为 `local`。 |
+| `KSADK_HARNESS_STATE_DIR` | 否 | 无 | 否 | Runtime agent | Harness runtime server 持久状态目录（checkpoints 与 tool receipts）。 |
 | `KSADK_LOCAL_SKILLS_DIR` | 条件必传 | `KSADK_SKILL_CACHE_DIR` 可作为 fallback | 否 | 开发者 | 本地已解压 Skill 包目录；目录下每个 skill 应包含 `SKILL.md`。 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | 否 | 无 | 否 | 开发者 | 本地进程模式设为 `local_process`。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | 条件必传 | 默认使用 SDK 内置 agent | 否 | 开发者 | `local_process` backend 的 agent 入口。 |
@@ -361,6 +362,9 @@
 | `KSADK_A2A_SERVICE_SCHEME` | A2A Runtime / KOP | 否 | `https` | 无 | 否 | 部署层 / 平台 | 否 | A2A service URL scheme（`http`/`https`）。 |
 | `KSADK_A2A_SERVICE_REGION` | A2A Runtime / KOP | 否 | 回退 `KSYUN_REGION` → `cn-beijing-6` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 region。 |
 | `KSADK_EVAL_JUDGE_API_KEY` | 评测 / LLM Judge | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | LLM Judge 评测后端的 API key。 |
+| `KSADK_EVAL_API_KEY` | 评测 | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | 真实模型评测端点的 API key。 |
+| `KSADK_EVAL_BASE_URL` | 评测 | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | 真实模型评测端点的 base URL。 |
+| `KSADK_EVAL_LITELLM_MODEL` | 评测 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 真实模型评测使用的 LiteLLM 模型 id。 |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
@@ -390,6 +394,8 @@
 | `AGENTENGINE_MANAGED_RUNTIME_VERSION` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | catalog 解析后的 Runtime 版本；镜像启动时同时校验已安装的 `openai-codex` 版本。 |
 | `AGENTENGINE_MANIFEST_PROTOCOL` | Codex Runtime 镜像 | 是（平台注入） | `runtime-manifest/v1`（旧 bundle 兼容） | 无 | 否 | AgentEngine Server | 否 | 内联 manifest 协议版本。当前只支持 `runtime-manifest/v1`。 |
 | `AGENTENGINE_MANIFEST_SHA256` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端规范化 `agentengine.yaml` 的 SHA-256；镜像启动时校验挂载内容。 |
+| `KSADK_MODEL_PROFILE_MAP` | 模型 | 否 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | JSON 对象，把 model profile ref 映射到 provider 模型 id。 |
+| `KSADK_MODEL_STREAMING` | 模型 | 否 | 自动 | 无 | 否 | 开发者 / 平台 | 否 | 开启流式模型响应（未设置时按 provider 能力自动）。 |
 | `KSADK_MODEL_PROXY_ENABLED` | Model proxy | 否 | `0` | 无 | 否 | 开发者 / 平台 | 否 | 启用实验性模型协议转换层。 |
 | `KSADK_MODEL_PROXY_AGENTS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 agent allowlist。 |
 | `KSADK_MODEL_PROXY_MODELS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 model allowlist。 |
