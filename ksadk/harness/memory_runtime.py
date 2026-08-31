@@ -37,7 +37,7 @@ from ksadk.memory.models import (
 )
 from ksadk.memory.policy import MemoryEvaluation
 from ksadk.memory.providers.local_sqlite import SqliteMemoryProvider
-from ksadk.memory.retrieval import MemorySemanticScorer
+from ksadk.memory.retrieval import MemoryReranker, MemorySemanticScorer
 
 #: MemoryScope（PCM）→ Harness memory_policy scope allowlist 值。
 _SCOPE_MAP: dict[str, str] = {
@@ -88,6 +88,8 @@ class HarnessMemoryRuntime:
         max_core_tokens: int = 4096,
         semantic_scorer: MemorySemanticScorer | None = None,
         semantic_weight: float = 0.35,
+        reranker: MemoryReranker | None = None,
+        reranker_candidate_multiplier: int = 4,
         consolidation_queue: MemoryConsolidationQueue | None = None,
     ) -> None:
         self._coordinator = coordinator
@@ -95,6 +97,10 @@ class HarnessMemoryRuntime:
         self._max_core_tokens = max_core_tokens
         self._semantic_scorer = semantic_scorer
         self._semantic_weight = min(1.0, max(0.0, float(semantic_weight)))
+        self._reranker = reranker
+        self._reranker_candidate_multiplier = min(
+            8, max(1, int(reranker_candidate_multiplier))
+        )
         self._consolidation_queue = consolidation_queue or MemoryConsolidationQueue(
             coordinator.provider
         )
@@ -279,15 +285,25 @@ class HarnessMemoryRuntime:
 
         长任务方案 §7.5：Provider 召回后走 Rerank/多样性/Token 截断默认管线。
         """
+        candidate_top_k = top_k
+        if self._reranker is not None:
+            candidate_top_k = min(64, top_k * self._reranker_candidate_multiplier)
         request = MemorySearchRequest(
-            query=query, scopes=scopes, memory_types=["fact", "profile"], top_k=top_k
+            query=query,
+            scopes=scopes,
+            memory_types=["fact", "profile"],
+            top_k=candidate_top_k,
         )
         result = self._coordinator.recall(request)
         if result.status == "ok" and result.records:
-            from ksadk.memory.retrieval import RetrievalConfig, rerank_records
+            from ksadk.memory.retrieval import (
+                RetrievalConfig,
+                rerank_records,
+                select_ranked_records,
+            )
 
             vector_scores: dict[str, float] | None = None
-            reranker_status = "not_configured"
+            semantic_status = "not_configured"
             if self._semantic_scorer is not None and self._semantic_weight > 0:
                 try:
                     raw_scores = self._semantic_scorer.score(
@@ -297,14 +313,14 @@ class HarnessMemoryRuntime:
                         str(memory_id): min(1.0, max(0.0, float(score)))
                         for memory_id, score in raw_scores.items()
                     }
-                    reranker_status = "applied"
+                    semantic_status = "applied"
                 except Exception:  # noqa: BLE001 - optional enhancement must degrade
-                    reranker_status = "degraded"
+                    semantic_status = "degraded"
             reranked = rerank_records(
                 result.records,
                 query=query,
                 config=RetrievalConfig(
-                    top_k=top_k,
+                    top_k=candidate_top_k,
                     max_tokens=request.max_tokens,
                     vector_weight=self._semantic_weight,
                 ),
@@ -314,12 +330,35 @@ class HarnessMemoryRuntime:
                     else None
                 ),
             )
+            dedicated_status = "not_configured"
+            if self._reranker is not None:
+                try:
+                    ranked_ids = self._reranker.rerank(query=query, records=tuple(reranked))
+                    reranked = select_ranked_records(
+                        reranked,
+                        ranked_ids=ranked_ids,
+                        top_k=top_k,
+                        max_tokens=request.max_tokens,
+                    )
+                    dedicated_status = "applied"
+                except Exception:  # noqa: BLE001 - optional enhancement must degrade
+                    dedicated_status = "degraded"
+                    reranked = reranked[:top_k]
+            else:
+                reranked = reranked[:top_k]
             strategy = "hybrid" if vector_scores is not None else "keyword"
+            overall_status = (
+                dedicated_status
+                if self._reranker is not None
+                else semantic_status
+            )
             result = replace(
                 result,
                 records=reranked,
                 retrieval_strategy=strategy,
-                reranker_status=reranker_status,
+                reranker_status=overall_status,
+                semantic_scorer_status=semantic_status,
+                dedicated_reranker_status=dedicated_status,
             )
         return result
 

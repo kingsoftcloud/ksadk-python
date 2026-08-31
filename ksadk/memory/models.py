@@ -345,6 +345,8 @@ class MemorySearchResult:
     #: stable while making semantic fallback visible to Studio/observability.
     retrieval_strategy: str = "provider"
     reranker_status: str = "not_configured"
+    semantic_scorer_status: str = "not_configured"
+    dedicated_reranker_status: str = "not_configured"
 
 
 @dataclass(frozen=True)

@@ -156,6 +156,46 @@ class TestSemanticRecall:
         assert result.reranker_status == "degraded"
 
 
+class TestDedicatedReranker:
+    class _Reranker:
+        def rerank(self, *, query, records):
+            return tuple(
+                record.memory_id
+                for record in sorted(records, key=lambda item: "冻结数" not in item.content)
+            )
+
+    class _InvalidReranker:
+        def rerank(self, *, query, records):
+            return (records[0].memory_id,)
+
+    @staticmethod
+    def _seed(runtime: HarnessMemoryRuntime) -> None:
+        runtime.write(_write(content="预算口径文档"), _spec(), run_id="rerank-1")
+        runtime.write(
+            _write(content="预算冻结数是最终财务事实"), _spec(), run_id="rerank-2"
+        )
+
+    def test_dedicated_reranker_controls_final_order(self):
+        runtime = HarnessMemoryRuntime.local_sqlite(reranker=self._Reranker())
+        self._seed(runtime)
+
+        result = runtime.recall(query="预算", scopes=[("user", "user:u1")])
+
+        assert result.records[0].content == "预算冻结数是最终财务事实"
+        assert result.dedicated_reranker_status == "applied"
+        assert result.reranker_status == "applied"
+
+    def test_invalid_reranker_degrades_to_first_stage_order(self):
+        runtime = HarnessMemoryRuntime.local_sqlite(reranker=self._InvalidReranker())
+        self._seed(runtime)
+
+        result = runtime.recall(query="预算", scopes=[("user", "user:u1")])
+
+        assert result.status == "ok"
+        assert len(result.records) == 2
+        assert result.dedicated_reranker_status == "degraded"
+
+
 class TestCoreMemory:
     def test_list_core_returns_committed_blocks_with_limits(self):
         rt = HarnessMemoryRuntime.local_sqlite(max_core_blocks=4)

@@ -39,6 +39,18 @@ class MemorySemanticScorer(Protocol):
     ) -> Mapping[str, float]: ...
 
 
+class MemoryReranker(Protocol):
+    """Optional second-stage reranker boundary.
+
+    A reranker receives the already filtered and cheaply ranked candidate set and
+    returns memory ids in preferred order.  It may be backed by a cross-encoder,
+    a managed rerank API or an organization-specific policy model.  The Harness
+    validates its output and degrades to the first-stage order on any failure.
+    """
+
+    def rerank(self, *, query: str, records: Sequence[MemoryRecord]) -> Sequence[str]: ...
+
+
 @dataclass(frozen=True)
 class RetrievalConfig:
     """管线参数（Token 截断与多样性，避免硬编码全局常数）。"""
@@ -112,6 +124,45 @@ def rerank_records(
     return _box_by_tokens(diverse, cfg.max_tokens)
 
 
+def select_ranked_records(
+    records: Sequence[MemoryRecord],
+    *,
+    ranked_ids: Sequence[str],
+    top_k: int,
+    max_tokens: int,
+    per_slot_limit: int = _PER_SLOT_LIMIT,
+) -> list[MemoryRecord]:
+    """Validate a reranker order, preserve diversity and enforce the token budget.
+
+    Unknown ids, duplicate ids and omitted candidates are rejected.  Requiring a
+    full permutation prevents a faulty or compromised reranker from silently
+    dropping Memory facts.  Callers should catch ``ValueError`` and retain the
+    first-stage result.
+    """
+
+    by_id = {record.memory_id: record for record in records}
+    normalized = tuple(str(memory_id) for memory_id in ranked_ids)
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("reranker returned duplicate memory ids")
+    if set(normalized) != set(by_id):
+        raise ValueError("reranker must return every candidate exactly once")
+
+    selected: list[MemoryRecord] = []
+    seen_slots: dict[str, int] = {}
+    for memory_id in normalized:
+        record = by_id[memory_id]
+        slot = str(record.metadata.get("slot_key") or "")
+        if slot:
+            count = seen_slots.get(slot, 0)
+            if count >= per_slot_limit:
+                continue
+            seen_slots[slot] = count + 1
+        selected.append(record)
+        if len(selected) >= top_k:
+            break
+    return _box_by_tokens(selected, max_tokens)
+
+
 def _box_by_tokens(records: list[MemoryRecord], max_tokens: int) -> list[MemoryRecord]:
     """按顺序装箱（§10.6：Token 预算截断）。"""
     from ksadk.context_engine.tokenizer import get_default_token_counter
@@ -129,8 +180,10 @@ def _box_by_tokens(records: list[MemoryRecord], max_tokens: int) -> list[MemoryR
 
 
 __all__ = [
+    "MemoryReranker",
     "MemorySemanticScorer",
     "RetrievalConfig",
     "keyword_coverage",
     "rerank_records",
+    "select_ranked_records",
 ]

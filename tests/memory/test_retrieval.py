@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ksadk.memory.models import MemoryRecord
-from ksadk.memory.retrieval import RetrievalConfig, keyword_coverage, rerank_records
+from ksadk.memory.retrieval import (
+    RetrievalConfig,
+    keyword_coverage,
+    rerank_records,
+    select_ranked_records,
+)
 
 
 def _record(
@@ -93,3 +100,21 @@ class TestKeywordCoverage:
         assert keyword_coverage("预算 冻结", "预算口径以系统为准") == 0.5
         assert keyword_coverage("budget", "Q3 budget freeze") == 1.0
         assert keyword_coverage("", "任意") == 0.0
+
+
+class TestDedicatedRerankerSelection:
+    def test_applies_external_order_and_token_budget(self):
+        records = [_record("a", "first"), _record("b", "second")]
+        out = select_ranked_records(
+            records, ranked_ids=("b", "a"), top_k=1, max_tokens=100
+        )
+        assert [record.memory_id for record in out] == ["b"]
+
+    def test_rejects_partial_or_unknown_order(self):
+        records = [_record("a", "first"), _record("b", "second")]
+        with pytest.raises(ValueError, match="every candidate"):
+            select_ranked_records(records, ranked_ids=("a",), top_k=2, max_tokens=100)
+        with pytest.raises(ValueError, match="every candidate"):
+            select_ranked_records(
+                records, ranked_ids=("a", "unknown"), top_k=2, max_tokens=100
+            )
