@@ -117,6 +117,7 @@ def _fix(check: Mapping[str, Any]) -> dict[str, Any]:
         "runtime": "运行一次 Draft/Smoke 会话并修复阻断项",
         "model": "配置并验证至少一个可用 Model Profile",
         "mcp": "检查 MCP 连接、鉴权、Schema 与必需 Tool",
+        "skill": "固定 Skill 版本并确保必需内容包已下载且 Manifest 有效",
         "sandbox": "配置目标 Sandbox Backend 并运行 Conformance",
         "lifecycle": "验证构建、部署、激活、调用与回滚链路",
     }
