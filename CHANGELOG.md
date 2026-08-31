@@ -19,7 +19,7 @@
 
 ### Studio 自动化与会话表面
 
-- 新增本地 Scheduler Lite：支持 once、interval、cron、IANA 时区、启停、编辑、删除、立即运行、misfire 策略、并发保护和 occurrence 历史。Studio 提供全局自动化页和 Agent 详情页自动化 Tab；浏览器纵切已通过真实本地 Kernel 与 Codex RuntimeAdapter 验证 accepted、run identity、terminal 状态和刷新后历史对账。
+- 新增本地 Scheduler Lite：支持 once、interval、cron、IANA 时区、启停、编辑、删除、立即运行、misfire 策略、并发保护和 occurrence 历史。Studio 提供全局自动化页和 Agent 详情页自动化 Tab；浏览器纵切已通过真实本地 Kernel、Codex RuntimeAdapter + App Server 以及 KsADK Harness 生产模型客户端验证 new/follow-up、accepted、run identity、terminal 状态和刷新后历史对账；测试仅以本地确定性 HTTP 模型端替代外部模型服务。
 - 冻结 `ConversationSurface`、`ConversationInput` 和 `ConversationItem` 合同，统一文本、reasoning、工具、审批、A2UI 与未知 item 的 identity-aware 归并和回放边界。
 - 新增核心 Conversation Renderer 与受控 A2UI action bridge。自定义前端可以消费同一会话表面；未知类型保持安全的通用降级，不要求客户端理解某个 Provider 的私有事件。
 - Hosted UI 与 Studio 固定到 `@kingsoftcloud/ksadk-web@0.3.3`。该版本新增可在 Node/SSR 环境安全导入的 headless conversation 入口、严格的 Conversation v1 解码、SSE 有界重连、按 item/event identity 归并、思考/工具/审批/产物/A2UI 的统一时间线，以及附件、模型、推理、审批、Goal/Plan 的统一输入合同；只有明确的 404 才回退旧 Responses/AG-UI，畸形响应与 5xx 继续 fail closed。

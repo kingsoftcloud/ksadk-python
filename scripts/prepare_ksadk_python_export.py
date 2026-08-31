@@ -133,6 +133,8 @@ PUBLIC_TEST_FILES = {
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/plugin.json",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-check/SKILL.md",
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
+    "tests/e2e/chat_completions_stub.py",
+    "tests/e2e/codex_app_server_fixture.py",
     "tests/fixtures/dsh-node-agent-provider/cordis.patch.yml",
     "tests/fixtures/dsh-node-agent-provider/index.mjs",
     "tests/fixtures/dsh-node-agent-provider/package.json",

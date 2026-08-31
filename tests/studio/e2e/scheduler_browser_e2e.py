@@ -2,9 +2,10 @@
 
 The browser talks to the production FastAPI routes and React bundle.  Task
 definitions and occurrence history use the real SQLite store; run-now crosses
-the real AgentControl ingress, AgentKernel worker and Codex RuntimeAdapter.  A
-deterministic Codex client replaces only the external App Server process.  It
-does not write Scheduler state or manufacture a terminal occurrence.
+the real AgentControl ingress, AgentKernel worker, Codex RuntimeAdapter and
+Codex App Server.  Only the external model endpoint is replaced by a local
+deterministic Responses server; it does not write Scheduler state or manufacture
+a terminal occurrence.
 """
 
 from __future__ import annotations
@@ -15,10 +16,10 @@ import json
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from openai_codex import CodexConfig
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
@@ -27,6 +28,8 @@ from ksadk.events.canonical_store import RuntimeEventStore
 from ksadk.runtime import RuntimeExecutor, RuntimeRegistry
 from ksadk.studio.contracts import AgentSpec
 from ksadk.studio.service import StudioService
+from tests.e2e.codex_app_server_fixture import RealCodexFactory
+from tests.e2e.codex_responses_stub import DeterministicResponsesStub
 
 AGENT_ID = "scheduler-browser-agent"
 AGENT_NAME = "Scheduler Browser Agent"
@@ -100,65 +103,6 @@ def _agent_spec() -> AgentSpec:
             },
         }
     )
-
-
-class _CodexFixtureBackend:
-    """External App Server boundary; Scheduler and Kernel remain production."""
-
-    def __init__(self) -> None:
-        self.thread_count = 0
-        self.turn_count = 0
-        self.threads: set[str] = set()
-        self.calls: list[tuple[str, str]] = []
-
-    def create_thread(self) -> str:
-        self.thread_count += 1
-        thread_id = f"codex-thread-{self.thread_count}"
-        self.threads.add(thread_id)
-        self.calls.append(("thread/start", thread_id))
-        return thread_id
-
-    def create_turn(self, thread_id: str) -> str:
-        self.turn_count += 1
-        self.calls.append(("turn/start", thread_id))
-        return f"codex-turn-{self.turn_count}"
-
-
-class _CodexFixtureClient:
-    def __init__(self, backend: _CodexFixtureBackend) -> None:
-        self.backend = backend
-        self.attached_threads: set[str] = set()
-
-    async def start_thread(self, config=None) -> str:
-        del config
-        thread_id = self.backend.create_thread()
-        self.attached_threads.add(thread_id)
-        return thread_id
-
-    async def resume_thread(self, thread_id: str, config=None) -> str:
-        del config
-        if thread_id not in self.backend.threads:
-            raise RuntimeError(f"unknown Codex thread: {thread_id}")
-        self.backend.calls.append(("thread/resume", thread_id))
-        self.attached_threads.add(thread_id)
-        return thread_id
-
-    def run_turn(self, thread_id: str, prompt: Any, *, config=None) -> AsyncIterator[dict]:
-        del prompt, config
-
-        async def events() -> AsyncIterator[dict]:
-            turn_id = self.backend.create_turn(thread_id)
-            turn = {"id": turn_id, "status": "inProgress", "items": [], "error": None}
-            yield {"method": "turn/started", "params": {"threadId": thread_id, "turn": turn}}
-            yield {
-                "method": "turn/completed",
-                "params": {"threadId": thread_id, "turn": {**turn, "status": "completed"}},
-            }
-
-        return events()
-
-    async def close(self) -> None:
-        self.attached_threads.clear()
 
 
 def _prepare_agent(service: StudioService) -> str:
@@ -438,47 +382,53 @@ def _assert_scheduler_lifecycle(
 def main() -> None:
     with TemporaryDirectory(prefix="ksadk-scheduler-browser-") as temp_dir:
         workspace = Path(temp_dir)
-        backend = _CodexFixtureBackend()
-        registry = RuntimeRegistry()
-        registry.register(
-            "codex",
-            lambda _context: CodexRuntimeAdapter(  # type: ignore[arg-type]
-                _CodexFixtureClient(backend)
-            ),
-        )
-        service = StudioService(
-            workspace,
-            codex_runtime_inspector=_runtime_inspector,
-            runtime_executor=RuntimeExecutor(registry),
-        )
-        build_id = _prepare_agent(service)
+        with DeterministicResponsesStub() as responses:
+            client_factory = RealCodexFactory(responses_url=responses.base_url)
+            codex_config = CodexConfig(env={"CODEX_HOME": str(workspace / "codex-home")})
+            registry = RuntimeRegistry()
+            registry.register(
+                "codex",
+                lambda _context: CodexRuntimeAdapter(client_factory(codex_config)),
+            )
+            service = StudioService(
+                workspace,
+                codex_runtime_inspector=_runtime_inspector,
+                runtime_executor=RuntimeExecutor(registry),
+            )
+            build_id = _prepare_agent(service)
 
-        with studio_server(workspace, service=service) as base_url, sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                page = browser.new_page(viewport={"width": 1440, "height": 960})
-                page_errors: list[str] = []
-                page.on("pageerror", lambda error: page_errors.append(str(error)))
-                session_id, run_id = _assert_scheduler_lifecycle(
-                    page,
-                    base_url,
-                    build_id=build_id,
-                )
-                assert page_errors == [], f"Uncaught React page errors: {page_errors}"
-            finally:
-                browser.close()
+            with (
+                studio_server(workspace, service=service) as base_url,
+                sync_playwright() as playwright,
+            ):
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(viewport={"width": 1440, "height": 960})
+                    page_errors: list[str] = []
+                    page.on("pageerror", lambda error: page_errors.append(str(error)))
+                    session_id, run_id = _assert_scheduler_lifecycle(
+                        page,
+                        base_url,
+                        build_id=build_id,
+                    )
+                    assert page_errors == [], f"Uncaught React page errors: {page_errors}"
+                finally:
+                    browser.close()
+
+            requests = responses.requests()
+            assert len(requests) == 3, requests
+            native_thread_ids = [
+                request.payload["client_metadata"]["thread_id"] for request in requests
+            ]
+            assert native_thread_ids[0] != native_thread_ids[1]
+            assert native_thread_ids[1] == native_thread_ids[2]
+            assert len(client_factory.processes) == 3
+            assert all(process.poll() is not None for process in client_factory.processes)
 
         events = asyncio.run(
             RuntimeEventStore(service.session_service).list(session_id, run_id=run_id)
         )
         assert events[-1].event_type == "run.completed"
-        assert backend.calls == [
-            ("thread/start", "codex-thread-1"),
-            ("turn/start", "codex-thread-1"),
-            ("thread/start", "codex-thread-2"),
-            ("turn/start", "codex-thread-2"),
-            ("turn/start", "codex-thread-2"),
-        ], backend.calls
 
 
 if __name__ == "__main__":

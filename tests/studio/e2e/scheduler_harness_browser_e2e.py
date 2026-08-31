@@ -2,9 +2,10 @@
 
 The browser creates and runs both continuity modes through production Studio
 HTTP routes.  AgentControl, the Kernel worker, HarnessRuntimeAdapter and the
-canonical SessionEvent store are real.  Only the external model turn is a
-deterministic local reasoner, so an ``accepted`` receipt can never manufacture
-the terminal occurrence asserted below.
+canonical SessionEvent store and production model client are real.  Only the
+external model endpoint is replaced by a deterministic local HTTP service, so
+an ``accepted`` receipt can never manufacture the terminal occurrence asserted
+below.
 """
 
 from __future__ import annotations
@@ -15,17 +16,16 @@ import shutil
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
-from ksadk.harness.reasoner import HarnessReasoningTurn
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.studio.contracts import AgentSpec
 from ksadk.studio.service import StudioService
+from tests.e2e.chat_completions_stub import DeterministicChatCompletionsStub
 
 AGENT_ID = "scheduler-harness-agent"
 AGENT_NAME = "Scheduler Harness Agent"
@@ -79,7 +79,7 @@ def _json(base_url: str, path: str) -> dict:
     return json.loads(raw) if raw else {}
 
 
-def _agent_spec() -> AgentSpec:
+def _agent_spec(*, endpoint_url: str) -> AgentSpec:
     return AgentSpec.model_validate(
         {
             "description": "Scheduler Harness browser fixture",
@@ -91,7 +91,7 @@ def _agent_spec() -> AgentSpec:
             "model": {
                 "provider": "openai-compatible",
                 "model": "fixture-model",
-                "endpointUrl": "https://model.example.com/v1/chat/completions",
+                "endpointUrl": endpoint_url,
                 "credentialRef": "env://MODEL_API_KEY",
                 "parameters": {"temperature": 0.2, "maxTokens": 128},
             },
@@ -112,24 +112,12 @@ def _agent_spec() -> AgentSpec:
                 "allowedPermissions": ["process:host-user"],
                 "network": {
                     "mode": "restricted",
-                    "allowedHosts": ["model.example.com"],
-                    "allowPrivateNetwork": False,
+                    "allowedHosts": ["127.0.0.1"],
+                    "allowPrivateNetwork": True,
                 },
             },
         }
     )
-
-
-class _HarnessReasoner:
-    """Deterministic model boundary behind the production Harness loop."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[dict[str, Any], ...]] = []
-
-    async def complete(self, *, model, prompt, messages, tools):
-        del model, prompt, tools
-        self.calls.append(tuple(messages))
-        return HarnessReasoningTurn(final_text=f"scheduled harness result {len(self.calls)}")
 
 
 def _create_task(
@@ -222,7 +210,11 @@ def _start_browser_sse(page: Page, session_id: str, after_seq: int) -> None:
     )
 
 
-def _assert_harness_vertical(page: Page, base_url: str, reasoner: _HarnessReasoner) -> None:
+def _assert_harness_vertical(
+    page: Page,
+    base_url: str,
+    model: DeterministicChatCompletionsStub,
+) -> None:
     page.goto(f"{base_url}/#/automations", wait_until="networkidle")
     expect(page.get_by_role("heading", name="自动化 / 定时任务")).to_be_visible()
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
@@ -275,10 +267,13 @@ def _assert_harness_vertical(page: Page, base_url: str, reasoner: _HarnessReason
     assert '"type":"run.completed"' in sse["text"], sse
 
     # New-session plus two turns in one continued Session reached the real
-    # Harness reasoner. The second continued turn receives durable history.
-    assert len(reasoner.calls) == 3
-    assert len(reasoner.calls[0]) == 2
-    assert reasoner.calls[2] == (
+    # production model client. The second continued turn receives durable history.
+    requests = model.requests()
+    assert len(requests) == 3
+    assert all(item.path == "/v1/chat/completions" for item in requests)
+    assert all(item.authorization == "Bearer harness-fixture-key" for item in requests)
+    assert len(requests[0].payload["messages"]) == 2
+    assert requests[2].payload["messages"] == [
         {
             "role": "system",
             "content": (
@@ -289,42 +284,44 @@ def _assert_harness_vertical(page: Page, base_url: str, reasoner: _HarnessReason
         {"role": "user", "content": "执行 Harness 继续会话"},
         {"role": "assistant", "content": "scheduled harness result 2"},
         {"role": "user", "content": "执行 Harness 继续会话"},
-    ), reasoner.calls
+    ], requests
 
 
 def main() -> None:
     with TemporaryDirectory(prefix="ksadk-scheduler-harness-browser-") as temp_dir:
         workspace = Path(temp_dir)
-        reasoner = _HarnessReasoner()
         environment = _managed_harness_profile(workspace)
+        with DeterministicChatCompletionsStub() as model:
+            runtime_environment = {
+                **environment,
+                "KSADK_AGENT_KERNEL": "1",
+                "MODEL_API_KEY": "harness-fixture-key",
+            }
+            with patch.dict(os.environ, runtime_environment):
+                service = StudioService(workspace)
+                spec = _agent_spec(endpoint_url=model.endpoint_url)
+                service.create_studio_agent(
+                    agent_id=AGENT_ID,
+                    name=AGENT_NAME,
+                    description="Scheduler Harness browser fixture",
+                    spec=spec,
+                    runtime=spec.runtime,
+                )
 
-        with (
-            patch.dict(os.environ, {**environment, "KSADK_AGENT_KERNEL": "1"}),
-        ):
-            service = StudioService(workspace, harness_reasoner=reasoner)
-            spec = _agent_spec()
-            service.create_studio_agent(
-                agent_id=AGENT_ID,
-                name=AGENT_NAME,
-                description="Scheduler Harness browser fixture",
-                spec=spec,
-                runtime=spec.runtime,
-            )
-
-        with (
-            patch.dict(os.environ, {**environment, "KSADK_AGENT_KERNEL": "1"}),
-            studio_server(workspace, service=service) as base_url,
-            sync_playwright() as playwright,
-        ):
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                page = browser.new_page(viewport={"width": 1440, "height": 960})
-                page_errors: list[str] = []
-                page.on("pageerror", lambda error: page_errors.append(str(error)))
-                _assert_harness_vertical(page, base_url, reasoner)
-                assert page_errors == [], f"Uncaught React page errors: {page_errors}"
-            finally:
-                browser.close()
+            with (
+                patch.dict(os.environ, runtime_environment),
+                studio_server(workspace, service=service) as base_url,
+                sync_playwright() as playwright,
+            ):
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(viewport={"width": 1440, "height": 960})
+                    page_errors: list[str] = []
+                    page.on("pageerror", lambda error: page_errors.append(str(error)))
+                    _assert_harness_vertical(page, base_url, model)
+                    assert page_errors == [], f"Uncaught React page errors: {page_errors}"
+                finally:
+                    browser.close()
 
 
 if __name__ == "__main__":

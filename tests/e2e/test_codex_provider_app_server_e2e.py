@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import dataclasses
 import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from ksadk.codex.client import AsyncCodexClient
 from ksadk.events.canonical import ContinuationCreated, ItemCompleted
 from ksadk.events.content import TextContent, ToolCallContent, ToolResultContent
 from ksadk.events.store import RuntimeEventStore
@@ -17,6 +15,7 @@ from ksadk.plugins.host import PluginHost
 from ksadk.plugins.providers.codex import CodexAgentProviderFactory
 from ksadk.plugins.resolver import PluginRegistry
 from ksadk.sessions.in_memory import InMemorySessionService
+from tests.e2e.codex_app_server_fixture import RealCodexFactory
 from tests.e2e.codex_responses_stub import DeterministicResponsesStub
 from tests.harness.fixtures.mcp_server import run_fixture_mcp_server
 from tests.plugins.test_codex_provider_vertical import (
@@ -29,55 +28,6 @@ pytestmark = pytest.mark.skipif(
     os.getenv("KSADK_CODEX_PROVIDER_E2E") != "1",
     reason="set KSADK_CODEX_PROVIDER_E2E=1 to exercise the real Codex App Server",
 )
-
-
-class _RealCodexFactory:
-    def __init__(self, *, responses_url: str) -> None:
-        self._responses_url = responses_url
-        self.processes: list[Any] = []
-
-    def __call__(self, config: Any = None) -> AsyncCodexClient:
-        assert config is not None
-        environment = dict(getattr(config, "env", None) or {})
-        codex_home = Path(environment["CODEX_HOME"])
-        codex_home.mkdir(parents=True, exist_ok=True)
-        (codex_home / "config.toml").write_text(
-            f'''model_provider = "ksadk_provider_stub"
-approval_policy = "never"
-sandbox_mode = "read-only"
-
-[model_providers.ksadk_provider_stub]
-name = "KsADK provider deterministic E2E"
-base_url = "{self._responses_url}"
-wire_api = "responses"
-request_max_retries = 0
-stream_max_retries = 0
-requires_openai_auth = false
-''',
-            encoding="utf-8",
-        )
-        environment.update(
-            {
-                "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
-                "RUST_LOG": "warn",
-            }
-        )
-        client = AsyncCodexClient(
-            dataclasses.replace(config, env=environment)
-        )
-        transport = client._codex._client._sync
-        original_close = transport.close
-
-        def recording_close() -> None:
-            process = transport._proc
-            try:
-                original_close()
-            finally:
-                if process is not None:
-                    self.processes.append(process)
-
-        transport.close = recording_close
-        return client
 
 
 def _request_texts(request: Any) -> str:
@@ -119,7 +69,7 @@ async def test_real_app_server_calls_bundle_mcp_twice_and_resumes_native_thread(
                 }
             ],
         )
-        client_factory = _RealCodexFactory(responses_url=responses.base_url)
+        client_factory = RealCodexFactory(responses_url=responses.base_url)
         provider = CodexAgentProviderFactory(
             session_service=session_service,
             codex_client_factory=client_factory,

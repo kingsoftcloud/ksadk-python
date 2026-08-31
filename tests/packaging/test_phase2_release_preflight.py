@@ -23,7 +23,7 @@ from scripts.phase2_release_preflight import (
     run_release_test_gates,
     validate_clean_artifact_installations,
     validate_distribution_archives,
-    validate_generated_static_is_untracked,
+    validate_generated_static_tracking_policy,
     validate_phase2_evidence_report,
     write_phase2_evidence_report,
 )
@@ -277,7 +277,7 @@ def test_artifact_gate_rejects_mismatched_wheel_and_sdist_provenance(
 
 
 def test_generated_static_payload_is_not_tracked() -> None:
-    validate_generated_static_is_untracked()
+    validate_generated_static_tracking_policy(public_export=False)
 
 
 def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_path: Path) -> None:
@@ -301,7 +301,7 @@ def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_p
         ),
     )
 
-    validate_generated_static_is_untracked(tmp_path)
+    validate_generated_static_tracking_policy(tmp_path, public_export=True)
 
 
 def test_git_free_clean_export_uses_attested_source_identity(tmp_path: Path) -> None:
@@ -313,7 +313,7 @@ def test_git_free_clean_export_uses_attested_source_identity(tmp_path: Path) -> 
     from scripts.phase2_release_preflight import _current_source_commit
 
     assert _current_source_commit(tmp_path) == SOURCE_COMMIT
-    validate_generated_static_is_untracked(tmp_path)
+    validate_generated_static_tracking_policy(tmp_path, public_export=True)
 
 
 def test_clean_install_gate_installs_wheel_and_rebuilt_sdist_wheel_separately(
@@ -392,7 +392,9 @@ def test_phase2_evidence_report_binds_contract_commit_artifacts_and_e2e(
         contract_digest=contract_digest,
         require_complete=True,
     )
-    assert report["overallStatus"] == "passed"
+    assert report["overallStatus"] == "incomplete"
+    assert report["localStatus"] == "passed"
+    assert report["releaseStatus"] == "not_evaluated"
     assert report["contractDigest"] == contract_digest
     assert report["sourceCommit"] == SOURCE_COMMIT
     assert set(report["artifacts"]) == {"wheel", "sdist"}
@@ -448,8 +450,8 @@ def test_phase2_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
         e2e_statuses=statuses,
     )
 
-    assert report["overallStatus"] == "incomplete"
-    with pytest.raises(Phase2PreflightError, match="overall status is incomplete"):
+    assert report["localStatus"] == "incomplete"
+    with pytest.raises(Phase2PreflightError, match="local status is incomplete"):
         validate_phase2_evidence_report(
             report,
             artifacts=artifacts,
@@ -464,7 +466,8 @@ def test_phase2_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
     [
         ("sourceCommit", "b" * 40, "source commit"),
         ("contractDigest", f"sha256:{'b' * 64}", "contract digest"),
-        ("overallStatus", "incomplete", "overall status"),
+        ("localStatus", "incomplete", "local status"),
+        ("overallStatus", "passed", "overall release completion"),
     ],
 )
 def test_phase2_evidence_report_rejects_unbound_or_incomplete_claims(

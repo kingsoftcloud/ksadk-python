@@ -210,14 +210,14 @@ def validate_approval_record(
         filled = bool(
             name
             and name.lower() not in {"pending", "tbd", "todo"}
-            and decision.lower().startswith("approved")
+            and decision.lower() == "approved"
             and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
         )
         checks.append(
             ApprovalCheck(
                 name=f"signoff:{role}",
                 ok=filled,
-                detail="name, an Approved decision, and an ISO date are required",
+                detail="name, the exact decision Approved, and an ISO date are required",
             )
         )
 

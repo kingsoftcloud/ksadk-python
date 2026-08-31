@@ -79,7 +79,7 @@ PHASE2_E2E_STATUS_KEYS = (
     "cleanWheelInstall",
     "cleanSdistInstall",
 )
-PHASE2_EVIDENCE_SCHEMA_VERSION = 1
+PHASE2_EVIDENCE_SCHEMA_VERSION = 2
 
 CLEAN_INSTALL_SMOKE = """
 from pathlib import Path
@@ -286,7 +286,11 @@ def validate_distribution_archives(
     return artifacts
 
 
-def validate_generated_static_is_untracked(root: Path = ROOT) -> None:
+def validate_generated_static_tracking_policy(
+    root: Path = ROOT,
+    *,
+    public_export: bool,
+) -> None:
     try:
         completed = subprocess.run(
             ["git", "ls-files", "ksadk/server/static", "ksadk/studio/static"],
@@ -302,11 +306,7 @@ def validate_generated_static_is_untracked(root: Path = ROOT) -> None:
             "cannot verify generated static tracking without Git metadata"
         )
     tracked = [line for line in completed.stdout.splitlines() if line.strip()]
-    is_clean_public_export = (
-        (root / "export-manifest.json").is_file()
-        and not (root / "ksadk/studio/react-ui/package.json").is_file()
-    )
-    if is_clean_public_export:
+    if public_export:
         tracked_set = set(tracked)
         required_files = {
             "ksadk/server/static/index.html",
@@ -598,11 +598,17 @@ def build_phase2_evidence_report(
         raise Phase2PreflightError("evidence requires one wheel and one sdist")
 
     ordered_statuses = {name: e2e_statuses[name] for name in PHASE2_E2E_STATUS_KEYS}
-    complete = all(value == "passed" for value in ordered_statuses.values())
+    local_complete = all(value == "passed" for value in ordered_statuses.values())
     return {
         "schemaVersion": PHASE2_EVIDENCE_SCHEMA_VERSION,
         "phase": "phase2",
-        "overallStatus": "passed" if complete else "incomplete",
+        "scope": "local-source-and-package",
+        # This local preflight deliberately cannot claim release completion:
+        # registry publication, consumer images and deployed targets are
+        # separate evidence inputs bound by the final release-candidate gate.
+        "overallStatus": "incomplete",
+        "localStatus": "passed" if local_complete else "incomplete",
+        "releaseStatus": "not_evaluated",
         "sourceCommit": normalized_commit,
         "contractDigest": contract_digest,
         "artifacts": artifact_evidence,
@@ -633,13 +639,19 @@ def validate_phase2_evidence_report(
         raise Phase2PreflightError("evidence E2E statuses are incomplete")
     if any(value not in {"passed", "failed", "not_run"} for value in raw_statuses.values()):
         raise Phase2PreflightError("evidence E2E status is invalid")
-    expected_overall = (
+    expected_local = (
         "passed" if all(value == "passed" for value in raw_statuses.values()) else "incomplete"
     )
-    if report.get("overallStatus") != expected_overall:
-        raise Phase2PreflightError("evidence overall status is inconsistent")
-    if require_complete and expected_overall != "passed":
-        raise Phase2PreflightError("evidence overall status is incomplete")
+    if report.get("scope") != "local-source-and-package":
+        raise Phase2PreflightError("evidence scope is invalid")
+    if report.get("localStatus") != expected_local:
+        raise Phase2PreflightError("evidence local status is inconsistent")
+    if report.get("overallStatus") != "incomplete":
+        raise Phase2PreflightError("local evidence must not claim overall release completion")
+    if report.get("releaseStatus") != "not_evaluated":
+        raise Phase2PreflightError("local evidence release status is invalid")
+    if require_complete and expected_local != "passed":
+        raise Phase2PreflightError("evidence local status is incomplete")
 
     raw_artifacts = report.get("artifacts")
     if not isinstance(raw_artifacts, dict) or set(raw_artifacts) != {"wheel", "sdist"}:
@@ -718,7 +730,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     source_gate_statuses = {name: "not_run" for name in SOURCE_E2E_STATUS_KEYS}
     if not args.skip_tests:
         source_gate_statuses = run_release_test_gates()
-    validate_generated_static_is_untracked()
+    public_export = (
+        (ROOT / "export-manifest.json").is_file()
+        and not (ROOT / "ksadk/studio/react-ui/package.json").is_file()
+    )
+    validate_generated_static_tracking_policy(ROOT, public_export=public_export)
     source_commit = _current_source_commit()
     artifacts = validate_distribution_archives(
         dist_dir,
@@ -759,7 +775,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     write_phase2_evidence_report(evidence_output, report)
 
-    if report["overallStatus"] == "passed":
+    if report["localStatus"] == "passed":
         print("Phase 2 local compatibility/package preflight passed")
     else:
         print("Phase 2 package preflight passed; release evidence is incomplete")

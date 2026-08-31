@@ -60,7 +60,7 @@ This prevents a stale approval record from passing after candidate changes.
   Agent and a historical 0.8.2 Agent: streaming text, reasoning/tool cards,
   multi-turn context and final-message de-duplication.
 - Release notes, `CHANGELOG.md`, public README and docs were reviewed for the
-  complete 0.8.2 summary, sensitive environment names, internal endpoints,
+  complete 0.8.3 summary, sensitive environment names, internal endpoints,
   tokens, customer data and inaccurate claims.
 - PyPI/TestPyPI credentials stay outside the repository.
 
