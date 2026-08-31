@@ -241,6 +241,17 @@ TARGET_RULES: dict[str, tuple[DenyRule, ...]] = {
 
 CONTENT_AUDIT_TARGETS = {"public-repo", "ksadk-web-candidate", "sdist", "wheel"}
 
+PUBLIC_EXPORT_MANIFEST_KEYS = {
+    "schemaVersion",
+    "generatedAt",
+    "sourceCommit",
+    "sourceTree",
+    "targetRepository",
+    "documentation",
+    "exportPathCount",
+    "exportPolicy",
+}
+
 CONTENT_RULES = (
     ContentRule(
         name="public-doc-internal-endpoint",
@@ -635,6 +646,145 @@ def audit_ksadk_web_candidate_metadata(root: Path, paths: Iterable[str]) -> Audi
     )
 
 
+def audit_public_export_manifest(root: Path, paths: Iterable[str]) -> AuditResult:
+    """Require a minimal provenance attestation without publishing internal inventory."""
+    path_set = {normalize_path(path) for path in paths}
+    violations: list[Violation] = []
+    manifest_path = root / "export-manifest.json"
+
+    if "export-manifest.json" not in path_set or not manifest_path.is_file():
+        violations.append(
+            Violation(
+                path="export-manifest.json",
+                rule="missing-public-export-manifest",
+                description="public repository export must include its provenance manifest",
+            )
+        )
+    else:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            violations.append(
+                Violation(
+                    path="export-manifest.json",
+                    rule="invalid-json",
+                    description="export manifest must be valid JSON",
+                )
+            )
+        else:
+            if not isinstance(manifest, dict):
+                violations.append(
+                    Violation(
+                        path="export-manifest.json",
+                        rule="invalid-public-export-manifest",
+                        description="export manifest root must be a JSON object",
+                    )
+                )
+            else:
+                unexpected_keys = sorted(set(manifest).difference(PUBLIC_EXPORT_MANIFEST_KEYS))
+                missing_keys = sorted(PUBLIC_EXPORT_MANIFEST_KEYS.difference(manifest))
+                if unexpected_keys:
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="public-export-inventory-disclosure",
+                            description=(
+                                "export manifest must not publish internal path inventories or "
+                                f"release notes; unexpected keys: {', '.join(unexpected_keys)}"
+                            ),
+                        )
+                    )
+                if missing_keys:
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="incomplete-public-export-manifest",
+                            description=(
+                                "export manifest is missing required provenance fields: "
+                                + ", ".join(missing_keys)
+                            ),
+                        )
+                    )
+                if manifest.get("schemaVersion") != 1:
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="unsupported-public-export-manifest-schema",
+                            description="export manifest schemaVersion must be 1",
+                        )
+                    )
+                if manifest.get("targetRepository") != (
+                    "https://github.com/kingsoftcloud/ksadk-python"
+                ):
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="wrong-public-export-target-repository",
+                            description="export manifest must point to the public KsADK repository",
+                        )
+                    )
+                if manifest.get("documentation") != (
+                    "https://kingsoftcloud.github.io/ksadk-python/"
+                ):
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="wrong-public-export-documentation",
+                            description="export manifest must point to the public documentation site",
+                        )
+                    )
+                if not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("sourceCommit", ""))):
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="invalid-public-export-source-commit",
+                            description="sourceCommit must be a full lowercase Git commit ID",
+                        )
+                    )
+                if manifest.get("sourceTree") != "clean":
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="dirty-public-export-source",
+                            description="public export must be generated from a clean source tree",
+                        )
+                    )
+                export_policy = manifest.get("exportPolicy")
+                if not isinstance(export_policy, dict) or set(export_policy) != {
+                    "mode",
+                    "schemaVersion",
+                    "sha256",
+                }:
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="invalid-public-export-policy",
+                            description=(
+                                "exportPolicy must contain only mode, schemaVersion, and sha256"
+                            ),
+                        )
+                    )
+                elif (
+                    export_policy.get("mode") != "allowlist"
+                    or export_policy.get("schemaVersion") != 1
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(export_policy.get("sha256", "")))
+                ):
+                    violations.append(
+                        Violation(
+                            path="export-manifest.json",
+                            rule="invalid-public-export-policy",
+                            description="exportPolicy must be a versioned allowlist SHA-256 attestation",
+                        )
+                    )
+
+    return AuditResult(
+        target="public-export-manifest",
+        ok=not violations,
+        counts={"checked": 1, "violations": len(violations)},
+        violations=violations,
+    )
+
+
 def merge_results(target: str, results: Sequence[AuditResult]) -> AuditResult:
     violations = [violation for result in results for violation in result.violations]
     return AuditResult(
@@ -758,6 +908,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 *(
                     [audit_ksadk_web_candidate_metadata(args.root, paths)]
                     if args.target == "ksadk-web-candidate"
+                    else []
+                ),
+                *(
+                    [audit_public_export_manifest(args.root, paths)]
+                    if args.target == "public-repo"
                     else []
                 ),
             ],

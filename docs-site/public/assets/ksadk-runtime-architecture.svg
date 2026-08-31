@@ -1,204 +1,268 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
-  <title id="title">KsADK 智能体运行时平台架构</title>
-  <desc id="desc">Agent 框架接入 KsADK 统一运行时，通过运行时能力部署到本地或 AgentEngine 托管环境。</desc>
-  <style>
-    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; letter-spacing: 0; }
-    .eyebrow { font-size: 12px; font-weight: 700; fill: #087f9c; }
-    .title { font-size: 34px; font-weight: 750; fill: #111827; }
-    .subtitle { font-size: 15px; font-weight: 450; fill: #64748b; }
-    .section { font-size: 12px; font-weight: 750; fill: #475569; }
-    .section-accent { font-size: 12px; font-weight: 750; fill: #047857; }
-    .card-title { font-size: 17px; font-weight: 680; fill: #18212f; }
-    .card-subtitle { font-size: 12px; font-weight: 450; fill: #64748b; }
-    .small-title { font-size: 14px; font-weight: 650; fill: #26313f; }
-    .small-subtitle { font-size: 11px; font-weight: 450; fill: #64748b; }
-    .micro { font-size: 10px; font-weight: 650; fill: #7a8594; }
-    .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
-  </style>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1250" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK 总体技术架构</title>
+  <desc id="desc">KsADK 浅色总体技术架构图，突出可信内核、Harness 执行层和插件化 Provider。</desc>
   <defs>
-    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
-      <path d="M32 0H0V32" fill="none" stroke="#dfe5ec" stroke-width="0.7" opacity="0.7"/>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#dbe5f0" stroke-width="1" opacity="0.62"/>
     </pattern>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#6b7687"/>
+    <linearGradient id="headerGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="0.48" stop-color="#ecfdf5"/>
+      <stop offset="1" stop-color="#f5f3ff"/>
+    </linearGradient>
+    <linearGradient id="harnessGlow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ecfeff"/>
+      <stop offset="0.52" stop-color="#eff6ff"/>
+      <stop offset="1" stop-color="#f5f3ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrowCyan" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#0891b2"/>
     </marker>
-    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#43c9e8"/>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#2563eb"/>
     </marker>
-    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#38d6a5"/>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#ea580c"/>
     </marker>
+    <marker id="arrowGray" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#64748b"/>
+    </marker>
+    <style>
+      .title { font: 700 31px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .section-title { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .section-note { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #64748b; }
+      .box-title { font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .box-title-lg { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .body { font: 400 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #334155; }
+      .small { font: 400 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #475569; }
+      .pill { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #155e75; }
+      .mono { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #64748b; }
+      .arrow-label { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #475569; }
+      .line-cyan { fill: none; stroke: #0891b2; stroke-width: 2.2; marker-end: url(#arrowCyan); }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrowBlue); }
+      .line-orange { fill: none; stroke: #ea580c; stroke-width: 2.2; marker-end: url(#arrowOrange); }
+      .line-gray { fill: none; stroke: #64748b; stroke-width: 1.8; stroke-dasharray: 6 5; marker-end: url(#arrowGray); }
+      .bus-cyan { fill: none; stroke: #0891b2; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .bus-blue { fill: none; stroke: #2563eb; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
   </defs>
 
-  <!-- Background -->
-  <rect width="1440" height="900" fill="#f8fafc"/>
-  <rect width="1440" height="900" fill="url(#grid)"/>
-  <path d="M0 112H1440" stroke="#d8dee7" stroke-width="1"/>
+  <rect width="1600" height="1250" fill="#f8fafc"/>
+  <rect width="1600" height="1250" fill="url(#grid)" opacity="0.72"/>
 
-  <!-- Header -->
-  <text x="44" y="38" class="eyebrow">KSADK / RUNTIME DATA PLANE</text>
-  <text x="44" y="78" class="title">KsADK 智能体运行时平台</text>
-  <text x="1396" y="51" class="micro" text-anchor="end">LOCAL-FIRST  /  CLOUD-READY</text>
-  <text x="1396" y="78" class="subtitle" text-anchor="end">一套 Agent 代码，贯通本地开发与云端托管</text>
+  <!-- 标题 -->
+  <rect x="36" y="24" width="1528" height="80" rx="18" fill="url(#headerGlow)" stroke="#cbd5e1" filter="url(#shadow)"/>
+  <text class="title" x="64" y="76">KsADK 总体技术架构</text>
+  <rect x="1394" y="46" width="140" height="36" rx="18" fill="#ffffff" stroke="#0891b2"/>
+  <text class="pill" x="1464" y="69" text-anchor="middle">运行时能力</text>
 
-  <!-- Agent code region -->
-  <rect x="40" y="138" width="1360" height="122" rx="8" fill="#ffffff" stroke="#d5dde7" stroke-width="1.2"/>
-  <rect x="40" y="138" width="5" height="122" rx="2.5" fill="#43c9e8"/>
-  <text x="68" y="173" class="section">01  AGENT CODE</text>
-  <text x="68" y="202" class="card-title">接入你的 Agent 框架</text>
-  <text x="68" y="224" class="card-subtitle">业务逻辑保持原生</text>
-
+  <!-- 分区底板 -->
   <g>
-    <rect x="300" y="164" width="236" height="70" rx="7" fill="#fbfdff" stroke="#2e78d6" stroke-width="1.2"/>
-    <rect x="300" y="164" width="4" height="70" rx="2" fill="#3b82f6"/>
-    <text x="326" y="194" class="card-title">Google ADK</text>
-    <text x="326" y="216" class="card-subtitle mono">root_agent</text>
-  </g>
-  <g>
-    <rect x="556" y="164" width="236" height="70" rx="7" fill="#fbfefc" stroke="#248e75" stroke-width="1.2"/>
-    <rect x="556" y="164" width="4" height="70" rx="2" fill="#34d399"/>
-    <text x="582" y="194" class="card-title">LangGraph</text>
-    <text x="582" y="216" class="card-subtitle mono">StateGraph</text>
-  </g>
-  <g>
-    <rect x="812" y="164" width="236" height="70" rx="7" fill="#fffdf8" stroke="#ad7a22" stroke-width="1.2"/>
-    <rect x="812" y="164" width="4" height="70" rx="2" fill="#f5b942"/>
-    <text x="838" y="194" class="card-title">LangChain</text>
-    <text x="838" y="216" class="card-subtitle mono">Runnable / chain</text>
-  </g>
-  <g>
-    <rect x="1068" y="164" width="300" height="70" rx="7" fill="#fcfbff" stroke="#7864c8" stroke-width="1.2"/>
-    <rect x="1068" y="164" width="4" height="70" rx="2" fill="#9b87f5"/>
-    <text x="1094" y="194" class="card-title">DeepAgents</text>
-    <text x="1094" y="216" class="card-subtitle mono">create_deep_agent</text>
+    <rect x="36" y="126" width="1528" height="154" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="36" y="300" width="1528" height="174" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="36" y="494" width="1528" height="326" rx="20" fill="url(#harnessGlow)" stroke="#2563eb" stroke-width="2" filter="url(#shadow)"/>
+    <rect x="36" y="840" width="1528" height="128" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="36" y="988" width="1528" height="124" rx="18" fill="#fff7ed" stroke="#fdba74"/>
+    <rect x="36" y="1132" width="1528" height="86" rx="18" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="7 5"/>
   </g>
 
-  <!-- Agent code to runtime -->
-  <path d="M720 260V294" fill="none" stroke="#43c9e8" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
-  <rect x="648" y="267" width="144" height="18" rx="3" fill="#f8fafc"/>
-  <text x="720" y="279" class="micro" text-anchor="middle">运行时适配</text>
+  <!-- 分区标题 -->
+  <text class="section-title" x="60" y="153">1 · 使用入口</text>
+  <text class="section-note" x="184" y="153">同一运行底座，多种开发、调用与协议入口</text>
+  <text class="section-title" x="60" y="327">2 · 可信内核</text>
+  <text class="section-note" x="184" y="327">把并发、恢复和状态一致性收口到唯一可信边界</text>
+  <text class="section-title" x="60" y="523">3 · Harness 执行层与插件化架构</text>
+  <text class="section-note" x="346" y="523">稳定外壳负责控制与生命周期，Provider 保留原生执行语义</text>
+  <text class="section-title" x="60" y="867">4 · Harness 共用能力</text>
+  <text class="section-note" x="248" y="867">通过能力总线向上注入，不与具体 Agent 框架绑定</text>
+  <text class="section-title" x="60" y="1015">5 · 统一事件与呈现</text>
+  <text class="section-note" x="236" y="1015">Harness 运行事件依次适配、固化并投影到不同界面</text>
+  <text class="section-title" x="60" y="1159">平台外部依赖</text>
+  <text class="section-note" x="196" y="1159">KsADK 通过明确契约连接，不在 SDK 内重复建设</text>
 
-  <!-- KsADK runtime region -->
-  <rect x="40" y="300" width="1360" height="414" rx="9" fill="#f1faf7" stroke="#2fcfa0" stroke-width="1.8"/>
-  <rect x="40" y="300" width="5" height="414" rx="2.5" fill="#38d6a5"/>
-  <text x="68" y="334" class="section-accent">02  KSADK 运行时</text>
-  <text x="68" y="359" class="card-subtitle">统一执行语义 · 统一协议 · 统一运行时能力</text>
+  <!-- 主流程连线：入口先汇聚，再进入可信内核 -->
+  <path class="bus-cyan" d="M203 253V270M501 253V270M799 253V270M1097 253V270M1395 253V270M203 270H1395"/>
+  <circle cx="203" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="501" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="799" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="1097" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="1395" cy="270" r="3.5" fill="#0891b2"/>
+  <path class="line-cyan" d="M799 270V342"/>
+  <path class="line-blue" d="M800 454V538"/>
+  <path class="line-blue" d="M470 663H514"/>
+  <path class="line-blue" d="M926 663H966"/>
+  <!-- 运行事件沿右侧独立通道进入第 5 层，不穿过共用能力卡片 -->
+  <path class="line-orange" d="M900 786V828H1538V1023H197V1035"/>
+  <!-- 六类共用能力汇聚后向上注入 Harness -->
+  <path class="bus-blue" d="M169 944V956M407 944V956M645 944V956M927 944V956M1165 944V956M1403 944V956M169 956H1403"/>
+  <path class="line-blue" d="M786 956V790"/>
+  <rect x="758" y="476" width="84" height="20" rx="10" fill="#ffffff" stroke="#93c5fd"/>
+  <text class="arrow-label" x="800" y="490" text-anchor="middle">内核调度</text>
 
-  <!-- Runtime access rail -->
-  <rect x="498" y="320" width="870" height="52" rx="6" fill="#ffffff" stroke="#b9d9cf" stroke-width="1"/>
-  <text x="522" y="341" class="micro">运行入口</text>
-  <text x="522" y="359" class="small-title mono">SDK + CLI</text>
-  <path d="M700 331V361M918 331V361M1136 331V361" stroke="#dbe7e3"/>
-  <text x="724" y="352" class="small-title">浏览器 UI</text>
-  <text x="942" y="352" class="small-title">OpenAI API</text>
-  <text x="1160" y="352" class="small-title">A2A</text>
-  <text x="1337" y="352" class="small-subtitle" text-anchor="end">调用 · 流式 · 服务</text>
-
-  <!-- Core execution flow -->
-  <path d="M428 428H504M936 428H1012" fill="none" stroke="#38d6a5" stroke-width="1.8" marker-end="url(#arrow-green)"/>
-  <g>
-    <rect x="68" y="394" width="360" height="78" rx="7" fill="#ffffff" stroke="#71ae9d" stroke-width="1.2"/>
-    <text x="92" y="422" class="card-title">框架 Runner</text>
-    <text x="92" y="447" class="card-subtitle">invoke · stream · 工具绑定</text>
-    <text x="404" y="444" class="micro mono" text-anchor="end">BaseRunner</text>
+  <!-- 入口 -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="171" width="278" height="82" rx="13" fill="#ecfeff" stroke="#0891b2"/>
+    <rect x="362" y="171" width="278" height="82" rx="13" fill="#ecfdf5" stroke="#059669"/>
+    <rect x="660" y="171" width="278" height="82" rx="13" fill="#eff6ff" stroke="#2563eb"/>
+    <rect x="958" y="171" width="278" height="82" rx="13" fill="#f5f3ff" stroke="#7c3aed"/>
+    <rect x="1256" y="171" width="278" height="82" rx="13" fill="#fffbeb" stroke="#d97706"/>
   </g>
-  <g>
-    <rect x="504" y="386" width="432" height="94" rx="8" fill="#dff7ee" stroke="#0aa578" stroke-width="2"/>
-    <text x="720" y="419" class="card-title" text-anchor="middle">对话运行时</text>
-    <text x="720" y="444" class="small-subtitle" text-anchor="middle">调用 · 流式 · 会话事件</text>
-    <text x="720" y="464" class="micro" text-anchor="middle">数据面核心</text>
-  </g>
-  <g>
-    <rect x="1012" y="394" width="356" height="78" rx="7" fill="#ffffff" stroke="#71ae9d" stroke-width="1.2"/>
-    <text x="1036" y="422" class="card-title">协议入口</text>
-    <text x="1036" y="447" class="card-subtitle">OpenAI 兼容 · A2A · 流式</text>
-  </g>
-
-  <!-- Runtime capability matrix -->
-  <text x="68" y="514" class="section">运行时能力</text>
-  <path d="M246 509H1368" stroke="#d8e4e0"/>
-
-  <g>
-    <rect x="68" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="91" cy="553" r="4" fill="#43c9e8"/>
-    <text x="106" y="558" class="small-title">会话连续性</text>
-    <text x="91" y="579" class="small-subtitle">状态 · transcript · 弹性存储</text>
-  </g>
-  <g>
-    <rect x="390" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="413" cy="553" r="4" fill="#43c9e8"/>
-    <text x="428" y="558" class="small-title">检查点控制</text>
-    <text x="413" y="579" class="small-subtitle">恢复 · 取消 · 运行事件</text>
-  </g>
-  <g>
-    <rect x="712" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="735" cy="553" r="4" fill="#f5b942"/>
-    <text x="750" y="558" class="small-title">工具集 + MCP</text>
-    <text x="735" y="579" class="small-subtitle">发现 · 策略 · 调度</text>
-  </g>
-  <g>
-    <rect x="1034" y="532" width="334" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="1057" cy="553" r="4" fill="#9b87f5"/>
-    <text x="1072" y="558" class="small-title">Skill Runtime</text>
-    <text x="1057" y="579" class="small-subtitle">发现 · 加载 · 隔离执行</text>
+  <g text-anchor="middle">
+    <text class="box-title" x="203" y="202">开发者入口</text>
+    <text class="body" x="203" y="227">Python SDK · AgentEngine CLI</text>
+    <text class="box-title" x="501" y="202">本地工作台</text>
+    <text class="body" x="501" y="227">Studio · 调试与回放</text>
+    <text class="box-title" x="799" y="202">标准调用接口</text>
+    <text class="body" x="799" y="227">Responses · Chat · Session</text>
+    <text class="box-title" x="1097" y="202">协议接入</text>
+    <text class="body" x="1097" y="227">A2A · AG-UI · A2UI</text>
+    <text class="box-title" x="1395" y="202">自动任务</text>
+    <text class="body" x="1395" y="227">Scheduler · 定时与批量触发</text>
   </g>
 
-  <g>
-    <rect x="68" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="91" cy="631" r="4" fill="#f5b942"/>
-    <text x="106" y="636" class="small-title">Workspace + 产物</text>
-    <text x="91" y="657" class="small-subtitle">读取 · 编辑 · 检查 · 导出</text>
+  <!-- 可信内核 -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="348" width="292" height="100" rx="14" fill="#f8fafc" stroke="#64748b"/>
+    <rect x="380" y="342" width="840" height="112" rx="16" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <rect x="1244" y="348" width="290" height="100" rx="14" fill="#f8fafc" stroke="#64748b"/>
   </g>
-  <g>
-    <rect x="390" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="413" cy="631" r="4" fill="#ef6f8d"/>
-    <text x="428" y="636" class="small-title">Sandbox + 审批</text>
-    <text x="413" y="657" class="small-subtitle">隔离代码 · 工具安全</text>
+  <text class="box-title" x="86" y="377">应用装配</text>
+  <text class="body" x="86" y="401">FastAPI 路由 · 生命周期</text>
+  <text class="small" x="86" y="424">认证、会话、协议入口统一编排</text>
+  <text class="box-title-lg" x="406" y="374">Agent Kernel</text>
+  <text class="body" x="406" y="399">许可控制 · 持久收件箱 · 租约与防旧写 · 交互恢复</text>
+  <rect x="406" y="416" width="180" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <rect x="598" y="416" width="180" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <rect x="790" y="416" width="180" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <rect x="982" y="416" width="210" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <text class="pill" x="496" y="432" text-anchor="middle">并发与背压</text>
+  <text class="pill" x="688" y="432" text-anchor="middle">取消与恢复</text>
+  <text class="pill" x="880" y="432" text-anchor="middle">状态一致性</text>
+  <text class="pill" x="1087" y="432" text-anchor="middle">运行时安全边界</text>
+  <text class="box-title" x="1266" y="377">构建与部署</text>
+  <text class="body" x="1266" y="401">代码 / 容器 / ManagedRuntime</text>
+  <text class="small" x="1266" y="424">Bundle、摘要与来源可追溯</text>
+
+  <!-- Harness 核心：三栏 -->
+  <rect x="64" y="548" width="406" height="238" rx="16" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="514" y="548" width="412" height="238" rx="16" fill="#ffffff" stroke="#2563eb" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="966" y="548" width="568" height="238" rx="16" fill="#ffffff" stroke="#0891b2" stroke-width="1.5"/>
+
+  <text class="box-title-lg" x="88" y="580">插件组合</text>
+  <text class="small" x="88" y="602">配置决定“本次运行装入什么”</text>
+  <rect x="88" y="619" width="358" height="38" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <text class="body" x="267" y="643" text-anchor="middle">版本 → 组合配置 → AgentBundle v2</text>
+  <rect x="88" y="668" width="358" height="38" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <text class="body" x="267" y="692" text-anchor="middle">PluginHost：发现、装载、启停、回滚</text>
+  <text class="small" x="88" y="731">锁文件 / 摘要 / 来源证明，支持原子切换</text>
+  <text class="small" x="88" y="754">默认生态：DSH / Cordis；原生桥接：Codex</text>
+
+  <text class="box-title-lg" x="538" y="580">Harness 执行层</text>
+  <text class="small" x="538" y="602">稳定外壳：统一控制，不吞掉框架特性</text>
+  <rect x="538" y="619" width="364" height="46" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+  <text class="box-title" x="720" y="639" text-anchor="middle">一次 Activation 选择一个 Provider</text>
+  <text class="small" x="720" y="656" text-anchor="middle">并建立隔离的运行上下文</text>
+  <rect x="538" y="676" width="174" height="42" rx="10" fill="#ecfeff" stroke="#67e8f9"/>
+  <rect x="728" y="676" width="174" height="42" rx="10" fill="#ecfeff" stroke="#67e8f9"/>
+  <text class="small" x="625" y="701" text-anchor="middle">控制 / 工具 / 会话连续性</text>
+  <text class="small" x="815" y="701" text-anchor="middle">上下文 / 事件 / 可观测性</text>
+  <rect x="538" y="730" width="364" height="34" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text class="small" x="720" y="752" text-anchor="middle">Host 管生命周期 · Provider 管原生语义与私有状态</text>
+
+  <text class="box-title-lg" x="990" y="580">可插拔 Provider</text>
+  <text class="small" x="990" y="602">同一 Harness 契约下接入不同执行内核</text>
+  <rect x="990" y="619" width="250" height="63" rx="11" fill="#ecfeff" stroke="#0891b2"/>
+  <rect x="1258" y="619" width="250" height="63" rx="11" fill="#ecfdf5" stroke="#059669"/>
+  <rect x="990" y="698" width="250" height="63" rx="11" fill="#f5f3ff" stroke="#7c3aed"/>
+  <rect x="1258" y="698" width="250" height="63" rx="11" fill="#fffbeb" stroke="#d97706"/>
+  <text class="box-title" x="1115" y="644" text-anchor="middle">Codex 原生 Provider</text>
+  <text class="small" x="1115" y="665" text-anchor="middle">桥接原生执行与事件</text>
+  <text class="box-title" x="1383" y="644" text-anchor="middle">KsADK Harness Provider</text>
+  <text class="small" x="1383" y="665" text-anchor="middle">ADK / LangGraph 等框架族</text>
+  <text class="box-title" x="1115" y="723" text-anchor="middle">DSH / Cordis Provider</text>
+  <text class="small" x="1115" y="744" text-anchor="middle">插件生态与宿主协作</text>
+  <text class="box-title" x="1383" y="723" text-anchor="middle">SubagentProvider</text>
+  <text class="small" x="1383" y="744" text-anchor="middle">子代理路由与嵌套执行</text>
+
+  <!-- 连线说明遮罩 -->
+  <rect x="473" y="651" width="38" height="24" rx="12" fill="#ffffff" stroke="#93c5fd"/>
+  <text class="arrow-label" x="492" y="667" text-anchor="middle">装载</text>
+  <rect x="927" y="651" width="38" height="24" rx="12" fill="#ffffff" stroke="#93c5fd"/>
+  <text class="arrow-label" x="946" y="667" text-anchor="middle">选择</text>
+
+  <!-- 共用能力 -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="884" width="210" height="60" rx="12" fill="#ecfeff" stroke="#0891b2"/>
+    <rect x="302" y="884" width="210" height="60" rx="12" fill="#ecfdf5" stroke="#059669"/>
+    <rect x="540" y="884" width="210" height="60" rx="12" fill="#f5f3ff" stroke="#7c3aed"/>
+    <rect x="822" y="884" width="210" height="60" rx="12" fill="#fffbeb" stroke="#d97706"/>
+    <rect x="1060" y="884" width="210" height="60" rx="12" fill="#fff1f2" stroke="#e11d48"/>
+    <rect x="1298" y="884" width="210" height="60" rx="12" fill="#eff6ff" stroke="#2563eb"/>
   </g>
-  <g>
-    <rect x="712" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="735" cy="631" r="4" fill="#9b87f5"/>
-    <text x="750" y="636" class="small-title">记忆 + 知识库</text>
-    <text x="735" y="657" class="small-subtitle">长期上下文 · 检索</text>
-  </g>
-  <g>
-    <rect x="1034" y="610" width="334" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="1057" cy="631" r="4" fill="#38d6a5"/>
-    <text x="1072" y="636" class="small-title">可观测性</text>
-    <text x="1057" y="657" class="small-subtitle">traces · 用量 · 评估</text>
+  <rect x="718" y="849" width="136" height="28" rx="14" fill="#eff6ff" stroke="#2563eb"/>
+  <text class="arrow-label" x="786" y="868" text-anchor="middle">共用能力注入</text>
+  <rect x="1490" y="849" width="72" height="28" rx="14" fill="#fff7ed" stroke="#ea580c"/>
+  <text class="arrow-label" x="1526" y="868" text-anchor="middle">事件通道</text>
+  <g text-anchor="middle">
+    <text class="box-title" x="169" y="910">上下文与提示</text>
+    <text class="small" x="169" y="930">压缩、拼装、快照</text>
+    <text class="box-title" x="407" y="910">工具与安全</text>
+    <text class="small" x="407" y="930">策略、审批、权限</text>
+    <text class="box-title" x="645" y="910">MCP 与 Skill</text>
+    <text class="small" x="645" y="930">工具发现与能力注入</text>
+    <text class="box-title" x="927" y="910">沙箱与工作区</text>
+    <text class="small" x="927" y="930">隔离执行、文件与命令</text>
+    <text class="box-title" x="1165" y="910">记忆与知识</text>
+    <text class="small" x="1165" y="930">Memory · KnowledgeBase</text>
+    <text class="box-title" x="1403" y="910">追踪与评测</text>
+    <text class="small" x="1403" y="930">Trace · 指标 · Eval</text>
   </g>
 
-  <!-- Runtime to deployment -->
-  <path d="M720 714V744H394V760" fill="none" stroke="#6b7687" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <path d="M720 744H972V760" fill="none" stroke="#6b7687" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <rect x="650" y="720" width="140" height="18" rx="3" fill="#f8fafc"/>
-  <text x="720" y="733" class="micro" text-anchor="middle">统一运行时契约</text>
-
-  <!-- Deployment targets -->
-  <text x="44" y="780" class="section">03  随处运行</text>
-  <text x="44" y="803" class="card-subtitle">开发与部署共享同一运行时边界</text>
-
-  <g>
-    <rect x="244" y="762" width="300" height="104" rx="8" fill="#f4f8ff" stroke="#3b82f6" stroke-width="1.3"/>
-    <rect x="244" y="762" width="5" height="104" rx="2.5" fill="#3b82f6"/>
-    <text x="274" y="796" class="card-title">本地运行时</text>
-    <text x="274" y="821" class="card-subtitle">CLI · 浏览器 UI · local process</text>
-    <text x="274" y="846" class="micro">快速反馈 / 无需云端</text>
+  <!-- 统一事件链 -->
+  <path class="line-orange" d="M330 1070H365"/>
+  <path class="line-orange" d="M624 1070H659"/>
+  <path class="line-orange" d="M918 1070H953"/>
+  <path class="line-orange" d="M1212 1070H1247"/>
+  <g filter="url(#shadow)">
+    <rect x="64" y="1034" width="266" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="365" y="1034" width="259" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="659" y="1034" width="259" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="953" y="1034" width="259" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="1247" y="1034" width="287" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+  </g>
+  <g text-anchor="middle">
+    <text class="box-title" x="197" y="1062">框架事件适配</text>
+    <text class="small" x="197" y="1084">保留 Provider 原生身份</text>
+    <text class="box-title" x="494.5" y="1062">RuntimeEvent v2</text>
+    <text class="small" x="494.5" y="1084">统一事实模型</text>
+    <text class="box-title" x="788.5" y="1062">SessionEvent 日志</text>
+    <text class="small" x="788.5" y="1084">持久化与顺序保证</text>
+    <text class="box-title" x="1082.5" y="1062">投影与回放</text>
+    <text class="small" x="1082.5" y="1084">流式、聚合、断点续传</text>
+    <text class="box-title" x="1390.5" y="1062">API / Studio / 托管界面</text>
+    <text class="small" x="1390.5" y="1084">同源一致呈现</text>
   </g>
 
-  <g>
-    <rect x="576" y="762" width="792" height="104" rx="8" fill="#fff9ed" stroke="#c69333" stroke-width="1.3"/>
-    <rect x="576" y="762" width="5" height="104" rx="2.5" fill="#f5b942"/>
-    <text x="606" y="793" class="card-title">AgentEngine 托管控制面</text>
-    <text x="606" y="817" class="card-subtitle">产物 · 运行时 · 路由 · 调用 · 观测</text>
-    <g>
-      <rect x="1010" y="783" width="100" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
-      <text x="1060" y="805" class="small-title" text-anchor="middle">Serverless</text>
-      <rect x="1122" y="783" width="100" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
-      <text x="1172" y="805" class="small-title" text-anchor="middle">Hermes</text>
-      <rect x="1234" y="783" width="110" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
-      <text x="1289" y="805" class="small-title" text-anchor="middle">OpenClaw</text>
-    </g>
-    <text x="1344" y="846" class="micro" text-anchor="end">托管生命周期 + 平台服务</text>
+  <!-- 外部依赖 -->
+  <g text-anchor="middle">
+    <rect x="320" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <rect x="590" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <rect x="860" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <rect x="1130" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <text class="small" x="445" y="1192">AgentEngine 控制面</text>
+    <text class="small" x="715" y="1192">模型 / MCP / A2A 服务</text>
+    <text class="small" x="985" y="1192">Skill / Sandbox 服务</text>
+    <text class="small" x="1255" y="1192">OTLP 可观测平台</text>
   </g>
+
+  <!-- 边界与图例 -->
+  <line x1="1140" y1="1234" x2="1178" y2="1234" stroke="#2563eb" stroke-width="2.4"/>
+  <text class="small" x="1188" y="1239">主运行链路</text>
+  <line x1="1300" y1="1234" x2="1338" y2="1234" stroke="#ea580c" stroke-width="2.2"/>
+  <text class="small" x="1348" y="1239">事件事实链</text>
+  <line x1="1452" y1="1234" x2="1490" y2="1234" stroke="#64748b" stroke-width="1.8" stroke-dasharray="6 5"/>
+  <text class="small" x="1500" y="1239">外部契约</text>
 </svg>

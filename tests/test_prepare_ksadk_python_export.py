@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -94,3 +95,44 @@ def test_generated_static_files_reject_source_maps(tmp_path: Path):
         "compiled public static directory contains source artifact: "
         "ksadk/studio/static/assets/app.js.map"
     ]
+
+
+def test_export_manifest_attests_policy_without_exposing_internal_inventory(
+    tmp_path: Path,
+    monkeypatch,
+):
+    module = _load_module()
+    repo_root = tmp_path / "source"
+    repo_root.mkdir()
+    (repo_root / "README.md").write_text("public\n", encoding="utf-8")
+    plan = module.ExportPlan(
+        ok=True,
+        repo_root=str(repo_root),
+        target_repository=module.TARGET_REPOSITORY,
+        documentation=module.DOCUMENTATION_URL,
+        export_paths=["README.md"],
+        excluded_paths=["docs/internal/private-plan.md"],
+        violations=[],
+    )
+    monkeypatch.setattr(
+        module,
+        "git_source_provenance",
+        lambda _root: ("a" * 40, "clean"),
+    )
+
+    output_dir = tmp_path / "public"
+    module.copy_export(plan, output_dir)
+    manifest = json.loads(
+        (output_dir / "export-manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["schemaVersion"] == 1
+    assert manifest["sourceCommit"] == "a" * 40
+    assert manifest["sourceTree"] == "clean"
+    assert manifest["exportPathCount"] == 1
+    assert manifest["exportPolicy"]["mode"] == "allowlist"
+    assert manifest["exportPolicy"]["sha256"].isalnum()
+    assert "excludedPaths" not in manifest
+    assert "excludedPathCount" not in manifest
+    assert "includePolicy" not in manifest
+    assert "private-plan" not in json.dumps(manifest)

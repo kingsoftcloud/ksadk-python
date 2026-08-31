@@ -394,6 +394,7 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
 
 
 def test_public_ci_runs_gitleaks_and_documents_branch_protection():
+    ci_workflow = _read(".github/workflows/ci.yml")
     secret_workflow = _read(".github/workflows/secret-patterns.yml")
     branch_protection = _read(".github/BRANCH_PROTECTION.md")
     approval_record = _read("docs/maintainer-approval-record.md")
@@ -402,7 +403,11 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" in secret_workflow
     assert "/tmp/gitleaks detect --source ." in secret_workflow
     assert "fetch-depth: 0" in secret_workflow
-    assert "python3 scripts/open_source_audit.py --target public-repo" in secret_workflow
+    for workflow in (ci_workflow, secret_workflow):
+        assert "if [ -f export-manifest.json ]" in workflow
+        assert "scripts/prepare_ksadk_python_export.py" in workflow
+        assert '--root "$audit_root"' in workflow
+        assert "--target public-repo" in workflow
     assert "Require a pull request before merging" in branch_protection
     assert "CI / test" in branch_protection
     assert "Secret Pattern Audit / scan" in branch_protection
