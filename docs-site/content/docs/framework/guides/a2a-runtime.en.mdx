@@ -10,14 +10,12 @@ application simply by setting an environment variable or creating an HTTP client
 
 ## Protocol compatibility and Agent Card
 
-Because `0.8.0` is still a release candidate, its A2A target contract is
-[`a2aproject/A2A`'s `main/docs/specification.md`](https://github.com/a2aproject/A2A/blob/main/docs/specification.md).
-That document makes `specification/a2a.proto` in the same repository the
-normative source of the data model. KsADK pins `a2a-sdk==1.1.0`; its protobuf
-fields for `AgentCard`, `AgentInterface`, `AgentCapabilities`, and
-`SecurityRequirement` match the current main definitions. If upstream main
-changes before release, we must first upgrade the SDK or adapt the implementation
-and update the contract test—not merely change these docs.
+KsADK 0.8.3 fixes its A2A wire contract at A2A 1.0 and pins
+`a2a-sdk==1.1.0` exactly. `AgentCard`, `AgentInterface`,
+`AgentCapabilities`, and `SecurityRequirement` use the protobuf types supplied
+by that SDK. Compatibility is governed by the pinned dependency and repository
+contract tests, not a floating upstream `main`. A protocol upgrade must update
+the SDK, implementation, and contract tests together—not merely these docs.
 
 This is not a KsADK JSON dialect. Each `supportedInterfaces[]` entry uses `url`,
 `protocolBinding`, and `protocolVersion`, and discovery uses
@@ -67,9 +65,9 @@ those fields when it has no real values to declare.
 }
 ```
 
-The current main schema has the following core fields and KsADK behavior:
+The pinned `a2a-sdk==1.1.0` Card schema has the following core fields and KsADK behavior:
 
-| main-schema field | KsADK behavior |
+| A2A 1.0 field | KsADK behavior |
 | --- | --- |
 | `name`, `description`, `version` | Produced from `a2a card` arguments or project detection |
 | `supportedInterfaces` | Declares JSON-RPC then HTTP+JSON, each at protocol `1.0` |
@@ -79,7 +77,7 @@ The current main schema has the following core fields and KsADK behavior:
 | Optional fields such as `securityRequirements` | Produced only when the managed Gateway/identity layer has a real contract; a local minimal Card never invents authentication claims |
 
 The repository test reparses the output through the pinned SDK protobuf and
-asserts that no pre-main legacy Card fields escape. This is a schema gate for the
+asserts that no pre-A2A-1.0 legacy Card fields escape. This is a schema gate for the
 release candidate; it deliberately does not treat optional provider or security
 values in an illustrative official Card as mandatory for every Agent.
 
