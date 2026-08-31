@@ -334,6 +334,33 @@ def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
     assert checkpoint_capability["SharedAcrossPods"] is True
 
 
+@pytest.mark.asyncio
+async def test_adk_capability_preparation_uses_database_without_loading_agent(
+    monkeypatch, tmp_path
+):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    session_service = SimpleNamespace(degraded=False)
+    short_term_memory = SimpleNamespace(
+        backend="database", session_service=session_service
+    )
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    monkeypatch.setenv("KSADK_ADK_RESUMABLE", "1")
+    monkeypatch.setattr(runner, "_init_short_term_memory", lambda: short_term_memory)
+    monkeypatch.setattr(runner, "_check_adk_resume_compatibility", lambda: (True, ""))
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner._agent is None
+    assert runner._module is None
+    assert runner._short_term_memory is short_term_memory
+    capabilities = runner.get_runtime_capabilities()
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["SharedAcrossPods"] is True
+    assert capabilities["ResumeRun"]["Supported"] is True
+    assert capabilities["ResumeRun"]["ResumeMode"] == "invocation_id"
+
+
 def test_adk_runner_does_not_advertise_sqlite_resume_across_pods(tmp_path):
     from ksadk.runners.adk_runner import ADKRunner
 

@@ -442,7 +442,7 @@ async def test_ui_bootstrap_disables_checkpoint_controls_when_runner_does_not_su
 
 
 @pytest.mark.asyncio
-async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(monkeypatch):
+async def test_ui_bootstrap_gates_checkpoint_controls_when_persistence_is_unavailable(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
@@ -459,10 +459,10 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
 
     assert response.status_code == 200
     capabilities = response.json()["Data"]["Capabilities"]
-    assert capabilities["CheckpointResumeCapability"]["Supported"] is True
-    assert capabilities["RunLifecycle"]["Checkpoints"] is True
-    assert capabilities["RunLifecycle"]["CheckpointResume"] is True
-    assert capabilities["RunLifecycle"]["CheckpointResumePreview"] is True
+    assert capabilities["CheckpointResumeCapability"]["Supported"] is False
+    assert capabilities["RunLifecycle"]["Checkpoints"] is False
+    assert capabilities["RunLifecycle"]["CheckpointResume"] is False
+    assert capabilities["RunLifecycle"]["CheckpointResumePreview"] is False
 
 
 @pytest.mark.asyncio

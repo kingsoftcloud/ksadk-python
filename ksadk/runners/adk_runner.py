@@ -298,6 +298,27 @@ class ADKRunner(BaseRunner):
     def get_session_adapter(self):
         return ADKSessionAdapter()
 
+    async def prepare_runtime_capabilities(self) -> None:
+        """Prepare persistence-backed capability state without importing user code."""
+
+        if self._short_term_memory is None:
+            self._short_term_memory = self._init_short_term_memory()
+        if self._short_term_memory is not None and self._session_service is None:
+            self._session_service = getattr(
+                self._short_term_memory, "session_service", None
+            )
+        resumable = self._resolve_resumability()
+        self._resume_disabled_reason = None
+        self._resume_disabled_reason_code = None
+        if resumable.enabled:
+            compatible, reason = self._check_adk_resume_compatibility()
+            if not compatible:
+                self._resumable = False
+                self._resume_disabled_reason = reason
+                self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
+                return
+        self._resumable = resumable.enabled
+
     async def refresh_runtime_capabilities(self) -> None:
         await super().refresh_runtime_capabilities()
         session_service = (
@@ -1001,7 +1022,8 @@ class ADKRunner(BaseRunner):
             raise TypeError("加载的对象不是有效的 ADK Agent")
 
         # 初始化记忆体 (从环境变量读取配置)
-        self._short_term_memory = self._init_short_term_memory()
+        if self._short_term_memory is None:
+            self._short_term_memory = self._init_short_term_memory()
         self._long_term_memory = self._init_long_term_memory()
 
         # 初始化知识库 (从环境变量读取配置)

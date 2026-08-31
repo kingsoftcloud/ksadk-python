@@ -6,8 +6,8 @@ from ksadk.agui.config import AGUIConfig
 from ksadk.runtime.adapter import RuntimeLaunchContext, RuntimeRegistry
 from ksadk.runtime.executor import RuntimeExecutor
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+from ksadk.server.composition import configure_runtime_app
 from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
-from ksadk.server.routes.routers import ui_bootstrap_router
 
 
 class _Runner:
@@ -52,9 +52,9 @@ def test_bootstrap_advertises_agui_only_when_endpoint_is_enabled():
             launch_context=launch_context,
             agui=AGUIConfig(enabled=True, agent_name="agent"),
             route_groups={"ui_bootstrap", "agui"},
-        )
+        ),
+        configure_runtime_app,
     )
-    app.include_router(ui_bootstrap_router)
     response = TestClient(app).post(
         "/agentengine/api/v1/GetAgentUiBootstrap",
         json={"AgentId": "agent", "UserId": "user", "SessionId": "s1"},
@@ -79,9 +79,9 @@ def test_bootstrap_falls_back_to_responses_without_agui():
             runtime_executor=executor,
             launch_context=launch_context,
             route_groups={"ui_bootstrap"},
-        )
+        ),
+        configure_runtime_app,
     )
-    app.include_router(ui_bootstrap_router)
     response = TestClient(app).post(
         "/agentengine/api/v1/GetAgentUiBootstrap",
         json={"AgentId": "agent", "UserId": "user", "SessionId": "s1"},
@@ -109,9 +109,9 @@ def test_bootstrap_does_not_advertise_agui_interrupt_without_runtime_checkpoint(
             launch_context=launch_context,
             agui=AGUIConfig(enabled=True, agent_name="agent"),
             route_groups={"ui_bootstrap", "agui"},
-        )
+        ),
+        configure_runtime_app,
     )
-    app.include_router(ui_bootstrap_router)
 
     response = TestClient(app).post(
         "/agentengine/api/v1/GetAgentUiBootstrap",
@@ -127,7 +127,7 @@ def test_bootstrap_does_not_advertise_agui_interrupt_without_runtime_checkpoint(
     }
 
 
-def test_lifespan_refreshes_capability_only_after_lazy_runner_load():
+def test_bootstrap_refreshes_capability_without_loading_lazy_runner():
     calls = []
 
     class _LazyRunner(_Runner):
@@ -136,13 +136,17 @@ def test_lifespan_refreshes_capability_only_after_lazy_runner_load():
             self.loaded = True
 
         async def refresh_runtime_capabilities(self):
-            assert self.loaded is True
             calls.append("refresh")
 
+    executor, launch_context = _execution_for(_LazyRunner())
     app = create_runtime_app(
-        RuntimeAppConfig(runner=_LazyRunner(), route_groups={"ui_bootstrap"})
+        RuntimeAppConfig(
+            runtime_executor=executor,
+            launch_context=launch_context,
+            route_groups={"ui_bootstrap"},
+        ),
+        configure_runtime_app,
     )
-    app.include_router(ui_bootstrap_router)
 
     with TestClient(app) as client:
         response = client.post(
@@ -151,4 +155,4 @@ def test_lifespan_refreshes_capability_only_after_lazy_runner_load():
         )
 
     assert response.status_code == 200
-    assert calls == ["load", "refresh"]
+    assert calls == ["refresh"]

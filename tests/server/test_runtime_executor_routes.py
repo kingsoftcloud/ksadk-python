@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.conversations.runtime_persistence import append_run_checkpoint_event
@@ -19,6 +20,7 @@ from ksadk.events.canonical import (
 )
 from ksadk.events.content import TextContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -31,6 +33,7 @@ from ksadk.runtime import (
     RuntimeRegistry,
     StartRequest,
 )
+from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 from ksadk.server.composition import configure_runtime_app
 from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -298,8 +301,190 @@ def test_ui_bootstrap_uses_launch_context_and_runtime_capabilities() -> None:
         },
         "goal": None,
         "loop": None,
-        "plan": None,
+            "plan": None,
+            "interaction_mode": "unavailable",
+        }
+
+
+def test_ui_bootstrap_reuses_capability_runner_and_exposes_persistence_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[_CapabilityRunner] = []
+
+    class _CapabilityRunner:
+        detection_result = type(
+            "Detection", (), {"name": "probe-agent", "type": type("Type", (), {"value": "adk"})()}
+        )()
+
+        def __init__(self) -> None:
+            self.prepare_calls = 0
+            self.load_calls = 0
+            self.close_calls = 0
+
+        def load_agent(self) -> None:
+            self.load_calls += 1
+
+        async def prepare_runtime_capabilities(self) -> None:
+            self.prepare_calls += 1
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+        def describe_checkpoint_capability(self) -> dict[str, object]:
+            return dict(self.get_runtime_capabilities()["Checkpoint"])
+
+        def get_runtime_capabilities(self) -> dict[str, object]:
+            prepared = self.prepare_calls > 0
+            return {
+                "Framework": "adk",
+                "CancelRun": {"Supported": True},
+                "Checkpoint": {
+                    "Supported": prepared,
+                    "Backend": "adk_invocation+postgres",
+                    "Scope": "invocation",
+                    "Durable": True,
+                    "SharedAcrossPods": True,
+                    "ResumeMode": "invocation_id",
+                    "Reason": "",
+                },
+                "ResumeRun": {
+                    "Supported": prepared,
+                    "ResumeMode": "invocation_id",
+                    "Reason": "",
+                },
+            }
+
+    def adapter_factory(_context: RuntimeLaunchContext) -> RunnerRuntimeAdapter:
+        runner = _CapabilityRunner()
+        created.append(runner)
+        return RunnerRuntimeAdapter(runner, runtime_type="adk")
+
+    async def ready_status(*, framework=None, use_cache=True):
+        assert framework == "adk"
+        return {
+            "Session": {
+                "Configured": True,
+                "Status": "ready",
+                "Ready": True,
+                "Backend": "postgres",
+                "SharedAcrossPods": True,
+                "Source": "explicit",
+                "ReasonCode": "READY",
+                "Reason": "",
+            },
+            "Checkpoint": {
+                "Configured": True,
+                "Status": "ready",
+                "Ready": True,
+                "Backend": "postgres",
+                "SharedAcrossPods": True,
+                "Source": "explicit",
+                "ReasonCode": "READY",
+                "Reason": "",
+            },
+        }
+
+    monkeypatch.setattr(
+        "ksadk.sessions.persistence.get_persistence_status", ready_status
+    )
+    registry = RuntimeRegistry()
+    registry.register("adk", adapter_factory)
+    app = create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=RuntimeExecutor(registry),
+            launch_context=RuntimeLaunchContext(
+                runtime_type="adk",
+                project_dir=".",
+                detection=_CapabilityRunner.detection_result,
+            ),
+            route_groups={"ui_bootstrap"},
+            session_service_provider=InMemorySessionService,
+        ),
+        configure_runtime_app,
+    )
+
+    with TestClient(app) as client:
+        first = client.post("/agentengine/api/v1/GetAgentUiBootstrap", json={})
+        second = client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"SessionId": "session-without-history"},
+        )
+
+    assert first.status_code == second.status_code == 200
+    for response in (first, second):
+        capabilities = response.json()["Data"]["Capabilities"]
+        assert capabilities["ResumeRun"] is True
+        assert capabilities["Persistence"]["Ready"] is True
+        assert capabilities["CheckpointPersistence"]["Ready"] is True
+        assert capabilities["RuntimeCapabilityMatrix"]["resume"]["supported"] is True
+    assert len(created) == 1
+    assert created[0].prepare_calls == 1
+    assert created[0].load_calls == 0
+    assert created[0].close_calls == 1
+
+
+def test_ui_bootstrap_projects_native_runtime_matrix_to_legacy_resume_fields() -> None:
+    class _NativeRuntime(BaseRuntime):
+        runtime_type = "codex"
+
+        def native_capabilities(self) -> dict[str, object]:
+            return {
+                "Framework": "codex",
+                "resume": "thread_id",
+                "checkpoint": "thread_snapshot",
+            }
+
+    class _NativeAdapter(_Adapter):
+        def __init__(self) -> None:
+            RuntimeAdapter.__init__(self, _NativeRuntime())
+
+        def capabilities(self) -> RuntimeCapabilityMatrix:
+            unavailable = RuntimeCapability(
+                supported=False, mode="unavailable", reason="not_supported"
+            )
+            return RuntimeCapabilityMatrix(
+                cancel=RuntimeCapability(supported=True, mode="native"),
+                pause=RuntimeCapability(supported=True, mode="native"),
+                resume=RuntimeCapability(supported=True, mode="native"),
+                submit_interaction=unavailable,
+                attach=unavailable,
+                steer=unavailable,
+                inject=unavailable,
+                checkpoint=RuntimeCapability(supported=True, mode="native"),
+                durable_restore=unavailable,
+                interaction_mode="live_submit",
+            )
+
+    adapter = _NativeAdapter()
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: adapter)
+    app = create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=RuntimeExecutor(registry),
+            launch_context=RuntimeLaunchContext(
+                runtime_type="codex",
+                project_dir=".",
+                detection=type("Detection", (), {"name": "codex-agent"})(),
+            ),
+            route_groups={"ui_bootstrap"},
+            session_service_provider=InMemorySessionService,
+        ),
+        configure_runtime_app,
+    )
+
+    response = TestClient(app).post(
+        "/agentengine/api/v1/GetAgentUiBootstrap", json={}
+    )
+
+    assert response.status_code == 200
+    capabilities = response.json()["Data"]["Capabilities"]
+    assert capabilities["ResumeRun"] is True
+    assert capabilities["CheckpointResumeCapability"]["ResumeRun"] == {
+        "Supported": True,
+        "ResumeMode": "native",
+        "Reason": "",
     }
+    assert capabilities["RuntimeCapabilityMatrix"]["durable_restore"]["supported"] is False
 
 
 def test_openai_responses_stream_stays_attached_to_app_owned_runtime() -> None:

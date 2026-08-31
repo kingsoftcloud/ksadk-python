@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from types import SimpleNamespace
 
 import httpx
 import pytest
+
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry
+from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
+from ksadk.sessions.in_memory import InMemorySessionService
 
 
 @pytest.mark.asyncio
@@ -429,13 +434,36 @@ class _PostgresCheckpointRunner:
         }
 
 
+def _bootstrap_app(monkeypatch, runner, persistence_status):
+    monkeypatch.setattr(
+        "ksadk.sessions.persistence.get_persistence_status", persistence_status
+    )
+    registry = RuntimeRegistry()
+    registry.register(
+        "langgraph",
+        lambda _context: RunnerRuntimeAdapter(runner, runtime_type="langgraph"),
+    )
+    return create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=RuntimeExecutor(registry),
+            launch_context=RuntimeLaunchContext(
+                runtime_type="langgraph",
+                project_dir=".",
+                detection=runner.detection_result,
+            ),
+            route_groups={"ui_bootstrap"},
+            session_service_provider=InMemorySessionService,
+        ),
+        configure_runtime_app,
+    )
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_exposes_independent_checkpoint_status_and_gates_resume(
     monkeypatch,
 ):
     """Catch bootstrap treating a ready Session store as a ready checkpoint store."""
-    server_app_module = importlib.import_module("ksadk.server.app")
-    server_app_module.set_runner(_PostgresCheckpointRunner())
+    runner = _PostgresCheckpointRunner()
     observed_frameworks = []
 
     async def persistence_status(*, framework=None):
@@ -465,9 +493,9 @@ async def test_bootstrap_exposes_independent_checkpoint_status_and_gates_resume(
             },
         }
 
-    monkeypatch.setattr(server_app_module, "get_persistence_status", persistence_status)
+    app = _bootstrap_app(monkeypatch, runner, persistence_status)
 
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",
@@ -547,8 +575,7 @@ def test_persistence_gate_identifies_session_fallback_as_blocker():
 
 @pytest.mark.asyncio
 async def test_bootstrap_disables_checkpoint_when_postgres_is_not_configured(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    server_app_module.set_runner(_PostgresCheckpointRunner())
+    runner = _PostgresCheckpointRunner()
 
     async def not_configured(*, framework=None):
         return {
@@ -562,9 +589,9 @@ async def test_bootstrap_disables_checkpoint_when_postgres_is_not_configured(mon
             "Reason": "PostgreSQL persistence is not configured",
         }
 
-    monkeypatch.setattr(server_app_module, "get_persistence_status", not_configured)
+    app = _bootstrap_app(monkeypatch, runner, not_configured)
 
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",
@@ -582,8 +609,7 @@ async def test_bootstrap_disables_checkpoint_when_postgres_is_not_configured(mon
 
 @pytest.mark.asyncio
 async def test_bootstrap_disables_checkpoint_when_configured_postgres_is_not_ready(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    server_app_module.set_runner(_PostgresCheckpointRunner())
+    runner = _PostgresCheckpointRunner()
 
     async def not_ready(*, framework=None):
         return {
@@ -597,9 +623,9 @@ async def test_bootstrap_disables_checkpoint_when_configured_postgres_is_not_rea
             "Reason": "PostgreSQL persistence is unreachable",
         }
 
-    monkeypatch.setattr(server_app_module, "get_persistence_status", not_ready)
+    app = _bootstrap_app(monkeypatch, runner, not_ready)
 
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",
@@ -620,8 +646,6 @@ async def test_bootstrap_disables_checkpoint_when_configured_postgres_is_not_rea
 
 @pytest.mark.asyncio
 async def test_bootstrap_awaits_runner_capability_preparation(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
     class _PreparingRunner(_PostgresCheckpointRunner):
         prepared = False
 
@@ -635,7 +659,6 @@ async def test_bootstrap_awaits_runner_capability_preparation(monkeypatch):
             return capabilities
 
     active_runner = _PreparingRunner()
-    server_app_module.set_runner(active_runner)
 
     async def ready(*, framework=None):
         return {
@@ -649,8 +672,8 @@ async def test_bootstrap_awaits_runner_capability_preparation(monkeypatch):
             "Reason": "",
         }
 
-    monkeypatch.setattr(server_app_module, "get_persistence_status", ready)
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    app = _bootstrap_app(monkeypatch, active_runner, ready)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",
@@ -663,9 +686,7 @@ async def test_bootstrap_awaits_runner_capability_preparation(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bootstrap_capability_recovers_without_restarting_app(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
     runner = _PostgresCheckpointRunner()
-    server_app_module.set_runner(runner)
     ready = False
 
     async def changing_status(*, framework=None, use_cache=True):
@@ -691,14 +712,14 @@ async def test_bootstrap_capability_recovers_without_restarting_app(monkeypatch)
             },
         }
 
-    monkeypatch.setattr(server_app_module, "get_persistence_status", changing_status)
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    app = _bootstrap_app(monkeypatch, runner, changing_status)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         first = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap", json={"AgentId": "demo-agent"}
         )
         ready = True
-        server_app_module.app.state.runtime.persistence_capability._snapshot = None
+        app.state.runtime.persistence_capability._snapshot = None
         second = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap", json={"AgentId": "demo-agent"}
         )

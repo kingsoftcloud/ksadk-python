@@ -213,12 +213,12 @@ def configure_local_runtime_persistence(
         os.environ["AGENTENGINE_UI_DIR"] = local_ui_dir
     else:
         os.environ.setdefault("AGENTENGINE_UI_DIR", local_ui_dir)
-    _default_project_stm_if_unset(
-        framework,
-        agent_path,
-        explicit_session_env_names=explicit_session_env_names,
-        explicit_checkpoint_env_names=explicit_checkpoint_env_names,
-    )
+    # _default_project_stm_if_unset(
+    #     framework,
+    #     agent_path,
+    #     explicit_session_env_names=explicit_session_env_names,
+    #     explicit_checkpoint_env_names=explicit_checkpoint_env_names,
+    # )
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
