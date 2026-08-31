@@ -971,6 +971,35 @@ def test_a2ui_data_lifecycle_and_interaction_use_typed_context_refs() -> None:
     assert all(event.payload["surface_id"] == "surface-1" for event in projected)
 
 
+def test_a2ui_operation_batch_completion_does_not_project_surface_end() -> None:
+    source = A2UI_SOURCE.model_copy(
+        update={
+            "metadata": {
+                "surface_id": "surface-1",
+                "operation_batch": True,
+                "surface_lifecycle": "begin",
+            }
+        }
+    )
+    context = _context(
+        a2ui_surfaces={
+            ("scope-1", "surface-batch"): A2UISurfaceProjectionRef(
+                surface_id="surface-1", catalog="basic"
+            )
+        }
+    )
+    completed = ItemCompleted(
+        **_envelope(45, source=source),
+        item_id="surface-batch",
+        item_kind="data",
+        snapshot=ContentSnapshot(
+            parts=(DataContent(part_id="a2ui-ops", data=[{"createSurface": {}}]),)
+        ),
+    )
+
+    assert project_to_v1(completed, context=context) == ()
+
+
 def test_a2ui_protocol_item_with_missing_surface_identity_is_rejected() -> None:
     event = ItemStarted(
         **_envelope(45, source=A2UI_SOURCE),

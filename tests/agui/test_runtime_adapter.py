@@ -11,6 +11,7 @@ from ag_ui_a2ui_toolkit import A2UI_SCHEMA_CONTEXT_DESCRIPTION
 from fastapi import FastAPI
 
 import ksadk.runtime as runtime_api
+from ksadk.agui._agent_helpers import a2ui_operations as project_agui_a2ui_operations
 from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.agui.agent import KsadkAGUIAgent
 from ksadk.agui.config import AGUIConfig
@@ -40,6 +41,7 @@ from ksadk.events.content import (
     ToolCallContent,
     ToolResultContent,
 )
+from ksadk.events.reducer import StreamReducer
 from ksadk.events.store import RuntimeEventStore, runtime_event_to_session_event
 from ksadk.runtime.adapter import (
     BaseRuntime,
@@ -517,6 +519,43 @@ async def test_runner_runtime_adapter_projects_a2ui_tool_envelope_as_canonical_s
     assert surface.source.metadata["surface_id"] == "component-status"
     operations = surface.initial.parts[0].data
     assert operations[1]["updateComponents"]["components"][0]["id"] == "root"
+    completed_surface = next(
+        event
+        for event in events
+        if isinstance(event, ItemCompleted)
+        and event.item_kind == "data"
+        and event.item_id == surface.item_id
+    )
+    assert project_agui_a2ui_operations(surface, "component-status") == operations
+    assert project_agui_a2ui_operations(completed_surface, "component-status") == []
+
+    serialized = []
+    for event in events:
+        stored = runtime_event_to_session_event("s", event)
+        serialized.append(
+            {
+                "EventId": stored.id,
+                "EventType": stored.event_type,
+                "Content": stored.content,
+                "Metadata": stored.metadata,
+                "Timestamp": stored.timestamp,
+                "SeqId": stored.seq_id,
+                "InvocationId": stored.invocation_id,
+            }
+        )
+    messages = project_session_messages(serialized)
+    activities = [
+        activity
+        for message in messages
+        for activity in message.get("Activities", [])
+    ]
+    assert len(activities) == 1
+    assert activities[0]["Content"]["a2ui_operations"] == operations
+
+    reducer = StreamReducer()
+    for event in events:
+        reducer.apply(event)
+    assert reducer.snapshot().status == "completed"
 
 
 @pytest.mark.asyncio
