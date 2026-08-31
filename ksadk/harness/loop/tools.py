@@ -46,6 +46,7 @@ class ApprovalResolver(Protocol):
 
 #: 按调用参数动态判定是否需审批（P0.1：MCP 按实际目标 Server 风险决策）。
 ApprovalDecider = Callable[[str, dict[str, Any]], bool]
+ParallelSafeDecider = Callable[[str, dict[str, Any]], bool]
 
 
 #: 同步审批解析器（适合 LangGraph interrupt 同步语义）。
@@ -108,6 +109,10 @@ class ToolCallInput:
     #: 按调用参数的动态审批决策（P0.1）：对静态集合与 Policy 决策都是
     #: 追加约束——decider 返回 True 则必须审批，即使 Policy 判 allow。
     approval_decider: ApprovalDecider | None = None
+    #: 仅当整批调用都被宿主判定为无副作用、无需审批时并行执行。
+    #: 默认关闭，避免改变普通 Tool 的既有顺序与 Receipt 语义。
+    parallel_safe_decider: ParallelSafeDecider | None = None
+    max_parallelism: int = 1
     tenant_id: str = "default"
 
 
@@ -138,6 +143,9 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
     - 失败韧性（§7.2）：单工具抛错不终止 Run，记 error 事件 + 失败消息后继续。
     - asyncio.CancelledError 原样抛出（cancel 语义，由引擎处理）。
     """
+    if _parallel_batch_allowed(inp):
+        return await _execute_parallel_batch(inp)
+
     out = ToolCallOutput(working_context=inp.working_context)
     seq = inp.seq_start
     runtime = inp.capability_runtime
@@ -378,6 +386,131 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
     return out
 
 
+def _parallel_batch_allowed(inp: ToolCallInput) -> bool:
+    """只为明确标记的无审批、无 Receipt 批次启用并行。"""
+    if (
+        len(inp.pending_tool_calls) < 2
+        or inp.max_parallelism < 2
+        or inp.parallel_safe_decider is None
+        or inp.capability_runtime is not None
+    ):
+        return False
+    for pending in inp.pending_tool_calls:
+        name = pending["name"]
+        arguments = pending["arguments"]
+        if name in inp.approval_required:
+            return False
+        if inp.approval_decider is not None and inp.approval_decider(name, arguments):
+            return False
+        if not inp.parallel_safe_decider(name, arguments):
+            return False
+    return True
+
+
+async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
+    """并行执行一批只读调用，按原输入顺序生成确定性事件与消息。"""
+    semaphore = asyncio.Semaphore(inp.max_parallelism)
+
+    async def invoke_one(pending: dict[str, Any]) -> tuple[Any | None, Exception | None]:
+        async with semaphore:
+            try:
+                value = await _invoke(
+                    inp.tool_executor,
+                    pending["name"],
+                    pending["arguments"],
+                    context=ToolExecutionContext(
+                        run_id=inp.run_id,
+                        call_id=pending["call_id"],
+                    ),
+                )
+                return value, None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                return None, exc
+
+    results = await asyncio.gather(*(invoke_one(pending) for pending in inp.pending_tool_calls))
+    out = ToolCallOutput(working_context=inp.working_context)
+    seq = inp.seq_start
+    for pending, (result, error) in zip(inp.pending_tool_calls, results, strict=True):
+        call_id, name, arguments = (
+            pending["call_id"],
+            pending["name"],
+            pending["arguments"],
+        )
+        reliability_payload = _resolve_reliability(inp, name, arguments).to_event_payload()
+        seq += 1
+        out.events.append(
+            _event(
+                EventType.TOOL_CALL_BEGIN,
+                inp,
+                seq,
+                {
+                    "call_id": call_id,
+                    "name": name,
+                    "args": arguments,
+                    "parallel": True,
+                    "reliability": reliability_payload,
+                },
+            )
+        )
+        seq += 1
+        if error is not None:
+            error_text = f"{type(error).__name__}: {error}"
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_END,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": error_text,
+                        "parallel": True,
+                        "receipt_committed": False,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            result_text = f"[error] {error_text}"
+            if out.working_context is not None:
+                out.working_context = record_tool_failure(
+                    out.working_context, name=name, error=error_text
+                )
+        else:
+            result_text = (
+                result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            )
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_END,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "result": result,
+                        "parallel": True,
+                        "receipt_committed": False,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            if out.working_context is not None:
+                out.working_context = record_tool_result(
+                    out.working_context, name=name, result_text=result_text
+                )
+        out.new_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": name,
+                "content": result_text,
+            }
+        )
+    return out
+
+
 def _resolve_reliability(
     inp: ToolCallInput,
     name: str,
@@ -441,5 +574,6 @@ __all__ = [
     "ToolExecuteFn",
     "ToolExecutor",
     "ToolExecutionContext",
+    "ParallelSafeDecider",
     "execute_tool_calls",
 ]

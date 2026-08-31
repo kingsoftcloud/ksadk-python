@@ -19,6 +19,7 @@ from ksadk.harness.loop.reason import (
 from ksadk.harness.loop.tools import (
     ApprovalResolver,
     ContextualToolExecutor,
+    ParallelSafeDecider,
     ToolCallInput,
     ToolCallOutput,
     ToolExecutionContext,
@@ -30,6 +31,7 @@ __all__ = [
     "ApprovalResolver",
     "ContextualToolExecutor",
     "ModelFailoverExhausted",
+    "ParallelSafeDecider",
     "ReasonInput",
     "ReasonOutput",
     "ReasoningLimitError",

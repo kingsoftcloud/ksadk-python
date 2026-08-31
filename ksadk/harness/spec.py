@@ -162,6 +162,17 @@ class SubAgentBinding(_SpecModel):
     description: str = Field(default="", max_length=1024)
     #: 允许使用的工具名（空 = 纯文本推理）。
     tools: tuple[str, ...] = Field(default=(), max_length=64)
+    #: 单次委派的墙钟超时；防止子 Agent 阻塞父 Run。
+    timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    #: 子 Agent 自己可执行的最大模型轮数，独立于父 Agent。
+    max_turns: int = Field(default=4, ge=1, le=32)
+    #: ``propagate`` 将失败作为 Tool error 回流父 Agent；``return_error``
+    #: 返回结构化失败文本，适合可选审查/检索子任务。
+    failure_policy: str = Field(default="propagate", pattern=r"^(propagate|return_error)$")
+    #: Skill 属于只读知识能力，默认继承；MCP 默认不继承，避免子 Agent
+    #: 在未显式授权时扩大外部系统访问面。
+    inherit_skills: bool = True
+    inherit_mcp: bool = False
 
 
 class ExecutionStrategyKind(str, Enum):

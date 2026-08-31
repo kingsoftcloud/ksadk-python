@@ -96,6 +96,11 @@ class SubAgentInput(_RevisionInputModel):
     instructions: str
     description: str = ""
     tools: tuple[str, ...] = ()
+    timeout_seconds: float = 120.0
+    max_turns: int = 4
+    failure_policy: str = "propagate"
+    inherit_skills: bool = True
+    inherit_mcp: bool = False
 
 
 class HarnessRevisionInput(_RevisionInputModel):
@@ -195,6 +200,11 @@ def compile_revision_to_spec(
             instructions=sub.instructions,
             description=sub.description,
             tools=tuple(sub.tools),
+            timeout_seconds=sub.timeout_seconds,
+            max_turns=sub.max_turns,
+            failure_policy=sub.failure_policy,
+            inherit_skills=sub.inherit_skills,
+            inherit_mcp=sub.inherit_mcp,
         )
         for sub in spec.sub_agents
     )

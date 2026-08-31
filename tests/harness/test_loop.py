@@ -350,3 +350,76 @@ def test_multiple_tools_partial_failure_continues():
     assert out.new_messages[1]["content"].startswith("[error]")
     # 失败工具记入 recent_tool_failures
     assert any("boom" in f for f in out.working_context.recent_tool_failures)
+
+
+def test_explicitly_safe_tools_run_in_parallel_with_deterministic_events():
+    """只有宿主显式标记安全的批次并行，事件仍按模型调用顺序输出。"""
+
+    class _BarrierExec:
+        def __init__(self) -> None:
+            self.entered = 0
+            self.all_entered = asyncio.Event()
+
+        async def execute(self, name, arguments):  # type: ignore[no-untyped-def]
+            self.entered += 1
+            if self.entered == 2:
+                self.all_entered.set()
+            await asyncio.wait_for(self.all_entered.wait(), timeout=0.2)
+            return f"done:{name}"
+
+    out = _run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=[
+                    {"call_id": "first", "name": "worker-a", "arguments": {}},
+                    {"call_id": "second", "name": "worker-b", "arguments": {}},
+                ],
+                approval_required=frozenset(),
+                approval_resolver=None,
+                tool_executor=_BarrierExec(),
+                parallel_safe_decider=lambda _name, _arguments: True,
+                max_parallelism=2,
+            )
+        )
+    )
+
+    assert [message["tool_call_id"] for message in out.new_messages] == ["first", "second"]
+    assert [event.payload["call_id"] for event in out.events] == [
+        "first",
+        "first",
+        "second",
+        "second",
+    ]
+    assert all(event.payload["parallel"] is True for event in out.events)
+
+
+def test_approval_requirement_disables_parallel_execution():
+    """任何审批约束存在时都回到原有串行语义。"""
+
+    class _OrderExec:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def execute(self, name, arguments):  # type: ignore[no-untyped-def]
+            self.calls.append(name)
+            return name
+
+    executor = _OrderExec()
+    out = _run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=[
+                    {"call_id": "1", "name": "safe", "arguments": {}},
+                    {"call_id": "2", "name": "guarded", "arguments": {}},
+                ],
+                approval_required=frozenset({"guarded"}),
+                approval_resolver=None,
+                tool_executor=executor,
+                parallel_safe_decider=lambda _name, _arguments: True,
+                max_parallelism=2,
+            )
+        )
+    )
+
+    assert executor.calls == ["safe", "guarded"]
+    assert all("parallel" not in event.payload for event in out.events)

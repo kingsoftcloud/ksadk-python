@@ -101,6 +101,8 @@ class _EngineRun:
     skill_catalog: tuple[dict[str, str], ...] = ()
     #: Revision 绑定的 Level 0 MCP Server 目录（名称/描述/风险等级）。
     mcp_catalog: tuple[dict[str, str], ...] = ()
+    #: 本 Revision 的子 Agent 工具；Run 级冻结，避免多 Spec 并发串配置。
+    sub_agents: dict[str, Any] = field(default_factory=dict)
 
 
 class ManagedLangGraphEngine:
@@ -124,6 +126,7 @@ class ManagedLangGraphEngine:
         artifact_store: Any | None = None,
         mcp_offload_policy: Any | None = None,
         event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
+        max_reasoning_turns: int = _MAX_REASONING_TURNS,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
         self._checkpointer = checkpointer
@@ -138,6 +141,9 @@ class ManagedLangGraphEngine:
         self._capability_runtime = capability_runtime
         # 收口 6：子 Agent（名称 → SubAgentSpec）；多 Agent 作为可选能力。
         self._sub_agents = sub_agents or {}
+        if max_reasoning_turns < 1:
+            raise ValueError("max_reasoning_turns 必须为正整数")
+        self._max_reasoning_turns = max_reasoning_turns
         # 长任务方案 §6.4：压缩前受控 Memory Flush 用的 Memory Runtime（可选）。
         self._memory_runtime = memory_runtime
         # SkillRuntime 只消费已绑定、已校验的 Skill 内容；L0 摘要常驻动态
@@ -174,6 +180,9 @@ class ManagedLangGraphEngine:
         # 子 Agent 在 tool_calls 节点内联执行，但事件必须等本节点自身的
         # tool.call.begin/end 落定后统一重排并入，保证 seq 单调。
         self._pending_child_events: dict[str, list[RuntimeEvent]] = {}
+        # 并行子 Agent 按 call_id 单独缓冲，节点结束时再按模型原始调用顺序
+        # 合并，避免墙钟完成顺序造成 Trace/重放结果不确定。
+        self._pending_subagent_events: dict[str, dict[str, list[RuntimeEvent]]] = {}
         self._runs: dict[str, _EngineRun] = {}
 
     # ------------------------------------------------------------- compile
@@ -184,15 +193,21 @@ class ManagedLangGraphEngine:
         plan = self._strategy_registry.compile(spec, strategy=spec.execution_strategy.kind.value)
         if spec.execution_strategy.kind.value == self._strategy_registry.default():
             ExecutionStrategyRegistry.assert_single_agent_purity(plan)
+        max_parallel = spec.execution_strategy.config.get("max_parallel_subagents", 4)
+        if isinstance(max_parallel, bool) or not isinstance(max_parallel, int):
+            raise ExecutionEngineError("max_parallel_subagents 必须是整数")
+        if not 1 <= max_parallel <= 32:
+            raise ExecutionEngineError("max_parallel_subagents 必须在 1..32 之间")
+        declared_sub_agents = {binding.name for binding in spec.sub_agents}
         self._skill_disclosure.validate_bindings(
             spec,
             tool_names=set(self._tools),
-            sub_agent_names=set(self._sub_agents),
+            sub_agent_names=set(self._sub_agents) | declared_sub_agents,
         )
         self._mcp_disclosure.validate_bindings(
             spec,
             tool_names=set(self._tools),
-            sub_agent_names=set(self._sub_agents),
+            sub_agent_names=set(self._sub_agents) | declared_sub_agents,
         )
         self._current_spec = spec
         return CompiledHarness(
@@ -215,11 +230,14 @@ class ManagedLangGraphEngine:
             run_id=run_id,
             status=RunStatus.PENDING,
         )
+        checkpoint_session_id = str(
+            request.metadata.get("checkpoint_session_id") or request.session_id
+        )
         thread_id = encode_thread_id(
             tenant_id=self._tenant_id,
             user_id=request.user_id,
             agent_id=state.agent_id,
-            session_id=request.session_id,
+            session_id=checkpoint_session_id,
             run_id=run_id,
         )
         handle = RunHandle(
@@ -232,6 +250,14 @@ class ManagedLangGraphEngine:
                 "agent_id": state.agent_id,
             },
         )
+        from ksadk.harness.subagent import SubAgentSpec
+
+        revision_sub_agents = {
+            binding.name: SubAgentSpec.from_binding(binding)
+            for binding in compiled.spec.sub_agents
+        }
+        # Revision 是事实源；宿主同名配置只作为未编译旧路径的兼容兜底。
+        effective_sub_agents = {**self._sub_agents, **revision_sub_agents}
         self._runs[run_id] = _EngineRun(
             handle=handle,
             request=request,
@@ -240,6 +266,7 @@ class ManagedLangGraphEngine:
             thread_id=thread_id,
             skill_catalog=self._skill_disclosure.catalog(compiled.spec),
             mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
+            sub_agents=effective_sub_agents,
         )
         return handle
 
@@ -584,7 +611,7 @@ class ManagedLangGraphEngine:
                         list(self._tools.values())
                         + self._skill_disclosure.tools(run.skill_catalog)
                         + self._mcp_disclosure.tools(run.mcp_catalog)
-                        + list(self._sub_agents.values())
+                        + list(run.sub_agents.values())
                     ),
                     reasoner=self._reasoner,
                     agent_id=run.state.agent_id,
@@ -592,7 +619,7 @@ class ManagedLangGraphEngine:
                     session_id=run.state.session_id,
                     run_id=run.handle.run_id,
                     seq_start=run.seq,
-                    max_turns=_MAX_REASONING_TURNS,
+                    max_turns=self._max_reasoning_turns,
                 )
 
             try:
@@ -708,6 +735,14 @@ class ManagedLangGraphEngine:
                     pending_tool_calls=state["pending_tool_calls"],
                     approval_required=frozenset(engine._approval_required),
                     approval_decider=_mcp_approval_decider,
+                    parallel_safe_decider=(
+                        lambda name, _arguments: name in run.sub_agents
+                    ),
+                    max_parallelism=int(
+                        run.compiled.spec.execution_strategy.config.get(
+                            "max_parallel_subagents", 4
+                        )
+                    ),
                     capability_runtime=engine._capability_runtime,
                     tenant_id=engine._tenant_id,
                     approval_resolver=_GraphApprovalResolver(),
@@ -727,6 +762,12 @@ class ManagedLangGraphEngine:
             from ksadk.harness.subagent import resequence_child_events
 
             resequence_child_events(run, self._pending_child_events.pop(run.handle.run_id, []))
+            subagent_events = self._pending_subagent_events.pop(run.handle.run_id, {})
+            for pending in state["pending_tool_calls"]:
+                resequence_child_events(
+                    run,
+                    subagent_events.get(str(pending.get("call_id") or ""), []),
+                )
             state["messages"].extend(out.new_messages)
             if out.working_context is not None:
                 run.state.working_context = out.working_context
@@ -833,7 +874,7 @@ class ManagedLangGraphEngine:
         call_id: str = "",
     ) -> Any:
         # 收口 6：子 Agent 即工具——内联运行到完成，子事件并入父流。
-        sub = self._sub_agents.get(name)
+        sub = (run.sub_agents if run is not None else self._sub_agents).get(name)
         if sub is not None and run is not None:
             from ksadk.harness.subagent import run_subagent
 
@@ -842,8 +883,11 @@ class ManagedLangGraphEngine:
                 parent_run=run,
                 sub=sub,
                 task=str((arguments or {}).get("task") or ""),
+                call_id=call_id,
             )
-            self._pending_child_events.setdefault(run.handle.run_id, []).extend(child_events)
+            self._pending_subagent_events.setdefault(run.handle.run_id, {})[
+                call_id or name
+            ] = child_events
             return text
         if self._skill_disclosure.is_tool(name):
             return self._invoke_skill_tool(name, arguments, run=run)
@@ -1017,6 +1061,8 @@ class ManagedLangGraphEngine:
         if run is not None:
             self._skill_disclosure.clear_run(run.handle.run_id)
             self._mcp_disclosure.clear_run(run.handle.run_id)
+            self._pending_child_events.pop(run.handle.run_id, None)
+            self._pending_subagent_events.pop(run.handle.run_id, None)
 
     # ------------------------------------------------------------- helpers
 
