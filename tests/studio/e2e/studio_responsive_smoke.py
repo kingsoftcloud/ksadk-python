@@ -343,8 +343,8 @@ def main() -> None:
             workspace,
             codex_runtime_inspector=lambda _runtime: (
                 "0.8.2",
-                "0.144.4",
-                "codex-cli 0.144.4",
+                "0.147.0",
+                "codex-cli 0.147.0",
             ),
         )
         with (
@@ -691,6 +691,7 @@ def main() -> None:
                 expect(context_tooltip).to_be_visible()
                 expect(context_tooltip).to_contain_text("上下文窗口")
                 workbench_page.mouse.move(0, 0)
+                expect(context_tooltip).to_be_hidden()
                 context_ring.focus()
                 expect(context_tooltip).to_be_visible()
 

@@ -17,6 +17,7 @@ from scripts.phase2_release_preflight import (
     CREDENTIAL_FREE_NATIVE_TESTS,
     MANAGED_DSH_TOOLCHAIN_TESTS,
     PHASE2_E2E_STATUS_KEYS,
+    ROOT,
     Phase2PreflightError,
     build_phase2_evidence_report,
     phase2_contract_digest,
@@ -277,7 +278,9 @@ def test_artifact_gate_rejects_mismatched_wheel_and_sdist_provenance(
 
 
 def test_generated_static_payload_is_not_tracked() -> None:
-    validate_generated_static_tracking_policy(public_export=False)
+    validate_generated_static_tracking_policy(
+        public_export=(ROOT / "export-manifest.json").is_file()
+    )
 
 
 def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_path: Path) -> None:
