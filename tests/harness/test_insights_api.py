@@ -114,6 +114,23 @@ def test_insights_context_inspection_e2e():
     assert report["compaction"]["count"] >= 1
 
 
+def test_insights_context_recommendations_are_read_only():
+    registry = HarnessInsightsRegistry()
+    run_id = _drive(registry)
+    with _client(registry) as client:
+        run_response = client.get(f"/insights/runs/{run_id}/context-recommendations")
+        session_response = client.get("/insights/sessions/sess-1/context-recommendations")
+    assert run_response.status_code == 200
+    assert session_response.status_code == 200
+    report = run_response.json()
+    assert report["schema_version"] == 1
+    assert report["auto_apply"] is False
+    assert report["recommendation_count"] == len(report["recommendations"])
+    serialized = __import__("json").dumps(report, ensure_ascii=False)
+    assert "AP-1024" not in serialized
+    assert "财务分析助手" not in serialized
+
+
 def test_insights_compaction_trace_and_session_report():
     registry = HarnessInsightsRegistry()
     run_id = _drive(registry)

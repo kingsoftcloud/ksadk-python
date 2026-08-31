@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, FastAPI, HTTPException
 
+from ksadk.harness.context_tuning import context_tuning_recommendations
 from ksadk.harness.events import RuntimeEvent, project_v2
 from ksadk.harness.observability import (
     capability_health,
@@ -130,6 +131,11 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         """Studio 单页 Context 检查视图（不含 Prompt/Memory/Tool 正文）。"""
         return context_inspection(_events_or_404(run_id))
 
+    @router.get("/runs/{run_id}/context-recommendations")
+    async def get_context_recommendations(run_id: str) -> dict[str, Any]:
+        """基于真实 Run 指标给出只读调优建议，不自动修改线上策略。"""
+        return context_tuning_recommendations(_events_or_404(run_id))
+
     @router.get("/runs/{run_id}/compaction-trace")
     async def get_compaction_trace(run_id: str) -> dict[str, Any]:
         """压缩历史（前后 Token、触发原因、质量校验、Memory Flush 候选）。"""
@@ -163,6 +169,14 @@ def build_insights_router(registry: HarnessInsightsRegistry) -> APIRouter:
         if not events:
             raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
         return context_inspection(events)
+
+    @router.get("/sessions/{session_id}/context-recommendations")
+    async def get_session_context_recommendations(session_id: str) -> dict[str, Any]:
+        """跨 Run 聚合的会话级 Context 调优建议。"""
+        events = registry.session_events(session_id)
+        if not events:
+            raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
+        return context_tuning_recommendations(events)
 
     @router.get("/sessions/{session_id}/capability-health")
     async def get_session_capability_health(session_id: str) -> dict[str, Any]:
