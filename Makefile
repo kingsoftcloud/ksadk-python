@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
 
 PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
 # Phase 1 runtime drills must run beside real Agent workloads in the preprod
@@ -54,6 +54,7 @@ help:
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
 	@echo "    make phase2-release-preflight  Phase 2 兼容/原生宿主/浏览器/制品门禁"
+	@echo "    make phase2-release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
 	@echo "    make public-publish-gate  PyPI/GitHub Release 写操作前的审批门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
@@ -524,6 +525,22 @@ public-version-gate:
 phase2-release-preflight: public-build-check
 	@echo "==> Phase 2 compatibility, native host, browser, and artifact preflight"
 	@uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist
+
+PHASE2_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
+PHASE2_LOCAL_EVIDENCE ?= dist/phase2-evidence.json
+PHASE2_WEB_REGISTRY_EVIDENCE ?= dist/evidence/ksadk-web-registry.json
+PHASE2_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
+PHASE2_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
+PHASE2_FINAL_EVIDENCE ?= dist/phase2-release-candidate.json
+
+phase2-release-candidate-gate:
+	@uv run python scripts/phase2_release_candidate_gate.py \
+		--expected-commit "$(PHASE2_FINAL_COMMIT)" \
+		--local "$(PHASE2_LOCAL_EVIDENCE)" \
+		--web-registry "$(PHASE2_WEB_REGISTRY_EVIDENCE)" \
+		--deployment "$(PHASE2_DEPLOYMENT_EVIDENCE)" \
+		--preprod "$(PHASE2_PREPROD_EVIDENCE)" \
+		--output "$(PHASE2_FINAL_EVIDENCE)"
 
 public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build phase2-release-preflight
 	@echo "✅ public preflight passed"

@@ -31,6 +31,7 @@
 - Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
 - Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
 - `ksadk-web@0.3.3` 的源码门禁、独立浏览器 E2E 和显式 tarball 消费已通过；绑定该制品的真实部署 Hosted UI 已完成 Studio 创建 Codex Agent 与 0.8.2 历史 Agent 的两轮会话，验证了正文、思考、工具卡片和上下文续接。正式发布仍要求先完成 npm Trusted Publishing，再从公开 registry 重建 Studio/Hosted UI，并以最终 clean commit 通过 wheel/sdist provenance、公开内容审计和维护者审批；在这些外部写入完成前本节保持 `Unreleased`。
+- 新增 Phase 2 最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
 
 ## [0.8.2] - 2026-08-26
 
