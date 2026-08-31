@@ -7,9 +7,11 @@ import os
 import pytest
 
 from ksadk.harness.real_model_eval import (
+    LARGE_MEMORY_ANNOTATION_DATASET,
     MEMORY_ANNOTATION_DATASET,
     GoldenAnnotation,
     RealModelReasoner,
+    evaluate_memory_annotation,
     rule_based_annotate,
     score_annotations,
 )
@@ -25,6 +27,22 @@ def test_annotation_dataset_frozen_shape():
         "tool-facts-and-noise",
         "no-memory-at-all",
     }
+
+
+def test_large_annotation_dataset_has_100_unique_balanced_cases():
+    assert len(LARGE_MEMORY_ANNOTATION_DATASET) == 100
+    assert len({case.case_id for case in LARGE_MEMORY_ANNOTATION_DATASET}) == 100
+    assert sum(not case.golden for case in LARGE_MEMORY_ANNOTATION_DATASET) == 25
+
+
+def test_large_annotation_dataset_rule_pipeline_meets_offline_gate():
+    report = evaluate_memory_annotation(
+        dataset=LARGE_MEMORY_ANNOTATION_DATASET,
+        include_model=False,
+    )
+
+    assert len(report["cases"]) == 100
+    assert report["rule_based"] == {"precision": 1.0, "recall": 1.0, "f1": 1.0}
 
 
 def test_rule_annotator_scores_against_golden():

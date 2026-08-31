@@ -257,6 +257,92 @@ MEMORY_ANNOTATION_DATASET: tuple[AnnotationCase, ...] = (
 )
 
 
+def _large_memory_annotation_dataset() -> tuple[AnnotationCase, ...]:
+    """构建冻结的 100 条 Memory 金标集。
+
+    保留 4 条人工基线，并为显式记忆、明确纠错、已核实工具事实和纯噪声
+    各补 24 条模板化金标。模板中的标识和值均固定，保证跨版本可重复比较。
+    这份集合用于规模回归；默认真实模型 smoke 仍只跑上面的 4 条，避免 CI
+    或本地开发意外产生 100 次模型调用。
+    """
+
+    cases = list(MEMORY_ANNOTATION_DATASET)
+    for index in range(24):
+        suffix = f"{index:02d}"
+        cases.extend(
+            (
+                AnnotationCase(
+                    case_id=f"large-explicit-{suffix}",
+                    events=(
+                        _event(
+                            "user_message",
+                            "user",
+                            f"请记住：我的部门编号是 DEPT-{suffix}。",
+                            1,
+                        ),
+                    ),
+                    golden=(
+                        GoldenAnnotation(
+                            f"我的部门编号是 DEPT-{suffix}", "profile", "add", 0.9
+                        ),
+                    ),
+                ),
+                AnnotationCase(
+                    case_id=f"large-correction-{suffix}",
+                    events=(
+                        _event(
+                            "user_message",
+                            "user",
+                            f"以后报表{suffix}不要用英文，请改成中文。",
+                            1,
+                        ),
+                    ),
+                    golden=(
+                        GoldenAnnotation(
+                            f"报表{suffix}改为中文", "profile", "update", 0.9
+                        ),
+                    ),
+                ),
+                AnnotationCase(
+                    case_id=f"large-tool-fact-{suffix}",
+                    events=(
+                        _event(
+                            "tool_result",
+                            "tool",
+                            f"查询成功：供应商 VEN-{suffix} 名称供应商{suffix}，状态已认证。",
+                            1,
+                        ),
+                    ),
+                    golden=(
+                        GoldenAnnotation(
+                            f"供应商 VEN-{suffix} 名称供应商{suffix}", "fact", "add", 0.7
+                        ),
+                    ),
+                ),
+                AnnotationCase(
+                    case_id=f"large-noise-{suffix}",
+                    events=(
+                        _event(
+                            "user_message",
+                            "user",
+                            f"请解释第 {index + 1} 个临时计算步骤。",
+                            1,
+                        ),
+                        _event("assistant_message", "assistant", "这是一次临时回答。", 2),
+                    ),
+                    golden=(),
+                ),
+            )
+        )
+    return tuple(cases)
+
+
+#: 规模化 Memory 金标集（v1，冻结）：100 条，四类场景各 25 条。
+LARGE_MEMORY_ANNOTATION_DATASET: tuple[AnnotationCase, ...] = (
+    _large_memory_annotation_dataset()
+)
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"[\s。.，,！!？?]", "", text)
 
@@ -397,7 +483,9 @@ def evaluate_memory_annotation(
 # ---------------------------------------------------------------------------
 
 
-def run_full_eval(*, output_path: str = "") -> dict[str, Any]:
+def run_full_eval(
+    *, output_path: str = "", memory_dataset: str = "smoke"
+) -> dict[str, Any]:
     model, base_url, _key = _env_model_config()
     print(f"[real-model-eval] model={model} base_url={base_url or '(default)'}")
     print("[real-model-eval] 1/2 跨压缩长任务（固定数据集，真实模型）…")
@@ -413,7 +501,12 @@ def run_full_eval(*, output_path: str = "") -> dict[str, Any]:
     print("  aggregate:", json.dumps(long_task["aggregate"], ensure_ascii=False))
 
     print("[real-model-eval] 2/2 Memory 标注评测（规则 vs 模型标注器）…")
-    annotation = evaluate_memory_annotation()
+    annotation_dataset = (
+        LARGE_MEMORY_ANNOTATION_DATASET
+        if memory_dataset == "full"
+        else MEMORY_ANNOTATION_DATASET
+    )
+    annotation = evaluate_memory_annotation(dataset=annotation_dataset)
     for annotator in ("rule_based", "model_based"):
         if annotator in annotation:
             print(f"  {annotator}: {json.dumps(annotation[annotator], ensure_ascii=False)}")
@@ -435,8 +528,14 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(prog="ksadk.harness.real_model_eval")
     parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--memory-dataset",
+        choices=("smoke", "full"),
+        default="smoke",
+        help="smoke 跑 4 条；full 跑冻结的 100 条 Memory 金标集",
+    )
     args = parser.parse_args()
-    run_full_eval(output_path=args.out)
+    run_full_eval(output_path=args.out, memory_dataset=args.memory_dataset)
 
 
 if __name__ == "__main__":
