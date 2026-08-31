@@ -8,6 +8,7 @@ import pytest
 
 from ksadk.harness.capabilities import CapabilityDescriptor, CapabilityKind
 from ksadk.harness.mcp_runtime import (
+    McpAuthenticationError,
     McpCapabilityRuntime,
     McpRuntimeError,
     McpRuntimeOptions,
@@ -207,3 +208,95 @@ async def test_availability_projects_only_stable_platform_states():
     transport.call_mode = "success"
     await runtime.call(server_id, "lookup", {})
     assert runtime.availability(server_id) == "available"
+
+
+class _RotatingTransport(_ControllableTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.authenticated = False
+
+    async def list_tools(self):
+        self.list_calls += 1
+        if not self.authenticated:
+            raise McpAuthenticationError("credential rejected")
+        return _TOOLS
+
+    async def call_tool(self, name, arguments):
+        self.call_calls += 1
+        if not self.authenticated:
+            raise McpAuthenticationError("credential rejected")
+        return {"name": name, "arguments": arguments}
+
+
+class _Refresher:
+    def __init__(self, *, succeeds: bool = True) -> None:
+        self.succeeds = succeeds
+        self.calls = 0
+
+    async def refresh(self, *, server_id, transport):
+        self.calls += 1
+        if self.succeeds:
+            transport.authenticated = True
+        return self.succeeds
+
+
+def _rotating_runtime(transport, refresher):
+    runtime = McpCapabilityRuntime(
+        options=McpRuntimeOptions(health_ttl_seconds=0, failure_threshold=1)
+    )
+    runtime.bind(
+        McpServerBinding(
+            descriptor=CapabilityDescriptor(
+                id="mcp://finance@1.0.0",
+                name="finance",
+                kind=CapabilityKind.MCP,
+                version="1.0.0",
+            ),
+            transport=transport,
+            credential_ref="secret://finance-mcp",
+            credential_refresher=refresher,
+        )
+    )
+    return runtime
+
+
+@pytest.mark.asyncio
+async def test_authentication_failure_rotates_once_and_retries_discovery():
+    transport = _RotatingTransport()
+    refresher = _Refresher()
+    runtime = _rotating_runtime(transport, refresher)
+
+    tools = await runtime.tools("mcp://finance@1.0.0")
+
+    assert [tool["name"] for tool in tools] == ["lookup"]
+    assert transport.list_calls == 2
+    assert refresher.calls == 1
+    assert runtime.credential_generation("mcp://finance@1.0.0") == 1
+
+
+@pytest.mark.asyncio
+async def test_authentication_failure_rotates_once_and_retries_tool_call():
+    transport = _RotatingTransport()
+    refresher = _Refresher()
+    runtime = _rotating_runtime(transport, refresher)
+
+    result = await runtime.call("mcp://finance@1.0.0", "lookup", {"q": "x"})
+
+    assert result["arguments"] == {"q": "x"}
+    assert transport.call_calls == 2
+    assert refresher.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_rotation_does_not_loop_or_leak_credential_ref():
+    transport = _RotatingTransport()
+    refresher = _Refresher(succeeds=False)
+    runtime = _rotating_runtime(transport, refresher)
+
+    with pytest.raises(McpRuntimeError) as caught:
+        await runtime.call("mcp://finance@1.0.0", "lookup", {})
+
+    assert transport.call_calls == 1
+    assert refresher.calls == 1
+    assert "secret://finance-mcp" not in str(caught.value)
+    assert runtime.credential_generation("mcp://finance@1.0.0") == 0

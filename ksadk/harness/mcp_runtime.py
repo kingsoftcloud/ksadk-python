@@ -24,6 +24,21 @@ class McpRuntimeError(RuntimeError):
     """MCP 生命周期错误（含必需能力不可用）。"""
 
 
+class McpAuthenticationError(RuntimeError):
+    """Transport-authentication failure known to occur before tool execution."""
+
+
+class McpCredentialRefresher(Protocol):
+    """Rotate credentials out-of-band without returning secret material.
+
+    The implementation updates the injected Transport/credential provider and
+    returns whether a new credential generation became active.  Secret values must
+    never be returned to the Harness or persisted in a Bundle/Event.
+    """
+
+    async def refresh(self, *, server_id: str, transport: McpTransport) -> bool: ...
+
+
 class McpTransport(Protocol):
     """MCP 服务器传输的最小协议（宿主注入，SDK 不绑定具体客户端）。"""
 
@@ -83,6 +98,9 @@ class McpServerBinding:
     #: ``transport`` 表示 Transport 能将幂等键透传到真正执行副作用的服务。
     #: 默认 ``none`` 保持旧 MCP Transport 行为，不虚假承诺 exactly-once。
     idempotency_mode: Literal["none", "transport"] = "none"
+    #: Stable Secret reference for audit/readiness only; never the secret value.
+    credential_ref: str = ""
+    credential_refresher: McpCredentialRefresher | None = None
 
 
 @dataclass
@@ -126,6 +144,7 @@ class McpCapabilityRuntime:
         self._servers: dict[str, McpServerBinding] = {}
         self._health: dict[str, _HealthState] = {}
         self._tools_cache: dict[str, list[dict[str, Any]]] = {}
+        self._credential_generation: dict[str, int] = {}
 
     # ------------------------------------------------------------- 注册
 
@@ -139,6 +158,7 @@ class McpCapabilityRuntime:
             )
         self._servers[binding.descriptor.id] = binding
         self._health.setdefault(binding.descriptor.id, _HealthState())
+        self._credential_generation.setdefault(binding.descriptor.id, 0)
 
     def binding(self, server_id: str) -> McpServerBinding:
         try:
@@ -158,6 +178,11 @@ class McpCapabilityRuntime:
         if healthy is None:
             return "unknown"
         return "available" if healthy else "degraded"
+
+    def credential_generation(self, server_id: str) -> int:
+        """Opaque rotation generation; contains no credential material."""
+        self.binding(server_id)
+        return self._credential_generation[server_id]
 
     # ------------------------------------------------------------- 健康
 
@@ -186,10 +211,7 @@ class McpCapabilityRuntime:
             )
 
         try:
-            await self._with_timeout(
-                binding.transport.list_tools(),
-                timeout_seconds=self._options.discovery_timeout_seconds,
-            )
+            await self._list_tools_with_rotation(server_id, binding)
         except asyncio.CancelledError:
             # 调用方取消不是远端故障，不污染健康状态或熔断计数。
             raise
@@ -208,7 +230,7 @@ class McpCapabilityRuntime:
                 server_id=server_id,
                 healthy=False,
                 degraded=not binding.required,
-                reason=f"probe_failed: {exc}",
+                reason=_safe_transport_error(exc, operation="probe"),
                 circuit_open=state.opened_at is not None,
             )
 
@@ -228,10 +250,7 @@ class McpCapabilityRuntime:
         if not self._allow_operation(state, now=clock):
             raise McpRuntimeError(f"mcp {server_id} circuit open")
         try:
-            raw = await self._with_timeout(
-                binding.transport.list_tools(),
-                timeout_seconds=self._options.discovery_timeout_seconds,
-            )
+            raw = await self._list_tools_with_rotation(server_id, binding)
         except asyncio.CancelledError:
             raise
         except TimeoutError as exc:
@@ -239,7 +258,8 @@ class McpCapabilityRuntime:
             raise McpRuntimeError(f"mcp {server_id} tools/list timeout") from exc
         except Exception as exc:  # noqa: BLE001 - Transport 失败统一计入熔断
             self._record_failure(state, now=clock)
-            raise McpRuntimeError(f"mcp {server_id} tools/list failed: {exc}") from exc
+            reason = _safe_transport_error(exc, operation="tools/list")
+            raise McpRuntimeError(f"mcp {server_id} tools/list failed: {reason}") from exc
         self._record_success(state, now=clock)
         valid: list[dict[str, Any]] = []
         for tool in raw:
@@ -270,18 +290,12 @@ class McpCapabilityRuntime:
         if not self._allow_operation(state, now=clock):
             raise McpRuntimeError(f"mcp {server_id} circuit open")
         try:
-            if binding.idempotency_mode == "transport":
-                if context is None:
-                    raise McpRuntimeError(
-                        f"mcp {server_id} 的 transport 幂等调用缺少稳定调用上下文"
-                    )
-                call_with_context = getattr(binding.transport, "call_tool_with_context")
-                operation = call_with_context(tool_name, arguments, context=context)
-            else:
-                operation = binding.transport.call_tool(tool_name, arguments)
-            result = await self._with_timeout(
-                operation,
-                timeout_seconds=self._options.call_timeout_seconds,
+            result = await self._call_with_rotation(
+                server_id,
+                binding,
+                tool_name,
+                arguments,
+                context=context,
             )
         except asyncio.CancelledError:
             raise
@@ -290,9 +304,85 @@ class McpCapabilityRuntime:
             raise McpRuntimeError(f"mcp {server_id} tool {tool_name} call timeout") from exc
         except Exception as exc:  # noqa: BLE001
             self._record_failure(state, now=clock)
-            raise McpRuntimeError(f"mcp call failed: {exc}") from exc
+            reason = _safe_transport_error(exc, operation="tool/call")
+            raise McpRuntimeError(
+                f"mcp call failed: {server_id} tool {tool_name}: {reason}"
+            ) from exc
         self._record_success(state, now=clock)
         return result
+
+    async def _list_tools_with_rotation(
+        self, server_id: str, binding: McpServerBinding
+    ) -> list[dict[str, Any]]:
+        try:
+            return await self._with_timeout(
+                binding.transport.list_tools(),
+                timeout_seconds=self._options.discovery_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not _is_authentication_failure(exc) or not await self._refresh_credentials(
+                server_id, binding
+            ):
+                raise
+        return await self._with_timeout(
+            binding.transport.list_tools(),
+            timeout_seconds=self._options.discovery_timeout_seconds,
+        )
+
+    async def _call_with_rotation(
+        self,
+        server_id: str,
+        binding: McpServerBinding,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        context: McpToolCallContext | None,
+    ) -> Any:
+        async def execute() -> Any:
+            if binding.idempotency_mode == "transport":
+                if context is None:
+                    raise McpRuntimeError(
+                        f"mcp {server_id} 的 transport 幂等调用缺少稳定调用上下文"
+                    )
+                operation = getattr(binding.transport, "call_tool_with_context")(
+                    tool_name, arguments, context=context
+                )
+            else:
+                operation = binding.transport.call_tool(tool_name, arguments)
+            return await self._with_timeout(
+                operation,
+                timeout_seconds=self._options.call_timeout_seconds,
+            )
+
+        try:
+            return await execute()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Only an explicit/pre-execution authentication failure is safe to retry.
+            # Timeouts and generic transport failures keep their existing at-most-once
+            # behavior because remote side effects may already have happened.
+            if not _is_authentication_failure(exc) or not await self._refresh_credentials(
+                server_id, binding
+            ):
+                raise
+        return await execute()
+
+    async def _refresh_credentials(
+        self, server_id: str, binding: McpServerBinding
+    ) -> bool:
+        refresher = binding.credential_refresher
+        if refresher is None:
+            return False
+        refreshed = bool(
+            await refresher.refresh(server_id=server_id, transport=binding.transport)
+        )
+        if refreshed:
+            self._credential_generation[server_id] += 1
+            self.invalidate_tools(server_id)
+        return refreshed
 
     # ------------------------------------------------------------- 故障状态
 
@@ -349,7 +439,9 @@ class McpCapabilityRuntime:
 
 
 __all__ = [
+    "McpAuthenticationError",
     "McpCapabilityRuntime",
+    "McpCredentialRefresher",
     "McpHealthReport",
     "McpToolCallContext",
     "IdempotentMcpTransport",
@@ -357,3 +449,23 @@ __all__ = [
     "McpRuntimeOptions",
     "McpServerBinding",
 ]
+
+
+def _is_authentication_failure(exc: Exception) -> bool:
+    """Classify only failures that indicate rejection before remote execution."""
+    if isinstance(exc, McpAuthenticationError):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    return status in {401, 403}
+
+
+def _safe_transport_error(exc: Exception, *, operation: str) -> str:
+    """Project a stable error category without echoing transport/secret text."""
+    if _is_authentication_failure(exc):
+        return f"{operation} authentication_failed"
+    if isinstance(exc, (ConnectionError, OSError)):
+        return f"{operation} transport_unavailable"
+    return f"{operation} transport_failed"

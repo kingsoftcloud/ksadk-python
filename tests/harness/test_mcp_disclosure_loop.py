@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,6 +15,8 @@ from ksadk.harness.engine.mcp_disclosure import (
     MCP_CALL_TOOL_TOOL,
     MCP_LIST_TOOLS_TOOL,
     MCP_READ_SCHEMA_TOOL,
+    McpDisclosureBridge,
+    McpDisclosureCursors,
 )
 from ksadk.harness.events import EventType
 from ksadk.harness.mcp_runtime import (
@@ -405,6 +408,37 @@ def test_list_tools_refresh_invalidates_cache():
     assert runtime._tools_cache.get(_FINANCE)
     runtime.invalidate_tools(_FINANCE)
     assert runtime._tools_cache.get(_FINANCE) is None
+
+
+def test_list_tools_refresh_revokes_previous_schema_disclosure():
+    """刷新 L1 后旧 L2 授权失效，避免 Schema 漂移后直接执行。"""
+    runtime, _transport = _runtime()
+    bridge = McpDisclosureBridge(runtime)
+    cursors = McpDisclosureCursors(
+        listed={("run-1", _FINANCE)},
+        schema_read={("run-1", _FINANCE, "pay_invoice")},
+    )
+
+    class _Handle:
+        run_id = "run-1"
+
+    class _Run:
+        handle = _Handle()
+        mcp_catalog = [{"server_id": _FINANCE}]
+        state = SimpleNamespace(agent_id="a", user_id="u", session_id="s")
+
+    result = asyncio.run(
+        bridge._list_tools(  # noqa: SLF001 - verify cursor security boundary
+            _Run(),
+            _FINANCE,
+            {"refresh": True},
+            cursors,
+            {},
+        )
+    )
+
+    assert result["tools"]
+    assert ("run-1", _FINANCE, "pay_invoice") not in cursors.schema_read
 
 
 def test_cross_process_approval_resume_preserves_cursors(tmp_path):

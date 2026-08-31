@@ -377,6 +377,15 @@ class McpDisclosureBridge:
     ) -> dict[str, Any]:
         if arguments.get("refresh"):
             self._runtime.invalidate_tools(server_id)
+            # A refreshed tools/list may expose a changed or removed Schema.  Any
+            # L2 grant issued from the previous catalog is therefore invalid and
+            # the model must explicitly read the current Schema before L3.
+            run_id = run.handle.run_id
+            cursors.schema_read = {
+                item
+                for item in cursors.schema_read
+                if not (item[0] == run_id and item[1] == server_id)
+            }
         tools = await self._observe_runtime_operation(
             run,
             pending_events,
