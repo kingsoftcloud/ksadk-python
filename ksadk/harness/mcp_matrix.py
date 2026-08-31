@@ -7,11 +7,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ksadk.harness.mcp_runtime import McpCapabilityRuntime
+from ksadk.harness.mcp_runtime import (
+    McpAuthenticationError,
+    McpCapabilityRuntime,
+    McpRuntimeError,
+)
 
 _SECRET_DETAIL = re.compile(
     r"(?i)(authorization|api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+"
@@ -35,6 +42,28 @@ class McpProbe:
 
 
 @dataclass(frozen=True)
+class McpResilienceCase:
+    """企业 MCP 故障注入验证项。
+
+    - ``timeout_seconds``：对只读探针施加调用截止时间。真实服务必须在
+      截止时间内返回，或以结构化（可分类）错误失败，绝不悬挂或抛出
+      未分类异常。
+    - ``verify_disconnect_recovery``：在故障之后验证熔断/健康状态机仍
+      可响应，且后续调用能恢复（available/degraded 而非未知态）。
+    - ``verify_schema_refresh``：使缓存失效并重新发现，验证 Schema 变化
+      能被下一次发现捕获（报告记录前后签名对比）。
+    """
+
+    timeout_seconds: float | None = None
+    verify_disconnect_recovery: bool = False
+    verify_schema_refresh: bool = False
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+
+
+@dataclass(frozen=True)
 class McpMatrixCandidate:
     server_id: str
     runtime: McpCapabilityRuntime | None
@@ -43,6 +72,7 @@ class McpMatrixCandidate:
     probe: McpProbe | None = None
     minimum_valid_tools: int = 1
     require_credential_rotation: bool = False
+    resilience: McpResilienceCase | None = None
 
     def __post_init__(self) -> None:
         if self.minimum_valid_tools < 0:
@@ -81,6 +111,175 @@ class McpMatrixReport:
                 for row in self.rows
             ],
         }
+
+
+def _tool_signature(tools: list[dict[str, Any]]) -> str:
+    """Stable signature over tool names + input schemas (no result bodies)."""
+
+    payload = sorted(
+        json.dumps(
+            {"name": tool.get("name"), "schema": tool.get("inputSchema")},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        for tool in tools
+    )
+    return hashlib.sha256("\n".join(payload).encode("utf-8")).hexdigest()
+
+
+async def _run_resilience_findings(
+    candidate: "McpMatrixCandidate",
+    *,
+    runtime: McpCapabilityRuntime,
+    tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    resilience = candidate.resilience
+    if resilience is None:
+        return findings
+
+    probe_ready = (
+        candidate.probe is not None
+        and any(tool.get("name") == candidate.probe.tool_name for tool in tools)
+    )
+    classified = (TimeoutError, McpRuntimeError, McpAuthenticationError)
+
+    if resilience.timeout_seconds is not None:
+        if not probe_ready:
+            findings.append(
+                {
+                    "rule": "mcp.resilience.timeout",
+                    "status": "skipped",
+                    "detail": "read-only probe not available for timeout injection",
+                }
+            )
+        else:
+            assert candidate.probe is not None
+            try:
+                await asyncio.wait_for(
+                    runtime.call(
+                        candidate.server_id,
+                        candidate.probe.tool_name,
+                        dict(candidate.probe.arguments),
+                    ),
+                    timeout=resilience.timeout_seconds,
+                )
+                findings.append(
+                    {
+                        "rule": "mcp.resilience.timeout",
+                        "status": "passed",
+                        "detail": "probe completed within deadline",
+                    }
+                )
+            except asyncio.TimeoutError:
+                findings.append(
+                    {
+                        "rule": "mcp.resilience.timeout",
+                        "status": "failed",
+                        "detail": (
+                            f"probe hung past matrix deadline of "
+                            f"{resilience.timeout_seconds}s"
+                        ),
+                    }
+                )
+            except classified:
+                findings.append(
+                    {
+                        "rule": "mcp.resilience.timeout",
+                        "status": "passed",
+                        "detail": "failure was classified and contained",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                findings.append(
+                    {
+                        "rule": "mcp.resilience.timeout",
+                        "status": "failed",
+                        "detail": _safe_detail(exc),
+                    }
+                )
+
+    if resilience.verify_disconnect_recovery:
+        if not probe_ready:
+            findings.append(
+                {
+                    "rule": "mcp.resilience.disconnect_recovery",
+                    "status": "skipped",
+                    "detail": "read-only probe not available for recovery check",
+                }
+            )
+        else:
+            assert candidate.probe is not None
+            before = runtime.availability(candidate.server_id)
+            try:
+                health = await runtime.health(candidate.server_id)
+                health_detail = health.reason if not health.healthy else "healthy"
+            except Exception as exc:  # noqa: BLE001
+                findings.append(
+                    {
+                        "rule": "mcp.resilience.disconnect_recovery",
+                        "status": "failed",
+                        "detail": f"health check crashed: {_safe_detail(exc)}",
+                    }
+                )
+                health = None
+                health_detail = ""
+            if health is not None:
+                try:
+                    await runtime.call(
+                        candidate.server_id,
+                        candidate.probe.tool_name,
+                        dict(candidate.probe.arguments),
+                    )
+                    retry = "recovered"
+                    passed = True
+                except classified:
+                    retry = "classified_failure"
+                    passed = True
+                except Exception as exc:  # noqa: BLE001
+                    retry = f"unclassified:{_safe_detail(exc)}"
+                    passed = False
+                after = runtime.availability(candidate.server_id)
+                passed = passed and after in {"available", "degraded"}
+                findings.append(
+                    {
+                        "rule": "mcp.resilience.disconnect_recovery",
+                        "status": "passed" if passed else "failed",
+                        "detail": (
+                            f"availability {before} -> {after}; "
+                            f"health={health_detail}; retry={retry}"
+                        ),
+                    }
+                )
+
+    if resilience.verify_schema_refresh:
+        try:
+            before_signature = _tool_signature(tools)
+            runtime.invalidate_tools(candidate.server_id)
+            refreshed = await runtime.tools(candidate.server_id)
+            changed = _tool_signature(refreshed) != before_signature
+            findings.append(
+                {
+                    "rule": "mcp.tools.schema_refresh",
+                    "status": (
+                        "passed" if len(refreshed) >= candidate.minimum_valid_tools else "failed"
+                    ),
+                    "detail": (
+                        f"refreshed_tools={len(refreshed)}; "
+                        f"schema_changed={str(changed).lower()}"
+                    ),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            findings.append(
+                {
+                    "rule": "mcp.tools.schema_refresh",
+                    "status": "failed",
+                    "detail": _safe_detail(exc),
+                }
+            )
+
+    return findings
 
 
 async def run_mcp_matrix(
@@ -221,6 +420,14 @@ async def run_mcp_matrix(
                 }
             )
 
+        findings.extend(
+            await _run_resilience_findings(
+                candidate,
+                runtime=runtime,
+                tools=tools,
+            )
+        )
+
         counts = {
             state: sum(1 for item in findings if item["status"] == state)
             for state in ("passed", "failed", "skipped")
@@ -262,5 +469,6 @@ __all__ = [
     "McpMatrixReport",
     "McpMatrixRow",
     "McpProbe",
+    "McpResilienceCase",
     "run_mcp_matrix",
 ]

@@ -24,7 +24,10 @@ from typing import Any, Callable, Protocol, Sequence
 
 import httpx
 
-from ksadk.harness.model_provider import safe_model_error_message
+from ksadk.harness.model_provider import (
+    classify_model_failure,
+    safe_model_error_message,
+)
 from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
 from ksadk.harness.tools import HarnessTool
 
@@ -44,6 +47,8 @@ class ModelMatrixRequirements:
     """Release requirements evaluated without guessing provider capabilities."""
 
     require_streaming: bool = False
+    require_usage: bool = False
+    require_overflow: bool = False
     min_context_window: int | None = None
     required_input_modalities: tuple[str, ...] = ()
 
@@ -229,6 +234,105 @@ class OpenAICompatibleStreamingProbe:
         }
 
 
+class OverflowCompatibilityProbe(Protocol):
+    """Provider-neutral probe for context-overflow failure semantics."""
+
+    async def probe_overflow(
+        self, *, model: str, context_window: int | None
+    ) -> dict[str, Any]: ...
+
+
+class OpenAICompatibleOverflowProbe:
+    """Verify a real gateway classifies context overflow as a recoverable failure.
+
+    发送一个确定超过上下文窗口的请求。合规网关必须以可分类的
+    context-length 错误拒绝（``classify_model_failure`` → CONTEXT_LENGTH，
+    恢复动作 recover_context），而不是 200 截断、未分类 5xx 或连接重置。
+    """
+
+    _FILLER = "上下文溢出探针填充段落 OVERFLOW_MATRIX_PADDING "
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+        timeout_seconds: float = 120.0,
+        fallback_context_tokens: int = 200_000,
+    ) -> None:
+        if not base_url.strip():
+            raise ValueError("OPENAI_BASE_URL is required")
+        if not api_key.strip():
+            raise ValueError("OPENAI_API_KEY is required")
+        self._url = f"{base_url.rstrip('/')}/chat/completions"
+        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._transport = transport
+        self._timeout_seconds = timeout_seconds
+        self._fallback_context_tokens = fallback_context_tokens
+
+    async def probe_overflow(
+        self, *, model: str, context_window: int | None
+    ) -> dict[str, Any]:
+        tokens = context_window or self._fallback_context_tokens
+        # 保守按 1 token ≈ 2 字符估算，翻倍确保越界（中文多字 1 token）。
+        target_chars = int(tokens * 2) + 4096
+        filler_chars = len(self._FILLER)
+        prompt = self._FILLER * (target_chars // filler_chars + 1)
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt + "\n只回复 OK。",
+                }
+            ],
+            "max_tokens": 8,
+        }
+        status_code: int | None = None
+        detail = ""
+        failure_kind = ""
+        overflow_detected = False
+        try:
+            async with httpx.AsyncClient(
+                transport=self._transport,
+                timeout=self._timeout_seconds,
+                follow_redirects=True,
+            ) as client:
+                response = await client.post(
+                    self._url,
+                    headers=self._headers,
+                    json=payload,
+                )
+            status_code = response.status_code
+            if response.status_code == 200:
+                detail = "overflow prompt was accepted (provider did not reject)"
+            else:
+                overflow_detected = True
+                error = _ResponseStatusError(response.status_code, response.text[:512])
+                detail = safe_model_error_message(error, limit=240)
+                failure_kind = classify_model_failure(error).kind.value
+        except httpx.HTTPError as exc:
+            overflow_detected = True
+            detail = safe_model_error_message(exc, limit=240)
+            failure_kind = classify_model_failure(exc).kind.value
+        return {
+            "passed": overflow_detected and failure_kind == "context_length",
+            "overflow_detected": overflow_detected,
+            "failure_kind": failure_kind,
+            "status_code": status_code,
+            "detail": detail,
+        }
+
+
+class _ResponseStatusError(Exception):
+    """Carry an HTTP status into provider failure classification."""
+
+    def __init__(self, status_code: int, body: str) -> None:
+        super().__init__(f"HTTP {status_code}: {body}")
+        self.status_code = status_code
+
+
 def _models_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/models"
 
@@ -321,6 +425,7 @@ async def _probe_one(
     *,
     reasoner_factory: Callable[[], HarnessReasoner],
     streaming_probe: StreamingCompatibilityProbe | None,
+    overflow_probe: OverflowCompatibilityProbe | None = None,
     requirements: ModelMatrixRequirements,
 ) -> dict[str, Any]:
     reasoner = reasoner_factory()
@@ -332,6 +437,7 @@ async def _probe_one(
         "usage_reported": False,
         "stream_text": None,
         "stream_tool_calling": None,
+        "overflow_classified": None,
         "input_modalities": list(model.input_modalities),
         "context_window": model.context_window,
         "errors": [],
@@ -425,6 +531,27 @@ async def _probe_one(
     elif requirements.require_streaming:
         result["errors"].append("streaming_probe_not_configured")
 
+    if overflow_probe is not None:
+        try:
+            overflow = await overflow_probe.probe_overflow(
+                model=model.model_id,
+                context_window=model.context_window,
+            )
+            result["overflow_classified"] = bool(overflow.get("passed"))
+            result["overflow_details"] = overflow
+            if not result["overflow_classified"]:
+                result["errors"].append("overflow_failure_not_classified")
+        except Exception as exc:  # noqa: BLE001 - report provider compatibility
+            result["overflow_classified"] = False
+            result["errors"].append(
+                f"overflow:{type(exc).__name__}:{safe_model_error_message(exc, limit=240)}"
+            )
+    elif requirements.require_overflow:
+        result["errors"].append("overflow_probe_not_configured")
+
+    if requirements.require_usage and not result["usage_reported"]:
+        result["errors"].append("usage_not_reported")
+
     capability_findings: list[dict[str, Any]] = []
     if requirements.min_context_window is not None:
         actual = model.context_window
@@ -460,6 +587,10 @@ async def _probe_one(
     required_checks = [result["basic_chat"], result["tool_calling"]]
     if streaming_probe is not None or requirements.require_streaming:
         required_checks.extend([result["stream_text"], result["stream_tool_calling"]])
+    if overflow_probe is not None or requirements.require_overflow:
+        required_checks.append(result["overflow_classified"])
+    if requirements.require_usage:
+        required_checks.append(result["usage_reported"])
     result["passed"] = all(bool(check) for check in required_checks) and not any(
         item["status"] == "failed" for item in capability_findings
     )
@@ -471,6 +602,7 @@ async def evaluate_model_matrix(
     *,
     reasoner_factory: Callable[[], HarnessReasoner] = LiteLLMHarnessReasoner,
     streaming_probe: StreamingCompatibilityProbe | None = None,
+    overflow_probe: OverflowCompatibilityProbe | None = None,
     requirements: ModelMatrixRequirements | None = None,
 ) -> dict[str, Any]:
     """Run basic chat and tool-calling probes for each selected model."""
@@ -483,6 +615,7 @@ async def evaluate_model_matrix(
                 model,
                 reasoner_factory=reasoner_factory,
                 streaming_probe=streaming_probe,
+                overflow_probe=overflow_probe,
                 requirements=requirements,
             )
         )
@@ -515,6 +648,7 @@ def run_model_matrix(
     requested_models: Sequence[str] = (),
     limit: int = 4,
     include_streaming: bool = False,
+    include_overflow: bool = False,
     requirements: ModelMatrixRequirements | None = None,
 ) -> dict[str, Any]:
     discovered = discover_models(base_url=base_url, api_key=api_key)
@@ -528,10 +662,16 @@ def run_model_matrix(
             if include_streaming
             else None
         )
+        overflow_probe = (
+            OpenAICompatibleOverflowProbe(base_url=base_url, api_key=api_key)
+            if include_overflow
+            else None
+        )
         evaluated = asyncio.run(
             evaluate_model_matrix(
                 selected,
                 streaming_probe=streaming_probe,
+                overflow_probe=overflow_probe,
                 requirements=requirements,
             )
         )
@@ -549,6 +689,7 @@ def run_model_matrix(
         "discovered_count": len(discovered),
         "selected_models": [item.model_id for item in selected],
         "streaming_enabled": include_streaming,
+        "overflow_enabled": include_overflow,
         **evaluated,
     }
 
@@ -563,6 +704,11 @@ def main() -> None:
         action="store_true",
         help="Also verify SSE text and fragmented Tool Calling semantics",
     )
+    parser.add_argument(
+        "--overflow",
+        action="store_true",
+        help="Also verify context-overflow failures are classified as context_length",
+    )
     args = parser.parse_args()
     base_url = os.getenv("OPENAI_BASE_URL", "")
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -572,6 +718,7 @@ def main() -> None:
         requested_models=args.models.split(","),
         limit=args.limit,
         include_streaming=args.streaming,
+        include_overflow=args.overflow,
     )
     safe = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out:
@@ -588,7 +735,9 @@ if __name__ == "__main__":
 __all__ = [
     "DiscoveredModel",
     "ModelMatrixRequirements",
+    "OpenAICompatibleOverflowProbe",
     "OpenAICompatibleStreamingProbe",
+    "OverflowCompatibilityProbe",
     "StreamingCompatibilityProbe",
     "discover_models",
     "evaluate_model_matrix",

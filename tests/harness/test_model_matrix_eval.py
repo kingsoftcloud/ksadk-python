@@ -9,6 +9,7 @@ import pytest
 from ksadk.harness.model_matrix_eval import (
     DiscoveredModel,
     ModelMatrixRequirements,
+    OpenAICompatibleOverflowProbe,
     OpenAICompatibleStreamingProbe,
     discover_models,
     evaluate_model_matrix,
@@ -279,3 +280,118 @@ def test_streaming_probe_reports_malformed_tool_json_without_leaking_credentials
     with pytest.raises(RuntimeError, match="invalid JSON tool arguments") as caught:
         asyncio.run(probe.probe_tool(model="model-a", tool=tool))  # type: ignore[arg-type]
     assert fake_key not in str(caught.value)
+
+
+def test_overflow_probe_requires_classified_context_length_failure() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"error": {"message": "This model's maximum context length is 8192 tokens"}},
+        )
+
+    probe = OpenAICompatibleOverflowProbe(
+        base_url="http://gateway.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(probe.probe_overflow(model="model-a", context_window=8192))
+    assert result["passed"] is True
+    assert result["failure_kind"] == "context_length"
+    assert result["status_code"] == 400
+    assert "test-key" not in str(result)
+
+
+def test_overflow_probe_fails_when_provider_accepts_oversized_prompt() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    probe = OpenAICompatibleOverflowProbe(
+        base_url="http://gateway.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(probe.probe_overflow(model="model-a", context_window=8192))
+    assert result["passed"] is False
+    assert result["overflow_detected"] is False
+
+
+def test_overflow_probe_fails_on_unclassified_generic_500() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="upstream exploded")
+
+    probe = OpenAICompatibleOverflowProbe(
+        base_url="http://gateway.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(probe.probe_overflow(model="model-a", context_window=None))
+    assert result["passed"] is False
+    assert result["overflow_detected"] is True
+    assert result["failure_kind"] != "context_length"
+
+
+def test_evaluate_model_matrix_blocks_unclassified_overflow_and_missing_usage() -> None:
+    class Reasoner:
+        async def complete(self, *, tools, **_):
+            if tools:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="call-1",
+                            name="record_model_matrix_probe",
+                            arguments={"code": "KSADK-42"},
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="MODEL_MATRIX_OK", usage=None)
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    probe = OpenAICompatibleOverflowProbe(
+        base_url="http://gateway.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    report = asyncio.run(
+        evaluate_model_matrix(
+            (DiscoveredModel("model-a"),),
+            reasoner_factory=Reasoner,
+            overflow_probe=probe,
+            requirements=ModelMatrixRequirements(require_usage=True),
+        )
+    )
+    assert report["all_passed"] is False
+    result = report["results"][0]
+    assert result["overflow_classified"] is False
+    assert "overflow_failure_not_classified" in result["errors"]
+    assert "usage_not_reported" in result["errors"]
+
+
+def test_required_overflow_without_probe_is_explicit_blocker() -> None:
+    class Reasoner:
+        async def complete(self, *, tools, **_):
+            if tools:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="call-1",
+                            name="record_model_matrix_probe",
+                            arguments={"code": "KSADK-42"},
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(
+                final_text="MODEL_MATRIX_OK",
+                usage={"input_tokens": 8, "output_tokens": 2},
+            )
+
+    report = asyncio.run(
+        evaluate_model_matrix(
+            (DiscoveredModel("model-a"),),
+            reasoner_factory=Reasoner,
+            requirements=ModelMatrixRequirements(require_overflow=True),
+        )
+    )
+    assert report["all_passed"] is False
+    assert "overflow_probe_not_configured" in report["results"][0]["errors"]
