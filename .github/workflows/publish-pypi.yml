@@ -66,14 +66,15 @@ jobs:
       - name: Sync KsADK Web static assets
         run: make sync-ksadk-web-static
 
-      - name: Install Chromium for Phase 2 browser gates
-        run: |
-          uv sync --extra all
-          uv run playwright install --with-deps chromium
-
       - name: Run public release preflight
         if: env.PUBLISH_TARGET == 'full'
-        run: make public-preflight
+        # Mirror the 0.8.2 publish preflight shape: version + audit + ksadk-web
+        # sync + test + build/twine check. docs-site-build runs in the
+        # deploy-pages job; the heavy Phase 2 native/browser E2E gates are
+        # already enforced by the pull-request release-check workflow, so
+        # re-running them here only doubles work and stalls on the shared CI
+        # runner.
+        run: make public-preflight-publish
 
       - name: Run alias-only release checks
         if: env.PUBLISH_TARGET == 'alias-only'
