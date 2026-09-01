@@ -339,6 +339,20 @@ def validate_generated_static_tracking_policy(
         )
 
 
+def is_public_export(root: Path = ROOT) -> bool:
+    """Return whether *root* is a source-free public release checkout.
+
+    Public release branches deliberately track the compiled Studio/Hosted UI
+    payload while excluding editable frontend sources.  Internal development
+    checkouts do the inverse, so both the CLI gate and its regression tests
+    must derive the policy from the same repository shape.
+    """
+    return (
+        (root / "export-manifest.json").is_file()
+        and not (root / "ksadk/studio/react-ui/package.json").is_file()
+    )
+
+
 def _run(
     command: Iterable[str],
     *,
@@ -730,10 +744,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     source_gate_statuses = {name: "not_run" for name in SOURCE_E2E_STATUS_KEYS}
     if not args.skip_tests:
         source_gate_statuses = run_release_test_gates()
-    public_export = (
-        (ROOT / "export-manifest.json").is_file()
-        and not (ROOT / "ksadk/studio/react-ui/package.json").is_file()
-    )
+    public_export = is_public_export(ROOT)
     validate_generated_static_tracking_policy(ROOT, public_export=public_export)
     source_commit = _current_source_commit()
     artifacts = validate_distribution_archives(
