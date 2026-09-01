@@ -552,6 +552,14 @@ phase2-release-candidate-gate:
 public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build phase2-release-preflight
 	@echo "✅ public preflight passed"
 
+# Variant of public-preflight without docs-site-build.  The PyPI publish
+# workflow runs alongside the deploy-pages job, which already builds and
+# deploys the docs site; running docs-site-build in both jobs in parallel
+# contends on the pnpm store and can stall.  Use this in the publish workflow
+# so docs validation stays the deploy-pages job's responsibility.
+public-preflight-no-docs: public-version-gate public-audit sync-ksadk-web-static public-test phase2-release-preflight
+	@echo "✅ public preflight (no docs) passed"
+
 public-publish-check:
 	@echo "==> publication state check"
 	@if [ -f "scripts/check_publication_state.py" ]; then \

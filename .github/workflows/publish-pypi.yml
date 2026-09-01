@@ -73,7 +73,9 @@ jobs:
 
       - name: Run public release preflight
         if: env.PUBLISH_TARGET == 'full'
-        run: make public-preflight
+        # docs-site-build runs in the deploy-pages job; skip it here to avoid
+        # parallel pnpm store contention that previously stalled this step.
+        run: make public-preflight-no-docs
 
       - name: Run alias-only release checks
         if: env.PUBLISH_TARGET == 'alias-only'
