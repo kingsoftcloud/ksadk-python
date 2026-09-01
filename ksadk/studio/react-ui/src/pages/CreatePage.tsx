@@ -62,7 +62,7 @@ const POLICY_META: Record<string, { title: string; description: string }> = {
 };
 
 const RUNTIME_OPTIONS = [
-  { value: "harness", label: "KsADK Harness · Managed Agent Loop" },
+  { value: "harness", label: "KsADK Harness" },
   { value: "codex", label: "Codex · ManagedRuntime" },
   { value: "adk", label: "Google ADK · Python source" },
   { value: "langgraph", label: "LangGraph · Python graph" },
