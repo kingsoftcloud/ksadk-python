@@ -138,6 +138,10 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
 
     # ---- 框架钩子(子类按需 override) ----
 
+    def _requires_stable_stream_context(self) -> bool:
+        """Whether one Task must own the runner generator for its lifetime."""
+        return self._runtime_type == "adk"
+
     def capabilities(self) -> RuntimeCapabilityMatrix:
         """诚实矩阵:cancel 经 asyncio 任务打断(emulated,过 conformance);
         resume/checkpoint 依赖 runner 声明的原生 checkpoint;attach/durable_restore

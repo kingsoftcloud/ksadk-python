@@ -2263,6 +2263,7 @@ class ADKRunner(BaseRunner):
                                 fc_args = {}
                         yield {
                             "type": "tool_call",
+                            "tool_call_id": str(fc_id),
                             "tool_name": getattr(fc, "name", "unknown"),
                             "tool_args": fc_args,
                         }
@@ -2277,6 +2278,7 @@ class ADKRunner(BaseRunner):
                             emitted_tool_call_ids.add(tc_id)
                             yield {
                                 "type": "tool_call",
+                                "tool_call_id": str(tc_id),
                                 "tool_name": tc_name,
                                 "tool_args": getattr(tool_call, "input", {}),
                             }
@@ -2305,6 +2307,7 @@ class ADKRunner(BaseRunner):
                         fr = getattr(part, "function_response", None)
                         if fr is not None:
                             fr_name = getattr(fr, "name", "unknown")
+                            fr_id = getattr(fr, "id", "") or fr_name
                             fr_output = getattr(fr, "response", None) or {}
                             if not isinstance(fr_output, dict):
                                 try:
@@ -2318,6 +2321,7 @@ class ADKRunner(BaseRunner):
                                     fr_output = {"raw": str(fr_output)}
                             yield {
                                 "type": "tool_result",
+                                "tool_call_id": str(fr_id),
                                 "tool_name": fr_name,
                                 "tool_output": fr_output,
                             }

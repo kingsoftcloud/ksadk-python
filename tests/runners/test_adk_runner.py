@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from ksadk.runners.adk_runner import ADKRunner
 from ksadk.runtime.adapter import RunHandle, StartRequest
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
@@ -41,3 +45,41 @@ def test_metadata_flows_from_a2a_to_state_delta():
     raw = {"input_parts": ["p1"], "metadata": {"k": "v"}, "unknown": "x"}
     sd = runner._build_state_delta(raw)  # noqa: SLF001
     assert sd == {"input_parts": ["p1"], "metadata": {"k": "v"}}
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_ids_for_repeated_calls_to_the_same_tool():
+    runner = ADKRunner.__new__(ADKRunner)
+    runner._agent = SimpleNamespace(name="root")  # noqa: SLF001
+    runner._prepare_trace_metadata = lambda _session_id: (None, [], None, "root")  # noqa: SLF001
+    runner._extract_event_usage = lambda _event: {}  # noqa: SLF001
+    runner._extract_approval_signals = lambda _event: []  # noqa: SLF001
+
+    async def ensure_session(_session_id):
+        return "session-1"
+
+    async def event_stream():
+        for call_id in ("call-1", "call-2"):
+            call = SimpleNamespace(
+                id=call_id,
+                name="metaso_web_reader",
+                args={"url": "https://example.test/article"},
+            )
+            yield SimpleNamespace(
+                partial=False,
+                author="root",
+                content=SimpleNamespace(parts=[]),
+                actions=None,
+                get_function_calls=lambda call=call: [call],
+            )
+
+    async def prepare_events(**_kwargs):
+        return event_stream()
+
+    runner._ensure_session = ensure_session  # type: ignore[method-assign]  # noqa: SLF001
+    runner._prepare_run_events = prepare_events  # type: ignore[method-assign]  # noqa: SLF001
+
+    chunks = [chunk async for chunk in runner.stream({"input": "test"})]
+    tool_calls = [chunk for chunk in chunks if chunk.get("type") == "tool_call"]
+
+    assert [chunk["tool_call_id"] for chunk in tool_calls] == ["call-1", "call-2"]
