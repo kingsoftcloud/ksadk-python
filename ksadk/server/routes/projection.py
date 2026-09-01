@@ -262,6 +262,21 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         framework_ref = {framework: dict(canonical.ref)}
         capability = canonical.source.metadata.get("capability")
         capability = capability if isinstance(capability, Mapping) else {}
+        # Fallback: when the canonical event lacks capability fields, try
+        # the raw event metadata (legacy run_checkpoint stored backend/scope
+        # directly in metadata, and some adapters may not enrich source).
+        event_meta = event.metadata or {}
+        def _capability_str(key: str, default: str = "unknown") -> str:
+            value = capability.get(key)
+            if value is not None:
+                return str(value)
+            value = event_meta.get(key)
+            if value is not None:
+                return str(value)
+            return default
+        durable_raw = capability.get("durable")
+        if durable_raw is None:
+            durable_raw = event_meta.get("durable", False)
         metadata = {
             **dict(event.metadata or {}),
             **dict(canonical.source.metadata),
@@ -270,9 +285,9 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             "checkpoint_id": canonical.continuation_id,
             "framework": framework,
             "framework_ref": dict(framework_ref),
-            "backend": str(capability.get("backend") or "unknown"),
-            "scope": str(capability.get("scope") or "unknown"),
-            "durable": bool(capability.get("durable", False)),
+            "backend": _capability_str("backend"),
+            "scope": _capability_str("scope"),
+            "durable": bool(durable_raw),
             "is_resumable": canonical.resumable,
         }
     run_id = str(metadata.get("run_id") or "").strip()
@@ -283,9 +298,17 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         return None
     next_node = str(metadata.get("next_node") or "").strip()
     if not next_node:
-        langgraph_ref = framework_ref.get("langgraph")
+        langgraph_ref = framework_ref.get(framework)
         if isinstance(langgraph_ref, Mapping):
             next_node = str(langgraph_ref.get("next_node") or "").strip()
+            # Fallback: stream_mapping wraps framework_ref one level deeper;
+            # try ref[framework].framework_ref[framework].next_node.
+            if not next_node:
+                inner_ref = langgraph_ref.get("framework_ref")
+                if isinstance(inner_ref, Mapping):
+                    inner_framework_ref = inner_ref.get(framework)
+                    if isinstance(inner_framework_ref, Mapping):
+                        next_node = str(inner_framework_ref.get("next_node") or "").strip()
     is_terminal = bool(metadata.get("is_terminal", False))
     is_resumable_raw = metadata.get("is_resumable")
     is_resumable = is_resumable_raw if isinstance(is_resumable_raw, bool) else None

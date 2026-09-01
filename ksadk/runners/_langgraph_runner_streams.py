@@ -693,6 +693,31 @@ class _LangGraphStreamMixin:
                             (ckpt_config.get("configurable") or {}).get("checkpoint_id", "") or ""
                         )
                         if ckpt_id:
+                            # Extract next_node from graph state so the
+                            # projection layer can surface it in the REST
+                            # checkpoint payload.
+                            next_nodes_raw = (
+                                ckpt_state.get("next")
+                                if isinstance(ckpt_state, dict)
+                                else getattr(ckpt_state, "next", None)
+                            )
+                            ckpt_next_node = ""
+                            if isinstance(next_nodes_raw, str):
+                                ckpt_next_node = next_nodes_raw.strip()
+                            elif isinstance(next_nodes_raw, (list, tuple, set)):
+                                ckpt_next_node = str(next(iter(next_nodes_raw)) or "").strip()
+                            # Enrich source metadata with checkpoint
+                            # capability (backend/scope/durable) so the
+                            # projection layer does not fall back to unknown.
+                            ckpt_capability = self.describe_checkpoint_capability()
+                            ckpt_source_metadata: dict[str, Any] = {"checkpoint": True}
+                            if isinstance(ckpt_capability, dict):
+                                ckpt_source_metadata["capability"] = {
+                                    "backend": str(ckpt_capability.get("Backend") or "unknown"),
+                                    "scope": str(ckpt_capability.get("Scope") or "unknown"),
+                                    "durable": bool(ckpt_capability.get("Durable", False)),
+                                    **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
+                                }
                             ckpt_ref = {
                                 "thread_id": str(
                                     (ckpt_config.get("configurable") or {}).get(
@@ -701,6 +726,7 @@ class _LangGraphStreamMixin:
                                 ),
                                 "checkpoint_ns": "",
                                 "checkpoint_id": ckpt_id,
+                                **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
                             }
                             continuation_id = stable_item_id(
                                 "langgraph",
@@ -729,7 +755,7 @@ class _LangGraphStreamMixin:
                                 source=SourceRef(
                                     framework="langgraph",
                                     native_run_id=run_id,
-                                    metadata={"checkpoint": True},
+                                    metadata=ckpt_source_metadata,
                                 ),
                                 continuation_id=continuation_id,
                                 continuation_kind="graph_checkpoint",

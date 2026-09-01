@@ -621,26 +621,47 @@ class _RunnerStreamMappingMixin:
             if isinstance(runtime_ref, dict):
                 handle.native_ref.update(runtime_ref)
             item_id = stable_item_id(framework, run_id, "$run")
+            # Extract checkpoint capability from agentengine metadata so the
+            # canonical event carries backend/scope/next_node facts that the
+            # projection layer (projection.py) needs for the REST payload.
+            capability: dict[str, Any] = {}
+            for cap_key in ("backend", "scope", "durable", "next_node",
+                            "is_terminal", "is_resumable", "resume_status",
+                            "resume_disabled_reason"):
+                cap_val = agentengine.get(cap_key)
+                if cap_val is not None:
+                    capability[cap_key] = cap_val
+            canonical_kwargs = self._canonical_kwargs(  # type: ignore[attr-defined]
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="continuation.created",
+                part_id="continuation",
+            )
+            if capability:
+                base_source = canonical_kwargs["source"]
+                canonical_kwargs["source"] = SourceRef(
+                    framework=base_source.framework,
+                    protocol=base_source.protocol,
+                    native_run_id=base_source.native_run_id,
+                    metadata={**base_source.metadata, "capability": capability},
+                )
             ref_value = cast(
                 JsonValue,
                 framework_ref if isinstance(framework_ref, dict) else {},
             )
+            next_node_val = agentengine.get("next_node")
             return [
                 ContinuationCreated(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="continuation.created",
-                        part_id="continuation",
-                    ),
+                    **canonical_kwargs,
                     continuation_id=checkpoint_id,
                     continuation_kind="graph_checkpoint",
-                    resumable=True,
+                    resumable=bool(agentengine.get("is_resumable", True)),
                     ref={
                         "framework": ckpt_framework,
                         "framework_ref": ref_value,
                         "resume_target": ref_value,
+                        **({"next_node": str(next_node_val)} if next_node_val else {}),
                     },
                 )
             ]
