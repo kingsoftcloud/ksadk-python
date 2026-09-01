@@ -20,6 +20,7 @@ from ksadk.events.canonical import (
     RunFailed,
     RunStarted,
     SourceRef,
+    UsageReported,
 )
 from ksadk.events.content import ContentSnapshot, TextContent, ToolCallContent, ToolResultContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
@@ -174,6 +175,12 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         ):
             messages.append({"role": "user", "content": current_input})
         execution_log: list[dict[str, Any]] = []
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+        }
 
         for _turn_number in range(_MAX_REASONING_TURNS):
             turn = await self._reasoner.complete(
@@ -182,6 +189,8 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 messages=tuple(messages),
                 tools=tools,
             )
+            for key in usage:
+                usage[key] += max(0, int((turn.usage or {}).get(key, 0)))
             if turn.tool_calls:
                 messages.append(
                     {
@@ -237,6 +246,10 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 "prompt": prompt,
                 "tool_calls": execution_log,
                 "sandbox_read_only": self._config.sandbox.read_only,
+                "usage": {
+                    **usage,
+                    "total_tokens": usage["input_tokens"] + usage["output_tokens"],
+                },
             }
         raise RuntimeError(f"Harness reasoning exceeded {_MAX_REASONING_TURNS} turns")
 
@@ -307,6 +320,15 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         run.task = asyncio.create_task(self.execute_request(run.request))
         try:
             result = await run.task
+            usage = result["usage"]
+            yield UsageReported(
+                **envelope("usage.reported", run_item_id, "usage"),
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                total_tokens=usage["total_tokens"],
+                cached_tokens=usage["cached_tokens"],
+                reasoning_tokens=usage["reasoning_tokens"],
+            )
             for call in result["tool_calls"]:
                 call_item_id = stable_item_id(
                     framework, handle.run_id, "tool_call", call["call_id"]

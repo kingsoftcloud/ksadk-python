@@ -58,6 +58,38 @@ async def test_native_harness_consumes_studio_conversation_history(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_native_harness_reports_aggregated_model_usage(tmp_path):
+    class UsageReasoner:
+        async def complete(self, **_kwargs):
+            return HarnessReasoningTurn(
+                final_text="done",
+                usage={
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "cached_tokens": 20,
+                    "reasoning_tokens": 10,
+                },
+            )
+
+    adapter = HarnessRuntimeAdapter(
+        HarnessConfig(model="glm-5.2", prompt="budget assistant"),
+        reasoner=UsageReasoner(),
+        workspace_root=tmp_path,
+    )
+    handle = await adapter.start(
+        StartRequest(input="calculate", user_id="u", session_id="s")
+    )
+    events = [event async for event in adapter.stream(handle)]
+    usage = next(event for event in events if event.event_type == "usage.reported")
+
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.total_tokens == 150
+    assert usage.cached_tokens == 20
+    assert usage.reasoning_tokens == 10
+
+
+@pytest.mark.asyncio
 async def test_production_reasoner_uses_model_tool_loop_without_echo(monkeypatch, tmp_path):
     import litellm
 
