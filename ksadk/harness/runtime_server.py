@@ -155,10 +155,18 @@ class DeploymentRuntime:
     async def initialize(self) -> None:
         if self.engine is not None:
             return
-        if self._state_dir is None:
+        import os
+
+        dsn = os.getenv("KSADK_CHECKPOINT_DSN", "").strip()
+        if dsn:
+            from ksadk.harness.engine.postgres_checkpointer import postgres_checkpointer
+
+            self._checkpointer_context = postgres_checkpointer(dsn)
+            checkpointer: Any = await self._checkpointer_context.__aenter__()
+        elif self._state_dir is None:
             from ksadk.harness.engine.langgraph import memory_checkpointer
 
-            checkpointer: Any = memory_checkpointer()
+            checkpointer = memory_checkpointer()
         else:
             from ksadk.harness.engine.langgraph import sqlite_checkpointer
 

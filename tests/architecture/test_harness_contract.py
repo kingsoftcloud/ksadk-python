@@ -66,7 +66,7 @@ def test_engine_langgraph_is_the_only_langgraph_entrypoint() -> None:
     harness_root = ROOT / "ksadk" / "harness"
     offenders: list[str] = []
     for path in harness_root.rglob("*.py"):
-        if path.name in ("langgraph.py", "graph_builder.py") and path.parent.name == "engine":
+        if path.name in ("langgraph.py", "graph_builder.py", "postgres_checkpointer.py") and path.parent.name == "engine":
             continue
         for module in _imported_modules(path):
             if module.startswith("langgraph"):
