@@ -427,7 +427,7 @@ def test_public_metadata_uses_runtime_platform_positioning():
 
     assert pyproject["project"]["version"] == "0.8.3"
     assert 'VERSION = "0.8.3"' in version_text
-    assert "## [0.8.3] - Unreleased" in changelog
+    assert "## [0.8.3] - 2026-09-01" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
