@@ -3227,12 +3227,12 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     message_events = [
         event for event in events if event["EventType"] in {"user_message", "item.completed"}
     ]
-    assert [event["Author"] for event in message_events] == ["user", "ksadk"]
-    assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
+    assert [event["Author"] for event in message_events] == ["ksadk", "user"]
     assert (
-        message_events[1]["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"]
+        message_events[0]["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"]
         == "assistant says hi"
     )
+    assert message_events[1]["Content"]["parts"][0]["text"] == "hello"
 
 
 @pytest.mark.asyncio
@@ -3272,7 +3272,7 @@ async def test_runtime_local_list_session_events_returns_total_and_page(monkeypa
     assert data["Offset"] == 0
     assert data["Limit"] == 2
     assert data["Total"] == 4
-    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+    assert [event["SeqId"] for event in data["Events"]] == [4, 3]
 
 
 @pytest.mark.asyncio
@@ -3308,7 +3308,7 @@ async def test_runtime_local_list_session_events_filters_by_after_seq_id(monkeyp
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+    assert [event["SeqId"] for event in data["Events"]] == [4, 3]
     assert data["Total"] == 2
     assert data["AfterSeqId"] == 2
 
@@ -3347,7 +3347,7 @@ async def test_runtime_local_list_session_events_filters_by_before_seq_id(monkey
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert [event["SeqId"] for event in data["Events"]] == [2, 3]
+    assert [event["SeqId"] for event in data["Events"]] == [3, 2]
     assert data["Total"] == 3
     assert data["BeforeSeqId"] == 4
 
@@ -3387,7 +3387,7 @@ async def test_runtime_list_session_events_is_bounded_by_default_and_schema_limi
     data = bounded.json()["Data"]
     assert data["Limit"] == 200
     assert data["Total"] == 205
-    assert [item["SeqId"] for item in data["Events"]] == list(range(6, 206))
+    assert [item["SeqId"] for item in data["Events"]] == list(range(205, 5, -1))
     assert too_large.status_code == 422
 
 
@@ -6377,3 +6377,87 @@ async def test_list_session_checkpoints_without_session_id_returns_all_sessions(
     assert data["Total"] == 2
     assert {cp["SessionId"] for cp in data["Checkpoints"]} == {"sess-a", "sess-b"}
     assert {cp["CheckpointId"] for cp in data["Checkpoints"]} == {"ckpt-a", "ckpt-b"}
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_filters_types_and_checkpoint_ids_before_pagination(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "events-filtered")
+    for event_id, event_type, checkpoint_id, timestamp in (
+        ("match-old", "user_message", "cp-a", 1),
+        ("wrong-type", "assistant_message", "cp-a", 2),
+        ("wrong-checkpoint", "user_message", "cp-b", 3),
+        ("match-new", "user_message", "cp-a", 4),
+    ):
+        await service.append_event(
+            "events-filtered",
+            SessionEvent(
+                id=event_id,
+                event_type=event_type,
+                timestamp=timestamp,
+                metadata={"checkpoint_id": checkpoint_id},
+            ),
+        )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "SessionId": "events-filtered",
+                "EventTypes": [" user_message ", "user_message"],
+                "CheckpointIds": [" cp-a ", "cp-a"],
+                "Limit": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["EventTypes"] == ["user_message"]
+    assert data["CheckpointIds"] == ["cp-a"]
+    assert data["Total"] == 2
+    assert [event["EventId"] for event in data["Events"]] == ["match-new"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_applies_multi_id_filters_before_pagination(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    for session_id in ("filtered-a", "filtered-b"):
+        await service.create_session("demo-agent", "user-1", session_id)
+        for checkpoint_id, framework in (("keep", "langgraph"), ("drop", "adk")):
+            await conversation_runtime.append_run_checkpoint_event(
+                session_id=session_id,
+                author="demo-agent",
+                run_id="run-filtered",
+                checkpoint_id=f"{checkpoint_id}-{session_id}",
+                framework=framework,
+                framework_ref={},
+                session_service_provider=lambda: service,
+            )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-1",
+                "SessionId": ["filtered-a", "filtered-b"],
+                "CheckpointId": ["keep-filtered-a", "keep-filtered-b"],
+                "RunId": "run-filtered",
+                "Framework": "langgraph",
+                "Limit": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Total"] == 2
+    assert len(data["Checkpoints"]) == 1
+    assert data["SessionId"] == ["filtered-a", "filtered-b"]
+    assert data["CheckpointId"] == ["keep-filtered-a", "keep-filtered-b"]
