@@ -67,7 +67,9 @@ jobs:
         run: make sync-ksadk-web-static
 
       - name: Install Chromium for Phase 2 browser gates
-        run: uv run playwright install --with-deps chromium
+        run: |
+          uv sync --extra all
+          uv run playwright install --with-deps chromium
 
       - name: Run public release preflight
         if: env.PUBLISH_TARGET == 'full'
