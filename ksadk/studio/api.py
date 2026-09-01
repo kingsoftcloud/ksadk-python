@@ -486,7 +486,7 @@ def create_studio_app(
                 "build": True,
                 "run": True,
                 "runtimeRegistry": True,
-                "runtimeTypes": ["codex", "adk", "langgraph"],
+                "runtimeTypes": ["harness", "codex", "adk", "langgraph"],
                 "evaluation": True,
                 "deployment": True,
                 "cloudRebuild": False,

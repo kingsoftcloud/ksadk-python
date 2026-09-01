@@ -11,10 +11,39 @@ from typing import Any
 from ksadk.codex.client import AsyncCodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.runtime.adapter import StartRequest
-from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry
+from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry, StartRequest
 from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime.launch import RuntimeLaunchContext
+
+
+def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
+    """Create the native KsADK Harness adapter from an immutable launch manifest."""
+
+    from ksadk.harness.config import HarnessConfig
+    from ksadk.harness.reasoner import LiteLLMHarnessReasoner
+    from ksadk.harness.runtime import HarnessRuntimeAdapter
+
+    config = dict(context.config)
+    prompt = str(config.get("prompt") or config.get("base_instructions") or "").strip()
+    model = str(config.get("model") or "").strip()
+    if not prompt:
+        raise ValueError("harness runtime requires prompt/base_instructions")
+    if not model:
+        raise ValueError("harness runtime requires model")
+    return HarnessRuntimeAdapter(
+        HarnessConfig.from_dict(
+            {
+                "runtime": "yaml",
+                "model": model,
+                "prompt": prompt,
+                "sandbox": {"read_only": bool(config.get("sandbox_read_only", True))},
+            },
+            source="RuntimeLaunchContext.config",
+        ),
+        agent_name=str(config.get("agent_id") or "harness-agent"),
+        reasoner=LiteLLMHarnessReasoner(base_url=str(config.get("base_url") or "")),
+        workspace_root=context.project_dir,
+    )
 
 
 def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, Any]:
@@ -319,10 +348,11 @@ def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:
 
 
 def build_default_runtime_registry() -> RuntimeRegistry:
-    """注册内置 Codex、ADK 和 LangGraph Runtime Factory。"""
+    """注册内置 KsADK Harness、Codex、ADK 和 LangGraph Runtime Factory。"""
 
     registry = RuntimeRegistry()
     registry.register("codex", _create_codex)
+    registry.register("harness", _create_harness)
     registry.register("adk", _create_adk)
     registry.register("langgraph", _create_langgraph)
     return registry

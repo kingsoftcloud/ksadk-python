@@ -40,7 +40,7 @@ from ksadk.studio.workspace import Workspace
 _SLUG = re.compile(r"[^a-z0-9]+")
 _MAX_IMPORT_BYTES = 100 * 1024 * 1024
 _MAX_IMPORT_FILES = 2000
-_SUPPORTED_RUNTIMES = frozenset({"codex", "adk", "langgraph"})
+_SUPPORTED_RUNTIMES = frozenset({"harness", "codex", "adk", "langgraph"})
 
 
 class ConversationProposal(BaseModel):
@@ -48,7 +48,7 @@ class ConversationProposal(BaseModel):
 
     name: str = Field(min_length=1, max_length=128)
     slug: str = Field(min_length=1, max_length=63)
-    runtimeType: Literal["codex", "adk", "langgraph"]
+    runtimeType: Literal["harness", "codex", "adk", "langgraph"]
     description: str = Field(default="", max_length=1024)
     spec: AgentSpec
 
@@ -128,18 +128,24 @@ class AgentAuthoringService:
         if normalized not in _SUPPORTED_RUNTIMES:
             raise StudioError(
                 "RUNTIME_NOT_SUPPORTED",
-                "创建方式仅支持 Codex、ADK 和 LangGraph",
+                "创建方式仅支持 KsADK Harness、Codex、ADK 和 LangGraph",
                 status_code=422,
                 field="runtimeType",
                 details={"runtimeType": normalized},
             )
-        if normalized == "codex":
+        if normalized in {"codex", "harness"}:
             # A new YAML Agent must lock the CLI actually installed on this
             # Studio host. Cloud admission resolves that explicit version via
             # the Server-owned catalog instead of accepting a client image.
+            from ksadk.version import VERSION
+
             return RuntimeRef(
-                type="codex",
-                version=installed_runtime_version("codex") or "0.144.4",
+                type=cast(Any, normalized),
+                version=(
+                    installed_runtime_version("codex") or "0.144.4"
+                    if normalized == "codex"
+                    else VERSION
+                ),
             )
         return RuntimeRef(
             type=cast(Any, normalized),

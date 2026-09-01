@@ -9,6 +9,17 @@ from ksadk.managed_runtime import installed_runtime_version
 from ksadk.runtime import RuntimeExecutor
 
 _RUNTIMES = {
+    "harness": {
+        "package": "ksadk",
+        "displayName": "KsADK Harness",
+        "adapter": "HarnessRuntimeAdapter",
+        "capabilities": {
+            "session": True,
+            "cancel": True,
+            "resume": "not_supported",
+            "checkpoint": "not_supported",
+        },
+    },
     "codex": {
         "package": "openai-codex",
         "displayName": "Codex",
@@ -54,6 +65,8 @@ def inspect_runtime_catalog(executor: RuntimeExecutor) -> list[dict]:
             installed = (
                 installed_runtime_version("codex")
                 if runtime_type == "codex"
+                else package_version("ksadk")
+                if runtime_type == "harness"
                 else package_version(package)
             )
         except PackageNotFoundError:
@@ -65,7 +78,10 @@ def inspect_runtime_catalog(executor: RuntimeExecutor) -> list[dict]:
                 "installed": bool(installed),
                 "version": installed or None,
                 "status": "ready" if installed else "missing-dependency",
-                "installCommand": f"pip install 'ksadk[{runtime_type}]'",
+                "installCommand": (
+                    "pip install ksadk" if runtime_type == "harness"
+                    else f"pip install 'ksadk[{runtime_type}]'"
+                ),
             }
         )
     return items

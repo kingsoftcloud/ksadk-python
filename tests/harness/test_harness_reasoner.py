@@ -7,9 +7,54 @@ import pytest
 
 from ksadk.harness import HarnessApp, HarnessConfig
 from ksadk.harness.config import McpToolSpec
-from ksadk.harness.reasoner import LiteLLMHarnessReasoner, resolve_model_identifier
+from ksadk.harness.reasoner import (
+    HarnessReasoningTurn,
+    LiteLLMHarnessReasoner,
+    resolve_model_identifier,
+)
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime import StartRequest
+
+
+@pytest.mark.asyncio
+async def test_native_harness_consumes_studio_conversation_history(tmp_path):
+    captured: list[dict] = []
+
+    class CaptureReasoner:
+        async def complete(self, **kwargs):
+            captured.extend(kwargs["messages"])
+            return HarnessReasoningTurn(final_text="ok")
+
+    adapter = HarnessRuntimeAdapter(
+        HarnessConfig(model="glm-5.2", prompt="budget assistant"),
+        reasoner=CaptureReasoner(),
+        workspace_root=tmp_path,
+    )
+    result = await adapter.execute_request(
+        StartRequest(
+            input="compress the prior result",
+            user_id="u",
+            session_id="s",
+            metadata={
+                "conversation_request": {
+                    "messages": [
+                        {"role": "user", "content": "budget is 50"},
+                        {"role": "assistant", "content": "total is 55"},
+                        {"role": "user", "content": "compress the prior result"},
+                    ]
+                }
+            },
+        )
+    )
+
+    assert result["output"] == "ok"
+    assert [item["role"] for item in captured] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert captured[-1]["content"] == "compress the prior result"
 
 
 @pytest.mark.asyncio

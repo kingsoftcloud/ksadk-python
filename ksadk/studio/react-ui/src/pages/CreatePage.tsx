@@ -62,6 +62,7 @@ const POLICY_META: Record<string, { title: string; description: string }> = {
 };
 
 const RUNTIME_OPTIONS = [
+  { value: "harness", label: "KsADK Harness · Managed Agent Loop" },
   { value: "codex", label: "Codex · ManagedRuntime" },
   { value: "adk", label: "Google ADK · Python source" },
   { value: "langgraph", label: "LangGraph · Python graph" },
@@ -933,7 +934,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }
 
   const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
-  const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph" } as Record<string, string>)[runtime] || runtime;
+  const runtimeLabel = ({ harness: "KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
@@ -945,7 +946,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const selectedModelNeedsCredential = selectedModelItems.some(
     item => !hasConfiguredCredential(item),
   );
-  const isManagedRuntime = runtime === "codex";
+  const isManagedRuntime = runtime === "codex" || runtime === "harness";
   const wizardStepMeta = isManagedRuntime
     ? [...WIZARD_STEP_META.slice(0, 3), ["检查并创建", "校验声明与打开会话"]]
     : WIZARD_STEP_META;

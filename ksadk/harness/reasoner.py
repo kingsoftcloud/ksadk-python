@@ -93,11 +93,15 @@ class LiteLLMHarnessReasoner:
         *,
         streaming: bool | None = None,
         capability_store: Any | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         # None keeps compatibility while allowing deployments to turn streaming on
         # without changing an immutable Agent Revision.
         self._streaming = streaming
         self._capability_store = capability_store
+        self._base_url = str(base_url or "").strip() or None
+        self._api_key = str(api_key or "").strip() or None
         #: 最近一次调用实际使用的模式（供审计/测试断言能力裁决结果）。
         self.last_streaming_mode: bool | None = None
 
@@ -130,8 +134,8 @@ class LiteLLMHarnessReasoner:
             if max_output_tokens < 1:
                 raise ValueError("max_output_tokens must be positive")
             kwargs["max_tokens"] = max_output_tokens
-        base_url = os.getenv("OPENAI_BASE_URL")
-        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = self._base_url or os.getenv("OPENAI_BASE_URL")
+        api_key = self._api_key or os.getenv("OPENAI_API_KEY")
         if base_url:
             kwargs["base_url"] = base_url
         if api_key:

@@ -143,6 +143,7 @@ def test_matrix_covers_all_registered_runners():
     # langgraph ↔ external-langgraph）。
     normalize = {
         "managed": "managed-langgraph",
+        "harness": "native-harness-adapter",
         "langgraph": "external-langgraph",
     }
     registered = {

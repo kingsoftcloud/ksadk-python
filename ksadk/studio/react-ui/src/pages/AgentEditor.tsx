@@ -89,13 +89,14 @@ function modelName(item?: EditorCatalogItem) {
 }
 
 function runtimeTitle(runtime: string) {
+  if (runtime === "harness") return "HarnessRuntimeAdapter";
   if (runtime === "adk") return "ADKRuntimeAdapter";
   if (runtime === "langgraph") return "LangGraphRuntimeAdapter";
   return "CodexRuntimeAdapter";
 }
 
 function runtimeManifest(runtime: string) {
-  if (runtime === "codex") return { type: "codex" };
+  if (runtime === "codex" || runtime === "harness") return { type: runtime };
   return {
     type: runtime,
     projectPath: ".",
@@ -541,6 +542,7 @@ export function AgentEditor({
             disabled
             value={runtime}
             options={[
+              { value: "harness", label: "HarnessRuntimeAdapter" },
               { value: "codex", label: "CodexRuntimeAdapter" },
               { value: "adk", label: "ADKRuntimeAdapter" },
               { value: "langgraph", label: "LangGraphRuntimeAdapter" },

@@ -589,7 +589,7 @@ class StudioAuthoringCoordinator:
             getattr(model, "endpoint_url", "-"),
         )
         normalized_runtime_type = str(runtime_type or "").strip().lower()
-        if normalized_runtime_type not in {"codex", "adk", "langgraph"}:
+        if normalized_runtime_type not in {"harness", "codex", "adk", "langgraph"}:
             raise StudioError(
                 "AGENT_RUNTIME_INVALID",
                 "对话构建 Runtime 仅支持 Codex、ADK 或 LangGraph",

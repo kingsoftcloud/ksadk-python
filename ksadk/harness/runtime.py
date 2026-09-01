@@ -163,10 +163,16 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
     async def execute_request(self, request: StartRequest) -> dict[str, Any]:
         tools = await self._ensure_tools()
         model, prompt = self._effective(request)
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": str(request.input or "")},
-        ]
+        conversation = request.conversation_preprocessing()
+        history = [dict(item) for item in conversation.messages] if conversation else []
+        messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
+        messages.extend(history)
+        current_input = str(request.input or "")
+        if not history or not (
+            str(history[-1].get("role") or "") == "user"
+            and str(history[-1].get("content") or "") == current_input
+        ):
+            messages.append({"role": "user", "content": current_input})
         execution_log: list[dict[str, Any]] = []
 
         for _turn_number in range(_MAX_REASONING_TURNS):
