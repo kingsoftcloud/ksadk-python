@@ -14,11 +14,14 @@ from ksadk.harness.observability.inspection import (
     context_trace,
     token_report,
 )
+from ksadk.harness.observability.metrics import PerformanceMetrics, collect_metrics
 from ksadk.harness.observability.otel_exporter import OTelSpanAdapter
 
 __all__ = [
     "OTelSpanAdapter",
+    "PerformanceMetrics",
     "capability_health",
+    "collect_metrics",
     "compaction_trace",
     "context_inspection",
     "context_trace",
