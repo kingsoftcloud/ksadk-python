@@ -227,8 +227,9 @@ async def resume_run_action(request: ResumeRunActionRequest):
             run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
         )
         detached = deps.detached_stream_class()(
-            deps.conversation().stream_responses_conversation_turn(
-                runner=active_runner,
+            stream_runtime_responses_conversation_turn(
+                executor=executor,
+                launch_context=launch_context,
                 agent_id=request.AgentId,
                 user_id=user_id,
                 messages=[],
@@ -241,10 +242,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 include_agentengine_metadata=True,
                 resume_input=resume_input,
                 invocation_id=resume_invocation_id,
-                prepare_runner=_prepare_runner_for_model,
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_BACKGROUND,
-                resume_lifecycle_prepared=True,
             ),
             invocation_id=resume_invocation_id,
             session_id=request.SessionId,
@@ -316,6 +315,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 run_mode=RUN_MODE_BACKGROUND,
             ),
             invocation_id=resume_invocation_id,
+            session_id=request.SessionId,
             resume_key=resume_key,
             run_mode=RUN_MODE_BACKGROUND,
             run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,

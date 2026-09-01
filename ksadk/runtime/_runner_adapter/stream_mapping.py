@@ -188,9 +188,15 @@ class _RunnerStreamMappingMixin:
     """``_map_runner_stream`` / ``_chunk_to_event`` 的实现载体(纯移动自 runner_adapter)。"""
 
     async def _map_runner_stream(
-        self, handle: RunHandle, runner_input: dict
+        self,
+        handle: RunHandle,
+        runner_input: dict,
+        *,
+        active_run: Optional[_ActiveRun] = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        run: Optional[_ActiveRun] = self._active_runs.get(handle.run_id)  # type: ignore[attr-defined]
+        run: Optional[_ActiveRun] = active_run
+        if run is None:
+            run = self._active_runs.get(handle.run_id)  # type: ignore[attr-defined]
         interrupt = run.interrupt_event if run is not None else None
         prepared_start = run.__dict__.get("_prepared_start") if run is not None else None
         invocation_context = (

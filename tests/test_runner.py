@@ -335,6 +335,71 @@ def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_adk_runner_attaches_persisted_invocation_with_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch Runtime v2 rejecting ADK recovery after the original process exits."""
+    from ksadk.runners.adk_runner import ADKRunner
+    from ksadk.runtime.adapter import RunHandle
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="adk",
+        native_ref={"invocation_id": "invocation-1"},
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_rejects_persisted_invocation_without_shared_backend(
+    monkeypatch, tmp_path
+):
+    from ksadk.runners.adk_runner import ADKRunner
+    from ksadk.runtime.adapter import RunHandle
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": False,
+            "Durable": True,
+            "SharedAcrossPods": False,
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="adk",
+        native_ref={"invocation_id": "invocation-1"},
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
+
+
+@pytest.mark.asyncio
 async def test_adk_capability_preparation_uses_database_without_loading_agent(
     monkeypatch, tmp_path
 ):

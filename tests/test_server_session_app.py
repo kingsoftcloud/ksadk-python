@@ -99,6 +99,11 @@ class _CheckpointResumeRunner(_DummyRunner):
         }
 
 
+class _FailingAttachCheckpointRunner(_CheckpointResumeRunner):
+    def attach_runtime_handle(self, _handle):
+        raise RuntimeError("checkpoint backend unavailable")
+
+
 class _CheckpointMetadataRunner(_DummyRunner):
     def __init__(self):
         super().__init__()
@@ -4342,16 +4347,17 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
         session_service_provider=lambda: service,
     )
 
-    captured_invocations: list[str | None] = []
+    captured_calls: list[tuple[str | None, str | None]] = []
 
     def fake_detached_streaming_response(source, *, invocation_id=None, **kwargs):
-        del kwargs
-        captured_invocations.append(invocation_id)
+        del source
+        captured_calls.append((invocation_id, kwargs.get("session_id")))
         return Response(status_code=202)
 
     monkeypatch.setattr(
         server_app_module, "_detached_streaming_response", fake_detached_streaming_response
     )
+
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -4368,7 +4374,152 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
         )
 
     assert response.status_code == 202
-    assert captured_invocations == ["run-ui-resume-1"]
+    assert captured_calls == [("run-ui-resume-1", "sess-resume-stream")]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_background_uses_runtime_executor(monkeypatch):
+    """Catch the migrated Background branch referencing removed active_runner state."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-background"
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-background",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-resume-background",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-background",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+                "ResumeAttemptId": "resume-1",
+                "InvocationId": "run-ui-resume-background-1",
+                "Background": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["Data"]["Background"] is True
+    detached = server_app_module._DETACHED_STREAMS_BY_INVOCATION[
+        "run-ui-resume-background-1"
+    ]
+    task_results = await asyncio.gather(detached._task, return_exceptions=True)
+    assert task_results == [None]
+    assert runner.calls, detached._backlog
+    assert runner.calls[-1]["run_id"] == "run-1"
+    assert runner.calls[-1]["invocation_id"] == "run-ui-resume-background-1"
+    for _ in range(50):
+        events = await service.get_events("sess-resume-background")
+        statuses = [
+            event.content.get("status")
+            for event in events
+            if event.event_type == "run_status"
+            and event.invocation_id == "run-ui-resume-background-1"
+        ]
+        if statuses and statuses[-1] in {"completed", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+    assert statuses == ["resuming", "in_progress", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_stream_persists_attach_failure(monkeypatch):
+    """A detached attach failure must terminate the resume invocation."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _FailingAttachCheckpointRunner()
+
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-attach-failure"
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-attach-failure",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-resume-attach-failure",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+    invocation_id = "run-ui-resume-attach-failure"
+    captured_detached = []
+
+    def start_detached_stream_and_return_accepted(source, *, invocation_id=None, **kwargs):
+        detached = server_app_module._DetachedSSEStream(
+            source,
+            invocation_id=invocation_id,
+            session_id=kwargs.get("session_id"),
+            run_mode=kwargs.get("run_mode", "unknown"),
+            run_trigger=kwargs.get("run_trigger", "unknown"),
+        )
+        captured_detached.append(detached)
+        return Response(status_code=202)
+
+    monkeypatch.setattr(
+        server_app_module,
+        "_detached_streaming_response",
+        start_detached_stream_and_return_accepted,
+    )
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-attach-failure",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+                "ResumeAttemptId": "resume-1",
+                "InvocationId": invocation_id,
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert len(captured_detached) == 1
+    detached = captured_detached[0]
+    task_results = await asyncio.gather(detached._task, return_exceptions=True)
+    assert len(task_results) == 1
+    assert isinstance(task_results[0], RuntimeError)
+    events = await service.get_events("sess-resume-attach-failure")
+    statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status" and event.invocation_id == invocation_id
+    ]
+    assert statuses == ["resuming", "failed"]
 
 
 @pytest.mark.asyncio

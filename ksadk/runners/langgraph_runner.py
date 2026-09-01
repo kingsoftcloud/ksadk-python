@@ -271,6 +271,9 @@ class LangGraphRunner(BaseRunner):
         if checkpointer is None:
             checkpointer = getattr(agent, "_checkpointer", None)
         if checkpointer is None:
+            lazy_capability = self.describe_lazy_checkpoint_capability()
+            if lazy_capability is not None:
+                return self._normalize_lazy_checkpoint_capability(lazy_capability)
             if self._managed_checkpoint_error is not None:
                 reason_code, reason = self._managed_checkpoint_error
                 return {
@@ -283,9 +286,6 @@ class LangGraphRunner(BaseRunner):
                     "ReasonCode": reason_code,
                     "Reason": reason,
                 }
-            lazy_capability = self.describe_lazy_checkpoint_capability()
-            if lazy_capability is not None:
-                return self._normalize_lazy_checkpoint_capability(lazy_capability)
             return {
                 "Supported": False,
                 "Backend": "none",
@@ -371,6 +371,52 @@ class LangGraphRunner(BaseRunner):
 
     async def refresh_runtime_capabilities(self) -> None:
         await self._prepare_managed_checkpoint(allow_transient_retry=True)
+
+    async def attach_runtime_handle(self, handle: Any) -> bool:
+        """Validate a persisted LangGraph checkpoint handle for Runtime v2.
+
+        The concrete graph resolves the checkpoint during its native resume
+        call.  Attachment verifies the durable backend and the complete native
+        address without fabricating process-local ownership.
+        """
+
+        if str(getattr(handle, "runtime_type", "") or "").strip().lower() != "langgraph":
+            return False
+        native_ref = getattr(handle, "native_ref", None)
+        if not isinstance(native_ref, Mapping):
+            return False
+        framework_ref = native_ref.get("framework_ref")
+        langgraph_ref = (
+            framework_ref.get("langgraph") if isinstance(framework_ref, Mapping) else None
+        )
+        checkpoint_id = str(
+            native_ref.get("checkpoint_id")
+            or (
+                langgraph_ref.get("checkpoint_id")
+                if isinstance(langgraph_ref, Mapping)
+                else ""
+            )
+            or ""
+        ).strip()
+        thread_id = str(
+            native_ref.get("thread_id")
+            or (
+                langgraph_ref.get("thread_id")
+                if isinstance(langgraph_ref, Mapping)
+                else ""
+            )
+            or ""
+        ).strip()
+        if not checkpoint_id or not thread_id:
+            return False
+
+        await self.prepare_runtime_capabilities()
+        capability = self.describe_checkpoint_capability()
+        return bool(
+            capability.get("Supported")
+            and capability.get("Durable")
+            and capability.get("SharedAcrossPods")
+        )
 
     async def _prepare_managed_checkpoint(self, *, allow_transient_retry: bool) -> None:
         if self._managed_checkpoint_state in {"ready", "terminal_failure"}:

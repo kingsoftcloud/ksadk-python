@@ -32,10 +32,38 @@ from ksadk.runtime import (
     StartRequest,
 )
 from ksadk.runtime.conversation_execution import (
+    _persisted_resume_native_ref,
     invoke_runtime_conversation_once,
     iter_runtime_conversation_events,
 )
 from ksadk.sessions.in_memory import InMemorySessionService
+
+
+def test_persisted_resume_native_ref_unwraps_checkpoint_projection() -> None:
+    """Catch projected checkpoint refs hiding the native LangGraph thread id."""
+    native_ref = _persisted_resume_native_ref(
+        {
+            "framework": "langgraph",
+            "checkpoint_id": "checkpoint-1",
+            "framework_ref": {
+                "langgraph": {
+                    "framework": "langgraph",
+                    "checkpoint_id": "checkpoint-1",
+                    "framework_ref": {
+                        "langgraph": {
+                            "checkpoint_id": "checkpoint-1",
+                            "thread_id": "session-1:run-1",
+                            "checkpoint_ns": "agent:demo",
+                        }
+                    },
+                }
+            },
+        }
+    )
+
+    assert native_ref["checkpoint_id"] == "checkpoint-1"
+    assert native_ref["thread_id"] == "session-1:run-1"
+    assert native_ref["checkpoint_ns"] == "agent:demo"
 
 
 class _Runtime(BaseRuntime):

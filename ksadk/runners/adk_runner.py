@@ -332,6 +332,37 @@ class ADKRunner(BaseRunner):
             if inspect.isawaitable(result):
                 await result
 
+    async def attach_runtime_handle(self, handle: Any) -> bool:
+        """Validate that a persisted ADK invocation can be resumed here.
+
+        Invocation existence is resolved by ADK when ``run_async`` receives the
+        invocation id.  This seam proves the deployment-side prerequisites
+        before Runtime v2 accepts a handle restored from session metadata.
+        """
+
+        if str(getattr(handle, "runtime_type", "") or "").strip().lower() != "adk":
+            return False
+        native_ref = getattr(handle, "native_ref", None)
+        if not isinstance(native_ref, Mapping):
+            return False
+        framework_ref = native_ref.get("framework_ref")
+        adk_ref = framework_ref.get("adk") if isinstance(framework_ref, Mapping) else None
+        invocation_id = str(
+            native_ref.get("invocation_id")
+            or (adk_ref.get("invocation_id") if isinstance(adk_ref, Mapping) else "")
+            or ""
+        ).strip()
+        if not invocation_id:
+            return False
+
+        await self.prepare_runtime_capabilities()
+        capability = self.describe_checkpoint_capability()
+        return bool(
+            capability.get("Supported")
+            and capability.get("Durable")
+            and capability.get("SharedAcrossPods")
+        )
+
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         resumable = getattr(self, "_resumable", False)
         stm_backend = (

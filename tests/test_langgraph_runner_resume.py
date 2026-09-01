@@ -5,6 +5,7 @@ import pytest
 from langgraph.types import Command
 
 from ksadk.runners.langgraph_runner import LangGraphRunner
+from ksadk.runtime.adapter import RunHandle
 
 
 class _DummyAgent:
@@ -39,6 +40,117 @@ class _AsyncStateAgent(_DummyAgent):
         return SimpleNamespace(config=self.state_config)
 
     get_state = None
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_attaches_persisted_checkpoint_with_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch restarted RuntimeExecutor failing before LangGraph sees its checkpoint."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "known_checkpoint_ids": ["checkpoint-1"],
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rejects_incomplete_persisted_checkpoint(
+    monkeypatch, tmp_path
+):
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={"checkpoint_id": "checkpoint-1"},
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_lazy_checkpoint_capability_owns_attach(
+    monkeypatch, tmp_path
+):
+    """Catch base managed-graph errors masking a custom runner's lazy saver."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = None
+    runner._managed_checkpoint_error = (
+        "LANGGRAPH_FACTORY_REQUIRED",
+        "base managed graph factory is not used by this custom runner",
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_lazy_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Backend": "postgres",
+            "Scope": "shared",
+            "Durable": True,
+            "SharedAcrossPods": True,
+            "ResumeMode": "time_travel",
+            "Reason": "",
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
 
 
 @pytest.mark.asyncio
