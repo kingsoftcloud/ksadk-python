@@ -289,6 +289,10 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             "scope": _capability_str("scope"),
             "durable": bool(durable_raw),
             "is_resumable": canonical.resumable,
+            "is_terminal": bool(capability.get("is_terminal", event_meta.get("is_terminal", False))),
+            "next_node": _capability_str("next_node", ""),
+            "resume_status": _capability_str("resume_status", ""),
+            "resume_disabled_reason": _capability_str("resume_disabled_reason", ""),
         }
     run_id = str(metadata.get("run_id") or "").strip()
     checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()

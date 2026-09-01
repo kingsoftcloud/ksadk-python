@@ -712,10 +712,24 @@ class _LangGraphStreamMixin:
                             ckpt_capability = self.describe_checkpoint_capability()
                             ckpt_source_metadata: dict[str, Any] = {"checkpoint": True}
                             if isinstance(ckpt_capability, dict):
+                                ckpt_is_terminal = not bool(ckpt_next_node)
+                                ckpt_is_resumable = bool(
+                                    ckpt_capability.get("Supported")
+                                    and ckpt_next_node
+                                    and ckpt_capability.get("Scope") != "process_local"
+                                )
                                 ckpt_source_metadata["capability"] = {
                                     "backend": str(ckpt_capability.get("Backend") or "unknown"),
                                     "scope": str(ckpt_capability.get("Scope") or "unknown"),
                                     "durable": bool(ckpt_capability.get("Durable", False)),
+                                    "is_terminal": ckpt_is_terminal,
+                                    "is_resumable": ckpt_is_resumable,
+                                    "resume_status": "resumable" if ckpt_is_resumable else "disabled",
+                                    "resume_disabled_reason": (
+                                        "该 checkpoint 已是终态；可选择更早恢复点重跑"
+                                        if ckpt_is_terminal
+                                        else str(ckpt_capability.get("Reason") or "")
+                                    ),
                                     **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
                                 }
                             ckpt_ref = {

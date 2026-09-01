@@ -345,16 +345,46 @@ class InMemorySessionService(BaseSessionService):
                 and (
                     query.run_id is None
                     or str((event.metadata or {}).get("run_id") or "") == query.run_id
+                    or (
+                        event.event_type == "continuation.created"
+                        and str(
+                            ((event.content or {}).get("runtime_event") or {}).get(
+                                "run_id", ""
+                            )
+                            or ""
+                        )
+                        == query.run_id
+                    )
                 )
                 and (
                     query.checkpoint_id is None
                     or str((event.metadata or {}).get("checkpoint_id") or "")
                     == query.checkpoint_id
+                    or (
+                        event.event_type == "continuation.created"
+                        and str(
+                            ((event.content or {}).get("runtime_event") or {}).get(
+                                "continuation_id", ""
+                            )
+                            or ""
+                        )
+                        == query.checkpoint_id
+                    )
                 )
                 and (
                     not allowed_checkpoint_ids
                     or str((event.metadata or {}).get("checkpoint_id") or "")
                     in allowed_checkpoint_ids
+                    or (
+                        event.event_type == "continuation.created"
+                        and str(
+                            ((event.content or {}).get("runtime_event") or {}).get(
+                                "continuation_id", ""
+                            )
+                            or ""
+                        )
+                        in allowed_checkpoint_ids
+                    )
                 )
             ]
             if count_only:

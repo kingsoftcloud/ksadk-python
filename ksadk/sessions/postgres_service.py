@@ -557,14 +557,27 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
             clauses.append(f"event_row.event_type=ANY(${len(params)}::text[])")
         if query.run_id is not None:
             params.append(query.run_id)
-            clauses.append(f"event_row.metadata_json->>'run_id'=${len(params)}")
+            clauses.append(
+                "(event_row.metadata_json->>'run_id'="
+                f"${len(params)}"
+                " OR (event_row.event_type='continuation.created'"
+                f" AND event_row.content_json->'runtime_event'->>'run_id'=${len(params)}))"
+            )
         if query.checkpoint_id is not None:
             params.append(query.checkpoint_id)
-            clauses.append(f"event_row.metadata_json->>'checkpoint_id'=${len(params)}")
+            clauses.append(
+                "(event_row.metadata_json->>'checkpoint_id'="
+                f"${len(params)}"
+                " OR (event_row.event_type='continuation.created'"
+                f" AND event_row.content_json->'runtime_event'->>'continuation_id'=${len(params)}))"
+            )
         if query.checkpoint_ids:
             params.append(query.checkpoint_ids)
             clauses.append(
-                f"event_row.metadata_json->>'checkpoint_id'=ANY(${len(params)}::text[])"
+                "(event_row.metadata_json->>'checkpoint_id'=ANY("
+                f"${len(params)}::text[])"
+                " OR (event_row.event_type='continuation.created'"
+                f" AND event_row.content_json->'runtime_event'->>'continuation_id'=ANY(${len(params)}::text[])))"
             )
         return clauses, params
 
@@ -642,20 +655,26 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         if query.checkpoint_ids:
             params.append(query.checkpoint_ids)
             clauses.append(
-                "(event_row.event_type='continuation.created' OR "
-                f"event_row.metadata_json->>'checkpoint_id'=ANY(${len(params)}::text[]))"
+                "(event_row.metadata_json->>'checkpoint_id'=ANY("
+                f"${len(params)}::text[])"
+                " OR (event_row.event_type='continuation.created'"
+                f" AND event_row.content_json->'runtime_event'->>'continuation_id'=ANY(${len(params)}::text[])))"
             )
         if query.run_id is not None:
             params.append(query.run_id)
             clauses.append(
-                "(event_row.event_type='continuation.created' OR "
-                f"event_row.metadata_json->>'run_id'=${len(params)})"
+                "(event_row.metadata_json->>'run_id'="
+                f"${len(params)}"
+                " OR (event_row.event_type='continuation.created'"
+                f" AND event_row.content_json->'runtime_event'->>'run_id'=${len(params)}))"
             )
         if query.framework is not None:
             params.append(query.framework.lower())
             clauses.append(
-                "(event_row.event_type='continuation.created' OR "
-                f"lower(event_row.metadata_json->>'framework')=${len(params)})"
+                "(lower(event_row.metadata_json->>'framework')="
+                f"${len(params)}"
+                " OR (event_row.event_type='continuation.created'"
+                f" AND lower(event_row.content_json->'runtime_event'->'source'->>'framework')=${len(params)}))"
             )
         if cursor is not None:
             placeholders = []
