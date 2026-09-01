@@ -676,7 +676,12 @@ def main() -> None:
                 expect(
                     workbench_page.get_by_text("这是已经完成的历史答案。", exact=True)
                 ).to_be_visible()
-                expect(workbench_page.get_by_role("textbox", name="消息")).to_be_enabled()
+                # Selecting a completed session clears the live run's stream
+                # so the composer re-enables.  Allow a generous window: the
+                # React re-render chain (stream reset -> runs recompute ->
+                # composer enabled) is fast locally but can brush the default
+                # 5s budget on a loaded shared CI runner.
+                expect(workbench_page.get_by_role("textbox", name="消息")).to_be_enabled(timeout=20000)
                 model_trigger = workbench_page.locator(".chat-model-trigger")
                 expect(model_trigger).to_be_visible()
                 model_trigger_text = model_trigger.inner_text().strip()
