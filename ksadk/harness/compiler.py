@@ -98,7 +98,13 @@ class SubAgentInput(_RevisionInputModel):
     tools: tuple[str, ...] = ()
     timeout_seconds: float = 120.0
     max_turns: int = 4
+    max_total_tokens: int | None = None
+    max_artifacts: int | None = None
+    max_tool_calls: int | None = None
+    output_schema: dict[str, Any] | None = None
+    depends_on: tuple[str, ...] = ()
     failure_policy: str = "propagate"
+    max_retries: int = 0
     inherit_skills: bool = True
     inherit_mcp: bool = False
 
@@ -202,7 +208,13 @@ def compile_revision_to_spec(
             tools=tuple(sub.tools),
             timeout_seconds=sub.timeout_seconds,
             max_turns=sub.max_turns,
+            max_total_tokens=sub.max_total_tokens,
+            max_artifacts=sub.max_artifacts,
+            max_tool_calls=sub.max_tool_calls,
+            output_schema=sub.output_schema,
+            depends_on=sub.depends_on,
             failure_policy=sub.failure_policy,
+            max_retries=sub.max_retries,
             inherit_skills=sub.inherit_skills,
             inherit_mcp=sub.inherit_mcp,
         )

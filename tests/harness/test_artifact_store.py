@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from ksadk.harness.artifact_store import ArtifactStore
+from ksadk.harness.artifact_store import (
+    ArtifactBudgetExceeded,
+    ArtifactStore,
+    BudgetedArtifactStore,
+)
 
 
 def test_save_versions_and_roundtrip(tmp_path):
@@ -31,6 +35,12 @@ def test_runs_are_isolated(tmp_path):
     assert store.list("r3") == []
 
 
+def test_list_uses_same_run_id_canonicalization_as_save(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.save(run_id="parent:sub:child", name="x.txt", content=b"a")
+    assert len(store.list("parent:sub:child")) == 1
+
+
 def test_unsafe_names_are_sanitized(tmp_path):
     store = ArtifactStore(tmp_path / "artifacts")
     record = store.save(run_id="r1", name="../../etc/passwd", content=b"nope")
@@ -43,3 +53,14 @@ def test_missing_content_raises(tmp_path):
     store = ArtifactStore(tmp_path / "artifacts")
     with pytest.raises(FileNotFoundError):
         store._read_uri("artifact://r1/none@v1")
+
+
+def test_budgeted_store_rejects_before_file_or_index_side_effect(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    guarded = BudgetedArtifactStore(store, run_id="r1", max_artifacts=0)
+
+    with pytest.raises(ArtifactBudgetExceeded, match="before write"):
+        guarded.save(run_id="r1", name="blocked.txt", content=b"must-not-exist")
+
+    assert store.list("r1") == []
+    assert not (tmp_path / "artifacts" / "r1").exists()

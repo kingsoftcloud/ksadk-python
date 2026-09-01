@@ -66,8 +66,27 @@ def test_optional_external_matrix_downgrades_blocker_to_warning():
     assert report["deployable"] is True
 
 
-def test_unknown_status_never_silently_becomes_ready():
+def test_required_not_configured_is_upgraded_to_blocked():
     report = release_readiness({"status": "not_configured"})
 
+    assert report["status"] == "blocked"
+    assert report["deployable"] is False
+    assert report["checks"][0]["source_status"] == "not_configured"
+    assert report["checks"][0]["reason_code"] == "runtime_not_configured"
+
+
+def test_optional_not_configured_remains_warning_with_source_status():
+    report = release_readiness(
+        {"status": "ready"},
+        (
+            ReleaseEvidence(
+                "enterprise-auth",
+                "mcp",
+                {"status": "not_configured"},
+                required=False,
+            ),
+        ),
+    )
     assert report["status"] == "warning"
-    assert report["checks"][0]["reason_code"] == "runtime_warning"
+    assert report["checks"][1]["source_status"] == "not_configured"
+    assert report["checks"][1]["reason_code"] == "mcp_not_configured"

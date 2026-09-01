@@ -104,11 +104,12 @@ class ArtifactStore:
     # ------------------------------------------------------------- 读取
 
     def list(self, run_id: str, *, name: str | None = None) -> list[ArtifactRecord]:
+        run_id = _safe_name(run_id)
         query = "SELECT * FROM artifacts WHERE run_id = ?"
         params: list[Any] = [run_id]
         if name is not None:
             query += " AND name = ?"
-            params.append(name)
+            params.append(_safe_name(name))
         query += " ORDER BY name, version"
         rows = self._db.execute(query, params).fetchall()
         return [_record(row) for row in rows]
@@ -151,6 +152,34 @@ class ArtifactStore:
         self._db.close()
 
 
+class BudgetedArtifactStore:
+    """Run 级写入守卫；在委托真实 Store 前原子检查数量预算。"""
+
+    def __init__(self, store: ArtifactStore, *, run_id: str, max_artifacts: int) -> None:
+        self._store = store
+        self._run_id = run_id
+        self._max_artifacts = max_artifacts
+
+    def save(self, *, run_id: str, name: str, content: bytes, mime: str = "text/plain"):
+        if run_id != self._run_id:
+            raise ValueError("budgeted artifact store run_id mismatch")
+        if len(self._store.list(run_id)) >= self._max_artifacts:
+            raise ArtifactBudgetExceeded(
+                f"artifact budget {self._max_artifacts} exhausted before write"
+            )
+        return self._store.save(run_id=run_id, name=name, content=content, mime=mime)
+
+    def list(self, run_id: str, *, name: str | None = None):
+        return self._store.list(run_id, name=name)
+
+    def __getattr__(self, name: str):
+        return getattr(self._store, name)
+
+
+class ArtifactBudgetExceeded(ValueError):
+    """Artifact 写入在产生文件或索引副作用前被预算拒绝。"""
+
+
 def _safe_name(name: str) -> str:
     keep = [c if (c.isalnum() or c in "-_.") else "_" for c in str(name or "").strip()]
     return "".join(keep)[:128]
@@ -176,4 +205,9 @@ def _record(row: tuple) -> ArtifactRecord:
     )
 
 
-__all__ = ["ArtifactRecord", "ArtifactStore"]
+__all__ = [
+    "ArtifactBudgetExceeded",
+    "ArtifactRecord",
+    "ArtifactStore",
+    "BudgetedArtifactStore",
+]

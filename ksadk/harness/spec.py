@@ -12,7 +12,7 @@ import json
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ksadk.harness.resource_ref import validate_resource_ref
 
@@ -166,13 +166,39 @@ class SubAgentBinding(_SpecModel):
     timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     #: 子 Agent 自己可执行的最大模型轮数，独立于父 Agent。
     max_turns: int = Field(default=4, ge=1, le=32)
+    #: 子 Agent 模型调用的独立总 Token 上限；None 表示仅受父级/Provider 预算。
+    max_total_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
+    #: 子 Agent 可创建的独立 Artifact 数量上限。
+    max_artifacts: int | None = Field(default=None, ge=0, le=10_000)
+    #: 子 Agent 最多完成的 Tool Call 数量。
+    max_tool_calls: int | None = Field(default=None, ge=0, le=100_000)
+    #: 子 Agent 最终输出的 JSON Schema；未声明时保留文本输出。
+    output_schema: dict[str, Any] | None = None
+    #: 同一委派批次内必须先完成的子 Agent 名称。
+    depends_on: tuple[str, ...] = Field(default=(), max_length=32)
     #: ``propagate`` 将失败作为 Tool error 回流父 Agent；``return_error``
     #: 返回结构化失败文本，适合可选审查/检索子任务。
-    failure_policy: str = Field(default="propagate", pattern=r"^(propagate|return_error)$")
+    failure_policy: str = Field(
+        default="propagate", pattern=r"^(propagate|return_error|retry)$"
+    )
+    max_retries: int = Field(default=0, ge=0, le=3)
     #: Skill 属于只读知识能力，默认继承；MCP 默认不继承，避免子 Agent
     #: 在未显式授权时扩大外部系统访问面。
     inherit_skills: bool = True
     inherit_mcp: bool = False
+
+    @field_validator("output_schema")
+    @classmethod
+    def validate_output_schema(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        from jsonschema.validators import validator_for
+
+        try:
+            validator_for(value).check_schema(value)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"output_schema 不是有效 JSON Schema: {exc}") from exc
+        return value
 
 
 class ExecutionStrategyKind(str, Enum):
@@ -229,6 +255,26 @@ class HarnessSpec(_SpecModel):
     @model_validator(mode="after")
     def validate_revision_ref(self) -> "HarnessSpec":
         validate_resource_ref(self.agent_revision_ref)
+        names = {sub.name for sub in self.sub_agents}
+        for sub in self.sub_agents:
+            unknown = set(sub.depends_on) - names
+            if unknown:
+                raise ValueError(
+                    f"sub-agent {sub.name!r} has unknown dependencies: {sorted(unknown)}"
+                )
+            if sub.name in sub.depends_on:
+                raise ValueError(f"sub-agent dependency cycle: {sub.name} -> {sub.name}")
+        dependencies = {sub.name: set(sub.depends_on) for sub in self.sub_agents}
+        remaining = set(dependencies)
+        resolved: set[str] = set()
+        while remaining:
+            ready = {name for name in remaining if dependencies[name] <= resolved}
+            if not ready:
+                raise ValueError(
+                    f"sub-agent dependency cycle: {sorted(remaining)}"
+                )
+            resolved.update(ready)
+            remaining -= ready
         return self
 
     def content_hash(self) -> str:

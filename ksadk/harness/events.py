@@ -35,7 +35,21 @@ def project_v2(events: list["RuntimeEvent"]) -> list["RuntimeEvent"]:
     经本函数统一升级。子 Agent 事件以 ``agent.started`` 中的父信息标记
     parent_scope_id（事件树已有 child → parent 映射时直接透传）。
     """
-    return [event.to_v2() for event in events]
+    parent_by_agent: dict[str, str] = {}
+    for event in events:
+        explicit_parent = str(event.payload.get("parent_agent_id") or "")
+        if explicit_parent:
+            parent_by_agent[event.agent_id] = explicit_parent
+    return [
+        event.to_v2(
+            parent_scope_id=(
+                f"agent:{parent_by_agent[event.agent_id]}"
+                if event.agent_id in parent_by_agent
+                else None
+            )
+        )
+        for event in events
+    ]
 
 
 class EventPhase(str, Enum):
@@ -311,6 +325,8 @@ class RuntimeEvent(BaseModel):
     scope_id: Optional[str] = None
     #: 父作用域（子 Agent 事件的父 Agent scope；顶层为空）。
     parent_scope_id: Optional[str] = None
+    #: 父 Run（多 Agent 子 Run 使用；顶层为空）。
+    parent_run_id: Optional[str] = None
 
     # ---- 构造 ----
 
@@ -332,13 +348,19 @@ class RuntimeEvent(BaseModel):
         run_id: Optional[str] = None,
         scope_id: Optional[str] = None,
         parent_scope_id: Optional[str] = None,
+        parent_run_id: Optional[str] = None,
     ) -> "RuntimeEvent":
         """便捷构造:自动补 event_id / timestamp,并按 event_type 校验相位与 payload。
 
         传入 ``run_id``/``scope_id`` 构造 v2 信封（schema_version=2）。
         """
         schema_version: int = 1
-        if run_id is not None or scope_id is not None or parent_scope_id is not None:
+        if (
+            run_id is not None
+            or scope_id is not None
+            or parent_scope_id is not None
+            or parent_run_id is not None
+        ):
             schema_version = 2
         event = cls(
             schema_version=schema_version,  # type: ignore[arg-type]
@@ -355,6 +377,7 @@ class RuntimeEvent(BaseModel):
             run_id=run_id,
             scope_id=scope_id,
             parent_scope_id=parent_scope_id,
+            parent_run_id=parent_run_id,
         )
         event.validate_conformance()
         return event
@@ -399,7 +422,7 @@ class RuntimeEvent(BaseModel):
                 "schema_version": 2,
                 "run_id": self.run_id or self.invocation_id,
                 "scope_id": self.scope_id or f"agent:{self.agent_id}",
-                "parent_scope_id": parent_scope_id,
+                "parent_scope_id": self.parent_scope_id or parent_scope_id,
             }
         )
 

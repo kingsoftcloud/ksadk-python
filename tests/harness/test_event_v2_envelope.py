@@ -67,6 +67,25 @@ def test_project_v2_stream():
     assert all(e.schema_version == 1 for e in events)
 
 
+def test_project_v2_preserves_explicit_parent_and_does_not_guess_from_colons():
+    explicit = RuntimeEvent.create(
+        EventType.RUN_STARTED,
+        agent_id="tenant:agent",
+        user_id="u",
+        session_id="s",
+        invocation_id="child-run",
+        seq_id=1,
+        payload={"status": "running"},
+        run_id="child-run",
+        scope_id="agent:tenant:agent",
+        parent_scope_id="agent:explicit-parent",
+        parent_run_id="parent-run",
+    )
+    projected = project_v2([explicit])[0]
+    assert projected.parent_scope_id == "agent:explicit-parent"
+    assert projected.parent_run_id == "parent-run"
+
+
 def test_v2_conformance_requires_run_and_scope():
     with pytest.raises(ValueError, match="run_id 与 scope_id"):
         RuntimeEvent.create(

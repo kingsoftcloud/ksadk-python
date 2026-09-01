@@ -47,6 +47,8 @@ class ApprovalResolver(Protocol):
 #: 按调用参数动态判定是否需审批（P0.1：MCP 按实际目标 Server 风险决策）。
 ApprovalDecider = Callable[[str, dict[str, Any]], bool]
 ParallelSafeDecider = Callable[[str, dict[str, Any]], bool]
+StopOnErrorDecider = Callable[[str, dict[str, Any]], bool]
+CancelPendingDecider = Callable[[str, dict[str, Any]], bool]
 
 
 #: 同步审批解析器（适合 LangGraph interrupt 同步语义）。
@@ -112,6 +114,12 @@ class ToolCallInput:
     #: 仅当整批调用都被宿主判定为无副作用、无需审批时并行执行。
     #: 默认关闭，避免改变普通 Tool 的既有顺序与 Receipt 语义。
     parallel_safe_decider: ParallelSafeDecider | None = None
+    #: 当前调用失败后是否取消同批尚未启动的调用（多 Agent fail-fast）。
+    stop_on_error_decider: StopOnErrorDecider | None = None
+    #: fail-fast 触发后，仅取消匹配的尚未启动调用；普通工具不应被误取消。
+    cancel_pending_decider: CancelPendingDecider | None = None
+    #: 调用名 -> 必须先成功的调用名。未满足时该调用不会启动。
+    dependencies: dict[str, tuple[str, ...]] = field(default_factory=dict)
     max_parallelism: int = 1
     tenant_id: str = "default"
 
@@ -149,12 +157,91 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
     out = ToolCallOutput(working_context=inp.working_context)
     seq = inp.seq_start
     runtime = inp.capability_runtime
+    succeeded: set[str] = set()
+    cancelled_call_ids: set[str] = set()
 
-    for pending in inp.pending_tool_calls:
+    for pending_index, pending in enumerate(inp.pending_tool_calls):
         call_id, name = pending["call_id"], pending["name"]
         arguments = pending["arguments"]
         reliability = _resolve_reliability(inp, name, arguments)
         reliability_payload = reliability.to_event_payload()
+        if str(call_id) in cancelled_call_ids:
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_BEGIN,
+                    inp,
+                    seq,
+                    {"call_id": call_id, "name": name, "args": arguments, "skipped": True,
+                     "reliability": reliability_payload},
+                )
+            )
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_END,
+                    inp,
+                    seq,
+                    {"call_id": call_id, "name": name,
+                     "error": "cancelled by fail-fast sibling failure",
+                     "error_category": "cancelled_by_fail_fast",
+                     "receipt_committed": False, "skipped": True,
+                     "reliability": reliability_payload},
+                )
+            )
+            out.new_messages.append(
+                {"role": "tool", "tool_call_id": call_id, "name": name,
+                 "content": "[error] cancelled by fail-fast sibling failure"}
+            )
+            continue
+        missing_dependencies = [
+            dependency
+            for dependency in inp.dependencies.get(name, ())
+            if dependency not in succeeded
+        ]
+        if missing_dependencies:
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_BEGIN,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "args": arguments,
+                        "skipped": True,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            seq += 1
+            error = f"unsatisfied dependencies: {', '.join(missing_dependencies)}"
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_END,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": error,
+                        "error_category": "dependency_unsatisfied",
+                        "receipt_committed": False,
+                        "skipped": True,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            out.new_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": f"[error] {error}",
+                }
+            )
+            continue
 
         # 1. Receipt 幂等回放：审批恢复重放节点时不再重复触发副作用。
         prior = runtime.check_receipt(inp.run_id, call_id) if runtime is not None else None
@@ -203,6 +290,8 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     "content": result_text,
                 }
             )
+            if executed:
+                succeeded.add(name)
             continue
 
         # 2. 决策：统一 Policy 优先；未注入时回退静态 approval_required 集合。
@@ -312,6 +401,7 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
+            category = str(getattr(exc, "category", "") or "")
             seq += 1
             out.events.append(
                 _event(
@@ -322,6 +412,7 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                         "call_id": call_id,
                         "name": name,
                         "error": f"{type(exc).__name__}: {exc}",
+                        **({"error_category": category} if category else {}),
                         "receipt_committed": False,
                         "reliability": reliability_payload,
                     },
@@ -339,6 +430,18 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 out.working_context = record_tool_failure(
                     out.working_context, name=name, error=f"{type(exc).__name__}: {exc}"
                 )
+            if inp.stop_on_error_decider is not None and inp.stop_on_error_decider(
+                name, arguments
+            ):
+                for skipped in inp.pending_tool_calls[pending_index + 1 :]:
+                    skipped_call_id = str(skipped["call_id"])
+                    skipped_name = str(skipped["name"])
+                    skipped_arguments = skipped["arguments"]
+                    if inp.cancel_pending_decider is not None and not inp.cancel_pending_decider(
+                        skipped_name, skipped_arguments
+                    ):
+                        continue
+                    cancelled_call_ids.add(skipped_call_id)
             continue
 
         result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
@@ -381,6 +484,7 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 "content": result_text,
             }
         )
+        succeeded.add(name)
 
     out.pending_tool_calls = []
     return out
@@ -393,6 +497,7 @@ def _parallel_batch_allowed(inp: ToolCallInput) -> bool:
         or inp.max_parallelism < 2
         or inp.parallel_safe_decider is None
         or inp.capability_runtime is not None
+        or bool(inp.dependencies)
     ):
         return False
     for pending in inp.pending_tool_calls:
@@ -457,6 +562,7 @@ async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
         seq += 1
         if error is not None:
             error_text = f"{type(error).__name__}: {error}"
+            category = str(getattr(error, "category", "") or "")
             out.events.append(
                 _event(
                     EventType.TOOL_CALL_END,
@@ -466,6 +572,7 @@ async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
                         "call_id": call_id,
                         "name": name,
                         "error": error_text,
+                        **({"error_category": category} if category else {}),
                         "parallel": True,
                         "receipt_committed": False,
                         "reliability": reliability_payload,

@@ -29,14 +29,16 @@ def release_readiness(
     """生成 ``ready / warning / blocked`` 的发布门禁快照。"""
 
     checks: list[dict[str, Any]] = []
-    runtime_status = _status(runtime_report.get("status"))
+    runtime_source_status = _status(runtime_report.get("status"))
+    runtime_status = _effective_status(runtime_source_status, required=True)
     checks.append(
         {
             "id": "runtime",
             "category": "runtime",
             "status": runtime_status,
+            "source_status": runtime_source_status,
             "required": True,
-            "reason_code": _reason("runtime", runtime_status),
+            "reason_code": _reason("runtime", runtime_status, runtime_source_status),
             "summary": _summary(runtime_report),
         }
     )
@@ -48,9 +50,7 @@ def release_readiness(
             else dict(item.report)
         )
         source_status = _status(payload.get("status"))
-        effective = source_status
-        if not item.required and source_status == "blocked":
-            effective = "warning"
+        effective = _effective_status(source_status, required=item.required)
         checks.append(
             {
                 "id": item.evidence_id,
@@ -58,7 +58,7 @@ def release_readiness(
                 "status": effective,
                 "source_status": source_status,
                 "required": item.required,
-                "reason_code": _reason(item.category, effective),
+                "reason_code": _reason(item.category, effective, source_status),
                 "summary": _summary(payload),
             }
         )
@@ -85,13 +85,21 @@ def release_readiness(
 
 def _status(value: object) -> str:
     normalized = str(value or "warning").lower()
-    if normalized in {"ready", "warning", "blocked"}:
+    if normalized in {"ready", "warning", "blocked", "not_configured"}:
         return normalized
     if normalized in {"passed", "healthy", "available"}:
         return "ready"
     if normalized in {"failed", "unhealthy", "error"}:
         return "blocked"
     return "warning"
+
+
+def _effective_status(source_status: str, *, required: bool) -> str:
+    if source_status == "not_configured":
+        return "blocked" if required else "warning"
+    if not required and source_status == "blocked":
+        return "warning"
+    return source_status
 
 
 def _summary(report: Mapping[str, Any]) -> dict[str, int]:
@@ -107,8 +115,8 @@ def _summary(report: Mapping[str, Any]) -> dict[str, int]:
     return result
 
 
-def _reason(category: str, status: str) -> str:
-    return f"{category}_{status}"
+def _reason(category: str, status: str, source_status: str) -> str:
+    return f"{category}_{source_status if source_status == 'not_configured' else status}"
 
 
 def _fix(check: Mapping[str, Any]) -> dict[str, Any]:

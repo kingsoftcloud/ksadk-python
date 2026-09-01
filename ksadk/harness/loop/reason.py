@@ -51,6 +51,8 @@ class ReasonInput:
     #: turn 计数与上限（§7.1 reason 自环 + 上限保护）。
     turn_count: int = 0
     max_turns: int = 8
+    #: 本次 Provider 调用允许生成的硬上限；None 表示未配置 Run 预算。
+    max_output_tokens: int | None = None
 
 
 @dataclass
@@ -164,6 +166,11 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                     prompt=inp.instructions,
                     messages=tuple(inp.messages),
                     tools=list(inp.tools),
+                    **(
+                        {"max_output_tokens": inp.max_output_tokens}
+                        if inp.max_output_tokens is not None
+                        else {}
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
                 last_error = exc

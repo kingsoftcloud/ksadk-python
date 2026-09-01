@@ -44,6 +44,26 @@ def build_graph(engine, run):
         )
 
         def _reason_input() -> ReasonInput:
+            max_total_tokens = spec.execution_strategy.config.get("max_total_tokens")
+            max_output_tokens = None
+            if max_total_tokens is not None:
+                from ksadk.harness.engine.context_pipeline import count_tokens
+                from ksadk.harness.subagent import SubAgentExecutionError
+
+                used = int(state.get("usage_tokens") or 0)
+                estimated_input = sum(
+                    count_tokens(str(message.get("content") or ""))
+                    for message in state["messages"]
+                ) + count_tokens(spec.prompt.instructions or "")
+                remaining = int(max_total_tokens) - used - estimated_input
+                if remaining < 1:
+                    raise SubAgentExecutionError(
+                        "budget_exhausted",
+                        "sub-agent token budget exhausted before model invocation "
+                        f"(limit={max_total_tokens}, used={used}, "
+                        f"estimated_input={estimated_input})",
+                    )
+                max_output_tokens = remaining
             return ReasonInput(
                 model_ref=spec.model.profile_ref,
                 fallback_model_refs=spec.model.fallback_profile_refs,
@@ -63,6 +83,7 @@ def build_graph(engine, run):
                 run_id=run.handle.run_id,
                 seq_start=run.seq,
                 max_turns=engine._max_reasoning_turns,
+                max_output_tokens=max_output_tokens,
             )
 
         try:
@@ -108,6 +129,10 @@ def build_graph(engine, run):
                 )
             run.events.append(ev)
             run.seq = max(run.seq, ev.seq_id)
+            if ev.event_type == EventType.USAGE_REPORTED:
+                state["usage_tokens"] = int(state.get("usage_tokens") or 0) + int(
+                    ev.payload.get("input_tokens") or 0
+                ) + int(ev.payload.get("output_tokens") or 0)
         state["messages"].extend(out.new_messages)
         state["pending_tool_calls"] = out.pending_tool_calls
         state["route"] = out.route
@@ -172,14 +197,44 @@ def build_graph(engine, run):
 
                 return classify_tool_reliability(side_effect="unknown")
 
+        from ksadk.harness.subagent import order_subagent_tool_calls
+
+        pending_tool_calls = order_subagent_tool_calls(
+            list(state["pending_tool_calls"]), run.sub_agents
+        )
+        has_subagent_dependencies = any(
+            run.sub_agents[name].depends_on
+            for name in (str(call.get("name") or "") for call in pending_tool_calls)
+            if name in run.sub_agents
+        )
+        subagent_failure_mode = str(
+            run.compiled.spec.execution_strategy.config.get(
+                "subagent_failure_mode", "partial"
+            )
+        )
         out = await execute_tool_calls(
             ToolCallInput(
-                pending_tool_calls=state["pending_tool_calls"],
+                pending_tool_calls=pending_tool_calls,
                 approval_required=frozenset(engine._approval_required),
                 approval_decider=_mcp_approval_decider,
                 parallel_safe_decider=(
-                    lambda name, _arguments: name in run.sub_agents
+                    lambda name, _arguments: (
+                        name in run.sub_agents
+                        and not has_subagent_dependencies
+                        and subagent_failure_mode != "fail_fast"
+                    )
                 ),
+                stop_on_error_decider=(
+                    lambda name, _arguments: (
+                        subagent_failure_mode == "fail_fast" and name in run.sub_agents
+                    )
+                ),
+                cancel_pending_decider=lambda name, _arguments: name in run.sub_agents,
+                dependencies={
+                    name: tuple(spec.depends_on)
+                    for name, spec in run.sub_agents.items()
+                    if spec.depends_on
+                },
                 max_parallelism=int(
                     run.compiled.spec.execution_strategy.config.get(
                         "max_parallel_subagents", 4
@@ -205,7 +260,7 @@ def build_graph(engine, run):
 
         resequence_child_events(run, engine._pending_child_events.pop(run.handle.run_id, []))
         subagent_events = engine._pending_subagent_events.pop(run.handle.run_id, {})
-        for pending in state["pending_tool_calls"]:
+        for pending in pending_tool_calls:
             resequence_child_events(
                 run,
                 subagent_events.get(str(pending.get("call_id") or ""), []),
@@ -305,4 +360,3 @@ def build_graph(engine, run):
         builder.add_edge(src, dst)
     graph = builder.compile(checkpointer=engine._checkpointer)
     return graph
-

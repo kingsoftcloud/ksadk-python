@@ -72,6 +72,28 @@ def test_model_profile_reference_falls_back_to_openai_compatible_name(monkeypatc
     assert resolve_model_identifier("model-profile://glm-5.3@live") == "openai/glm-5.3"
 
 
+@pytest.mark.asyncio
+async def test_reasoner_forwards_preflight_output_budget_to_provider(monkeypatch):
+    import litellm
+
+    captured = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+        message = SimpleNamespace(content="ok", tool_calls=[])
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    await LiteLLMHarnessReasoner(streaming=False).complete(
+        model="glm-5.3",
+        prompt="p",
+        messages=({"role": "user", "content": "hi"},),
+        tools=(),
+        max_output_tokens=17,
+    )
+    assert captured["max_tokens"] == 17
+
+
 def test_invalid_model_profile_map_fails_honestly(monkeypatch):
     monkeypatch.setenv("KSADK_MODEL_PROFILE_MAP", "not-json")
     with pytest.raises(RuntimeError, match="valid JSON"):
@@ -169,6 +191,63 @@ async def test_production_reasoner_reassembles_fragmented_streaming_tool_call(mo
     assert turn.tool_calls[0].call_id == "call-1"
     assert turn.tool_calls[0].name == "sandbox_read_file"
     assert turn.tool_calls[0].arguments == {"path": "facts.txt"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoner_rejects_conflicting_call_ids_for_one_index():
+    async def chunks():
+        for call_id, arguments in (("call-1", '{"path":"'), ("call-2", 'x"}')):
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id=call_id,
+                                    function=SimpleNamespace(
+                                        name="sandbox_read_file" if call_id == "call-1" else None,
+                                        arguments=arguments,
+                                    ),
+                                )
+                            ],
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    with pytest.raises(RuntimeError, match="conflicting tool call id"):
+        await LiteLLMHarnessReasoner._consume_stream(chunks(), model="glm-5.3")
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoner_rejects_tool_call_without_provider_identity():
+    async def chunks():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(
+                                    name="sandbox_read_file",
+                                    arguments='{"path":"x"}',
+                                ),
+                            )
+                        ],
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+    with pytest.raises(RuntimeError, match="missing tool call id"):
+        await LiteLLMHarnessReasoner._consume_stream(chunks(), model="glm-5.3")
 
 
 @pytest.mark.asyncio

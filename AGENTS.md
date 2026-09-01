@@ -47,12 +47,24 @@
 - Sandbox Service：sandbox template、instance、token、网络、预热、E2B 兼容 SDK / API、AIO / Code / Browser / Private 模板。
 - 跨仓或跨服务改动必须写清字段归属、请求/响应、环境变量、鉴权和失败语义。
 
-## 6. Superpowers / Subagents
+## 6. 工作流 / Subagents
 
-- 场景命中时使用对应 superpowers skill；流程型 skill 优先于实现型 skill。
-- 准备宣称完成、提交、合并或发布前，必须 fresh verification。
+### 6.1 Superpowers / OpenSpec skill 使用约定（Claude Code / pi）
+
+- Superpowers（`using-superpowers` 及流程型 skill：brainstorming / test-driven-development / systematic-debugging / executing-plans 等）与 OpenSpec skills（openspec-explore / openspec-propose / openspec-apply-change / openspec-verify-change 等）已安装，pi 与 Claude Code 均可通过 `~/.pi/agent/settings.json` 的 `skills` 数组加载，`enableSkillCommands` 开启后可用 `/skill:<name>` 加载。
+- **默认不主动调用**：这些 skill 仅在用户明确要求使用 Superpowers / OpenSpec 开发时才启用；未明确要求时，按常规流程开发，不自动启动 Superpowers 流程，也不自动创建/更新/同步/归档 OpenSpec change。仓库中存在 `openspec/` 目录或历史 change 不视为授权。
+- 用户明确要求使用时：开发先 `using-superpowers` 判断适用流程 skill；OpenSpec 先 `openspec-explore` / `openspec-propose` 明确需求与变更工件，再 `openspec-apply-change` 实施，验证后 `openspec-verify-change` 并同步或归档（`openspec-sync-specs` / `openspec-archive-change`）。
+
+### 6.2 Review 默认流程
+
+- 未明确要求使用 Superpowers 时，Code review 按常规流程进行；用户明确要求时再走 Superpowers 的 `receiving-code-review` / `requesting-code-review`。
+- 宣称完成前必须 fresh verification：重跑受影响测试，不引用历史结果（此条始终生效，不依赖 skill）。
+
+### 6.3 Subagents
+
 - 只有任务可清晰拆分、写集不重叠、主线程不会立即阻塞时，才使用 subagents。
 - 不要为了“更快”启用 subagents；小任务直接本地完成。
+- 准备宣称完成、提交、合并或发布前，必须 fresh verification。
 
 ## 7. 验证与 E2E
 

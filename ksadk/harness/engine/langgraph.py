@@ -67,6 +67,7 @@ class _GraphState(TypedDict, total=False):
     # MCP 披露游标（P0.1）：随图状态进 Checkpoint，跨进程审批恢复不丢。
     mcp_listed: list[tuple[str, str]]
     mcp_schema_read: list[tuple[str, str, str]]
+    usage_tokens: int
 
 
 @dataclass
@@ -93,6 +94,8 @@ class _EngineRun:
     mcp_catalog: tuple[dict[str, str], ...] = ()
     #: 本 Revision 的子 Agent 工具；Run 级冻结，避免多 Spec 并发串配置。
     sub_agents: dict[str, Any] = field(default_factory=dict)
+    tool_calls_started: int = 0
+    artifacts_created: int = 0
 
 
 class ManagedLangGraphEngine:
@@ -175,6 +178,9 @@ class ManagedLangGraphEngine:
         # 并行子 Agent 按 call_id 单独缓冲，节点结束时再按模型原始调用顺序
         # 合并，避免墙钟完成顺序造成 Trace/重放结果不确定。
         self._pending_subagent_events: dict[str, dict[str, list[RuntimeEvent]]] = {}
+        # parent_run_id -> call_id -> (child_engine, child_handle)。父取消必须先
+        # 显式传播到所有活动子 Run，不能只依赖 asyncio 任务树的隐式取消。
+        self._active_subagent_runs: dict[str, dict[str, tuple[Any, RunHandle]]] = {}
         self._runs: dict[str, _EngineRun] = {}
 
     # ------------------------------------------------------------- compile
@@ -190,6 +196,9 @@ class ManagedLangGraphEngine:
             raise ExecutionEngineError("max_parallel_subagents 必须是整数")
         if not 1 <= max_parallel <= 32:
             raise ExecutionEngineError("max_parallel_subagents 必须在 1..32 之间")
+        failure_mode = spec.execution_strategy.config.get("subagent_failure_mode", "partial")
+        if failure_mode not in {"partial", "fail_fast"}:
+            raise ExecutionEngineError("subagent_failure_mode 必须是 partial 或 fail_fast")
         declared_sub_agents = {binding.name for binding in spec.sub_agents}
         self._skill_disclosure.validate_bindings(
             spec,
@@ -383,13 +392,23 @@ class ManagedLangGraphEngine:
         才会从 unknown 转为 available/degraded。
         """
         spec = run.compiled.spec
-        declarations: list[tuple[str, str, bool, str]] = []
+        declarations: list[tuple[str, str, bool, str, dict[str, Any]]] = []
+        runtime_declaration = self.harness_capabilities()
+        declarations.append(
+            (
+                f"runtime://{runtime_declaration.runtime_type}@v1#{run.handle.run_id}",
+                "runtime",
+                True,
+                "eager",
+                {"declaration": runtime_declaration.model_dump(mode="json")},
+            )
+        )
         declarations.extend(
-            (binding.capability_ref, "mcp", binding.required, binding.load_policy)
+            (binding.capability_ref, "mcp", binding.required, binding.load_policy, {})
             for binding in spec.capabilities.mcp_bindings
         )
         declarations.extend(
-            (binding.capability_ref, "skill", binding.required, binding.load_policy)
+            (binding.capability_ref, "skill", binding.required, binding.load_policy, {})
             for binding in spec.capabilities.skill_bindings
         )
         if any(name.startswith(_SANDBOX_TOOL_PREFIX) for name in self._tools):
@@ -399,6 +418,7 @@ class ManagedLangGraphEngine:
                     "sandbox",
                     True,
                     "on_demand",
+                    {},
                 )
             )
         return [
@@ -411,10 +431,17 @@ class ManagedLangGraphEngine:
                     "state": "unknown",
                     "required": required,
                     "load_policy": load_policy,
+                    **extra,
                 },
             )
-            for capability_ref, kind, required, load_policy in declarations
+            for capability_ref, kind, required, load_policy, extra in declarations
         ]
+
+    def harness_capabilities(self):
+        """返回运行时真实治理声明；该声明也随每个 Run 的首批事件保存。"""
+        from ksadk.harness.runtime_capabilities import managed_langgraph_capabilities
+
+        return managed_langgraph_capabilities()
 
     async def _execute(
         self,
@@ -522,6 +549,8 @@ class ManagedLangGraphEngine:
                 run.events.append(
                     self._event(run, EventType.TEXT_COMPLETED, {"text": text}, phase="final_answer")
                 )
+            if run.cancel_requested:
+                raise asyncio.CancelledError
             run.state.status = RunStatus.COMPLETED
             run.events.append(
                 self._event(
@@ -573,7 +602,19 @@ class ManagedLangGraphEngine:
                 )
             )
             run.events.append(
-                self._event(run, EventType.RUN_FAILED, {"status": "failed", "error": str(exc)})
+                self._event(
+                    run,
+                    EventType.RUN_FAILED,
+                    {
+                        "status": "failed",
+                        "error": str(exc),
+                        **(
+                            {"error_category": str(exc.category)}
+                            if getattr(exc, "category", None)
+                            else {}
+                        ),
+                    },
+                )
             )
             return []
 
@@ -595,6 +636,16 @@ class ManagedLangGraphEngine:
         mcp_cursors: McpDisclosureCursors | None = None,
         call_id: str = "",
     ) -> Any:
+        if run is not None:
+            configured = run.compiled.spec.execution_strategy.config.get("max_tool_calls")
+            if configured is not None and run.tool_calls_started >= int(configured):
+                from ksadk.harness.subagent import SubAgentExecutionError
+
+                raise SubAgentExecutionError(
+                    "budget_exhausted",
+                    f"sub-agent tool-call budget {configured} exhausted before execution",
+                )
+            run.tool_calls_started += 1
         # 收口 6：子 Agent 即工具——内联运行到完成，子事件并入父流。
         sub = (run.sub_agents if run is not None else self._sub_agents).get(name)
         if sub is not None and run is not None:
@@ -628,6 +679,32 @@ class ManagedLangGraphEngine:
             raise RuntimeError(
                 f"engine tool {name!r} is not available; it may be filtered or unpublished"
             )
+        if run is not None and callable(getattr(tool, "drain_artifacts", None)):
+            artifact_budget = run.compiled.spec.execution_strategy.config.get(
+                "max_artifacts"
+            )
+            declared_cost = getattr(tool, "artifact_budget_cost", None)
+            if artifact_budget is not None and declared_cost is None:
+                from ksadk.harness.subagent import SubAgentExecutionError
+
+                raise SubAgentExecutionError(
+                    "budget_exhausted",
+                    "artifact-producing tool lacks artifact_budget_cost; "
+                    "finite budget cannot be proven before execution",
+                )
+            if artifact_budget is not None:
+                artifact_cost = int(declared_cost)
+                if artifact_cost < 0 or (
+                    run.artifacts_created + artifact_cost > int(artifact_budget)
+                ):
+                    from ksadk.harness.subagent import SubAgentExecutionError
+
+                    raise SubAgentExecutionError(
+                        "budget_exhausted",
+                        "sub-agent artifact budget "
+                        f"{artifact_budget} exhausted before tool execution",
+                    )
+                run.artifacts_created += artifact_cost
         call = getattr(tool, "call", None)
         result = await call(arguments) if callable(call) else await tool(arguments)
         # 缺口 5：工具产出的 Artifact → artifact.created 事件（与子事件同
@@ -659,12 +736,23 @@ class ManagedLangGraphEngine:
         run = self._runs.get(handle.run_id)
         if run is None or run.done:
             return CancelResult.NOT_RUNNING
+        run.cancel_requested = True
+        active_children = list(self._active_subagent_runs.get(handle.run_id, {}).values())
+        active_task = run.task if run.task is not None and not run.task.done() else None
+        if active_task is not None:
+            active_task.cancel()
+        if active_children:
+            await asyncio.gather(
+                *(
+                    child_engine.cancel(child_handle)
+                    for child_engine, child_handle in active_children
+                ),
+                return_exceptions=True,
+            )
         if run.task is None:
-            run.cancel_requested = True
             return CancelResult.PENDING_CANCEL_RECORDED
-        if run.task.done():
+        if active_task is None:
             return CancelResult.NOT_RUNNING
-        run.task.cancel()
         return CancelResult.INTERRUPTED_ACTIVE_TURN
 
     # --------------------------------------------------------------- pause
@@ -785,6 +873,7 @@ class ManagedLangGraphEngine:
             self._mcp_disclosure.clear_run(run.handle.run_id)
             self._pending_child_events.pop(run.handle.run_id, None)
             self._pending_subagent_events.pop(run.handle.run_id, None)
+            self._active_subagent_runs.pop(run.handle.run_id, None)
 
     # ------------------------------------------------------------- helpers
 

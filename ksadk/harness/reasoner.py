@@ -16,6 +16,14 @@ class HarnessToolCall:
     arguments: dict[str, Any]
 
 
+class HarnessToolCallValidationError(RuntimeError):
+    """Provider-neutral validation failure for a model-emitted tool call."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class HarnessReasoningTurn:
     final_text: str | None = None
@@ -32,6 +40,7 @@ class HarnessReasoner(Protocol):
         prompt: str,
         messages: Sequence[dict[str, Any]],
         tools: Sequence[Any],
+        max_output_tokens: int | None = None,
     ) -> HarnessReasoningTurn: ...
 
 
@@ -99,6 +108,7 @@ class LiteLLMHarnessReasoner:
         prompt: str,
         messages: Sequence[dict[str, Any]],
         tools: Sequence[Any],
+        max_output_tokens: int | None = None,
     ) -> HarnessReasoningTurn:
         del prompt
         try:
@@ -116,6 +126,10 @@ class LiteLLMHarnessReasoner:
             "tools": [tool.openai_schema for tool in tools],
             "tool_choice": "auto",
         }
+        if max_output_tokens is not None:
+            if max_output_tokens < 1:
+                raise ValueError("max_output_tokens must be positive")
+            kwargs["max_tokens"] = max_output_tokens
         base_url = os.getenv("OPENAI_BASE_URL")
         api_key = os.getenv("OPENAI_API_KEY")
         if base_url:
@@ -202,7 +216,11 @@ class LiteLLMHarnessReasoner:
                         index,
                         {"id": "", "name": "", "arguments": ""},
                     )
-                    current["id"] += str(getattr(call, "id", "") or "")
+                    incoming_id = str(getattr(call, "id", "") or "")
+                    if incoming_id:
+                        current["id"] = cls._merge_stream_call_id(
+                            current["id"], incoming_id
+                        )
                     function = getattr(call, "function", None)
                     if function is not None:
                         current["name"] += str(getattr(function, "name", "") or "")
@@ -213,7 +231,7 @@ class LiteLLMHarnessReasoner:
             raise RuntimeError(f"Harness model {model!r} returned an empty stream")
         raw_calls = [
             SimpleToolCall(
-                id=fragment["id"] or f"stream-tool-call-{index}",
+                id=fragment["id"],
                 function=SimpleFunctionCall(
                     name=fragment["name"],
                     arguments=fragment["arguments"] or "{}",
@@ -232,9 +250,26 @@ class LiteLLMHarnessReasoner:
         )
 
     @staticmethod
+    def _merge_stream_call_id(current: str, incoming: str) -> str:
+        if not current:
+            return incoming
+        if incoming == current or current.endswith(incoming):
+            return current
+        if incoming.startswith(current):
+            return incoming
+        if current.startswith(("call-", "call_")) and incoming.startswith(
+            ("call-", "call_")
+        ):
+            raise HarnessToolCallValidationError(
+                "conflicting_tool_call_id",
+                "Harness model stream emitted a conflicting tool call id",
+            )
+        return current + incoming
+
+    @staticmethod
     def _parse_tool_calls(raw_calls: Sequence[Any]) -> tuple[HarnessToolCall, ...]:
         calls: list[HarnessToolCall] = []
-        for index, call in enumerate(raw_calls):
+        for call in raw_calls:
             function = getattr(call, "function", None)
             name = str(getattr(function, "name", "") or "").strip()
             raw_arguments = getattr(function, "arguments", None) or "{}"
@@ -243,14 +278,23 @@ class LiteLLMHarnessReasoner:
                     json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
                 )
             except json.JSONDecodeError as exc:
-                raise RuntimeError(
+                raise HarnessToolCallValidationError(
+                    "invalid_tool_arguments",
                     f"Harness model emitted invalid JSON arguments for tool {name!r}"
                 ) from exc
+            call_id = str(getattr(call, "id", "") or "").strip()
+            if not call_id:
+                raise HarnessToolCallValidationError(
+                    "missing_tool_call_id",
+                    "Harness model emitted a tool call with missing tool call id",
+                )
             if not name or not isinstance(arguments, dict):
-                raise RuntimeError("Harness model emitted an invalid tool call")
+                raise HarnessToolCallValidationError(
+                    "invalid_tool_call", "Harness model emitted an invalid tool call"
+                )
             calls.append(
                 HarnessToolCall(
-                    call_id=str(getattr(call, "id", "") or f"tool-call-{index}"),
+                    call_id=call_id,
                     name=name,
                     arguments=dict(arguments),
                 )

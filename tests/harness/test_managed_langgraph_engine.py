@@ -92,8 +92,11 @@ def test_bound_sandbox_is_declared_before_first_observation():
         event for event in events if event.event_type == EventType.CAPABILITY_DECLARED
     ]
 
-    assert len(declarations) == 1
-    assert declarations[0].payload == {
+    sandbox_declarations = [
+        event for event in declarations if event.payload.get("kind") == "sandbox"
+    ]
+    assert len(sandbox_declarations) == 1
+    assert sandbox_declarations[0].payload == {
         "capability_ref": "sandbox://local-readonly@1",
         "kind": "sandbox",
         "state": "unknown",

@@ -423,3 +423,50 @@ def test_approval_requirement_disables_parallel_execution():
 
     assert executor.calls == ["safe", "guarded"]
     assert all("parallel" not in event.payload for event in out.events)
+
+
+def test_failed_dependency_prevents_dependent_tool_from_starting():
+    executor = _Exec({"writer": RuntimeError("failed"), "reviewer": "must-not-run"})
+    out = _run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=[
+                    {"call_id": "w", "name": "writer", "arguments": {}},
+                    {"call_id": "r", "name": "reviewer", "arguments": {}},
+                ],
+                approval_required=frozenset(),
+                approval_resolver=None,
+                tool_executor=executor,
+                dependencies={"reviewer": ("writer",)},
+            )
+        )
+    )
+    assert executor.calls == [("writer", {})]
+    reviewer = next(
+        event
+        for event in out.events
+        if event.event_type == EventType.TOOL_CALL_END
+        and event.payload["call_id"] == "r"
+    )
+    assert reviewer.payload["error_category"] == "dependency_unsatisfied"
+
+
+def test_fail_fast_only_cancels_calls_selected_by_host():
+    executor = _Exec({"child": RuntimeError("failed"), "ordinary": "still-runs"})
+    out = _run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=[
+                    {"call_id": "c", "name": "child", "arguments": {}},
+                    {"call_id": "o", "name": "ordinary", "arguments": {}},
+                ],
+                approval_required=frozenset(),
+                approval_resolver=None,
+                tool_executor=executor,
+                stop_on_error_decider=lambda name, _arguments: name == "child",
+                cancel_pending_decider=lambda name, _arguments: name == "other-child",
+            )
+        )
+    )
+    assert executor.calls == [("child", {}), ("ordinary", {})]
+    assert any(message["content"] == "still-runs" for message in out.new_messages)
