@@ -53,6 +53,8 @@ class ReasonInput:
     max_turns: int = 8
     #: 本次 Provider 调用允许生成的硬上限；None 表示未配置 Run 预算。
     max_output_tokens: int | None = None
+    #: 流式模式：True 时调 reasoner.stream_complete 逐 chunk 发 TEXT_DELTA。
+    streaming: bool = False
 
 
 @dataclass
@@ -161,17 +163,44 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             seq += 1
             out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta))
             try:
-                turn = await inp.reasoner.complete(
-                    model=model_ref,
-                    prompt=inp.instructions,
-                    messages=tuple(inp.messages),
-                    tools=list(inp.tools),
-                    **(
-                        {"max_output_tokens": inp.max_output_tokens}
-                        if inp.max_output_tokens is not None
-                        else {}
-                    ),
-                )
+                if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
+                    text_parts: list[str] = []
+                    async for item in inp.reasoner.stream_complete(
+                        model=model_ref,
+                        prompt=inp.instructions,
+                        messages=tuple(inp.messages),
+                        tools=list(inp.tools),
+                        **(
+                            {"max_output_tokens": inp.max_output_tokens}
+                            if inp.max_output_tokens is not None
+                            else {}
+                        ),
+                    ):
+                        if "text_delta" in item:
+                            text_parts.append(item["text_delta"])
+                            seq += 1
+                            out.events.append(
+                                _event(
+                                    EventType.TEXT_DELTA,
+                                    inp,
+                                    seq,
+                                    {"text": item["text_delta"]},
+                                ),
+                            )
+                        if "turn" in item:
+                            turn = item["turn"]
+                else:
+                    turn = await inp.reasoner.complete(
+                        model=model_ref,
+                        prompt=inp.instructions,
+                        messages=tuple(inp.messages),
+                        tools=list(inp.tools),
+                        **(
+                            {"max_output_tokens": inp.max_output_tokens}
+                            if inp.max_output_tokens is not None
+                            else {}
+                        ),
+                    )
             except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
                 last_error = exc
                 failure = classify_model_failure(exc)
@@ -287,6 +316,16 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         out.route = ROUTE_TOOL_CALLS
     else:
         out.new_messages.append({"role": "assistant", "content": turn.final_text or ""})
+        seq += 1
+        out.events.append(
+            _event(
+                EventType.TEXT_COMPLETED,
+                inp,
+                seq,
+                {"text": turn.final_text or ""},
+                phase="final_answer",
+            ),
+        )
         out.route = ROUTE_FINAL
     return out
 

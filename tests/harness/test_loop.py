@@ -470,3 +470,93 @@ def test_fail_fast_only_cancels_calls_selected_by_host():
     )
     assert executor.calls == [("child", {}), ("ordinary", {})]
     assert any(message["content"] == "still-runs" for message in out.new_messages)
+
+
+# ----------------------------------------------------------- streaming
+
+
+class _StreamingReasoner:
+    """不触网的流式 reasoner：stream_complete 逐 chunk yield 文本增量。"""
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = list(chunks)
+        self._i = 0
+
+    async def complete(self, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("streaming reasoner should not be called via complete()")
+
+    async def stream_complete(self, **kwargs):  # type: ignore[no-untyped-def]
+        for chunk in self._chunks:
+            yield {"text_delta": chunk}
+        yield {
+            "turn": HarnessReasoningTurn(
+                final_text="".join(self._chunks),
+                usage={"input_tokens": 10, "output_tokens": 5},
+            ),
+        }
+
+
+def test_streaming_emits_text_delta_events_then_completed():
+    """流式模式：逐 chunk 发 TEXT_DELTA，最终发 TEXT_COMPLETED。"""
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="m",
+                instructions="",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                reasoner=_StreamingReasoner(["Hello", " ", "world"]),
+                streaming=True,
+            ),
+        )
+    )
+    types = [e.event_type for e in out.events]
+    # TEXT_DELTA 在 MODEL_CALL_COMPLETED 之前
+    delta_events = [e for e in out.events if e.event_type == EventType.TEXT_DELTA]
+    assert len(delta_events) == 3
+    assert [e.payload["text"] for e in delta_events] == ["Hello", " ", "world"]
+    assert EventType.TEXT_COMPLETED in types
+    assert EventType.MODEL_CALL_COMPLETED in types
+    assert out.route == ROUTE_FINAL
+    assert out.new_messages == [{"role": "assistant", "content": "Hello world"}]
+
+
+def test_streaming_with_tool_calls_routes_to_tool_calls():
+    """流式模式 + 工具调用：发 delta 后仍路由到 tool_calls。"""
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="m",
+                instructions="",
+                messages=[{"role": "user", "content": "查"}],
+                tools=["t"],
+                reasoner=_StreamingReasoner(["查"], ),
+                streaming=True,
+            ),
+        )
+    )
+    # 无 tool_call 时仍 final（_StreamingReasoner 只有 text）
+    assert out.route == ROUTE_FINAL
+    assert EventType.TEXT_DELTA in [e.event_type for e in out.events]
+
+
+def test_non_streaming_does_not_emit_text_delta():
+    """非流式模式：不发 TEXT_DELTA，仅 TEXT_COMPLETED。"""
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="m",
+                instructions="",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="你好")]),
+                streaming=False,
+            ),
+        )
+    )
+    types = [e.event_type for e in out.events]
+    assert EventType.TEXT_DELTA not in types
+    assert EventType.TEXT_COMPLETED in types

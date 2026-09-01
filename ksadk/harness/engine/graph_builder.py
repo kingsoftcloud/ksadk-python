@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -84,6 +85,11 @@ def build_graph(engine, run):
                 seq_start=run.seq,
                 max_turns=engine._max_reasoning_turns,
                 max_output_tokens=max_output_tokens,
+                streaming=(
+                    getattr(engine._reasoner, "_streaming", None) is True
+                    or os.getenv("KSADK_MODEL_STREAMING", "").strip().lower()
+                    in {"1", "true", "yes", "on"}
+                ),
             )
 
         try:

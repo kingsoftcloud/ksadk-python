@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol, Sequence
+from typing import Any, AsyncIterator, Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -173,6 +173,108 @@ class LiteLLMHarnessReasoner:
         if streaming:
             return await self._consume_stream(response, model=model)
         return self._consume_response(response, model=model)
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[Any],
+        max_output_tokens: int | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """流式模型调用：逐 chunk yield {"text_delta": str}，
+        最后 yield {"turn": HarnessReasoningTurn}。
+
+        与 ``complete(streaming=True)`` 的区别：``complete`` 摈整段返回；
+        ``stream_complete`` 逐 chunk 交还调用方（loop 层据此发 TEXT_DELTA 事件），
+        显著降低首 token 延迟。
+        """
+        del prompt
+        try:
+            from litellm import acompletion
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "Harness streaming requires the 'adk' extra (litellm)"
+            ) from exc
+
+        resolved_model = resolve_model_identifier(model)
+        kwargs: dict[str, Any] = {
+            "model": resolved_model,
+            "messages": list(messages),
+            "tools": [tool.openai_schema for tool in tools],
+            "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if max_output_tokens is not None:
+            if max_output_tokens < 1:
+                raise ValueError("max_output_tokens must be positive")
+            kwargs["max_tokens"] = max_output_tokens
+        base_url = os.getenv("OPENAI_BASE_URL")
+        api_key = os.getenv("OPENAI_API_KEY")
+        if base_url:
+            kwargs["base_url"] = base_url
+        if api_key:
+            kwargs["api_key"] = api_key
+
+        response = await acompletion(**kwargs)
+        if not hasattr(response, "__aiter__"):
+            raise RuntimeError(f"Harness model {model!r} returned a non-stream response")
+
+        text_chunks: list[str] = []
+        tool_fragments: dict[int, dict[str, str]] = {}
+        usage_payload: dict[str, int] | None = None
+        saw_choice = False
+        async for chunk in response:
+            usage = self._usage_payload(getattr(chunk, "usage", None))
+            if usage is not None:
+                usage_payload = usage
+            choices = getattr(chunk, "choices", None) or []
+            for choice in choices:
+                saw_choice = True
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if content is not None:
+                    text_chunks.append(str(content))
+                    yield {"text_delta": str(content)}
+                for call in getattr(delta, "tool_calls", None) or []:
+                    index = int(getattr(call, "index", 0) or 0)
+                    current = tool_fragments.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    incoming_id = str(getattr(call, "id", "") or "")
+                    if incoming_id:
+                        current["id"] = self._merge_stream_call_id(current["id"], incoming_id)
+                    function = getattr(call, "function", None)
+                    if function is not None:
+                        current["name"] += str(getattr(function, "name", "") or "")
+                        current["arguments"] += str(getattr(function, "arguments", "") or "")
+        if not saw_choice and not usage_payload:
+            raise RuntimeError(f"Harness model {model!r} returned an empty stream")
+        raw_calls = [
+            SimpleToolCall(
+                id=fragment["id"],
+                function=SimpleFunctionCall(
+                    name=fragment["name"],
+                    arguments=fragment["arguments"] or "{}",
+                ),
+            )
+            for index, fragment in sorted(tool_fragments.items())
+        ]
+        calls = self._parse_tool_calls(raw_calls)
+        final_text = "".join(text_chunks) or None
+        if final_text is None and not calls:
+            raise RuntimeError(f"Harness model {model!r} stream produced no content")
+        yield {
+            "turn": HarnessReasoningTurn(
+                final_text=final_text,
+                tool_calls=calls,
+                usage=usage_payload,
+            )
+        }
 
     @classmethod
     def _consume_response(cls, response: Any, *, model: str) -> HarnessReasoningTurn:
