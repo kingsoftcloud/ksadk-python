@@ -1,0 +1,16 @@
+{
+  "apiVersion": "conversation.ksadk.io/v1",
+  "kind": "ConversationSurface",
+  "surfaceId": "studio.conversation",
+  "sessionId": "session-example",
+  "providerRef": "runtime:codex",
+  "inputs": [
+    {"name": "text", "mode": "native"},
+    {"name": "attachments", "mode": "translated"}
+  ],
+  "outputs": [
+    {"name": "text", "mode": "native"},
+    {"name": "approval", "mode": "native"},
+    {"name": "plan", "mode": "degraded", "reason": "provider emits opaque plans"}
+  ]
+}

@@ -1,0 +1,64 @@
+[
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "status": "accepted",
+    "message_id": "11111111-2222-3333-4444-555555555555",
+    "run_id": "run-1",
+    "accepted_seq": 42
+  },
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "status": "duplicate",
+    "message_id": "11111111-2222-3333-4444-555555555555"
+  },
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "status": "rejected",
+    "error": {
+      "code": "invalid_command",
+      "message": "payload missing content",
+      "retryable": false,
+      "details": {
+        "field": "payload.content"
+      }
+    }
+  },
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "status": "unsupported",
+    "error": {
+      "code": "unsupported",
+      "message": "steer not supported by runtime",
+      "retryable": false,
+      "details": {}
+    }
+  },
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "status": "queue_full",
+    "error": {
+      "code": "queue_full",
+      "message": "inbox depth reached limit",
+      "retryable": true,
+      "details": {
+        "limit": 128
+      }
+    }
+  },
+  {
+    "schema_version": 1,
+    "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+    "status": "persistence_uncertain",
+    "error": {
+      "code": "persistence_uncertain",
+      "message": "commit result unknown",
+      "retryable": true,
+      "details": {}
+    }
+  }
+]

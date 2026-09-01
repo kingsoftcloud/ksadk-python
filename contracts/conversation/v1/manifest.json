@@ -1,0 +1,38 @@
+{
+  "contract_set": "conversation/v1",
+  "digest_algorithm": "sha256",
+  "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
+  "aggregate_digest": "0920c82418155841ae0af7183ad44238fe16da45d65c9e744b8f6f8eb8aa0d38",
+  "files": [
+    {
+      "path": "conversation-input.schema.json",
+      "sha256": "17d778a80ebda278f4dc6c907a8cbd30a27b7fe3b14e6b6789edb1a2c59cf7df",
+      "bytes": 1623
+    },
+    {
+      "path": "conversation-item.schema.json",
+      "sha256": "94bb626042ed05ac1489e64b693179c6728a7ff7fb3822dda908ddebf384e55e",
+      "bytes": 1440
+    },
+    {
+      "path": "conversation-surface.schema.json",
+      "sha256": "cb8844c8fa7428c8e1b2c4ec2c16b90cd4143510eb2f781f2b5ac192bdacef63",
+      "bytes": 1096
+    },
+    {
+      "path": "fixtures/conversation-input.json",
+      "sha256": "534eed029f05455bb83f9943912a7755c8bc47f21912d9eaed8851366bcd8bfb",
+      "bytes": 507
+    },
+    {
+      "path": "fixtures/conversation-item.json",
+      "sha256": "23748e43cfba4389a60962ac98d99ace75090622fa0fc82e3ea3a403ed582cbd",
+      "bytes": 391
+    },
+    {
+      "path": "fixtures/conversation-surface.json",
+      "sha256": "333c1e43fcccad3ab261b0c67b747096235d3508c3a00a95745847e9b53b51ac",
+      "bytes": 403
+    }
+  ]
+}

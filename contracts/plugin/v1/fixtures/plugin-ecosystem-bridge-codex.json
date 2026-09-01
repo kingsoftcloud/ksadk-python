@@ -1,0 +1,339 @@
+{
+  "fixtureKind": "lifecycle",
+  "contractFormat": "ksadk.plugin-ecosystem-bridge/v1",
+  "describeRequest": {
+    "requestFormat": "ksadk.bridge-describe/v1",
+    "ecosystem": "codex"
+  },
+  "describeResult": {
+    "resultFormat": "ksadk.bridge-describe-result/v1",
+    "descriptor": {
+      "descriptorFormat": "ksadk.plugin-ecosystem-bridge-descriptor/v1",
+      "bridgeId": "io.ksadk.codex-bridge",
+      "bridgeVersion": "1.0.0",
+      "bridgeDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ecosystem": "codex",
+      "integrationMode": "bridged",
+      "maturity": "bridged-ready",
+      "hostRequirement": {
+        "hostId": "codex-app-server",
+        "versionConstraint": ">=1.0.0,<2.0.0",
+        "protocol": "codex.app-server/v1",
+        "protocolConstraint": ">=1.0.0,<2.0.0"
+      },
+      "supportedActions": [
+        "describe",
+        "probe",
+        "inspect",
+        "plan",
+        "stage",
+        "commit",
+        "reconcile",
+        "rollback",
+        "dispose"
+      ]
+    }
+  },
+  "probe": {
+    "fixtureKind": "probe",
+    "request": {
+      "requestFormat": "ksadk.bridge-probe/v1",
+      "sourceRef": "file://fixtures/codex-plugin",
+      "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "selectedManifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json"
+    },
+    "result": {
+      "resultFormat": "ksadk.bridge-probe-result/v1",
+      "candidates": [
+        {
+          "ecosystem": "codex",
+          "integrationMode": "bridged",
+          "maturity": "bridged-ready",
+          "manifestKind": "codex-plugin",
+          "manifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json",
+          "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "selectionRequired": false,
+      "selectedManifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json",
+      "rejection": null
+    }
+  },
+  "inspectRequest": {
+    "requestFormat": "ksadk.bridge-inspect/v1",
+    "bridgeId": "io.ksadk.codex-bridge",
+    "sourceRef": "file://fixtures/codex-plugin",
+    "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "candidate": {
+      "ecosystem": "codex",
+      "integrationMode": "bridged",
+      "maturity": "bridged-ready",
+      "manifestKind": "codex-plugin",
+      "manifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "inspectResult": {
+    "resultFormat": "ksadk.bridge-inspect-result/v1",
+    "status": "accepted",
+    "descriptor": {
+      "descriptorFormat": "ksadk.ecosystem-plugin-descriptor/v1",
+      "ecosystem": "codex",
+      "pluginId": "io.openai.example-plugin",
+      "pluginVersion": "1.2.3",
+      "integrationMode": "bridged",
+      "maturity": "bridged-ready",
+      "sourceRef": "file://fixtures/codex-plugin",
+      "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "hostRequirement": {
+        "hostId": "codex-app-server",
+        "versionConstraint": ">=1.0.0,<2.0.0",
+        "protocol": "codex.app-server/v1",
+        "protocolConstraint": ">=1.0.0,<2.0.0"
+      },
+      "permissionsDeclared": true,
+      "installPermissions": ["package:local-read"],
+      "runtimePermissions": ["process:host-user"],
+      "authScopes": ["codex.plugin:manage"],
+      "secretRefs": ["credential://codex/session"],
+      "components": ["skill:review", "mcp:repository"]
+    },
+    "rejection": null
+  },
+  "planRequest": {
+    "requestFormat": "ksadk.bridge-plan/v1",
+    "descriptor": {
+      "descriptorFormat": "ksadk.ecosystem-plugin-descriptor/v1",
+      "ecosystem": "codex",
+      "pluginId": "io.openai.example-plugin",
+      "pluginVersion": "1.2.3",
+      "integrationMode": "bridged",
+      "maturity": "bridged-ready",
+      "sourceRef": "file://fixtures/codex-plugin",
+      "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "hostRequirement": {
+        "hostId": "codex-app-server",
+        "versionConstraint": ">=1.0.0,<2.0.0",
+        "protocol": "codex.app-server/v1",
+        "protocolConstraint": ">=1.0.0,<2.0.0"
+      },
+      "permissionsDeclared": true,
+      "installPermissions": ["package:local-read"],
+      "runtimePermissions": ["process:host-user"],
+      "authScopes": ["codex.plugin:manage"],
+      "secretRefs": ["credential://codex/session"],
+      "components": ["skill:review", "mcp:repository"]
+    },
+    "operation": "install",
+    "desiredState": "enabled",
+    "boundReferences": ["agent://fixture-agent"],
+    "authorizationRef": "policy://plugin/install-approved",
+    "acceptUndeclaredPermissions": false
+  },
+  "planResult": {
+    "resultFormat": "ksadk.bridge-plan-result/v1",
+    "plan": {
+      "planFormat": "ksadk.bridge-transition-plan/v1",
+      "planId": "plan-codex-01",
+      "bridgeId": "io.ksadk.codex-bridge",
+      "bridgeVersion": "1.0.0",
+      "bridgeDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ecosystem": "codex",
+      "pluginId": "io.openai.example-plugin",
+      "pluginVersion": "1.2.3",
+      "integrationMode": "bridged",
+      "operation": "install",
+      "desiredState": "enabled",
+      "descriptorDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "installPermissions": ["package:local-read"],
+      "runtimePermissions": ["process:host-user"],
+      "authScopes": ["codex.plugin:manage"],
+      "authorizationRef": "policy://plugin/install-approved",
+      "permissionsDeclared": true,
+      "undeclaredPermissionsAccepted": false,
+      "boundReferences": ["agent://fixture-agent"],
+      "hostRequirement": {
+        "hostId": "codex-app-server",
+        "versionConstraint": ">=1.0.0,<2.0.0",
+        "protocol": "codex.app-server/v1",
+        "protocolConstraint": ">=1.0.0,<2.0.0"
+      },
+      "rollbackPointRef": "host-snapshot://codex/plugin-state-before-install",
+      "rollbackPointDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "createdAt": "2026-08-28T00:00:00Z"
+    }
+  },
+  "stageRequest": {
+    "requestFormat": "ksadk.bridge-stage/v1",
+    "plan": {
+      "planFormat": "ksadk.bridge-transition-plan/v1",
+      "planId": "plan-codex-01",
+      "bridgeId": "io.ksadk.codex-bridge",
+      "bridgeVersion": "1.0.0",
+      "bridgeDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ecosystem": "codex",
+      "pluginId": "io.openai.example-plugin",
+      "pluginVersion": "1.2.3",
+      "integrationMode": "bridged",
+      "operation": "install",
+      "desiredState": "enabled",
+      "descriptorDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "installPermissions": ["package:local-read"],
+      "runtimePermissions": ["process:host-user"],
+      "authScopes": ["codex.plugin:manage"],
+      "authorizationRef": "policy://plugin/install-approved",
+      "permissionsDeclared": true,
+      "undeclaredPermissionsAccepted": false,
+      "boundReferences": ["agent://fixture-agent"],
+      "hostRequirement": {
+        "hostId": "codex-app-server",
+        "versionConstraint": ">=1.0.0,<2.0.0",
+        "protocol": "codex.app-server/v1",
+        "protocolConstraint": ">=1.0.0,<2.0.0"
+      },
+      "rollbackPointRef": "host-snapshot://codex/plugin-state-before-install",
+      "rollbackPointDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "createdAt": "2026-08-28T00:00:00Z"
+    },
+    "expectedPlanDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "stageResult": {
+    "resultFormat": "ksadk.bridge-stage-result/v1",
+    "stageId": "stage-codex-01",
+    "planId": "plan-codex-01",
+    "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "bridgeVersion": "1.0.0",
+    "bridgeDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "host": {
+      "hostId": "codex-app-server",
+      "available": true,
+      "version": "1.4.0",
+      "protocol": "codex.app-server/v1",
+      "protocolVersion": "1.1.0",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "nativeStageRef": "codex-stage://plugin/stage-codex-01",
+    "nativeStageDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "stagedAt": "2026-08-28T00:00:01Z"
+  },
+  "commitRequest": {
+    "requestFormat": "ksadk.bridge-commit/v1",
+    "stageId": "stage-codex-01",
+    "planId": "plan-codex-01",
+    "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "nativeStageRef": "codex-stage://plugin/stage-codex-01",
+    "nativeStageDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "idempotencyKey": "commit-codex-01"
+  },
+  "commitResult": {
+    "resultFormat": "ksadk.bridge-commit-result/v1",
+    "receipt": {
+      "receiptFormat": "ksadk.ecosystem-install-receipt/v1",
+      "receiptId": "receipt-codex-01",
+      "planId": "plan-codex-01",
+      "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "stageId": "stage-codex-01",
+      "ecosystem": "codex",
+      "pluginId": "io.openai.example-plugin",
+      "pluginVersion": "1.2.3",
+      "integrationMode": "bridged",
+      "desiredState": "enabled",
+      "bridgeId": "io.ksadk.codex-bridge",
+      "bridgeVersion": "1.0.0",
+      "bridgeDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "host": {
+        "hostId": "codex-app-server",
+        "available": true,
+        "version": "1.4.0",
+        "protocol": "codex.app-server/v1",
+        "protocolVersion": "1.1.0",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "nativeReceiptRef": "codex-receipt://plugin/io.openai.example-plugin/1.2.3",
+      "nativeReceiptDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "boundReferences": ["agent://fixture-agent"],
+      "committedAt": "2026-08-28T00:00:02Z"
+    }
+  },
+  "reconcileRequest": {
+    "requestFormat": "ksadk.bridge-reconcile/v1",
+    "receiptId": "receipt-codex-01",
+    "nativeReceiptRef": "codex-receipt://plugin/io.openai.example-plugin/1.2.3",
+    "nativeReceiptDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "reconcileResult": {
+    "resultFormat": "ksadk.bridge-reconcile-result/v1",
+    "inventory": {
+      "inventoryFormat": "ksadk.ecosystem-inventory/v1",
+      "receiptId": "receipt-codex-01",
+      "ecosystem": "codex",
+      "pluginId": "io.openai.example-plugin",
+      "pluginVersion": "1.2.3",
+      "integrationMode": "bridged",
+      "desiredState": "enabled",
+      "observedState": "ready",
+      "maturity": "bridged-ready",
+      "bridgeId": "io.ksadk.codex-bridge",
+      "bridgeVersion": "1.0.0",
+      "bridgeDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "host": {
+        "hostId": "codex-app-server",
+        "available": true,
+        "version": "1.4.0",
+        "protocol": "codex.app-server/v1",
+        "protocolVersion": "1.1.0",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "nativeReceiptRef": "codex-receipt://plugin/io.openai.example-plugin/1.2.3",
+      "nativeReceiptDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "boundReferences": ["agent://fixture-agent"],
+      "reasonCode": null,
+      "reconciledAt": "2026-08-28T00:00:03Z"
+    }
+  },
+  "rollbackRequest": {
+    "requestFormat": "ksadk.bridge-rollback/v1",
+    "receiptId": "receipt-codex-01",
+    "rollbackPointRef": "host-snapshot://codex/plugin-state-before-install",
+    "rollbackPointDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "expectedNativeReceiptDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "rollbackResult": {
+    "resultFormat": "ksadk.bridge-rollback-result/v1",
+    "receiptId": "receipt-codex-01",
+    "state": "rolled-back",
+    "nativeReceiptRef": "codex-receipt://plugin/io.openai.example-plugin/rolled-back",
+    "nativeReceiptDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "rolledBackAt": "2026-08-28T00:00:04Z"
+  },
+  "disposeRequest": {
+    "requestFormat": "ksadk.bridge-dispose/v1",
+    "receiptId": "receipt-codex-01",
+    "nativeReceiptRef": "codex-receipt://plugin/io.openai.example-plugin/rolled-back",
+    "nativeReceiptDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "disposeResult": {
+    "resultFormat": "ksadk.bridge-dispose-result/v1",
+    "receiptId": "receipt-codex-01",
+    "state": "disposed",
+    "nativeReceiptRef": "codex-receipt://plugin/io.openai.example-plugin/rolled-back",
+    "nativeReceiptDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "disposedAt": "2026-08-28T00:00:05Z"
+  }
+}

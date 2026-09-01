@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
+from ksadk.studio.service import StudioService
+
 VIEWPORTS = (
     (768, 768),
     (1024, 768),
@@ -28,6 +30,20 @@ def assert_no_root_overflow(page: Page) -> None:
         """() => ({
           viewport: window.innerWidth,
           scrollWidth: document.documentElement.scrollWidth,
+          overflowing: [...document.querySelectorAll('*')]
+            .map(element => {
+              const rect = element.getBoundingClientRect();
+              return {
+                tag: element.tagName,
+                className: typeof element.className === 'string' ? element.className : '',
+                left: Math.round(rect.left),
+                right: Math.round(rect.right),
+                width: Math.round(rect.width),
+                scrollWidth: element.scrollWidth,
+              };
+            })
+            .filter(item => item.right > innerWidth + 1 || item.scrollWidth > item.width + 1)
+            .slice(0, 12),
         })"""
     )
     assert metrics["scrollWidth"] <= metrics["viewport"] + 1, metrics
@@ -47,6 +63,22 @@ def rect(page: Page, selector: str) -> dict[str, float]:
           };
         }"""
     )
+
+
+def open_studio(page: Page, base_url: str) -> None:
+    """Wait for the rendered Studio shell, not for long-lived API traffic.
+
+    Studio intentionally starts session/catalog/trace requests while it mounts.
+    ``networkidle`` turns that valid background work into a flaky browser gate;
+    the visible application shell is the actual readiness condition here.
+    """
+    page.goto(base_url, wait_until="domcontentloaded")
+    expect(page.locator(".app-shell")).to_be_visible()
+
+
+def reload_studio(page: Page) -> None:
+    page.reload(wait_until="domcontentloaded")
+    expect(page.locator(".app-shell")).to_be_visible()
 
 
 def create_test_agent(base_url: str) -> None:
@@ -281,13 +313,15 @@ def assert_page_matrix(page: Page, width: int) -> None:
         ("工程资源", "工程资源", "data", "Skill"),
         ("可观测", "可观测", "workbench", None),
         ("运行资源", "运行资源", "document", None),
-        ("任务编排", "任务编排", "document", None),
+        ("自动化", "自动化", "document", None),
     )
     for nav_label, page_title, layout, tab_label in pages:
         navigation.get_by_role("button", name=nav_label, exact=True).click()
         if tab_label is not None:
             page.get_by_role("tab").filter(has_text=tab_label).click()
-        expect(page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)).to_be_visible()
+        expect(
+            page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)
+        ).to_be_visible()
         page_root = page.locator("#mainContent > div:not(.chat-wrap) > [data-layout]").first
         expect(page_root).to_have_attribute("data-layout", layout)
         try:
@@ -316,9 +350,26 @@ def assert_page_matrix(page: Page, width: int) -> None:
             expected_max = 1760
             assert page_rect["width"] <= expected_max + 1, (nav_label, page_rect)
 
+
 def main() -> None:
     with TemporaryDirectory(prefix="ksadk-responsive-studio-") as temp_dir:
-        with studio_server(Path(temp_dir)) as base_url, sync_playwright() as playwright:
+        workspace = Path(temp_dir)
+        service = StudioService(
+            workspace,
+            codex_runtime_inspector=lambda _runtime: (
+                "0.8.2",
+                # This browser fixture creates a current Codex agent.  Keep
+                # the simulated local runtime aligned with that agent's
+                # pinned version so this test exercises the Studio UI rather
+                # than deliberately tripping the runtime-version guard.
+                "0.147.0",
+                "codex-cli 0.147.0",
+            ),
+        )
+        with (
+            studio_server(workspace, service=service) as base_url,
+            sync_playwright() as playwright,
+        ):
             browser = playwright.chromium.launch(headless=True)
             try:
                 context = browser.new_context(
@@ -327,7 +378,7 @@ def main() -> None:
                     reduced_motion="reduce",
                 )
                 page = context.new_page()
-                page.goto(base_url, wait_until="networkidle")
+                open_studio(page, base_url)
 
                 assert_no_root_overflow(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
@@ -344,7 +395,7 @@ def main() -> None:
                     == "dark"
                 )
                 page.keyboard.press("Escape")
-                page.reload(wait_until="networkidle")
+                reload_studio(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
 
                 page.get_by_role("button", name="设置", exact=True).click()
@@ -449,9 +500,7 @@ def main() -> None:
 
                 page.set_viewport_size({"width": 1024, "height": 682})
                 page.locator(".authoring-mode-tabs button").filter(has_text="快速创建").click()
-                expect(page.locator(".create-shell")).to_have_attribute(
-                    "data-layout", "document"
-                )
+                expect(page.locator(".create-shell")).to_have_attribute("data-layout", "document")
                 page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
                 continue_button = page.get_by_role("button", name="继续", exact=True)
                 expect(continue_button).to_be_visible()
@@ -507,7 +556,7 @@ def main() -> None:
                         reduced_motion="reduce",
                     )
                     matrix_page = matrix_context.new_page()
-                    matrix_page.goto(base_url, wait_until="networkidle")
+                    open_studio(matrix_page, base_url)
                     expected_rail = 80 if width <= 1023 else 216
                     sidebar_rect = rect(matrix_page, ".sidebar")
                     assert abs(sidebar_rect["width"] - expected_rail) <= 1, (
@@ -543,7 +592,7 @@ def main() -> None:
                 )
                 workbench_page = workbench_context.new_page()
                 workbench_page.route("**/api/v1/runs**", route_recoverable_chat_fixture)
-                workbench_page.goto(base_url, wait_until="networkidle")
+                open_studio(workbench_page, base_url)
                 expect(workbench_page.locator("html")).to_have_attribute("data-theme", "dark")
                 workbench_page.locator(".primary-nav").get_by_role(
                     "button", name="会话", exact=True
@@ -562,21 +611,11 @@ def main() -> None:
                 )
                 assert first_session_row["height"] <= 41, first_session_row
                 assert workbench_page.locator(".chat-session-item time").count() == 0
-                model_trigger = workbench_page.locator(".chat-model-trigger")
-                expect(model_trigger).to_be_visible()
-                model_trigger_text = model_trigger.inner_text().strip()
-                assert model_trigger_text and model_trigger_text != "模型"
-                expect(
-                    workbench_page.get_by_role("button", name="批准模式：帮我批准")
-                ).to_be_visible()
-                workbench_page.get_by_role("button", name="批准模式：帮我批准").click()
-                approval_menu = workbench_page.locator(".chat-approval-menu")
-                expect(approval_menu).to_be_visible()
-                assert approval_menu.locator(".chat-approval-option").count() == 3
-                approval_menu.get_by_text("请求批准", exact=True).click()
-                expect(
-                    workbench_page.get_by_role("button", name="批准模式：请求批准")
-                ).to_be_visible()
+                # A live run owns the Runtime handle.  The composer must be
+                # visibly unavailable rather than allowing a second submit
+                # which would fail with an already-attached-handle error.
+                expect(workbench_page.get_by_role("textbox", name="消息")).to_be_disabled()
+                expect(workbench_page.get_by_role("button", name="暂停生成")).to_be_visible()
                 workbench_page.locator(".chat-message-list").evaluate(
                     """element => {
                       const spacer = document.createElement('div');
@@ -637,6 +676,27 @@ def main() -> None:
                 expect(
                     workbench_page.get_by_text("这是已经完成的历史答案。", exact=True)
                 ).to_be_visible()
+                # Selecting a completed session clears the live run's stream
+                # so the composer re-enables.  Allow a generous window: the
+                # React re-render chain (stream reset -> runs recompute ->
+                # composer enabled) is fast locally but can brush the default
+                # 5s budget on a loaded shared CI runner.
+                expect(workbench_page.get_by_role("textbox", name="消息")).to_be_enabled(timeout=20000)
+                model_trigger = workbench_page.locator(".chat-model-trigger")
+                expect(model_trigger).to_be_visible()
+                model_trigger_text = model_trigger.inner_text().strip()
+                assert model_trigger_text and model_trigger_text != "模型"
+                expect(
+                    workbench_page.get_by_role("button", name="批准模式：帮我批准")
+                ).to_be_visible()
+                workbench_page.get_by_role("button", name="批准模式：帮我批准").click()
+                approval_menu = workbench_page.locator(".chat-approval-menu")
+                expect(approval_menu).to_be_visible()
+                assert approval_menu.locator(".chat-approval-option").count() == 3
+                approval_menu.get_by_text("请求批准", exact=True).click()
+                expect(
+                    workbench_page.get_by_role("button", name="批准模式：请求批准")
+                ).to_be_visible()
                 workbench_page.locator(".chat-session-main").filter(
                     has_text="继续处理这个长任务"
                 ).click()
@@ -685,7 +745,7 @@ def main() -> None:
                 )
                 trace_page = trace_context.new_page()
                 trace_page.route("**/api/v1/traces**", route_trace_fixture)
-                trace_page.goto(base_url, wait_until="networkidle")
+                open_studio(trace_page, base_url)
                 trace_page.locator(".primary-nav").get_by_role(
                     "button", name="可观测", exact=True
                 ).click()
@@ -797,7 +857,7 @@ def main() -> None:
                 expect(trace_page.locator(".sidebar")).to_have_css("width", "216px")
                 expanded_sidebar = rect(trace_page, ".sidebar")
                 assert abs(expanded_sidebar["width"] - 216) <= 1, expanded_sidebar
-                trace_page.reload(wait_until="networkidle")
+                reload_studio(trace_page)
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
                 trace_page.get_by_role("button", name="收起导航", exact=True).click()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "compact")

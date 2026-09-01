@@ -4,8 +4,9 @@ description: 从第一个本地 Agent 到云端托管 Runtime 的用户文档入
 ---
 
 **Kingsoft Cloud Agent Development Kit** 用于构建、调试、部署和观测企业级 AI
-Agent。先选择你的项目形态；所有路径随后都能复用同一套本地 Web UI、OpenAI
-兼容 API、会话和可观测能力。
+Agent。0.8.3 以可信内核收口并发、恢复和状态一致性，以 Harness 统一执行生命周期，
+再通过可插拔 Provider 接入不同执行内核。先选择项目形态，随后复用同一套 Studio、
+API、会话和事件能力。
 
 ```bash
 pip install -U "ksadk[all]"
@@ -15,31 +16,38 @@ pip install -U "ksadk[all]"
 
 <Cards>
   <Card title="第一个 Python Agent" href="/cn/docs/framework/getting-started/quickstart" description="从 LangGraph 模板开始：配置模型、在终端运行，再打开本地 Web UI。" />
-  <Card title="✨ YAML 即 Agent：Codex（0.8 新增）" href="/cn/docs/framework/tutorials/best-practices/codex-yaml-agent" description="只有 agentengine.yaml；macOS、Windows、Linux 原生调试，托管部署不上传 KS3 代码包。" />
+  <Card title="YAML 即 Agent：Codex" href="/cn/docs/framework/tutorials/best-practices/codex-yaml-agent" description="只有 agentengine.yaml；macOS、Windows、Linux 原生调试，托管部署不上传 KS3 代码包。" />
   <Card title="导入已有 Agent" href="/cn/docs/framework/tutorials/existing-agent" description="把现有 Python Agent 包装成显式、可调试的 KsADK 项目。" />
 </Cards>
 
-## 完成本地开发闭环
+## Studio 与本地开发
 
 <Cards>
   <Card title="项目配置" href="/cn/docs/framework/getting-started/configuration" description="理解 YAML、.env、命令行参数的优先级；区分 Python 项目和 Codex manifest。" />
-  <Card title="本地 Web UI" href="/cn/docs/framework/guides/local-web-ui" description="浏览器调试、会话、附件、workspace 文件与本地 API。" />
-  <Card title="构建与部署" href="/cn/docs/framework/guides/cloud-deployment" description="选择 Code、Container 或 ManagedRuntime，并从 dry-run 开始验证。" />
+  <Card title="AgentKit Local Studio" href="/cn/docs/framework/guides/agentkit-local-studio" description="在一个工作区创建、调试和回放 Codex、ADK、LangGraph 与插件 Provider Agent。" />
+  <Card title="本地 Web UI" href="/cn/docs/framework/guides/local-web-ui" description="浏览器调试、会话、附件、工作区文件与本地 API。" />
+  <Card title="评测与可观测" href="/cn/docs/framework/guides/evaluation-observability" description="验证响应、事件、轨迹和评测结果，形成可复现的本地闭环。" />
 </Cards>
 
-## 0.8 新能力与进阶主题
+## Harness 与插件化
 
 <Cards>
-  <Card title="✨ AgentKit Local Studio（0.8.1 新增）" href="/cn/docs/framework/guides/agentkit-local-studio" description="本地创建、构建并测试 Codex、ADK 与 LangGraph Agent 的统一工作区。" />
-  <Card title="Codex Managed Runtime" href="/cn/docs/framework/guides/managed-runtime" description="声明式 Runtime 的版本锁定、manifest bundle、服务端镜像解析与本机代理边界。" />
-  <Card title="A2A Runtime（实验性）" href="/cn/docs/framework/guides/a2a-runtime" description="官方 A2A 1.0 Agent Card、JSON-RPC/HTTP+JSON、A2A Center / Space 调试。" />
-  <Card title="HarnessApp（实验性）" href="/cn/docs/framework/guides/harness-app" description="用严格 YAML 组装最小统一 Runtime 数据面；适合受限的声明式场景。" />
-  <Card title="Hosted UI 与事件回放" href="/cn/docs/framework/guides/hosted-ui-events" description="AG-UI/A2UI 能力协商、RuntimeEvent 与只读 replay。" />
+  <Card title="运行时架构" href="/cn/docs/framework/guides/runtime-architecture" description="理解可信内核、Harness 执行层、Provider 与共用能力之间的责任边界。" />
+  <Card title="HarnessApp" href="/cn/docs/framework/guides/harness-app" description="使用严格 YAML 组装统一运行时数据面，保持框架语义由 Provider 持有。" />
+  <Card title="插件与本地自动化" href="/cn/docs/framework/guides/plugins-and-automations" description="组合 Provider、工具链和自动任务；一次 Activation 只选择一个 Provider。" />
+</Cards>
+
+## 事件、互操作与交付
+
+<Cards>
+  <Card title="统一事件与回放" href="/cn/docs/framework/guides/hosted-ui-events" description="由 Provider 原生事件进入 RuntimeEvent v2，再投影到 API、Studio 与托管界面。" />
+  <Card title="A2A Runtime" href="/cn/docs/framework/guides/a2a-runtime" description="基于 A2A 1.0 的 Agent Card、JSON-RPC/HTTP+JSON 与平台联调。" />
+  <Card title="构建与部署" href="/cn/docs/framework/guides/cloud-deployment" description="选择 Code、Container 或 ManagedRuntime，并从 dry-run 开始验证。" />
 </Cards>
 
 ## 查找精确契约
 
 <Cards>
   <Card title="命令行参考" href="/cn/docs/cli" description="agentengine 的创建、运行、构建、部署和诊断命令。" />
-  <Card title="配置与环境变量参考" href="/cn/docs/references" description="项目 manifest、环境变量、OpenAI 兼容 API、会话文件和故障排查。" />
+  <Card title="配置与环境变量参考" href="/cn/docs/references" description="项目清单、环境变量、OpenAI 兼容 API、会话文件和故障排查。" />
 </Cards>

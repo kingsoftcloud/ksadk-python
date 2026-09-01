@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.2"
+version = "0.8.3"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,6 +31,7 @@ dependencies = [
     # 配置
     "pyyaml>=6.0.0",
     "packaging>=23.0",
+    "tomli>=2.0.0; python_version < '3.11'",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "jsonschema>=4.0.0,<5.0.0",
@@ -77,6 +78,9 @@ dependencies = [
     "rapidocr-onnxruntime>=1.2.0",
     "pillow>=11.0.0,<13.0.0",
     # ========= 核心框架依赖 (默认安装) =========
+    # Studio 是基础产品入口；即使只使用 Codex/DSH Provider，启动时也会
+    # 枚举已有 ADK Agent。因此 google-adk 不能再只存在于可选 extra。
+    "google-adk>=1.34.0,<3.0.0",
     # LangChain
     "langchain>=1.3.14,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
@@ -91,9 +95,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Google ADK 支持 (goal-00: 1.34.x 为最低锚点,<3.0 上界;1.x/2.x 差异经 ksadk.compat.adk_compat 收口)
+# Google ADK 扩展 (基础安装已包含 google-adk；本 extra 增加生成/修复依赖)
 adk = [
-    "google-adk>=1.34.0,<3.0.0",
     "litellm>=1.0.0; platform_system != 'Windows' or python_version < '3.13'",
     "json_repair>=0.25.0",  # 用于修复大模型输出的非法 JSON
 ]
@@ -198,7 +201,7 @@ include = ["ksadk*", "ksadk_runtime_common*"]
 exclude = ["ksadk.server.web-ui*", "ksadk.studio.react-ui*"]
 
 [tool.setuptools.package-data]
-ksadk = ["server/static/**/*", "studio/static/**/*", "kernel/sql/*.sql"]
+ksadk = ["_build_provenance.json", "server/static/**/*", "studio/static/**/*", "kernel/sql/*.sql", "plugins/providers/bundles/**/*"]
 ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]

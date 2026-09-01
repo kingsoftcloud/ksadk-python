@@ -13,8 +13,9 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
-from ksadk.studio.contracts import ContextSpec, MemorySpec
+from ksadk.studio.contracts import ContextSpec, MemorySpec, SoulDocument
 from ksadk.studio.errors import StudioError, not_found
+from ksadk.studio.soul import soul_digest as compute_soul_digest
 from ksadk.studio.workspace import Workspace
 
 
@@ -43,6 +44,12 @@ class CodexAgentManifest(BaseModel):
     # Codex Runtime 最终仍消费合并后的 base_instructions；该字段用于在 AgentVersion /
     # Build 中保留任务契约来源，避免为了运行投影而破坏 PromptSection 审计。
     task_prompt: str | None = Field(default=None, max_length=32768)
+    # Soul remains reviewed source in the ManagedRuntime manifest. Runtime
+    # launch deterministically compiles it before ``prompt``; these provenance
+    # fields prevent a Draft-only Soul from masquerading as deployed behavior.
+    soul: SoulDocument | None = None
+    soul_source: Literal["AgentSpec.soul"] | None = None
+    soul_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     skills: list[str] | None = None
     mcp_servers: list[dict[str, Any]] | None = None
     sandbox: str | None = None
@@ -98,6 +105,17 @@ class CodexAgentManifest(BaseModel):
                 mcp_seen.add(name)
                 mcp_deduped.append(server)
             self.mcp_servers = mcp_deduped
+        if self.soul is None:
+            if self.soul_source is not None or self.soul_digest is not None:
+                raise ValueError("soul source/digest require a SoulDocument")
+        else:
+            expected_digest = compute_soul_digest(self.soul)
+            if self.soul_source not in {None, "AgentSpec.soul"}:
+                raise ValueError("soul_source must identify AgentSpec.soul")
+            if self.soul_digest not in {None, expected_digest}:
+                raise ValueError("soul_digest does not match the SoulDocument")
+            self.soul_source = "AgentSpec.soul"
+            self.soul_digest = expected_digest
         return self
 
     @property
@@ -113,6 +131,8 @@ def normalized_manifest_bytes(manifest: CodexAgentManifest) -> bytes:
         payload["context"] = manifest.context.model_dump(mode="python", by_alias=True)
     if manifest.memory is not None:
         payload["memory"] = manifest.memory.model_dump(mode="python", by_alias=True)
+    if manifest.soul is not None:
+        payload["soul"] = manifest.soul.model_dump(mode="python", by_alias=True)
     return serialize_managed_runtime_manifest(payload)
 
 

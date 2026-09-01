@@ -2013,6 +2013,7 @@ class AgentEngineClient:
         agent_id: str,
         session_id: str,
         after_seq_id: int | None = None,
+        offset: int | None = None,
         limit: int = 100,
     ) -> Dict[str, Any]:
         """Read canonical cloud session events through the Server Action API."""
@@ -2024,6 +2025,8 @@ class AgentEngineClient:
         }
         if after_seq_id is not None:
             params["AfterSeqId"] = after_seq_id
+        if offset is not None:
+            params["Offset"] = offset
         return await self._action_async("ListSessionEvents", params)
 
     async def submit_interaction(

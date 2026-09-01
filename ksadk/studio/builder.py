@@ -10,7 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from ksadk.plugins.bundle_security import assert_bundle_security
+from ksadk.plugins.contracts import CompositionProfile, PluginLock, plugin_lock_digest
+from ksadk.plugins.resolver import ResolvedComposition
 from ksadk.studio.capabilities import canonical_json, compute_bundle_digest, sha256_digest
+from ksadk.studio.compatibility_report import (
+    build_bundle_compatibility_report,
+    compatibility_facts_digest,
+)
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
     AgentDraft,
@@ -24,6 +31,7 @@ from ksadk.studio.hosted_kernel import (
     hosted_kernel_requirement_digest,
 )
 from ksadk.studio.repository import BuildRepository
+from ksadk.studio.soul import render_soul_markdown
 from ksadk.studio.workspace import Workspace
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -43,29 +51,46 @@ class AgentBundleBuilder:
         self.compiler = compiler or AgentCompiler(workspace)
         self.repository = repository or BuildRepository(workspace)
 
-    def build(self, draft: AgentDraft) -> BuildRecord:
+    def build(
+        self,
+        draft: AgentDraft,
+        *,
+        composition: ResolvedComposition | None = None,
+    ) -> BuildRecord:
         LOGGER.info(
             "bundle build started: agent=%s revision=%s",
             draft.metadata.id,
             draft.metadata.revision,
         )
         compiled = self.compiler.compile(draft)
-        # Bundle v2 always carries a lock. Phase 1 deliberately supports no
-        # user-selectable plugin factories yet, so the only valid lock is the
-        # explicit empty set. This makes admission deterministic without
-        # pulling the Phase 2 PluginHost into a deployed runtime.
-        plugin_lock = {"lockFormat": "agentkit.plugin-lock/v1", "plugins": []}
-        plugin_lock_digest = sha256_digest(canonical_json(plugin_lock))
-        runtime_type, source_digest, runtime_lock = self._runtime_snapshot(draft, compiled)
-        resolved_digest = sha256_digest(
-            canonical_json(
-                {
-                    "definitionDigest": compiled.resolved.resolved_digest,
-                    "runtime": runtime_lock,
-                    "sourceDigest": source_digest,
-                }
-            )
+        # Bundle v2 already carries a deterministic empty lock.  P2-00A now
+        # validates that wire shape through PluginLock while deliberately not
+        # resolving or loading a PluginHost before P2-02/P2-03.
+        parsed_plugin_lock = composition.plugin_lock if composition else PluginLock()
+        plugin_lock = parsed_plugin_lock.model_dump(
+            by_alias=True,
+            exclude_none=True,
+            mode="json",
         )
+        plugin_lock_digest_value = plugin_lock_digest(parsed_plugin_lock)
+        composition_profile = composition.profile if composition else None
+        composition_profile_digest_value = composition.profile_digest if composition else None
+        runtime_type, source_digest, runtime_lock = self._runtime_snapshot(draft, compiled)
+        compatibility_facts_digest_value = compatibility_facts_digest(
+            draft=draft,
+            composition=composition,
+            runtime_lock=runtime_lock,
+        )
+        resolved_digest_payload = {
+            "compatibilityFactsDigest": compatibility_facts_digest_value,
+            "definitionDigest": compiled.resolved.resolved_digest,
+            "runtime": runtime_lock,
+            "sourceDigest": source_digest,
+        }
+        if composition is not None:
+            resolved_digest_payload["compositionProfileDigest"] = composition_profile_digest_value
+            resolved_digest_payload["pluginLockDigest"] = plugin_lock_digest_value
+        resolved_digest = sha256_digest(canonical_json(resolved_digest_payload))
         short_digest = resolved_digest.removeprefix("sha256:")[:20]
         build_id = f"build_{short_digest}"
         final_dir = self.workspace.resolve(Path("dist") / draft.metadata.id / build_id)
@@ -98,13 +123,32 @@ class AgentBundleBuilder:
                 runtime_lock=runtime_lock,
                 resolved_digest=resolved_digest,
                 plugin_lock=plugin_lock,
+                composition_profile=composition_profile,
+                composition_profile_digest_value=composition_profile_digest_value,
                 hosted_kernel_requirement=hosted_kernel_requirement,
                 hosted_kernel_requirement_digest_value=hosted_kernel_requirement_digest_value,
+                compatibility_facts_digest_value=compatibility_facts_digest_value,
+            )
+            self._write_json(
+                bundle_root / "compatibility-report.json",
+                build_bundle_compatibility_report(
+                    draft=draft,
+                    composition=composition,
+                    runtime_lock=runtime_lock,
+                    resolved_digest=resolved_digest,
+                    facts_digest=compatibility_facts_digest_value,
+                    plugin_lock_digest=plugin_lock_digest_value,
+                    composition_profile_digest=composition_profile_digest_value,
+                ),
             )
             self._write_json(
                 bundle_root / "hosted-kernel-requirements.json",
                 hosted_kernel_requirement,
             )
+            # Secrets are references at every declarative boundary.  Scan the
+            # final materialized Bundle before its file manifest/digest are
+            # sealed, so an accidental literal cannot become a deployable ZIP.
+            assert_bundle_security(bundle_root)
             # The manifest is a complete content declaration. Write this
             # auxiliary checksum file first, then include it in the manifest
             # entries; otherwise a Server-side full-membership check correctly
@@ -118,12 +162,21 @@ class AgentBundleBuilder:
                 resolved_digest=resolved_digest,
                 runtime_type=runtime_type,
                 source_digest=source_digest,
-                plugin_lock_digest=plugin_lock_digest,
+                plugin_lock_digest=plugin_lock_digest_value,
+                composition_mode="composed" if composition is not None else "legacy",
+                composition_profile_digest=composition_profile_digest_value,
                 hosted_kernel_requirement_digest=hosted_kernel_requirement_digest_value,
                 files=files,
             )
             manifest.bundle_digest = compute_bundle_digest(manifest)
-            self._write_json(bundle_root / "manifest.json", manifest.model_dump(by_alias=True))
+            # Keep the on-disk manifest on the same ``exclude_none`` wire
+            # projection used by ``compute_bundle_digest``.  New v2 archives
+            # always state whether they select legacy or composed execution;
+            # only historical archives may omit that discriminator.
+            self._write_json(
+                bundle_root / "manifest.json",
+                manifest.model_dump(by_alias=True, exclude_none=True),
+            )
             archive = staging / "agent-bundle.zip"
             self._write_zip(bundle_root, archive)
             final_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -166,8 +219,11 @@ class AgentBundleBuilder:
         runtime_lock: dict,
         resolved_digest: str,
         plugin_lock: dict,
+        composition_profile: CompositionProfile | None,
+        composition_profile_digest_value: str | None,
         hosted_kernel_requirement: dict,
         hosted_kernel_requirement_digest_value: str,
+        compatibility_facts_digest_value: str,
     ) -> None:
         definition_digest = compiled.resolved.resolved_digest
         resolved_payload = compiled.resolved.model_dump(
@@ -186,14 +242,30 @@ class AgentBundleBuilder:
         self._write_json(root / "agentkit.lock", dependency_lock)
         self._write_json(root / "runtime-lock.json", runtime_lock)
         self._write_json(root / "plugin-lock.json", plugin_lock)
+        if composition_profile is not None:
+            # A resolved profile is an immutable composition input, not a
+            # second editable Agent spec.  It is only written once its
+            # deterministic lock has already been resolved by PluginRegistry.
+            self._write_json(
+                root / "composition-profile.json",
+                composition_profile.model_dump(
+                    by_alias=True,
+                    exclude_none=True,
+                    mode="json",
+                ),
+            )
         instructions = root / "instructions"
         instructions.mkdir()
         (instructions / "system.md").write_text(
-            draft.spec.instructions.system.rstrip() + "\n", encoding="utf-8"
+            compiled.resolved.instructions.system.rstrip() + "\n", encoding="utf-8"
         )
         (instructions / "task.md").write_text(
-            draft.spec.instructions.task.rstrip() + "\n", encoding="utf-8"
+            compiled.resolved.instructions.task.rstrip() + "\n", encoding="utf-8"
         )
+        if compiled.resolved.soul is not None:
+            (instructions / "soul.md").write_text(
+                render_soul_markdown(compiled.resolved.soul), encoding="utf-8"
+            )
         for skill in compiled.resolved.capabilities.skills:
             source = self.workspace.resolve(
                 Path("capabilities/skills") / skill["name"],
@@ -238,25 +310,33 @@ class AgentBundleBuilder:
                 "components": components,
             },
         )
-        self._write_json(
-            root / "provenance.json",
-            {
-                "format": "agentkit.provenance/v1",
-                "agentId": draft.metadata.id,
-                "sourceRevision": draft.metadata.revision,
-                "sourceDigest": compiled.resolved.source_digest,
-                "definitionDigest": definition_digest,
-                "resolvedDigest": resolved_digest,
-                "compilerVersion": compiled.resolved.compiler_version,
-                "runtimeContract": "agentkit.runtime/v1",
-                "hostedKernel": {
-                    "requirementsPath": "hosted-kernel-requirements.json",
-                    "requirementDigest": hosted_kernel_requirement_digest_value,
-                    "contractSet": hosted_kernel_requirement["kernelContract"]["set"],
-                    "contractDigest": hosted_kernel_requirement["kernelContract"]["digest"],
-                },
+        provenance = {
+            "format": "agentkit.provenance/v1",
+            "agentId": draft.metadata.id,
+            "sourceRevision": draft.metadata.revision,
+            "sourceDigest": compiled.resolved.source_digest,
+            "definitionDigest": definition_digest,
+            "resolvedDigest": resolved_digest,
+            "compilerVersion": compiled.resolved.compiler_version,
+            "runtimeContract": "agentkit.runtime/v1",
+            "compatibility": {
+                "reportPath": "compatibility-report.json",
+                "factsDigest": compatibility_facts_digest_value,
             },
-        )
+            "hostedKernel": {
+                "requirementsPath": "hosted-kernel-requirements.json",
+                "requirementDigest": hosted_kernel_requirement_digest_value,
+                "contractSet": hosted_kernel_requirement["kernelContract"]["set"],
+                "contractDigest": hosted_kernel_requirement["kernelContract"]["digest"],
+            },
+        }
+        if composition_profile is not None:
+            provenance["composition"] = {
+                "profilePath": "composition-profile.json",
+                "profileDigest": composition_profile_digest_value,
+                "pluginLockDigest": sha256_digest(canonical_json(plugin_lock)),
+            }
+        self._write_json(root / "provenance.json", provenance)
 
     def _runtime_snapshot(self, draft: AgentDraft, compiled) -> tuple[str, str, dict]:
         runtime = draft.spec.runtime
@@ -269,9 +349,7 @@ class AgentBundleBuilder:
                 content = path.read_bytes()
                 relative = path.relative_to(source_root).as_posix()
                 digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
-                source_files.append(
-                    {"path": relative, "sha256": digest, "size": len(content)}
-                )
+                source_files.append({"path": relative, "sha256": digest, "size": len(content)})
             source_digest = sha256_digest(canonical_json(source_files))
         bound_models = [
             item.model for item in self.compiler.catalog.resolve_models(draft.spec.bindings)
@@ -290,9 +368,11 @@ class AgentBundleBuilder:
             "model": compiled.resolved.model.model,
             "models": list(dict.fromkeys(bound_models)),
         }
-        return runtime_type, source_digest, {
-            key: value for key, value in lock.items() if value is not None
-        }
+        return (
+            runtime_type,
+            source_digest,
+            {key: value for key, value in lock.items() if value is not None},
+        )
 
     def _copy_runtime_source(self, bundle_root: Path, draft: AgentDraft) -> None:
         runtime = draft.spec.runtime

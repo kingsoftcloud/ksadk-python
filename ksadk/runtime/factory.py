@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
+import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,8 +14,7 @@ from typing import Any
 from ksadk.codex.client import AsyncCodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.runtime.adapter import StartRequest
-from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry
+from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry, StartRequest
 from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime.launch import RuntimeLaunchContext
 
@@ -88,6 +90,19 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
     }
     if base_instructions:
         request_config["base_instructions"] = base_instructions
+    collaboration_mode = str(config.get("collaboration_mode") or "").strip().lower()
+    if collaboration_mode:
+        if collaboration_mode not in {"default", "plan"}:
+            raise ValueError("Codex collaboration_mode must be default or plan")
+        request_config["collaboration_mode"] = collaboration_mode
+    goal_objective = str(config.get("goal_objective") or "").strip()
+    if goal_objective:
+        request_config["goal_objective"] = goal_objective
+    raw_skills = config.get("skills")
+    if isinstance(raw_skills, (list, tuple)):
+        request_config["skills"] = [
+            dict(item) for item in raw_skills if isinstance(item, dict)
+        ]
     defaults["config"] = request_config
     return defaults
 
@@ -158,6 +173,7 @@ def _manifest_mcp_overrides(config: dict[str, Any]) -> list[str]:
 def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
     client_factory = context.services.codex_client_factory or AsyncCodexClient
     config = dict(context.config)
+    bound_skill_paths: dict[str, str] = {}
     overrides = list(config.get("codex_overrides") or [])
     manifest_mcp_overrides = _manifest_mcp_overrides(config)
     overrides.extend(item for item in manifest_mcp_overrides if item not in overrides)
@@ -185,6 +201,9 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
             )
         env = dict(getattr(base_cfg, "env", None) or {})
         isolated_home = _isolated_codex_home(context.project_dir)
+        bound_skill_paths = _materialize_bound_codex_skills(
+            isolated_home, config.get("skills")
+        )
         env.setdefault("CODEX_HOME", str(isolated_home))
         # HOME 级隔离：codex app-server 还会按约定扫 ~/.agents/skills、
         # ~/.claude/skills 等宿主目录，仅设 CODEX_HOME 挡不住。隔离 HOME 后这些
@@ -219,6 +238,7 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
         client,
         sandbox_read_only=sandbox_read_only,
         turn_timeout_seconds=float(timeout) if timeout is not None else None,
+        bound_skill_paths=bound_skill_paths,
     )
 
 
@@ -261,6 +281,60 @@ def _isolated_codex_home(project_dir: Any) -> Path:
     fallback_home = fallback_root / "codex-home"
     fallback_home.mkdir(parents=True, exist_ok=True)
     return fallback_home
+
+
+def _materialize_bound_codex_skills(
+    codex_home: Path, value: Any
+) -> dict[str, str]:
+    """Expose immutable Bundle Skills through Codex's native skill catalog.
+
+    Passing an arbitrary ``SkillInput`` path is accepted by the Python SDK but
+    ignored by the real App Server unless the Skill is discoverable by the
+    native host.  Copy each content-addressed Bundle Skill into the isolated
+    CODEX_HOME so the host owns discovery while the Bundle remains read-only.
+    Content-addressed directory names avoid overwriting user-managed Skills
+    when an explicit KSADK_CODEX_HOME is used.
+    """
+
+    if not isinstance(value, (list, tuple)):
+        return {}
+    skills_root = codex_home / "skills"
+    skills_root.mkdir(parents=True, exist_ok=True)
+    installed: dict[str, str] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        raw_path = str(item.get("path") or "").strip()
+        if not name or not raw_path:
+            continue
+        skill_file = Path(raw_path).resolve()
+        if skill_file.name != "SKILL.md" or not skill_file.is_file():
+            continue
+        source_dir = skill_file.parent
+        digest = hashlib.sha256()
+        for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+            digest.update(source.relative_to(source_dir).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(source.read_bytes())
+            digest.update(b"\0")
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-") or "skill"
+        target = skills_root / f"ksadk-{digest.hexdigest()[:16]}-{safe_name}"
+        if target.is_dir():
+            installed[name] = str(target / "SKILL.md")
+            continue
+        staging = Path(tempfile.mkdtemp(prefix=".ksadk-skill-", dir=skills_root))
+        try:
+            shutil.copytree(source_dir, staging, dirs_exist_ok=True)
+            try:
+                staging.replace(target)
+            except FileExistsError:
+                pass
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+        installed[name] = str(target / "SKILL.md")
+    return installed
 
 
 def _apply_codex_overrides(client: Any, overrides: Any) -> None:

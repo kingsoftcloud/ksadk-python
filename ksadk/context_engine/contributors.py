@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 ContributorFailureMode = Literal["skip", "warn", "fail"]
 ContributorCacheability = Literal["stable", "turn", "none"]
 
+_TRUST_RANK: dict[ContextTrustLevel, int] = {
+    "untrusted": 0,
+    "user": 1,
+    "resource": 2,
+    "developer": 3,
+    "platform": 4,
+}
+
 
 @dataclass(frozen=True)
 class ContributorCapabilities:
@@ -131,13 +139,15 @@ class WorkspaceRulesContributor(ContextContributor):
             return []
         items: list[ContextItem] = []
         for index, section in enumerate(sections):
+            raw_tokens = section.metadata.get("tokens", 0)
+            tokens = int(raw_tokens) if isinstance(raw_tokens, (int, str)) else 0
             items.append(
                 _make_item(
                     contributor_id=self.capabilities.contributor_id,
                     trust_level=self.capabilities.trust_level,
                     kind="resource_manifest",
                     content=section.content,
-                    tokens=int(section.metadata.get("tokens", 0)) or 1,
+                    tokens=tokens or 1,
                     source=section.source,
                     metadata={"path": section.metadata.get("path"), "kind": "rule_file"},
                 )
@@ -267,6 +277,60 @@ class ContributionResult:
     warnings: tuple[str, ...]
 
 
+def _admit_contribution_items(
+    contributor: ContextContributor,
+    items: object,
+) -> tuple[list[ContextItem], str | None]:
+    """Validate one Contributor result and enforce its declared token ceiling.
+
+    A Contributor is an untrusted capability boundary.  It cannot promote an
+    item above the trust level granted at registration, mark context as
+    required, return duplicate identities, or make the Host confuse token
+    counts with list indexes.  Items that do not fit the declared budget are
+    deterministically omitted while later, smaller items may still fit.
+    """
+
+    if not isinstance(items, list) or not all(isinstance(item, ContextItem) for item in items):
+        raise TypeError("ContextContributor must return a list of ContextItem values")
+
+    capabilities = contributor.capabilities
+    if capabilities.max_tokens < 0:
+        raise ValueError("ContextContributor max_tokens cannot be negative")
+    if capabilities.timeout_ms <= 0:
+        raise ValueError("ContextContributor timeout_ms must be positive")
+
+    admitted: list[ContextItem] = []
+    seen_ids: set[str] = set()
+    used_tokens = 0
+    omitted = 0
+    maximum_trust = _TRUST_RANK[capabilities.trust_level]
+    for item in items:
+        if not item.item_id or item.item_id in seen_ids:
+            raise ValueError("ContextContributor item ids must be non-empty and unique")
+        seen_ids.add(item.item_id)
+        if item.required:
+            raise ValueError("ContextContributor cannot mark context as required")
+        if _TRUST_RANK[item.trust_level] > maximum_trust:
+            raise ValueError(
+                "ContextContributor cannot elevate item trust above its registered level"
+            )
+        if item.estimated_tokens < 0:
+            raise ValueError("ContextContributor estimated_tokens cannot be negative")
+        if used_tokens + item.estimated_tokens > capabilities.max_tokens:
+            omitted += 1
+            continue
+        admitted.append(item)
+        used_tokens += item.estimated_tokens
+
+    warning = None
+    if omitted:
+        warning = (
+            f"{contributor.id()}: omitted {omitted} context item(s) that exceeded "
+            f"the {capabilities.max_tokens}-token contributor budget"
+        )
+    return admitted, warning
+
+
 async def run_contributors(
     contributors: Sequence[ContextContributor],
     request: ContextContributionRequest,
@@ -284,24 +348,25 @@ async def run_contributors(
     async def _run_one(c: ContextContributor) -> tuple[str, list[ContextItem], str, str | None]:
         timeout = max(c.capabilities.timeout_ms, 1) / 1000.0
         try:
-            items = await asyncio.wait_for(c.contribute(request), timeout=timeout)
+            raw_items = await asyncio.wait_for(c.contribute(request), timeout=timeout)
+            items, budget_warning = _admit_contribution_items(c, raw_items)
         except asyncio.TimeoutError:
             return c.id(), [], "timeout", f"{c.id()}: timeout"
         except Exception as exc:  # noqa: BLE001
             if c.capabilities.failure_mode == "fail":
                 raise
-            return c.id(), [], "error", f"{c.id()}: {exc}"
-        # 单 Contributor 总 token 约束
-        if items and sum(i.estimated_tokens for i in items) > c.capabilities.max_tokens:
-            items = items[: c.capabilities.max_tokens]  # best-effort 限条数
-        return c.id(), items, "ok", None
+            warning = f"{c.id()}: {exc}" if c.capabilities.failure_mode == "warn" else None
+            return c.id(), [], "error", warning
+        return c.id(), items, "ok", budget_warning
 
     results = await asyncio.gather(*[_run_one(c) for c in contributors], return_exceptions=True)
     all_items: list[ContextItem] = []
     status: dict[str, str] = {}
     warnings: list[str] = []
     for contributor, r in zip(contributors, results):
-        if isinstance(r, Exception):
+        if isinstance(r, BaseException):
+            if isinstance(r, asyncio.CancelledError):
+                raise r
             if contributor.capabilities.failure_mode == "fail":
                 raise r
             warnings.append(f"{contributor.id()}: {r}")

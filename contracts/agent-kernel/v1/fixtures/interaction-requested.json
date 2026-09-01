@@ -1,0 +1,52 @@
+[
+  {
+    "schema_version": 1,
+    "event_type": "interaction.requested",
+    "interaction_id": "int-1",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "kind": "approval",
+    "revision": 1,
+    "timestamp": "2026-08-19T00:00:00Z",
+    "request": {
+      "kind": "approval",
+      "request_schema": {"type": "object", "properties": {"approved": {"type": "boolean"}}},
+      "presentation": {
+        "title": "Approve deployment",
+        "a2ui": {
+          "wire_version": "0.9.1",
+          "catalog_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "messages": [{"surfaceUpdate": {"surfaceId": "int-1"}}]
+        }
+      }
+    }
+  },
+  {
+    "schema_version": 1,
+    "event_type": "interaction.cancelled",
+    "interaction_id": "int-2",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "kind": "plan_review",
+    "revision": 2,
+    "timestamp": "2026-08-19T00:01:00Z",
+    "reason": "run_cancelled"
+  },
+  {
+    "schema_version": 1,
+    "event_type": "interaction.expired",
+    "interaction_id": "int-3",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "kind": "structured_input",
+    "revision": 1,
+    "timestamp": "2026-08-19T00:02:00Z",
+    "reason": "deadline_reached"
+  }
+]

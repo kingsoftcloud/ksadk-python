@@ -694,6 +694,16 @@ class AgentAuthoringService:
         ignored.add(".git")
         entries: list[dict[str, Any]] = []
         for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+            relative = path.relative_to(root).as_posix()
+            # Studio state and VCS internals may legitimately contain symlinks
+            # (for example managed Node dependencies). They are outside the
+            # imported project contract, so prune them before applying the
+            # source-tree symlink safety check.
+            if any(
+                relative == ignored_dir or relative.startswith(ignored_dir + "/")
+                for ignored_dir in (".agentkit", ".git")
+            ):
+                continue
             if path.is_symlink():
                 raise StudioError(
                     "AUTHORING_SOURCE_UNSAFE",
@@ -702,10 +712,6 @@ class AgentAuthoringService:
                     details={"path": str(path)},
                 )
             if not path.is_file() or path.name in ignored:
-                continue
-            # 跳过 .agentkit / .git 目录下的文件
-            relative = path.relative_to(root).as_posix()
-            if any(relative.startswith(ignored_dir + "/") for ignored_dir in (".agentkit", ".git")):
                 continue
             content = path.read_bytes()
             entries.append(

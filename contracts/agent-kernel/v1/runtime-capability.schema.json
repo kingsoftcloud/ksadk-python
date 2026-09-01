@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/agent-kernel/v1/runtime-capability.schema.json",
+  "title": "RuntimeCapabilityMatrix/v1",
+  "type": "object",
+  "$defs": {
+    "runtimeCapability": {
+      "type": "object",
+      "properties": {
+        "supported": {"type": "boolean"},
+        "mode": {"enum": ["native", "emulated", "unavailable"]},
+        "reason": {"type": ["string", "null"]}
+      },
+      "required": ["supported", "mode"],
+      "if": {"properties": {"supported": {"const": false}}},
+      "then": {"properties": {"mode": {"const": "unavailable"}, "reason": {"type": "string", "minLength": 1}}}
+    }
+  },
+  "properties": {
+    "schema_version": {"const": 1},
+    "cancel": {"$ref": "#/$defs/runtimeCapability"},
+    "pause": {"$ref": "#/$defs/runtimeCapability"},
+    "resume": {"$ref": "#/$defs/runtimeCapability"},
+    "submit_interaction": {"$ref": "#/$defs/runtimeCapability"},
+    "attach": {"$ref": "#/$defs/runtimeCapability"},
+    "steer": {"$ref": "#/$defs/runtimeCapability"},
+    "inject": {"$ref": "#/$defs/runtimeCapability"},
+    "checkpoint": {"$ref": "#/$defs/runtimeCapability"},
+    "durable_restore": {"$ref": "#/$defs/runtimeCapability"},
+    "interaction_mode": {"enum": ["live_submit", "durable_resume", "unavailable"]},
+    "goal": {
+      "description": "A durable objective that continues across turns toward a verifiable stopping condition.",
+      "anyOf": [{"$ref": "#/$defs/runtimeCapability"}, {"type": "null"}]
+    },
+    "loop": {
+      "description": "An externally bounded, eval-driven improvement loop. This is not an ordinary runtime agent loop and is not collaboration_mode=default.",
+      "anyOf": [{"$ref": "#/$defs/runtimeCapability"}, {"type": "null"}]
+    },
+    "plan": {
+      "description": "A collaboration mode that produces a plan without directly implementing it.",
+      "anyOf": [{"$ref": "#/$defs/runtimeCapability"}, {"type": "null"}]
+    }
+  },
+  "required": [
+    "schema_version", "cancel", "pause", "resume", "submit_interaction",
+    "attach", "steer", "inject", "checkpoint", "durable_restore"
+  ]
+}

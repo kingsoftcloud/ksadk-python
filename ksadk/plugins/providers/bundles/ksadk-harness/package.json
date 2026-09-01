@@ -1,0 +1,19 @@
+{
+  "name": "@kingsoftcloud/ksadk-harness-provider",
+  "version": "1.0.0",
+  "description": "KsADK Harness AgentProvider for DeepSeek Harness profiles",
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

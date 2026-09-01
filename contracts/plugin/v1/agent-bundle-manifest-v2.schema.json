@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/agent-bundle-manifest-v2.schema.json",
+  "title": "AgentBundleManifest/v2",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "sha256": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 0}
+      },
+      "required": ["path", "sha256", "size"]
+    }
+  },
+  "properties": {
+    "bundleFormat": {"const": "agentkit.bundle/v2"},
+    "agentId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "sourceRevision": {"type": "integer", "minimum": 1},
+    "resolvedDigest": {"$ref": "#/$defs/digest"},
+    "runtimeType": {"type": "string", "minLength": 1, "maxLength": 128},
+    "sourceDigest": {"$ref": "#/$defs/digest"},
+    "runtimeContract": {"const": "agentkit.runtime/v1"},
+    "pluginLockDigest": {"$ref": "#/$defs/digest"},
+    "compositionMode": {"enum": ["legacy", "composed"]},
+    "compositionProfileDigest": {"$ref": "#/$defs/digest"},
+    "hostedKernelRequirementDigest": {"$ref": "#/$defs/digest"},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/file"},
+      "uniqueItems": true
+    },
+    "createdAt": {"$ref": "#/$defs/timestamp"},
+    "bundleDigest": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"compositionMode": {"const": "composed"}},
+        "required": ["compositionMode"]
+      },
+      "then": {"required": ["compositionProfileDigest"]}
+    },
+    {
+      "if": {
+        "properties": {"compositionMode": {"const": "legacy"}},
+        "required": ["compositionMode"]
+      },
+      "then": {"not": {"required": ["compositionProfileDigest"]}}
+    }
+  ],
+  "required": [
+    "bundleFormat",
+    "agentId",
+    "sourceRevision",
+    "resolvedDigest",
+    "runtimeType",
+    "sourceDigest",
+    "runtimeContract",
+    "pluginLockDigest",
+    "hostedKernelRequirementDigest",
+    "files",
+    "createdAt",
+    "bundleDigest"
+  ]
+}

@@ -1,0 +1,130 @@
+---
+title: 插件与自动化
+status: experimental
+---
+
+Phase 2 提供本地优先的插件生命周期、生态宿主桥接、Scheduler Lite 和统一会话表面。当前能力仍处于未发布门禁阶段；已发布 Agent 和精确识别的历史 Bundle 继续使用原路径，不要求重建或升级 Runtime。
+
+Studio 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.4` 的版本化
+Conversation v1 headless 模块。候选源码、独立浏览器及真实部署的新/历史 Agent
+两轮会话已经验证；正式发布仍要求从公开 npm 制品重建并通过最终制品审计。
+
+<Callout type="warning" title="未发布预览">
+  本页不代表稳定版已经发布。云端 PluginHost、云端 24×7 调度、P2-06 DSH Codex Bundle/child Provider、Claude Code 和游戏插件执行均不在当前支持声明中。一个参考 DSH AgentProvider 的 E2E 通过不等于任意第三方 Provider 自动受支持。
+</Callout>
+
+## 选择接入方式
+
+| 方式 | 所有者 | 当前用途 |
+| --- | --- | --- |
+| `dsh` | DeepSeek Harness / Cordis | 默认插件格式；Bundle 可贡献 AgentProvider、Tool、Renderer 和 Studio slot |
+| `codex` | Codex App Server | 兼容 Codex 官方插件，并保留 Codex 的原生宿主与权限语义 |
+| `linked` | 外部宿主 | 只发现或跳转，不能显示为已安装可执行 |
+
+KsADK 不定义第三种私有插件包、manifest 或 ABI。插件不会修改 Kernel 合同；新增 Runtime 由标准 DSH Bundle 贡献粗粒度 AgentProvider，Codex 插件继续由 App Server 管理。
+
+## 开发 DSH Bundle
+
+开发者不需要检出或编译 DeepSeek Harness 源码。先从公网 npm 安装 KsADK 固定版本的受管理 DSH CLI，再创建、校验、测试和打包标准 DSH Bundle：
+
+```bash title="shell"
+agentengine plugin toolchain status
+agentengine plugin toolchain install
+agentengine plugin create ./my-provider --name @example/my-provider
+agentengine plugin validate ./my-provider
+agentengine plugin test ./my-provider
+agentengine plugin pack ./my-provider --output-dir ./artifacts
+```
+
+生成目录是普通 npm 包，使用 DSH 的 `dsh.bundle.patch` / Cordis 组合格式，不包含 `ksadk-plugin.yaml`。`validate` 和 `test` 会在临时 Profile 中验证安装、投射、停用、启用和卸载；`pack` 使用固定 pnpm 按 npm `files` 语义生成 `.tgz`。
+
+把 Bundle 安装到隔离 Profile 后，可以通过同一套 DSH 生命周期命令管理：
+
+```bash title="shell"
+agentengine plugin install ./artifacts/example-my-provider-0.1.0.tgz \
+  --accept-host-permissions
+agentengine plugin disable @example/my-provider
+agentengine plugin enable @example/my-provider
+agentengine plugin uninstall @example/my-provider
+```
+
+发布门禁会从公网 npm 安装固定 DSH 工具链，并验证生成 Bundle、`.tgz`，以及官方 Codex subagent 包的格式和安装边界：
+
+```bash title="shell"
+KSADK_DSH_TOOLCHAIN_E2E=1 \
+uv run --extra all pytest -q tests/e2e/test_dsh_managed_toolchain_e2e.py
+```
+
+这项校验不代表 P2-06 的 DSH Codex Bundle/child Provider 执行链已经完成。另一个真实仓外 Node AgentProvider 会在受管 Profile 中完成安装、连续两轮、停用、损坏升级失败回滚、重新启用旧包继续执行和卸载。
+
+本地 DSH 源码若包含尚未发布的改动，编译结果可能与 npm 包不同。普通插件开发、CI 与发布始终以固定 npm 版本为兼容基线；只有 DSH 核心开发者验证下一版时才显式设置 `KSADK_DSH_BIN`，且版本不匹配会 fail closed。KsADK 只是包装官方命令，不复制 DSH 编译器。
+
+## 管理 Codex 插件
+
+Codex 插件的目录、安装状态和卸载由 Codex App Server 管理。KsADK 只调用宿主协议，不解释执行插件代码，也不会把 `.codex-plugin/plugin.json` 转换成 `ksadk-plugin.yaml`：
+
+```bash title="shell"
+agentengine plugin codex list
+agentengine plugin codex info <plugin-id>
+agentengine plugin codex install <plugin-id> --accept-host-permissions
+agentengine plugin codex uninstall <plugin-id>
+```
+
+缺少 Codex App Server 时返回明确的 unavailable 错误。安装确认表示插件按当前系统用户的宿主权限运行；插件自己的认证仍在 Codex 中完成。
+
+## 管理 DSH Profile
+
+DSH 插件由隔离的 DeepSeek Harness Profile 管理。安装、启停、升级和卸载均调用受管理的原生 `dsh plugin`，修改后通过宿主配置预检。目录或 `.tgz` 会按 SHA-256 固化为不可变安装源；启用、更新或投影前发现摘要漂移会 fail closed，失败升级会恢复旧 manifest、lock、状态与可执行旧包：
+
+```bash title="shell"
+export KSADK_DSH_HOME=/path/to/isolated/dsh-home
+export KSADK_DSH_PROFILE=studio
+
+agentengine plugin list
+agentengine plugin install <bundle> --accept-host-permissions
+agentengine plugin disable <bundle-name>
+agentengine plugin enable <bundle-name>
+agentengine plugin profile
+agentengine plugin uninstall <bundle-name>
+```
+
+`agentengine plugin dsh ...` 只保留为早期脚本兼容别名。
+
+DSH bundle 可能运行安装脚本，必须显式确认宿主权限。只有通过握手、权限、会话投影与执行 conformance 的 AgentProvider 才能出现在 Runtime 选择器中。
+
+## 创建本地定时任务
+
+Studio 的 **自动化** 页面支持 once、interval 和 cron，并使用 IANA 时区。任务可以启停、编辑、删除、立即运行；详情页显示下次运行时间和 occurrence 状态历史。Agent 详情页的 **自动化** Tab 只展示并创建当前 Agent 的任务。
+
+| 能力 | 当前行为 |
+| --- | --- |
+| 存储 | 工作区本地 SQLite |
+| 触发 | Studio 本地进程中的 Scheduler Lite |
+| 连续性 | 新会话，或显式绑定已有 session 后续接 |
+| 并发 | 同一任务禁止重叠执行 |
+| 误点补偿 | `skip` 或 `run_once` |
+| 历史 | 保留 accepted、run identity、terminal 状态和错误信息 |
+
+<Callout type="info" title="本地调度边界">
+  Studio 进程停止后不会提供 24×7 唤醒。云端持久 ScheduleStore、独立 scheduler worker 和跨 Pod claim 属于后续端云阶段。
+</Callout>
+
+## 接入会话表面
+
+`ConversationSurface` 声明输入能力，`ConversationInput` 只提交已允许的字段，`ConversationItem` 表示文本、reasoning、工具、审批、A2UI 和未知输出。Studio、Hosted UI 和自定义前端使用相同的 item identity 进行增量归并与重放。
+
+核心 Renderer 提供通用降级；Provider 特有的 UI 应通过受控 Renderer 或 A2UI surface 扩展。未知 item 必须保持可见和不可执行，不能丢弃，也不能把未经识别的数据变成可点击操作。审批 item 只有在携带持久 revision 时才允许提交；缺少 revision 的客户端保持只读。
+
+共享 Web 包、Studio、Hosted UI 与独立前端的浏览器 E2E 全部通过后，才会把这一表面标记为稳定可写。
+
+## 兼容与发布门禁
+
+| 项目 | 当前边界 |
+| --- | --- |
+| 历史 Agent | 真实 0.8.2 LangGraph Bundle v2 和更早 framework Bundle 继续走旧 Runtime；历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter，未知 v1 fail closed |
+| 新 Harness v2 | 必须解析到就绪的 DSH registration；缺失时 fail closed，不回退 legacy adapter |
+| 本地存储 | 无 PostgreSQL 时继续使用 SQLite 或 memory；高可用能力不被伪造 |
+| 第三方生态 | Claude Code、游戏和任意能力必须由标准 DSH Bundle 承载，或由 Codex App Server 原生管理，并通过 conformance |
+| 稳定发布 | `make phase2-release-preflight` 中的 DSH、会话浏览器、历史 Agent、clean provenance 和公开制品审计必须全部通过 |
+
+游戏类扩展可以由一个 DSH Bundle 组合 Tool、Store、Renderer/A2UI 和 Studio slot；完整游戏循环可以贡献独立 AgentProvider。它们都不需要修改 Kernel 协议，但在通过权限、生命周期、会话投影和回滚测试前，不会显示为已支持插件。

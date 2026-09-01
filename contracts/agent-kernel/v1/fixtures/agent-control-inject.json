@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "command_id": "6d2a063d-1e4f-4a77-b291-4fe7a898d33b",
+  "idempotency_key": "studio:s1:message-inject",
+  "tenant_id": "tenant-1",
+  "agent_instance_id": "agent-instance-1",
+  "session_id": "session-1",
+  "command_type": "inject",
+  "payload": {
+    "context": {
+      "doc": "spec.md"
+    },
+    "run_id": "run-1"
+  },
+  "source": {
+    "kind": "studio",
+    "ref": "local-studio"
+  },
+  "authorization_ref": "permit-1",
+  "submitted_at": "2026-08-17T00:00:00Z"
+}
