@@ -24,28 +24,34 @@ def delete_framework_agent(studio: Any, agent_id: str, *, purge: bool) -> None:
             status_code=409,
             details={"agentId": agent_id, "runIds": running},
         )
+    builds = studio.builds.list_for_agent(agent_id)
+    removed_bindings = studio.plugin_compositions.unbind_builds(builds)
     trash_directory = None
-    if not purge:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        trash_directory = studio.workspace.resolve(
-            Path(".agentkit/trash/agents") / f"{agent_id}-{timestamp}"
+    try:
+        if not purge:
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            trash_directory = studio.workspace.resolve(
+                Path(".agentkit/trash/agents") / f"{agent_id}-{timestamp}"
+            )
+            trash_directory.mkdir(parents=True, exist_ok=False)
+        studio.event_store.delete_agent(
+            agent_id,
+            purge=purge,
+            trash_directory=trash_directory,
         )
-        trash_directory.mkdir(parents=True, exist_ok=False)
-    studio.event_store.delete_agent(
-        agent_id,
-        purge=purge,
-        trash_directory=trash_directory,
-    )
-    studio.builds.delete_for_agent(
-        agent_id,
-        purge=purge,
-        trash_directory=trash_directory,
-    )
-    studio.drafts.delete(
-        agent_id,
-        purge=purge,
-        trash_directory=trash_directory,
-    )
+        studio.builds.delete_for_agent(
+            agent_id,
+            purge=purge,
+            trash_directory=trash_directory,
+        )
+        studio.drafts.delete(
+            agent_id,
+            purge=purge,
+            trash_directory=trash_directory,
+        )
+    except Exception:
+        studio.plugin_compositions.restore_bindings(removed_bindings)
+        raise
 
 
 __all__ = ["delete_framework_agent"]

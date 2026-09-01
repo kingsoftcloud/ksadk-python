@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ConversationCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {"maxLength": 128, "minLength": 1, "type": "string"},
+        "mode": {
+          "enum": ["native", "translated", "degraded", "unavailable"],
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [{"maxLength": 512, "type": "string"}, {"type": "null"}],
+          "default": null
+        }
+      },
+      "required": ["name", "mode"],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "conversation.ksadk.io/v1",
+      "default": "conversation.ksadk.io/v1",
+      "type": "string"
+    },
+    "kind": {
+      "const": "ConversationSurface",
+      "default": "ConversationSurface",
+      "type": "string"
+    },
+    "surfaceId": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "sessionId": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "providerRef": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "inputs": {
+      "default": [],
+      "items": {"$ref": "#/$defs/ConversationCapability"},
+      "type": "array"
+    },
+    "outputs": {
+      "default": [],
+      "items": {"$ref": "#/$defs/ConversationCapability"},
+      "type": "array"
+    }
+  },
+  "required": ["surfaceId", "sessionId", "providerRef"],
+  "title": "ConversationSurface",
+  "type": "object"
+}

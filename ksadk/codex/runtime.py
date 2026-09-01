@@ -107,11 +107,13 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         *,
         sandbox_read_only: bool = True,
         turn_timeout_seconds: Optional[float] = None,
+        bound_skill_paths: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(_CodexAsBaseRuntime(client))
         self._client = client
         self._sandbox_read_only = sandbox_read_only
         self._turn_timeout_seconds = turn_timeout_seconds
+        self._bound_skill_paths = dict(bound_skill_paths or {})
         self._threads: dict[str, _CodexThread] = {}
         self._requests: dict[str, StartRequest] = {}
         self._known_threads: set[str] = set()
@@ -147,6 +149,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             goal=RuntimeCapability(supported=True, mode="native"),
             loop=_unavailable("codex_loop_requires_run_control_spec"),
             plan=RuntimeCapability(supported=True, mode="native"),
+            interaction_mode="live_submit",
         )
 
     # ---- 六动词 ----
@@ -154,6 +157,25 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     async def start(self, request: StartRequest) -> RunHandle:
         # 新 thread 由后端分配真实 thread_id(thread_start);metadata 携带的 thread_id
         # 表示接入既有 thread(resume 语义,run_turn 时按 resume 接入)。
+        if self._bound_skill_paths:
+            skills = request.config.get("skills") if request.config else None
+            if isinstance(skills, list):
+                projected_skills = []
+                for item in skills:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or "").strip()
+                    projected_skills.append(
+                        {
+                            **item,
+                            "path": self._bound_skill_paths.get(
+                                name, str(item.get("path") or "")
+                            ),
+                        }
+                    )
+                request = request.model_copy(
+                    update={"config": {**request.config, "skills": projected_skills}}
+                )
         provided = request.metadata.get("thread_id")
         if provided:
             thread_id = str(provided)
@@ -353,23 +375,43 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         )
 
     async def close(self, handle: RunHandle) -> None:
+        self._do_not_persist.add(handle.run_id)
+        await self.close_all()
+
+    async def close_all(self) -> None:
+        """Dispose every thread and the activation-owned App Server process.
+
+        One ``CodexRuntimeAdapter`` owns one client transport. Closing any
+        attached Kernel handle therefore closes the transport as a unit; this
+        additive helper also lets a draining AgentProvider clean up a runtime
+        that has been created but not started yet.
+        """
+
         if self._closed:
             return
         self._closed = True
-        thread = self._threads.pop(handle.run_id, None)
-        self._requests.pop(handle.run_id, None)
-        active = thread is not None and thread.streaming and not thread.done
-        if active:
+        threads = tuple(self._threads.values())
+        active_threads = tuple(
+            thread for thread in threads if thread.streaming and not thread.done
+        )
+        for thread in active_threads:
             thread.interrupt_event.set()
         try:
-            if active:
+            for thread in active_threads:
                 await self._client.interrupt_active_turn(thread.thread_id)
         finally:
             # AsyncCodex.close owns terminate/wait/kill for the app-server child.
             await self._client.close()
-            self._do_not_persist.add(handle.run_id)
-            self._known_threads.discard(handle.run_id)
-            self._pending_cancels.discard(handle.run_id)
+            thread_ids = {
+                *self._known_threads,
+                *self._threads,
+                *self._requests,
+            }
+            self._do_not_persist.update(thread_ids)
+            self._threads.clear()
+            self._requests.clear()
+            self._known_threads.clear()
+            self._pending_cancels.clear()
 
     # ---- stream → RuntimeEvent(phase 翻译 + 中断竞速) ----
 

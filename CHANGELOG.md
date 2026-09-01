@@ -5,7 +5,33 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [Unreleased]
+## [0.8.3] - Unreleased
+
+> `0.8.3` 发布候选已完成下述验证；正式 PyPI 发布完成后再写入发布日期。
+
+### 插件化基础
+
+- 新增统一的 `agentengine plugin` 产品入口，但不定义第三种 KsADK 私有插件格式。DSH Bundle/Profile 是唯一默认生态；受管理的固定版本 DSH/pnpm 工具链覆盖 `create`、`validate`、`test`、`pack`，开发者无需检出或编译 DeepSeek Harness 源码。
+- 新增事务化 PluginHost、能力注册与组合合同。一个真实仓外 DSH AgentProvider 已在同一受管 Profile 中通过安装、连续两轮状态延续、停用阻断、损坏升级失败回滚、重新启用旧版本继续执行以及卸载的完整 E2E。SQLite Store 与 Renderer 保持 host-owned，MCP、Skill 和 Context 只投影经过边界校验的安全数据；数据库路径和已解析 Secret 不越界。
+- DSH 本地目录和 `.tgz` 安装源按 SHA-256 固化到受管不可变存储；目录使用固定 pnpm 按 npm `files` 语义打包。启用、更新和投影前发现来源或制品摘要漂移会 fail closed；升级失败恢复旧 manifest、lock、状态和可执行旧包。
+- 新增 Codex App Server 插件桥接。Codex 插件的发现、详情、安装和卸载均交给 Codex 宿主，KsADK 不复制插件实现，也不接管其认证或宿主权限。
+- 新增 DeepSeek Harness Profile 管理桥接。DSH Bundle 的发现、安装、启停、升级、卸载和配置预检均委托给受管理的原生 `dsh plugin`，KsADK 只保存无 Secret 的 inventory、来源摘要与配置摘要。
+
+### Studio 自动化与会话表面
+
+- 新增本地 Scheduler Lite：支持 once、interval、cron、IANA 时区、启停、编辑、删除、立即运行、misfire 策略、并发保护和 occurrence 历史。Studio 提供全局自动化页和 Agent 详情页自动化 Tab；浏览器纵切已通过真实本地 Kernel、Codex RuntimeAdapter + App Server 以及 KsADK Harness 生产模型客户端验证 new/follow-up、accepted、run identity、terminal 状态和刷新后历史对账；测试仅以本地确定性 HTTP 模型端替代外部模型服务。
+- 冻结 `ConversationSurface`、`ConversationInput` 和 `ConversationItem` 合同，统一文本、reasoning、工具、审批、A2UI 与未知 item 的 identity-aware 归并和回放边界。
+- 新增核心 Conversation Renderer 与受控 A2UI action bridge。自定义前端可以消费同一会话表面；未知类型保持安全的通用降级，不要求客户端理解某个 Provider 的私有事件。
+- Hosted UI 与 Studio 固定到 `@kingsoftcloud/ksadk-web@0.3.4`。该版本在 0.3.3 的 headless Conversation v1、SSE 有界重连和统一时间线基础上，修复 item 完成被误判为整轮完成的问题，等待显式 run terminal 才解锁下一轮；“正在思考”改为持续可见的文字流光，并提供可独立运行的 GitHub Pages 演示，覆盖逐字流式、工具状态、输入框上方审批卡片与反馈卡片。只有明确的 404 才回退旧 Responses/AG-UI，畸形响应与 5xx 继续 fail closed。
+- 修复基础安装把 `agentengine studio` 整体误降级为不可用的问题：Studio 所需的 `google-adk` 现在随基础包安装；LiteLLM 与 JSON 修复等仅在 `[adk]` 扩展中保留。
+
+### 兼容与发布验证
+
+- Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
+- Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
+- Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
+- `ksadk-web@0.3.4` 已通过 npm Trusted Publishing 发布；registry integrity 为 `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`，registry tarball SHA-256 为 `0d88fb37506bae77ba863b3986b2fde4546cd74cbd3f3021eed1ecd05f15c596`。Studio 已从公开 registry 重建，Hosted UI 发布验证镜像 digest 为 `sha256:d629384e44a2e35f5dd5f7788ea16097cb49d79c582206d5fe453911fe20d66d`；真实 Studio 创建的 Codex Agent 与 0.8.2 历史 Agent 均完成多轮流式、思考、刷新回放、上下文续接和最终消息去重验证。
+- 新增 Phase 2 最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
 
 ## [0.8.2] - 2026-08-26
 
@@ -81,6 +107,7 @@
 
 ### 修复与性能
 
+- 修复通用 Runner 退化流把 `text/text_delta` 标成 commentary、再为终态另建 final-answer item 的协议错误。普通正文现在从首字符起沿同一个 final-answer item 流式输出并由终态快照完成；显式 commentary 与 reasoning 仍保持独立身份，避免答案混入思考并在结尾整段重复。
 - 修复 LangGraph 回调将 ToolGateway 结果序列化为 JSON 文本时，工具审批未被识别为可恢复交互的问题；Responses 客户端现在会收到标准审批项，批准后可继续原工具调用并执行真实副作用。
 - 修复 LangGraph 中 ToolGateway 审批完成后向已结束图发送原生 resume、导致副作用虽已执行却没有后续回复的问题；现在会基于已持久化的真实工具结果继续生成最终回答，同时保留原生 `interrupt()` 的 resume 语义。
 - 修复 Studio 快速创建向导与模板编排 API 的请求契约，并将 ADK/LangGraph 的源码路径和入口变量完全交由服务端生成；“创建后立即构建并打开会话”现在会实际提交 Build、等待成功后再进入会话。Codex、ADK、LangGraph 三种 Runtime 均按同一流程创建和构建。

@@ -2069,7 +2069,7 @@ wheels = [
 
 [[package]]
 name = "ksadk"
-version = "0.8.2"
+version = "0.8.3"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["fastapi"] },
@@ -2079,6 +2079,7 @@ dependencies = [
     { name = "click" },
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "google-adk" },
     { name = "greenlet" },
     { name = "httpcore" },
     { name = "httpx" },
@@ -2109,6 +2110,7 @@ dependencies = [
     { name = "requests-aws4auth" },
     { name = "rich" },
     { name = "sse-starlette" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -2123,7 +2125,6 @@ a2a-postgres = [
     { name = "a2a-sdk", extra = ["postgresql"] },
 ]
 adk = [
-    { name = "google-adk" },
     { name = "json-repair" },
     { name = "litellm", marker = "python_full_version < '3.13' or sys_platform != 'win32'" },
 ]
@@ -2144,7 +2145,6 @@ all = [
     { name = "deepeval" },
     { name = "e2b" },
     { name = "fastmcp" },
-    { name = "google-adk" },
     { name = "json-repair" },
     { name = "langchain" },
     { name = "langchain-core" },
@@ -2242,7 +2242,7 @@ requires-dist = [
     { name = "e2b", marker = "extra == 'skills'", specifier = ">=2.15.3,<2.25.0" },
     { name = "fastapi", specifier = ">=0.100.0,<1.0.0" },
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=2.0.0" },
-    { name = "google-adk", marker = "extra == 'adk'", specifier = ">=1.34.0,<3.0.0" },
+    { name = "google-adk", specifier = ">=1.34.0,<3.0.0" },
     { name = "greenlet", specifier = ">=1.0.0" },
     { name = "httpcore", specifier = ">=1.0.9,<1.1.0" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
@@ -2298,6 +2298,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'a2a'", specifier = ">=2.0.0,<3.0.0" },
     { name = "sse-starlette", specifier = ">=2.1.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "types-protobuf", marker = "extra == 'dev'", specifier = ">=6.32.0" },
     { name = "types-python-dateutil", marker = "extra == 'dev'", specifier = ">=2.9.0" },

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "command_id": "7e3b174e-2f50-4b88-c3a2-5af8b909e44c",
+  "idempotency_key": "studio:s1:message-interrupt",
+  "tenant_id": "tenant-1",
+  "agent_instance_id": "agent-instance-1",
+  "session_id": "session-1",
+  "command_type": "interrupt",
+  "payload": {
+    "run_id": "run-1",
+    "reason": "user_requested"
+  },
+  "source": {
+    "kind": "studio",
+    "ref": "local-studio"
+  },
+  "authorization_ref": "permit-1",
+  "submitted_at": "2026-08-17T00:00:00Z"
+}

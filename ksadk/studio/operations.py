@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from ksadk.api import AgentEngineAPIError
 from ksadk.studio.contracts import (
     Operation,
     OperationEvent,
@@ -108,10 +109,19 @@ class OperationManager:
                 "exceptionType": type(exc).__name__,
             }
             # TypeError carries only Python call-shape information and is safe
-            # to surface to the local operator.  Do not expose arbitrary
-            # exception text: it may include provider request data.
+            # to surface to the local operator.  AgentEngineAPIError carries
+            # a structured server-side Action API message (not credentials),
+            # so surface it to help the operator diagnose a failed deployment.
             if isinstance(exc, TypeError):
                 operation.error["exceptionMessage"] = str(exc)
+            elif isinstance(exc, StudioError):
+                operation.error["code"] = exc.code
+                operation.error["message"] = exc.message
+            elif isinstance(exc, AgentEngineAPIError):
+                operation.error["code"] = f"AGENT_ENGINE_API_ERROR_{exc.code}"
+                operation.error["message"] = exc.message
+                if exc.details:
+                    operation.error["details"] = exc.details
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)

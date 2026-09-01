@@ -51,6 +51,13 @@ class CodexBuildRecord(ContractModel):
     # New builds always persist a mapping (possibly empty), so run resolution
     # never consults mutable Catalog state after the build has been created.
     model_profiles: dict[str, dict[str, Any]] | None = None
+    # Resource ids and model names are different namespaces.  Keep the exact
+    # Studio bindings separately so currentness checks never compare a model
+    # name (``glm-5.2``) with a Catalog id (``model:provider:glm-5-2:live``).
+    # ``None`` only allows older local records to be read and rejected as
+    # stale with an actionable rebuild; Phase 2 has not shipped yet, so the
+    # deployment path does not carry a legacy identity-migration branch.
+    model_profile_ids: list[str] | None = None
     created_at: datetime
 
 
@@ -272,7 +279,12 @@ class CodexStudioBuilder:
             allowed_models=snapshot.manifest.allowed_models,
             ignore_missing=True,
         )
-        build_id = self._build_id(snapshot.manifest_sha256, model_profiles)
+        model_profile_ids = self._bound_model_profile_ids(snapshot.manifest.name)
+        build_id = self._build_id(
+            snapshot.manifest_sha256,
+            model_profiles,
+            model_profile_ids=model_profile_ids,
+        )
         try:
             existing = self.repository.get(build_id)
         except StudioError as exc:
@@ -337,6 +349,7 @@ class CodexStudioBuilder:
             proxy_mode=current_proxy_mode(),
             runtime_lock=lock,
             model_profiles=model_profiles,
+            model_profile_ids=model_profile_ids,
             created_at=datetime.now(timezone.utc),
         )
         return self.repository.save(record)
@@ -347,29 +360,41 @@ class CodexStudioBuilder:
             return False
         if record.model_profiles is None:
             return True
-        try:
-            current_profiles = self._model_profile_snapshot(
-                snapshot.manifest.name,
-                allowed_models=snapshot.manifest.allowed_models,
-            )
-        except StudioError as exc:
-            if exc.code == "RESOURCE_NOT_FOUND":
-                # A completed Build owns its connection snapshot.  A later
-                # Catalog cleanup must not make that immutable Build
-                # undeployable; launch resolution reads the snapshot instead.
-                return True
-            raise
+        if record.model_profile_ids is None:
+            return False
+        draft = self.drafts.get(record.agent_name) if self.drafts is not None else None
+        if draft is None:
+            return not record.model_profiles
+
+        bound_ids = set(self._bound_model_profile_ids(record.agent_name))
+        if set(record.model_profile_ids) != bound_ids:
+            return False
+        current_profiles = self._model_profile_snapshot(
+            snapshot.manifest.name,
+            allowed_models=snapshot.manifest.allowed_models,
+            ignore_missing=True,
+        )
+        # Provider-discovered Catalog entries are process-local.  A restart may
+        # temporarily remove them, but the Build still owns an immutable,
+        # runnable connection snapshot and must remain deployable.
+        if bound_ids and not current_profiles:
+            return True
         return record.model_profiles == current_profiles
 
     @staticmethod
     def _build_id(
         manifest_sha256: str,
         model_profiles: dict[str, dict[str, Any]],
+        *,
+        model_profile_ids: list[str] | None = None,
     ) -> str:
-        if not model_profiles:
+        if not model_profiles and not model_profile_ids:
             return f"build_{manifest_sha256[:20]}"
         fingerprint = json.dumps(
-            model_profiles,
+            {
+                "profiles": model_profiles,
+                "resourceIds": sorted(model_profile_ids or []),
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -417,9 +442,23 @@ class CodexStudioBuilder:
                 by_alias=True,
                 exclude_defaults=True,
                 exclude_none=True,
+                exclude={"metadata", "discovery"},
                 mode="json",
             )
         return profiles
+
+    def _bound_model_profile_ids(self, agent_id: str) -> list[str]:
+        if self.drafts is None:
+            return []
+        draft = self.drafts.get(agent_id)
+        if draft is None:
+            return []
+        bindings = draft.spec.bindings
+        resource_ids = list(getattr(bindings, "model_profile_ids", []) or [])
+        default_id = getattr(bindings, "model_profile_id", None)
+        if not resource_ids and default_id:
+            resource_ids = [default_id]
+        return list(dict.fromkeys(resource_ids))
 
     @staticmethod
     def _runtime_lock(artifact_path: Path) -> dict:

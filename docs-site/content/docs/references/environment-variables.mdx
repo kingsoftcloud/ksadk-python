@@ -88,9 +88,9 @@ OPENAI_MODEL_NAME=my-model
 | --- | --- | --- |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | 平台 / 开发者 | A2UI 结构化生成超时秒数；有效范围 `1` 到 `120`，默认 `20`。 |
 
-这些变量的协议与运行边界见 [A2A Runtime](../framework/guides/a2a-runtime)、
-[Codex Managed Runtime](../framework/guides/managed-runtime) 和
-[Hosted UI 与事件回放](../framework/guides/hosted-ui-events)。
+这些变量的协议与运行边界见 [A2A Runtime](../framework/guides/a2a-runtime.mdx)、
+[Codex Managed Runtime](../framework/guides/managed-runtime.mdx) 和
+[Hosted UI 与事件回放](../framework/guides/hosted-ui-events.mdx)。
 
 ## 统一模型策略与 fallback（0.6.6+）
 
@@ -156,7 +156,7 @@ KSADK_STM_BACKEND=sqlite
 KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 ```
 
-## Agent Kernel（0.8.2，可选）
+## Agent Kernel
 
 | 变量 | 用途 |
 | --- | --- |
@@ -338,7 +338,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，0.8.2 默认 `0.3.2`；wheel 构建前必须先发布并验证新版本 |
+| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，0.8.3 默认 `0.3.4`；wheel 构建前必须先发布并验证新版本 |
 | `KSADK_WEB_PACKAGE` | 本地 UI static 同步使用的 npm 包名，默认 `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | 设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式使用 npm 返回的真实 tarball 文件名 |
 | `KSADK_WEB_RELEASE_URL` | 可选兜底；设置后跳过 npm pack，改从该 tarball URL 下载 |
@@ -347,6 +347,14 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 <Callout type="info">
   `make build` / `make build-wheel` 会自动执行 `sync-ksadk-web-static`，无需手动同步。
 </Callout>
+
+## DSH 插件桥接
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_DSH_HOME` | 受管理 DSH Profile 的隔离目录；默认是工作区中的 `.agentkit/dsh-home`。显式设置后 Studio 不会改写该目录。 |
+| `KSADK_DSH_PROFILE` | 要使用的 DSH Profile 名称，默认 `studio`。 |
+| `KSADK_DSH_BIN` | 可选的 DSH 命令绝对路径，仅用于固定版本工具链的核心开发或 CI 验证；不匹配时拒绝执行。 |
 
 ## 可观测
 

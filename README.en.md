@@ -12,7 +12,6 @@
 <p align="center">
   <a href="https://kingsoftcloud.github.io/ksadk-python/"><img alt="Docs" src="https://img.shields.io/badge/Docs-ksadk--python-2f6fdf?style=flat" /></a>
   <a href="https://pypi.org/project/ksadk/"><img alt="PyPI" src="https://img.shields.io/pypi/v/ksadk?style=flat&color=2f6fdf" /></a>
-  <a href="https://zread.ai/kingsoftcloud/ksadk-python"><img alt="Ask Zread" src="https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
 </p>
 
@@ -37,31 +36,22 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
-## 0.8.2 Agent Runtime V2 Phase 1
+## 0.8.3 Runtime Architecture
 
-- Studio now covers local authoring, builds and debugging plus cloud deployment, status, details, conversations, updates, deletion and version rollback. Existing high-code Agents deployed with the CLI are selectable as well.
-- Studio's local service signs cloud requests with AK/SK and routes them through Server admission; credentials never enter the browser and Gateway no longer bypasses Server to reach Runtime.
-- Foreground conversations use real SSE for incremental text, reasoning, tools and approvals. Goal and Plan are explicit execution controls; Background is reserved for work that must outlive the foreground connection.
-- AgentKernelStore may use InMemory or SQLite by default. PostgreSQL is optional and is enabled for cross-Pod takeover, recovery and high availability.
-- The bundled Web UI is pinned to `@kingsoftcloud/ksadk-web@0.3.2`.
+KsADK 0.8.3 converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:
 
-See [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/) and the [changelog](CHANGELOG.md) for details.
+- **Trusted kernel**: owns concurrency, cancellation, recovery, state consistency, and runtime safety boundaries.
+- **Harness execution layer**: owns composition, Activation, lifecycle, and shared-capability injection; each Activation selects exactly one Provider.
+- **Pluggable Providers**: Codex, KsADK Harness, DSH/Cordis, and Subagent run behind one Harness contract while retaining native thread, checkpoint, and event semantics.
+- **Unified events**: `RuntimeEvent(schema_version=2)` is the event source of truth for storage, replay, APIs, Studio, and hosted surfaces; v1 is read-only compatibility projection only.
+- **Controlled plugins**: DSH Bundle/Profile uses a pinned toolchain, immutable source digests, and rollback on failed upgrades; official Codex plugins remain owned by Codex App Server.
+- **Local development loop**: Studio covers authoring, builds, debugging, evaluation, and Scheduler Lite; the bundled UI is pinned to `@kingsoftcloud/ksadk-web@0.3.4`.
 
-## 0.8.1 Observability Contract
+Start with the [0.8.3 runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See the [changelog](CHANGELOG.md) and PyPI badge for version history and publication status.
 
-- Remote traces use standard OTLP/HTTP only: Langfuse consumes `OTEL_EXPORTER_OTLP_*`, while CloudMonitor consumes `CLOUD_MONITOR_OTLP_*`. Both backends receive the same span with identical `trace_id` and `span_id` values.
-- Managed Agents created from either the CLI or console request observability by default and receive both routes from the platform. Use `--no-observability`, or turn observability off in the console, to disable it explicitly.
-- `LANGFUSE_USE_CALLBACK` and the Langfuse SDK CallbackHandler/exporter have been removed. `CLOUD_MONITOR_APP_KEY` remains only as a one-version transition fallback; new configurations provide `Ksc-Appkey` through OTLP headers.
-- Exporters run directly inside the Agent process. No OpenTelemetry Collector, sidecar, extra container, or extra Pod is started.
+### RuntimeEvent Schema v2 Contract
 
-See the [observability guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/) and [environment variable reference](https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/) for migration details and examples.
-
-## 0.8.1 RuntimeEvent Schema v2 Contract
-
-- The runtime event main path uses the canonical `RuntimeEvent(schema_version=2)`: the runtime, protocol projections, event store, replay, and final-output selection all treat v2 as the single source of truth.
-- v1 events become a read-only compatibility projection and no longer accept new v1 writes. Undeclared downstream consumers receive terminal snapshots, while upgraded consumers explicitly opt into identity-aware replace semantics.
-- Capability descriptor: `RuntimeEventVersions=[1,2]`, `RuntimeEventDefault=2`, `RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`, `RuntimeEventV1ProjectionDefault="snapshot_only"`.
-- The local Web UI, Studio, and Hosted UI must run the identity-aware version that matches this Python release so they can merge streaming and replayed output by item identity.
+The event path is canonical `RuntimeEvent(schema_version=2)`. Its capability descriptor is `RuntimeEventVersions=[1,2]`, `RuntimeEventDefault=2`, `RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`, and `RuntimeEventV1ProjectionDefault="snapshot_only"`. Version 1 is a read-only compatibility projection.
 
 <p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
@@ -79,7 +69,9 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 
 ## Architecture
 
-<p align="center"><img alt="KsADK Agent Runtime Platform architecture" src="docs-site/public/assets/ksadk-runtime-architecture.en.png" width="860" /></p>
+<p align="center"><img alt="KsADK technical architecture" src="docs-site/public/assets/ksadk-runtime-architecture.en.png" width="860" /></p>
+
+Agent Kernel centralizes trusted control, Harness owns composition and lifecycle, and pluggable Providers preserve native execution semantics. RuntimeEvent v2 supplies one event fact chain for APIs, Studio, and hosted surfaces.
 
 ## Docs And Examples
 
@@ -91,13 +83,13 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 - Observability: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/>
 - Cloud Deployment: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/cloud-deployment/>
 - Hosted UI and Event Replay: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/>
+- Environment Variables: <https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/>
 - Samples: <https://github.com/kingsoftcloud/ksadk-samples>
 
 ## Related Projects
 
 - KsADK repository: <https://github.com/kingsoftcloud/ksadk-python>
 - Web UI repository: <https://github.com/kingsoftcloud/ksadk-web>
-- Wiki: <https://zread.ai/kingsoftcloud/ksadk-python>
 - PyPI: <https://pypi.org/project/ksadk/>
 
 ## Contributing

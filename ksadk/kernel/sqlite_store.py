@@ -1400,6 +1400,7 @@ class SQLiteAgentKernelStore:
                     "fencing_token": int(expected_fence),
                 },
                 run_id=run.run_id,
+                causation_id=str(run.metadata.get("command_id") or "") or None,
             ),
             activation,
             expected_fence,

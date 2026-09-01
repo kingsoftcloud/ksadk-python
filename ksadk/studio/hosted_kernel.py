@@ -21,7 +21,7 @@ from ksadk.studio.errors import StudioError
 AGENT_KERNEL_V1_CONTRACT_SET = "agent-kernel/v1"
 # This mirrors contracts/agent-kernel/v1/manifest.json. A Studio test compares
 # the two, so a frozen-contract update cannot leave packaged preflight stale.
-AGENT_KERNEL_V1_CONTRACT_DIGEST = "47e1003e03d97abeba232cc3e03a14b9cbcf78b1109870ccd2ce371f073b6211"
+AGENT_KERNEL_V1_CONTRACT_DIGEST = "b610a25aae957306b9f84a2cc2c948b30d1ce6218585cfd2a91f96736b92d102"
 HOSTED_KERNEL_REQUIREMENTS_PATH = "hosted-kernel-requirements.json"
 HOSTED_KERNEL_REQUIREMENTS_FORMAT = "agentkit.hosted-kernel-requirements/v1"
 HOSTED_KERNEL_RUNTIME_CONTRACT = "agentkit.runtime/v1"

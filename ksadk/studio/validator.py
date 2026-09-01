@@ -32,7 +32,7 @@ class AgentValidator:
     ) -> ValidationResult:
         diagnostics: list[Diagnostic] = []
         spec = draft.spec
-        if not spec.instructions.system.strip():
+        if not spec.instructions.system.strip() and spec.soul is None:
             diagnostics.append(
                 self._error(
                     "AGENT_SYSTEM_INSTRUCTION_REQUIRED",

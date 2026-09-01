@@ -278,7 +278,6 @@ class StudioAuthoringCoordinator:
             resolved = (spec or default_agent_spec(template, description=description)).model_copy(
                 deep=True
             )
-            canonical_runtime = self.backend.runtime_ref(agent_id, runtime_type)
             proposed_runtime = resolved.runtime
             if proposed_runtime is not None and proposed_runtime.type != runtime_type:
                 raise StudioError(
@@ -291,7 +290,18 @@ class StudioAuthoringCoordinator:
                         "specRuntimeType": proposed_runtime.type,
                     },
                 )
-            if proposed_runtime is not None:
+            if runtime_type == "plugin":
+                if proposed_runtime is None or proposed_runtime.provider_ref is None:
+                    raise StudioError(
+                        "AGENT_PROVIDER_REFERENCE_REQUIRED",
+                        "外部 AgentProvider 必须选择一个已安装的精确版本",
+                        status_code=422,
+                        field="spec.runtime.providerRef",
+                    )
+                canonical_runtime = proposed_runtime.model_copy(deep=True)
+            else:
+                canonical_runtime = self.backend.runtime_ref(agent_id, runtime_type)
+            if proposed_runtime is not None and runtime_type != "plugin":
                 if runtime_type == "codex" and proposed_runtime.version:
                     canonical_runtime.version = proposed_runtime.version
                 elif runtime_type in {"adk", "langgraph"}:

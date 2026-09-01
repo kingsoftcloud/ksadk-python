@@ -1,1 +1,0 @@
-import{Mr as e,jr as t}from"./MermaidBlock-Dz4IP-Tx.js";var n=(n,r)=>e.lang.round(t.parse(n)[r]);export{n as t};

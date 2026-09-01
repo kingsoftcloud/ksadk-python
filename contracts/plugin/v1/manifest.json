@@ -1,0 +1,108 @@
+{
+  "contract_set": "plugin/v1",
+  "digest_algorithm": "sha256",
+  "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
+  "aggregate_digest": "a7ae3fb4ef3186f8244b94575225214240c9bb63a20618057b45f0bea294981d",
+  "files": [
+    {
+      "path": "agent-bundle-manifest-v2.schema.json",
+      "sha256": "eae48cc944d6284868c3c18dc4b7d8bf1298d4901bd9e0dddd3a835dccbe45cf",
+      "bytes": 1912
+    },
+    {
+      "path": "capability-definition.schema.json",
+      "sha256": "6a8de04c3c70e3a4508bfce9c8a1375d501d291c52347982f748040e41812b41",
+      "bytes": 998
+    },
+    {
+      "path": "composition-profile.schema.json",
+      "sha256": "4500d651b8e103b46cb896acd4f37a517d44b83248ec8df83f998926ac228fa5",
+      "bytes": 1304
+    },
+    {
+      "path": "context-contributor.schema.json",
+      "sha256": "fa101d2ed37eea9f65b82d092f964b84ec4e07bed1324eb94e98498d34ded9ea",
+      "bytes": 6217
+    },
+    {
+      "path": "dsh-agent-provider-host.schema.json",
+      "sha256": "c096e991f90b0040d89881f4b2029c2dbf2a44c7f7e30885a3c12afc8372d6b2",
+      "bytes": 3660
+    },
+    {
+      "path": "fixtures/agent-bundle-manifest-v2.json",
+      "sha256": "065b5a8df2185b2b23072cd08e7dc2a679137777bfc84de7dd3cb5524629f124",
+      "bytes": 1175
+    },
+    {
+      "path": "fixtures/capability-definition.json",
+      "sha256": "caea56c231ebb680f1aac3103a33d0b4aaa38f87028942eced04f805ed44e15c",
+      "bytes": 286
+    },
+    {
+      "path": "fixtures/composition-profile.json",
+      "sha256": "2fe714638081a27956b9c9330d374fca6a6ae9657df5fbf364f46ebbbf8565a4",
+      "bytes": 455
+    },
+    {
+      "path": "fixtures/context-contributor.json",
+      "sha256": "b446b30ce3a863c8d716c5fcdc0a73af11d3a04bb8b2f642a39e653d5dd9acfd",
+      "bytes": 1231
+    },
+    {
+      "path": "fixtures/dsh-agent-provider-host.json",
+      "sha256": "3ed0ca5baaff9d1bb56a37f866a7f95621787521e1ab896fcf6b6497d0900e97",
+      "bytes": 2709
+    },
+    {
+      "path": "fixtures/plugin-ecosystem-bridge-codex.json",
+      "sha256": "0ba3b692c9e0bc7d1024de7a200ac9e5a9a6957a4aaf975ee0dd70b89009fe28",
+      "bytes": 12444
+    },
+    {
+      "path": "fixtures/plugin-ecosystem-bridge-dual-manifest.json",
+      "sha256": "537a544ff779cbb5e537c1efa9fdbd30f1baf01aae9a925be3cf458b27c301e8",
+      "bytes": 923
+    },
+    {
+      "path": "fixtures/plugin-ecosystem-bridge-host-missing.json",
+      "sha256": "55554a4cd0051f3c9502861ff64fa19805fef0a3c89e664010aa8840eb0a186d",
+      "bytes": 920
+    },
+    {
+      "path": "fixtures/plugin-inventory.json",
+      "sha256": "cc15f9e0691fdb729ab10d0b51509077e755358dbee1191dc8ea96a8b28044f4",
+      "bytes": 424
+    },
+    {
+      "path": "fixtures/plugin-lock.json",
+      "sha256": "5b539b90da5a57270d862129c1fccadf14fe9429d50aedab80ac468092e71fb0",
+      "bytes": 800
+    },
+    {
+      "path": "fixtures/subagent-provider.json",
+      "sha256": "69f1c98aa75773cde7bf74d640484cf710a534670cf7f68c660f5ef5150a642d",
+      "bytes": 1790
+    },
+    {
+      "path": "plugin-ecosystem-bridge.schema.json",
+      "sha256": "c605653ea65445bcf278a65b3f2d9cfc76de6ed0b1f69e652a9fd12a54da3e0c",
+      "bytes": 25804
+    },
+    {
+      "path": "plugin-inventory.schema.json",
+      "sha256": "1f6610627f62164a853a3618fc24d264878821ed415072642707735e97d9880d",
+      "bytes": 1170
+    },
+    {
+      "path": "plugin-lock.schema.json",
+      "sha256": "05ab0b941b97ed148b2b8444e853b74457ee9b71a56b80cbddbb603a03f78fd9",
+      "bytes": 1618
+    },
+    {
+      "path": "subagent-provider.schema.json",
+      "sha256": "09b5de1bcde8e61a2e284430778d2bc6aaa6de04b89184d0e9c73c1b289da00e",
+      "bytes": 5139
+    }
+  ]
+}

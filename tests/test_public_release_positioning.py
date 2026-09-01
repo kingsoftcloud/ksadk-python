@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -19,6 +20,8 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/agentkit-local-studio/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/plugins-and-automations/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/runtime-architecture/",
     f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
 }
 EN_DOC_URLS = {
@@ -30,6 +33,8 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/agentkit-local-studio/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/plugins-and-automations/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/runtime-architecture/",
     f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
 }
 
@@ -189,6 +194,201 @@ def test_docs_internal_links_resolve_to_rendered_pages():
     assert not broken, "Broken internal documentation links:\n" + "\n".join(broken)
 
 
+def test_docs_relative_links_are_resolvable_by_fumadocs():
+    """Relative docs links must use source paths that createRelativeLink understands.
+
+    The static site uses trailing-slash routes.  An unresolved link such as
+    ``managed-runtime`` is emitted unchanged and the browser resolves it below
+    the current page (``.../agentkit-local-studio/managed-runtime``), which is a
+    404 even though the sibling page exists.  Fumadocs resolves locale-aware
+    links only when they start with ``./`` or ``../`` and name the MDX source.
+    """
+
+    unsafe: list[str] = []
+    for source in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx")):
+        text = source.read_text(encoding="utf-8")
+        for match in _DOCS_LINK_PATTERN.finditer(text):
+            target = next(value for value in match.groups() if value is not None)
+            path = target.split("#", 1)[0].split("?", 1)[0]
+            if not path or path.startswith(("http://", "https://", "mailto:", "/")):
+                continue
+            if Path(path).suffix and not path.endswith(".mdx"):
+                continue
+            if not path.startswith(("./", "../")) or not path.endswith(".mdx"):
+                unsafe.append(f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target}")
+
+    assert not unsafe, "Relative links that Fumadocs will emit unresolved:\n" + "\n".join(unsafe)
+
+
+def test_docs_content_and_navigation_have_complete_english_variants():
+    chinese_pages = {
+        path.relative_to(DOCS_CONTENT_ROOT).as_posix()
+        for path in DOCS_CONTENT_ROOT.rglob("*.mdx")
+        if not path.name.endswith(".en.mdx")
+    }
+    english_pages = {
+        path.relative_to(DOCS_CONTENT_ROOT).as_posix().replace(".en.mdx", ".mdx")
+        for path in DOCS_CONTENT_ROOT.rglob("*.en.mdx")
+    }
+    assert chinese_pages == english_pages
+
+    chinese_meta = sorted(DOCS_CONTENT_ROOT.rglob("meta.json"))
+    missing_meta = [
+        path.relative_to(DOCS_CONTENT_ROOT).as_posix()
+        for path in chinese_meta
+        if not path.with_name("meta.en.json").exists()
+    ]
+    assert not missing_meta, "Missing English navigation metadata:\n" + "\n".join(missing_meta)
+
+    def navigation_identity(entry: str) -> str:
+        if entry.startswith("---"):
+            icon = re.match(r"---(?:\[([^]]+)\])?", entry)
+            return f"separator:{icon.group(1) if icon else ''}"
+        return entry
+
+    for chinese_path in chinese_meta:
+        english_path = chinese_path.with_name("meta.en.json")
+        chinese = json.loads(chinese_path.read_text(encoding="utf-8"))
+        english = json.loads(english_path.read_text(encoding="utf-8"))
+        assert [navigation_identity(item) for item in chinese.get("pages", [])] == [
+            navigation_identity(item) for item in english.get("pages", [])
+        ], chinese_path.relative_to(DOCS_CONTENT_ROOT)
+
+    i18n_config = _read("docs-site/lib/i18n.ts")
+    assert "fallbackLanguage: null" in i18n_config
+
+
+def test_docs_navigation_exposes_the_083_user_journeys():
+    chinese = _read("docs-site/content/docs/framework/meta.json")
+    english = _read("docs-site/content/docs/framework/meta.en.json")
+    for expected in (
+        "Studio 与本地开发",
+        "Harness 与插件化",
+        "统一事件与互操作",
+        "构建与部署",
+        "运维与维护",
+    ):
+        assert expected in chinese
+    for expected in (
+        "Studio and Local Development",
+        "Harness and Plugins",
+        "Events and Interoperability",
+        "Build and Deploy",
+        "Operations and Maintenance",
+    ):
+        assert expected in english
+
+    page_order = json.loads(chinese)["pages"]
+    assert page_order.index("guides/agentkit-local-studio") < page_order.index(
+        "guides/runtime-architecture"
+    )
+    assert page_order.index("guides/runtime-architecture") < page_order.index(
+        "guides/plugins-and-automations"
+    )
+    assert page_order.index("guides/plugins-and-automations") < page_order.index(
+        "guides/hosted-ui-events"
+    )
+
+    landing = _read("docs-site/content/docs/framework/index.mdx")
+    assert "Harness 与插件化" in landing
+    assert "/cn/docs/framework/guides/runtime-architecture" in landing
+    assert "/cn/docs/framework/guides/plugins-and-automations" in landing
+
+
+def test_docs_versioned_facts_match_083_source():
+    makefile = _read("Makefile")
+    web_version_match = re.search(r"^KSADK_WEB_VERSION \?= (\S+)$", makefile, re.MULTILINE)
+    assert web_version_match is not None
+    web_version = web_version_match.group(1)
+    assert web_version == "0.3.4"
+
+    versioned_docs = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx"))
+    )
+    public_surfaces = "\n".join(
+        (
+            versioned_docs,
+            _read("README.md"),
+            _read("README.zh-CN.md"),
+            _read("README.en.md"),
+            _read("docs-site/app/[lang]/(home)/page.tsx"),
+        )
+    )
+    for stale in (
+        "KSADK_WEB_VERSION=0.3.2",
+        "`KSADK_WEB_VERSION` | `0.3.2`",
+        "0.8.2 default is `0.3.2`",
+        "0.8.2 默认 `0.3.2`",
+        "V=0.6.7",
+        "`0.8.0` is still a release candidate",
+        "`0.8.0` 仍是候选版本",
+        "RuntimeEvent v1",
+    ):
+        assert stale not in public_surfaces
+
+    assert 'version = "0.8.3"' in _read("pyproject.toml")
+    assert "0.8.3" in _read("docs-site/app/[lang]/(home)/page.tsx")
+
+    for relative in (
+        "framework/guides/web-ui-source.mdx",
+        "framework/guides/web-ui-source.en.mdx",
+        "references/environment-variables.mdx",
+        "references/environment-variables.en.mdx",
+    ):
+        assert f"`{web_version}`" in _read(f"docs-site/content/docs/{relative}")
+
+    a2a_dependency = re.search(r'"a2a-sdk\[fastapi\]==([^"]+)"', _read("pyproject.toml"))
+    assert a2a_dependency is not None
+    for relative in (
+        "framework/guides/a2a-runtime.mdx",
+        "framework/guides/a2a-runtime.en.mdx",
+    ):
+        assert f"a2a-sdk=={a2a_dependency.group(1)}" in _read(
+            f"docs-site/content/docs/{relative}"
+        )
+
+
+def test_documented_cli_snippets_only_use_registered_top_level_commands():
+    from ksadk.cli import _register_commands, cli
+
+    _register_commands()
+
+    documented: set[str] = set()
+    fence_pattern = re.compile(r"```(?:bash|shell|console)[^\n]*\n(.*?)```", re.DOTALL)
+    command_pattern = re.compile(
+        r"^(?:\$\s+)?(?:(?:uv run|python -m)\s+)?(?:agentengine|ksadk)\s+([a-z][a-z0-9-]*)",
+        re.MULTILINE,
+    )
+    for source in DOCS_CONTENT_ROOT.rglob("*.mdx"):
+        for block in fence_pattern.findall(source.read_text(encoding="utf-8")):
+            documented.update(command_pattern.findall(block))
+
+    registered = set(cli.commands)
+    assert documented <= registered, sorted(documented - registered)
+    for required in ("init", "run", "web", "studio", "plugin", "eval", "deploy"):
+        assert required in documented
+
+
+def test_083_runtime_configuration_is_present_in_the_public_reference():
+    chinese = _read("docs-site/content/docs/references/environment-variables.mdx")
+    english = _read("docs-site/content/docs/references/environment-variables.en.mdx")
+    for name in (
+        "KSADK_AGENT_KERNEL",
+        "KSADK_A2A_CONTROL_PLANE_URL",
+        "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
+        "KSADK_DSH_BIN",
+        "KSADK_DSH_HOME",
+        "KSADK_DSH_PROFILE",
+        "KSADK_STUDIO_SESSION_TOKEN",
+        "KSADK_WEB_VERSION",
+    ):
+        assert name in chinese
+        assert name in english
+
+    for text in (chinese, english):
+        assert "agentengine.yaml" in text or "AGENTENGINE_MANAGED_RUNTIME_NAME" in text
+
+
 def test_docs_site_cloud_deployment_guides_and_static_search_are_publicly_reachable():
     docs_root = ROOT / "docs-site"
     search = _read("docs-site/components/search.tsx")
@@ -225,9 +425,9 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.2"
-    assert 'VERSION = "0.8.2"' in version_text
-    assert "## [0.8.2] - 2026-08-26" in changelog
+    assert pyproject["project"]["version"] == "0.8.3"
+    assert 'VERSION = "0.8.3"' in version_text
+    assert "## [0.8.3] - Unreleased" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
@@ -298,10 +498,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.2"' in workflow
+    assert 'default: "0.3.4"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.2' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.4' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -319,12 +519,13 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.2"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.4"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.2" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.4" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
-        "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
+        "tests/test_docs_site_output_audit.py tests/test_config_env_registry.py "
+        "tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
         "tests/runners/test_adapter_contract.py" in makefile
     )
@@ -340,14 +541,60 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "verify-ksadk-web-wheel-static" in makefile
     assert (
         "public-preflight: public-version-gate public-audit sync-ksadk-web-static "
-        "public-test docs-site-build public-build-check" in makefile
+        "public-test docs-site-build phase2-release-preflight" in makefile
     )
     assert "NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static" in makefile
+    assert "scripts/audit_docs_site_output.py" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
 
 
+def test_ksadk_web_npm_consumers_use_the_configured_registry():
+    makefile = _read("Makefile")
+    registry = "https://registry.example.test/npm"
+
+    assert 'KSADK_WEB_NPM := npm --registry="$(KSADK_WEB_REGISTRY)"' in makefile
+    assert (
+        '$(KSADK_WEB_NPM) pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"'
+        in makefile
+    )
+    assert "$(KSADK_WEB_NPM) --prefix ksadk/studio/react-ui ci" in makefile
+    assert '$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci' in makefile
+    assert (
+        "REGISTRY_JSON=$$(curl -fsSL "
+        '"$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)")' in makefile
+    )
+    assert 'npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"' not in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.4" in makefile
+
+    sync_dry_run = subprocess.run(
+        [
+            "make",
+            "-n",
+            "sync-ksadk-web-static",
+            f"KSADK_WEB_REGISTRY={registry}",
+            "KSADK_WEB_CACHE_DIR=/tmp/ksadk-web-registry-contract",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.4"' in sync_dry_run
+    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.4"' in sync_dry_run
+
+    studio_dry_run = subprocess.run(
+        ["make", "-n", "build-studio-static", f"KSADK_WEB_REGISTRY={registry}"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    assert f'npm --registry="{registry}" --prefix "ksadk/studio/react-ui" ci' in studio_dry_run
+
+
 def test_public_ci_runs_gitleaks_and_documents_branch_protection():
+    ci_workflow = _read(".github/workflows/ci.yml")
     secret_workflow = _read(".github/workflows/secret-patterns.yml")
     branch_protection = _read(".github/BRANCH_PROTECTION.md")
     approval_record = _read("docs/maintainer-approval-record.md")
@@ -356,7 +603,11 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" in secret_workflow
     assert "/tmp/gitleaks detect --source ." in secret_workflow
     assert "fetch-depth: 0" in secret_workflow
-    assert "python3 scripts/open_source_audit.py --target public-repo" in secret_workflow
+    for workflow in (ci_workflow, secret_workflow):
+        assert "if [ -f export-manifest.json ]" in workflow
+        assert "scripts/prepare_ksadk_python_export.py" in workflow
+        assert '--root "$audit_root"' in workflow
+        assert "--target public-repo" in workflow
     assert "Require a pull request before merging" in branch_protection
     assert "CI / test" in branch_protection
     assert "Secret Pattern Audit / scan" in branch_protection
@@ -368,8 +619,8 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
 def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.8.2 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.2" in approval_record
+    assert "| Python package version | 0.8.3 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.3" in approval_record
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():

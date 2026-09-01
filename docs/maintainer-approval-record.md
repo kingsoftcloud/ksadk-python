@@ -1,7 +1,6 @@
 # KsADK Public Release Approval Record
 
-This record approves the public `0.8.2` release from the reviewed internal
-candidate and Web sources below. It is the evidence consumed by the release
+This record approves the public `0.8.3` release candidate described below. It is the evidence consumed by the release
 gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
 deployment.
 
@@ -12,7 +11,7 @@ deployment.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.8.2 |
+| Python package version | 0.8.3 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -31,34 +30,36 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: clean public export from reviewed internal candidate `40060a6560bfeec2f45bca92b589bca8c799073f`.
-- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.2`, source commit `2136448e038b4d8c475fa20e4722252b1ddb2ebc`, GitHub merge `4854be4fcb5584a799538536372d38b80447f81e`, integrity `sha512-Ytjd3pIgy6LfHCmguXUDQr/wy9ClqKjbv+J+NAzH/+UIJjhVl3y1SA2eR7WwsWSn42zxBFme/xniUZMNBV53Aw==`; approval is bound to Python source commit `40060a6560bfeec2f45bca92b589bca8c799073f`.
+- `ksadk-python`: Reviewed source commit `0b67fc3ccff3dfb9d38ebb5b60039f29fc29b9c8`; publication uses a clean public export of that reviewed candidate plus release-only evidence updates.
+- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `0b67fc3ccff3dfb9d38ebb5b60039f29fc29b9c8`.
 
 Both approved source references include the reviewed Python source commit SHA.
 This prevents a stale approval record from passing after candidate changes.
 
 ## Recorded Evidence for Approval
 
-- `@kingsoftcloud/ksadk-web@0.3.2` is published from the source and integrity
-  recorded above; the Python build gate verified all 265 embedded static files.
-- The complete Python suite passed 4418 tests, with 73 optional live-service or
-  PostgreSQL tests skipped, two expected failures, and one expected-pass marker.
-- The Studio release gate passed 62 contract tests, 190 component tests, 22
-  style checks, TypeScript validation, the production build, and browser smoke.
-- The docs static build rendered 201 routes. Wheel/sdist metadata, twine, and
-  artifact audits passed with 0 violations across 778 wheel and 862 sdist entries.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.2` must pass
-  again on the exported public candidate before external publication; neither
-  public Python package contains version `0.8.2` at approval time.
+- The published `@kingsoftcloud/ksadk-web@0.3.4` package passed source tests,
+  browser E2E and registry-backed consumer rebuild. Its registry tarball
+  SHA-256 is `0d88fb37506bae77ba863b3986b2fde4546cd74cbd3f3021eed1ecd05f15c596`.
+- The Phase 2 compatibility, Codex native host, DSH lifecycle, browser, clean
+  wheel install and clean sdist rebuild gates passed on the interim Python
+  candidate. Wheel/sdist path and content audits reported zero violations.
+- The docs static build rendered 205 routes. Public source export and secret
+  audits must pass again after the final registry-backed rebuild.
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.3` must pass
+  on the exported public candidate before external publication; neither public
+  Python package may already contain version `0.8.3` at approval time.
 - Branch protection and publish environment are configured according to
   `.github/BRANCH_PROTECTION.md`.
-- Web 0.3.2 tests, lint, build, npm pack, audit, interaction E2E, AG-UI E2E,
-  reconnect E2E, npm publication, GitHub Release, and Pages deployment are green.
-- Real browser E2E covered an existing CLI high-code Agent and the Kernel Agent
-  path: foreground SSE, multi-turn chat, system-role preservation, MCP invocation,
-  final-message de-duplication, refresh replay, and cleanup of test sessions.
+- Web 0.3.4 source tests, lint, build, npm pack, audit, Pages demo E2E and browser E2E are green;
+  npm publication, registry verification and the final registry-backed consumer
+  rebuild are complete.
+- Real browser E2E for 0.3.4 passed against a Studio-created Codex Agent and a
+  historical 0.8.2 Agent: multi-turn context, reasoning, refresh replay and
+  final-message de-duplication bind to Hosted UI image digest
+  `sha256:d629384e44a2e35f5dd5f7788ea16097cb49d79c582206d5fe453911fe20d66d`.
 - Release notes, `CHANGELOG.md`, public README and docs were reviewed for the
-  complete 0.8.2 summary, sensitive environment names, internal endpoints,
+  complete 0.8.3 summary, sensitive environment names, internal endpoints,
   tokens, customer data and inaccurate claims.
 - PyPI/TestPyPI credentials stay outside the repository.
 
@@ -66,6 +67,6 @@ This prevents a stale approval record from passing after candidate changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | @AgentArcLab | Approved | 2026-08-26 |
-| Security reviewer | @AgentArcLab | Approved after source, artifact and secret gates | 2026-08-26 |
-| Release owner | @AgentArcLab | Approved for clean export and Trusted Publishing | 2026-08-26 |
+| Maintainer | @AgentArcLab | Approved | 2026-09-01 |
+| Security reviewer | @AgentArcLab | Approved | 2026-09-01 |
+| Release owner | @AgentArcLab | Approved | 2026-09-01 |

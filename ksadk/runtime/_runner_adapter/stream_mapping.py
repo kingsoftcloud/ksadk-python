@@ -69,7 +69,7 @@ def _a2ui_surface_event(
     self: Any,
     handle: RunHandle,
     chunk: Any,
-) -> RuntimeEvent | None:
+) -> tuple[RuntimeEvent, ...]:
     """Recognize a validated A2UI tool envelope and emit a canonical data-item event.
 
     The dynamic ``generate_a2ui`` tool returns official v0.9 operations as a
@@ -83,7 +83,7 @@ def _a2ui_surface_event(
     """
 
     if not isinstance(chunk, dict):
-        return None
+        return ()
     value = chunk.get("tool_output", chunk.get("output"))
     if value is not None and hasattr(value, "content"):
         value = value.content
@@ -91,15 +91,15 @@ def _a2ui_surface_event(
         try:
             value = json.loads(value)
         except (TypeError, ValueError):
-            return None
+            return ()
     if not isinstance(value, Mapping):
-        return None
+        return ()
     operations_raw = value.get("a2ui_operations")
     if not isinstance(operations_raw, list) or not operations_raw:
-        return None
+        return ()
     operations = [dict(operation) for operation in operations_raw if isinstance(operation, Mapping)]
     if not operations:
-        return None
+        return ()
 
     known: list[tuple[str, str]] = []  # (surface_id, lifecycle)
     for operation in operations:
@@ -116,71 +116,75 @@ def _a2ui_surface_event(
                     known.append((surface_id, lifecycle))
                     break
     if not known:
-        return None
+        return ()
     surface_ids = {surface_id for surface_id, _lifecycle in known}
     if len(surface_ids) != 1:
         logger.warning("ignoring A2UI tool result with multiple surfaces")
-        return None
+        return ()
     surface_id = known[0][0]
     lifecycle = "begin" if any(lc == "begin" for _, lc in known) else known[0][1]
 
     framework = self._runtime_type
     run_id = handle.run_id
     scope_id = stable_scope_id(framework, run_id)
-    item_id = stable_item_id(framework, run_id, "a2ui", surface_id)
+    # A dynamic A2UI tool result is a complete, immutable operation batch.  It
+    # must therefore be represented by a closed canonical item.  Reusing one
+    # long-lived item per surface leaves a create/update-only batch open at the
+    # run terminal and makes strict reducers reject the stream.
+    start_seq = self._next_seq()
+    batch_ref = str(chunk.get("call_id") or chunk.get("run_id") or chunk.get("id") or "")
+    if not batch_ref:
+        batch_ref = json.dumps(
+            operations,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    item_id = stable_item_id(framework, run_id, "a2ui-batch", surface_id, batch_ref)
     source = SourceRef(
         framework=framework,
         protocol="a2ui",
         native_run_id=run_id,
-        metadata={"surface_id": surface_id},
+        metadata={
+            "surface_id": surface_id,
+            "operation_batch": True,
+            "surface_lifecycle": lifecycle,
+        },
     )
     # TODO(runtime-event-v2): dict chunk 退化路径,chunk_ordinal 用 seq counter;
     # LangGraph/Codex 切 stream_canonical_events 后清理
-    n = self._next_seq()
     timestamp = time.time()
-    if lifecycle == "begin":
-        return ItemStarted(
+    snapshot = ContentSnapshot(parts=(DataContent(part_id="a2ui-ops", data=operations),))
+    completed_seq = self._next_seq()
+    return (
+        ItemStarted(
             schema_version=2,
             event_id=stable_event_id(
-                framework, scope_id, item_id, "item.started", "a2ui", run_id, n
+                framework, scope_id, item_id, "item.started", "a2ui", run_id, start_seq
             ),
-            seq=n,
+            seq=start_seq,
             timestamp=timestamp,
             run_id=run_id,
             scope_id=scope_id,
             source=source,
             item_id=item_id,
             item_kind="data",
-            initial=ContentSnapshot(parts=(DataContent(part_id="a2ui-ops", data=operations),)),
-        )
-    if lifecycle == "update":
-        return ItemUpdated(
+            initial=snapshot,
+        ),
+        ItemCompleted(
             schema_version=2,
             event_id=stable_event_id(
-                framework, scope_id, item_id, "item.updated", "a2ui", run_id, n
+                framework, scope_id, item_id, "item.completed", "a2ui", run_id, completed_seq
             ),
-            seq=n,
+            seq=completed_seq,
             timestamp=timestamp,
             run_id=run_id,
             scope_id=scope_id,
             source=source,
             item_id=item_id,
             item_kind="data",
-            op="replace",
-            update=DataContent(part_id="a2ui-ops", data=operations),
-        )
-    # lifecycle == "end"
-    return ItemCompleted(
-        schema_version=2,
-        event_id=stable_event_id(framework, scope_id, item_id, "item.completed", "a2ui", run_id, n),
-        seq=n,
-        timestamp=timestamp,
-        run_id=run_id,
-        scope_id=scope_id,
-        source=source,
-        item_id=item_id,
-        item_kind="data",
-        snapshot=ContentSnapshot(parts=()),
+            snapshot=snapshot,
+        ),
     )
 
 
@@ -323,8 +327,7 @@ class _RunnerStreamMappingMixin:
                                 usage.update(raw_usage)
                         for event in self._chunk_to_event(handle, run, chunk):  # type: ignore[attr-defined]
                             yield event
-                        a2ui_surface = _a2ui_surface_event(self, handle, chunk)
-                        if a2ui_surface is not None:
+                        for a2ui_surface in _a2ui_surface_event(self, handle, chunk):
                             yield a2ui_surface
             finally:
                 if accumulated_output:
@@ -708,8 +711,10 @@ class _RunnerStreamMappingMixin:
             if run is not None:
                 run.final_answer_item_id = item_id
             text_content = TextContent(part_id="text-0", text=output)
-            # Auto-close any open commentary/reasoning item before emitting final_answer.
-            # Text/thinking deltas create items that are never ItemCompleted;
+            # Auto-close any open explicit commentary/reasoning item before completing
+            # final_answer. Text deltas already belong to the final-answer item and must
+            # keep that identity through completion.
+            # Commentary/thinking deltas create items that are never ItemCompleted;
             # without this, RunCompleted fails _ensure_no_open_items.
             #
             # Close them *before* allocating the final-answer item.  Event
@@ -764,9 +769,13 @@ class _RunnerStreamMappingMixin:
         text = self._coerce(chunk.get("delta") or chunk.get("output") or chunk.get("data"))  # type: ignore[attr-defined]
         if not text:
             return []
-        item_id = stable_item_id(framework, run_id, "message", "commentary")
+        is_commentary = chunk_type in {"commentary", "commentary_delta"}
+        phase = "commentary" if is_commentary else "final_answer"
+        item_id = stable_item_id(framework, run_id, "message", phase)
+        if run is not None and not is_commentary:
+            run.final_answer_item_id = item_id
         op: str = "replace" if chunk.get("replace") else "append"
-        events = ensure_started(item_id=item_id, item_kind="message", phase="commentary")
+        events = ensure_started(item_id=item_id, item_kind="message", phase=phase)
         events.append(
             ItemUpdated(
                 **self._canonical_kwargs(  # type: ignore[attr-defined]

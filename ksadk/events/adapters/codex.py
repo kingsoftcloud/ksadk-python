@@ -48,6 +48,7 @@ from ksadk.events.canonical import (
     ContinuationCreated,
     ContinuationResumed,
     ErrorInfo,
+    InteractionRequested,
     ItemCompleted,
     ItemFailed,
     ItemStarted,
@@ -56,10 +57,12 @@ from ksadk.events.canonical import (
     RunCanceled,
     RunCompleted,
     RunFailed,
+    RunInterrupted,
     RunProgress,
     RunStarted,
     RuntimeEvent,
     SourceRef,
+    StructuredInputRequest,
     UsageReported,
 )
 from ksadk.events.content import (
@@ -191,6 +194,20 @@ class CodexEventAdapter(_CodexInteractionMixin):
             return self._map_server_request_resolved(
                 params=params, context=context, cursor=cursor, timestamp=timestamp
             )
+        if method == "a2ui/surface":
+            return self._map_a2ui_surface(
+                params=params,
+                context=context,
+                cursor=cursor,
+                timestamp=timestamp,
+            )
+        if method == "a2ui/interaction":
+            return self._map_a2ui_interaction(
+                params=params,
+                context=context,
+                cursor=cursor,
+                timestamp=timestamp,
+            )
         if method in _CONTROL_INTERACTION_METHODS:
             return self._map_control_interaction_request(
                 message=message,
@@ -254,6 +271,179 @@ class CodexEventAdapter(_CodexInteractionMixin):
                 method=method, params=params, context=context, cursor=cursor, timestamp=timestamp
             )
         _fail("unsupported_method", "method", f"Unsupported Codex app-server method: {method}")
+
+    @staticmethod
+    def _a2ui_scope(
+        params: Mapping[str, Any],
+        context: CodexAdapterContext,
+        *,
+        surface_id: str,
+    ) -> tuple[str, str, str]:
+        thread_value = params.get("threadId", params.get("thread_id"))
+        turn_value = params.get("turnId", params.get("turn_id"))
+        thread_id = (
+            _required_string(thread_value, "params.threadId")
+            if thread_value is not None
+            else f"runtime:{context.run_id}"
+        )
+        turn_id = (
+            _required_string(turn_value, "params.turnId")
+            if turn_value is not None
+            else "a2ui"
+        )
+        return thread_id, turn_id, stable_scope_id("codex", thread_id, turn_id, surface_id)
+
+    @staticmethod
+    def _a2ui_source(
+        *,
+        method: str,
+        cursor: str,
+        thread_id: str,
+        turn_id: str,
+        native_item_id: str,
+        surface_id: str,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> SourceRef:
+        source = _protocol_source(
+            method=method,
+            cursor=cursor,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            native_item_id=native_item_id,
+            native_event_id=native_item_id,
+        )
+        return source.model_copy(
+            update={
+                "protocol": "a2ui",
+                "metadata": {
+                    **source.metadata,
+                    "surface_id": surface_id,
+                    **dict(metadata or {}),
+                },
+            }
+        )
+
+    def _map_a2ui_surface(
+        self,
+        *,
+        params: Mapping[str, Any],
+        context: CodexAdapterContext,
+        cursor: str,
+        timestamp: float,
+    ) -> tuple[RuntimeEvent, ...]:
+        """Map one complete A2UI surface description as an immutable operation batch."""
+
+        surface_id = _required_string(params.get("surface_id"), "params.surface_id")
+        surface = _mapping(params.get("surface"), "params.surface")
+        thread_id, turn_id, scope_id = self._a2ui_scope(
+            params, context, surface_id=surface_id
+        )
+        item_id = stable_item_id("codex", scope_id, "a2ui-surface", surface_id)
+        source = self._a2ui_source(
+            method="a2ui/surface",
+            cursor=cursor,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            native_item_id=surface_id,
+            surface_id=surface_id,
+            metadata={
+                "operation_batch": True,
+                "surface_lifecycle": "begin",
+                "catalog_id": str(surface.get("catalog_id") or surface.get("catalogId") or ""),
+            },
+        )
+        snapshot = ContentSnapshot(
+            parts=(
+                DataContent(
+                    part_id="a2ui-surface",
+                    data={"surface_id": surface_id, **_json_value(surface)},
+                ),
+            )
+        )
+        env = _envelope(context, cursor, timestamp)
+        return (
+            ItemStarted(
+                **env(scope_id, item_id, "item.started", "a2ui-surface", source),
+                item_id=item_id,
+                item_kind="data",
+                initial=snapshot,
+            ),
+            ItemCompleted(
+                **env(scope_id, item_id, "item.completed", "a2ui-surface", source),
+                item_id=item_id,
+                item_kind="data",
+                snapshot=snapshot,
+            ),
+        )
+
+    def _map_a2ui_interaction(
+        self,
+        *,
+        params: Mapping[str, Any],
+        context: CodexAdapterContext,
+        cursor: str,
+        timestamp: float,
+    ) -> tuple[RuntimeEvent, ...]:
+        """Map the client-owned A2UI input request without changing its live call id."""
+
+        surface_id = _required_string(params.get("surface_id"), "params.surface_id")
+        interaction_id = _required_string(
+            params.get("interaction_id"), "params.interaction_id"
+        )
+        kind = _required_string(params.get("kind"), "params.kind")
+        schema = _mapping(params.get("input_schema"), "params.input_schema")
+        is_blocking = params.get("is_blocking", True)
+        if not isinstance(is_blocking, bool):
+            _fail(
+                "invalid_interaction_request",
+                "params.is_blocking",
+                "A2UI is_blocking must be a boolean",
+            )
+        thread_id, turn_id, scope_id = self._a2ui_scope(
+            params, context, surface_id=surface_id
+        )
+        source = self._a2ui_source(
+            method="a2ui/interaction",
+            cursor=cursor,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            native_item_id=interaction_id,
+            surface_id=surface_id,
+            metadata={"kind": kind, "is_blocking": is_blocking},
+        )
+        env = _envelope(context, cursor, timestamp)
+        requested = InteractionRequested(
+            **env(
+                scope_id,
+                interaction_id,
+                "interaction.requested",
+                "structured_input",
+                source,
+            ),
+            interaction_id=interaction_id,
+            interaction_kind="structured_input",
+            request=StructuredInputRequest(prompt=None, schema=_json_value(schema)),
+        )
+        if not is_blocking:
+            return (requested,)
+        return (
+            requested,
+            RunInterrupted(
+                **env(
+                    scope_id,
+                    turn_id,
+                    "run.interrupted",
+                    interaction_id,
+                    source,
+                ),
+                status="interrupted",
+                reason="Codex requires user interaction",
+                interaction_id=interaction_id,
+                continuation_id=self._thread_continuations.setdefault(
+                    thread_id, _thread_continuation_identity(thread_id)[1]
+                ),
+            ),
+        )
 
     def _map_token_usage(
         self,

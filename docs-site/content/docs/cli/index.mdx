@@ -73,7 +73,7 @@ agentengine init my-agent --from-agent ./existing_agent.py
 `agentengine init --framework codex` 只生成 `agentengine.yaml`、`.env`、
 `requirements.txt` 和 README，不生成 `agent.py`。它的 `artifact_type` 是
 `ManagedRuntime`；本机运行原生 Codex 子进程，云端由服务端选择 Runtime 镜像。详见
-[Codex Managed Runtime](../framework/guides/managed-runtime)。
+[Codex Managed Runtime](../framework/guides/managed-runtime.mdx)。
 </Callout>
 
 <Callout type="info">
@@ -151,7 +151,7 @@ Studio 的 React / TypeScript 可编辑源码；`make build-wheel` 和 `make pub
 会校验并打包经过审计的静态产物。
 
 从启动工作区到创建、构建和测试 Agent 的完整流程见
-[AgentKit Local Studio（0.8.1 新增）](/cn/docs/framework/guides/agentkit-local-studio)。
+[AgentKit Local Studio](/cn/docs/framework/guides/agentkit-local-studio)。
 
 ### `ksadk replay` / `agentengine replay`
 
@@ -164,7 +164,7 @@ ksadk replay session_123 --after-seq-id 120 --format json
 agentengine replay session_123 --before-seq-id 260
 ```
 
-只有 RuntimeEvent v1 已持久化的 session 可被这个命令读取；旧式 SessionEvent 不会自动转换。
+只有通过 canonical RuntimeEvent v2 store 持久化的 session 可被这个命令读取；旧式 SessionEvent 不会被静默转换成新的 canonical 事实。
 `--after-seq-id` 是开区间，`--before-seq-id` 是不含上界，可用二者缩小诊断窗口。
 
 ## 协议和集成
@@ -243,7 +243,7 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
   传入的 `--env-file` 用于显式注入运行时 env。真实的 `.env` / `.env.local`
   不会进入 Code、Container 或 MCP 构建上下文，构建只保留 `.env.example` /
   `.env.sample` / `.env.template` 模板文件。详见
-  [环境变量参考](../references/environment-variables)。
+  [环境变量参考](../references/environment-variables.mdx)。
 </Callout>
 
 ### 默认可观测性与显式关闭
@@ -262,7 +262,7 @@ agentengine launch . --target serverless --no-observability
 agentengine hermes deploy --name my-hermes --no-observability
 ```
 
-关闭后平台会清理托管 OTLP endpoint、headers 和 protocol；不要用 `--env` 覆盖平台托管的可观测变量。环境变量协议见[环境变量参考](../references/environment-variables)。
+关闭后平台会清理托管 OTLP endpoint、headers 和 protocol；不要用 `--env` 覆盖平台托管的可观测变量。环境变量协议见[环境变量参考](../references/environment-variables.mdx)。
 
 ### `agentengine hermes`
 
@@ -316,7 +316,7 @@ agentengine openclaw --help
   `--memory-system` CLI 选项只暴露 `openclaw_default` 与 `mem0`。`lancedb`
   后端需要通过 `MEMORY_BACKEND_MANIFEST` 在运行时侧声明 manifest，不走 CLI
   参数；详见
-  [环境变量参考](../references/environment-variables)。
+  [环境变量参考](../references/environment-variables.mdx)。
 </Callout>
 
 <Callout type="info" title="mem0 参数约束">

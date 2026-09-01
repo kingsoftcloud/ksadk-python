@@ -132,6 +132,66 @@ def test_public_repo_audit_allows_curated_environment_reference_doc():
     assert result.violations == []
 
 
+def test_public_export_manifest_rejects_internal_inventory(tmp_path):
+    audit = _load_audit_module()
+    manifest = {
+        "schemaVersion": 1,
+        "generatedAt": "2026-08-31T00:00:00+00:00",
+        "sourceCommit": "a" * 40,
+        "sourceTree": "clean",
+        "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
+        "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
+        "exportPathCount": 100,
+        "exportPolicy": {
+            "mode": "allowlist",
+            "schemaVersion": 1,
+            "sha256": "b" * 64,
+        },
+        "excludedPaths": ["docs/internal/private-plan.md"],
+        "includePolicy": {"tests": ["tests/internal/test_preprod.py"]},
+    }
+    (tmp_path / "export-manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    result = audit.audit_public_export_manifest(
+        tmp_path, ["export-manifest.json"]
+    )
+
+    assert result.ok is False
+    assert [violation.rule for violation in result.violations] == [
+        "public-export-inventory-disclosure"
+    ]
+
+
+def test_public_export_manifest_accepts_minimal_provenance(tmp_path):
+    audit = _load_audit_module()
+    manifest = {
+        "schemaVersion": 1,
+        "generatedAt": "2026-08-31T00:00:00+00:00",
+        "sourceCommit": "a" * 40,
+        "sourceTree": "clean",
+        "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
+        "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
+        "exportPathCount": 100,
+        "exportPolicy": {
+            "mode": "allowlist",
+            "schemaVersion": 1,
+            "sha256": "b" * 64,
+        },
+    }
+    (tmp_path / "export-manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    result = audit.audit_public_export_manifest(
+        tmp_path, ["export-manifest.json"]
+    )
+
+    assert result.ok is True
+    assert result.violations == []
+
+
 def test_wheel_audit_blocks_hosted_ui_bundle_and_zread_snapshot():
     audit = _load_audit_module()
 

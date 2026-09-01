@@ -185,6 +185,11 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 if durable_supported
                 else _unavailable("durable_restore_requires_cross_process_checkpoint")
             ),
+            # A generic Runner cannot claim interaction delivery merely from a
+            # checkpoint capability.  ADK is forward-only and only the
+            # LangGraph specialization below binds a checkpoint to the
+            # original interrupt identity.
+            interaction_mode="unavailable",
         )
 
     async def durable_restore(self, handle: RunHandle) -> RunHandle:

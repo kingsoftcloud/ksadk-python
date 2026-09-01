@@ -74,7 +74,7 @@ frameworks that can run locally without internal infrastructure.
 `agentengine init --framework codex` creates only `agentengine.yaml`, `.env`,
 `requirements.txt`, and a README; it does not create `agent.py`. Its
 `artifact_type` is `ManagedRuntime`: native Codex runs locally and the server
-selects the cloud Runtime image. See [Codex Managed Runtime](../framework/guides/managed-runtime).
+selects the cloud Runtime image. See [Codex Managed Runtime](../framework/guides/managed-runtime.mdx).
 </Callout>
 
 <Callout type="info">
@@ -158,7 +158,7 @@ source. `make build-wheel` and `make public-build-check` validate and package
 the reviewed static payload.
 
 For the full workflow from starting a workspace through creating, building, and
-testing an Agent, see [AgentKit Local Studio (New in 0.8.1)](/en/docs/framework/guides/agentkit-local-studio).
+testing an Agent, see [AgentKit Local Studio](/en/docs/framework/guides/agentkit-local-studio).
 
 ### `ksadk replay` / `agentengine replay`
 
@@ -170,7 +170,7 @@ ksadk replay session_123 --after-seq-id 120 --format json
 agentengine replay session_123 --before-seq-id 260
 ```
 
-The command only reads sessions that persist RuntimeEvent v1; it does not convert legacy SessionEvent records. `--after-seq-id` is exclusive and `--before-seq-id` is an exclusive upper bound, so use both to narrow an investigation window.
+The command only reads sessions persisted through the canonical RuntimeEvent v2 store; it does not silently convert legacy SessionEvent rows into new canonical facts. `--after-seq-id` is exclusive and `--before-seq-id` is an exclusive upper bound, so use both to narrow an investigation window.
 
 ## Protocol And Integration
 
@@ -253,7 +253,7 @@ Sensitive credentials, including secrets passed with `--env`, are redacted from 
   The `--env-file` you pass is for explicit runtime env injection. Real `.env`
   / `.env.local` files are excluded from Code, Container, and MCP build
   contexts; only `.env.example` / `.env.sample` / `.env.template` templates are
-  kept. See [Environment Variables Reference](../references/environment-variables).
+  kept. See [Environment Variables Reference](../references/environment-variables.mdx).
 </Callout>
 
 ### Default observability and explicit opt-out
@@ -272,7 +272,7 @@ agentengine launch . --target serverless --no-observability
 agentengine hermes deploy --name my-hermes --no-observability
 ```
 
-Disabling observability clears the managed OTLP endpoints, headers, and protocols. Do not use `--env` to override platform-managed observability variables. See the [Environment Variables Reference](../references/environment-variables) for the protocol contract.
+Disabling observability clears the managed OTLP endpoints, headers, and protocols. Do not use `--env` to override platform-managed observability variables. See the [Environment Variables Reference](../references/environment-variables.mdx) for the protocol contract.
 
 ### `agentengine hermes`
 
@@ -330,7 +330,7 @@ Memory backend options (0.6.7):
   The `--memory-system` CLI option only exposes `openclaw_default` and `mem0`.
   The `lancedb` backend must be declared via a `MEMORY_BACKEND_MANIFEST` on the
   runtime side, not through CLI flags; see
-  [Environment Variables Reference](../references/environment-variables).
+  [Environment Variables Reference](../references/environment-variables.mdx).
 </Callout>
 
 <Callout type="info" title="mem0 argument constraints">

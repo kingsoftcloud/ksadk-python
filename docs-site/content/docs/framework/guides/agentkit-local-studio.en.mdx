@@ -1,15 +1,10 @@
 ---
 title: AgentKit Local Studio
 description: A local workspace for authoring, builds, conversations, and cloud lifecycle operations.
-status: new
 ---
 
-<Callout type="info" title="New in 0.8.1">
-  AgentKit Local Studio is a local-first workspace for authoring, building, and testing Agents in the browser. End users do not need a separate Node.js installation.
-</Callout>
-
-<Callout type="info" title="Cloud loop in 0.8.2">
-  Studio still runs on the developer machine, but it can now deploy and manage cloud Agents through the existing platform APIs and chat with high-code Agents created by the CLI.
+<Callout type="info" title="Current in 0.8.3">
+  AgentKit Local Studio creates, builds, and tests Agents in the browser and manages cloud lifecycle operations through existing platform APIs. Version 0.8.3 also exposes controlled plugin entry points, one conversation surface, and local Scheduler Lite while preserving Provider, permission, and local-runtime boundaries.
 </Callout>
 
 `agentengine studio` is KsADK's local-first workspace. It brings Agent definitions, build history, conversations, resources, traces, and orchestration into one browser surface, while model calls and builds still run through the local KsADK runtime.
@@ -60,7 +55,7 @@ cd my-langgraph-agent
 agentengine web .
 ```
 
-For generated files, runtime entry-point conventions, and deployment paths, see [Create a project](../getting-started/quickstart), [Codex Managed Runtime](managed-runtime), and [cloud deployment](cloud-deployment).
+For generated files, runtime entry-point conventions, and deployment paths, see [Create a project](../getting-started/quickstart.mdx), [Codex Managed Runtime](./managed-runtime.mdx), and [cloud deployment](./cloud-deployment.mdx).
 
 ## Cloud deployment and lifecycle
 
@@ -75,6 +70,12 @@ After a successful build, Studio can start deployment directly. It reuses AgentE
 Cloud targets combine Studio deployment receipts with Agents already present in the account, including high-code Agents deployed by the CLI. Identity always uses the complete `agent_id`, so changing the source does not create duplicate conversations. If Hermes or OpenClaw does not advertise the capabilities required by Studio chat, Studio says so and links to the official dashboard instead of pretending full compatibility.
 
 Ordinary chat is a foreground streaming request and does not require Background mode. Background sessions are reserved for tasks that must continue after the foreground connection closes. Conversations support incremental text, reasoning, tools, approvals, attachments, model selection, three approval levels, and Goal / Plan controls. There is no separate “Loop” mode in the composer.
+
+## Plugins and local automation in 0.8.3
+
+The Studio plugin page exposes two explicit host boundaries. A managed DSH toolchain owns DSH Bundle/Profile lifecycle operations, while official Codex plugins remain owned by Codex App Server. KsADK does not copy plugin implementations or present an arbitrary local directory as an installed capability.
+
+The **Automations** page and the Agent detail automation tab use Scheduler Lite for once, interval, cron, IANA timezone, run-now, and occurrence-history flows. Scheduling belongs to the current Studio process: stopping Studio stops 24x7 wakeups, and no cross-Pod high availability is implied. See [Plugins and automations](./plugins-and-automations.mdx) for the complete boundary.
 
 ## Studio and the local Web UI
 
@@ -96,4 +97,4 @@ Do not remove Agent source files or `agentengine.yaml` to reset conversations. T
 
 Wheel users do not need to build the Studio frontend: the wheel includes the reviewed production static assets. The public repository, sdist, and wheel do not include editable Studio React / TypeScript source; the public release gate validates and packages only `ksadk/studio/static`.
 
-See [build and package](build-and-package) and the [Web UI source and release contract](web-ui-source) for details.
+See [build and package](./build-and-package.mdx) and the [Web UI source and release contract](./web-ui-source.mdx) for details.

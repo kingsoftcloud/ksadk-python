@@ -89,9 +89,9 @@ must not put them in `.env` or commit them.
 | --- | --- | --- |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | platform / developer | A2UI structured-generation timeout in seconds; valid range `1` through `120`, default `20`. |
 
-See [A2A Runtime](../framework/guides/a2a-runtime),
-[Codex Managed Runtime](../framework/guides/managed-runtime), and
-[Hosted UI and Event Replay](../framework/guides/hosted-ui-events) for their
+See [A2A Runtime](../framework/guides/a2a-runtime.mdx),
+[Codex Managed Runtime](../framework/guides/managed-runtime.mdx), and
+[Hosted UI and Event Replay](../framework/guides/hosted-ui-events.mdx) for their
 protocol and runtime boundaries.
 
 ## Unified Model Policy And Fallback (0.6.6+)
@@ -158,7 +158,7 @@ KSADK_STM_BACKEND=sqlite
 KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 ```
 
-## Agent Kernel (0.8.2, Optional)
+## Agent Kernel
 
 | Variable | Purpose |
 | --- | --- |
@@ -341,7 +341,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.2 default is `0.3.2`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.3 default is `0.3.4`. Publish and verify a new version before using it in a wheel build. |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |
@@ -350,6 +350,14 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 <Callout type="info">
   `make build` / `make build-wheel` automatically run `sync-ksadk-web-static`; no manual sync needed.
 </Callout>
+
+## DSH Plugin Bridge
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_DSH_HOME` | Isolated managed DSH Profile directory; defaults to `.agentkit/dsh-home` in the workspace. Studio never mutates an explicitly configured directory. |
+| `KSADK_DSH_PROFILE` | DSH Profile name to use; defaults to `studio`. |
+| `KSADK_DSH_BIN` | Optional absolute DSH command path for fixed-toolchain core development or CI verification; version mismatches fail closed. |
 
 ## Observability
 

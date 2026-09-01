@@ -126,7 +126,8 @@ def test_shared_component_css_uses_semantic_typography_tokens() -> None:
         assert match is None, f"{name} must use a semantic token: {match.group(0)!r}"
 
     font_shorthands = re.findall(r"(?<!-)font\s*:\s*([^;]+);", component_css)
-    assert font_shorthands == ["inherit"]
+    assert font_shorthands
+    assert set(font_shorthands) == {"inherit"}
 
 
 def test_core_components_keep_shared_visual_contracts() -> None:
@@ -225,7 +226,7 @@ def test_react_chat_composer_has_one_focus_boundary() -> None:
     assert ".chat-composer:focus-within {" in stylesheet
 
 
-def test_react_chat_is_owned_by_studio_and_uses_asymmetric_messages() -> None:
+def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     stylesheet = REACT_STYLESHEET.read_text(encoding="utf-8")
     source = CHAT_SOURCE.read_text(encoding="utf-8")
     package = PACKAGE.read_text(encoding="utf-8")
@@ -240,7 +241,7 @@ def test_react_chat_is_owned_by_studio_and_uses_asymmetric_messages() -> None:
     assert "padding: 0" in assistant
     assert "ChatWorkspace" in source
     assert 'apiFetch("/v1/responses"' in source
-    assert "@kingsoftcloud/ksadk-web" not in package
+    assert '"@kingsoftcloud/ksadk-web": "0.3.4"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
     # 强制重定向到创建页。

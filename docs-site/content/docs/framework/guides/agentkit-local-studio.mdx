@@ -1,15 +1,10 @@
 ---
 title: AgentKit Local Studio
 description: 本地创作、构建、对话与云端生命周期工作区。
-status: new
 ---
 
-<Callout type="info" title="0.8.1 新增">
-  AgentKit Local Studio 是面向本地开发的 Agent 创作工作区：在浏览器中创建、构建并测试 Agent，不需要另行安装 Node.js。
-</Callout>
-
-<Callout type="info" title="0.8.2 云端闭环">
-  Studio 仍运行在开发者本机，但已经可以通过平台既有接口部署和管理云端 Agent，并与账号中由 CLI 创建的高代码 Agent 会话。
+<Callout type="info" title="0.8.3 当前能力">
+  AgentKit Local Studio 在浏览器中创建、构建并测试 Agent，并通过平台既有接口管理云端生命周期。0.8.3 同时提供受控插件入口、统一会话表面和本地 Scheduler Lite；这些能力仍遵守 Provider、权限和本地运行边界。
 </Callout>
 
 `agentengine studio` 是 KsADK 的本地优先工作区。它把 Agent 定义、构建记录、会话、资源、Trace 与任务编排放在同一个浏览器界面中；模型调用和构建仍由本机 KsADK 运行时执行。
@@ -60,7 +55,7 @@ cd my-langgraph-agent
 agentengine web .
 ```
 
-有关模板生成的文件、各运行时的入口约定和部署方式，请分别参阅[创建项目](../getting-started/quickstart)、[Codex Managed Runtime](managed-runtime)和[云端部署](cloud-deployment)。
+有关模板生成的文件、各运行时的入口约定和部署方式，请分别参阅[创建项目](../getting-started/quickstart.mdx)、[Codex Managed Runtime](./managed-runtime.mdx)和[云端部署](./cloud-deployment.mdx)。
 
 ## 云端部署与生命周期
 
@@ -75,6 +70,12 @@ agentengine web .
 云端目标列表同时包含 Studio 部署记录和账号已有 Agent。后者包括通过 CLI 部署的高代码 Agent；目标身份使用完整 `agent_id`，不会因来源不同创建重复会话。Hermes 或 OpenClaw 若不声明 Studio 会话所需能力，Studio 会明确提示并提供其官方 Dashboard，而不是伪装为兼容。
 
 普通聊天使用前台流式请求，不要求 Background 模式。断开页面后仍需继续的长任务才使用 Background session。当前会话支持增量正文、思考、工具、审批、附件、模型选择、三档审批以及 Goal / Plan；不单独展示一个“Loop”模式。
+
+## 0.8.3 插件与本地自动化
+
+Studio 的插件页只展示两个明确的宿主边界：DSH Bundle/Profile 由受管理的 DSH 工具链接管生命周期；Codex 官方插件继续由 Codex App Server 管理。KsADK 不复制插件实现，也不把任意本地目录伪装成已安装能力。
+
+**自动化**页和 Agent 详情页的自动化 Tab 使用 Scheduler Lite，支持 once、interval、cron、IANA 时区、立即运行和 occurrence 历史。调度器属于当前 Studio 进程：关闭 Studio 后不会继续提供 24×7 唤醒，也不宣称跨 Pod 高可用。完整边界见[插件与自动化](./plugins-and-automations.mdx)。
 
 ## Studio 与本地 Web UI 的分工
 
@@ -96,4 +97,4 @@ Studio 的工作区数据和会话是本地开发状态，不是需要提交的�
 
 安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含经过审计的生产静态资源。公开仓、sdist 与 wheel 都不包含 Studio 的 React / TypeScript 可编辑源码；公开发布门禁只校验并打包 `ksadk/studio/static`。
 
-详见[构建与打包](build-and-package)和[Web UI 源码与发布契约](web-ui-source)。
+详见[构建与打包](./build-and-package.mdx)和[Web UI 源码与发布契约](./web-ui-source.mdx)。

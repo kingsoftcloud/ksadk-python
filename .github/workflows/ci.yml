@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.2"
+      KSADK_WEB_VERSION: "0.3.4"
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +49,19 @@ jobs:
         run: make public-test
 
       - name: Audit public repository candidate
-        run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
+        run: |
+          if [ -f export-manifest.json ]; then
+            audit_root="$PWD"
+          else
+            audit_root="${RUNNER_TEMP}/ksadk-python-public-audit"
+            rm -rf "$audit_root"
+            uv run --extra dev python scripts/prepare_ksadk_python_export.py \
+              --output-dir "$audit_root" \
+              --summary
+          fi
+          uv run --extra dev python scripts/open_source_audit.py \
+            --root "$audit_root" \
+            --target public-repo
 
       - name: Build and audit public docs
         run: make docs-site-build
@@ -98,7 +110,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.2"
+      KSADK_WEB_VERSION: "0.3.4"
     strategy:
       fail-fast: false
       matrix:
