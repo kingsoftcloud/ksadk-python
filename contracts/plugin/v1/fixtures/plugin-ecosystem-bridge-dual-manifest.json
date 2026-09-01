@@ -1,0 +1,33 @@
+{
+  "fixtureKind": "probe",
+  "request": {
+    "requestFormat": "ksadk.bridge-probe/v1",
+    "sourceRef": "file://fixtures/multi-ecosystem-plugin",
+    "sourceDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "selectedManifestRef": null
+  },
+  "result": {
+    "resultFormat": "ksadk.bridge-probe-result/v1",
+    "candidates": [
+      {
+        "ecosystem": "dsh",
+        "integrationMode": "linked",
+        "maturity": "experimental",
+        "manifestKind": "dsh-bundle",
+        "manifestRef": "file://fixtures/multi-ecosystem-plugin/package.json",
+        "manifestDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      {
+        "ecosystem": "codex",
+        "integrationMode": "bridged",
+        "maturity": "experimental",
+        "manifestKind": "codex-plugin",
+        "manifestRef": "file://fixtures/multi-ecosystem-plugin/.codex-plugin/plugin.json",
+        "manifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "selectionRequired": true,
+    "selectedManifestRef": null,
+    "rejection": null
+  }
+}

@@ -77,6 +77,7 @@ ROOT_HELP_COMMANDS = {
     "mcp",
     "observe",
     "openclaw",
+    "plugin",
     "run",
     "studio",
     "version",
@@ -102,6 +103,7 @@ SHORT_HELP_MAP = {
     "mcp": "MCP 资源管理",
     "observe": "导出本地 Agent 观测数据",
     "openclaw": "OpenClaw 资源管理",
+    "plugin": "插件验证、安装与启停管理",
     "run": "运行 Agent",
     "studio": "启动本地 Agent 构建控制台",
     "version": "Agent 版本管理",
@@ -210,6 +212,7 @@ class ColoredHelpGroup(click.Group):
         # 配置与工具
         formatter.write(click.style("  🧰  配置:\n\n", fg="yellow", bold=True))
         _write_colored_help_row(formatter, "agentengine config", "项目配置向导与模型配置")
+        _write_colored_help_row(formatter, "agentengine plugin", "插件验证、安装与启停管理")
         _write_colored_help_row(formatter, "agentengine completion", "Shell 补全管理")
 
         # 自定义 Options 格式化
@@ -371,6 +374,9 @@ def _register_commands():
 
     # MCP 命令组
     _register_optional_command(cli, "ksadk.cli.cmd_mcp", "mcp")
+
+    # Plugin 命令组
+    _register_optional_command(cli, "ksadk.cli.cmd_plugin", "plugin")
 
     # Completion 命令组
     _register_optional_command(cli, "ksadk.cli.cmd_completion", "completion")

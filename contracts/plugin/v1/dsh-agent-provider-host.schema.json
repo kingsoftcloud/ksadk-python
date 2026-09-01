@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/dsh-agent-provider-host.schema.json",
+  "title": "DSH AgentProviderHost/v1 JSONL conformance transcript",
+  "description": "The fixed, language-neutral DSH AgentProvider sidecar ABI. This is not a third plugin package format.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$", "minLength": 3, "maxLength": 128},
+    "semver": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "method": {"enum": ["handshake", "describe", "preflight", "activate", "inventory", "execute", "cancel", "health", "drain", "dispose"]},
+    "handshake": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {"const": "ksadk.dsh-agent-provider-host/v1"},
+        "methods": {"type": "array", "items": {"$ref": "#/$defs/method"}, "minItems": 10, "maxItems": 10, "uniqueItems": true},
+        "hostVersion": {"$ref": "#/$defs/semver"}
+      },
+      "required": ["protocolVersion", "methods", "hostVersion"]
+    },
+    "descriptor": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "descriptorFormat": {"const": "dsh.agent-provider-descriptor/v1"},
+        "ecosystem": {"const": "dsh"},
+        "providerId": {"$ref": "#/$defs/id"},
+        "providerVersion": {"$ref": "#/$defs/semver"},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+        "pluginName": {"type": "string", "pattern": "^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+$", "minLength": 1, "maxLength": 256},
+        "profile": {"type": "string", "minLength": 1, "maxLength": 64},
+        "profileDigest": {"$ref": "#/$defs/digest"},
+        "definition": {"const": "agent.provider/v1"},
+        "slot": {"const": "agent.execution"},
+        "runtimeProtocols": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true}
+      },
+      "required": ["descriptorFormat", "ecosystem", "providerId", "providerVersion", "displayName", "pluginName", "profile", "profileDigest", "definition", "slot", "runtimeProtocols"]
+    },
+    "preflight": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"ready": {"type": "boolean"}, "descriptorDigest": {"$ref": "#/$defs/digest"}, "profileDigest": {"$ref": "#/$defs/digest"}},
+      "required": ["ready", "descriptorDigest", "profileDigest"]
+    },
+    "inventory": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "providerId": {"$ref": "#/$defs/id"}, "providerVersion": {"$ref": "#/$defs/semver"}, "profile": {"type": "string", "minLength": 1, "maxLength": 64}, "profileDigest": {"$ref": "#/$defs/digest"}, "descriptorDigest": {"$ref": "#/$defs/digest"}, "state": {"enum": ["ready", "draining", "disposed", "failed"]}, "activationCount": {"type": "integer", "minimum": 0}
+      },
+      "required": ["providerId", "providerVersion", "profile", "profileDigest", "descriptorDigest", "state", "activationCount"]
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"id": {"type": "string", "pattern": "^dsh-[1-9][0-9]*$"}, "method": {"$ref": "#/$defs/method"}, "params": {"type": "object"}},
+      "required": ["id", "method", "params"]
+    },
+    "response": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"id": {"type": "string", "pattern": "^dsh-[1-9][0-9]*$"}, "result": true},
+      "required": ["id", "result"]
+    }
+  },
+  "properties": {
+    "contractFormat": {"const": "ksadk.dsh-agent-provider-host/v1"},
+    "handshake": {"$ref": "#/$defs/handshake"},
+    "descriptor": {"$ref": "#/$defs/descriptor"},
+    "preflight": {"$ref": "#/$defs/preflight"},
+    "inventory": {"$ref": "#/$defs/inventory"},
+    "requests": {"type": "array", "items": {"$ref": "#/$defs/request"}, "minItems": 10, "maxItems": 10},
+    "responses": {"type": "array", "items": {"$ref": "#/$defs/response"}, "minItems": 10, "maxItems": 10}
+  },
+  "required": ["contractFormat", "handshake", "descriptor", "preflight", "inventory", "requests", "responses"]
+}

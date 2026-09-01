@@ -1,16 +1,15 @@
 ---
 title: "Hosted UI and Event Replay"
-status: "new"
 ---
 
-The `0.8.0` candidate separates Hosted UI transport, interactive presentation,
+KsADK 0.8.3 separates Hosted UI transport, interactive presentation,
 and runtime audit. OpenAI Responses remains the compatibility baseline, AG-UI
 is an optional transport, A2UI represents structured activities, and
 `RuntimeEvent` is the sole persistence and replay boundary. UI evolution does
 not change the original model-call protocol.
 
-<Callout type="warning" title="Candidate status">
-This page describes interfaces and boundaries on the review branch. It does not mean that an npm/PyPI release exists. A real hosted deployment must still validate its gateway, authentication, runner, database, and provider credentials.
+<Callout type="warning" title="Release boundary">
+This page describes interfaces and boundaries in the 0.8.3 source. It does not claim that npm/PyPI publication is complete. A real hosted deployment must still validate its gateway, authentication, runner, database, and provider credentials.
 </Callout>
 
 ## Protocol Selection
@@ -20,7 +19,7 @@ This page describes interfaces and boundaries on the review branch. It does not 
 | OpenAI Responses | established `/v1/responses` and `/v1/chat/completions` request/response semantics | always available as the compatibility baseline |
 | AG-UI | optional streaming transport between Hosted UI and runtime | fall back to Responses when the capability is not negotiated |
 | A2UI | structured activities/components and user actions | does not replace model, tool, or approval policy |
-| RuntimeEvent v1 | canonical session events, state, audit, and replay record | unknown event types cannot bypass conformance validation |
+| RuntimeEvent v2 | canonical session events, state, audit, and replay record | unknown event types cannot bypass conformance validation |
 
 AG-UI/A2UI is not a second model API. A client selects it only after Hosted
 bootstrap advertises the capability; existing Responses clients can remain unchanged.
@@ -67,4 +66,4 @@ that was rejected or consumed.
 3. For reloads, disconnects, or duplicate approvals, use `ksadk replay` to locate the event cursor and terminal state.
 4. For LangGraph/ADK interrupt or resume, then validate the framework-native checkpoint configuration. New integrations must not depend on legacy LangChain continuity.
 
-For browser debugging, see [Local Web UI](local-web-ui). For session and checkpoint semantics, see [Sessions, Runtime, and Files](../../references/runtime-sessions-files).
+For browser debugging, see [Local Web UI](./local-web-ui.mdx). For session and checkpoint semantics, see [Sessions, Runtime, and Files](../../references/runtime-sessions-files.mdx).

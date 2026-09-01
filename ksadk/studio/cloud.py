@@ -1151,6 +1151,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         *,
         session_id: str,
         after_seq_id: int | None = None,
+        offset: int | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
         """Read canonical events, including public Interaction/v1 frames."""
@@ -1160,6 +1161,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 agent_id=self._chat_agent_id(deployment),
                 session_id=session_id,
                 after_seq_id=after_seq_id,
+                offset=offset,
                 limit=limit,
             )
         except AgentEngineAPIError as exc:
@@ -1922,6 +1924,7 @@ class CloudDeploymentService:
         *,
         session_id: str,
         after_seq_id: int | None = None,
+        offset: int | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
         deployment = await self._chat_target(deployment_id)
@@ -1936,6 +1939,7 @@ class CloudDeploymentService:
             deployment,
             session_id=session_id,
             after_seq_id=after_seq_id,
+            offset=offset,
             limit=limit,
         )
 

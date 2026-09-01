@@ -269,6 +269,16 @@ Common causes:
 - generated files under `site/` accidentally committed.
 - docs referencing private files excluded from the public repository.
 
+The build also audits the exported deployment base path, links and fragments,
+initial HTML language, canonical URLs, and hreflang alternates.
+
+## Skill Runtime Does Not Execute
+
+Discovering a Skill Space does not mean a sandbox is enabled. Isolated
+execution requires `KSADK_SKILL_RUNTIME_BACKEND`, a runtime or sandbox template
+id, and the corresponding dependency and credential. Missing configuration
+must produce a diagnostic result rather than a fabricated success.
+
 ## Need More Detail
 
 Run command-specific help:

@@ -9,9 +9,9 @@ KsADK Web UI 源码属于独立仓库 `kingsoftcloud/ksadk-web`，并以 npm 包
 clean export、sdist 与 wheel 只携带经过审计的静态产物，不携带 Studio 的 React /
 TypeScript 可编辑源码。
 
-<Callout type="info" title="0.6.7 口径">
-自 0.6.5 起 `ksadk-python` 移除了本地 `npm ci` / `npm run build:ksadk` 构建链路，
-不再在 wheel 构建时实时拉取 GitHub latest release。Hosted UI 产物来自 npm 包
+<Callout type="info" title="当前发布边界">
+`ksadk-python` 不在 wheel 构建时实时拉取 GitHub latest release，也不在公开候选中维护
+第二份可编辑 UI 源码。Hosted UI 产物来自 npm 包
 `@kingsoftcloud/ksadk-web`；Studio 静态产物在进入公开 clean export 前完成构建与审计。
 </Callout>
 
@@ -39,8 +39,8 @@ TypeScript 可编辑源码。
 # 默认拉已验证的 npm 版本
 make sync-ksadk-web-static
 
-# 0.8.2 发布候选固定具体版本
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.2
+# 0.8.3 发布候选固定具体版本
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.4
 ```
 
 <Callout type="warning" title="不要在 wheel 构建时实时拉 GitHub latest release">
@@ -69,7 +69,7 @@ make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.2
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.2` | 已发布的 npm 包版本；发布候选必须固定为具体版本 |
+| `KSADK_WEB_VERSION` | `0.3.4` | 已发布的 npm 包版本；发布候选必须固定为具体版本 |
 | `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm 包名 |
 | `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | tarball 文件名，由版本推导 |
 | `KSADK_WEB_RELEASE_URL` | 空 | 显式指定 tarball URL 兜底，优先级高于 npm pack |
@@ -83,14 +83,14 @@ sync 优先级：`KSADK_WEB_RELEASE_URL` 显式 tarball > `npm pack` > registry 
 
 每次 `ksadk-python` release note 应记录：
 
-- `ksadk-python` 版本（如 `0.8.2`）。
-- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.2` 对应 `@kingsoftcloud/ksadk-web@0.3.2`）。
-- 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.2`）。
+- `ksadk-python` 版本（如 `0.8.3`）。
+- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.3` 对应 `@kingsoftcloud/ksadk-web@0.3.4`）。
+- 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.4`）。
 - wheel / sdist 审计结果（`make public-build-check` / `twine check dist/*`）。
 
-<Callout type="info" title="0.8.2 发布记录示例">
-- `ksadk-python`: `0.8.2`
-- npm 包: `@kingsoftcloud/ksadk-web@0.3.2`
-- 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.2`
+<Callout type="info" title="0.8.3 候选记录示例">
+- `ksadk-python`: `0.8.3`
+- npm 包: `@kingsoftcloud/ksadk-web@0.3.4`
+- 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.4`
 - 审计: `make public-build-check` 通过，`twine check dist/*` 通过
 </Callout>

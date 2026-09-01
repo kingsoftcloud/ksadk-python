@@ -338,7 +338,12 @@ class LocalResourceCatalog:
         if not catalog:
             if cached is not None:
                 return cached[1], cached[2]
-            catalog = [normalize_model_metadata({"id": current_model or "glm-5.1"})]
+            # No provider response and no cache: return an empty catalog so the
+            # UI can guide the user to configure a provider instead of showing
+            # a phantom default model.
+            self._provider_models = {}
+            self._provider_catalog_cache[cache_key] = (now, [], source)
+            return [], source
 
         descriptors: list[ResourceDescriptor] = []
         for item in catalog:

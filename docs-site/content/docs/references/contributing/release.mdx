@@ -8,7 +8,7 @@ title: 发布流程
 
 ```bash
 make public-review
-make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.7
+make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=x.y.z
 ```
 
 ## GitHub
@@ -63,7 +63,7 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: latest
+        default: "0.3.4"
 permissions:
   id-token: write   # OIDC Trusted Publishing 必需
 ```
@@ -79,5 +79,5 @@ permissions:
 ```bash
 make sync-ksadk-web-static
 make public-preflight
-make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.7
+make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=x.y.z
 ```

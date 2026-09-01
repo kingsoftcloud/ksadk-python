@@ -1,0 +1,10 @@
+{
+  "title": "Best Practices",
+  "pages": [
+    "codex-yaml-agent",
+    "langgraph-toolsets",
+    "long-task-resume",
+    "custom-ui-agent",
+    "agent-best-practices"
+  ]
+}

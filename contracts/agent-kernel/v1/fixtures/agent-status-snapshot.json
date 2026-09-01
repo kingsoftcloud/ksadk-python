@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "agent_instance_id": "agent-instance-1",
+  "instance_state": "ready",
+  "session_id": "session-1",
+  "active_run_id": "run-1",
+  "active_run_state": "running",
+  "inbox_depth": 0,
+  "activation_id": "activation-1",
+  "lease_expires_at": "2026-08-17T00:02:00Z",
+  "capability": {
+    "schema_version": 1,
+    "cancel": {
+      "supported": true,
+      "mode": "native"
+    },
+    "pause": {
+      "supported": true,
+      "mode": "native"
+    },
+    "resume": {
+      "supported": true,
+      "mode": "native"
+    },
+    "submit_interaction": {
+      "supported": true,
+      "mode": "native"
+    },
+    "attach": {
+      "supported": true,
+      "mode": "native"
+    },
+    "steer": {
+      "supported": true,
+      "mode": "native"
+    },
+    "inject": {
+      "supported": true,
+      "mode": "native"
+    },
+    "checkpoint": {
+      "supported": true,
+      "mode": "native"
+    },
+    "durable_restore": {
+      "supported": true,
+      "mode": "native"
+    }
+  }
+}

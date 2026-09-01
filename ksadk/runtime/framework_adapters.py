@@ -63,6 +63,24 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
     def __init__(self, runner: BaseRunner) -> None:
         super().__init__(runner, runtime_type="langgraph")
 
+    def capabilities(self):  # noqa: ANN201
+        """Advertise checkpoint interaction only when LangGraph can resume it.
+
+        ``RunnerRuntimeAdapter`` is intentionally conservative because a
+        generic checkpoint is not proof of original-interrupt delivery.  The
+        LangGraph adapter owns that mapping, so it is the only runner-family
+        adapter that may publish ``durable_resume``.
+        """
+
+        matrix = super().capabilities()
+        return matrix.model_copy(
+            update={
+                "interaction_mode": (
+                    "durable_resume" if matrix.resume.supported else "unavailable"
+                )
+            }
+        )
+
     async def _resume_native(
         self,
         handle: RunHandle,

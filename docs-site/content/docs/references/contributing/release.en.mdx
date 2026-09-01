@@ -14,9 +14,9 @@ The first public release should be prepared from an independent branch and revie
 6. Create release tags, GitHub release assets, and TestPyPI/PyPI uploads only
    from the reviewed GitHub `main` commit after public CI passes.
 7. Before publication, verify the external state with
-   `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.7`.
+   `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=x.y.z`.
 8. After publication, verify the external state with
-   `make public-publish-check PUBLIC_PUBLISH_PHASE=post-publish V=0.6.7`.
+   `make public-publish-check PUBLIC_PUBLISH_PHASE=post-publish V=x.y.z`.
 
 Public release assets must not be created directly from an unsynced candidate
 branch. `make publish`, `make publish-test`, and `make public-release-tag`
@@ -110,7 +110,7 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: latest
+        default: "0.3.4"
 permissions:
   id-token: write   # required for OIDC Trusted Publishing
 ```
@@ -128,7 +128,7 @@ current release):
 ```bash
 make sync-ksadk-web-static
 make public-preflight
-make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.7
+make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=x.y.z
 ```
 
 ## Public Import Approval

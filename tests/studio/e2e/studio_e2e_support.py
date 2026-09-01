@@ -11,6 +11,7 @@ from urllib.request import urlopen
 import uvicorn
 
 from ksadk.studio.api import create_studio_app
+from ksadk.studio.service import StudioService
 
 
 def write_skill(root: Path, name: str, body: str = "Follow the instructions.") -> Path:
@@ -35,9 +36,13 @@ def free_port() -> int:
 
 
 @contextmanager
-def studio_server(workspace: Path) -> Iterator[str]:
+def studio_server(
+    workspace: Path,
+    *,
+    service: StudioService | None = None,
+) -> Iterator[str]:
     port = free_port()
-    app = create_studio_app(workspace, security_enabled=False)
+    app = create_studio_app(workspace, service=service, security_enabled=False)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

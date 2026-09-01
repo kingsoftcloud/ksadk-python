@@ -1,9 +1,9 @@
 ---
 title: "YAML 即 Agent：Codex"
-description: "0.8 新增：用单一 agentengine.yaml 声明、调试并部署 Codex Managed Runtime。"
+description: "用单一 agentengine.yaml 声明、调试并部署 Codex Managed Runtime。"
 ---
 
-<Callout type="info" title="0.8 新增">
+<Callout type="info" title="单一配置源">
 Codex 是 KsADK 的第一个 YAML 即 Agent 范式：`agentengine.yaml` 是唯一配置源，
 没有 `agent.py`、没有第二份 `codex.yaml`，也不会把开发机二进制打进云端部署包。
 </Callout>
@@ -100,4 +100,4 @@ agentengine deploy . --target serverless
   Runtime 版本和镜像 digest。
 
 完整的 runtime contract、镜像边界和环境变量见
-[Codex Managed Runtime](../../guides/managed-runtime)。
+[Codex Managed Runtime](../../guides/managed-runtime.mdx)。
