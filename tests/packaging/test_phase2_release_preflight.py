@@ -83,10 +83,6 @@ def test_preflight_enables_real_managed_dsh_toolchain_gate(monkeypatch) -> None:
                 "-q",
                 "tests/e2e/test_dsh_managed_toolchain_e2e.py",
                 "tests/plugins/test_dsh_node_provider_e2e.py",
-                "-k",
-                "not test_public_npm_toolchain_validates_generated_tgz_and_official_plugin "
-                "and not test_normal_studio_discovers_runs_and_releases_external_node_provider "
-                "and not test_real_dsh_bundle_drives_stateful_node_provider_and_uninstalls",
             ),
             {"KSADK_DSH_TOOLCHAIN_E2E": "1"},
         )
