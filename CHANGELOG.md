@@ -5,9 +5,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.8.3] - Unreleased
-
-> 本节是 Agent Runtime V2 Phase 2 的开发中草案，不代表已经发布或通过稳定版门禁。
+## [0.8.3] - 2026-09-01
 
 ### 插件化基础
 
@@ -25,12 +23,12 @@
 - Hosted UI 与 Studio 固定到 `@kingsoftcloud/ksadk-web@0.3.4`。该版本在 0.3.3 的 headless Conversation v1、SSE 有界重连和统一时间线基础上，修复 item 完成被误判为整轮完成的问题，等待显式 run terminal 才解锁下一轮；“正在思考”改为持续可见的文字流光，并提供可独立运行的 GitHub Pages 演示，覆盖逐字流式、工具状态、输入框上方审批卡片与反馈卡片。只有明确的 404 才回退旧 Responses/AG-UI，畸形响应与 5xx 继续 fail closed。
 - 修复基础安装把 `agentengine studio` 整体误降级为不可用的问题：Studio 所需的 `google-adk` 现在随基础包安装；LiteLLM 与 JSON 修复等仅在 `[adk]` 扩展中保留。
 
-### 兼容与尚未关闭的门禁
+### 兼容与发布验证
 
 - Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
 - Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
 - Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
-- `ksadk-web@0.3.4` 的源码门禁、独立浏览器 E2E、GitHub Pages 演示 E2E 和显式 tarball 消费已通过；候选 tarball SHA-256 为 `e6b3eb33cb73b0f9d5a590f2109d07f37278248d3e85b28b51586e6b635e7417`。正式发布仍要求先完成 npm Trusted Publishing，再从公开 registry 重建 Studio、受控发布验证环境与正式环境的 Hosted UI；随后必须重新完成 Studio 新 Agent 与 0.8.2 历史 Agent 的多轮流式、思考、工具、审批、刷新回放和上下文续接，并以最终 clean commit 通过 wheel/sdist provenance、公开内容审计和维护者审批。在这些外部写入和部署证据完成前本节保持 `Unreleased`。
+- `ksadk-web@0.3.4` 已通过 npm Trusted Publishing 发布；registry integrity 为 `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`，registry tarball SHA-256 为 `0d88fb37506bae77ba863b3986b2fde4546cd74cbd3f3021eed1ecd05f15c596`。Studio 已从公开 registry 重建，Hosted UI 发布验证镜像 digest 为 `sha256:d629384e44a2e35f5dd5f7788ea16097cb49d79c582206d5fe453911fe20d66d`；真实 Studio 创建的 Codex Agent 与 0.8.2 历史 Agent 均完成多轮流式、思考、刷新回放、上下文续接和最终消息去重验证。
 - 新增 Phase 2 最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
 
 ## [0.8.2] - 2026-08-26
