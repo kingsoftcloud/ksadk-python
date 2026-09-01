@@ -230,11 +230,14 @@ class McpDisclosureBridge:
                 if binding.required:
                     raise
                 continue  # 可选 Server 未注册 → 降级，不阻断主对话
+            # L0 目录只注入一句话描述（截短到 120 字符），降低 Prompt 固定开销
+            # （plan §10.4：L0 = 名称 + 一句话描述，不含 Schema/Tool 详情）。
+            short_desc = (descriptor.description or "")[:120]
             result.append(
                 {
                     "server_id": descriptor.id,
                     "name": descriptor.name,
-                    "description": descriptor.description,
+                    "description": short_desc,
                     "risk_level": descriptor.risk_level.value,
                     "load_policy": binding.load_policy,
                 }
