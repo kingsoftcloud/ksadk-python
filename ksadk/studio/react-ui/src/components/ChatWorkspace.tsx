@@ -1101,6 +1101,14 @@ export function ChatWorkspace({
   function selectSession(sessionId: string) {
     const list = messageListRef.current;
     if (list && currentSessionId) scrollBySessionRef.current.set(currentSessionId, list.scrollTop);
+    // Drop the live run's stream so the composer reflects the selected
+    // session's own runs.  Without this, leaving a streaming session keeps
+    // ``stream.status === "streaming"`` and the composer stays disabled, and
+    // a subsequent submit fails with an already-attached runtime handle.
+    setStream(null);
+    setInput("");
+    setAttachments([]);
+    setOptimisticPrompt("");
     setCurrentSessionId(sessionId);
     setSessionPanelOpen(false);
     followBottomRef.current = !scrollBySessionRef.current.has(sessionId);
