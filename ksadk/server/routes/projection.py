@@ -277,6 +277,11 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         durable_raw = capability.get("durable")
         if durable_raw is None:
             durable_raw = event_meta.get("durable", False)
+        def _cap_val(key: str, default: Any = None) -> Any:
+            value = capability.get(key)
+            if value is not None:
+                return value
+            return event_meta.get(key, default)
         metadata = {
             **dict(event.metadata or {}),
             **dict(canonical.source.metadata),
@@ -293,6 +298,19 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             "next_node": _capability_str("next_node", ""),
             "resume_status": _capability_str("resume_status", ""),
             "resume_disabled_reason": _capability_str("resume_disabled_reason", ""),
+            "phase": _capability_str("phase", ""),
+            "stage": _capability_str("stage", ""),
+            "stage_name": _capability_str("stage_name", ""),
+            "stage_key": _capability_str("stage_key", ""),
+            "summary": _capability_str("summary", ""),
+            "next_action": _capability_str("next_action", ""),
+            "status": _capability_str("status", ""),
+            "tool_name": _capability_str("tool_name", ""),
+            "receipt_key": _capability_str("receipt_key", ""),
+            "artifact_path": _capability_str("artifact_path", ""),
+            "stage_index": _cap_val("stage_index"),
+            "total_stages": _cap_val("total_stages"),
+            "artifact_preview": _cap_val("artifact_preview", {}),
         }
     run_id = str(metadata.get("run_id") or "").strip()
     checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()

@@ -625,9 +625,17 @@ class _RunnerStreamMappingMixin:
             # canonical event carries backend/scope/next_node facts that the
             # projection layer (projection.py) needs for the REST payload.
             capability: dict[str, Any] = {}
-            for cap_key in ("backend", "scope", "durable", "next_node",
-                            "is_terminal", "is_resumable", "resume_status",
-                            "resume_disabled_reason"):
+            for cap_key in (
+                # Capability / resume fields
+                "backend", "scope", "durable", "next_node",
+                "is_terminal", "is_resumable", "resume_status",
+                "resume_disabled_reason",
+                # Checkpoint display fields
+                "phase", "stage", "stage_name", "stage_key",
+                "stage_index", "total_stages", "summary",
+                "next_action", "status", "artifact_preview",
+                "tool_name", "receipt_key", "artifact_path",
+            ):
                 cap_val = agentengine.get(cap_key)
                 if cap_val is not None:
                     capability[cap_key] = cap_val

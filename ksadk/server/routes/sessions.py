@@ -620,10 +620,11 @@ async def _list_checkpoints_payload_legacy_filtered(
     resumable_total = sum(_is_checkpoint_resumable(item) for item in checkpoints)
     if request.OnlyResumable:
         checkpoints = [item for item in checkpoints if _is_checkpoint_resumable(item)]
-    checkpoints.sort(key=lambda item: (item["Timestamp"], item["SeqId"]), reverse=True)
     offset = int(request.Offset or 0)
+    checkpoints = checkpoints[offset: offset + request.Limit]
+    checkpoints.sort(key=lambda item: (item["Timestamp"], item["SeqId"]), reverse=True)
     return {
-        "Checkpoints": checkpoints[offset : offset + request.Limit],
+        "Checkpoints": checkpoints,
         "Total": len(checkpoints),
         "ResumableTotal": resumable_total,
         "HasResumableCheckpoint": resumable_total > 0,
