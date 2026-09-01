@@ -30,8 +30,8 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: Reviewed source commit `0b67fc3ccff3dfb9d38ebb5b60039f29fc29b9c8`; publication uses a clean public export of that reviewed candidate plus release-only evidence updates.
-- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `0b67fc3ccff3dfb9d38ebb5b60039f29fc29b9c8`.
+- `ksadk-python`: Reviewed source commit `4234cd183e0d8c6599618ae9769d2327849408a5` (release head after the Phase 2 composer/session-switch fix, public-export gate alignment, and PyPI publish workflow chromium fix); publication uses a clean public export of that reviewed candidate plus release-only evidence updates.
+- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `4234cd183e0d8c6599618ae9769d2327849408a5`.
 
 Both approved source references include the reviewed Python source commit SHA.
 This prevents a stale approval record from passing after candidate changes.
