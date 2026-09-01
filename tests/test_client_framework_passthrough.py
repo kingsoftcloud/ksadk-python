@@ -67,7 +67,7 @@ async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch
 
     monkeypatch.setattr(client, "_action", fake_action)
     checksum = "a" * 64
-    command = ["ksadk", "web", "/app/code/runtime", "--port", "8080"]
+    command = ["ksadk", "web", "/app/code", "--port", "8080"]
     await client.create_agent(
         {
             **_build_create_payload(),

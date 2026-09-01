@@ -182,7 +182,7 @@ class TestDeployLogic:
         assert create_payload["code_command"] == [
             "ksadk",
             "web",
-            "/app/code/runtime",
+            "/app/code",
             "--port",
             "8080",
             "--host",
@@ -364,7 +364,7 @@ class TestDeployLogic:
         mock_client.create_agent.assert_not_called()
         update_payload = mock_client.update_agent.await_args.args[1]
         assert update_payload["code_checksum"] == "a" * 64
-        assert update_payload["code_command"][:3] == ["ksadk", "web", "/app/code/runtime"]
+        assert update_payload["code_command"][:3] == ["ksadk", "web", "/app/code"]
 
     @pytest.mark.asyncio
     async def test_deploy_explicit_agent_id_updates_the_resolved_agent(
