@@ -941,9 +941,12 @@ function CloudRuntimeTimeline({ items, agentName, streaming }: { items: CloudRun
   // then claims the same stable item id; for old text-only streams, it owns
   // only the assistant body while durable reasoning/tool cards remain useful.
   const directMessageVisible = items.some(item => item.source === "direct" && item.kind === "message");
+  const directReasoningVisible = items.some(item => item.source === "direct" && item.kind === "reasoning");
   const visibleItems = items.filter(item => (
     item.source === "direct"
-    || (item.source === "session" && (item.kind !== "message" || !directMessageVisible))
+    || (item.source === "session"
+      && (item.kind !== "message" || !directMessageVisible)
+      && (item.kind !== "reasoning" || !directReasoningVisible))
   ));
   return (
     <div className="cloud-runtime-timeline" data-ui="runtime-timeline">

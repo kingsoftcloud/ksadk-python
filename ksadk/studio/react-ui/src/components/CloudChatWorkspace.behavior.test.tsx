@@ -442,6 +442,92 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
   });
 
+  it("keeps one live reasoning card when the direct Responses stream and canonical SessionEvent describe the second turn", async () => {
+    let sessionStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let secondDirectController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let directCalls = 0;
+    const secondDirectStream = new ReadableStream<Uint8Array>({
+      start(controller) { secondDirectController = controller; },
+    });
+
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-second-turn", title: "第二轮双流" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path.includes("/events/stream?afterSeqId=")) {
+        const sessionStream = new ReadableStream<Uint8Array>({
+          start(controller) { sessionStreamController = controller; },
+        });
+        return new Response(sessionStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        directCalls += 1;
+        if (directCalls === 1) {
+          return new Response([
+            'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","response_id":"resp-first","item_id":"reason-first","delta":"第一轮思考"}',
+            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","response_id":"resp-first","item_id":"answer-first","delta":"第一轮回答"}',
+            'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp-first","status":"completed"}}',
+            "",
+          ].join("\n\n"), { headers: { "Content-Type": "text/event-stream" } });
+        }
+        return new Response(secondDirectStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    const { container } = render(
+      <CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />,
+    );
+    await screen.findByText("第二轮双流");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "第一轮");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByText("第一轮回答")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "消息" })).not.toBeDisabled());
+
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "第二轮");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(directCalls).toBe(2));
+
+    secondDirectController?.enqueue(new TextEncoder().encode(
+      'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","response_id":"resp-second","item_id":"reason-second","delta":"核对第二轮"}\n\n',
+    ));
+    sessionStreamController?.enqueue(new TextEncoder().encode([
+      "event: session.event",
+      `data: ${JSON.stringify({
+        event_type: "runtime_event",
+        seq_id: 1,
+        invocation_id: "resp-second",
+        content: { runtime_event: {
+          schema_version: 2,
+          event_id: "event-reason-second",
+          run_id: "resp-second",
+          scope_id: "scope-second",
+          event_type: "item.updated",
+          item_id: "reason-second",
+          item_kind: "reasoning",
+          op: "append",
+          update: { text: "核对第二轮" },
+        } },
+      })}`,
+      "",
+      "",
+    ].join("\n")));
+
+    await screen.findAllByText("核对第二轮");
+    expect(screen.getAllByText("核对第二轮")).toHaveLength(1);
+    expect(screen.getAllByText("正在思考")).toHaveLength(1);
+    expect(container.querySelectorAll(".chat-processing-group")).toHaveLength(1);
+
+    secondDirectController?.enqueue(new TextEncoder().encode(
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","response_id":"resp-second","item_id":"answer-second","delta":"第二轮回答"}\n\n'
+      + 'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp-second","status":"completed"}}\n\n',
+    ));
+    secondDirectController?.close();
+  });
+
   it("appends implicit item.updated reasoning deltas instead of replacing earlier thought", async () => {
     apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === `${base}/sessions` && !init?.method) {

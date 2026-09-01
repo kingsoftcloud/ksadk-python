@@ -1599,6 +1599,11 @@ def _project_a2ui_surface(
         projected = "a2ui.surface.end"
         data_parts = event.snapshot.parts
 
+    if event.source.metadata.get("operation_batch") is True and isinstance(event, ItemCompleted):
+        # Completion closes the immutable canonical batch; it is not a request
+        # to remove the surface that the batch just created.
+        projected = "a2ui.surface.begin"
+
     surface_id = str(event.source.metadata.get("surface_id") or "")
     operations: list[dict[str, Any]] = []
     for part in data_parts:
@@ -1606,6 +1611,8 @@ def _project_a2ui_surface(
             data = part.data
             if isinstance(data, list):
                 operations.extend(dict(op) for op in data if isinstance(op, Mapping))
+            elif isinstance(data, Mapping):
+                operations.extend(project_a2ui_operations(projected, data))
     if not operations:
         operations = project_a2ui_operations(projected, {"surface_id": surface_id})
     payload: dict[str, Any] = {
