@@ -621,8 +621,11 @@ async def _list_checkpoints_payload_legacy_filtered(
     if request.OnlyResumable:
         checkpoints = [item for item in checkpoints if _is_checkpoint_resumable(item)]
     offset = int(request.Offset or 0)
+    checkpoints.sort(
+        key=lambda item: (item["Timestamp"], item["SessionId"], item["SeqId"]),
+        reverse=True,
+    )
     checkpoints = checkpoints[offset: offset + request.Limit]
-    checkpoints.sort(key=lambda item: (item["Timestamp"], item["SeqId"]), reverse=True)
     return {
         "Checkpoints": checkpoints,
         "Total": len(checkpoints),
@@ -721,8 +724,7 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
                     resumable_total += int(_is_checkpoint_resumable(checkpoint))
                     if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
                         continue
-                    if offset <= total < offset + int(request.Limit):
-                        checkpoints.append(checkpoint)
+                    checkpoints.append(checkpoint)
                     total += 1
         except CheckpointScanRestartRequired as exc:
             if attempt == 0:
@@ -739,7 +741,11 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
             if callable(close):
                 await close()
         break
-    checkpoints.sort(key=lambda item: (item["Timestamp"], item["SeqId"]), reverse=True)
+    checkpoints.sort(
+        key=lambda item: (item["Timestamp"], item["SessionId"], item["SeqId"]),
+        reverse=True,
+    )
+    checkpoints = checkpoints[offset : offset + int(request.Limit)]
     return {
         "Checkpoints": checkpoints,
         "Total": total,
