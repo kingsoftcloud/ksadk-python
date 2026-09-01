@@ -107,6 +107,7 @@
 
 ### 修复与性能
 
+- 修复通用 Runner 退化流把 `text/text_delta` 标成 commentary、再为终态另建 final-answer item 的协议错误。普通正文现在从首字符起沿同一个 final-answer item 流式输出并由终态快照完成；显式 commentary 与 reasoning 仍保持独立身份，避免答案混入思考并在结尾整段重复。
 - 修复 LangGraph 回调将 ToolGateway 结果序列化为 JSON 文本时，工具审批未被识别为可恢复交互的问题；Responses 客户端现在会收到标准审批项，批准后可继续原工具调用并执行真实副作用。
 - 修复 LangGraph 中 ToolGateway 审批完成后向已结束图发送原生 resume、导致副作用虽已执行却没有后续回复的问题；现在会基于已持久化的真实工具结果继续生成最终回答，同时保留原生 `interrupt()` 的 resume 语义。
 - 修复 Studio 快速创建向导与模板编排 API 的请求契约，并将 ADK/LangGraph 的源码路径和入口变量完全交由服务端生成；“创建后立即构建并打开会话”现在会实际提交 Build、等待成功后再进入会话。Codex、ADK、LangGraph 三种 Runtime 均按同一流程创建和构建。

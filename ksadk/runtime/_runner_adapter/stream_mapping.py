@@ -711,8 +711,10 @@ class _RunnerStreamMappingMixin:
             if run is not None:
                 run.final_answer_item_id = item_id
             text_content = TextContent(part_id="text-0", text=output)
-            # Auto-close any open commentary/reasoning item before emitting final_answer.
-            # Text/thinking deltas create items that are never ItemCompleted;
+            # Auto-close any open explicit commentary/reasoning item before completing
+            # final_answer. Text deltas already belong to the final-answer item and must
+            # keep that identity through completion.
+            # Commentary/thinking deltas create items that are never ItemCompleted;
             # without this, RunCompleted fails _ensure_no_open_items.
             #
             # Close them *before* allocating the final-answer item.  Event
@@ -767,9 +769,13 @@ class _RunnerStreamMappingMixin:
         text = self._coerce(chunk.get("delta") or chunk.get("output") or chunk.get("data"))  # type: ignore[attr-defined]
         if not text:
             return []
-        item_id = stable_item_id(framework, run_id, "message", "commentary")
+        is_commentary = chunk_type in {"commentary", "commentary_delta"}
+        phase = "commentary" if is_commentary else "final_answer"
+        item_id = stable_item_id(framework, run_id, "message", phase)
+        if run is not None and not is_commentary:
+            run.final_answer_item_id = item_id
         op: str = "replace" if chunk.get("replace") else "append"
-        events = ensure_started(item_id=item_id, item_kind="message", phase="commentary")
+        events = ensure_started(item_id=item_id, item_kind="message", phase=phase)
         events.append(
             ItemUpdated(
                 **self._canonical_kwargs(  # type: ignore[attr-defined]

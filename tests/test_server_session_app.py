@@ -1607,9 +1607,8 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
 
     assert response.status_code == 200
     payloads = _sse_payloads(response.text)
-    # canonical switch: commentary-phase text deltas project as reasoning deltas
-    # (response.reasoning.delta with "delta" key), final output projects as a
-    # message with content.parts[0].text.
+    # Ordinary runner text deltas are the final-answer stream. The terminal
+    # snapshot authoritatively replaces partial text on the same message item.
     assert [
         payload.get("delta") or payload.get("content", {}).get("parts", [{}])[0].get("text", "")
         for payload in payloads
@@ -1618,21 +1617,19 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
         "lo",
         "goodbye",
     ]
-    assert "partial" not in payloads[0]  # reasoning deltas have no partial flag
-    assert "partial" not in payloads[1]
+    assert payloads[0]["partial"] is True
+    assert payloads[1]["partial"] is True
     assert "partial" not in payloads[2]
 
     session_id = payloads[-1]["sessionId"]
     events = await service.get_events(session_id)
     # canonical switch: authors are framework(ksadk) for canonical events,
-    # agent_id for projected run_status. Text deltas create item.started +
-    # item.updated; final creates item.started + item.completed.
+    # agent_id for projected run_status. Text deltas and the final snapshot
+    # share one item.started/item.updated/item.completed lifecycle.
     assert [event.author for event in events] == [
         "user",
         "ksadk",
         "demo-agent",
-        "ksadk",
-        "ksadk",
         "ksadk",
         "ksadk",
         "ksadk",
@@ -1648,13 +1645,11 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
         "item.updated",
         "item.updated",
         "item.completed",
-        "item.started",
-        "item.completed",
         "run.completed",
         "run_status",
     ]
     # final_answer item.completed carries the authoritative output text
-    assert events[8].content["runtime_event"]["snapshot"]["parts"][0]["text"] == "goodbye"
+    assert events[6].content["runtime_event"]["snapshot"]["parts"][0]["text"] == "goodbye"
 
 
 @pytest.mark.asyncio
@@ -1724,11 +1719,10 @@ async def test_run_sse_stream_emits_compaction_status_events(monkeypatch):
     ]
     assert (
         event_names.count("message") >= 1
-    )  # canonical switch: text deltas project as reasoning, only final answer yields message
+    )  # text deltas and the authoritative terminal snapshot project one answer message
 
     persisted_events = await service.get_events(session.id)
-    # canonical switch: text.delta → item.started+item.updated, text.completed
-    # → item.completed (auto-close) + item.started+item.completed (final_answer)
+    # text deltas and the terminal snapshot share one final-answer lifecycle.
     assert [event.event_type for event in persisted_events] == [
         "user_message",
         "assistant_message",
@@ -1744,8 +1738,6 @@ async def test_run_sse_stream_emits_compaction_status_events(monkeypatch):
         "item.started",
         "item.updated",
         "item.updated",
-        "item.completed",
-        "item.started",
         "item.completed",
         "run.completed",
         "run_status",
@@ -5641,19 +5633,16 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
         "user_message",
         "run.started",
         "run_status",
-        # canonical switch: text.delta → item.started+item.updated, text.completed
-        # → item.completed (auto-close commentary) + item.started+item.completed (final_answer)
+        # text deltas and the terminal snapshot share one final-answer lifecycle.
         "item.started",
         "item.updated",
         "item.updated",
-        "item.completed",
-        "item.started",
         "item.completed",
         "run.completed",
         "run_status",
     ]
     # final_answer item.completed carries the authoritative output text
-    assert events[8].content["runtime_event"]["snapshot"]["parts"][0]["text"] == "hello"
+    assert events[6].content["runtime_event"]["snapshot"]["parts"][0]["text"] == "hello"
     assert events[-1].content["status"] == "completed"
 
 
