@@ -53,6 +53,12 @@ interface CloudMessage {
   blocks?: ProcessingBlock[];
 }
 
+interface CloudProjectionCache {
+  messages: CloudMessage[];
+  runtimeItems: CloudRuntimeItem[];
+  interactions: CloudInteraction[];
+}
+
 interface CloudInteraction {
   id: string;
   runId: string;
@@ -558,7 +564,15 @@ function normalizeSession(value: unknown): CloudSession | null {
   if (!id) return null;
   return {
     id,
-    title: valueText(item.title ?? item.summary ?? item.first_prompt ?? "") || "新会话",
+    // Server keeps the explicit title fields as empty strings until an
+    // asynchronous title producer runs.  Nullish coalescing stops on that
+    // empty string, so historical and freshly-created cloud sessions used to
+    // lose their already-available first prompt and all appeared as 新会话.
+    title: valueText(item.title)
+      || valueText(item.summary)
+      || valueText(item.first_prompt ?? item.firstPrompt)
+      || valueText(item.last_prompt ?? item.lastPrompt)
+      || "新会话",
     updatedAt: scalarText(item.updated_at ?? item.updatedAt ?? item.created_at),
     state: scalarText(item.active_run_status ?? item.state),
     error: errorText(
@@ -1004,6 +1018,8 @@ export function CloudChatWorkspace({
   const awaitingInvocationIdRef = useRef("");
   const awaitingAcceptedSeqRef = useRef(0);
   const sessionCursorRef = useRef<Map<string, number>>(new Map());
+  const projectionCacheRef = useRef<Map<string, CloudProjectionCache>>(new Map());
+  const deletedSessionIdsRef = useRef<Set<string>>(new Set());
   const sendInFlightRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamedFramesRef = useRef<unknown[]>([]);
@@ -1022,11 +1038,17 @@ export function CloudChatWorkspace({
   );
 
   const selectSession = useCallback((sessionId: string) => {
-    if (currentSessionIdRef.current !== sessionId) {
+    const changed = currentSessionIdRef.current !== sessionId;
+    if (changed) {
       sessionReadGenerationRef.current += 1;
     }
     currentSessionIdRef.current = sessionId;
     setCurrentSessionId(sessionId);
+    if (!changed) return;
+    const cached = projectionCacheRef.current.get(sessionId);
+    setMessages(cached?.messages || []);
+    setStreamingRuntimeItems(cached?.runtimeItems || []);
+    setInteractions(cached?.interactions || []);
   }, []);
 
   const settleCloudRun = useCallback((error = "", title = "云端运行未完成") => {
@@ -1052,7 +1074,9 @@ export function CloudChatWorkspace({
     const payload = await response.json() as { sessions?: unknown[]; items?: unknown[] };
     const rows = (payload.sessions || payload.items || [])
       .map(normalizeSession)
-      .filter((item: CloudSession | null): item is CloudSession => Boolean(item));
+      .filter((item: CloudSession | null): item is CloudSession => (
+        Boolean(item) && !deletedSessionIdsRef.current.has(item!.id)
+      ));
     setSessions(rows);
     const selected = rows.find(item => item.id === currentSessionIdRef.current);
     if (selected && cloudSessionActivity(selected.state) === "failed") {
@@ -1123,7 +1147,8 @@ export function CloudChatWorkspace({
     // window; later resolved/cancelled history is appended and removes it.
     const interactionFrames = [...streamedFramesRef.current, ...events].slice(-500);
     streamedFramesRef.current = interactionFrames;
-    setInteractions(pendingInteractions(interactionFrames));
+    const interactionRows = pendingInteractions(interactionFrames);
+    setInteractions(interactionRows);
     const durableRunIds = new Set(events.flatMap(event => {
       const envelope = runtimeEnvelope(event);
       return envelope ? [envelope.runId, envelope.invocationId].filter(Boolean) : [];
@@ -1157,6 +1182,11 @@ export function CloudChatWorkspace({
     const hasNewAssistant = rebuiltRows.some(
       message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
     );
+    projectionCacheRef.current.set(sessionId, {
+      messages: rebuiltRows,
+      runtimeItems: durableCompatibilityItems,
+      interactions: interactionRows,
+    });
     if (!directStreamActiveRef.current) {
       setMessages(rebuiltRows);
     }
@@ -1198,6 +1228,8 @@ export function CloudChatWorkspace({
     awaitingInvocationIdRef.current = "";
     awaitingAcceptedSeqRef.current = 0;
     sessionCursorRef.current.clear();
+    projectionCacheRef.current.clear();
+    deletedSessionIdsRef.current.clear();
     refreshSessions()
       .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -1285,6 +1317,11 @@ export function CloudChatWorkspace({
     const session = normalizeSession(raw);
     if (!session) throw new Error("云端未返回有效会话标识");
     setSessions(previous => [session, ...previous.filter(item => item.id !== session.id)]);
+    projectionCacheRef.current.set(session.id, {
+      messages: [],
+      runtimeItems: [],
+      interactions: [],
+    });
     selectSession(session.id);
     setMessages([]);
     fallbackMessagesRef.current = [];
@@ -1573,6 +1610,11 @@ export function CloudChatWorkspace({
     try {
       const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await responseError(response));
+      // Keep a local tombstone so a list request that started before the
+      // DELETE (or an eventually-consistent control-plane replica) cannot
+      // resurrect the row after the user has removed it.
+      deletedSessionIdsRef.current.add(sessionId);
+      projectionCacheRef.current.delete(sessionId);
       setSessions(previous => previous.filter(item => item.id !== sessionId));
       const deletedCurrent = currentSessionIdRef.current === sessionId;
       if (deletedCurrent) {

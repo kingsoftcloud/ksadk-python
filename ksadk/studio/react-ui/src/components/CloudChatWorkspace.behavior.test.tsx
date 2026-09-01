@@ -37,6 +37,28 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     vi.stubGlobal("localStorage", storage);
   });
 
+  it("uses the first non-empty prompt when the cloud title producer has not run", async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === `${base}/sessions`) {
+        return jsonResponse({ sessions: [{
+          session_id: "sess-untitled",
+          title: "",
+          summary: "",
+          first_prompt: "请汇总今天的行业动态",
+        }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages")) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000")) return jsonResponse({ events: [] });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    expect(await screen.findByRole("button", { name: "请汇总今天的行业动态" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "新会话" })).not.toBeInTheDocument();
+  });
+
   it("ignores a slow message response from the previously selected session", async () => {
     let resolveOldMessages!: (response: Response) => void;
     const oldMessages = new Promise<Response>((resolve) => {
@@ -999,6 +1021,35 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(screen.getByText("保留会话")).toBeInTheDocument();
     expect(container.querySelector(".chat-session-item.active")).toBeNull();
     expect(screen.getByRole("heading", { name: "开始一段云端会话" })).toBeInTheDocument();
+  });
+
+  it("does not resurrect a deleted session from a stale cloud list response", async () => {
+    const staleSessions = [
+      { session_id: "sess-delete", title: "待删除会话" },
+      { session_id: "sess-keep", title: "保留会话" },
+    ];
+
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        // Simulate a control-plane replica that still lists the deleted row.
+        return jsonResponse({ sessions: staleSessions });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
+      if (path === `${base}/sessions/sess-delete` && init?.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("待删除会话");
+    await userEvent.click(screen.getByRole("button", { name: "删除会话 待删除会话" }));
+
+    await waitFor(() => expect(screen.queryByText("待删除会话")).not.toBeInTheDocument());
+    expect(screen.getByText("保留会话")).toBeInTheDocument();
   });
 
   it("stops immediately on RunAgent 500 while preserving the user message and real error", async () => {
