@@ -49,7 +49,7 @@ async def test_persistence_status_reports_ready_without_exposing_dsn(monkeypatch
             return None
 
     async def connect(**kwargs):
-        assert kwargs["dsn"] == "postgresql://user:secret@10.0.0.8:5432/appdb"
+        assert kwargs["dsn"] == "postgresql://user:secret@db.example.test:5432/appdb"
         return _Connection()
 
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
