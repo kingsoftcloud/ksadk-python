@@ -3229,10 +3229,158 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     ]
     assert [event["Author"] for event in message_events] == ["ksadk", "user"]
     assert (
-        message_events[0]["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"]
-        == "assistant says hi"
+       message_events[0]["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"]
+       == "assistant says hi"
     )
     assert message_events[1]["Content"]["parts"][0]["text"] == "hello"
+    # canonical events should now also have Content.parts[0].text injected
+    assert message_events[0]["Content"]["parts"][0]["text"] == "assistant says hi"
+
+
+def _canonical_event_content(payload: dict) -> dict:
+    """Wrap a canonical runtime event payload in the session_event content shape."""
+    return {"runtime_event": payload}
+
+
+def test_derive_display_text_covers_canonical_event_types():
+    """_derive_display_text extracts Content.parts[0].text for each canonical type."""
+    from ksadk.server.routes.projection import _derive_display_text
+
+    # item.completed + message: extract text from snapshot.parts
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "item.completed",
+        "item_kind": "message",
+        "snapshot": {"parts": [{"content_type": "text", "part_id": "p1", "text": "hello world"}]},
+    })) == "hello world"
+
+    # item.completed + tool_result: extract result (truncated)
+    result_text = _derive_display_text(_canonical_event_content({
+        "event_type": "item.completed",
+        "item_kind": "tool_result",
+        "snapshot": {"parts": [{"content_type": "tool_result", "part_id": "p1", "call_id": "c1", "result": "done"}]},
+    }))
+    assert result_text == "done"
+
+    # item.completed + tool_call: show tool name
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "item.completed",
+        "item_kind": "tool_call",
+        "snapshot": {"parts": [{"content_type": "tool_call", "part_id": "p1", "call_id": "c1", "name": "search", "arguments": {}}]},
+    })) == "工具调用完成：search"
+
+    # item.updated + message: pass through update.text
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "item.updated",
+        "item_kind": "message",
+        "update": {"content_type": "text", "part_id": "p1", "text": "delta"},
+    })) == "delta"
+
+    # item.updated + reasoning: pass through update.text
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "item.updated",
+        "item_kind": "reasoning",
+        "update": {"content_type": "text", "part_id": "p1", "text": "thinking..."},
+    })) == "thinking..."
+
+    # item.updated + tool_call: show tool name
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "item.updated",
+        "item_kind": "tool_call",
+        "update": {"content_type": "tool_call", "part_id": "p1", "call_id": "c1", "name": "search", "arguments": {}},
+    })) == "调用工具：search"
+
+    # item.started + tool_call: show tool name from initial
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "item.started",
+        "item_kind": "tool_call",
+        "initial": {"parts": [{"content_type": "tool_call", "part_id": "p1", "call_id": "c1", "name": "write_file", "arguments": {}}]},
+    })) == "调用工具：write_file"
+
+    # run lifecycle
+    assert _derive_display_text(_canonical_event_content({"event_type": "run.started", "status": "running"})) == "运行开始"
+    assert _derive_display_text(_canonical_event_content({"event_type": "run.completed", "status": "completed"})) == "运行完成"
+    assert _derive_display_text(_canonical_event_content({"event_type": "run.failed", "status": "failed", "error": {"code": "err", "message": "boom", "source": "x", "scope_id": "s"}})) == "boom"
+    assert _derive_display_text(_canonical_event_content({"event_type": "run.interrupted", "status": "interrupted", "reason": "approval"})) == "approval"
+    assert _derive_display_text(_canonical_event_content({"event_type": "run.canceled", "status": "canceled", "reason": "user"})) == "user"
+
+    # interaction
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "interaction.requested", "interaction_id": "i1", "interaction_kind": "approval",
+        "request": {"request_type": "approval", "kind": "tool_approval", "detail": {}},
+    })) == "请求审批：tool_approval"
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "interaction.resolved", "interaction_id": "i1", "interaction_kind": "approval",
+        "response": {"response_type": "approval", "decision": "approved", "data": None},
+    })) == "approved"
+
+    # continuation
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "continuation.created", "continuation_id": "c1", "continuation_kind": "graph_checkpoint",
+        "resumable": True, "ref": {},
+    })) == "创建恢复点：graph_checkpoint"
+
+    # usage
+    assert _derive_display_text(_canonical_event_content({
+        "event_type": "usage.reported", "input_tokens": 10, "output_tokens": 20, "total_tokens": 30,
+    })) == "用量上报：30 tokens"
+
+    # unknown event type returns empty
+    assert _derive_display_text(_canonical_event_content({"event_type": "unknown.future"})) == ""
+
+
+def test_event_to_action_payload_injects_parts_for_canonical_events():
+    """_event_to_action_payload adds Content.parts[0].text for canonical events."""
+    from ksadk.server.routes.projection import _event_to_action_payload
+
+    # canonical event without parts → should inject
+    event = SessionEvent(
+        id="evt-1",
+        session_id="sess-1",
+        author="ksadk",
+        event_type="item.completed",
+        content=_canonical_event_content({
+            "event_type": "item.completed",
+            "item_kind": "message",
+            "snapshot": {"parts": [{"content_type": "text", "part_id": "p1", "text": "hello"}]},
+        }),
+    )
+    payload = _event_to_action_payload(event)
+    assert payload["Content"]["parts"][0]["text"] == "hello"
+    # original runtime_event content is preserved
+    assert payload["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"] == "hello"
+
+    # legacy event with existing parts → should NOT override
+    event = SessionEvent(
+        id="evt-2",
+        session_id="sess-1",
+        author="user",
+        event_type="user_message",
+        content={"parts": [{"text": "hi there"}]},
+    )
+    payload = _event_to_action_payload(event)
+    assert payload["Content"]["parts"][0]["text"] == "hi there"
+
+    # legacy event with text but no parts → should inject from text
+    event = SessionEvent(
+        id="evt-3",
+        session_id="sess-1",
+        author="user",
+        event_type="user_message",
+        content={"text": "plain text"},
+    )
+    payload = _event_to_action_payload(event)
+    assert payload["Content"]["parts"][0]["text"] == "plain text"
+
+    # canonical event with empty display text → should NOT inject parts
+    event = SessionEvent(
+        id="evt-4",
+        session_id="sess-1",
+        author="ksadk",
+        event_type="run.progress",
+        content=_canonical_event_content({"event_type": "run.progress", "status": "running"}),
+    )
+    payload = _event_to_action_payload(event)
+    assert "parts" not in payload["Content"]
 
 
 @pytest.mark.asyncio
