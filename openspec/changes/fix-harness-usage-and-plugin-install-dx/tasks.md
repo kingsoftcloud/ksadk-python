@@ -49,4 +49,4 @@
 
 - [x] 7.1 完善 `docs/2026-09-02-harness-studio-e2e-report.md`：§3 增补思考过程展示对比、§5 五项问题终态、§7 验证记录补全
 - [x] 7.2 `openspec validate` 通过；受影响测试全绿
-- [ ] 7.3 分主题提交（仅本 change 相关文件；不触碰分支既有未提交改动，提交前经用户确认）
+- [x] 7.3 分主题提交：docs 报告 399ad413、fix 主提交 60d42fd7（test_managed_runtime_adapter.py 仅暂存本次新增 reasoning 测试，用户既有的 current_input 断言行保留在工作区未提交）
