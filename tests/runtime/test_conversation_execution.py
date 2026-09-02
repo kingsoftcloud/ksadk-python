@@ -186,6 +186,16 @@ class _CodexAdapter(_Adapter):
         return handle.model_copy(update={"runtime_type": "codex"})
 
 
+class _AttachableAdapter(_Adapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attached: list[RunHandle] = []
+
+    async def attach(self, handle: RunHandle) -> RunHandle:
+        self.attached.append(handle.model_copy(deep=True))
+        return handle
+
+
 @pytest.mark.asyncio
 async def test_runtime_conversation_prepares_once_persists_and_closes_terminal_run() -> None:
     service = InMemorySessionService()
@@ -374,4 +384,59 @@ async def test_checkpoint_resume_reuses_owned_handle_and_calls_executor_resume()
             None,
         )
     ]
+    assert {event.run_id for event in events} == {"original-run"}
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_resume_fresh_executor_attaches_persisted_framework_ref() -> None:
+    """Catch restart recovery accidentally depending on an executor-owned handle."""
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", "session-1")
+    adapter = _AttachableAdapter()
+    registry = RuntimeRegistry()
+    registry.register("fixture", lambda _context: adapter)
+    executor = RuntimeExecutor(registry)
+    context = RuntimeLaunchContext(runtime_type="fixture", project_dir=".")
+
+    assert executor.find_handle("fixture", "original-run", "session-1") is None
+
+    events = [
+        event
+        async for event in iter_runtime_conversation_events(
+            executor=executor,
+            launch_context=context,
+            agent_id="agent-1",
+            user_id="user-1",
+            messages=[],
+            session_id="session-1",
+            model=None,
+            resume_input={
+                "type": "agentengine.resume_checkpoint",
+                "run_id": "original-run",
+                "checkpoint_id": "checkpoint-1",
+                "resume_attempt_id": "resume-1",
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "checkpoint-1",
+                        "thread_id": "session-1:original-run",
+                        "checkpoint_ns": "agent:demo",
+                    }
+                },
+            },
+            invocation_id="resume-1",
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert len(adapter.attached) == 1
+    attached = adapter.attached[0]
+    assert attached.run_id == "original-run"
+    assert attached.session_id == "session-1"
+    assert attached.native_ref["checkpoint_id"] == "checkpoint-1"
+    assert attached.native_ref["thread_id"] == "session-1:original-run"
+    assert attached.native_ref["checkpoint_ns"] == "agent:demo"
+    assert adapter.resumes[0][1] == ResumeTarget(
+        kind="checkpoint_id", id="checkpoint-1"
+    )
     assert {event.run_id for event in events} == {"original-run"}

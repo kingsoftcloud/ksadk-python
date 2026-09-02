@@ -55,7 +55,7 @@ async def test_persistence_status_reports_ready_without_exposing_dsn(monkeypatch
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
     monkeypatch.setenv(
         "KSADK_SESSION_DSN",
-        "postgresql://user:secret@10.0.0.8:5432/appdb",
+        "postgresql://user:secret@db.example.test:5432/appdb",
     )
 
     status = (await get_persistence_status(connect=connect, use_cache=False))["Session"]
@@ -175,7 +175,9 @@ async def test_persistence_status_classifies_schema_permission_failure(monkeypat
         return _Connection()
 
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
-    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://user:secret@10.0.0.8/appdb")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN", "postgresql://user:secret@db.example.test/appdb"
+    )
 
     status = (await get_persistence_status(connect=connect, use_cache=False))["Session"]
 
@@ -202,7 +204,9 @@ async def test_persistence_status_classifies_stable_connection_errors(
         raise error
 
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
-    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://user:secret@10.0.0.8/appdb")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN", "postgresql://user:secret@db.example.test/appdb"
+    )
 
     status = (await get_persistence_status(connect=connect, use_cache=False))["Session"]
 
@@ -220,7 +224,9 @@ async def test_persistence_probe_does_not_swallow_task_cancellation(monkeypatch)
         raise asyncio.CancelledError
 
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
-    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://user:secret@10.0.0.8/appdb")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN", "postgresql://user:secret@db.example.test/appdb"
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await get_persistence_status(connect=connect, use_cache=False)

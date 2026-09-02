@@ -412,11 +412,95 @@ class LangGraphRunner(BaseRunner):
 
         await self.prepare_runtime_capabilities()
         capability = self.describe_checkpoint_capability()
-        return bool(
+        if not bool(
             capability.get("Supported")
             and capability.get("Durable")
             and capability.get("SharedAcrossPods")
+        ):
+            return False
+
+        configurable = {
+            "thread_id": thread_id,
+            "checkpoint_id": checkpoint_id,
+        }
+        checkpoint_ns = str(
+            native_ref.get("checkpoint_ns")
+            or (
+                langgraph_ref.get("checkpoint_ns")
+                if isinstance(langgraph_ref, Mapping)
+                else ""
+            )
+            or ""
+        ).strip()
+        if checkpoint_ns:
+            configurable["checkpoint_ns"] = checkpoint_ns
+        config = {"configurable": configurable}
+
+        if callable(
+            getattr(self._agent, "aget_state", None)
+            or getattr(self._agent, "get_state", None)
+        ):
+            return await self._checkpoint_state_resolves(
+                config,
+                thread_id=thread_id,
+                checkpoint_id=checkpoint_id,
+                checkpoint_ns=checkpoint_ns,
+            )
+
+        with_graph = getattr(self, "_with_graph", None)
+        if not callable(with_graph):
+            return False
+
+        async def validate_lazy_graph() -> bool:
+            return await self._checkpoint_state_resolves(
+                config,
+                thread_id=thread_id,
+                checkpoint_id=checkpoint_id,
+                checkpoint_ns=checkpoint_ns,
+            )
+
+        return bool(await with_graph(validate_lazy_graph))
+
+    async def _checkpoint_state_resolves(
+        self,
+        config: Mapping[str, Any],
+        *,
+        thread_id: str,
+        checkpoint_id: str,
+        checkpoint_ns: str,
+    ) -> bool:
+        """Confirm one exact persisted checkpoint through the active graph."""
+
+        get_state = getattr(self._agent, "aget_state", None) or getattr(
+            self._agent, "get_state", None
         )
+        if not callable(get_state):
+            return False
+        state = get_state(config)
+        if inspect.isawaitable(state):
+            state = await state
+        state_created_at = (
+            state.get("created_at")
+            if isinstance(state, Mapping)
+            else getattr(state, "created_at", None)
+        )
+        state_metadata = (
+            state.get("metadata")
+            if isinstance(state, Mapping)
+            else getattr(state, "metadata", None)
+        )
+        if state_created_at is None and state_metadata is None:
+            return False
+        resolved_ref = self._checkpoint_ref_from_state(state).get("langgraph", {})
+        if not isinstance(resolved_ref, Mapping):
+            return False
+        if str(resolved_ref.get("thread_id") or "").strip() != thread_id:
+            return False
+        if str(resolved_ref.get("checkpoint_id") or "").strip() != checkpoint_id:
+            return False
+        if checkpoint_ns and str(resolved_ref.get("checkpoint_ns") or "").strip() != checkpoint_ns:
+            return False
+        return True
 
     async def _prepare_managed_checkpoint(self, *, allow_transient_retry: bool) -> None:
         if self._managed_checkpoint_state in {"ready", "terminal_failure"}:

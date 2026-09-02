@@ -37,7 +37,30 @@ class _DummyAgent:
 class _AsyncStateAgent(_DummyAgent):
     async def aget_state(self, config):
         del config
-        return SimpleNamespace(config=self.state_config)
+        return SimpleNamespace(
+            config=self.state_config,
+            values={"messages": []},
+            next=(),
+            metadata={"source": "loop", "step": 1},
+            created_at="2026-09-02T00:00:00+00:00",
+            parent_config=None,
+            tasks=(),
+        )
+
+    get_state = None
+
+
+class _MissingCheckpointAgent(_DummyAgent):
+    async def aget_state(self, config):
+        return SimpleNamespace(
+            config=config,
+            values={},
+            next=(),
+            metadata=None,
+            created_at=None,
+            parent_config=None,
+            tasks=(),
+        )
 
     get_state = None
 
@@ -64,6 +87,13 @@ async def test_langgraph_runner_attaches_persisted_checkpoint_with_shared_backen
             "SharedAcrossPods": True,
         },
     )
+    runner._agent = _AsyncStateAgent()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "session-1:run-1",
+            "checkpoint_id": "checkpoint-1",
+        }
+    }
     handle = RunHandle(
         run_id="run-1",
         session_id="session-1",
@@ -76,6 +106,42 @@ async def test_langgraph_runner_attaches_persisted_checkpoint_with_shared_backen
     )
 
     assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rejects_checkpoint_missing_from_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch attach accepting a durable address that the graph cannot resolve."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    runner._agent = _MissingCheckpointAgent()
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
 
 
 @pytest.mark.asyncio
@@ -118,6 +184,22 @@ async def test_langgraph_runner_lazy_checkpoint_capability_owns_attach(
         SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
     )
     runner._agent = None
+    lazy_agent = _AsyncStateAgent()
+    lazy_agent.state_config = {
+        "configurable": {
+            "thread_id": "session-1:run-1",
+            "checkpoint_id": "checkpoint-1",
+        }
+    }
+
+    async def with_graph(callback):
+        runner._agent = lazy_agent
+        try:
+            return await callback()
+        finally:
+            runner._agent = None
+
+    monkeypatch.setattr(runner, "_with_graph", with_graph, raising=False)
     runner._managed_checkpoint_error = (
         "LANGGRAPH_FACTORY_REQUIRED",
         "base managed graph factory is not used by this custom runner",
@@ -154,9 +236,13 @@ async def test_langgraph_runner_lazy_checkpoint_capability_owns_attach(
 
 
 @pytest.mark.asyncio
-async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(monkeypatch, tmp_path):
+async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(
+    monkeypatch, tmp_path
+):
     """Catch a managed saver opening the Session database despite a dedicated target."""
-    runner = LangGraphRunner(SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path))
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
     runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
     captured_dsns = []
 
@@ -187,9 +273,13 @@ async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(monke
 
 
 @pytest.mark.asyncio
-async def test_managed_langgraph_checkpoint_reports_target_unreachable(monkeypatch, tmp_path):
+async def test_managed_langgraph_checkpoint_reports_target_unreachable(
+    monkeypatch, tmp_path
+):
     """Catch collapsing managed checkpoint setup failures into a generic DB error."""
-    runner = LangGraphRunner(SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path))
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
     runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
     runner._module = SimpleNamespace(
         ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(invoke=lambda: checkpointer)
