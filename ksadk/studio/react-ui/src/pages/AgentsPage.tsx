@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, Bot } from "lucide-react";
+import { Plus, Search, Bot, Trash2 } from "lucide-react";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MoreActionsMenu } from "../components/MoreActionsMenu";
@@ -146,9 +146,17 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
             items={[
               { label: "配置", onSelect: () => onDetail(agent.metadata.id) },
               { label: isDeclarativeAgent(agent) ? "校验声明" : "构建", onSelect: onBuild },
-              { label: "删除", danger: true, onSelect: () => setPendingDelete(agent) },
             ]}
           />
+          <button
+            className="icon-button danger-ghost"
+            type="button"
+            aria-label={`删除 ${agent.metadata.name}`}
+            title="删除"
+            onClick={() => setPendingDelete(agent)}
+          >
+            <Trash2 size={15} />
+          </button>
         </div>
       ),
     },

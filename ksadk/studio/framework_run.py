@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ksadk.detection.detector import FrameworkDetector
+from ksadk.plugins.bundle_security import BundleSecurityError, assert_bundle_security
 from ksadk.runtime import RuntimeLaunchContext
 from ksadk.studio.capabilities import compute_bundle_digest
 from ksadk.studio.contracts import BundleManifest
@@ -121,6 +122,10 @@ class FrameworkRunSpecResolver:
         artifact_root = self.workspace.resolve(build.artifact_path, must_exist=True).parent
         bundle_root = artifact_root / "agent-bundle"
         self._verify_bundle_integrity(bundle_root, expected_bundle_digest=build.bundle_digest)
+        # v1 artifacts predate the no-literal-secret Bundle admission rule and
+        # must stay runnable. Every v2 bundle is checked again before local
+        # execution, including an externally restored but integrity-valid ZIP.
+        self._verify_bundle_security(bundle_root)
         project_dir = bundle_root / "runtime"
         if runtime_type != "harness" and not project_dir.is_dir():
             raise StudioError(
@@ -320,6 +325,37 @@ class FrameworkRunSpecResolver:
                         "actual": len(content),
                     },
                 )
+
+    @staticmethod
+    def _verify_bundle_security(bundle_dir: Path) -> None:
+        try:
+            manifest = BundleManifest.model_validate_json(
+                (bundle_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            # Integrity verification reports the canonical error for a malformed
+            # manifest; do not mask it with a second diagnostic path.
+            return
+        if manifest.bundle_format != "agentkit.bundle/v2":
+            return
+        try:
+            assert_bundle_security(bundle_dir)
+        except BundleSecurityError as exc:
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "Bundle 包含不允许的明文凭证或本机路径",
+                status_code=422,
+                details={
+                    "securityFindings": [
+                        {
+                            "path": finding.path,
+                            "kind": finding.kind,
+                            **({"field": finding.field} if finding.field else {}),
+                        }
+                        for finding in exc.findings
+                    ]
+                },
+            ) from exc
 
 
 __all__ = ["FrameworkRunSpecResolver"]

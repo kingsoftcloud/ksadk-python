@@ -2,316 +2,158 @@
 title: "运行时架构"
 ---
 
-KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选框架适配到统一 Runner
-接口，并为终端、浏览器和 API 客户端暴露可预测的本地协议。
+KsADK 运行时把控制、执行与呈现拆成三个稳定边界：Agent Kernel 负责可信控制，Harness 与 PluginHost 负责装配和生命周期，Provider 负责框架原生执行。执行结果进入统一事件事实链，再投影到 API、Studio 与托管界面。
 
-## 分层模型
+![KsADK 总体技术架构](/assets/ksadk-runtime-architecture.svg)
 
-![KsADK 请求生命周期](/assets/ksadk-request-lifecycle.svg)
+## 分层与主线
 
-入口 → 启动 → HTTP/UI → 对话运行时 → Runner / RuntimeAdapter → Session 与 RuntimeEvent 持久化。关键边界是：HTTP server 和对话运行时不需要知道用户项目是 ADK、LangGraph、LangChain、DeepAgents 还是 Codex；代码项目经 `BaseRunner`，跨 Runtime 控制面经 `RuntimeAdapter`。
+```text
+使用入口
+  → Agent Kernel
+  → PluginHost 装载插件组合
+  → Harness 为 Activation 选择一个 Provider
+  → Provider 原生执行
+  → RuntimeEvent v2
+  → SessionEvent 日志
+  → API / Studio / 托管界面投影
+```
+
+共用能力不占据主执行链。上下文、工具、安全、MCP、Skill、沙箱、记忆和观测通过能力总线注入 Harness；Provider 仍然保留框架特定的线程、checkpoint 和事件语义。
 
 ## 核心包
 
-| Package | 职责 |
+| Package | 责任 |
 | --- | --- |
-| `ksadk.cli` | 命令入口、本地进程准备、用户可读错误 |
-| `ksadk.detection` | 项目配置、入口文件、框架和 Agent 变量检测 |
-| `ksadk.runners` | 统一 Runner 契约和框架适配器 |
-| `ksadk.runtime` | 0.8 RuntimeAdapter、RuntimeEvent、取消 / 恢复 / checkpoint 边界 |
-| `ksadk.harness` | 最小 YAML composition root，复用 Runtime 数据面 |
-| `ksadk.server` | FastAPI app、本地 Web UI API、OpenAI 兼容 endpoint |
-| `ksadk.conversations` | 消息规范化、session turn 编排、协议 payload |
-| `ksadk.sessions` | 本地和可插拔 session 存储 |
-| `ksadk_runtime_common.workspace_files` | 可复用工作区文件路由和预览安全 |
+| `ksadk.kernel` | 控制许可、准入、Inbox、lease、fencing、状态与恢复 |
+| `ksadk.harness` | Harness 配置、工具、沙箱、reasoner 与原生 RuntimeAdapter |
+| `ksadk.plugins` | 插件契约、组合编译、解析、PluginHost、Provider 与子代理桥接 |
+| `ksadk.events` | RuntimeEvent v2、身份、存储、reducer、回放与协议投影 |
+| `ksadk.scheduler` | 本地 Scheduler Lite、日历计算、任务存储与控制命令分发 |
+| `ksadk.runtime` | 跨 Runner、Harness、Codex 与 A2A 的运行控制接口 |
+| `ksadk.server` | FastAPI 应用、标准 API、本地 Studio 和协议入口 |
+| `ksadk.conversations` | turn 编排、输入规范化、会话写入和协议 payload |
+| `ksadk.sessions` | 本地及可插拔的会话存储 |
+| `ksadk.runners` | 历史框架项目的 Runner 适配层 |
 
-## 启动生命周期
+## 启动与入口
 
-`agentengine run` 和 `agentengine web` 大体路径一致：
-
-<Steps>
-  1. 解析项目目录。
-  2. 必要时重新进入项目虚拟环境执行。
-  3. 加载环境变量和项目设置。
-  4. 检测框架和入口点，或读取 Codex 声明式 manifest。
-  5. 创建匹配的 Runner / RuntimeAdapter。
-  6. 加载用户 Agent，或验证本机托管 Runtime。
-  7. 进入终端模式或启动本地 HTTP server。
-</Steps>
-
-<Callout type="warning">
-如果框架检测结果是 `unknown`，CLI 会在导入用户代码作为 Runner 之前停止，避免把不可识别的项目当成 Runner 加载。
-</Callout>
-
-![KsADK 启动生命周期](/assets/ksadk-startup-lifecycle.svg)
-
-
-
-## 启动边界
-
-本地运行时有严格启动边界：
+`agentengine run`、`agentengine web` 和标准 API 最终进入同一运行时边界。
 
 <Steps>
-  1. CLI 代码解析路径、配置、环境变量和项目虚拟环境。
-  2. detection 代码决定使用哪个框架适配器。
-  3. runner factory 创建框架特定 Runner。
-  4. runner 加载用户代码。
-  5. server 层暴露 HTTP 协议并委托给 runner。
+  1. CLI 或 Server 解析项目目录、环境变量与 `agentengine.yaml`。
+  2. 显式配置或检测逻辑确定 Runner、Harness 或插件化 Provider 路径。
+  3. 应用装配 FastAPI 路由、生命周期、认证和会话入口。
+  4. Agent Kernel 对需要可信控制的请求执行准入与状态保护。
+  5. Harness 创建 Activation，绑定共用能力并选择 Provider。
+  6. Provider 执行原生框架逻辑，事件进入统一事实链。
 </Steps>
 
 <Callout type="info">
-检测发生在导入用户代码之前。这个区别对安全和调试很重要：模块导入失败应报告为 Agent 加载问题；缺少 `agentengine.yaml`、入口点无效或框架不受支持，应报告为项目检测问题。
+  `agentengine.yaml` 应明确声明框架与入口点。检测失败属于项目装载问题，不应在导入用户代码后才表现为运行错误。
 </Callout>
 
-公开示例应保持项目配置明确：
+## Agent Kernel：可信控制边界
 
-```yaml title="agentengine.yaml"
-name: support-agent
-framework: langgraph
-entry_point: agent.py
-agent_variable: root_agent
-```
+Agent Kernel 不执行具体 Agent 逻辑。它把影响安全与一致性的控制语义集中到一个可验证边界。
 
-## 框架检测
+| 能力 | 约束 |
+| --- | --- |
+| 许可与准入 | 未通过许可校验的控制命令不会进入执行路径 |
+| Inbox 与顺序 | 控制命令先持久化，再由 Worker 有序领取 |
+| Lease 与 fencing | 过期持有者不能继续写入新的状态 |
+| 并发与背压 | 队列容量、重复命令和并行处理使用稳定错误语义 |
+| 取消与恢复 | 取消、恢复、交互回包与 checkpoint 目标显式分离 |
+| 状态一致性 | 运行状态、控制回执与事件写入共享写入保护 |
 
-检测优先使用显式配置，再使用约定：
+存储后端决定耐久等级：内存适合本地或单进程临时运行，SQLite 适合本地持久化，PostgreSQL 用于需要跨进程接管与事务 fencing 的托管运行时。配置为持久模式却缺少后端时应启动失败，不做静默降级。
 
-![框架检测流程](/assets/ksadk-framework-detection.svg)
+## Harness 与 Provider：执行边界
 
+Harness 是稳定宿主，不是新的 Agent 框架。它统一控制入口、工具接入、会话连续性、上下文和事件出口，但不重写 Provider 的原生执行模型。
 
+| Harness / Host 负责 | Provider 负责 |
+| --- | --- |
+| Activation 创建与关闭 | 框架原生执行 |
+| 插件图和能力绑定 | 私有线程、checkpoint 或会话状态 |
+| 权限准入与健康检查 | 原生工具调用和事件语义 |
+| profile fencing 与原子切换 | 能力矩阵中声明的 cancel、resume、checkpoint 行为 |
+| 统一事件出口 | 将执行结果映射为可适配的 Provider 事件 |
+
+每个 Activation 只选择一个 Agent Provider。当前插件目录包含 Codex 原生 Provider、KsADK Harness Provider、DSH / Cordis Provider 与 SubagentProvider；它们通过同一宿主契约接入，但不假装拥有相同能力。
+
+## 插件组合与生命周期
+
+Studio 中可编辑的 Agent revision 先由组合编译器转换为不可变插件图。插件引用使用精确版本，能力声明绑定到明确的 Definition 和 slot，敏感配置只接受 secret reference。
+
+<Steps>
+  1. 组合编译器把 runtime、Session、Memory、Context、Renderer、MCP 与 Skill 绑定规范化。
+  2. Resolver 生成锁定版本和摘要。
+  3. PluginHost 执行解析、权限准入、stage 与健康检查。
+  4. 候选图健康后原子切换；失败时保留旧图并清理候选副作用。
+  5. 已建立的会话继续持有原 Provider 私有状态，关闭后再回收旧图。
+</Steps>
+
+这条生命周期保证“配置可切换”和“运行不被撕裂”同时成立。
+
+## 共用能力总线
+
+| 能力 | 注入内容 |
+| --- | --- |
+| 上下文与提示 | 历史压缩、提示拼装、快照和 contributor 输出 |
+| 工具与安全 | 工具目录、策略、审批、权限和 secret reference |
+| MCP 与 Skill | 资源发现、物化后的插件能力和调用入口 |
+| 沙箱与工作区 | 隔离执行、文件访问和命令边界 |
+| 记忆与知识 | Memory 与 KnowledgeBase 上下文 |
+| 追踪与评测 | Trace、指标、事件关联和 Eval 数据 |
+
+能力插件通过只读执行上下文交给 Provider。没有物化插件所有者的 MCP 或 Skill 绑定会在构建阶段拒绝，避免界面显示“已启用”但运行时实际不可用。
+
+## 自动任务
+
+Scheduler Lite 负责确定性日历计算、本地任务存储和到期分发。任务触发后仍通过 Agent Kernel 与 Harness 进入同一执行链，不创建第二套运行时。
+
+| 组件 | 责任 |
+| --- | --- |
+| `SchedulerEngine` | 计算到期任务、维护 occurrence 与重试语义 |
+| `SchedulerSQLiteStore` | 持久化本地任务和调度状态 |
+| `AgentControlSchedulerDispatcher` | 把调度触发转换为 AgentControl 命令 |
+
+## 事件事实链
+
+ADK、LangGraph、Codex、A2A 与 Harness 事件由各自适配器转换为 `RuntimeEvent(schema_version=2)`。适配过程保留 source、scope、item 与 event 身份，避免按作者或文本做模糊去重。
+
+| 阶段 | 责任 |
+| --- | --- |
+| 框架事件适配 | 保留 Provider 来源与原生 item 身份 |
+| RuntimeEvent v2 | 表达 run、item、content、tool、interaction 与 error 事实 |
+| SessionEvent 日志 | 持久化顺序、运行状态与恢复所需事实 |
+| Reducer 与回放 | 按身份执行 append、replace、completed 和最终结果选择 |
+| 协议投影 | 生成 Responses、Chat、Studio、A2A 或托管界面所需视图 |
 
 <Callout type="info">
-公开 sample 推荐包含 `agentengine.yaml`，因为显式配置更容易审核，也较少依赖源码启发式。
+  `RuntimeEvent v2` 是写入主路径。v1 只保留只读兼容投影；新的运行事件不再写入 v1。
 </Callout>
 
-约定检测仍适合快速实验。它会检查：
+## 会话与协议
 
-- 根目录 `agent.py`、`main.py` 或 `app.py`。
-- 包目录中的 `agent.py`、`main.py`、`app.py` 或 `__init__.py`。
-- `src/<package>` 布局。
-- `langgraph.json` graph target。
+每个 turn 在执行前构造稳定的调用上下文，包括 Agent、用户、Session、输入、附件、模型选项以及启用的记忆和知识。Provider 只读取公开上下文和能力绑定，不依赖 Server 私有全局状态。
+
+| Endpoint | 用途 |
+| --- | --- |
+| `POST /v1/responses` | 首选标准调用协议 |
+| `POST /v1/chat/completions` | Chat Completions 兼容入口 |
+| `POST /agentengine/api/v1/RunAgent` | Studio action 风格调用 |
+| `POST /run_sse` | ADK Web 兼容执行路径 |
+| `POST /agentengine/api/v1/CancelRun` | 协作式取消 |
+| `POST /agentengine/api/v1/ResumeRun` | 按声明能力恢复运行 |
+
+外部客户端优先使用 `/v1/responses`。Studio 和托管界面通过 SessionEvent 投影与续订接口获得一致视图。
+
+## 平台边界
+
+KsADK 运行时包含 SDK、CLI、Server、Kernel、Harness、插件宿主、Provider、事件与本地存储。Agent 注册、远端部署生命周期、网关治理、托管 Skill / Sandbox 服务和 OTLP 后端属于外部平台，通过明确契约连接。
 
 <Callout type="warning">
-当使用约定检测时，运行时仍然需要两个事实：导入哪个文件，以及该文件里的哪个变量是 Agent 对象。如果任一值不明确，就添加 `agentengine.yaml`。
-</Callout>
-
-## Runner 契约
-
-每个 Runner 都实现同一组概念契约：
-
-| 方法 | 含义 |
-| --- | --- |
-| `load_agent()` | 导入并准备用户 Agent 对象 |
-| `invoke(input_data)` | 执行一次非流式 turn |
-| `stream(input_data)` | 执行一次流式 turn |
-| `prepare_for_request(model)` | 在支持时应用单请求模型覆盖 |
-| `close()` | server shutdown 时释放资源 |
-
-这个契约刻意保持窄。框架特定行为留在 adapter 中，而不是塞进 FastAPI endpoint。
-
-| 需求 | 推荐位置 |
-| --- | --- |
-| LangGraph 自定义 state mapping | 用户模块中的 `ksadk_prepare_state` |
-| LangChain 自定义 input mapping | 用户模块中的 `ksadk_prepare_input` |
-| 模型覆盖处理 | Runner 的 `prepare_for_request()` |
-| 框架原生 session continuity | Runner session adapter |
-| 协议 JSON/SSE 格式化 | server 和对话运行时 |
-
-<Callout type="info">
-新增框架 adapter 时，先从 `BaseRunner` 开始实现 `load_agent()`、`invoke()` 和 `stream()`。session continuity、动态模型覆盖或协议事件映射应在基础路径稳定后再加。
-</Callout>
-
-## RuntimeAdapter（0.8）
-
-`RuntimeAdapter` 是跨 Runner、Harness、Codex 和 A2A 的平台运行接口。普通项目不需要
-直接实现它；只有接入一个新的 Runtime 或把 Runtime 交给平台控制面时才应使用。它把原生
-差异收敛为以下固定语义：
-
-| 动词 | 语义 |
-| --- | --- |
-| `start(request)` | 以用户、session、可选模型和配置启动 run，返回不透明 `RunHandle`。 |
-| `stream(handle)` | 输出规范化 `RuntimeEvent` 异步事件流；它不是双工通道。 |
-| `cancel(handle)` | 返回明确的取消状态（已中断、记录 pending、未运行或失败），而非模糊布尔值。 |
-| `resume(handle, target, payload)` | 将恢复目标与审批/工具/人工回包分开表达。 |
-| `checkpoint(handle)` | 返回真实声明的 checkpoint 粒度与持久化能力，不假设所有 Runtime 都能回滚。 |
-| `close(handle)` | 释放 run 占用的运行期资源。 |
-
-`stream` 只传事件；审批决定、工具结果和 HITL 输入走 `resume`。这使 AG-UI/A2UI、A2A 和
-会话回放共享同一事件边界，也避免把某个框架的私有 SSE 语义泄露给调用方。`attach(handle)`
-是可选的跨进程恢复接口，默认 fail-closed；不能因为持久化了一个 handle 就假设原生
-Runtime 已在当前进程恢复。
-
-新 Runtime 应先用 `RunnerRuntimeAdapter` 覆盖标准 `BaseRunner` 路径，再逐项声明 cancel、
-resume 和 checkpoint 能力；不要用伪造的“全支持” capability 掩盖框架差异。
-
-## Agent Runtime V2 Phase 1 控制基座
-
-0.8.2 增加的是可选的 Agent Kernel 控制基座，不会把所有历史 Agent 自动迁移到新路径。
-`AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、
-`RuntimeCapabilityMatrix/v1` 和 `Interaction/v1` 由 JSON Schema、golden fixture、聚合
-digest 与 additive-only gate 锁定。Gateway 只负责身份与可信路由，Server 负责准入并签发
-permit，Runtime 缺少有效 permit 时拒绝控制命令。
-
-| 存储模式 | 适用范围 | 重启/跨 Pod 语义 |
-| --- | --- | --- |
-| InMemory | 本地开发或显式单 Pod ephemeral 托管 | 不承诺重启恢复或跨 Pod 接管 |
-| SQLite | 本地单进程持久化 | 进程重启可恢复本地状态，不提供多 Pod owner 语义 |
-| PostgreSQL | 需要高可用的托管 Runtime | durable Inbox、nonce、lease、事务 fencing 与 takeover |
-
-PostgreSQL 不是启用 Agent Kernel 的通用前置条件。单副本托管 Agent 可显式使用
-`memory + AGENT_KERNEL_DURABILITY_TIER=ephemeral`；只有声明 durable、高可用或跨 Pod
-恢复时才需要 PostgreSQL。选择 `postgres` 却未提供 DSN 会直接启动失败，因为这属于错误配置，
-而不是可静默降级的故障。
-
-旧 Runtime 制品如果没有版本、来源、commit id 或 Agent Kernel 合同 digest，仍走历史路径并把
-缺失字段标记为未知，不会仅因 Operator 升级就自动加入新控制协议。只有显式投射启用开关和匹配
-digest 的新部署才进入 Kernel；这使平台可以先升级控制面，再逐个更新 Runtime。
-
-## 请求生命周期
-
-普通非流式 `/v1/responses` 请求路径：
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant C as Client
-  participant API as FastAPI endpoint
-  participant Conv as conversations.runtime
-  participant Store as session service
-  participant Runner as BaseRunner
-
-  C->>API: POST /v1/responses
-  API->>Conv: invoke_conversation_once
-  Conv->>Store: ensure session
-  Conv->>Store: append user_message
-  Conv->>Conv: build_run_input (history + context)
-  Conv->>Conv: PlatformInvocationContext
-  Conv->>Store: append run_status=in_progress
-  Conv->>Runner: platform_invocation_scope → invoke(payload)
-  alt recoverable error
-    Runner-->>Conv: raise exception
-    Conv->>Conv: fallback_model retry (one attempt)
-    Conv->>Store: append run_status=in_progress (fallback)
-    Conv->>Runner: invoke(payload) again
-  else prompt-too-long
-    Runner-->>Conv: raise PTL exception
-    Conv->>Store: compact_conversation_history
-    Conv->>Runner: invoke(payload) again
-  end
-  Runner-->>Conv: result (output + metadata)
-  opt checkpoint metadata present
-    Conv->>Store: append run_checkpoint
-  end
-  Conv->>Store: append assistant_message
-  Conv->>Store: append run_status=completed
-  Conv-->>API: output text + metadata
-  API-->>C: response object
-```
-
-Streaming 使用同样的准备路径，再把内部语义事件序列化为 server-sent events。文本
-delta、reasoning、tool call、tool result、approval interrupt、final output 和
-error 会先成为运行时事件，再成为协议特定 SSE payload。
-
-## Streaming 事件模型
-
-框架 adapter 可能发出很不同的原生事件，但对话运行时期待一小组语义 chunk：
-
-| Chunk type | 含义 | 常见来源 |
-| --- | --- | --- |
-| `text` | assistant 文本 delta | 模型 token stream |
-| `thinking` | provider 或 ADK 可用时的 reasoning delta | provider 或 ADK event |
-| `tool_call` | tool call 开始或参数更新 | LangGraph、ADK、MCP 或自定义 tool event |
-| `tool_result` | tool 输出可用 | 框架 tool result event |
-| `interrupt` | 运行暂停，等待审批或外部输入 | graph interrupt 或 approval flow |
-| `final` | 最终权威输出 | 框架最终状态 |
-| `error` | 执行失败 | Runner 或协议异常 |
-
-协议层随后把这些语义事件映射到 `/v1/responses`、`/v1/chat/completions`、
-`/run_sse` 或本地 Web UI action 格式。
-
-### 模型策略与 thinking 语义
-
-`thinking` chunk 是否出现、以及 reasoning 内容如何注入，由运行时的统一模型策略和
-thinking disable 注入语义共同决定（0.6.6 起统一，0.6.7 补全 disable 注入）：
-
-- **统一模型策略**：托管部署通过 `AGENTENGINE_MODEL_POLICY_JSON` 注入 primary /
-  multimodal / fallback 默认值，Hermes、OpenClaw 和通用 Agent 共用同一套语义；显式
-  请求参数或显式环境变量仍优先于策略默认值。
-- **fallback 重试**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等
-  可恢复错误自动 fallback 重试一次；400 参数错误、业务错误和 tool 错误不会被吞掉。
-  fallback 触发时，下一轮 streaming 可能切换到 fallback backend，`thinking` chunk
-  是否出现以目标模型能力为准。
-- **thinking disable 注入**：当 `model_options.thinking` 为 disabled
-  （`reasoning.effort=none`、`thinking.type=disabled` 或 `max_reasoning_tokens<=0`）
-  时，runtime 自动向 `extra_body` 注入 `enable_thinking=false` 和
-  `chat_template_kwargs.enable_thinking=false`（DeepSeek 等模型兼容），并在流式输出
-  中过滤 reasoning 类 output item，因此 `thinking` chunk 不会出现在 SSE 流中。
-
-具体的策略 JSON 结构、catalog 字段和注入细节见
-[环境变量参考](../../references/environment-variables)。
-
-## Session 与上下文边界
-
-每个 turn 在调用 Runner 前都会构造 `PlatformInvocationContext`。它包含框架 adapter
-可能需要的稳定标识和运行时事实：
-
-- `agent_id`、`user_id`、`session_id` 和 invocation metadata。
-- 规范化输入内容和消息历史。
-- 当前 turn 附件和最近有效附件。
-- model、model metadata 和 model options。
-- 启用时的知识库和记忆上下文。
-
-Runner 会把这个 context 作为准备后输入的一部分收到。业务逻辑应优先读取公开文档中的
-runner payload 字段和框架 hook，而不是读取私有 server globals。
-
-## Checkpoint、Resume 与协作式取消
-
-<Callout type="info" title="0.6.7 新增">
-KsADK 在运行时引入框架级 checkpoint/resume 能力层，并补全 `CancelRun` 协作式取消。
-</Callout>
-
-
-Run 级 checkpoint、resume 和取消建立在 session store 与框架 checkpoint backend 之上，
-是独立于 streaming chunk 的能力层。conversation runtime 在每个 turn 写入
-`run_status` 事件，并以 checkpoint 为边界暴露恢复与取消入口：
-
-| 能力 | 含义 | 触发位置 |
-| --- | --- | --- |
-| checkpoint 写入 | 在 turn 边界持久化可恢复快照 | runner 在 turn 完成或 interrupt 处写入 |
-| resume | 从 checkpoint 恢复 run 执行 | `POST /agentengine/api/v1/ResumeRun` |
-| preview | 预览 resume 内容与影响面 | `POST /agentengine/api/v1/GetCheckpointResumePreview` |
-| list | 列出 session 下可用 checkpoint | `POST /agentengine/api/v1/ListSessionCheckpoints` |
-| 协作式取消 | 请求正在进行的 run 停止 | `POST /agentengine/api/v1/CancelRun` |
-
-`CancelRun` 是**协作式取消**：runtime 在下一个 runner 协作点（如下一个 streaming
-chunk、tool call 边界或 interrupt 检查点）观测到取消请求后停止 run，写入
-`run_status=cancelled`，并尽可能保留已产出的 checkpoint 与事件供后续 resume。它不会
-强杀进程或丢弃已持久化的 turn。
-
-resume 能力受 `GetAgentUiBootstrap` 返回的 `RuntimeCapabilities.ResumeRun.ResumeMode`
-与 `RunLifecycle` 双重门控（`time_travel` / `forward_only` / `none`）；前端入口必须
-同时满足 `RunLifecycle.Checkpoints` 与 `RunLifecycle.CheckpointResume` 才能展示。
-
-完整的 action 路径、ResumeMode 语义、`SubscribeRunEvents` 续订与 5 分钟服务端保护
-超时见 [会话与文件](../../references/runtime-sessions-files)。
-
-## 本地协议入口
-
-| Endpoint | 目的 |
-| --- | --- |
-| `POST /v1/responses` | 首选 OpenAI 兼容本地协议 |
-| `POST /v1/chat/completions` | 兼容 Chat Completions 客户端 |
-| `POST /agentengine/api/v1/RunAgent` | 本地 Web UI action 风格协议 |
-| `POST /run_sse` | ADK Web 兼容本地执行路径 |
-| `POST /agentengine/api/v1/UploadFile` | UI 流程的本地文件上传 |
-| `/_ksadk/workspace/v1/*` | 工作区文件 list/read/write/delete 路由 |
-
-<Callout type="info">
-外部客户端应优先使用 `/v1/responses`，除非它正在集成本地 Web UI 本身。
-</Callout>
-
-## 公开文档边界
-
-<Callout type="warning">
-本页描述公开本地运行时架构。它不会发布私有网关行为、内部集群部署细节、内部 kubeconfig 路径、私有 registry 名称或客户特定 runbook。
+  公开文档不包含私有网关行为、内部集群路径、私有镜像仓库或客户特定运维流程。
 </Callout>

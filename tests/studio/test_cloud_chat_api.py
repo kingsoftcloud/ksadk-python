@@ -317,7 +317,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
         )
         events = client.get(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/events",
-            params={"afterSeqId": 4},
+            params={"afterSeqId": 4, "offset": 200},
         )
         sent = client.post(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
@@ -383,6 +383,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
                 "agent_id": "ar-receipt-bound",
                 "session_id": "sess-existing",
                 "after_seq_id": 4,
+                "offset": 200,
                 "limit": 200,
             },
         ),
@@ -459,6 +460,103 @@ def test_cloud_chat_stream_emits_delta_before_terminal_event(tmp_path: Path) -> 
         "ListSessionEvents",
         "ListSessionEvents",
     ]
+
+
+def test_cloud_chat_event_stream_adds_typed_conversation_item_when_runtime_event_is_valid(
+    tmp_path: Path,
+) -> None:
+    client, cloud = _client_with_receipt(tmp_path)
+    cloud.stream_event_batches = [
+        [
+            {
+                "event_type": "runtime_event",
+                "seq_id": 2,
+                "content": {
+                    "runtime_event": {
+                        "schema_version": 2,
+                        "event_id": "runtime-event-1",
+                        "seq": 2,
+                        "timestamp": 1.0,
+                        "run_id": "run-stream",
+                        "scope_id": "scope-stream",
+                        "source": {"framework": "codex"},
+                        "event_type": "item.updated",
+                        "item_id": "answer-1",
+                        "item_kind": "message",
+                        "op": "append",
+                        "update": {
+                            "content_type": "text",
+                            "part_id": "answer-text",
+                            "text": "first delta",
+                        },
+                    }
+                },
+            },
+            {"event_type": "run.completed", "seq_id": 3, "run_id": "run-stream"},
+        ]
+    ]
+
+    with client.stream(
+        "GET",
+        "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/"
+        "sess-existing/events/stream?afterSeqId=1",
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"conversationItem": {"apiVersion": "conversation.ksadk.io/v1"' in body
+    assert '"kind": "assistant_text"' in body
+    assert '"payloadSchemaRef": "conversation.item.assistant_text/v1"' in body
+    assert '"text": "first delta"' in body
+
+
+def test_cloud_chat_event_stream_accepts_camel_case_runtime_event_envelope(
+    tmp_path: Path,
+) -> None:
+    """Old Server projections may use runtimeEvent rather than runtime_event."""
+
+    client, cloud = _client_with_receipt(tmp_path)
+    cloud.stream_event_batches = [
+        [
+            {
+                "eventType": "runtime_event",
+                "seqId": 2,
+                "content": {
+                    "runtimeEvent": {
+                        "schemaVersion": 2,
+                        "eventId": "runtime-event-camel-1",
+                        "seq": 2,
+                        "timestamp": 1.0,
+                        "runId": "run-stream",
+                        "scopeId": "scope-stream",
+                        "source": {"framework": "codex"},
+                        "eventType": "item.updated",
+                        "itemId": "answer-1",
+                        "itemKind": "message",
+                        "op": "append",
+                        "update": {
+                            "contentType": "text",
+                            "partId": "answer-text",
+                            "text": "camel delta",
+                        },
+                    }
+                },
+            },
+            {"eventType": "run.completed", "seqId": 3, "runId": "run-stream"},
+        ]
+    ]
+
+    with client.stream(
+        "GET",
+        "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/"
+        "sess-existing/events/stream?afterSeqId=1",
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"conversationItem": {"apiVersion": "conversation.ksadk.io/v1"' in body
+    assert '"kind": "assistant_text"' in body
+    assert '"text": "camel delta"' in body
 
 
 def test_cloud_chat_delete_is_absent_from_the_next_server_list(tmp_path: Path) -> None:

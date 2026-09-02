@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -152,6 +152,81 @@ describe("CreatePage quick authoring", () => {
         expect.objectContaining({ method: "POST" }),
       );
       expect(onCreated).toHaveBeenCalledWith("codex-local-test", true);
+    });
+  });
+
+  it("creates an external AgentProvider revision from the installed provider catalog", async () => {
+    const user = userEvent.setup();
+    const provider = {
+      providerRef: "plugin://io.example.provider@1.2.3",
+      pluginId: "io.example.provider",
+      resolvedVersion: "1.2.3",
+      displayName: "Example Provider",
+      state: "enabled",
+      compatible: true,
+      selectable: true,
+      reason: null,
+      permissions: ["process:host-user"],
+      isolation: "process",
+      configSchemaDeclared: false,
+      secretFields: ["apiKeyRef"],
+    };
+    mockedFetch.mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model] });
+      if (path === "/api/v1/catalog/models") return response({ items: [] });
+      if (path === "/api/v1/agent-providers") return response({ items: [provider] });
+      if (path === "/api/v1/credentials/OPENAI_API_KEY") return response({ configured: true });
+      if (path === "/api/v1/agent-templates/blank:compose") {
+        return response({
+          spec: {
+            instructions: { system: "External provider agent.", task: "" },
+            bindings: {
+              modelProfileId: model.resourceId,
+              modelProfileIds: [model.resourceId],
+              tools: [],
+              skills: [],
+              mcpServers: [],
+            },
+          },
+        });
+      }
+      if (path === "/api/v1/authoring/quick") {
+        return response({ metadata: { id: "external-provider-agent", revision: 1 } });
+      }
+      if (path === "/api/v1/agents/external-provider-agent/builds") return response({ id: "provider-build" });
+      if (path === "/api/v1/operations/provider-build") return response({ status: "SUCCEEDED" });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "使用外部 Provider 完成任务。");
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: /Example Provider · Plugin/ }));
+    expect(await screen.findByRole("combobox", { name: "AgentProvider" })).toHaveTextContent("Example Provider");
+    expect(screen.getByText("process:host-user；确认后才会写入本 Revision。")).toBeVisible();
+    await user.click(screen.getByRole("checkbox", { name: /确认 Provider 请求的权限/ }));
+    const providerConfig = screen.getByRole("textbox", { name: /Provider 配置/ });
+    fireEvent.change(providerConfig, { target: { value: '{"apiKeyRef":"env://PROVIDER_KEY","mode":"safe"}' } });
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(await screen.findByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByDisplayValue("External provider agent.");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+
+    await waitFor(() => {
+      const createCall = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(createCall?.[1]?.body));
+      expect(request.runtimeType).toBe("plugin");
+      expect(request.spec.runtime).toEqual({
+        type: "plugin",
+        providerRef: provider.providerRef,
+        providerConfig: { apiKeyRef: "env://PROVIDER_KEY", mode: "safe" },
+      });
+      expect(request.spec.security.allowedPermissions).toContain("process:host-user");
     });
   });
 

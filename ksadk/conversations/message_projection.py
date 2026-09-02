@@ -5,6 +5,8 @@ from typing import Any
 from urllib.parse import quote
 
 from ksadk.agui.a2ui_projection import project_a2ui_operations
+
+
 def _event_metadata(event: Mapping[str, Any]) -> Mapping[str, Any]:
     metadata = event.get("Metadata")
     return metadata if isinstance(metadata, Mapping) else {}
@@ -620,6 +622,7 @@ def _normalize_canonical_event(
             normalized_metadata.update({"call_id": call_id, "tool_name": name, "tool_args": args})
         elif item_kind == "data" and source.get("protocol") == "a2ui":
             surface_id = str(source.get("metadata", {}).get("surface_id") or "")
+            source_metadata = source.get("metadata")
             initial = runtime_event.get("initial") or {}
             parts = initial.get("parts") if isinstance(initial, Mapping) else []
             data: Any = {}
@@ -627,7 +630,16 @@ def _normalize_canonical_event(
                 if isinstance(part, Mapping) and part.get("content_type") == "data":
                     data = part.get("data")
                     break
-            if isinstance(data, list):
+            if (
+                isinstance(data, list)
+                and isinstance(source_metadata, Mapping)
+                and source_metadata.get("operation_batch") is True
+            ):
+                normalized["Content"] = {
+                    "surface_id": surface_id,
+                    "a2ui_operations": data,
+                }
+            elif isinstance(data, list):
                 normalized["Content"] = {"surface_id": surface_id, "components": data}
             elif isinstance(data, Mapping):
                 normalized["Content"] = data
@@ -663,6 +675,12 @@ def _normalize_canonical_event(
             normalized["Content"] = {"call_id": call_id, "name": "", "result": result}
             normalized_metadata.update({"call_id": call_id, "tool_output": result})
         elif item_kind == "data" and source.get("protocol") == "a2ui":
+            source_metadata = source.get("metadata")
+            if (
+                isinstance(source_metadata, Mapping)
+                and source_metadata.get("operation_batch") is True
+            ):
+                return event
             surface_id = str(source.get("metadata", {}).get("surface_id") or "")
             normalized["EventType"] = "a2ui.surface.end"
             normalized["Content"] = {"surface_id": surface_id}

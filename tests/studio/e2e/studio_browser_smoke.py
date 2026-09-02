@@ -86,11 +86,18 @@ def _assert_core_navigation(page: Page) -> None:
         "部署",
         "可观测",
         "运行资源",
-        "任务编排",
+        "自动化",
     ):
         page.get_by_role("button", name=label, exact=True).click()
-        expect(page.get_by_role("banner", name="当前页面").get_by_text(label, exact=True)).to_be_visible()
-        page.wait_for_load_state("networkidle")
+        expect(
+            page.get_by_role("banner", name="当前页面").get_by_text(label, exact=True)
+        ).to_be_visible()
+
+
+def _open_studio(page: Page, frontend_url: str) -> None:
+    """Wait for the rendered shell instead of long-lived API traffic."""
+    page.goto(frontend_url, wait_until="domcontentloaded")
+    expect(page.locator(".app-shell")).to_be_visible()
 
 
 def main() -> None:
@@ -119,7 +126,7 @@ def main() -> None:
                 if frontend_url != base_url:
                     page.route("**/api/v1/**", proxy_studio_api)
                     page.route("**/agentengine/api/v1/**", proxy_studio_api)
-                page.goto(frontend_url, wait_until="networkidle")
+                _open_studio(page, frontend_url)
                 _assert_multi_import_and_partial_failure(page, workspace)
                 _assert_core_navigation(page)
                 assert page_errors == [], f"Uncaught React page errors: {page_errors}"

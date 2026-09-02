@@ -50,3 +50,20 @@ def test_public_secret_audit_keeps_existing_secret_detection(tmp_path):
     hits = audit.audit_paths(tmp_path, ["config.txt"])
 
     assert hits == [f"config.txt:1:{secret_line}"]
+
+
+def test_public_secret_audit_skips_private_markers_in_non_exported_docs_but_not_secrets(
+    tmp_path,
+):
+    audit = _load_module()
+    internal_path = tmp_path / "docs" / "superpowers" / "handoff.md"
+    internal_path.parent.mkdir(parents=True)
+    secret_line = "Secret" + "AccessKey=not-a-placeholder"
+    internal_path.write_text(
+        "scm=ezone endpoint=aicp.inner.api.ksyun.com\n" + secret_line + "\n",
+        encoding="utf-8",
+    )
+
+    hits = audit.audit_paths(tmp_path, ["docs/superpowers/handoff.md"])
+
+    assert hits == [f"docs/superpowers/handoff.md:2:{secret_line}"]

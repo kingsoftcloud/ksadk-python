@@ -1,3 +1,17 @@
+import {
+  createConversationItemState,
+  decodeConversationItem,
+  projectConversationItems,
+  reduceConversationItem,
+  type ConversationArtifact,
+  type ConversationFallbackCard,
+  type ConversationItem,
+  type ConversationItemReducerState,
+  type ConversationPresentation,
+  type ConversationStreamResult,
+  type ConversationTimelineEntry,
+} from "./conversationProtocol";
+
 export interface ChatRun {
   id: string;
   agentId: string;
@@ -33,6 +47,8 @@ export interface ChatSession {
 
 export interface ResponseStreamEvent {
   type: string;
+  /** Numeric SSE `id`; presentation payloads cannot override this cursor. */
+  sseId?: number;
   [key: string]: unknown;
 }
 
@@ -47,6 +63,13 @@ export interface ChatStreamState {
   error: string;
   activities: RunActivity[];
   surfaces: A2UISurface[];
+  conversationItems: ConversationItemReducerState;
+  /** Ordered, identity-stable presentation nodes for a conversation stream. */
+  timeline: ConversationTimelineEntry[];
+  artifacts: ConversationArtifact[];
+  fallbacks: ConversationFallbackCard[];
+  pendingApprovals: Array<{ id: string; title: string; revision: number }>;
+  transport: "responses" | "conversation";
   usage?: Record<string, number>;
   collaborationMode?: string;
   goalObjective?: string;
@@ -55,6 +78,7 @@ export interface ChatStreamState {
 
 export interface A2UIInteraction {
   id: string;
+  revision: number;
   kind: string;
   status: "pending" | "resolved" | "expired";
   inputSchema: Record<string, unknown>;
@@ -239,6 +263,12 @@ export function createChatStreamState(localId: string, sessionId: string): ChatS
     error: "",
     activities: [],
     surfaces: [],
+    conversationItems: createConversationItemState(),
+    timeline: [],
+    artifacts: [],
+    fallbacks: [],
+    pendingApprovals: [],
+    transport: "responses",
   };
 }
 
@@ -246,11 +276,173 @@ function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
+function approvalItemTitle(payload: Record<string, unknown>, fallback: string): string {
+  if (typeof payload.detail === "string" && payload.detail.trim()) return payload.detail;
+  const detail = recordOf(payload.detail);
+  const nested = detail.command
+    || detail.title
+    || detail.name
+    || detail.message
+    || detail.action;
+  if (typeof nested === "string" && nested.trim()) return nested;
+  if (typeof payload.prompt === "string" && payload.prompt.trim()) return payload.prompt;
+  if (typeof payload.kind === "string" && payload.kind.trim()) return payload.kind;
+  return fallback;
+}
+
+function applyConversationProjection(
+  state: ChatStreamState,
+  conversationItems: ConversationItemReducerState,
+  projection: ConversationPresentation,
+): ChatStreamState {
+  const activities: RunActivity[] = [
+    ...projection.toolItems.map(item => ({
+      id: `tool:${item.itemId}`,
+      kind: "tool" as const,
+      title: String(item.payload.tool || "调用工具"),
+      status: item.lifecycle === "failed" ? "failed" as const
+        : item.lifecycle === "completed" ? "completed" as const
+          : "running" as const,
+      detail: eventDetail(item.payload),
+      data: item.payload,
+    })),
+    ...projection.approvalItems.map(item => ({
+      id: `approval:${item.itemId}`,
+      kind: "approval" as const,
+      title: approvalItemTitle(item.payload, "等待批准"),
+      status: item.lifecycle === "failed" ? "failed" as const
+        : item.lifecycle === "completed" ? "completed" as const
+          : "waiting" as const,
+      detail: eventDetail(item.payload),
+      data: item.payload,
+    })),
+  ];
+  let projectedState: ChatStreamState = {
+    ...state,
+    conversationItems,
+    timeline: projection.timeline,
+    output: projection.output,
+    reasoning: projection.reasoning,
+    activities,
+    artifacts: projection.artifacts,
+    fallbacks: projection.fallbacks,
+    pendingApprovals: projection.approvalItems
+      .filter(item => item.lifecycle === "pending" && Number(item.payload.revision) > 0)
+      .map(item => ({
+        id: String(item.payload.interactionId || item.itemId),
+        title: approvalItemTitle(item.payload, "此操作需要批准"),
+        revision: Number(item.payload.revision),
+      })),
+    runId: projection.runId || state.runId,
+    status: projection.terminalStatus === "failed" ? "failed"
+      : projection.terminalStatus === "completed" ? "completed"
+        : projection.approvalItems.some(item => item.lifecycle === "pending") ? "waiting_input"
+          : state.status,
+    error: projection.terminalStatus === "failed"
+      ? projection.fallbacks.find(item => item.failed)?.detail || "Agent 运行失败"
+      : state.error,
+  };
+  // A2UI remains a declarative operation list. Rebuild it from canonical
+  // items so reconnect replay cannot duplicate component mutations.
+  if (projection.a2uiItems.length || projection.structuredInputItems.length) {
+    projectedState = { ...projectedState, surfaces: [] };
+    for (const item of projection.a2uiItems) {
+      const operations = Array.isArray(item.payload.data) ? item.payload.data : [];
+      projectedState = reduceA2UIEvent(projectedState, {
+        type: "a2ui.surface.update",
+        runId: item.runId,
+        operations,
+      });
+    }
+    for (const item of projection.structuredInputItems) {
+      const surfaceId = String(item.payload.surfaceId || "");
+      if (!surfaceId) continue;
+      projectedState = reduceA2UIEvent(projectedState, {
+        type: item.lifecycle === "completed" ? "a2ui.action" : "a2ui.interaction",
+        runId: item.runId,
+        surfaceId,
+        interactionId: String(item.payload.interactionId || item.itemId),
+        kind: String(item.payload.kind || "form"),
+        inputSchema: recordOf(item.payload.inputSchema),
+        revision: Number(item.payload.revision || 0),
+      });
+    }
+  }
+  return projectedState;
+}
+
+/** Consume the result already reduced by the shared headless client. */
+export function applyConversationStreamResult(
+  state: ChatStreamState,
+  result: ConversationStreamResult,
+): ChatStreamState {
+  return applyConversationProjection(
+    state,
+    result.state,
+    result.presentation,
+  );
+}
+
+function applyExplicitRunTerminalEvent(
+  state: ChatStreamState,
+  event: ResponseStreamEvent,
+  type: string,
+): ChatStreamState | null {
+  const runId = String(event.runId || event.run_id || state.runId);
+  if (type === "run.completed") {
+    return { ...state, runId, status: "completed" };
+  }
+  if (type === "run.cancelled" || type === "run.canceled") {
+    return { ...state, runId, status: "cancelled" };
+  }
+  if (type === "run.failed" || type === "run.interrupted") {
+    const error = recordOf(event.error);
+    return {
+      ...state,
+      runId,
+      status: "failed",
+      error: String(
+        error.message
+        || event.message
+        || (type === "run.interrupted" ? "Agent 运行中断" : "Agent 运行失败"),
+      ),
+    };
+  }
+  return null;
+}
+
 export function reduceChatStreamEvent(
   state: ChatStreamState,
   event: ResponseStreamEvent,
 ): ChatStreamState {
   const type = String(event.type || "");
+  const conversationItem = decodeConversationItem(event.conversationItem);
+  if (conversationItem) {
+    const conversationItems = reduceConversationItem(state.conversationItems, conversationItem);
+    const projectedState = conversationItems === state.conversationItems
+      ? state
+      : applyConversationProjection(
+        state,
+        conversationItems,
+        projectConversationItems(conversationItems),
+      );
+    // A ConversationItem describes one renderer item. Even when that item is
+    // valid (or replayed), the outer stream event remains authoritative for
+    // the lifecycle of the whole run.
+    return applyExplicitRunTerminalEvent(projectedState, event, type) || projectedState;
+  }
+  if (event.conversationItem !== undefined) {
+    // The conversationItem was present but didn't pass strict schema validation.
+    // Instead of spamming the UI with "暂不支持" cards, silently update run status.
+    const terminalState = applyExplicitRunTerminalEvent(state, event, type);
+    if (terminalState) return terminalState;
+    return {
+      ...state,
+      runId: String(event.runId || event.run_id || state.runId),
+    };
+  }
+  const terminalState = applyExplicitRunTerminalEvent(state, event, type);
+  if (terminalState) return terminalState;
   if (type === "response.created" || type === "response.in_progress") {
     const response = recordOf(event.response);
     return { ...state, responseId: String(response.id || state.responseId) };
@@ -411,8 +603,9 @@ function reduceA2UIEvent(state: ChatStreamState, event: ResponseStreamEvent): Ch
       ...current,
       interaction: {
         id: String(event.interactionId || event.interaction_id || ""),
+        revision: Number(event.revision || 0),
         kind: String(event.kind || "form"),
-        status: "pending",
+        status: Number(event.revision || 0) > 0 ? "pending" : "expired",
         inputSchema: recordOf(event.inputSchema || event.input_schema),
       },
     });
@@ -430,9 +623,15 @@ function reduceA2UIEvent(state: ChatStreamState, event: ResponseStreamEvent): Ch
     ...state,
     runId: String(event.runId || event.run_id || state.runId),
     surfaces: [...surfaces.values()],
-    status: type === "a2ui.interaction" ? "waiting_input"
-      : type === "a2ui.action" ? "streaming"
-        : state.status,
+    // Rebuilding declarative A2UI state during replay must not move a
+    // canonical terminal Run back to an active state. Terminal Run facts are
+    // authoritative; A2UI interaction/action events only affect non-terminal
+    // turns.
+    status: state.status === "completed" || state.status === "failed"
+      ? state.status
+      : type === "a2ui.interaction" ? "waiting_input"
+        : type === "a2ui.action" ? "streaming"
+          : state.status,
   };
 }
 
@@ -464,10 +663,15 @@ export function createResponseSseParser(onEvent: (event: ResponseStreamEvent) =>
 
   const parseBlock = (block: string) => {
     let eventName = "message";
+    let sseId: number | undefined;
     const data: string[] = [];
     for (const line of block.split("\n")) {
       if (!line || line.startsWith(":")) continue;
       if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      if (line.startsWith("id:")) {
+        const candidate = Number(line.slice(3).trim());
+        if (Number.isSafeInteger(candidate) && candidate >= 0) sseId = candidate;
+      }
       if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
     }
     if (!data.length) return;
@@ -475,9 +679,17 @@ export function createResponseSseParser(onEvent: (event: ResponseStreamEvent) =>
     if (raw === "[DONE]") return;
     try {
       const parsed = JSON.parse(raw) as ResponseStreamEvent;
-      onEvent({ ...parsed, type: String(parsed.type || eventName) });
+      onEvent({
+        ...parsed,
+        type: String(parsed.type || eventName),
+        ...(sseId === undefined ? {} : { sseId }),
+      });
     } catch {
-      onEvent({ type: eventName, message: raw });
+      onEvent({
+        type: eventName,
+        message: raw,
+        ...(sseId === undefined ? {} : { sseId }),
+      });
     }
   };
 
@@ -492,6 +704,104 @@ export function createResponseSseParser(onEvent: (event: ResponseStreamEvent) =>
   };
 }
 
+export interface ConversationStreamConsumeOptions {
+  initialResponse: Response;
+  signal: AbortSignal;
+  onEvent: (event: ResponseStreamEvent) => void;
+  getRunId: () => string;
+  isTerminal: () => boolean;
+  replay: (runId: string, after: number) => Promise<Response>;
+  maxReconnects?: number;
+  retryDelayMs?: (attempt: number) => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
+function abortedConversationStream(): DOMException {
+  return new DOMException("Conversation stream aborted", "AbortError");
+}
+
+async function waitForConversationReplay(
+  milliseconds: number,
+  signal: AbortSignal,
+  sleep?: (milliseconds: number) => Promise<void>,
+): Promise<void> {
+  if (signal.aborted) throw abortedConversationStream();
+  if (milliseconds <= 0) return;
+  const delay = sleep
+    ? sleep(milliseconds)
+    : new Promise<void>(resolve => { globalThis.setTimeout(resolve, milliseconds); });
+  await Promise.race([
+    delay,
+    new Promise<never>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(abortedConversationStream()), { once: true });
+    }),
+  ]);
+}
+
+/**
+ * Consume one typed Conversation SSE response and replay it from its cursor
+ * when the foreground transport drops.  Cursor ownership stays with SSE id;
+ * item identity is owned by ConversationItem, so a replayed boundary cannot
+ * duplicate a side effect or a rendered block.
+ */
+export async function consumeConversationStream(
+  options: ConversationStreamConsumeOptions,
+): Promise<number> {
+  let cursor = 0;
+  const consume = async (response: Response): Promise<void> => {
+    if (!response.ok || !response.body) throw new Error(`会话流请求失败 (${response.status})`);
+    const parser = createResponseSseParser(event => {
+      if (typeof event.sseId === "number") cursor = Math.max(cursor, event.sseId);
+      options.onEvent(event);
+    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (!options.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (value) parser.push(decoder.decode(value, { stream: true }));
+        if (done) {
+          const tail = decoder.decode();
+          if (tail) parser.push(tail);
+          parser.finish();
+          return;
+        }
+      }
+      throw abortedConversationStream();
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
+  let response = options.initialResponse;
+  let lastFailure: unknown;
+  const maxReconnects = options.maxReconnects ?? 1;
+  for (let attempt = 0; ; attempt += 1) {
+    if (options.signal.aborted) throw abortedConversationStream();
+    try {
+      await consume(response);
+    } catch (error) {
+      if (options.signal.aborted) throw abortedConversationStream();
+      lastFailure = error;
+    }
+    if (options.isTerminal()) return cursor;
+    if (attempt >= maxReconnects) {
+      const suffix = lastFailure instanceof Error && lastFailure.message
+        ? `：${lastFailure.message}` : "";
+      throw new Error(`自动续流 ${maxReconnects} 次后仍未到达终态${suffix}`);
+    }
+    const runId = options.getRunId();
+    if (!runId) throw new Error("会话流中断且未获得可恢复的 Run 标识");
+    await waitForConversationReplay(
+      options.retryDelayMs?.(attempt) ?? 0,
+      options.signal,
+      options.sleep,
+    );
+    if (options.signal.aborted) throw abortedConversationStream();
+    response = await options.replay(runId, cursor);
+  }
+}
+
 function callKey(data: Record<string, unknown>, fallback: string): string {
   return String(data.callId || data.call_id || data.toolCallId || data.tool_call_id || fallback);
 }
@@ -502,7 +812,13 @@ function eventTitle(kind: RunActivity["kind"], data: Record<string, unknown>): s
   return String(data.kind || data.action || "等待批准");
 }
 
-function eventDetail(data: Record<string, unknown>): string {
+/**
+ * Human-readable, non-authoritative detail for a rendered activity card.
+ *
+ * Timeline renderers intentionally keep canonical item identity/order, but
+ * reuse this small formatter for the expandable detail body.
+ */
+export function eventDetail(data: Record<string, unknown>): string {
   const selected = data.output ?? data.result ?? data.message ?? data.error ?? "";
   if (typeof selected === "string") return selected;
   if (selected && typeof selected === "object") return JSON.stringify(selected, null, 2);

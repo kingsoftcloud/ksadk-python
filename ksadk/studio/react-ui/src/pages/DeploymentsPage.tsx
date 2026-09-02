@@ -52,6 +52,7 @@ interface BuildCandidate {
   runtimeName?: string;
   runtimeVersion?: string;
   artifactType?: string;
+  isCurrent?: boolean;
 }
 
 interface CloudVersion {
@@ -307,7 +308,16 @@ async function submitOrResumeOperation(
         // 5xx may be an ambiguous response after the Server accepted the write.
         // Keep its key so the next retry asks the Server for the same operation.
         if (response.status < 500) clearOperationAttempt(storageKey, current);
-        throw new Error(`${operationLabel}提交失败（${response.status}）`);
+        // Surface the server's structured error message (e.g. BUILD_NOT_CURRENT)
+        // instead of a generic status code so the user knows what to fix.
+        let serverMessage = "";
+        try {
+          const errorBody = await response.clone().json();
+          serverMessage = errorBody?.error?.message || "";
+        } catch {
+          // response body wasn't JSON; fall through to generic message
+        }
+        throw new Error(serverMessage || `${operationLabel}提交失败（${response.status}）`);
       }
       const operation = await response.json();
       const operationId = String(operation?.id || "").trim();
@@ -605,13 +615,26 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         if (cancelled) return;
         setCloudRegion(String(settings.cloudRegion || "").trim());
         setDeployableBuilds(candidates);
+        const firstCurrent = candidates.find((b: BuildCandidate) => b.isCurrent !== false);
         if (createSelection.buildId) {
-          if (!candidates.some((build: BuildCandidate) => build.id === createSelection.buildId)) {
+          const requested = candidates.find((build: BuildCandidate) => build.id === createSelection.buildId);
+          if (!requested) {
             throw new Error(`Build ${createSelection.buildId} 不存在或尚未成功`);
           }
-          setSelectedBuildId(createSelection.buildId);
+          // If the URL-pinned build is stale (isCurrent===false), prefer the most
+          // recent current build so the user doesn't silently deploy a stale
+          // revision and hit 409 BUILD_NOT_CURRENT.
+          if (requested.isCurrent === false && firstCurrent) {
+            setSelectedBuildId(firstCurrent.id);
+          } else {
+            setSelectedBuildId(createSelection.buildId);
+          }
         } else {
-          setSelectedBuildId(current => candidates.some((build: BuildCandidate) => build.id === current) ? current : "");
+          // Prefer the most recent current build; fall back to current selection or first candidate.
+          setSelectedBuildId(current => {
+            if (candidates.some((build: BuildCandidate) => build.id === current)) return current;
+            return (firstCurrent || candidates[0])?.id || "";
+          });
         }
       } catch (caught: any) {
         if (!cancelled) setCreateError(caught?.message || "可部署 Build 不可用");
@@ -1013,13 +1036,14 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   type="button"
                   role="radio"
                   aria-checked={build.id === selectedBuildId}
-                  aria-label={`${build.agentName || build.agentId || "Agent"} ${build.id}`}
+                  aria-label={`${build.agentName || build.agentId || "Agent"} ${build.id}${build.isCurrent === false ? " (声明已变更)" : ""}`}
                   className="deployment-version-option"
                   data-selected={build.id === selectedBuildId}
+                  data-stale={build.isCurrent === false}
                   onClick={() => setSelectedBuildId(build.id)}
                 >
                   <strong className="deployment-version-name">{build.agentName || build.agentId || "未命名 Agent"}</strong>
-                  <span className="deployment-version-state" data-state="available">{build.artifactType === "ManagedRuntime" ? "托管声明" : "代码 Bundle"}</span>
+                  <span className="deployment-version-state" data-state={build.isCurrent === false ? "stale" : "available"}>{build.artifactType === "ManagedRuntime" ? "托管声明" : "代码 Bundle"}{build.isCurrent === false ? " · 声明已变更" : ""}</span>
                   <code title={build.id}>{shortId(build.id, 24)}</code>
                   <time className="deployment-version-time" dateTime={build.createdAt || undefined}>{formatUpdatedAt(build.createdAt)}</time>
                 </button>

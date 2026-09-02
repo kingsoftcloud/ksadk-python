@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,13 +13,10 @@ from ksadk.events.canonical import (
     InteractionRequested,
     ItemCompleted,
     ItemStarted,
-    ItemUpdated,
     OutputRef,
     RunCompleted,
-    RunFailed,
     RunInterrupted,
     RunStarted,
-    RunCanceled,
     RuntimeEvent,
     SourceRef,
     StructuredInputRequest,
@@ -46,6 +44,7 @@ from ksadk.runtime import (
     StartRequest,
 )
 from ksadk.studio.contracts import RunStatus
+from ksadk.studio.errors import StudioError
 from ksadk.studio.run_service import (
     StudioRunService,
     StudioRunSpec,
@@ -165,6 +164,90 @@ class _RecordingAdapter(RuntimeAdapter):
         self.calls.append(("close", handle))
 
 
+class _MultiMessageAdapter(_RecordingAdapter):
+    async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+        common = {
+            "schema_version": 2,
+            "timestamp": 1.0,
+            "run_id": handle.run_id,
+            "scope_id": f"scope-{handle.run_id}",
+        }
+        source = SourceRef(framework=self.runtime_type)
+        yield RunStarted(event_id="e1", seq=1, status="running", source=source, **common)
+        for seq, item_id in ((2, "msg-a"), (3, "msg-b")):
+            yield ItemCompleted(
+                event_id=f"e{seq}",
+                seq=seq,
+                item_id=item_id,
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(TextContent(part_id=f"{item_id}-text", text="same"),)
+                ),
+                source=source,
+                **common,
+            )
+        yield RunCompleted(
+            event_id="e4",
+            seq=4,
+            status="completed",
+            output_refs=(
+                OutputRef(
+                    scope_id=common["scope_id"],
+                    item_id="msg-a",
+                    part_id="msg-a-text",
+                ),
+                OutputRef(
+                    scope_id=common["scope_id"],
+                    item_id="msg-b",
+                    part_id="msg-b-text",
+                ),
+            ),
+            source=source,
+            **common,
+        )
+
+
+def test_kernel_route_is_used_only_for_its_bound_studio_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An enabled Kernel must not silently execute a different Studio Build."""
+
+    from ksadk.kernel import bootstrap as kernel_bootstrap
+    from ksadk.kernel import ingress as kernel_ingress
+
+    active_context = RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path)
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            launch_context=active_context,
+            agent_instance_id="instance-codex",
+            start_request_defaults={"agent_id": "sales-helper"},
+        )
+    )
+    monkeypatch.setattr(kernel_ingress, "kernel_route_active", lambda: True)
+    monkeypatch.setattr(kernel_bootstrap, "get_agent_kernel_runtime", lambda: runtime)
+
+    matching = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+        build_id="build-codex",
+        agent_id="sales-helper",
+    )
+    assert StudioRunService._kernel_runtime_for_spec(matching) is runtime
+
+    other_agent = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+        build_id="build-other",
+        agent_id="research-helper",
+    )
+    assert StudioRunService._kernel_runtime_for_spec(other_agent) is None
+
+    other_runtime = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="langgraph", project_dir=tmp_path),
+        build_id="build-graph",
+        agent_id="sales-helper",
+    )
+    assert StudioRunService._kernel_runtime_for_spec(other_runtime) is None
+
+
 @pytest.mark.asyncio
 async def test_studio_run_service_uses_core_executor_and_persists_runtime_events(
     tmp_path: Path,
@@ -219,6 +302,31 @@ async def test_studio_run_service_uses_core_executor_and_persists_runtime_events
     ]
     assert [event.seq for event in canonical] == [1, 2, 3]
     assert {event.run_id for event in canonical} == {"native-langgraph"}
+
+
+@pytest.mark.asyncio
+async def test_terminal_output_preserves_identity_distinct_message_items(
+    tmp_path: Path,
+) -> None:
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: _MultiMessageAdapter([], "codex"))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+
+    record = await service.run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(
+                runtime_type="codex",
+                project_dir=tmp_path,
+            ),
+            build_id="build-multi-message",
+            agent_id="multi-message-agent",
+        ),
+        "keep both outputs",
+    )
+
+    assert record.output == "same\n\nsame"
 
 
 @pytest.mark.asyncio
@@ -743,6 +851,8 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
 
         async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
             self.calls.append(("submit", payload))
+            if payload.data.get("note") == "provider-failure":
+                raise RuntimeError("provider rejected interaction")
             self.answered.set()
 
     calls: list[tuple[str, Any]] = []
@@ -769,17 +879,68 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
             break
     assert run.status == RunStatus.WAITING_INPUT
 
-    result = await service.submit_interaction(
-        run.id,
-        "question-1",
-        name="submit",
-        data={"scope": ["前端", "服务端"], "note": "忽略生成文件"},
+    with pytest.raises(StudioError) as stale:
+        await service.submit_interaction(
+            run.id,
+            "question-1",
+            name="submit",
+            data={},
+            expected_revision=2,
+            idempotency_key="interaction:question-1:stale",
+        )
+    assert stale.value.code == "INTERACTION_REVISION_MISMATCH"
+
+    with pytest.raises(StudioError) as provider_failure:
+        await service.submit_interaction(
+            run.id,
+            "question-1",
+            name="submit",
+            data={"note": "provider-failure"},
+            expected_revision=1,
+            idempotency_key="interaction:question-1:provider-failure",
+        )
+    assert provider_failure.value.code == "INTERACTION_SUBMIT_FAILED"
+    assert not any(event.type == "a2ui.action" for event in service.event_store.events(run.id))
+
+    request = {
+        "name": "submit",
+        "data": {"scope": ["前端", "服务端"], "note": "忽略生成文件"},
+        "expected_revision": 1,
+        "idempotency_key": "interaction:question-1:revision-1",
+    }
+    first, replay = await asyncio.gather(
+        service.submit_interaction(run.id, "question-1", **request),
+        service.submit_interaction(run.id, "question-1", **request),
     )
-    assert result["status"] == "resolved"
+    assert first == replay
+    assert first["status"] == "resolved"
+    assert first["revision"] == 2
+
+    with pytest.raises(StudioError) as replay_conflict:
+        await service.submit_interaction(
+            run.id,
+            "question-1",
+            name="submit",
+            data={"scope": ["后端"]},
+            expected_revision=1,
+            idempotency_key="interaction:question-1:revision-1",
+        )
+    assert replay_conflict.value.code == "INTERACTION_IDEMPOTENCY_CONFLICT"
+
+    with pytest.raises(StudioError) as already_resolved:
+        await service.submit_interaction(
+            run.id,
+            "question-1",
+            name="submit",
+            data=request["data"],
+            expected_revision=1,
+            idempotency_key="interaction:question-1:other-attempt",
+        )
+    assert already_resolved.value.code == "INTERACTION_ALREADY_RESOLVED"
     completed = await asyncio.wait_for(task, timeout=2)
     assert completed.status == RunStatus.COMPLETED
     assert completed.output == "已按选择继续"
-    submitted = next(value for name, value in calls if name == "submit")
+    submitted = [value for name, value in calls if name == "submit"][-1]
     assert submitted.kind == "hitl_answer"
     assert submitted.call_id == "question-1"
     assert submitted.data == {
@@ -787,6 +948,7 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
         "scope": ["前端", "服务端"],
         "note": "忽略生成文件",
     }
+    assert [name for name, _ in calls].count("submit") == 2
     assert "a2ui.action" in service_event_types(workspace, run.id)
 
 
@@ -850,6 +1012,48 @@ def test_a2ui_runtime_events_are_persisted_as_official_operations() -> None:
         "updateComponents",
         "updateDataModel",
     ]
+
+
+def test_completed_a2ui_operation_batch_keeps_surface_visible() -> None:
+    event_type, payload = project_runtime_event(
+        ItemCompleted(
+            event_id="e2",
+            seq=2,
+            item_id="surface-batch-1",
+            item_kind="data",
+            snapshot=ContentSnapshot(
+                parts=(
+                    DataContent(
+                        part_id="a2ui-surface",
+                        data={
+                            "surface_id": "surface-1",
+                            "components": [
+                                {"id": "root", "component": "Text", "text": "Hello"}
+                            ],
+                        },
+                    ),
+                )
+            ),
+            schema_version=2,
+            timestamp=2.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(
+                framework="codex",
+                protocol="a2ui",
+                metadata={
+                    "surface_id": "surface-1",
+                    "operation_batch": True,
+                    "surface_lifecycle": "begin",
+                },
+            ),
+        )
+    )
+
+    assert event_type == "a2ui.surface.begin"
+    assert [
+        next(iter(operation.keys() - {"version"})) for operation in payload["a2uiOperations"]
+    ] == ["createSurface", "updateComponents"]
 
 
 def service_event_types(workspace: Workspace, run_id: str) -> list[str]:

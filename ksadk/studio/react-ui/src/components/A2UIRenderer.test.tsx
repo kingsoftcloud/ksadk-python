@@ -17,7 +17,7 @@ describe("A2UIRenderer", () => {
             root: { id: "root", component: "Card", title: "需要你的确认", children: ["approval"] },
             approval: { id: "approval", component: "ApprovalBar", summary: "写入配置", approve_label: "批准", deny_label: "拒绝" },
           },
-          interaction: { id: "approval-1", kind: "approval", status: "pending", inputSchema: {} },
+          interaction: { id: "approval-1", revision: 1, kind: "approval", status: "pending", inputSchema: {} },
         }}
         onSubmit={submit}
       />,
@@ -25,7 +25,7 @@ describe("A2UIRenderer", () => {
 
     expect(screen.getByText("需要你的确认")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "批准" }));
-    expect(submit).toHaveBeenCalledWith("approval-1", "approve", {});
+    expect(submit).toHaveBeenCalledWith("approval-1", 1, "approve", {});
   });
 
   it("collects multi-select and custom text input values", async () => {
@@ -42,7 +42,7 @@ describe("A2UIRenderer", () => {
             targets: { id: "targets", component: "CheckboxGroup", name: "targets", label: "目标", options: ["A", "B"] },
             note: { id: "note", component: "TextField", name: "note", label: "补充说明" },
           },
-          interaction: { id: "interaction-1", kind: "form", status: "pending", inputSchema: {} },
+          interaction: { id: "interaction-1", revision: 1, kind: "form", status: "pending", inputSchema: {} },
         }}
         onSubmit={submit}
       />,
@@ -51,7 +51,7 @@ describe("A2UIRenderer", () => {
     await userEvent.click(screen.getByLabelText("A"));
     await userEvent.type(screen.getByLabelText("补充说明"), "仅检查");
     await userEvent.click(screen.getByRole("button", { name: "继续" }));
-    expect(submit).toHaveBeenCalledWith("interaction-1", "submit", {
+    expect(submit).toHaveBeenCalledWith("interaction-1", 1, "submit", {
       targets: ["A"],
       note: "仅检查",
     });
@@ -81,7 +81,7 @@ describe("A2UIRenderer", () => {
               ],
             },
           },
-          interaction: { id: "question-1", kind: "form", status: "pending", inputSchema: {} },
+          interaction: { id: "question-1", revision: 1, kind: "form", status: "pending", inputSchema: {} },
         }}
         onSubmit={submit}
       />,
@@ -91,7 +91,7 @@ describe("A2UIRenderer", () => {
     await userEvent.type(screen.getByLabelText("检查范围自定义输入"), "只检查协议层");
     await userEvent.click(screen.getByRole("button", { name: /提交/ }));
 
-    expect(submit).toHaveBeenCalledWith("question-1", "submit", {
+    expect(submit).toHaveBeenCalledWith("question-1", 1, "submit", {
       scope: "只检查协议层",
     });
   });
@@ -108,7 +108,7 @@ describe("A2UIRenderer", () => {
         summary: { id: "summary", component: "TextField", name: "summary", label: "摘要" },
         note: { id: "note", component: "TextField", name: "note", label: "补充" },
       },
-      interaction: { id: "interaction-streamed", kind: "form", status: "pending" as const, inputSchema: {} },
+      interaction: { id: "interaction-streamed", revision: 1, kind: "form", status: "pending" as const, inputSchema: {} },
     };
     const view = render(<A2UIRenderer surface={surface} onSubmit={submit} />);
     await userEvent.clear(screen.getByLabelText("补充"));

@@ -11,6 +11,7 @@ fresh source snapshot.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -64,6 +65,7 @@ ROOT_EXPORT_FILES = {
 }
 
 EXPORT_PREFIXES = (
+    "contracts/",
     "docs-site/",
     "ksadk/",
     "ksadk_runtime_common/",
@@ -100,6 +102,7 @@ REQUIRED_PUBLIC_FILES = {
 }
 
 SCRIPT_EXPORT_FILES = {
+    "scripts/audit_docs_site_output.py",
     "scripts/audit_release_artifacts.py",
     "scripts/build_alias_distribution.py",
     "scripts/check_approval_record.py",
@@ -107,23 +110,66 @@ SCRIPT_EXPORT_FILES = {
     "scripts/check_release_version.py",
     "scripts/generate_public_assets.py",
     "scripts/open_source_audit.py",
+    "scripts/phase2_release_candidate_gate.py",
+    "scripts/phase2_release_preflight.py",
     "scripts/prepare_ksadk_python_export.py",
     "scripts/prepare_ksadk_web_export.py",
     "scripts/public_secret_audit.py",
     "scripts/verify_ksadk_web_static.py",
+    "scripts/write_build_provenance.py",
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/__init__.py",
     "tests/conftest.py",
     "tests/events/fixtures/runtime_projection_golden.json",
+    "tests/compat/fixtures/v0.8.2-agent-bundle.provenance.json",
+    "tests/compat/fixtures/v0.8.2-agent-bundle.zip.b64",
+    "tests/compat/fixtures/v0.8.2-managed-runtime-agentengine.provenance.json",
+    "tests/compat/fixtures/v0.8.2-managed-runtime-agentengine.yaml",
+    "tests/compat/test_phase2_legacy_compat.py",
+    "tests/compat/test_release_082_asset_compat.py",
+    "tests/e2e/test_codex_plugin_bridge_e2e.py",
+    "tests/e2e/test_codex_provider_app_server_e2e.py",
+    "tests/e2e/test_codex_subagent_provider_e2e.py",
+    "tests/e2e/fixtures/codex-marketplace/.agents/plugins/marketplace.json",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/plugin.json",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-check/SKILL.md",
+    "tests/e2e/test_dsh_managed_toolchain_e2e.py",
+    "tests/e2e/chat_completions_stub.py",
+    "tests/e2e/codex_app_server_fixture.py",
+    "tests/fixtures/dsh-node-agent-provider/cordis.patch.yml",
+    "tests/fixtures/dsh-node-agent-provider/index.mjs",
+    "tests/fixtures/dsh-node-agent-provider/package.json",
+    "tests/fixtures/dsh-node-agent-provider/provider-host.mjs",
+    "tests/e2e/codex_responses_stub.py",
+    "tests/harness/__init__.py",
+    "tests/harness/fixtures/__init__.py",
+    "tests/harness/fixtures/mcp_server.py",
+    "tests/packaging/test_phase2_release_candidate_gate.py",
+    "tests/packaging/test_phase2_release_preflight.py",
+    "tests/packaging/test_write_build_provenance.py",
+    "tests/plugins/__init__.py",
+    "tests/plugins/test_dsh_node_provider_e2e.py",
+    "tests/plugins/test_codex_provider_vertical.py",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
     "tests/test_config_env_registry.py",
+    "tests/test_docs_site_output_audit.py",
     "tests/test_markdown_repair.py",
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",
     "tests/test_runtime_common_packaging.py",
     "tests/studio/test_style_system.py",
+    "tests/studio/__init__.py",
+    "tests/studio/test_framework_bundle_integrity.py",
+    "tests/studio/runtime_adapter_fixtures.py",
+    "tests/studio/e2e/conversation_items_browser_e2e.py",
+    "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
+    "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
+    "tests/studio/e2e/scheduler_browser_e2e.py",
+    "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
+    "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/studio_browser_smoke.py",
     "tests/studio/e2e/studio_e2e_support.py",
     "tests/studio/e2e/studio_responsive_smoke.py",
@@ -220,6 +266,26 @@ def git_files(root: Path) -> list[str]:
         for path in completed.stdout.splitlines()
         if normalize(path) not in deleted_paths
     )
+
+
+def git_source_provenance(root: Path) -> tuple[str, str]:
+    """Return the reviewed source identity carried by a clean export."""
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip().lower()
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    return commit, "dirty" if status else "clean"
 
 
 def filesystem_files(root: Path) -> list[str]:
@@ -328,6 +394,7 @@ def build_export_plan(repo_root: Path) -> ExportPlan:
 
 def copy_export(plan: ExportPlan, output_dir: Path) -> None:
     repo_root = Path(plan.repo_root)
+    source_commit, source_tree = git_source_provenance(repo_root)
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
@@ -340,27 +407,35 @@ def copy_export(plan: ExportPlan, output_dir: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
+    policy_payload = {
+        "rootFiles": sorted(ROOT_EXPORT_FILES),
+        "prefixes": list(EXPORT_PREFIXES),
+        "curatedDocs": sorted(CURATED_DOCS),
+        "curatedReferenceDocs": sorted(CURATED_REFERENCE_DOCS),
+        "scripts": sorted(SCRIPT_EXPORT_FILES),
+        "tests": sorted(PUBLIC_TEST_FILES),
+    }
+    policy_digest = hashlib.sha256(
+        json.dumps(
+            policy_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     manifest = {
+        "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "sourceCommit": source_commit,
+        "sourceTree": source_tree,
         "targetRepository": TARGET_REPOSITORY,
         "documentation": DOCUMENTATION_URL,
         "exportPathCount": len(plan.export_paths),
-        "excludedPathCount": len(plan.excluded_paths),
-        "excludedPaths": plan.excluded_paths,
-        "includePolicy": {
-            "rootFiles": sorted(ROOT_EXPORT_FILES),
-            "prefixes": list(EXPORT_PREFIXES),
-            "curatedDocs": sorted(CURATED_DOCS),
-            "curatedReferenceDocs": sorted(CURATED_REFERENCE_DOCS),
-            "scripts": sorted(SCRIPT_EXPORT_FILES),
-            "tests": sorted(PUBLIC_TEST_FILES),
+        "exportPolicy": {
+            "mode": "allowlist",
+            "schemaVersion": 1,
+            "sha256": policy_digest,
         },
-        "notes": [
-            "Local-only clean export candidate.",
-            "Clean export uses an allowlist policy for the first public GitHub snapshot.",
-            "Run public-repo audit before importing to GitHub.",
-            "Do not include PyPI/TestPyPI credentials, .pypirc files, or CI secrets.",
-        ],
     }
     (output_dir / "export-manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",

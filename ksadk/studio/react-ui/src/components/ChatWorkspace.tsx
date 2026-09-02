@@ -36,8 +36,10 @@ import {
   type ApprovalMode,
 } from "../approvalModes";
 import {
+  applyConversationStreamResult,
   createChatStreamState,
   createResponseSseParser,
+  eventDetail,
   groupRunsBySession,
   latestActiveRun,
   persistedRunsForDisplay,
@@ -59,6 +61,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { showToast } from "./Toast";
 import {
   buildResponsesInput,
+  COMPOSER_ATTACHMENT_ACCEPT,
   encodedComposerAttachmentsBytes,
   fileToComposerAttachment,
   MAX_COMPOSER_ATTACHMENT_BYTES,
@@ -75,6 +78,37 @@ import {
 } from "./ChatComposer";
 import { RuntimeModeBar, type RuntimeMode, type RuntimeModeStatus } from "./RuntimeModeBar";
 import { redactTechnicalError, runErrorCopy } from "../utils/chatErrors";
+import {
+  buildConversationInput,
+  ConversationClientError,
+  HttpConversationClient,
+  surfacePermitsInput as declaredSurfacePermitsInput,
+  type ConversationTimelineEntry,
+  type ConversationSurface,
+} from "../conversationProtocol";
+
+function conversationFailureMessage(error: unknown): string {
+  if (!(error instanceof ConversationClientError)) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  switch (error.code) {
+    case "conversation_run_identity_missing":
+      return "会话流在返回可恢复的 Run 标识前中断，请刷新会话查看运行结果。";
+    case "conversation_reconnect_exhausted":
+      return "会话流已断开，自动续流后仍未到达终态；运行仍在后台继续，请刷新会话查看结果。";
+    case "conversation_input_unsupported":
+      return "当前 Agent 不支持本轮选择的输入能力，请调整附件、模型或运行模式后重试。";
+    case "conversation_session_mismatch":
+      return "会话已发生变化，请刷新后重试。";
+    case "conversation_contract_mismatch":
+      return "Agent 返回的会话数据与当前协议不兼容，请刷新或改用旧版兼容入口。";
+    case "conversation_http_error":
+    case "conversation_stream_error":
+      return "云端会话连接中断，请稍后重试；已开始的运行仍可从会话记录恢复。";
+    case "conversation_aborted":
+      return "本轮会话已停止。";
+  }
+}
 
 interface ChatModel {
   id: string;
@@ -83,6 +117,21 @@ interface ChatModel {
   context_window_tokens?: number;
   contextWindowTokens?: number;
   capabilities?: Record<string, unknown>;
+}
+
+type ConversationSurfaceState =
+  | { status: "loading" }
+  | { status: "declared"; buildId: string; surface: ConversationSurface }
+  | { status: "legacy" }
+  | { status: "error" };
+
+function surfacePermitsInput(
+  state: ConversationSurfaceState,
+  ...names: string[]
+): boolean {
+  if (state.status === "legacy") return true;
+  if (state.status !== "declared") return false;
+  return declaredSurfacePermitsInput(state.surface, ...names);
 }
 
 interface ChatWorkspaceProps {
@@ -188,6 +237,35 @@ async function responseError(response: Response): Promise<string> {
     || payload?.Message
     || payload?.message
     || `请求失败（HTTP ${response.status}）`;
+}
+
+async function uploadConversationAttachment(
+  attachment: ComposerAttachment,
+  signal: AbortSignal,
+): Promise<{ attachmentRef: string; mediaType: string; name: string }> {
+  let blob: Blob;
+  if (attachment.kind === "image" && attachment.dataUrl) {
+    blob = await (await fetch(attachment.dataUrl, { signal })).blob();
+  } else {
+    blob = new Blob([attachment.text || ""], { type: attachment.mimeType || "text/plain" });
+  }
+  const form = new FormData();
+  form.append("file", new File([blob], attachment.name, {
+    type: attachment.mimeType || blob.type || "application/octet-stream",
+  }));
+  const response = await apiFetch("/api/v1/conversation-attachments", {
+    method: "POST",
+    body: form,
+    signal,
+  });
+  if (!response.ok) throw new Error(await responseError(response));
+  const payload = await response.json();
+  if (typeof payload?.attachmentRef !== "string"
+    || typeof payload?.mediaType !== "string"
+    || typeof payload?.name !== "string") {
+    throw new Error("附件上传响应无效");
+  }
+  return payload;
 }
 
 function RunErrorCard({
@@ -313,16 +391,88 @@ function ActivityCard({ activity }: { activity: RunActivity }) {
   );
 }
 
+/**
+ * Render the canonical item order for typed Conversation/v1 streams.  This is
+ * deliberately separate from the legacy ProcessingGroup: a grouped string
+ * cannot represent thinking → tool → thinking → answer without reordering it.
+ */
+function ConversationTimeline({
+  items,
+  streaming,
+}: {
+  items: ConversationTimelineEntry[];
+  streaming: boolean;
+}) {
+  const visible = items.filter(entry => !["artifact", "a2ui", "error"].includes(entry.item.kind));
+  if (!visible.length) return null;
+  return (
+    <div className="chat-conversation-timeline" data-ui="conversation-timeline">
+      {visible.map(entry => {
+        const { item } = entry;
+        if (item.kind === "assistant_text") {
+          const text = typeof item.payload.text === "string" ? item.payload.text : "";
+          return text ? <MarkdownMessage key={entry.key} streaming={streaming && item.lifecycle === "streaming"}>{text}</MarkdownMessage> : null;
+        }
+        if (item.kind === "reasoning") {
+          const text = typeof item.payload.text === "string" ? item.payload.text : "";
+          return (
+            <details className="chat-processing-group" key={entry.key} open={streaming && item.lifecycle !== "completed"} data-ui="think">
+              <summary>
+                <BrainCircuit size={15} className="chat-processing-icon" />
+                <span>{item.lifecycle === "completed" ? "查看思考过程" : "正在思考"}</span>
+                {streaming && item.lifecycle !== "completed" && <Loader2 size={13} className="animate-spin" />}
+                <ChevronDown size={14} className="details-chevron" />
+              </summary>
+              {text && <div className="chat-processing-content"><div className="chat-reasoning-content">{text}</div></div>}
+            </details>
+          );
+        }
+        if (item.kind === "tool_call" || item.kind === "approval") {
+          const pending = item.kind === "approval" && item.lifecycle === "pending";
+          const activity: RunActivity = {
+            id: entry.key,
+            kind: item.kind === "approval" ? "approval" : "tool",
+            title: String(item.payload.tool || item.payload.title || item.payload.kind || (pending ? "等待批准" : "调用工具")),
+            status: item.lifecycle === "failed" ? "failed" : item.lifecycle === "completed" ? "completed" : pending ? "waiting" : "running",
+            detail: eventDetail(item.payload),
+            data: item.payload,
+          };
+          return <ActivityCard key={entry.key} activity={activity} />;
+        }
+        if (item.kind === "plan" || item.kind === "goal") {
+          const text = typeof item.payload.text === "string"
+            ? item.payload.text
+            : typeof item.payload.objective === "string"
+              ? item.payload.objective
+              : "";
+          return (
+            <details className="chat-activity-card" key={entry.key} open={streaming && item.lifecycle !== "completed"}>
+              <summary>
+                <span className="chat-activity-copy"><small>{item.kind === "plan" ? "计划" : "目标"}</small><strong>{text || (item.kind === "plan" ? "正在更新计划" : "正在更新目标")}</strong></span>
+                <ChevronDown size={14} className="details-chevron" />
+              </summary>
+              {text && <pre>{text}</pre>}
+            </details>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
 /** Pending interactions belong immediately above the blocked composer. */
 function ComposerInteractionTray({
   surfaces,
+  approvals = [],
   onInteraction,
 }: {
   surfaces: A2UISurface[];
-  onInteraction: (interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  approvals?: Array<{ id: string; title: string; revision: number }>;
+  onInteraction: (interactionId: string, revision: number, name: string, data: Record<string, unknown>) => Promise<void>;
 }) {
   const pending = surfaces.filter(surface => surface.interaction?.status === "pending");
-  if (!pending.length) return null;
+  if (!pending.length && !approvals.length) return null;
   return (
     <div className="chat-pending-interactions" aria-label="待处理确认" data-ui="interaction-tray">
       <div className="chat-pending-interactions-heading">
@@ -332,6 +482,17 @@ function ComposerInteractionTray({
       </div>
       {pending.map(surface => (
         <A2UIRenderer key={surface.id} surface={surface} onSubmit={onInteraction} />
+      ))}
+      {approvals.map(approval => (
+        <div className="chat-activity-card approval" key={approval.id} data-ui="approval-card">
+          <div className="chat-activity-row">
+            <span className="chat-activity-copy"><small>工具操作</small><strong>{approval.title}</strong></span>
+            <span className="chat-run-error-actions">
+              <button className="button secondary small" type="button" onClick={() => { void onInteraction(approval.id, approval.revision, "reject", {}); }}>拒绝</button>
+              <button className="button primary small" type="button" onClick={() => { void onInteraction(approval.id, approval.revision, "approve", {}); }}>允许</button>
+            </span>
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -344,7 +505,7 @@ function PersistedInteractionTray({
 }: {
   runId: string;
   status?: string;
-  onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  onInteraction: (runId: string, interactionId: string, revision: number, name: string, data: Record<string, unknown>) => Promise<void>;
 }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
 
@@ -377,7 +538,7 @@ function PersistedInteractionTray({
   return (
     <ComposerInteractionTray
       surfaces={projectA2UISurfaces(events)}
-      onInteraction={(interactionId, name, data) => onInteraction(runId, interactionId, name, data)}
+      onInteraction={(interactionId, revision, name, data) => onInteraction(runId, interactionId, revision, name, data)}
     />
   );
 }
@@ -393,7 +554,7 @@ function RunActivityCards({
   status?: string;
   durationMs?: number | null;
   showOutput?: boolean;
-  onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  onInteraction: (runId: string, interactionId: string, revision: number, name: string, data: Record<string, unknown>) => Promise<void>;
 }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -449,7 +610,7 @@ function RunActivityCards({
         <A2UIRenderer
           key={surface.id}
           surface={surface}
-          onSubmit={(interactionId, name, data) => onInteraction(runId, interactionId, name, data)}
+          onSubmit={(interactionId, revision, name, data) => onInteraction(runId, interactionId, revision, name, data)}
         />
       ))}
       {showOutput && projection.output && <MarkdownMessage>{projection.output}</MarkdownMessage>}
@@ -520,7 +681,7 @@ function PersistedTurn({
   run: ChatRun;
   agentName: string;
   agentAppearance?: AgentAppearance;
-  onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  onInteraction: (runId: string, interactionId: string, revision: number, name: string, data: Record<string, unknown>) => Promise<void>;
   onConfigure?: () => void;
   onOpenSettings?: () => void;
   onRetry: (prompt: string) => void;
@@ -580,11 +741,12 @@ function StreamingTurn({
   stream: ChatStreamState;
   agentName: string;
   agentAppearance?: AgentAppearance;
-  onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  onInteraction: (runId: string, interactionId: string, revision: number, name: string, data: Record<string, unknown>) => Promise<void>;
   onConfigure?: () => void;
   onOpenSettings?: () => void;
   onRetry: (prompt: string) => void;
 }) {
+  const hasTimeline = stream.timeline.length > 0;
   return (
     <>
       <article className="message user" data-ui="bubble" data-role="user">
@@ -598,15 +760,42 @@ function StreamingTurn({
           <span>{stream.status === "streaming" ? "正在生成" : "刚刚"}</span>
         </div>
         <div className="message-content">
-          <ProcessingGroup reasoning={stream.reasoning} activities={stream.activities} streaming={stream.status === "streaming"} />
+          {hasTimeline ? (
+            <ConversationTimeline items={stream.timeline} streaming={stream.status === "streaming"} />
+          ) : (
+            <ProcessingGroup reasoning={stream.reasoning} activities={stream.activities} streaming={stream.status === "streaming"} />
+          )}
           {stream.surfaces.filter(surface => surface.interaction?.status !== "pending").map(surface => (
             <A2UIRenderer
               key={surface.id}
               surface={surface}
-              onSubmit={(interactionId, name, data) => onInteraction(stream.runId, interactionId, name, data)}
+              onSubmit={(interactionId, revision, name, data) => onInteraction(stream.runId, interactionId, revision, name, data)}
             />
           ))}
-          {stream.output ? <MarkdownMessage streaming={stream.status === "streaming"}>{stream.output}</MarkdownMessage> : stream.error ? (
+          {stream.artifacts.map(artifact => (
+            <div className="chat-activity-card artifact" key={artifact.id} data-ui="artifact">
+              <div className="chat-activity-row">
+                <span className="chat-activity-copy">
+                  <small>{artifact.mimeType}</small>
+                  <strong>{artifact.name}</strong>
+                </span>
+                {artifact.uri && <a href={artifact.uri} target="_blank" rel="noreferrer">打开</a>}
+              </div>
+            </div>
+          ))}
+          {stream.fallbacks.map(card => (
+            <div
+              className={`chat-activity-card unknown${card.failed ? " failed" : ""}`}
+              key={card.id}
+              data-ui="conversation-fallback"
+              role={card.failed ? "alert" : "status"}
+            >
+              <div className="chat-activity-row">
+                <span className="chat-activity-copy"><small>{card.title}</small><strong>{card.detail}</strong></span>
+              </div>
+            </div>
+          ))}
+          {!hasTimeline && stream.output ? <MarkdownMessage streaming={stream.status === "streaming"}>{stream.output}</MarkdownMessage> : stream.error ? (
             <RunErrorCard
               error={stream.error}
               onConfigure={onConfigure}
@@ -615,7 +804,7 @@ function StreamingTurn({
             />
           ) : stream.status === "cancelled" ? (
             <span className="plain-message">运行已停止</span>
-          ) : (
+          ) : hasTimeline || stream.artifacts.length || stream.fallbacks.length || stream.surfaces.length ? null : (
             <span className="message-loading"><i /><i /><i /></span>
           )}
         </div>
@@ -644,6 +833,7 @@ export function ChatWorkspace({
   const [collaborationMode, setCollaborationMode] = useState<CollaborationMode>("default");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [conversationSurface, setConversationSurface] = useState<ConversationSurfaceState>({ status: "loading" });
   const [commandIndex, setCommandIndex] = useState(0);
   const [stream, setStream] = useState<ChatStreamState | null>(null);
   const [optimisticPrompt, setOptimisticPrompt] = useState("");
@@ -654,8 +844,10 @@ export function ChatWorkspace({
   const messageListRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const submissionInFlightRef = useRef(false);
   const followBottomRef = useRef(true);
   const scrollBySessionRef = useRef(new Map<string, number>());
+  const previewSurfaceSessionId = useMemo(() => uniqueId("ses_surface"), [agentId]);
 
   const sessions = useMemo(() => groupRunsBySession(runs, agentId), [runs, agentId]);
   const filteredSessions = useMemo(() => {
@@ -716,12 +908,95 @@ export function ChatWorkspace({
   const effectiveReasoningEffort = explicitReasoningEfforts(selectedModel).includes(reasoningEffort)
     ? reasoningEffort
     : "";
+  const allowsText = surfacePermitsInput(conversationSurface, "text");
+  const allowsImageAttachment = surfacePermitsInput(
+    conversationSurface,
+    "attachment.image",
+    "attachments",
+  );
+  const allowsFileAttachment = surfacePermitsInput(
+    conversationSurface,
+    "attachment.file",
+    "attachments",
+  );
+  const allowsAttachments = allowsImageAttachment || allowsFileAttachment;
+  const allowsPlan = surfacePermitsInput(conversationSurface, "plan");
+  const allowsGoal = surfacePermitsInput(conversationSurface, "goal");
+  const allowsApproval = surfacePermitsInput(conversationSurface, "approval", "approval.mode");
+  const allowsModelSelection = surfacePermitsInput(conversationSurface, "model.select");
+  const allowsReasoning = surfacePermitsInput(conversationSurface, "reasoning.effort");
+  const surfaceLoading = conversationSurface.status === "loading";
+  const attachmentAccept = allowsImageAttachment && allowsFileAttachment
+    ? COMPOSER_ATTACHMENT_ACCEPT
+    : allowsImageAttachment
+      ? "image/*"
+      : COMPOSER_ATTACHMENT_ACCEPT.split(",").filter(value => value !== "image/*").join(",");
 
   useEffect(() => {
     if (reasoningEffort && !explicitReasoningEfforts(selectedModel).includes(reasoningEffort)) {
       setReasoningEffort("");
     }
   }, [reasoningEffort, selectedModel]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    const surfaceSessionId = currentSessionId || previewSurfaceSessionId;
+    setConversationSurface({ status: "loading" });
+    const conversationClient = new HttpConversationClient({ fetch: apiFetch });
+    conversationClient.getSurface(agentId, surfaceSessionId, { signal: controller.signal })
+      .then(({ buildId, surface }) => {
+        if (surface.sessionId !== surfaceSessionId) {
+          throw new ConversationClientError(
+            "conversation_session_mismatch",
+            "Conversation surface changed session identity.",
+          );
+        }
+        if (!cancelled) setConversationSurface({
+          status: "declared",
+          buildId,
+          surface,
+        });
+      })
+      .catch(error => {
+        if (cancelled
+          || (error instanceof Error && error.name === "AbortError")
+          || (error instanceof ConversationClientError && error.code === "conversation_aborted")) return;
+        // Only an absent endpoint identifies a 0.8.2 legacy Studio.  A
+        // network/build/server failure must fail closed instead of exposing
+        // controls whose Runtime support could not be proven.
+        if (error instanceof ConversationClientError
+          && error.code === "conversation_http_error"
+          && error.status === 404) {
+          setConversationSurface({ status: "legacy" });
+          return;
+        }
+        setConversationSurface({ status: "error" });
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [agentId, currentSessionId, previewSurfaceSessionId, refreshTick]);
+
+  useEffect(() => {
+    if (conversationSurface.status !== "declared") return;
+    if (!allowsPlan && collaborationMode === "plan") {
+      setCollaborationMode("default");
+      localStorage.setItem(`agentkit:chat:collaboration:${agentId}`, "default");
+    }
+    if (!allowsAttachments && attachments.length) setAttachments([]);
+    if (!allowsReasoning && reasoningEffort) setReasoningEffort("");
+  }, [
+    agentId,
+    allowsAttachments,
+    allowsPlan,
+    allowsReasoning,
+    attachments.length,
+    collaborationMode,
+    conversationSurface.status,
+    reasoningEffort,
+  ]);
 
   const refreshRuns = useCallback(async () => {
     const runResponse = await apiFetch("/api/v1/runs");
@@ -826,6 +1101,14 @@ export function ChatWorkspace({
   function selectSession(sessionId: string) {
     const list = messageListRef.current;
     if (list && currentSessionId) scrollBySessionRef.current.set(currentSessionId, list.scrollTop);
+    // Drop the live run's stream so the composer reflects the selected
+    // session's own runs.  Without this, leaving a streaming session keeps
+    // ``stream.status === "streaming"`` and the composer stays disabled, and
+    // a subsequent submit fails with an already-attached runtime handle.
+    setStream(null);
+    setInput("");
+    setAttachments([]);
+    setOptimisticPrompt("");
     setCurrentSessionId(sessionId);
     setSessionPanelOpen(false);
     followBottomRef.current = !scrollBySessionRef.current.has(sessionId);
@@ -861,12 +1144,23 @@ export function ChatWorkspace({
 
   async function addAttachments(files: File[]) {
     if (isGenerating) return;
+    if (!allowsAttachments) {
+      showToast("当前 Agent 不支持附件", "运行时没有声明附件输入能力。", "error");
+      return;
+    }
+    const supportedFiles = files.filter(file => (
+      file.type.startsWith("image/") ? allowsImageAttachment : allowsFileAttachment
+    ));
+    if (supportedFiles.length !== files.length) {
+      showToast("部分附件未添加", "当前 Agent 没有声明对应的图片或文件输入能力。", "error");
+    }
+    if (!supportedFiles.length) return;
     const available = Math.max(0, MAX_COMPOSER_ATTACHMENTS - attachments.length);
     if (!available) {
       showToast("附件数量已达上限", `每轮最多 ${MAX_COMPOSER_ATTACHMENTS} 个`, "error");
       return;
     }
-    const selected = files.slice(0, available);
+    const selected = supportedFiles.slice(0, available);
     const existingBytes = attachments.reduce((total, item) => total + item.size, 0);
     if (existingBytes + selected.reduce((total, file) => total + file.size, 0) > MAX_COMPOSER_ATTACHMENT_BYTES) {
       showToast("附件体积过大", "每轮附件总计不能超过 1.5 MiB", "error");
@@ -894,13 +1188,25 @@ export function ChatWorkspace({
     const sourceInput = retrying ? inputOverride : input;
     const turnSourceAttachments = retrying ? [] : attachments;
     const submission = parseComposerSubmission(sourceInput);
-    if (isGenerating) return;
+    if (isGenerating || submissionInFlightRef.current) return;
+    if (surfaceLoading) {
+      showToast("正在确认会话能力", "请稍后再发送。", "error");
+      return;
+    }
+    if (!allowsText) {
+      showToast("当前 Agent 不支持文字会话", "运行时没有声明文字输入能力。", "error");
+      return;
+    }
     if (!model) {
       showToast("当前 Agent 尚未绑定模型", "请先完成模型绑定和凭证配置。", "error");
       onConfigureAgent?.();
       return;
     }
     if (submission.kind === "toggle-plan") {
+      if (!allowsPlan) {
+        showToast("当前 Agent 不支持计划模式", "运行时没有声明 Plan 输入能力。", "error");
+        return;
+      }
       togglePlanMode();
       return;
     }
@@ -908,6 +1214,10 @@ export function ChatWorkspace({
       changeCollaborationMode("default");
       setInput("");
       showToast("已返回默认模式", "下一轮对话生效", "success");
+      return;
+    }
+    if (submission.kind === "goal" && !allowsGoal) {
+      showToast("当前 Agent 不支持长期目标", "运行时没有声明 Goal 输入能力。", "error");
       return;
     }
     if (submission.kind === "goal" && !submission.objective) {
@@ -919,14 +1229,23 @@ export function ChatWorkspace({
     const content = submission.kind === "message"
       ? submission.text || (turnSourceAttachments.length ? "请分析这些附件。" : "")
       : goalObjective;
+    if (turnSourceAttachments.length && !allowsAttachments) {
+      showToast("当前 Agent 不支持附件", "请移除附件后重试。", "error");
+      return;
+    }
     if (!content && !turnSourceAttachments.length) return;
-    const sessionId = currentSessionId || uniqueId("ses");
+    submissionInFlightRef.current = true;
+    const sessionId = currentSessionId
+      || (conversationSurface.status === "declared"
+        ? conversationSurface.surface.sessionId
+        : uniqueId("ses"));
     const invocationId = uniqueId("resp");
     const approvalModeForTurn = approvalMode;
     const controller = new AbortController();
     abortRef.current = controller;
     let aggregate: ChatStreamState = {
       ...createChatStreamState(invocationId, sessionId),
+      transport: conversationSurface.status === "declared" ? "conversation" : "responses",
       collaborationMode,
       goalObjective,
       startedAt: new Date().toISOString(),
@@ -939,40 +1258,86 @@ export function ChatWorkspace({
     if (!retrying) setAttachments([]);
 
     try {
-      const response = await apiFetch("/v1/responses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          ...(effectiveReasoningEffort ? { reasoning: { effort: effectiveReasoningEffort } } : {}),
-          input: buildResponsesInput(content, turnAttachments),
-          stream: true,
-          metadata: {
-            agent_id: agentId,
-            session_id: sessionId,
-            invocation_id: invocationId,
-            approval_mode: approvalModeForTurn,
-            collaboration_mode: collaborationMode,
-            goal_objective: goalObjective || undefined,
-          },
-        }),
-      });
-      if (!response.ok || !response.body) throw new Error(await responseError(response));
-
-      const decoder = new TextDecoder();
-      const parser = createResponseSseParser(event => {
+      const applyStreamEvent = (event: Parameters<typeof reduceChatStreamEvent>[1]) => {
         aggregate = reduceChatStreamEvent(aggregate, event);
         setStream(aggregate);
-      });
-      const reader = response.body.getReader();
-      while (true) {
-        const { value, done } = await reader.read();
-        if (value) parser.push(decoder.decode(value, { stream: !done }));
-        if (done) break;
+      };
+      if (conversationSurface.status === "declared") {
+        const uploaded = await Promise.all(
+          turnAttachments.map(item => uploadConversationAttachment(item, controller.signal)),
+        );
+        const conversationInput = buildConversationInput({
+          inputId: invocationId,
+          sessionId,
+          idempotencyKey: invocationId,
+          parts: [
+            { kind: "text", text: content },
+            ...uploaded.map(item => ({
+              kind: "attachment" as const,
+              attachmentRef: item.attachmentRef,
+              mediaType: item.mediaType,
+              name: item.name,
+            })),
+          ],
+          ...(allowsModelSelection ? { modelRef: model } : {}),
+          ...(allowsReasoning && effectiveReasoningEffort ? { reasoning: effectiveReasoningEffort } : {}),
+          extensions: {
+            ...(allowsApproval ? { "ksadk.approval": approvalModeForTurn } : {}),
+            ...(allowsPlan ? { "ksadk.collaboration": collaborationMode } : {}),
+            ...(allowsGoal && goalObjective ? { "ksadk.goal": goalObjective } : {}),
+          },
+        });
+        const conversationClient = new HttpConversationClient({ fetch: apiFetch });
+        await conversationClient.streamTurn({
+          bootstrap: {
+            buildId: conversationSurface.buildId,
+            surface: conversationSurface.surface,
+          },
+          input: conversationInput,
+          signal: controller.signal,
+          onUpdate: result => {
+            aggregate = applyConversationStreamResult(aggregate, result);
+            setStream(aggregate);
+          },
+        });
+      } else {
+        // A 404 Surface endpoint is the only legacy signal. Existing 0.8.2
+        // agents keep the exact Responses wire while current agents use the
+        // typed ConversationInput path above.
+        const response = await apiFetch("/v1/responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          signal: controller.signal,
+          body: JSON.stringify({
+            ...(allowsModelSelection ? { model } : {}),
+            ...(allowsReasoning && effectiveReasoningEffort ? { reasoning: { effort: effectiveReasoningEffort } } : {}),
+            input: buildResponsesInput(content, turnAttachments),
+            stream: true,
+            metadata: {
+              agent_id: agentId,
+              session_id: sessionId,
+              invocation_id: invocationId,
+              ...(allowsApproval ? { approval_mode: approvalModeForTurn } : {}),
+              ...(allowsPlan ? { collaboration_mode: collaborationMode } : {}),
+              ...(allowsGoal && goalObjective ? { goal_objective: goalObjective } : {}),
+            },
+          }),
+        });
+        if (!response.ok || !response.body) throw new Error(await responseError(response));
+        // The legacy Responses transport intentionally retains its exact 0.8.2
+        // one-shot behavior. Conversation RunEvent cursors are not inferred
+        // for agents that did not declare a typed Surface.
+        const decoder = new TextDecoder();
+        const parser = createResponseSseParser(applyStreamEvent);
+        const reader = response.body.getReader();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (value) parser.push(decoder.decode(value, { stream: !done }));
+          if (done) break;
+        }
+        parser.finish();
       }
-      parser.finish();
       if (aggregate.status === "failed") throw new Error(aggregate.error || "Agent 运行失败");
       await refreshRuns();
       setStream(null);
@@ -983,13 +1348,14 @@ export function ChatWorkspace({
         aggregate = { ...aggregate, status: "cancelled" };
         setStream(aggregate);
       } else {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = conversationFailureMessage(error);
         aggregate = { ...aggregate, status: "failed", error: message };
         setStream(aggregate);
         showToast("运行失败", message, "error");
       }
     } finally {
       abortRef.current = null;
+      submissionInFlightRef.current = false;
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }
@@ -1002,7 +1368,9 @@ export function ChatWorkspace({
   async function pauseResponse() {
     if (!isGenerating) return;
     try {
-      const response = stream?.status === "streaming"
+      const response = stream?.transport === "conversation" && stream.runId
+        ? await apiFetch(`/api/v1/runs/${encodeURIComponent(stream.runId)}:pause`, { method: "POST" })
+        : stream?.status === "streaming"
         ? await apiFetch(`/v1/responses/${encodeURIComponent(stream.responseId)}:pause`, {
             method: "POST",
             credentials: "same-origin",
@@ -1018,7 +1386,9 @@ export function ChatWorkspace({
 
   async function resumeResponse() {
     try {
-      const response = stream?.status === "paused"
+      const response = stream?.transport === "conversation" && stream.runId
+        ? await apiFetch(`/api/v1/runs/${encodeURIComponent(stream.runId)}:resume`, { method: "POST" })
+        : stream?.status === "paused"
         ? await apiFetch(`/v1/responses/${encodeURIComponent(stream.responseId)}:resume`, {
             method: "POST",
             credentials: "same-origin",
@@ -1035,7 +1405,9 @@ export function ChatWorkspace({
   async function cancelResponse() {
     if (!isGenerating) return;
     try {
-      const response = stream
+      const response = stream?.transport === "conversation" && stream.runId
+        ? await apiFetch(`/api/v1/runs/${encodeURIComponent(stream.runId)}:cancel`, { method: "POST" })
+        : stream
         ? await apiFetch(`/v1/responses/${encodeURIComponent(stream.responseId)}/cancel`, {
             method: "POST",
             credentials: "same-origin",
@@ -1053,6 +1425,7 @@ export function ChatWorkspace({
   async function submitInteraction(
     runId: string,
     interactionId: string,
+    revision: number,
     name: string,
     data: Record<string, unknown>,
   ) {
@@ -1062,7 +1435,12 @@ export function ChatWorkspace({
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, data }),
+        body: JSON.stringify({
+          name,
+          data,
+          expectedRevision: revision,
+          idempotencyKey: `interaction:${interactionId}:revision-${revision}`,
+        }),
       },
     );
     if (!response.ok) {
@@ -1073,6 +1451,7 @@ export function ChatWorkspace({
     setStream(previous => previous ? {
       ...previous,
       status: "streaming",
+      pendingApprovals: previous.pendingApprovals.filter(item => item.id !== interactionId),
       surfaces: previous.surfaces.map(surface => surface.interaction?.id === interactionId
         ? { ...surface, interaction: { ...surface.interaction, status: "resolved" } }
         : surface),
@@ -1240,7 +1619,8 @@ export function ChatWorkspace({
           {stream && stream.sessionId === currentSessionId ? (
             <ComposerInteractionTray
               surfaces={stream.surfaces}
-              onInteraction={(interactionId, name, data) => submitInteraction(stream.runId, interactionId, name, data)}
+              approvals={stream.pendingApprovals}
+              onInteraction={(interactionId, revision, name, data) => submitInteraction(stream.runId, interactionId, revision, name, data)}
             />
           ) : waitingPersistedRuns.map(run => (
             <PersistedInteractionTray
@@ -1264,10 +1644,18 @@ export function ChatWorkspace({
           )}
           <ChatComposer
             input={input}
-            placeholder={collaborationMode === "plan" ? "描述需要规划的任务…" : "输入消息，或输入 / 使用命令…"}
-            disabled={isGenerating}
+            placeholder={surfaceLoading
+              ? "正在确认会话能力…"
+              : conversationSurface.status === "error"
+                ? "会话能力加载失败，请刷新后重试"
+                : !allowsText
+                  ? "当前 Agent 未开放文字输入"
+                  : collaborationMode === "plan"
+                    ? "描述需要规划的任务…"
+                    : "输入消息，或输入 / 使用命令…"}
+            disabled={isGenerating || surfaceLoading || !allowsText}
             active={active}
-            attachments={attachments.map(attachment => ({
+            attachments={(allowsAttachments ? attachments : []).map(attachment => ({
               id: attachment.id,
               name: attachment.name,
               kind: attachment.kind,
@@ -1288,9 +1676,9 @@ export function ChatWorkspace({
               ) : isGenerating ? (
                 <button className="chat-send-button pause" type="button" aria-label="暂停生成" title="暂停生成" onClick={pauseResponse}><Pause size={15} fill="currentColor" /></button>
               ) : (
-                <button className="chat-send-button" type="button" aria-label="发送消息" title="发送消息" onClick={() => { void sendMessage(); }} disabled={!input.trim() && !attachments.length}><Send size={15} /></button>
+                <button className="chat-send-button" type="button" aria-label="发送消息" title="发送消息" onClick={() => { void sendMessage(); }} disabled={surfaceLoading || !allowsText || (!input.trim() && !(allowsAttachments && attachments.length))}><Send size={15} /></button>
               )}
-            canSend={Boolean(input.trim() || attachments.length)}
+            canSend={allowsText && Boolean(input.trim() || (allowsAttachments && attachments.length))}
             textareaRef={textareaRef}
             onInputChange={setInput}
             onFiles={addAttachments}
@@ -1306,6 +1694,13 @@ export function ChatWorkspace({
             onCommandSelect={selectComposerCommand}
             onCommandIndexChange={setCommandIndex}
             onSend={() => { void sendMessage(); }}
+            allowAttachments={allowsAttachments}
+            allowPlan={allowsPlan}
+            allowGoal={allowsGoal}
+            allowApproval={allowsApproval}
+            allowModelSelection={allowsModelSelection}
+            allowReasoning={allowsReasoning}
+            attachmentAccept={attachmentAccept}
           />
           <p className="chat-composer-disclaimer">AI 生成内容可能不准确，请核对关键结论与工具操作。</p>
         </footer>

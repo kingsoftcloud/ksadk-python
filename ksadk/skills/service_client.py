@@ -119,6 +119,7 @@ class SkillServiceClient:
         download_url = self.get_skill_download_url(skill)
         if not download_url:
             raise ValueError(f"Skill Service did not return DownloadUrl for {skill.skill_id}")
+        download_url = _rewrite_ks3_to_internal(download_url)
         with httpx.Client(**self._client_kwargs()) as client:
             response = client.get(download_url)
             response.raise_for_status()
@@ -268,3 +269,50 @@ def _normalize_base_url(base_url: str) -> str:
     elif path.endswith("/docs"):
         path = path[: -len("/docs")] + "/api/v1"
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+def _rewrite_ks3_to_internal(url: str) -> str:
+    """Rewrite a KS3 public endpoint to internal only when public is unreachable.
+
+    AICP Skill Service returns pre-signed download URLs with public KS3 domains
+    (e.g. skill.ks3-cn-beijing.ksyuncs.com -> 60.x public IP). On private_only
+    compute pods those public IPs are unreachable. This probes the public domain
+    first; if reachable keeps it, otherwise rewrites to the internal domain
+    (ks3-cn-beijing-internal.ksyuncs.com -> 198.18.96.x).
+    """
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlsplit
+
+        from ksadk.common.constants import get_ks3_endpoints
+
+        region = os.environ.get(
+            "KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION"
+        ) or "cn-beijing-6"
+        public_ep, internal_ep = get_ks3_endpoints(region)
+        if not public_ep or not internal_ep:
+            return url
+        if public_ep not in url:
+            return url
+
+        # Public reachable => keep it.
+        import socket
+
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            s = socket.socket()
+            s.settimeout(1.5)
+            s.connect((host, port))
+            s.close()
+            return url
+        except OSError:
+            pass
+
+        # Public unreachable => rewrite to internal.
+        return url.replace(public_ep, internal_ep)
+    except Exception:
+        pass
+    return url

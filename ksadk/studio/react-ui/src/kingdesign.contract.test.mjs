@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [entry, foundation, tokens, responsive, finalLayer] = await Promise.all([
+const [entry, foundation, tokens, responsive, finalLayer, resourcesPage] = await Promise.all([
   readFile(new URL("./main.tsx", import.meta.url), "utf8"),
   readFile(new URL("./soft-block.css", import.meta.url), "utf8"),
   readFile(new URL("./studio.css", import.meta.url), "utf8"),
   readFile(new URL("./responsive.css", import.meta.url), "utf8"),
   readFile(new URL("./kingdesign.css", import.meta.url), "utf8"),
+  readFile(new URL("./pages/ResourcesPage.tsx", import.meta.url), "utf8"),
 ]);
 
 test("loads the company design layer after the legacy Studio styles", () => {
@@ -35,6 +36,12 @@ test("keeps browser zoom, AI message states, and scrollbars in the shared contra
   assert.match(finalLayer, /#pageHeaderActions > \.tag\s*\{\s*display:\s*none;/s);
   assert.match(finalLayer, /\.chat-composer\s*\{[\s\S]*?border:\s*1px solid var\(--kc-composer-border\)/s);
   assert.match(finalLayer, /::-webkit-scrollbar-thumb/);
+});
+
+test("keeps the resource catalogue inside the bounded data-page scroll contract", () => {
+  assert.match(resourcesPage, /className="page-container resources-page" data-layout="data" data-scroll-mode="data"/);
+  assert.match(responsive, /\.app-shell \.page-container\[data-layout="data"\]\[data-scroll-mode="data"\]\s*\{[\s\S]*?height:\s*calc\(100dvh - 64px\);[\s\S]*?overflow:\s*hidden;/);
+  assert.match(responsive, /\.app-shell \.table-data-body \.data-scroll-region\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
 });
 
 test("derives interactive AI surfaces from tokens in both light and dark themes", () => {
