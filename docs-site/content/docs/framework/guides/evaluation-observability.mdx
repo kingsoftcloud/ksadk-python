@@ -279,7 +279,7 @@ export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://otel.example.test/otel/v1/tra
 export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20<your-token>"
 ```
 
-仅配置通用 endpoint 时，KsADK 会派生 `/v1/traces`。Headers 使用逗号分隔，value 应按 RFC 3986 编码。需要第二路 CloudMonitor 时，另配 `CLOUD_MONITOR_OTLP_ENDPOINT` 或 `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` 及对应 headers；两个 exporter 读取同一批 Span，保持相同的 `trace_id` / `span_id`。变量全集见 [可观测与链路追踪](observability-tracing)。
+仅配置通用 endpoint 时，KsADK 会派生 `/v1/traces`。Headers 使用逗号分隔，value 应按 RFC 3986 编码。需要第二路 CloudMonitor 时，另配 `CLOUD_MONITOR_OTLP_ENDPOINT` 或 `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` 及对应 headers；两个 exporter 读取同一批 Span，保持相同的 `trace_id` / `span_id`。变量全集见 [可观测与链路追踪](./observability-tracing.mdx)。
 
 ## 回放 RuntimeEvent
 
@@ -296,7 +296,7 @@ agentengine replay <session-id> \
   --format json
 ```
 
-回放可投影 text、reasoning、tool、artifact 和 run status；不会调用模型、重跑工具或再次执行审批。只有已持久化 RuntimeEvent v1 的 session 可被读取，旧式 SessionEvent 不会自动转换。
+回放可投影 text、reasoning、tool、artifact 和 run status；不会调用模型、重跑工具或再次执行审批。只有通过 canonical RuntimeEvent v2 store 持久化的 session 可被读取，旧式 SessionEvent 不会被静默转换成新的 canonical 事实。
 
 ## 如何选择
 
@@ -324,4 +324,4 @@ agentengine replay <session-id> \
 | Studio Build 不可选 | 先完成 Build，并确认产物状态为成功且存在不可变 digest |
 | Studio 中没有 Trace | 确认在该工作区运行过 Agent，且 tracing 未禁用 |
 | 远端后端没有 Span | 检查 endpoint、protocol、headers、TLS 和鉴权；不要把凭据写进源码 |
-| replay 没有历史 | 确认 session 使用 RuntimeEvent v1 持久化，并检查 cursor 范围 |
+| replay 没有历史 | 确认 session 使用 canonical RuntimeEvent v2 持久化，并检查 cursor 范围 |
