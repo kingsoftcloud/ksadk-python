@@ -16,15 +16,14 @@ from typing import Any, AsyncIterator, Dict, Mapping
 from langgraph.types import Command
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
-from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
+from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runners.utils import load_agent_module
 from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
-class LangGraphRunner(BaseRunner):
+class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
     """LangGraph 框架运行时
 
     透传原生 LangGraph 功能，支持任意 State 格式
@@ -666,6 +665,25 @@ class LangGraphRunner(BaseRunner):
             return None
         resume_value = {interrupt_id: value} if interrupt_id else value
         return Command(resume=resume_value)
+
+    @staticmethod
+    def _is_gateway_approval_semantic_resume(value: Any) -> bool:
+        """Return whether a completed ToolGateway approval needs a fresh turn."""
+
+        return bool(
+            isinstance(value, Mapping)
+            and value.get("_ksadk_gateway_approval_resume") is True
+            and str(value.get("type") or "") == "function_call_output"
+        )
+
+    @staticmethod
+    def _gateway_approval_follow_up_input() -> str:
+        """Build the neutral prompt used after an approved terminal tool call."""
+
+        return (
+            "系统已完成此前获批的操作。请基于会话记录中的真实结果，直接向用户说明完成情况；"
+            "不要重试，也不要再次要求确认。"
+        )
 
     @staticmethod
     def _checkpoint_ref_from_state(state: Any) -> dict[str, Any]:
@@ -1314,413 +1332,6 @@ class LangGraphRunner(BaseRunner):
                 )
         return events
 
-    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
-        """流式调用 LangGraph 图"""
-        await self.prepare_runtime_capabilities()
-        payload = dict(input_data)
-        payload.pop("_ksadk_force_graph_invoke", None)
-        session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
-        history = payload.pop("history", [])
-        is_resume = payload.pop("resume", False)
-        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
-        resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
-        resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
-        resume_value = payload.get("input")
-        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
-        invoke_payload = dict(payload)
-        invoke_payload["session_id"] = session_id
-        if history:
-            invoke_payload["history"] = history
-        if is_resume:
-            invoke_payload["resume"] = True
-        if is_checkpoint_resume:
-            invoke_payload["checkpoint_resume"] = True
-            invoke_payload["resume_payload_provided"] = resume_payload_provided
-            invoke_payload["resume_interrupt_id"] = resume_interrupt_id
-
-        config = self._get_config(session_id)
-        if is_checkpoint_resume:
-            config = self._apply_checkpoint_resume_config(
-                config,
-                session_id=session_id,
-                checkpoint_ref=checkpoint_ref,
-            )
-
-        if is_checkpoint_resume:
-            state = resume_value
-        elif is_resume:
-            # Keep the interrupt value intact for ``Command(resume=...)``;
-            # prepare-state hooks only shape fresh user turns.
-            state = resume_value
-        elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history)
-        else:
-            state = self._to_state(payload, history)
-
-        accumulated_text = ""
-        accumulated_reasoning = ""
-        inline_reasoning_parser = ReasoningMarkupParser()
-        emitted_non_text_event = False
-        final_output_text = ""
-        final_output_usage: dict[str, Any] = {}
-        final_output_last_usage: dict[str, Any] = {}
-        model_run_usages: dict[str, dict[str, Any]] = {}
-        model_run_order: list[str] = []
-        stream_usage_run_keys: set[str] = set()
-        latest_stream_usage: dict[str, Any] = {}
-
-        def model_run_key(
-            event: Mapping[str, Any],
-            *,
-            fallback_key: str | None = None,
-        ) -> str:
-            raw_run_id = event.get("run_id")
-            return (
-                str(raw_run_id)
-                if raw_run_id
-                else fallback_key or f"model-event-{len(model_run_order)}"
-            )
-
-        def record_model_usage(
-            event: Mapping[str, Any],
-            usage: dict[str, Any],
-            *,
-            fallback_key: str | None = None,
-        ) -> None:
-            if not usage:
-                return
-            run_key = model_run_key(event, fallback_key=fallback_key)
-            if run_key not in model_run_usages:
-                model_run_order.append(run_key)
-            model_run_usages[run_key] = dict(usage)
-
-        def accumulated_model_usage() -> dict[str, Any]:
-            if len(model_run_order) == 1:
-                return dict(model_run_usages.get(model_run_order[0]) or {})
-            usage: dict[str, Any] = {}
-            for run_key in model_run_order:
-                usage = accumulate_usage(usage, model_run_usages.get(run_key) or {})
-            return usage
-
-        def latest_model_usage() -> dict[str, Any]:
-            for run_key in reversed(model_run_order):
-                usage = model_run_usages.get(run_key)
-                if usage:
-                    return dict(usage)
-            return {}
-
-        if is_checkpoint_resume and callable(getattr(self._agent, "astream", None)):
-            try:
-                async for chunk in self._stream_checkpoint_resume_updates(
-                    stream_input=self._checkpoint_resume_input(
-                        state,
-                        payload_provided=resume_payload_provided,
-                        interrupt_id=resume_interrupt_id,
-                    ),
-                    config=config,
-                    context=native_context,
-                ):
-                    yield chunk
-                return
-            except Exception as e:
-                yield {
-                    "type": "error",
-                    "message": str(e) or "LangGraph checkpoint resume failed",
-                    "checkpoint_id": str(checkpoint_ref.get("checkpoint_id") or ""),
-                    "exception_type": type(e).__name__,
-                }
-                return
-
-        if not hasattr(self._agent, "astream_events"):
-            result = await self.invoke(invoke_payload)
-            final_chunk = {"output": result.get("output", ""), "type": "final"}
-            usage = self._extract_usage(result)
-            if usage:
-                final_chunk["usage"] = usage
-            last_usage = self._extract_last_usage(result)
-            if last_usage:
-                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-            yield final_chunk
-            return
-
-        try:
-            stream_input = (
-                self._checkpoint_resume_input(
-                    state,
-                    payload_provided=resume_payload_provided,
-                    interrupt_id=resume_interrupt_id,
-                )
-                if is_checkpoint_resume
-                else (Command(resume=state) if is_resume else state)
-            )
-            # stream_mode 含 "custom" 才会产生 on_custom_stream 事件(custom writer);
-            # 保留默认 "values" 以兼容既有 on_chain_end/graph_update 消费。
-            stream_kwargs = {"version": "v2", "config": config}
-            if self._callable_accepts_keyword(self._agent.astream_events, "stream_mode"):
-                stream_kwargs["stream_mode"] = ["values", "custom"]
-            if native_context and self._callable_accepts_keyword(
-                self._agent.astream_events, "context"
-            ):
-                stream_kwargs["context"] = native_context
-            async for event in self._agent.astream_events(stream_input, **stream_kwargs):
-                event_kind = event.get("event", "")
-
-                if event_kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    if not chunk:
-                        continue
-                    chunk_usage = self._extract_usage(chunk)
-                    if chunk_usage:
-                        # Some LangChain providers attach cumulative usage to
-                        # every stream chunk, and LangChain may then sum those
-                        # cumulative snapshots into an inflated
-                        # on_chat_model_end usage. For a concrete model run,
-                        # keep the latest stream snapshot and ignore the later
-                        # end usage for that same run_id.
-                        latest_stream_usage = dict(chunk_usage)
-                        if event.get("run_id"):
-                            run_key = model_run_key(event)
-                            stream_usage_run_keys.add(run_key)
-                            record_model_usage(event, latest_stream_usage)
-
-                    # 推理内容
-                    reasoning = getattr(chunk, "reasoning_content", None)
-                    if not reasoning and hasattr(chunk, "additional_kwargs"):
-                        reasoning = chunk.additional_kwargs.get("reasoning_content")
-
-                    if reasoning:
-                        accumulated_reasoning += reasoning
-                        yield {"delta": reasoning, "type": "thinking"}
-
-                    # 常规内容
-                    if hasattr(chunk, "content") and chunk.content:
-                        content = self._filter_tool_tags(chunk.content)
-                        if isinstance(content, str):
-                            if accumulated_reasoning and content.startswith(accumulated_reasoning):
-                                content = content[len(accumulated_reasoning) :]
-                            elif reasoning and content.startswith(reasoning):
-                                content = content[len(reasoning) :]
-                        if content:
-                            for part in inline_reasoning_parser.feed(content):
-                                if not part.text:
-                                    continue
-                                if part.kind == "thinking":
-                                    accumulated_reasoning += part.text
-                                    yield {"delta": part.text, "type": "thinking"}
-                                else:
-                                    accumulated_text += part.text
-                                    yield {"delta": part.text, "type": "text"}
-
-                elif event_kind == "on_chat_model_end":
-                    data = event.get("data") or {}
-                    output = data.get("output") if isinstance(data, Mapping) else None
-                    usage = self._extract_usage(output) or self._extract_usage(data)
-                    last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
-                    run_key = model_run_key(event)
-                    if run_key not in stream_usage_run_keys:
-                        record_model_usage(event, last_usage or usage)
-
-                elif event_kind == "on_chain_stream":
-                    # node 内 get_stream_writer() 写入的自定义数据,经 stream_mode 含
-                    # "custom" 时,astream_events 包成 on_chain_stream,chunk 为
-                    # (mode, value) tuple:("custom", value) 是 writer 透传内容,
-                    # ("values", state) 是 state 快照(忽略,终态走 on_chain_end)。
-                    # 编排方常用 custom writer 把"调远端 agent/子图"的流式增量透传出来。
-                    chunk = event.get("data", {}).get("chunk")
-                    if not (
-                        isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"
-                    ):
-                        continue
-                    data = chunk[1]
-                    if isinstance(data, str):
-                        accumulated_text += data
-                        yield {"delta": data, "type": "text"}
-                        continue
-                    if isinstance(data, Mapping):
-                        custom_type = str(data.get("type") or "text")
-                        if custom_type in ("tool_call", "tool_result"):
-                            # 结构化工具事件:透传完整 payload(tool_name/tool_args/
-                            # tool_output 等),不计入正文,供 UI 渲染工具卡片。
-                            out = {"type": custom_type}
-                            out.update({k: v for k, v in data.items() if k != "type"})
-                            yield out
-                            continue
-                        custom_delta = ""
-                        for key in ("delta", "text", "content", "output", "data"):
-                            value = data.get(key)
-                            if isinstance(value, str) and value:
-                                custom_delta = value
-                                break
-                        if not custom_delta:
-                            continue
-                        replace = bool(data.get("replace"))
-                        if custom_type == "thinking":
-                            accumulated_reasoning = (
-                                custom_delta
-                                if replace
-                                else accumulated_reasoning + custom_delta
-                            )
-                        else:
-                            accumulated_text = (
-                                custom_delta if replace else accumulated_text + custom_delta
-                            )
-                        custom_event: dict[str, Any] = {
-                            "delta": custom_delta,
-                            "type": custom_type,
-                        }
-                        if replace:
-                            custom_event["replace"] = True
-                        yield custom_event
-                        continue
-                    if data is not None:
-                        accumulated_text += str(data)
-                        yield {"delta": str(data), "type": "text"}
-
-                elif event_kind == "on_tool_start":
-                    emitted_non_text_event = True
-                    yield {
-                        "type": "tool_call",
-                        "tool_name": event.get("name", "unknown"),
-                        "tool_args": event.get("data", {}).get("input", {}),
-                        "run_id": event.get("run_id"),
-                    }
-
-                elif event_kind == "on_tool_end":
-                    emitted_non_text_event = True
-                    tool_output = event.get("data", {}).get("output", "")
-                    # LangGraph returns a ToolMessage here for normal tools.
-                    # Preserve its content instead of serializing the repr,
-                    # otherwise structured output such as A2UI envelopes becomes
-                    # unparsable. Keep the callback run_id below: it is paired
-                    # with the preceding ``on_tool_start`` event on this stream.
-                    normalized_output = getattr(tool_output, "content", tool_output)
-                    if isinstance(tool_output, Mapping) and "content" in tool_output:
-                        normalized_output = tool_output["content"]
-                    yield {
-                        "type": "tool_result",
-                        "tool_name": event.get("name", "unknown"),
-                        "tool_args": event.get("data", {}).get("input", {}),
-                        "tool_output": normalized_output,
-                        "run_id": event.get("run_id"),
-                    }
-
-                elif event_kind == "on_chain_end":
-                    output = event.get("data", {}).get("output", {})
-                    if isinstance(output, dict) and "__interrupt__" in output:
-                        emitted_non_text_event = True
-                        yield {
-                            "type": "interrupt",
-                            "interrupt_info": output["__interrupt__"],
-                            "session_id": session_id,
-                        }
-                        return
-                    extracted_output = self._extract_output(output)
-                    if extracted_output:
-                        final_output_text = strip_reasoning_markup(str(extracted_output))
-                    final_output_usage = self._extract_usage(output)
-                    final_output_last_usage = self._extract_last_usage(output)
-
-        except Exception as e:
-            if "Interrupt" in type(e).__name__:
-                yield {
-                    "type": "interrupt",
-                    "interrupt_info": self._get_interrupt_info(self._agent.get_state(config)),
-                    "session_id": session_id,
-                }
-                return
-            raise
-
-        # goal-18(ksadk-web 人机交互):图因审批门(HITL)在流式中静默暂停时,
-        # 这里把审批详情(action_requests)作为 approval 事件冒出,供 UI 渲染审批卡。
-        # 此前流式路径只在 checkpoint 标 resumable,UI 拿不到"该批哪个工具/什么参数/允许哪些决定"。
-        # 注:get_state 在部分 agent 上是 async,统一按 awaitable 处理;取不到则跳过,不破坏事件流。
-        pending_approval = None
-        try:
-            _get_state = getattr(self._agent, "aget_state", None) or getattr(
-                self._agent, "get_state", None
-            )
-            if _get_state is not None:
-                _maybe_state = _get_state(config)
-                if inspect.isawaitable(_maybe_state):
-                    _maybe_state = await _maybe_state
-                pending_approval = self._get_interrupt_info(_maybe_state)
-        except Exception:
-            pending_approval = None
-        if pending_approval:
-            yield {
-                "type": "approval",
-                "interrupt_info": pending_approval,
-                "session_id": session_id,
-            }
-            metadata = await self._latest_checkpoint_metadata(config)
-            if metadata:
-                yield {"type": "checkpoint", "metadata": metadata}
-            return
-
-        for part in inline_reasoning_parser.flush():
-            if not part.text:
-                continue
-            if part.kind == "thinking":
-                accumulated_reasoning += part.text
-                yield {"delta": part.text, "type": "thinking"}
-            else:
-                accumulated_text += part.text
-                yield {"delta": part.text, "type": "text"}
-
-        if not accumulated_text:
-            if final_output_text:
-                final_chunk = {"output": final_output_text, "type": "final"}
-                usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
-                last_usage = (
-                    latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
-                )
-                if usage:
-                    final_chunk["usage"] = usage
-                if last_usage:
-                    final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-                yield final_chunk
-            elif not emitted_non_text_event:
-                result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
-                fallback_chunk: dict[str, Any] = {
-                    "output": result.get("output", ""),
-                    "type": "final",
-                }
-                usage = self._extract_usage(result)
-                if usage:
-                    fallback_chunk["usage"] = usage
-                last_usage = self._extract_last_usage(result)
-                if last_usage:
-                    fallback_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-                yield fallback_chunk
-                checkpoint_metadata = result.get("metadata") if isinstance(result, dict) else None
-                if isinstance(checkpoint_metadata, dict) and checkpoint_metadata.get("agentengine"):
-                    yield {"type": "checkpoint", "metadata": checkpoint_metadata}
-                    return
-        else:
-            final_chunk = {"output": accumulated_text, "type": "final"}
-            state_usage = await self._latest_state_usage(config)
-            usage = (
-                accumulated_model_usage()
-                or state_usage
-                or final_output_usage
-                or latest_stream_usage
-            )
-            if usage:
-                final_chunk["usage"] = usage
-                last_usage = (
-                    latest_model_usage()
-                    or state_usage
-                    or final_output_last_usage
-                    or latest_stream_usage
-                    or usage
-                )
-                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-            yield final_chunk
-
-        metadata = await self._latest_checkpoint_metadata(config)
-        if metadata:
-            yield {"type": "checkpoint", "metadata": metadata}
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""

@@ -3383,6 +3383,78 @@ def test_event_to_action_payload_injects_parts_for_canonical_events():
     assert "parts" not in payload["Content"]
 
 
+def test_event_to_action_payload_surfaces_checkpoint_id_for_continuation_created():
+    """_event_to_action_payload surfaces Content.checkpoint_id for graph_checkpoint events.
+
+    continuation.created events store checkpoint_id deep inside
+    Content.runtime_event.continuation_id.  The payload should promote it to
+    Content.checkpoint_id so frontends reading the top-level field work
+    uniformly with run_checkpoint events.  The inner runtime_event structure
+    must remain untouched.
+    """
+    from ksadk.server.routes.projection import _event_to_action_payload
+
+    # continuation.created (graph_checkpoint): checkpoint_id buried in runtime_event
+    event = SessionEvent(
+        id="evt-ckpt-1",
+        session_id="sess-1",
+        author="langgraph",
+        event_type="continuation.created",
+        content=_canonical_event_content({
+            "event_type": "continuation.created",
+            "continuation_id": "ckpt-deep",
+            "continuation_kind": "graph_checkpoint",
+            "resumable": True,
+            "ref": {"checkpoint_id": "ckpt-deep"},
+        }),
+    )
+    payload = _event_to_action_payload(event)
+    # surfaced to top level
+    assert payload["Content"]["checkpoint_id"] == "ckpt-deep"
+    # inner structure preserved
+    assert payload["Content"]["runtime_event"]["continuation_id"] == "ckpt-deep"
+
+    # run_checkpoint: already has checkpoint_id at top level — should not be overwritten
+    event = SessionEvent(
+        id="evt-ckpt-2",
+        session_id="sess-1",
+        author="langgraph",
+        event_type="run_checkpoint",
+        content={"status": "checkpointed", "checkpoint_id": "ckpt-top", "run_id": "r1"},
+        metadata={"checkpoint_id": "ckpt-top", "run_id": "r1", "framework": "langgraph"},
+    )
+    payload = _event_to_action_payload(event)
+    assert payload["Content"]["checkpoint_id"] == "ckpt-top"
+
+    # non-checkpoint event: should NOT have checkpoint_id injected
+    event = SessionEvent(
+        id="evt-ckpt-3",
+        session_id="sess-1",
+        author="user",
+        event_type="user_message",
+        content={"parts": [{"text": "hello"}]},
+    )
+    payload = _event_to_action_payload(event)
+    assert "checkpoint_id" not in payload["Content"]
+
+    # continuation.created with non-graph_checkpoint kind: should NOT surface checkpoint_id
+    event = SessionEvent(
+        id="evt-ckpt-4",
+        session_id="sess-1",
+        author="ksadk",
+        event_type="continuation.created",
+        content=_canonical_event_content({
+            "event_type": "continuation.created",
+            "continuation_id": "resume-1",
+            "continuation_kind": "invocation_resume",
+            "resumable": True,
+            "ref": {},
+        }),
+    )
+    payload = _event_to_action_payload(event)
+    assert "checkpoint_id" not in payload["Content"]
+
+
 @pytest.mark.asyncio
 async def test_runtime_local_list_session_events_returns_total_and_page(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")

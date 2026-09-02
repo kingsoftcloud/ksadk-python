@@ -295,6 +295,26 @@ def _derive_display_text(content: Mapping[str, Any]) -> str:
     return ""
 
 
+def _derive_checkpoint_id(event: SessionEvent, content: Mapping[str, Any]) -> str:
+    """Surface checkpoint_id to Content top level for checkpoint-bearing events.
+
+    ``run_checkpoint`` events already carry ``checkpoint_id`` at Content top
+    level.  ``continuation.created`` events with ``continuation_kind=
+    graph_checkpoint`` store it deeper as ``Content.runtime_event.
+    continuation_id``; this helper extracts it so frontends reading
+    ``Content.checkpoint_id`` work uniformly across both event shapes.
+    Returns an empty string for non-checkpoint events.
+    """
+    if content.get("checkpoint_id") is not None:
+        return str(content.get("checkpoint_id") or "")
+    if event.event_type == "continuation.created":
+        runtime_event = content.get("runtime_event")
+        if isinstance(runtime_event, Mapping):
+            if str(runtime_event.get("continuation_kind") or "") == "graph_checkpoint":
+                return str(runtime_event.get("continuation_id") or "")
+    return ""
+
+
 def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     """Serialize a stored SessionEvent for the REST action wire.
 
@@ -306,12 +326,19 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     对于 canonical runtime 事件（family=runtime/v2），``Content`` 没有
     顶层 ``parts``。此处根据事件类型从 ``runtime_event`` payload 提取一段
     人类可读文本注入 ``Content.parts[0].text``，兼容前端读取旧路径。
+    同理，``continuation.created`` (graph_checkpoint) 的 checkpoint id 存在
+    ``Content.runtime_event.continuation_id`` 深处；此处将其提升到
+    ``Content.checkpoint_id``，与 ``run_checkpoint`` 事件的外层结构对齐，
+    内层 ``runtime_event`` 原始结构保持不动。
     """
     content = dict(event.content or {})
     if not isinstance(content.get("parts"), list):
         display_text = _derive_display_text(content)
         if display_text:
             content["parts"] = [{"text": display_text}]
+    checkpoint_id = _derive_checkpoint_id(event, content)
+    if checkpoint_id and "checkpoint_id" not in content:
+        content["checkpoint_id"] = checkpoint_id
     payload = {
         "EventId": event.id,
         "SessionId": event.session_id,

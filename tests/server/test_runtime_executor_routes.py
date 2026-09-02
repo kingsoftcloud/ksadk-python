@@ -172,6 +172,31 @@ class _CancellableAdapter(_Adapter):
         return CancelResult.INTERRUPTED_ACTIVE_TURN
 
 
+def test_capability_adapter_rejects_stale_entry_from_reused_context_id() -> None:
+    created: list[_Adapter] = []
+    registry = RuntimeRegistry()
+
+    def factory(_context: RuntimeLaunchContext) -> RuntimeAdapter:
+        adapter = _Adapter()
+        created.append(adapter)
+        return adapter
+
+    registry.register("fixture", factory)
+    executor = RuntimeExecutor(registry)
+    first_context = RuntimeLaunchContext(runtime_type="fixture", project_dir=".")
+    second_context = RuntimeLaunchContext(runtime_type="fixture", project_dir=".")
+
+    first_adapter = executor.capability_adapter(first_context)
+    # Deterministically model CPython reusing first_context's released id for
+    # second_context without relying on allocator timing in the test process.
+    executor._capability_adapters[id(second_context)] = (first_context, first_adapter)
+
+    second_adapter = executor.capability_adapter(second_context)
+
+    assert second_adapter is not first_adapter
+    assert second_adapter is created[-1]
+
+
 def test_openai_responses_route_executes_runtime_adapter_without_runner() -> None:
     adapter = _Adapter()
     registry = RuntimeRegistry()

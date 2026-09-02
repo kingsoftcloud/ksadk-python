@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 class _LangGraphStreamMixin:
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
+        await self.prepare_runtime_capabilities()
         payload = dict(input_data)
         payload.pop("_ksadk_force_graph_invoke", None)
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
@@ -724,7 +725,9 @@ class _LangGraphStreamMixin:
                                     "durable": bool(ckpt_capability.get("Durable", False)),
                                     "is_terminal": ckpt_is_terminal,
                                     "is_resumable": ckpt_is_resumable,
-                                    "resume_status": "resumable" if ckpt_is_resumable else "disabled",
+                                    "resume_status": (
+                                        "resumable" if ckpt_is_resumable else "disabled"
+                                    ),
                                     "resume_disabled_reason": (
                                         "该 checkpoint 已是终态；可选择更早恢复点重跑"
                                         if ckpt_is_terminal

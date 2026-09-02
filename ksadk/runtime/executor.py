@@ -76,7 +76,7 @@ class RuntimeExecutor:
         self._registry = registry
         self._kernel_store = kernel_store
         self._runs: dict[_HandleKey, _OwnedRun] = {}
-        self._capability_adapters: dict[int, RuntimeAdapter] = {}
+        self._capability_adapters: dict[int, tuple[RuntimeLaunchContext, RuntimeAdapter]] = {}
 
     def create_adapter(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
         """从本 executor 的 registry 创建一个 adapter。
@@ -227,7 +227,7 @@ class RuntimeExecutor:
                     first_error = exc
             finally:
                 self._runs.pop(key, None)
-        for key, adapter in list(self._capability_adapters.items()):
+        for key, (_context, adapter) in list(self._capability_adapters.items()):
             runner = getattr(adapter, "_runner", None)
             close_runner = getattr(runner, "close", None)
             if callable(close_runner):
@@ -327,11 +327,12 @@ class RuntimeExecutor:
         """Return one stable, non-executing adapter for capability discovery."""
 
         key = id(context)
-        adapter = self._capability_adapters.get(key)
-        if adapter is None:
+        cached = self._capability_adapters.get(key)
+        if cached is None or cached[0] is not context:
             adapter = self._registry.create(context)
-            self._capability_adapters[key] = adapter
-        return adapter
+            self._capability_adapters[key] = (context, adapter)
+            return adapter
+        return cached[1]
 
     def capability_subject(self, context: RuntimeLaunchContext) -> object | None:
         """Expose the runner whose async capability hooks feed persistence gating."""
