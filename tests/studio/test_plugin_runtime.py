@@ -255,6 +255,75 @@ async def test_studio_uses_one_startup_provider_registration_for_build_and_runti
     assert factory.runtimes[0].ready is False
 
 
+@pytest.mark.asyncio
+async def test_plugin_result_usage_reaches_run_record(tmp_path: Path) -> None:
+    """Provider 结果携带的用量必须落到运行记录（pluginhost 来源、reported=True）。"""
+
+    manifest = _external_provider_manifest()
+    factory = _ExternalProviderFactory(manifest)
+
+    original_stage = factory.stage
+
+    async def staged_with_usage(*args, **kwargs):  # noqa: ANN002, ANN003
+        runtime = await original_stage(*args, **kwargs)
+        original_prepare = runtime.prepare
+
+        async def prepare_with_usage(bundle, *, capabilities):  # noqa: ANN001, ANN202
+            prepared = await original_prepare(bundle, capabilities=capabilities)
+            original_execute = prepared.execute
+
+            async def execute_with_usage(request):  # noqa: ANN001
+                result = await original_execute(request)
+                result["usage"] = {
+                    "input_tokens": 210,
+                    "output_tokens": 33,
+                    "cached_tokens": 12,
+                    "reasoning_tokens": 9,
+                }
+                return result
+
+            prepared.execute = execute_with_usage
+            return prepared
+
+        runtime.prepare = prepare_with_usage
+        return runtime
+
+    factory.stage = staged_with_usage  # type: ignore[method-assign]
+
+    studio = StudioService(
+        tmp_path,
+        plugin_provider_manifests={_EXTERNAL_PROVIDER_REF: manifest},
+        plugin_provider_factories={_EXTERNAL_PROVIDER_REF: factory},
+    )
+    studio.create_agent(
+        agent_id="external-provider-usage",
+        name="External Provider Usage",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref=_EXTERNAL_PROVIDER_REF,
+            ),
+            instructions=Instructions(system="usage-boundary"),
+            model=_model(),
+            security=_security("process:host-user"),
+        ),
+    )
+
+    build = await studio.ensure_current_build("external-provider-usage")
+    record = await studio.run_build(build.id, "hello", "external-usage-session")
+
+    assert record.status == RunStatus.COMPLETED, record.error
+    assert record.usage.reported is True
+    assert record.usage.input_tokens == 210
+    assert record.usage.output_tokens == 33
+    assert record.usage.total_tokens == 243
+    assert record.usage.cached_input_tokens == 12
+    assert record.usage.reasoning_output_tokens == 9
+    assert record.usage.source == "pluginhost"
+
+    await studio.aclose()
+
+
 def test_studio_rejects_partial_provider_registration(tmp_path: Path) -> None:
     manifest = _external_provider_manifest()
 

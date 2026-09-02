@@ -129,6 +129,7 @@ from ksadk.studio.templates import (
     compose_research_agent,
     default_agent_spec,
     list_agent_templates,
+    with_harness_provider_permissions,
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
@@ -1498,6 +1499,8 @@ class StudioService:
         )
         selected = runtime or resolved_spec.runtime
         resolved_spec.runtime = selected
+        if selected is not None and selected.type == "harness" and spec is None:
+            resolved_spec = with_harness_provider_permissions(resolved_spec)
         if selected is not None and selected.type == "codex":
             return cast(
                 AgentDraft,

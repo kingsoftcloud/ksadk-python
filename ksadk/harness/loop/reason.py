@@ -291,6 +291,18 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         )
         out.usage = usage
 
+    if turn.reasoning:
+        seq += 1
+        out.events.append(
+            _event(
+                EventType.REASONING_COMPLETED,
+                inp,
+                seq,
+                {"text": turn.reasoning},
+                phase="commentary",
+            ),
+        )
+
     if turn.tool_calls:
         out.new_messages.append(
             {

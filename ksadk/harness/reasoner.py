@@ -30,6 +30,8 @@ class HarnessReasoningTurn:
     tool_calls: tuple[HarnessToolCall, ...] = ()
     #: 本次模型调用的 usage（input_tokens/output_tokens）——引擎据此发 usage.reported。
     usage: dict[str, int] | None = None
+    #: 本次模型调用返回的推理文本（reasoning_content）——引擎据此发 reasoning 项。
+    reasoning: str | None = None
 
 
 class HarnessReasoner(Protocol):

@@ -26,6 +26,23 @@ class _Reasoner:
         return HarnessReasoningTurn(final_text="scheduled product result")
 
 
+class _UsageReasoner(_Reasoner):
+    """Reasoner that reports per-turn usage the way the real model client does."""
+
+    async def complete(self, *, model, prompt, messages, tools):  # type: ignore[no-untyped-def]
+        del model, prompt, tools
+        self.calls.append(tuple(messages))
+        return HarnessReasoningTurn(
+            final_text="scheduled product result",
+            usage={
+                "input_tokens": 210,
+                "output_tokens": 33,
+                "cached_tokens": 12,
+                "reasoning_tokens": 9,
+            },
+        )
+
+
 def _install_managed_harness_profile(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = root / ".agentkit" / "dsh-home"
     profile = home / "profiles" / "studio"
@@ -167,6 +184,62 @@ async def test_scheduler_settles_real_managed_dsh_harness_provider(
 
 
 @pytest.mark.asyncio
+async def test_managed_dsh_harness_reports_nonzero_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engine 链路必须把 reasoner 提供的用量上报为非零 usage.reported 事件。"""
+
+    _install_managed_harness_profile(tmp_path, monkeypatch)
+    reasoner = _UsageReasoner()
+    service = StudioService(tmp_path, harness_reasoner=reasoner)
+    spec = _spec()
+    service.create_studio_agent(
+        agent_id="scheduler-dsh-usage",
+        name="Scheduler DSH Usage",
+        description=spec.description,
+        spec=spec,
+        runtime=spec.runtime,
+    )
+    await service.start()
+    try:
+        task = await service.create_agent_schedule(
+            "scheduler-dsh-usage",
+            display_name="Managed DSH Usage",
+            prompt="execute managed DSH harness usage",
+            schedule=ScheduleSpec(kind="interval", every_seconds=3600),
+        )
+        accepted = await service.run_agent_schedule_now(
+            "scheduler-dsh-usage", task.task_id
+        )
+        current = accepted
+        for _ in range(200):
+            await service.scheduler.engine.reconcile()
+            current = service.scheduler.list_occurrences(task.task_id)[0]
+            if current.state in {"succeeded", "failed", "cancelled", "skipped"}:
+                break
+            await asyncio.sleep(0.01)
+
+        assert current.state == "succeeded", current
+        stored = await service.session_service.get_events(current.session_id)
+        usage_events = [
+            event
+            for event in stored
+            if event.event_type == "usage.reported"
+        ]
+        assert usage_events, "usage.reported event missing from session events"
+        reported = usage_events[-1]
+        payload = reported.content["session_event"]["payload"]
+        assert payload.get("input_tokens") == 210, payload
+        assert payload.get("output_tokens") == 33, payload
+        assert payload.get("cached_tokens") == 12, payload
+        assert payload.get("reasoning_tokens") == 9, payload
+    finally:
+        await service.scheduler.stop()
+        await service.aclose()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_rejects_unapproved_dsh_provider_before_acceptance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -193,7 +266,10 @@ async def test_scheduler_rejects_unapproved_dsh_provider_before_acceptance(
                 schedule=ScheduleSpec(kind="interval", every_seconds=3600),
             )
         assert denied.value.code == "PLUGIN_PERMISSION_DENIED"
-        assert denied.value.details == {"reason": "plugin_permission_denied"}
+        details = denied.value.details
+        assert details["reason"] == "plugin_permission_denied"
+        assert "process:host-user" in details["missingPermissions"]
+        assert "重新构建" in details["hint"]
         assert service.scheduler.list_tasks() == []
         assert service.scheduler.list_all_occurrences() == []
         assert service.scheduler_runtimes.active_runtime_count == 0

@@ -12,6 +12,7 @@ from ksadk.harness.reasoner import (
     LiteLLMHarnessReasoner,
     resolve_model_identifier,
 )
+from ksadk.events.canonical import ItemCompleted
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime import StartRequest
 
@@ -367,3 +368,45 @@ async def test_mcp_tool_adapter_uses_public_tool_api(monkeypatch):
         "confirmation_ids": ["public_lookup"],
         "error": "confirmation needed",
     }
+
+
+@pytest.mark.asyncio
+async def test_native_harness_emits_reasoning_item_events(tmp_path):
+    class ReasoningReasoner:
+        async def complete(self, **_kwargs):
+            return HarnessReasoningTurn(final_text="答案", reasoning="先算 417*29=12093。")
+
+    adapter = HarnessRuntimeAdapter(
+        HarnessConfig(model="glm-5.2", prompt="budget assistant"),
+        reasoner=ReasoningReasoner(),
+        workspace_root=tmp_path,
+    )
+    handle = await adapter.start(StartRequest(input="417*29=?", user_id="u", session_id="s"))
+    events = [event async for event in adapter.stream(handle)]
+
+    reasoning = [
+        event for event in events
+        if isinstance(event, ItemCompleted) and event.item_kind == "reasoning"
+    ]
+    assert reasoning, "reasoning item.completed missing"
+    text = reasoning[-1].snapshot.parts[0].text
+    assert text == "先算 417*29=12093。"
+
+
+@pytest.mark.asyncio
+async def test_native_harness_omits_reasoning_items_when_absent(tmp_path):
+    class PlainReasoner:
+        async def complete(self, **_kwargs):
+            return HarnessReasoningTurn(final_text="答案")
+
+    adapter = HarnessRuntimeAdapter(
+        HarnessConfig(model="glm-5.2", prompt="budget assistant"),
+        reasoner=PlainReasoner(),
+        workspace_root=tmp_path,
+    )
+    handle = await adapter.start(StartRequest(input="hi", user_id="u", session_id="s"))
+    events = [event async for event in adapter.stream(handle)]
+
+    assert not [
+        event for event in events if getattr(event, "item_kind", "") == "reasoning"
+    ]

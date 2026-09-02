@@ -657,3 +657,71 @@ async def test_model_client_sends_explicitly_configured_sampling_parameters(monk
     assert body["temperature"] == 0.7
     assert body["max_tokens"] == 8192
     assert body["top_p"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_model_client_captures_reasoning_content(monkeypatch):
+    """chat-completions 响应的 reasoning_content 必须进入 ModelResponse.reasoning。"""
+
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "12,093",
+                            "reasoning_content": "先计算 417*29=12093。",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete(
+        _model(),
+        messages=[{"role": "user", "content": "test"}],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    assert result.reasoning == "先计算 417*29=12093。"
+
+
+@pytest.mark.asyncio
+async def test_model_client_reasoning_absent_is_empty(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete(
+        _model(),
+        messages=[{"role": "user", "content": "test"}],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    assert not result.reasoning

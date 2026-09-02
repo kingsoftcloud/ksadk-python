@@ -593,3 +593,80 @@ def test_missing_host_is_typed_unavailable(tmp_path: Path, monkeypatch: pytest.M
 def test_profile_name_cannot_escape_dsh_home(tmp_path: Path, profile: str) -> None:
     with pytest.raises(ValueError, match="simple name"):
         DshProfilePluginBridge(dsh_home=tmp_path, profile=profile)
+
+
+def test_prepare_source_resolves_relative_directory_against_bridge_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相对 cwd 存在的本地目录源必须先绝对化，不得交给 dsh 相对 Profile 解析。"""
+
+    workspace = tmp_path / "workspace"
+    source = workspace / "bundle-src"
+    source.mkdir(parents=True)
+    _write_json(source / "package.json", {"name": "@example/local-bundle"})
+
+    class _FakePackResult:
+        artifact = tmp_path / "packed.tgz"
+
+    class _FakeDeveloper:
+        def __init__(self, *, toolchain=None):
+            pass
+
+        def pack(self, local, output_dir):
+            assert local == source.resolve()
+            _FakePackResult.artifact.write_bytes(b"fake-tgz-bytes")
+            return _FakePackResult
+
+    monkeypatch.setattr(
+        "ksadk.plugins.dsh_toolchain.DshPluginDeveloper", _FakeDeveloper
+    )
+    home = tmp_path / "dsh-home"
+    bridge = DshProfilePluginBridge(
+        dsh_home=home,
+        profile="test-profile",
+        dsh_command=("dsh-fixture",),
+        cwd=workspace,
+    )
+
+    prepared = bridge._prepare_source("bundle-src")
+
+    assert prepared.command_source != "bundle-src"
+    assert prepared.command_source.startswith(str(home.resolve()))
+    assert prepared.digest.startswith("sha256:")
+
+
+def test_prepare_source_rejects_missing_relative_tgz(tmp_path: Path) -> None:
+    """不存在且形如本地文件的 .tgz 源必须显式报错，而非生成 link: 死链依赖。"""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bridge = DshProfilePluginBridge(
+        dsh_home=tmp_path / "dsh-home",
+        profile="test-profile",
+        dsh_command=("dsh-fixture",),
+        cwd=workspace,
+    )
+
+    with pytest.raises(DshPluginMutationError, match="不存在|not exist|missing"):
+        bridge._prepare_source("./missing-bundle.tgz")
+
+
+@pytest.mark.parametrize(
+    "spec", ["@example/new-dsh-plugin@2.0.0", "plain-dsh-plugin", "git+https://example.test/x.git"]
+)
+def test_prepare_source_passes_through_non_local_specs(tmp_path: Path, spec: str) -> None:
+    """包名 / Git URL 等非本地 spec 原样传给 dsh，不被绝对化。"""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bridge = DshProfilePluginBridge(
+        dsh_home=tmp_path / "dsh-home",
+        profile="test-profile",
+        dsh_command=("dsh-fixture",),
+        cwd=workspace,
+    )
+
+    prepared = bridge._prepare_source(spec)
+
+    assert prepared.command_source == spec
+    assert prepared.digest == ""

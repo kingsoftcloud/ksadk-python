@@ -224,6 +224,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
             "cached_tokens": 0,
             "reasoning_tokens": 0,
         }
+        reasoning_parts: list[str] = []
 
         for _turn_number in range(_MAX_REASONING_TURNS):
             turn = await self._reasoner.complete(
@@ -234,6 +235,8 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
             )
             for key in usage:
                 usage[key] += max(0, int((turn.usage or {}).get(key, 0)))
+            if turn.reasoning:
+                reasoning_parts.append(turn.reasoning)
             if turn.tool_calls:
                 messages.append(
                     {
@@ -299,6 +302,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                     **usage,
                     "total_tokens": usage["input_tokens"] + usage["output_tokens"],
                 },
+                "reasoning": "".join(reasoning_parts),
             }
         raise RuntimeError(f"Harness reasoning exceeded {_MAX_REASONING_TURNS} turns")
 
@@ -382,6 +386,28 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         try:
             result = await run.task
             usage = result["usage"]
+            reasoning_text = str(result.get("reasoning") or "")
+            if reasoning_text:
+                reasoning_item_id = stable_item_id(
+                    framework, handle.run_id, "reasoning", "0"
+                )
+                reasoning_part_id = "reasoning-0"
+                reasoning_content = ContentSnapshot(
+                    parts=(TextContent(part_id=reasoning_part_id, text=reasoning_text),)
+                )
+                yield ItemStarted(
+                    **envelope("item.started", reasoning_item_id, reasoning_part_id),
+                    item_id=reasoning_item_id,
+                    item_kind="reasoning",
+                    phase="commentary",
+                    initial=reasoning_content,
+                )
+                yield ItemCompleted(
+                    **envelope("item.completed", reasoning_item_id, reasoning_part_id),
+                    item_id=reasoning_item_id,
+                    item_kind="reasoning",
+                    snapshot=reasoning_content,
+                )
             yield UsageReported(
                 **envelope("usage.reported", run_item_id, "usage"),
                 input_tokens=usage["input_tokens"],

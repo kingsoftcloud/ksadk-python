@@ -136,9 +136,19 @@ class _StudioHarnessReasoner:
                     arguments=arguments,
                 )
             )
+        reported_usage = response.usage if response.usage.reported else None
         return HarnessReasoningTurn(
             final_text=response.content or None,
             tool_calls=tuple(calls),
+            reasoning=response.reasoning or None,
+            usage=None
+            if reported_usage is None
+            else {
+                "input_tokens": max(0, int(reported_usage.input_tokens)),
+                "output_tokens": max(0, int(reported_usage.output_tokens)),
+                "cached_tokens": max(0, int(reported_usage.cached_input_tokens)),
+                "reasoning_tokens": max(0, int(reported_usage.reasoning_output_tokens)),
+            },
         )
 
 
@@ -505,6 +515,13 @@ class StudioPluginRuntime:
         try:
             host.preflight(bundle.composition.profile)
         except PluginHostError as error:
+            if error.code == "plugin_permission_denied":
+                raise StudioError(
+                    "PLUGIN_PERMISSION_DENIED",
+                    "Agent 插件组合未通过运行前检查",
+                    status_code=409,
+                    details=_permission_denial_details(error),
+                ) from error
             code = (
                 "PLUGIN_PERMISSION_DENIED"
                 if error.code == "plugin_permission_denied"
@@ -618,6 +635,28 @@ class StudioPluginRuntime:
 def _parse_plugin_ref(value: str) -> tuple[str, str]:
     plugin_id, version = value.removeprefix("plugin://").rsplit("@", 1)
     return plugin_id, version
+
+
+_PERMISSION_DENIAL_MARKER = "requests unapproved permissions:"
+
+
+def _permission_denial_details(error: PluginHostError) -> dict[str, Any]:
+    """把权限拒绝错误转成可自助修复的 details（缺失权限 + 修复指引）。"""
+
+    message = str(error)
+    missing: list[str] = []
+    if _PERMISSION_DENIAL_MARKER in message:
+        tail = message.split(_PERMISSION_DENIAL_MARKER, 1)[1]
+        missing = [item.strip() for item in tail.split(",") if item.strip()]
+    return {
+        "reason": error.code,
+        "missingPermissions": missing,
+        "hint": (
+            "在 Agent 安全设置的允许权限中加入缺失权限后重新构建并运行"
+            if missing
+            else "在 Agent 安全设置中调整允许权限后重新构建并运行"
+        ),
+    }
 
 
 def _normalize_result(raw: Any, *, session_id: str) -> StudioPluginTurnResult:
