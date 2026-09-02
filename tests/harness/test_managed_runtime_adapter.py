@@ -109,3 +109,36 @@ async def test_managed_adapter_passes_studio_conversation_history(tmp_path):
         and '"window_source":"model_profile"' in payload
         for payload in status_payloads
     )
+
+
+@pytest.mark.asyncio
+async def test_managed_adapter_emits_reasoning_item_events(tmp_path):
+    class _ReasoningReasoner(_Reasoner):
+        async def complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
+            del model, prompt, tools, max_output_tokens
+            self.messages.append([dict(message) for message in messages])
+            return HarnessReasoningTurn(
+                final_text="managed answer",
+                usage={"input_tokens": 12, "output_tokens": 3},
+                reasoning="先检查历史，再回答。",
+            )
+
+    adapter = ManagedHarnessRuntimeAdapter(_spec(), reasoner=_ReasoningReasoner(), workspace_root=tmp_path)
+    handle = await adapter.start(
+        StartRequest(
+            input="hello",
+            user_id="user",
+            session_id="session",
+            agent_id="agent",
+            runtime_type="harness",
+            metadata={"invocation_id": "run-managed-reasoning"},
+        )
+    )
+    events = [event async for event in adapter.stream(handle)]
+
+    reasoning = [
+        event for event in events
+        if isinstance(event, ItemCompleted) and event.item_kind == "reasoning"
+    ]
+    assert reasoning, "managed adapter did not emit reasoning item events"
+    assert reasoning[-1].snapshot.parts[0].text == "先检查历史，再回答。"
