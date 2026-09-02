@@ -22,6 +22,7 @@ from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
+    RuntimeAdapter,
     RuntimeExecutor,
     RuntimeLaunchContext,
     RuntimeRegistry,
@@ -368,6 +369,7 @@ class KsADKHarnessProviderRuntime:
             agent_name=bundle.manifest.agent_id,
             workspace_root=workspace_root,
             reasoner=self._reasoner,
+            skills=tuple(skills),
             context_sources=tuple(context_sources),
             session_service=self._session_service,
             inventory=inventory,
@@ -421,6 +423,7 @@ class KsADKHarnessActivation:
         agent_name: str,
         workspace_root: Path,
         reasoner: HarnessReasoner,
+        skills: tuple[HarnessSkillContribution, ...],
         context_sources: tuple[HarnessContextSource, ...],
         session_service: BaseSessionService,
         inventory: HarnessProviderInventory,
@@ -430,13 +433,14 @@ class KsADKHarnessActivation:
         self._agent_name = agent_name
         self._workspace_root = workspace_root
         self._reasoner = reasoner
+        self._skills = skills
         self._context_sources = context_sources
         self._session_service = session_service
         self._inventory = inventory
         self._ready = False
         self._disposed = False
         self._executors: list[RuntimeExecutor] = []
-        self._kernel_adapter: HarnessRuntimeAdapter | None = None
+        self._kernel_adapter: RuntimeAdapter | None = None
 
     async def start(self) -> None:
         if self._disposed:
@@ -491,7 +495,7 @@ class KsADKHarnessActivation:
             inventory=self._inventory,
         )
 
-    def runtime_adapter(self) -> HarnessRuntimeAdapter:
+    def runtime_adapter(self) -> RuntimeAdapter:
         """Return the activation-owned adapter used by AgentKernel Scheduler.
 
         The immutable profile has already assembled model instructions, MCP,
@@ -505,11 +509,16 @@ class KsADKHarnessActivation:
                 "harness_activation_unavailable", "Harness activation is not ready"
             )
         if self._kernel_adapter is None:
-            self._kernel_adapter = HarnessRuntimeAdapter(
+            from ksadk.plugins.providers.harness_managed import (
+                build_managed_provider_adapter,
+            )
+
+            self._kernel_adapter = build_managed_provider_adapter(
                 self._config,
                 agent_name=self._agent_name,
                 reasoner=self._reasoner,
                 workspace_root=self._workspace_root,
+                skills=self._skills,
             )
         return self._kernel_adapter
 
