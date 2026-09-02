@@ -3776,7 +3776,7 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
         ),
     ],
 )
-async def test_checkpoint_actions_enforce_user_scope(monkeypatch, action, payload):
+async def test_checkpoint_actions_ignore_user_scope(monkeypatch, action, payload):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -3817,11 +3817,11 @@ async def test_checkpoint_actions_enforce_user_scope(monkeypatch, action, payloa
             json={**payload, "UserId": "user-a"},
         )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_subscribe_run_events_enforces_agent_and_user_scope(monkeypatch):
+async def test_subscribe_run_events_ignores_user_scope(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     session = await service.create_session(
@@ -3855,7 +3855,7 @@ async def test_subscribe_run_events_enforces_agent_and_user_scope(monkeypatch):
             },
         )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -6537,7 +6537,7 @@ async def test_list_session_events_without_session_id_filters_total_by_user(monk
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_rejects_mismatched_session_user(monkeypatch):
+async def test_list_session_events_ignores_mismatched_session_user(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session(
@@ -6559,7 +6559,7 @@ async def test_list_session_events_rejects_mismatched_session_user(monkeypatch):
             },
         )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

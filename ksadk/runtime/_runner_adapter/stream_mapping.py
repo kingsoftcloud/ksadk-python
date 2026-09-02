@@ -453,6 +453,24 @@ class _RunnerStreamMappingMixin:
                 )
             ]
 
+        def tool_item_id(effective_call_id: str, item_kind: str) -> str:
+            components = (effective_call_id, item_kind)
+            if run is None:
+                return stable_item_id(framework, run_id, *components)
+            occurrences = run.__dict__.setdefault("_tool_item_occurrences", {})
+            occurrence_key = (scope_id, item_kind, effective_call_id)
+            occurrence = int(occurrences.get(occurrence_key, 0))
+            occurrences[occurrence_key] = occurrence + 1
+            if occurrence == 0:
+                return stable_item_id(framework, run_id, *components)
+            return stable_item_id(
+                framework,
+                run_id,
+                *components,
+                "occurrence",
+                occurrence,
+            )
+
         chunk_type = chunk.get("type")
 
         # ---- reasoning ----
@@ -515,7 +533,7 @@ class _RunnerStreamMappingMixin:
             )
             name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
             effective_call_id = call_id or name
-            item_id = stable_item_id(framework, run_id, effective_call_id, "tool_call")
+            item_id = tool_item_id(effective_call_id, "tool_call")
             part_id = "tool_call"
             tc_content = ToolCallContent(
                 part_id=part_id,
@@ -562,7 +580,7 @@ class _RunnerStreamMappingMixin:
             )
             name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
             effective_call_id = call_id or name
-            item_id = stable_item_id(framework, run_id, effective_call_id, "tool_result")
+            item_id = tool_item_id(effective_call_id, "tool_result")
             part_id = "tool_result"
             result_data = chunk.get("tool_output", chunk.get("output"))
             # ToolGateway 审批可能出现在"本已终态"的 tool result 里;识别后转为
