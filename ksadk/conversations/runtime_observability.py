@@ -343,6 +343,7 @@ def _set_conversation_usage_attributes(
     span: Any | None,
     usage: Mapping[str, Any] | None,
 ) -> None:
+    """Write run-level usage as KsADK diagnostics, never as model generation usage."""
     normalized = _normalize_usage_payload(usage)
     if not normalized:
         return
@@ -372,19 +373,14 @@ def _set_conversation_usage_attributes(
         )
 
     attributes = {
-        "gen_ai.usage.input_tokens": input_tokens,
-        "gen_ai.usage.output_tokens": output_tokens,
-        "gen_ai.usage.total_tokens": total_tokens,
-        "llm.usage.prompt_tokens": input_tokens,
-        "llm.usage.completion_tokens": output_tokens,
-        "llm.usage.total_tokens": total_tokens,
+        "ksadk.runtime.usage.input_tokens": input_tokens,
+        "ksadk.runtime.usage.output_tokens": output_tokens,
+        "ksadk.runtime.usage.total_tokens": total_tokens,
     }
     if cache_read_tokens:
-        attributes["gen_ai.usage.cache_read.input_tokens"] = cache_read_tokens
-        attributes["llm.usage.cache_read.input_tokens"] = cache_read_tokens
+        attributes["ksadk.runtime.usage.cache_read.input_tokens"] = cache_read_tokens
     if reasoning_tokens:
-        attributes["gen_ai.usage.reasoning.output_tokens"] = reasoning_tokens
-        attributes["llm.usage.reasoning_tokens"] = reasoning_tokens
+        attributes["ksadk.runtime.usage.reasoning.output_tokens"] = reasoning_tokens
 
     for key, value in attributes.items():
         if value:
@@ -405,6 +401,10 @@ def _set_conversation_span_attributes(
     if span is None:
         return
     try:
+        # A conversation span wraps the whole run. Real token-bearing model
+        # calls are separate child generations; keep this span out of the
+        # generation namespace so trace aggregation does not double-count.
+        span.set_attribute("openinference.span.kind", "AGENT")
         span.set_attribute("ksadk.agent_id", agent_id)
         span.set_attribute("ksadk.user_id", user_id)
         span.set_attribute("ksadk.session_id", session_id)
