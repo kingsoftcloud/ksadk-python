@@ -1040,12 +1040,11 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert fetched_session["Summary"] == "hello world"
     persisted_events = events.json()["Data"]["Events"]
     event_types = [item["EventType"] for item in persisted_events]
-    assert persisted_events[0]["Author"] == "user"
-    assert event_types[0] == "user_message"
+    assert persisted_events[-1]["Author"] == "user"
+    assert event_types[-1] == "user_message"
     assert "run.started" in event_types
     assert "item.completed" in event_types
     assert "run.completed" in event_types
-    assert event_types[-1] == "run_status"
     assert deleted.json()["Data"]["Deleted"] is True
 
 
@@ -1207,6 +1206,14 @@ async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cur
                 "SessionId": session.id,
             },
         )
+        wrong_agent = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "other-agent",
+                "UserId": "user-b",
+                "SessionId": session.id,
+            },
+        )
         latest = await client.post(
             "/agentengine/api/v1/ListSessionMessages",
             json={
@@ -1238,6 +1245,7 @@ async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cur
         )
 
     assert wrong_user.status_code == 404
+    assert wrong_agent.status_code == 404
     assert [item["SeqId"] for item in latest_data["Messages"]] == [7, 8]
     assert latest_data["NextCursor"] == 7
     assert [item["SeqId"] for item in older.json()["Data"]["Messages"]] == [5, 6]

@@ -65,6 +65,38 @@ async def _anext_or_stop(gen: AsyncIterator[Any]) -> Any:
         return _STREAM_STOP
 
 
+async def _pump_stream_in_one_context(
+    gen: AsyncIterator[Any],
+    requests: asyncio.Queue[None],
+    results: asyncio.Queue[tuple[str, Any]],
+) -> None:
+    """Own one async generator in one Task without reading ahead."""
+    outcome: tuple[str, Any] = ("stop", _STREAM_STOP)
+    try:
+        while True:
+            await requests.get()
+            try:
+                chunk = await gen.__anext__()
+            except StopAsyncIteration:
+                break
+            await results.put(("chunk", chunk))
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        outcome = ("error", exc)
+    finally:
+        aclose = getattr(gen, "aclose", None)
+        if callable(aclose):
+            try:
+                await aclose()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                if outcome[0] != "error":
+                    outcome = ("error", exc)
+    await results.put(outcome)
+
+
 def _a2ui_surface_event(
     self: Any,
     handle: RunHandle,
@@ -192,9 +224,15 @@ class _RunnerStreamMappingMixin:
     """``_map_runner_stream`` / ``_chunk_to_event`` 的实现载体(纯移动自 runner_adapter)。"""
 
     async def _map_runner_stream(
-        self, handle: RunHandle, runner_input: dict
+        self,
+        handle: RunHandle,
+        runner_input: dict,
+        *,
+        active_run: Optional[_ActiveRun] = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        run: Optional[_ActiveRun] = self._active_runs.get(handle.run_id)  # type: ignore[attr-defined]
+        run: Optional[_ActiveRun] = active_run
+        if run is None:
+            run = self._active_runs.get(handle.run_id)  # type: ignore[attr-defined]
         interrupt = run.interrupt_event if run is not None else None
         prepared_start = run.__dict__.get("_prepared_start") if run is not None else None
         invocation_context = (
@@ -209,6 +247,9 @@ class _RunnerStreamMappingMixin:
         accumulated_output = ""
         usage: dict[str, Any] = {}
         runner_gen: Optional[AsyncIterator[Any]] = None
+        pump_requests: asyncio.Queue[None] | None = None
+        pump_queue: asyncio.Queue[tuple[str, Any]] | None = None
+        pump_task: asyncio.Task[None] | None = None
         # span scope 经 runner_adapter 模块属性间接解析,保持既有 monkeypatch
         # patch 点(tests/agui/test_runtime_preprocessing.py)继续生效。
         from ksadk.runtime import runner_adapter as _runner_adapter_module
@@ -247,10 +288,26 @@ class _RunnerStreamMappingMixin:
                         # 调用返回 coroutine,需 await 得到迭代器。
                         stream_result = await stream_result
                     runner_gen = cast(AsyncIterator[Any], stream_result)
+                    if self._requires_stable_stream_context():
+                        pump_requests = asyncio.Queue(maxsize=1)
+                        pump_queue = asyncio.Queue()
+                        pump_task = asyncio.create_task(
+                            _pump_stream_in_one_context(
+                                runner_gen, pump_requests, pump_queue
+                            )
+                        )
+                        if run is not None:
+                            run.chunk_task = pump_task
                     while True:
                         # 竞速:下一个 runner chunk vs cancel 中断事件。
-                        chunk_task = asyncio.ensure_future(_anext_or_stop(runner_gen))
-                        if run is not None:
+                        if pump_requests is not None:
+                            pump_requests.put_nowait(None)
+                        chunk_task = asyncio.ensure_future(
+                            pump_queue.get()
+                            if pump_queue is not None
+                            else _anext_or_stop(runner_gen)
+                        )
+                        if run is not None and pump_task is None:
                             run.chunk_task = chunk_task
                         wait_set = {chunk_task}
                         interrupt_task = (
@@ -269,17 +326,23 @@ class _RunnerStreamMappingMixin:
                             await asyncio.gather(*pending, return_exceptions=True)
                         if interrupt_task is not None and interrupt_task in done:
                             # cancel 中断:安全关闭 runner 流(同一 task)并停止。
-                            chunk_task.cancel()
-                            await asyncio.gather(chunk_task, return_exceptions=True)
+                            owner_task = pump_task or chunk_task
+                            owner_task.cancel()
+                            await asyncio.gather(owner_task, return_exceptions=True)
                             return
                         try:
                             chunk = chunk_task.result()
+                            if pump_task is not None:
+                                outcome, payload = cast(tuple[str, Any], chunk)
+                                if outcome == "error":
+                                    raise payload
+                                chunk = payload
                         except asyncio.CancelledError:
                             if interrupt is not None and interrupt.is_set():
                                 return
                             raise
                         finally:
-                            if run is not None:
+                            if run is not None and pump_task is None:
                                 run.chunk_task = None
                         if chunk is _STREAM_STOP:
                             return
@@ -333,7 +396,11 @@ class _RunnerStreamMappingMixin:
                 if accumulated_output:
                     _set_conversation_output_attributes(span, accumulated_output)
                 _set_conversation_usage_attributes(span, usage)
-                if runner_gen is not None:
+                if pump_task is not None:
+                    if not pump_task.done():
+                        pump_task.cancel()
+                    await asyncio.gather(pump_task, return_exceptions=True)
+                elif runner_gen is not None:
                     aclose = getattr(runner_gen, "aclose", None)
                     if callable(aclose):
                         try:
@@ -341,6 +408,8 @@ class _RunnerStreamMappingMixin:
                         except Exception:  # noqa: BLE001
                             pass
                 if run is not None:
+                    if pump_task is not None:
+                        run.chunk_task = None
                     run.cancellation_ack.set()
 
     def _chunk_to_event(
@@ -386,6 +455,24 @@ class _RunnerStreamMappingMixin:
                     initial=initial,
                 )
             ]
+
+        def tool_item_id(effective_call_id: str, item_kind: str) -> str:
+            components = (effective_call_id, item_kind)
+            if run is None:
+                return stable_item_id(framework, run_id, *components)
+            occurrences = run.__dict__.setdefault("_tool_item_occurrences", {})
+            occurrence_key = (scope_id, item_kind, effective_call_id)
+            occurrence = int(occurrences.get(occurrence_key, 0))
+            occurrences[occurrence_key] = occurrence + 1
+            if occurrence == 0:
+                return stable_item_id(framework, run_id, *components)
+            return stable_item_id(
+                framework,
+                run_id,
+                *components,
+                "occurrence",
+                occurrence,
+            )
 
         chunk_type = chunk.get("type")
 
@@ -449,7 +536,7 @@ class _RunnerStreamMappingMixin:
             )
             name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
             effective_call_id = call_id or name
-            item_id = stable_item_id(framework, run_id, effective_call_id, "tool_call")
+            item_id = tool_item_id(effective_call_id, "tool_call")
             part_id = "tool_call"
             tc_content = ToolCallContent(
                 part_id=part_id,
@@ -496,7 +583,7 @@ class _RunnerStreamMappingMixin:
             )
             name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
             effective_call_id = call_id or name
-            item_id = stable_item_id(framework, run_id, effective_call_id, "tool_result")
+            item_id = tool_item_id(effective_call_id, "tool_result")
             part_id = "tool_result"
             result_data = chunk.get("tool_output", chunk.get("output"))
             # ToolGateway 审批可能出现在"本已终态"的 tool result 里;识别后转为
@@ -618,26 +705,55 @@ class _RunnerStreamMappingMixin:
             if isinstance(runtime_ref, dict):
                 handle.native_ref.update(runtime_ref)
             item_id = stable_item_id(framework, run_id, "$run")
+            # Extract checkpoint capability from agentengine metadata so the
+            # canonical event carries backend/scope/next_node facts that the
+            # projection layer (projection.py) needs for the REST payload.
+            capability: dict[str, Any] = {}
+            for cap_key in (
+                # Capability / resume fields
+                "backend", "scope", "durable", "next_node",
+                "is_terminal", "is_resumable", "resume_status",
+                "resume_disabled_reason",
+                # Checkpoint display fields
+                "phase", "stage", "stage_name", "stage_key",
+                "stage_index", "total_stages", "summary",
+                "next_action", "status", "artifact_preview",
+                "tool_name", "receipt_key", "artifact_path",
+            ):
+                cap_val = agentengine.get(cap_key)
+                if cap_val is not None:
+                    capability[cap_key] = cap_val
+            canonical_kwargs = self._canonical_kwargs(  # type: ignore[attr-defined]
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="continuation.created",
+                part_id="continuation",
+            )
+            if capability:
+                base_source = canonical_kwargs["source"]
+                canonical_kwargs["source"] = SourceRef(
+                    framework=base_source.framework,
+                    protocol=base_source.protocol,
+                    native_run_id=base_source.native_run_id,
+                    metadata={**base_source.metadata, "capability": capability},
+                )
             ref_value = cast(
                 JsonValue,
                 framework_ref if isinstance(framework_ref, dict) else {},
             )
+            next_node_val = agentengine.get("next_node")
             return [
                 ContinuationCreated(
-                    **self._canonical_kwargs(  # type: ignore[attr-defined]
-                        handle,
-                        scope_id=scope_id,
-                        item_id=item_id,
-                        event_type="continuation.created",
-                        part_id="continuation",
-                    ),
+                    **canonical_kwargs,
                     continuation_id=checkpoint_id,
                     continuation_kind="graph_checkpoint",
-                    resumable=True,
+                    resumable=bool(agentengine.get("is_resumable", True)),
                     ref={
                         "framework": ckpt_framework,
                         "framework_ref": ref_value,
                         "resume_target": ref_value,
+                        **({"next_node": str(next_node_val)} if next_node_val else {}),
                     },
                 )
             ]

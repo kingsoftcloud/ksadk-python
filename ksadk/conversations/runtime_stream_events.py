@@ -136,6 +136,7 @@ async def _iter_conversation_turn_events(
     agent_system: str = "",
     agent_task: str = "",
     prompt_integration_mode: str = "",
+    resume_lifecycle_prepared: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
@@ -198,6 +199,7 @@ async def _iter_conversation_turn_events(
             agent_system=agent_system,
             agent_task=agent_task,
             prompt_integration_mode=prompt_integration_mode,
+            resume_lifecycle_prepared=resume_lifecycle_prepared,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode

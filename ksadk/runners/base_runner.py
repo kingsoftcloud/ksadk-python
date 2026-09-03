@@ -151,6 +151,18 @@ class BaseRunner(ABC):
             },
         }
 
+    async def prepare_runtime_capabilities(self) -> None:
+        """Prepare optional async resources required for capability discovery."""
+        return None
+
+    async def refresh_runtime_capabilities(self) -> None:
+        """Refresh transient resources used for capability discovery.
+
+        The default implementation preserves compatibility for runners whose
+        capability preparation is either synchronous or permanently stable.
+        """
+        await self.prepare_runtime_capabilities()
+
     async def close(self) -> None:
         """释放 runner 持有的运行期资源。"""
         return None
