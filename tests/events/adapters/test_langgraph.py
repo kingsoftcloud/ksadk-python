@@ -38,6 +38,7 @@ from ksadk.events.canonical import (
     RunInterrupted,
     RunProgress,
     RuntimeEvent,
+    UsageReported,
     dump_runtime_event,
     parse_runtime_event,
 )
@@ -569,6 +570,53 @@ async def test_real_whole_message_raw_event_maps_as_terminal_snapshot() -> None:
     assert completed[0].snapshot.parts == (
         TextContent(part_id=completed[0].snapshot.parts[0].part_id, text="whole answer"),
     )
+
+
+@pytest.mark.parametrize(
+    "message_kwargs",
+    [
+        {
+            "usage_metadata": {
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "total_tokens": 18,
+                "input_token_details": {"cache_read": 3},
+                "output_token_details": {"reasoning": 2},
+            }
+        },
+        {
+            "response_metadata": {
+                "token_usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                }
+            }
+        },
+    ],
+)
+def test_whole_ai_message_usage_metadata_maps_to_usage_reported(
+    message_kwargs: Mapping[str, Any],
+) -> None:
+    message = AIMessage(id="usage-msg", content="answer", **message_kwargs)
+    raw = {
+        "type": "event",
+        "method": "messages",
+        "params": {
+            "namespace": [],
+            "timestamp": 1_786_439_000_000,
+            "data": (message, {"langgraph_node": "model", "run_id": "llm-1"}),
+        },
+        "seq": 1,
+    }
+
+    mapped = LangGraphEventAdapter().map_protocol_event(raw, _context())
+    usage = next(event for event in mapped if isinstance(event, UsageReported))
+    assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (11, 7, 18)
+    assert usage.cached_tokens == 3
+    assert usage.reasoning_tokens == 2
 
 
 @pytest.mark.asyncio

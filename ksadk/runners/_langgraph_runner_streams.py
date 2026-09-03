@@ -531,6 +531,7 @@ class _LangGraphStreamMixin:
             RunInterrupted,
             RunStarted,
             SourceRef,
+            UsageReported,
         )
         from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
         from ksadk.events.reducer import StreamReducer
@@ -668,6 +669,7 @@ class _LangGraphStreamMixin:
         )
         adapter = LangGraphEventAdapter()
         reducer = StreamReducer()
+        accumulated_usage: dict[str, Any] = {}
 
         # --- build stream kwargs (v3 rejects stream_mode/subgraphs) ---
         stream_kwargs: dict[str, Any] = {"version": "v3", "config": config}
@@ -680,6 +682,18 @@ class _LangGraphStreamMixin:
         try:
             run_stream = await self._agent.astream_events(stream_input, **stream_kwargs)
             async for event in adapter.stream_run(run_stream, adapter_context):
+                if isinstance(event, UsageReported):
+                    accumulated_usage = accumulate_usage(
+                        accumulated_usage,
+                        {
+                            "input_tokens": event.input_tokens,
+                            "output_tokens": event.output_tokens,
+                            "total_tokens": event.total_tokens,
+                            "cached_tokens": event.cached_tokens,
+                            "reasoning_tokens": event.reasoning_tokens,
+                        },
+                    )
+                    event = event.model_copy(update=accumulated_usage)
                 if isinstance(event, RunInterrupted):
                     was_interrupted = True
                     # Extract checkpoint from graph state and emit
