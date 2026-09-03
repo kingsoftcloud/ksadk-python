@@ -1809,7 +1809,10 @@ class ADKRunner(BaseRunner):
             metadata["resume_disabled_reason"] = (
                 self._resume_disabled_reason
                 if not self._resumable and self._resume_disabled_reason
-                else "ADK database session persistence was degraded when this checkpoint was written"
+                else (
+                    "ADK database session persistence was degraded when this checkpoint "
+                    "was written"
+                )
                 if persistence_degraded
                 else "ADK checkpoint uses an in-memory or local-only session backend; "
                 "cross-pod resume is unavailable"

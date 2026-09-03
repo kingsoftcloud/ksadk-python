@@ -21,7 +21,7 @@ from ksadk.conversations.run_kinds import (
 from ksadk.conversations.runtime_payloads import build_responses_payload
 from ksadk.conversations.runtime_streaming import stream_runtime_responses_conversation_turn
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
-from ksadk.server.factory import get_runtime_execution
+from ksadk.server.factory import get_runtime_execution, get_state
 
 from . import dependencies as deps
 from .checkpoint_resolution import _find_session_checkpoint
@@ -48,9 +48,9 @@ from .projection import (
 )
 from .routers import control_router, run_router
 from .streaming import (
+    _claim_detached_resume_key,
     _clear_detached_resume_key,
     _detached_resume_key_from_input,
-    _reject_if_detached_resume_active,
 )
 
 
@@ -204,60 +204,65 @@ async def resume_run_action(request: ResumeRunActionRequest):
     if request.Background:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key, pascal_case_detail=True)
-        await deps.conversation().append_run_resume_event(
-            session_id=request.SessionId,
-            author=request.AgentId,
-            run_id=str(request.RunId),
-            checkpoint_id=str(request.CheckpointId),
-            resume_attempt_id=str(resume_input["resume_attempt_id"]),
-            framework=checkpoint["Framework"],
-            framework_ref=checkpoint["FrameworkRef"],
-            invocation_id=resume_invocation_id,
-            session_service_provider=deps.resolve_session_service,
-        )
-        await deps.conversation().append_run_status_event(
-            session_id=request.SessionId,
-            author=request.AgentId,
-            status="resuming",
-            invocation_id=resume_invocation_id,
-            detail="checkpoint_resume",
-            session_service_provider=deps.resolve_session_service,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
-        detached = deps.detached_stream_class()(
-            stream_runtime_responses_conversation_turn(
-                executor=executor,
-                launch_context=launch_context,
-                agent_id=request.AgentId,
-                user_id=user_id,
-                messages=[],
+        await _claim_detached_resume_key(resume_key, resume_invocation_id, pascal_case_detail=True)
+        try:
+            await deps.conversation().append_run_resume_event(
                 session_id=request.SessionId,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata=resume_request_metadata,
-                custom_metadata=custom_metadata,
-                include_agentengine_metadata=True,
-                resume_input=resume_input,
+                author=request.AgentId,
+                run_id=str(request.RunId),
+                checkpoint_id=str(request.CheckpointId),
+                resume_attempt_id=str(resume_input["resume_attempt_id"]),
+                framework=checkpoint["Framework"],
+                framework_ref=checkpoint["FrameworkRef"],
                 invocation_id=resume_invocation_id,
                 session_service_provider=deps.resolve_session_service,
+            )
+            await deps.conversation().append_run_status_event(
+                session_id=request.SessionId,
+                author=request.AgentId,
+                status="resuming",
+                invocation_id=resume_invocation_id,
+                detail="checkpoint_resume",
+                session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_BACKGROUND,
-            ),
-            invocation_id=resume_invocation_id,
-            session_id=request.SessionId,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+            )
+            detached = deps.detached_stream_class()(
+                stream_runtime_responses_conversation_turn(
+                    executor=executor,
+                    launch_context=launch_context,
+                    agent_id=request.AgentId,
+                    user_id=user_id,
+                    messages=[],
+                    session_id=request.SessionId,
+                    model=request.Model,
+                    model_metadata=request.ModelMetadata,
+                    model_options=request.ModelOptions,
+                    request_metadata=resume_request_metadata,
+                    custom_metadata=custom_metadata,
+                    include_agentengine_metadata=True,
+                    resume_input=resume_input,
+                    invocation_id=resume_invocation_id,
+                    session_service_provider=deps.resolve_session_service,
+                    run_mode=RUN_MODE_BACKGROUND,
+                ),
+                invocation_id=resume_invocation_id,
+                session_id=request.SessionId,
+                run_mode=RUN_MODE_BACKGROUND,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+            )
+        except Exception:
+            if resume_key:
+                _clear_detached_resume_key(
+                    get_state().stream_registry, resume_invocation_id, resume_key
+                )
+            raise
         if resume_key:
             registry = detached._registry
             registry.resume_keys_by_invocation[resume_invocation_id] = resume_key
             registry.active_resume_invocation_by_key[resume_key] = resume_invocation_id
             detached._task.add_done_callback(
-                lambda _task: _clear_detached_resume_key(
-                    registry, resume_invocation_id, resume_key
-                )
+                lambda _task: _clear_detached_resume_key(registry, resume_invocation_id, resume_key)
             )
         return _action_response(
             "ResumeRun",
@@ -279,47 +284,54 @@ async def resume_run_action(request: ResumeRunActionRequest):
     if request.Stream:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key, pascal_case_detail=True)
+        await _claim_detached_resume_key(resume_key, resume_invocation_id, pascal_case_detail=True)
         # 与 RunAgent Background 同款：返回 SSE 前同步落 resuming 起始事件。
         # detached turn 的首个事件要等流被消费才写；UI 拿到响应头会立刻调
         # SubscribeRunEvents，其 _session_contains_invocation 校验若抢在首次写入前
         # 会误判 409 "InvocationId does not belong to SessionId"。
         # append_run_status_event 按 (invocation_id, status) 幂等，turn 内的补写会去重。
-        await deps.conversation().append_run_status_event(
-            session_id=request.SessionId,
-            author=request.AgentId,
-            status="resuming",
-            invocation_id=resume_invocation_id,
-            detail="checkpoint_resume",
-            session_service_provider=deps.resolve_session_service,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
-        return deps.detached_streaming_response(
-            stream_runtime_responses_conversation_turn(
-                executor=executor,
-                launch_context=launch_context,
-                agent_id=request.AgentId,
-                user_id=user_id,
-                messages=[],
+        try:
+            await deps.conversation().append_run_status_event(
                 session_id=request.SessionId,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata=resume_request_metadata,
-                custom_metadata=custom_metadata,
-                include_agentengine_metadata=True,
-                resume_input=resume_input,
+                author=request.AgentId,
+                status="resuming",
                 invocation_id=resume_invocation_id,
+                detail="checkpoint_resume",
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_BACKGROUND,
-            ),
-            invocation_id=resume_invocation_id,
-            session_id=request.SessionId,
-            resume_key=resume_key,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+            )
+            return deps.detached_streaming_response(
+                stream_runtime_responses_conversation_turn(
+                    executor=executor,
+                    launch_context=launch_context,
+                    agent_id=request.AgentId,
+                    user_id=user_id,
+                    messages=[],
+                    session_id=request.SessionId,
+                    model=request.Model,
+                    model_metadata=request.ModelMetadata,
+                    model_options=request.ModelOptions,
+                    request_metadata=resume_request_metadata,
+                    custom_metadata=custom_metadata,
+                    include_agentengine_metadata=True,
+                    resume_input=resume_input,
+                    invocation_id=resume_invocation_id,
+                    session_service_provider=deps.resolve_session_service,
+                    run_mode=RUN_MODE_BACKGROUND,
+                ),
+                invocation_id=resume_invocation_id,
+                session_id=request.SessionId,
+                resume_key=resume_key,
+                run_mode=RUN_MODE_BACKGROUND,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+            )
+        except Exception:
+            if resume_key:
+                _clear_detached_resume_key(
+                    get_state().stream_registry, resume_invocation_id, resume_key
+                )
+            raise
 
     response_id = f"resp_{uuid.uuid4().hex}"
     resolved_session_id, result = await invoke_runtime_conversation_once(

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.responses import Response
 from starlette.background import BackgroundTask
 
@@ -3776,7 +3777,7 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
         ),
     ],
 )
-async def test_checkpoint_actions_ignore_user_scope(monkeypatch, action, payload):
+async def test_checkpoint_actions_enforce_user_scope(monkeypatch, action, payload):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -3816,12 +3817,17 @@ async def test_checkpoint_actions_ignore_user_scope(monkeypatch, action, payload
             f"/agentengine/api/v1/{action}",
             json={**payload, "UserId": "user-a"},
         )
+        wrong_agent = await client.post(
+            f"/agentengine/api/v1/{action}",
+            json={**payload, "AgentId": "other-agent", "UserId": "user-b"},
+        )
 
-    assert response.status_code == 200
+    assert response.status_code == 404
+    assert wrong_agent.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_subscribe_run_events_ignores_user_scope(monkeypatch):
+async def test_subscribe_run_events_enforces_user_scope(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     session = await service.create_session(
@@ -3855,7 +3861,7 @@ async def test_subscribe_run_events_ignores_user_scope(monkeypatch):
             },
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -4989,6 +4995,34 @@ async def test_resume_run_action_stream_rejects_concurrent_resume_for_same_run(m
     assert first_response.status_code == 202
     assert second_response.status_code == 409
     assert second_response.json()["detail"]["code"] == "resume_already_running"
+
+
+@pytest.mark.asyncio
+async def test_detached_resume_key_claim_is_atomic_for_concurrent_requests():
+    """Two simultaneous resume requests must not both reserve the same run."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    streaming = importlib.import_module("ksadk.server.routes.streaming")
+    registry = server_app_module.app.state.runtime.stream_registry
+    registry.clear()
+    resume_key = ("sess-resume-atomic", "run-1")
+
+    results = await asyncio.gather(
+        streaming._claim_detached_resume_key(resume_key, "resume-invocation-1"),
+        streaming._claim_detached_resume_key(resume_key, "resume-invocation-2"),
+        return_exceptions=True,
+    )
+
+    accepted = [result for result in results if result is None]
+    rejected = [result for result in results if isinstance(result, HTTPException)]
+    assert len(accepted) == 1
+    assert len(rejected) == 1
+    assert rejected[0].status_code == 409
+    assert rejected[0].detail["code"] == "resume_already_running"
+    assert registry.active_resume_invocation_by_key[resume_key] in {
+        "resume-invocation-1",
+        "resume-invocation-2",
+    }
+    registry.clear()
 
 
 @pytest.mark.asyncio
@@ -6537,7 +6571,7 @@ async def test_list_session_events_without_session_id_filters_total_by_user(monk
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_ignores_mismatched_session_user(monkeypatch):
+async def test_list_session_events_rejects_mismatched_session_user(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session(
@@ -6559,7 +6593,7 @@ async def test_list_session_events_ignores_mismatched_session_user(monkeypatch):
             },
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

@@ -131,7 +131,8 @@ class _DetachedSSEStream:
                             invocation_id=self.invocation_id or "",
                             detail=(
                                 terminal_fallback_detail
-                                or f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
+                                or f"background_{terminal_fallback_status}:"
+                                f"{self.invocation_id or ''}"
                             ),
                             session_service_provider=get_state().resolve_session_service,
                             run_mode=self._run_mode,
@@ -252,6 +253,25 @@ def _reject_if_detached_resume_active(
         status_code=409,
         detail=detail,
     )
+
+
+async def _claim_detached_resume_key(
+    resume_key: tuple[str, str] | None,
+    invocation_id: str,
+    *,
+    pascal_case_detail: bool = False,
+) -> None:
+    """Atomically reject or reserve a detached checkpoint-resume key."""
+    if resume_key is None:
+        return
+    registry = get_state().stream_registry
+    async with registry.resume_key_lock:
+        _reject_if_detached_resume_active(
+            resume_key,
+            pascal_case_detail=pascal_case_detail,
+        )
+        registry.resume_keys_by_invocation[invocation_id] = resume_key
+        registry.active_resume_invocation_by_key[resume_key] = invocation_id
 
 
 def detached_streaming_response(

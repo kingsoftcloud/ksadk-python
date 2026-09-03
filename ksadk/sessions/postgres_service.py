@@ -577,7 +577,8 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
                 "(event_row.metadata_json->>'checkpoint_id'=ANY("
                 f"${len(params)}::text[])"
                 " OR (event_row.event_type='continuation.created'"
-                f" AND event_row.content_json->'runtime_event'->>'continuation_id'=ANY(${len(params)}::text[])))"
+                " AND event_row.content_json->'runtime_event'->>'continuation_id'=ANY("
+                f"${len(params)}::text[])))"
             )
         return clauses, params
 
@@ -658,7 +659,8 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
                 "(event_row.metadata_json->>'checkpoint_id'=ANY("
                 f"${len(params)}::text[])"
                 " OR (event_row.event_type='continuation.created'"
-                f" AND event_row.content_json->'runtime_event'->>'continuation_id'=ANY(${len(params)}::text[])))"
+                " AND event_row.content_json->'runtime_event'->>'continuation_id'=ANY("
+                f"${len(params)}::text[])))"
             )
         if query.run_id is not None:
             params.append(query.run_id)
@@ -674,7 +676,8 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
                 "(lower(event_row.metadata_json->>'framework')="
                 f"${len(params)}"
                 " OR (event_row.event_type='continuation.created'"
-                f" AND lower(event_row.content_json->'runtime_event'->'source'->>'framework')=${len(params)}))"
+                " AND lower(event_row.content_json->'runtime_event'->'source'->>'framework')="
+                f"${len(params)}))"
             )
         if cursor is not None:
             placeholders = []

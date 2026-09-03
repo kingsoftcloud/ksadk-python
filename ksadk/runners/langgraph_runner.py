@@ -875,6 +875,12 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
+                # Runtime-owned tool/approval records are preserved in the durable
+                # transcript, but must not be taught back to LangGraph as plain text.
+                if isinstance(content, str) and content.startswith(
+                    ("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")
+                ):
+                    continue
                 if role == "user":
                     messages.append(HumanMessage(content=content))
                 elif role in ("assistant", "model"):

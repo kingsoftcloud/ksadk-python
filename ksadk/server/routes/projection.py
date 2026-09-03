@@ -42,12 +42,13 @@ async def _require_action_session(
     agent_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> Session:
-    """Resolve one runtime session while enforcing the supplied agent scope."""
+    """Resolve one runtime session while enforcing every supplied scope."""
 
     session = await service.get_session_metadata(str(session_id or "").strip())
     if (
         session is None
         or (agent_id is not None and session.agent_id != agent_id)
+        or (user_id is not None and session.user_id != user_id)
     ):
         logger.warning("Session %s not found", session_id)
         raise HTTPException(status_code=404, detail="Session not found")
@@ -475,7 +476,9 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             "scope": _capability_str("scope"),
             "durable": bool(durable_raw),
             "is_resumable": canonical.resumable,
-            "is_terminal": bool(capability.get("is_terminal", event_meta.get("is_terminal", False))),
+            "is_terminal": bool(
+                capability.get("is_terminal", event_meta.get("is_terminal", False))
+            ),
             "next_node": _capability_str("next_node", ""),
             "resume_status": _capability_str("resume_status", ""),
             "resume_disabled_reason": _capability_str("resume_disabled_reason", ""),

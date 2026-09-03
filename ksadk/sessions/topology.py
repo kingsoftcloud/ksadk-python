@@ -6,7 +6,6 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-
 StorageSource = Literal[
     "none",
     "explicit",

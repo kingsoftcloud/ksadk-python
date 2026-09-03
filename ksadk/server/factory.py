@@ -92,6 +92,7 @@ class StreamRegistry:
         self.streams_by_invocation: dict[str, Any] = {}
         self.resume_keys_by_invocation: dict[str, tuple[str, str]] = {}
         self.active_resume_invocation_by_key: dict[tuple[str, str], str] = {}
+        self.resume_key_lock = asyncio.Lock()
 
     def clear(self) -> None:
         self.streams.clear()
