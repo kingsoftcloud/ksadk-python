@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 
 
@@ -46,6 +47,7 @@ class ToolReceiptStore:
     """
 
     def __init__(self, db_path: str = ":memory:") -> None:
+        self.path = Path(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.executescript(self._SCHEMA)
         self._lock = threading.Lock()

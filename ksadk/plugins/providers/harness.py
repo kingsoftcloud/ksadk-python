@@ -244,10 +244,14 @@ class KsADKHarnessProviderRuntime:
         plugin_id: str,
         session_service: BaseSessionService,
         reasoner: HarnessReasoner,
+        state_dir: str | None = None,
+        checkpoint_dsn: str | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
         self._reasoner = reasoner
+        self._state_dir = state_dir
+        self._checkpoint_dsn = checkpoint_dsn
         self._ready = False
         self._disposed = False
         self._last_inventory: HarnessProviderInventory | None = None
@@ -373,6 +377,8 @@ class KsADKHarnessProviderRuntime:
             context_sources=tuple(context_sources),
             session_service=self._session_service,
             inventory=inventory,
+            state_dir=self._state_dir,
+            checkpoint_dsn=self._checkpoint_dsn,
         )
 
 
@@ -406,10 +412,14 @@ class KsADKHarnessProviderFactory:
         reasoner = self._reasoner or services.get("harness_reasoner")
         if reasoner is None:
             reasoner = LiteLLMHarnessReasoner()
+        state_dir = services.get("harness_state_dir")
+        checkpoint_dsn = services.get("checkpoint_dsn")
         self.runtime = KsADKHarnessProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
             reasoner=reasoner,
+            state_dir=str(state_dir) if state_dir else None,
+            checkpoint_dsn=str(checkpoint_dsn) if checkpoint_dsn else None,
         )
         return self.runtime
 
@@ -427,6 +437,8 @@ class KsADKHarnessActivation:
         context_sources: tuple[HarnessContextSource, ...],
         session_service: BaseSessionService,
         inventory: HarnessProviderInventory,
+        state_dir: str | None = None,
+        checkpoint_dsn: str | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -437,6 +449,9 @@ class KsADKHarnessActivation:
         self._context_sources = context_sources
         self._session_service = session_service
         self._inventory = inventory
+        self._state_dir = state_dir
+        self._checkpoint_dsn = checkpoint_dsn
+        self._checkpoint_stack: Any | None = None
         self._ready = False
         self._disposed = False
         self._executors: list[RuntimeExecutor] = []
@@ -495,7 +510,7 @@ class KsADKHarnessActivation:
             inventory=self._inventory,
         )
 
-    def runtime_adapter(self) -> RuntimeAdapter:
+    async def runtime_adapter(self) -> RuntimeAdapter:
         """Return the activation-owned adapter used by AgentKernel Scheduler.
 
         The immutable profile has already assembled model instructions, MCP,
@@ -513,12 +528,17 @@ class KsADKHarnessActivation:
                 build_managed_provider_adapter,
             )
 
-            self._kernel_adapter = build_managed_provider_adapter(
+            self._kernel_adapter = await build_managed_provider_adapter(
                 self._config,
                 agent_name=self._agent_name,
                 reasoner=self._reasoner,
                 workspace_root=self._workspace_root,
                 skills=self._skills,
+                state_dir=self._state_dir,
+                checkpoint_dsn=self._checkpoint_dsn,
+            )
+            self._checkpoint_stack = getattr(
+                self._kernel_adapter, "_checkpoint_stack", None
             )
         return self._kernel_adapter
 
@@ -528,6 +548,12 @@ class KsADKHarnessActivation:
     async def dispose(self) -> None:
         self._ready = False
         first_error: BaseException | None = None
+        if self._checkpoint_stack is not None:
+            try:
+                await self._checkpoint_stack.aclose()
+            except BaseException as error:  # cleanup must continue
+                first_error = error
+            self._checkpoint_stack = None
         if self._kernel_adapter is not None:
             try:
                 await self._kernel_adapter.close_all()

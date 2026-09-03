@@ -32,6 +32,7 @@ from ksadk.events.canonical import (
 from ksadk.events.content import ContentSnapshot, TextContent, ToolCallContent, ToolResultContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.harness.context_engine import HarnessContextEngine
+from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine, memory_checkpointer
 from ksadk.harness.events import EventType
 from ksadk.harness.events import RuntimeEvent as HarnessEvent
@@ -86,6 +87,40 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         )
         self._compiled: Any | None = None
         self._external_handles: dict[str, RunHandle] = {}
+        #: 由装配层注入（持久 Checkpoint 分档时非空）；为空则不持久化 Handle。
+        self._run_store: Any | None = None
+
+    def _persist_durable_handle(self, internal: RunHandle, status: str = "running") -> None:
+        if self._run_store is None:
+            return
+        runs, handles = self._run_store.load()
+        runs[internal.run_id] = {"runId": internal.run_id, "status": status}
+        handles[internal.run_id] = internal
+        self._run_store.save(runs, handles)
+
+    async def durable_restore(self, run_id: str) -> RunHandle | None:
+        """按持久化 Handle 跨进程重连：经 engine.attach() 重建运行态（幂等）。"""
+
+        if self._run_store is None:
+            return None
+        _, handles = self._run_store.load()
+        handle = handles.get(run_id)
+        if handle is None:
+            return None
+        external = self._external_handles.get(run_id)
+        if external is not None:
+            return external
+        compiled = await self._ensure_compiled()
+        try:
+            internal = await self._engine.attach(handle, compiled)
+        except ExecutionEngineError as error:
+            # 已完结的 run 没有可恢复的未决状态：如实报告"无可恢复对象"。
+            if "无未决 Checkpoint" in str(error):
+                return None
+            raise
+        external = internal.model_copy(update={"runtime_type": "harness"})
+        self._external_handles[external.run_id] = internal
+        return external
 
     @property
     def harness_spec(self) -> HarnessSpec:
@@ -112,6 +147,7 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         internal = await self._engine.start(internal_request, compiled)
         external = internal.model_copy(update={"runtime_type": "harness"})
         self._external_handles[external.run_id] = internal
+        self._persist_durable_handle(internal)
         return external
 
     def stream(self, handle: RunHandle) -> AsyncIterator[Any]:

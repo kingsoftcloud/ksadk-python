@@ -178,6 +178,8 @@ async def test_scheduler_settles_real_managed_dsh_harness_provider(
         assert current.state == "succeeded", current
         assert current.run_id
         assert len(reasoner.calls) == 1
+        # Provider 持久装配：Workspace 状态目录由 harness_state_dir 穿线建立
+        assert (tmp_path / ".agentkit" / "plugin-runtime" / "state").is_dir()
     finally:
         await service.scheduler.stop()
         await service.aclose()

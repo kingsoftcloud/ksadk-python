@@ -13,6 +13,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,77 @@ def _status_for(events: list[RuntimeEvent]) -> str:
     if event_type == EventType.RUN_INTERRUPTED:
         return "awaiting_approval"
     return "running"
+
+
+@dataclass
+class CheckpointStack:
+    """一次装配产出的 Checkpointer 与配套本地状态。"""
+
+    checkpointer: Any
+    durable: bool
+    run_store: DeploymentRunStore | None
+    receipt_store: Any | None
+    _checkpointer_context: Any | None = None
+
+    async def aclose(self) -> None:
+        if self._checkpointer_context is not None:
+            await self._checkpointer_context.__aexit__(None, None, None)
+            self._checkpointer_context = None
+        if self.receipt_store is not None:
+            self.receipt_store.close()
+            self.receipt_store = None
+
+
+async def assemble_checkpoint_stack(
+    *,
+    state_dir: str | Path | None,
+    dsn: str | None = None,
+) -> CheckpointStack:
+    """按部署形态装配 Checkpointer 与配套状态（runtime_server 与 Provider 共用）。
+
+    分档：显式/环境 DSN → PostgreSQL；有状态目录 → 每 Workspace SQLite
+    （checkpoint + RunHandle 索引 + ToolReceipt）；皆无 → 内存回退（非 durable）。
+    """
+
+    resolved_dsn = (dsn or os.getenv("KSADK_CHECKPOINT_DSN", "")).strip()
+    from ksadk.harness.tool_receipts import ToolReceiptStore
+
+    run_store = DeploymentRunStore(state_dir) if state_dir else None
+    receipt_store = (
+        ToolReceiptStore(str(Path(state_dir) / "tool_receipts.sqlite")) if state_dir else None
+    )
+    if resolved_dsn:
+        from ksadk.harness.engine.postgres_checkpointer import postgres_checkpointer
+
+        context = postgres_checkpointer(resolved_dsn)
+        checkpointer = await context.__aenter__()
+        return CheckpointStack(
+            checkpointer=checkpointer,
+            durable=True,
+            run_store=run_store,
+            receipt_store=receipt_store,
+            _checkpointer_context=context,
+        )
+    if state_dir is None:
+        from ksadk.harness.engine.langgraph import memory_checkpointer
+
+        return CheckpointStack(
+            checkpointer=memory_checkpointer(),
+            durable=False,
+            run_store=None,
+            receipt_store=None,
+        )
+    from ksadk.harness.engine.langgraph import sqlite_checkpointer
+
+    context = sqlite_checkpointer(str(Path(state_dir) / "checkpoints.sqlite"))
+    checkpointer = await context.__aenter__()
+    return CheckpointStack(
+        checkpointer=checkpointer,
+        durable=True,
+        run_store=run_store,
+        receipt_store=receipt_store,
+        _checkpointer_context=context,
+    )
 
 
 class DeploymentRunStore:
@@ -155,39 +227,20 @@ class DeploymentRuntime:
     async def initialize(self) -> None:
         if self.engine is not None:
             return
-        import os
-
-        dsn = os.getenv("KSADK_CHECKPOINT_DSN", "").strip()
-        if dsn:
-            from ksadk.harness.engine.postgres_checkpointer import postgres_checkpointer
-
-            self._checkpointer_context = postgres_checkpointer(dsn)
-            checkpointer: Any = await self._checkpointer_context.__aenter__()
-        elif self._state_dir is None:
-            from ksadk.harness.engine.langgraph import memory_checkpointer
-
-            checkpointer = memory_checkpointer()
-        else:
-            from ksadk.harness.engine.langgraph import sqlite_checkpointer
-
-            checkpoint_path = self._state_dir / "checkpoints.sqlite"
-            self._checkpointer_context = sqlite_checkpointer(str(checkpoint_path))
-            checkpointer = await self._checkpointer_context.__aenter__()
+        stack = await assemble_checkpoint_stack(state_dir=self._state_dir)
+        self._checkpointer_context = stack._checkpointer_context
+        self._owned_receipt_store = stack.receipt_store
         engine_kwargs = dict(self._engine_kwargs)
-        if self._state_dir is not None and "capability_runtime" not in engine_kwargs:
+        if stack.receipt_store is not None and "capability_runtime" not in engine_kwargs:
             from ksadk.harness.capability_runtime import CapabilityRuntime
-            from ksadk.harness.tool_receipts import ToolReceiptStore
 
-            self._owned_receipt_store = ToolReceiptStore(
-                str(self._state_dir / "tool_receipts.sqlite")
-            )
             engine_kwargs["capability_runtime"] = CapabilityRuntime(
-                receipts=self._owned_receipt_store
+                receipts=stack.receipt_store
             )
         self.engine = compose_engine(
             self.spec,
             reasoner=self._reasoner,
-            checkpointer=checkpointer,
+            checkpointer=stack.checkpointer,
             **engine_kwargs,
         )
 

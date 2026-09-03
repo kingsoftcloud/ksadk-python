@@ -76,7 +76,7 @@ class _ManagedMcpReasoner:
 async def test_dsh_contributions_run_through_managed_harness(tmp_path):
     reasoner = _ManagedMcpReasoner()
     with run_fixture_mcp_server(label="managed") as fixture:
-        adapter = build_managed_provider_adapter(
+        adapter = await build_managed_provider_adapter(
             HarnessConfig(
                 model="fixture-model",
                 prompt="Use bound capabilities.",

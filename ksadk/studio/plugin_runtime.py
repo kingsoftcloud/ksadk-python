@@ -332,6 +332,11 @@ class StudioPluginRuntime:
                 # Providers resolve credential *references* at activation time.
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
+                # Harness Provider 持久 Checkpoint/RunStore/Receipt 的状态根
+                # （与 builtin capability factories 同一 Workspace 命名空间）。
+                "harness_state_dir": str(
+                    self.workspace.resolve(".agentkit/plugin-runtime/state")
+                ),
             }
             provider_id, _provider_version = _parse_plugin_ref(
                 verified.composition.profile.agent_provider.ref

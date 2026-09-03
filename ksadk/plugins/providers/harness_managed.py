@@ -35,15 +35,21 @@ from ksadk.harness.spec import (
 from ksadk.harness.tools import HarnessTool, load_mcp_tools
 
 
-def build_managed_provider_adapter(
+async def build_managed_provider_adapter(
     config: HarnessConfig,
     *,
     agent_name: str,
     workspace_root: Path,
     reasoner: HarnessReasoner,
     skills: Sequence[Any] = (),
+    state_dir: str | Path | None = None,
+    checkpoint_dsn: str | None = None,
 ) -> ManagedHarnessRuntimeAdapter:
-    """Assemble the DSH contributions behind the canonical Harness adapter."""
+    """Assemble the DSH contributions behind the canonical Harness adapter.
+
+    ``state_dir``/``checkpoint_dsn`` 触发持久 Checkpoint 装配（SQLite/Postgres，
+    由共享 ``assemble_checkpoint_stack`` 分档）；两者皆缺省时保持内存回退。
+    """
 
     model_name = _resource_id(config.model, fallback="provider-model")
     agent_id = _resource_id(agent_name, fallback="provider-agent")
@@ -66,20 +72,33 @@ def build_managed_provider_adapter(
             ),
         ),
     )
+    if state_dir is None and not checkpoint_dsn:
+        checkpointer: Any = memory_checkpointer()
+        stack = None
+    else:
+        from ksadk.harness.runtime_server import assemble_checkpoint_stack
+
+        stack = await assemble_checkpoint_stack(
+            state_dir=state_dir, dsn=checkpoint_dsn
+        )
+        checkpointer = stack.checkpointer
     engine = ManagedLangGraphEngine(
         reasoner=reasoner,
-        checkpointer=memory_checkpointer(),
+        checkpointer=checkpointer,
         context_engine=HarnessContextEngine(),
         skill_runtime=skill_runtime,
         mcp_runtime=mcp_runtime,
     )
-    return _PluginManagedHarnessRuntimeAdapter(
+    adapter = _PluginManagedHarnessRuntimeAdapter(
         spec,
         reasoner=reasoner,
         workspace_root=workspace_root,
         engine=engine,
         transports=transports,
     )
+    adapter._checkpoint_stack = stack  # noqa: SLF001 - 生命周期由激活层托管
+    adapter._run_store = stack.run_store if stack is not None else None  # noqa: SLF001
+    return adapter
 
 
 class _PluginManagedHarnessRuntimeAdapter(ManagedHarnessRuntimeAdapter):
