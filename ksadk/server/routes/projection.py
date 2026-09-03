@@ -441,8 +441,9 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         if canonical.continuation_kind != "graph_checkpoint":
             return None
         framework = canonical.source.framework
+        source_metadata = canonical.source.metadata
         framework_ref = {framework: dict(canonical.ref)}
-        capability = canonical.source.metadata.get("capability")
+        capability = source_metadata.get("capability")
         capability = capability if isinstance(capability, Mapping) else {}
         # Fallback: when the canonical event lacks capability fields, try
         # the raw event metadata (legacy run_checkpoint stored backend/scope
@@ -453,6 +454,9 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             if value is not None:
                 return str(value)
             value = event_meta.get(key)
+            if value is not None:
+                return str(value)
+            value = source_metadata.get(key)
             if value is not None:
                 return str(value)
             return default
