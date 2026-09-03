@@ -13,6 +13,7 @@ from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime.artifacts import (
     collect_output_dir_artifacts,
+    collect_text_output,
     merge_artifacts,
     parse_artifact_lines,
 )
@@ -24,6 +25,8 @@ class WorkflowExecution:
     status: str
     executed_skill: str = ""
     output_files: list[str] = field(default_factory=list)
+    output_text: str = ""
+    output_text_truncated: bool = False
     commands: list[dict[str, object]] = field(default_factory=list)
     selected_skills: list[str] = field(default_factory=list)
     loaded_skills: list[str] = field(default_factory=list)
@@ -93,6 +96,11 @@ def _attach_context(result: WorkflowExecution, *, selected: list[str], loaded: l
     result.loaded_skills = loaded
     if not result.artifacts:
         result.artifacts = list(result.output_files)
+    result.output_text, result.output_text_truncated = collect_text_output(
+        result.artifacts,
+        allowed_root=_skill_workdir(),
+        max_bytes=_output_text_limit(),
+    )
 
 
 def _execution_identity(
@@ -302,6 +310,14 @@ def _runtime_timeout() -> int:
         return int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900"))
     except ValueError:
         return 900
+
+
+def _output_text_limit() -> int:
+    try:
+        configured = int(os.environ.get("KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES", "65536"))
+    except ValueError:
+        configured = 65536
+    return min(max(configured, 0), 1024 * 1024)
 
 
 def _safe_project_name(raw: str) -> str:

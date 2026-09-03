@@ -20,7 +20,7 @@ from ksadk.skills.runtime.base import (
     SkillRuntimeResult,
     format_skill_names_env,
     normalize_skill_names,
-    parse_output_files,
+    parse_workflow_result,
     sandbox_runtime_env,
 )
 
@@ -105,6 +105,7 @@ class LocalProcessSkillRuntimeBackend:
                     env=runtime_env,
                     check=False,
                 )
+                workflow_result = parse_workflow_result(completed.stdout)
                 skill_events.extend(
                     replace(event, runtime_id=event.runtime_id or runtime_id)
                     for event in read_sandbox_skill_events(
@@ -122,7 +123,9 @@ class LocalProcessSkillRuntimeBackend:
                 stdout=completed.stdout,
                 stderr=completed.stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
-                output_files=parse_output_files(completed.stdout),
+                output_files=list(workflow_result.output_files),
+                output_text=workflow_result.output_text,
+                output_text_truncated=workflow_result.output_text_truncated,
                 skill_events=skill_events,
             )
         except subprocess.TimeoutExpired as exc:

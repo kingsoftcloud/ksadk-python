@@ -26,7 +26,7 @@ from ksadk.skills.runtime.base import (
     SkillRuntimeResult,
     format_skill_names_env,
     normalize_skill_names,
-    parse_output_files,
+    parse_workflow_result,
     sandbox_runtime_env,
 )
 
@@ -176,6 +176,7 @@ class E2BSkillRuntimeBackend:
             command = f"python -u /home/ksadk/agent.py --request-file {request_path}"
             result = session.run_command(command, timeout=effective_timeout, env=command_env)
             stdout = result.stdout
+            workflow_result = parse_workflow_result(stdout)
             try:
                 expected_invocations = (
                     {
@@ -200,7 +201,9 @@ class E2BSkillRuntimeBackend:
                 stdout=stdout,
                 stderr=result.stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
-                output_files=parse_output_files(stdout),
+                output_files=list(workflow_result.output_files),
+                output_text=workflow_result.output_text,
+                output_text_truncated=workflow_result.output_text_truncated,
                 skill_events=skill_events,
             )
         except Exception as exc:

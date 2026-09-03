@@ -39,6 +39,7 @@ RUNTIME_AGENT_ENV_NAMES = (
     "KSADK_SKILL_CACHE_DIR",
     "KSADK_SKILL_WORKDIR",
     "KSADK_SKILL_ARTIFACT_PROJECT",
+    "KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES",
     "KSADK_PUBLIC_SKILL_SPACE_IDS",
     "KSADK_PUBLIC_SKILL_ALLOWLIST",
 )
@@ -213,6 +214,8 @@ def _with_execution_context(
         error_type=result.error_type,
         error_message=result.error_message,
         output_files=result.output_files,
+        output_text=result.output_text,
+        output_text_truncated=result.output_text_truncated,
         skill_events=[
             *context_events,
             *accepted_events,

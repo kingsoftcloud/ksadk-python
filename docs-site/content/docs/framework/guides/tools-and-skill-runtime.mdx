@@ -952,6 +952,8 @@ timeout，返回 `SkillRuntimeResult`。
 | `timed_out` | 是否超时 |
 | `error_type` / `error_message` | 稳定错误分类和摘要 |
 | `output_files` | 工具生成的输出文件引用 |
+| `output_text` | 沙箱销毁前提取的受限文本产物内容；非文本产物不会内联 |
+| `output_text_truncated` | `output_text` 是否因字节上限被截断 |
 
 `ok` 只在 `exit_code == 0`、没有 `error_type` 且未超时时为真。
 

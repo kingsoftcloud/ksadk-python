@@ -228,6 +228,7 @@
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
 | `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
 | `KSADK_SKILL_OUTPUT_DIR` | Runtime agent workflow | 否 | `KSADK_SKILL_WORKDIR/artifacts` | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的产物输出目录。 |
+| `KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES` | Runtime agent | 否 | `65536` | 无 | 否 | 平台 / 开发者 | 否 | 返回给外层 Agent 的文本产物总字节上限；取值限制在 `0` 到 `1048576`。 |
 | `KSADK_SKILL_ROOT_DIR` | Runtime agent workflow | 否 | 当前执行 skill 根目录 | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的 skill 根目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |
 | `KSADK_WORKFLOW_PROMPT` | Runtime agent workflow | 否 | 当前 workflow prompt | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的用户请求文本。 |
