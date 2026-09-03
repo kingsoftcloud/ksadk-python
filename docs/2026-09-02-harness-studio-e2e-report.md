@@ -26,7 +26,7 @@
 | 配平评测延迟合计 | 11.7s | 29.7s | **Harness 约 2.5× 快** |
 | Studio 场景延迟 | 1.2s–29.3s | 3.5s–11.0s | 互有胜负，见 §4.2 |
 | 运行可观测性 | 5 Span / 8 事件 / 工具级明细 | 1 Span 黑盒 | **Harness 更细** |
-| 会话恢复 / Checkpoint | 进程内支持，跨进程持久恢复未打通 | thread 级持久支持 | **Codex 现阶段领先** |
+| 会话恢复 / Checkpoint | 进程内 + 跨进程持久（Workspace SQLite / 云端 DSN） | thread 级持久支持 | 持平 |
 | 思考过程展示 | 已思考（用时 x 秒） | 已思考（用时 x 秒） | 持平 |
 
 ## 3. Harness 能力实测
@@ -130,21 +130,21 @@ Harness 运行检查器提供运行级与工具级两级观测：
 - **Harness 优势**：Trace 瀑布与工具级事件明细（Codex 收敛为单 Span 黑盒）、输入 Token 经济性、协议级延迟。
 - **Codex 优势**：thread 级持久会话恢复与 Checkpoint。
 
-**Harness 会话恢复/Checkpoint 的三层现状**（代码核实）：
+**Harness 会话恢复/Checkpoint 的三层现状**（代码核实；持久层已于 OpenSpec change `durable-harness-checkpoint-recovery` 收口）：
 
 | 层 | 状态 | 依据 |
 |---|---|---|
 | 多轮对话历史 | ✅ 支持 | 会话历史由平台 Session/EventStore 持久化，每次请求重放给 Harness |
-| 进程内 Checkpoint / 审批恢复 | ✅ 支持 | Managed LangGraph 引擎带内存 Checkpointer（快照粒度），`resume()`/`checkpoint()` 已实现 |
-| 重启后的跨进程恢复 | ⏳ 未打通 | Provider 装配的仍是内存 Checkpointer；Studio 目录对该 Runtime 的声明也未反映真实能力 |
+| 进程内 Checkpoint / 审批恢复 | ✅ 支持 | Managed LangGraph 引擎带 Checkpointer（快照粒度），`resume()`/`checkpoint()` 已实现 |
+| 重启后的跨进程恢复 | ✅ 支持 | Provider 按 Workspace 装配持久 Checkpoint（SQLite）与 RunHandle 索引，重启后经 `engine.attach()` 重连恢复；云端经 Checkpoint DSN 使用 PostgreSQL |
 
-内核侧持久化基建（durable Checkpointer 探测、`engine.attach()` 跨进程重建、Postgres/SQLite Checkpointer、跨进程恢复测试）已具备，收口方向是为 Provider 路径补持久 Checkpointer 装配与 Adapter 重连，并让 Studio 能力目录读取 Adapter 真实声明。
+内核侧持久化基建（durable Checkpointer 探测、`engine.attach()` 跨进程重建、Postgres/SQLite Checkpointer、跨进程恢复测试）由 runtime_server 与 Provider 路径共用同一装配范式，Studio 能力目录读取 Adapter 真实声明。
 
 ![Codex 会话回答（同题对照）](assets/harness-studio-e2e/docs-codex-final.png)
 
 ## 5. 已知边界
 
-- 会话恢复/Checkpoint 的缺口仅在「重启后跨进程持久恢复」一层（见 §4.3 三层现状）；进程内审批挂起/恢复已由 Managed 引擎的内存 Checkpointer 覆盖，Studio 进程重启后的长会话续跑需待持久 Checkpointer 收口。
+- 会话恢复/Checkpoint 已三层齐备：跨进程持久恢复经 Workspace SQLite / 云端 DSN Checkpointer 收口（`durable-harness-checkpoint-recovery`），进程内审批挂起/恢复由 Managed 引擎 Checkpointer 覆盖。
 - 抗污染召回场景（§3.5 S3）的措辞会使两个 Runtime 都拒绝回答，无法用于对比记忆能力；对比结论以 §3.4 配平用例为准。
 - Studio 场景延迟含前端渲染与网关波动，单次采样，趋势性参考。
 
