@@ -187,7 +187,7 @@ Fresh verification 命令与结果：
 43 passed
 ```
 
-完整受影响域回归（Harness + Kernel + Plugins + Studio）首次运行结果为 `1589 passed / 37 skipped / 3 failed`，耗时 21m35s。三个失败均已精确复核并收口：默认环境缺少可选 AG-UI 依赖改为显式 skip；Studio ingress 测试补齐当前要求的 Build/Kernel 精确绑定；旧的 0.8.2 写死断言改为读取仓库真实版本。修正后的失败集合复跑为 `5 passed / 1 skipped`。此外对受影响文件执行 `ruff check` 和 `git diff --check`。
+完整受影响域回归（Harness + Kernel + Plugins + Studio）首次运行结果为 `1589 passed / 37 skipped / 3 failed`，耗时 21m35s。三个失败均已精确复核并收口：默认环境缺少可选 AG-UI 依赖改为显式 skip；Studio ingress 测试补齐当前要求的 Build/Kernel 精确绑定；旧的 0.8.2 写死断言改为读取仓库真实版本。修正后的失败集合复跑为 `5 passed / 1 skipped`；随后于 2026-09-03 重新执行相同四域完整回归，最终结果为 **`1591 passed / 38 skipped / 0 failed`**，耗时 **21m33s**。跳过项仍受可选依赖、真实凭证或外部服务开关约束，不计作已通过。此外对受影响文件执行 `ruff check` 和 `git diff --check`。
 
 ## 7. 覆盖结论
 
