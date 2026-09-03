@@ -94,6 +94,8 @@ async def build_managed_provider_adapter(
         reasoner=reasoner,
         workspace_root=workspace_root,
         engine=engine,
+        durable=bool(stack and stack.durable),
+        shared_across_pods=bool(checkpoint_dsn),
         transports=transports,
     )
     adapter._checkpoint_stack = stack  # noqa: SLF001 - 生命周期由激活层托管

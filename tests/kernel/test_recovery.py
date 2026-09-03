@@ -593,6 +593,76 @@ async def test_durable_handle_with_capabilities_attaches(harness: RecoveryHarnes
 
 
 @pytest.mark.asyncio
+async def test_durable_plugin_adapter_is_used_instead_of_global_executor() -> None:
+    """DSH/Plugin builds must cold-restore through their Build-pinned adapter."""
+
+    attachable = RecoveryHarness(attachable=True)
+    activation = await attachable.acquire("act-old")
+    await attachable.submit_enqueue()
+    with pytest.raises(CrashPoint):
+        await attachable.drive(activation, crash_point="after_takeover")
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    attachable.durable_handles[attachable.run_id] = RunHandle.model_validate(
+        run.metadata["handle"]
+    )
+    await attachable.kernel_store.release_activation(
+        activation.activation_id, expected_fence=activation.fencing_token
+    )
+    new = await attachable.acquire("act-new")
+    attachable.capability_overrides = {"attach": True, "durable_restore": True}
+
+    adapters: list[_AttachableAdapter] = []
+
+    def adapter_factory() -> _AttachableAdapter:
+        adapter = _AttachableAdapter(attachable.durable_handles)
+        adapters.append(adapter)
+        return adapter
+
+    report = await attachable.coordinator(adapter_factory=adapter_factory).recover(
+        AGENT, new
+    )
+
+    assert report.outcome == "attached"
+    assert adapters[0].attach_calls == [attachable.run_id]
+    assert adapters[0].streams == [attachable.run_id]
+
+
+@pytest.mark.asyncio
+async def test_durable_waiting_run_attaches_without_false_completion() -> None:
+    """An empty stream at an approval checkpoint must preserve WAITING."""
+
+    attachable = RecoveryHarness(attachable=True)
+    activation = await attachable.acquire("act-old")
+    await attachable.submit_enqueue()
+    with pytest.raises(CrashPoint):
+        await attachable.drive(activation, crash_point="after_takeover")
+    running = await attachable.kernel_store.load_run(attachable.run_id)
+    waiting = await attachable.kernel_store.save_run_transition(
+        running.model_copy(update={"state": RunState.WAITING}),
+        expected_fence=activation.fencing_token,
+    )
+    attachable.durable_handles[attachable.run_id] = RunHandle.model_validate(
+        waiting.metadata["handle"]
+    )
+    await attachable.kernel_store.release_activation(
+        activation.activation_id, expected_fence=activation.fencing_token
+    )
+    new = await attachable.acquire("act-new")
+    attachable.capability_overrides = {"attach": True, "durable_restore": True}
+    adapter = _AttachableAdapter(attachable.durable_handles)
+
+    report = await attachable.coordinator(adapter_factory=lambda: adapter).recover(
+        AGENT, new
+    )
+
+    restored = await attachable.kernel_store.load_run(attachable.run_id)
+    assert report.outcome == "attached"
+    assert report.reason == "durable_interaction_attached"
+    assert restored is not None and restored.state is RunState.WAITING
+    assert adapter.streams == []
+
+
+@pytest.mark.asyncio
 async def test_resume_capability_with_continuation_resumes(harness: RecoveryHarness) -> None:
     activation = await harness.acquire("act-old")
     await harness.submit_enqueue()

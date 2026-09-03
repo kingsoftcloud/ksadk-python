@@ -303,6 +303,7 @@ class AgentKernelRuntime:
     session_events: Any = field(repr=False)
     _owns_pool: bool = field(default=False, repr=False)
     _pool: Any = field(default=None, repr=False)
+    _owns_store: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         self._tasks: list[asyncio.Task] = []
@@ -377,6 +378,8 @@ class AgentKernelRuntime:
     async def start(self) -> None:
         if self._tasks:
             return
+        if hasattr(self.kernel_store, "ensure_schema"):
+            await self.kernel_store.ensure_schema()  # type: ignore[attr-defined]
         self._worker_running = True
         self._tasks.append(asyncio.create_task(self._run_loop(), name="kernel-runtime"))
         # 心跳续约必须是独立任务：run loop 可能长时间阻塞在某个 session 的
@@ -417,6 +420,11 @@ class AgentKernelRuntime:
         if self._owns_pool and self._pool is not None and hasattr(self._pool, "close"):
             try:
                 await self._pool.close()
+            except Exception:
+                pass
+        if self._owns_store and hasattr(self.kernel_store, "close"):
+            try:
+                await self.kernel_store.close()  # type: ignore[attr-defined]
             except Exception:
                 pass
 
@@ -470,15 +478,21 @@ class AgentKernelRuntime:
                     self._store_failures = 0
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     self._store_failures += 1
+                    logger.exception(
+                        "agent kernel poll failed: agent_instance_id=%s "
+                        "consecutive_failures=%d",
+                        self.config.agent_instance_id,
+                        self._store_failures,
+                    )
                     if (
                         self._store_failures
                         >= self.config.store_failure_degrade_threshold
                         and not await self._store_reachable()
                     ):
                         # store 持续不可达是全局性故障：宁降级不静默。
-                        self._mark_degraded("store_unreachable")
+                        self._mark_degraded("store_unreachable", exc)
                         return
                     await asyncio.sleep(self.config.poll_interval * 4)
                     continue
@@ -660,6 +674,19 @@ class AgentKernelRuntime:
             for message in messages
             if message.status.value in ("accepted", "claimed")
         }
+        # A process may die after the Inbox claim is completed but before the
+        # Runtime run reaches a terminal state. On restart there is then no
+        # pending Inbox row to discover the session from; scan sessions seen in
+        # the durable Inbox and retain those with an open Run for takeover.
+        known_sessions = {message.session_id for message in messages}
+        open_run_sessions = {
+            session_id
+            for session_id in known_sessions
+            if await self.kernel_store.find_active_run(
+                self.config.agent_instance_id, session_id
+            )
+            is not None
+        }
         # Inbox is completed as soon as a stream is launched.  Keep renewing
         # the owning lease after the independent live execution finishes too:
         # this runtime remains the session's activation owner while the Pod is
@@ -668,7 +695,7 @@ class AgentKernelRuntime:
         # releases the retained leases; an ungraceful stop lets their TTL
         # expire for recovery by a new activation.
         active_sessions = self.worker.active_session_ids()
-        return inbox_sessions | active_sessions
+        return inbox_sessions | open_run_sessions | active_sessions
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +779,7 @@ def build_agent_kernel_runtime(
     session_events = config.session_events
     session_service = config.session_service
     owns_pool = config.owns_pool
+    owns_store = False
     pool = config.pool
 
     if store is None or session_events is None:
@@ -787,6 +815,18 @@ def build_agent_kernel_runtime(
             # typed RuntimeEvent 写路径走 fenced store：每个
             # ActivationWriteGuard append 在同一事务验证 activation 行。
             events = PostgresFencedSessionEventStore(kernel_store)  # type: ignore[arg-type]
+        elif config.driver == "sqlite":
+            from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
+            from ksadk.sessions.in_memory import InMemorySessionService
+
+            if not config.dsn:
+                raise RuntimeError("sqlite agent kernel runtime requires a database path")
+            if session_service is None:
+                session_service = InMemorySessionService()
+            base_events = SessionServiceEventStore(session_service)
+            kernel_store = SQLiteAgentKernelStore(config.dsn, base_events)
+            events = base_events
+            owns_store = True
         else:
             from ksadk.kernel.memory_store import InMemoryAgentKernelStore
             from ksadk.sessions.in_memory import InMemorySessionService
@@ -890,6 +930,7 @@ def build_agent_kernel_runtime(
         session_events=session_events,
         _owns_pool=owns_pool,
         _pool=pool,
+        _owns_store=owns_store,
     )
     runtime.readiness.runtime = runtime
     return runtime

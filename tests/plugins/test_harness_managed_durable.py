@@ -38,6 +38,10 @@ async def test_provider_adapter_assembles_durable_sqlite_stack(tmp_path: Path) -
     assert not isinstance(adapter._engine._checkpointer, MemorySaver)
     matrix = adapter._engine.capabilities()
     assert matrix.durable_across_process.supported is True
+    adapter_matrix = adapter.capabilities()
+    assert adapter_matrix.attach.supported is True
+    assert adapter_matrix.durable_restore.supported is True
+    assert adapter.runtime.native_capabilities()["session_continuity"]["durable"] is True
 
 
 @pytest.mark.asyncio
@@ -52,3 +56,6 @@ async def test_provider_adapter_without_state_falls_back_to_memory(tmp_path: Pat
     assert isinstance(adapter._engine._checkpointer, MemorySaver)
     matrix = adapter._engine.capabilities()
     assert matrix.durable_across_process.supported is False
+    adapter_matrix = adapter.capabilities()
+    assert adapter_matrix.attach.supported is False
+    assert adapter_matrix.durable_restore.supported is False

@@ -111,9 +111,15 @@ class StudioPluginKernelAdapter(RuntimeAdapter):
 
     def capabilities(self):  # type: ignore[no-untyped-def]
         # Before ``start`` the provider activation is async and not yet bound.
-        # Keep admission conservative; enqueue remains available and the live
-        # execution delegates supported controls after binding.
+        # A managed Harness Build has a Workspace checkpoint directory wired
+        # by StudioPluginRuntime, so recovery admission must expose that stable
+        # contract before an async provider activation exists. Other plugin
+        # runtimes remain conservative until their delegate is bound.
         if self._delegate is None:
+            if self._spec.launch_context.runtime_type == "harness":
+                from ksadk.harness.managed_runtime import managed_harness_capabilities
+
+                return managed_harness_capabilities(durable=True)
             return super().capabilities()
         return self._delegate.capabilities()
 

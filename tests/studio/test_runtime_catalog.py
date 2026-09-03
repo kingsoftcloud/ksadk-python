@@ -16,8 +16,10 @@ def test_harness_capabilities_reflect_managed_adapter_declaration() -> None:
     harness = items["harness"]["capabilities"]
     assert harness["resume"] != "not_supported"
     assert harness["checkpoint"] != "not_supported"
-    # 进程内恢复为真实声明；跨进程持久性取决于装配档位，如实标注
-    assert harness["durableAcrossProcess"] is False
+    # Studio 的 shipped DSH Harness 总是装配 Workspace 状态目录。
+    assert harness["resume"] == "checkpoint_id"
+    assert harness["checkpoint"] == "workspace"
+    assert harness["durableAcrossProcess"] is True
     assert harness["checkpointGranularity"] == "snapshot"
 
 

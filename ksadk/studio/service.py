@@ -268,6 +268,7 @@ class StudioService:
             resolve_adapter_provider=self._scheduler_adapter_provider,
             session_service=self.session_service,
             runtime_executor=self.runtime_executor,
+            state_dir=self.workspace.resolve(".agentkit/plugin-runtime/state"),
         )
         self.scheduler = StudioSchedulerService(
             self.workspace,

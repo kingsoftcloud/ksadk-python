@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -98,6 +99,25 @@ class Harness:
         monkeypatch.setenv("KSADK_AGENT_KERNEL", "1")
         # 注册进程级 kernel（monkeypatch 会在 teardown 还原为 None）。
         monkeypatch.setattr(ingress, "_kernel", self.kernel, raising=True)
+        # Studio additionally requires an exact Build/runtime binding before
+        # it is allowed to enter Kernel ingress.  Register that trusted
+        # binding instead of relying on the obsolete "any active kernel"
+        # behaviour this convergence test predates.
+        from ksadk.kernel import bootstrap
+
+        monkeypatch.setattr(
+            bootstrap,
+            "_runtime",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    tenant_id=TENANT,
+                    agent_instance_id=AGENT_INSTANCE,
+                    launch_context=self.launch_context,
+                    start_request_defaults={"agent_id": AGENT_INSTANCE},
+                )
+            ),
+            raising=True,
+        )
 
     @property
     def submit_count(self) -> int:
@@ -166,7 +186,10 @@ class Harness:
             deps.resolve_session_service = self._orig_resolve_session_service
 
     async def _invoke_agui(self, session_id: str, idempotency_key: str) -> Any:
-        from ag_ui.core import RunAgentInput
+        agui_core = pytest.importorskip(
+            "ag_ui.core", reason="AG-UI optional dependency is not installed"
+        )
+        RunAgentInput = agui_core.RunAgentInput
 
         from ksadk.agui.agent import KsadkAGUIAgent
 

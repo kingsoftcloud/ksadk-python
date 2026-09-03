@@ -320,6 +320,13 @@ class AgentKernelWorker:
             return WorkResult(outcome="terminal_failure", message_id=message_id)
         except Exception:
             # 未知异常绝不 ack 为成功：消息保持 claimed。
+            logger.exception(
+                "agent kernel command failed before deterministic settlement: "
+                "command_id=%s command_type=%s session_id=%s",
+                command.command_id,
+                command.command_type,
+                command.session_id,
+            )
             return WorkResult(outcome="terminal_failure", message_id=message_id)
 
         try:

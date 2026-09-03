@@ -32,13 +32,14 @@ from ksadk.events.canonical import (
 from ksadk.events.content import ContentSnapshot, TextContent, ToolCallContent, ToolResultContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.harness.context_engine import HarnessContextEngine
-from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine, memory_checkpointer
 from ksadk.harness.events import EventType
 from ksadk.harness.events import RuntimeEvent as HarnessEvent
 from ksadk.harness.reasoner import HarnessReasoner
 from ksadk.harness.skill_composition import compose_engine
 from ksadk.harness.spec import HarnessSpec
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
+from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -55,12 +56,18 @@ from ksadk.runtime import (
 class ManagedHarnessRuntime(BaseRuntime):
     runtime_type = "harness"
 
+    def __init__(self, *, durable: bool = False) -> None:
+        self._durable = durable
+
     def native_capabilities(self) -> dict[str, Any]:
         return {
             "cancel": {"supported": True},
             "resume": {"supported": True},
             "checkpoint": {"supported": True, "granularity": "snapshot"},
-            "session_continuity": {"durable": False, "scope": "process"},
+            "session_continuity": {
+                "durable": self._durable,
+                "scope": "workspace" if self._durable else "process",
+            },
             "progressive_disclosure": {"skill": True, "mcp": True},
         }
 
@@ -75,10 +82,14 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         reasoner: HarnessReasoner | None = None,
         workspace_root: str | Path = ".",
         engine: ManagedLangGraphEngine | None = None,
+        durable: bool = False,
+        shared_across_pods: bool = False,
     ) -> None:
-        super().__init__(ManagedHarnessRuntime())
+        super().__init__(ManagedHarnessRuntime(durable=durable))
         self._spec = spec
         self._workspace_root = Path(workspace_root)
+        self._durable = durable
+        self._shared_across_pods = shared_across_pods
         self._engine = engine or compose_engine(
             spec,
             reasoner=reasoner,
@@ -90,37 +101,60 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         #: 由装配层注入（持久 Checkpoint 分档时非空）；为空则不持久化 Handle。
         self._run_store: Any | None = None
 
-    def _persist_durable_handle(self, internal: RunHandle, status: str = "running") -> None:
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        return managed_harness_capabilities(durable=self._durable)
+
+    def _persist_durable_handle(self, handle: RunHandle, status: str = "running") -> None:
         if self._run_store is None:
             return
         runs, handles = self._run_store.load()
-        runs[internal.run_id] = {"runId": internal.run_id, "status": status}
-        handles[internal.run_id] = internal
+        runs[handle.run_id] = {"runId": handle.run_id, "status": status}
+        handles[handle.run_id] = handle
         self._run_store.save(runs, handles)
 
-    async def durable_restore(self, run_id: str) -> RunHandle | None:
-        """按持久化 Handle 跨进程重连：经 engine.attach() 重建运行态（幂等）。"""
+    async def attach(self, handle: RunHandle) -> RunHandle:
+        """Attach a persisted platform handle to the durable LangGraph thread."""
 
-        if self._run_store is None:
-            return None
-        _, handles = self._run_store.load()
-        handle = handles.get(run_id)
-        if handle is None:
-            return None
-        external = self._external_handles.get(run_id)
-        if external is not None:
-            return external
+        if not self._durable:
+            raise UnsupportedControlError(
+                f"managed Harness run {handle.run_id!r} has no durable checkpoint backend"
+            )
+        if handle.runtime_type != "harness":
+            raise ValueError(
+                f"managed Harness cannot attach {handle.runtime_type!r} handle"
+            )
+        if handle.run_id in self._external_handles:
+            return handle
         compiled = await self._ensure_compiled()
-        try:
-            internal = await self._engine.attach(handle, compiled)
-        except ExecutionEngineError as error:
-            # 已完结的 run 没有可恢复的未决状态：如实报告"无可恢复对象"。
-            if "无未决 Checkpoint" in str(error):
-                return None
-            raise
-        external = internal.model_copy(update={"runtime_type": "harness"})
-        self._external_handles[external.run_id] = internal
-        return external
+        internal_handle = handle.model_copy(update={"runtime_type": "managed-langgraph"})
+        internal = await self._engine.attach(internal_handle, compiled)
+        self._external_handles[handle.run_id] = internal
+        return handle
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        """Restore a persisted handle and continue non-interactive checkpoints.
+
+        Approval checkpoints deliberately remain ``awaiting_approval`` so the
+        Kernel can route the later interaction to the newly attached adapter.
+        A process crash during ordinary graph execution is reconstructed as a
+        paused checkpoint and must resume automatically; otherwise attach
+        succeeds but the durable Run remains open forever.
+        """
+
+        restored = await self.attach(handle)
+        internal = self._internal_handle(restored)
+        state = await self._engine.snapshot_state(internal)
+        status = str(getattr(getattr(state, "status", None), "value", ""))
+        if status == "paused":
+            await self._engine.resume(
+                internal,
+                ResumeTarget(
+                    kind="checkpoint_id",
+                    id=str(internal.native_ref.get("thread_id") or internal.run_id),
+                ),
+                None,
+            )
+        return restored
 
     @property
     def harness_spec(self) -> HarnessSpec:
@@ -147,7 +181,7 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         internal = await self._engine.start(internal_request, compiled)
         external = internal.model_copy(update={"runtime_type": "harness"})
         self._external_handles[external.run_id] = internal
-        self._persist_durable_handle(internal)
+        self._persist_durable_handle(external)
         return external
 
     def stream(self, handle: RunHandle) -> AsyncIterator[Any]:
@@ -184,9 +218,13 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
                 granularity="snapshot",
                 rollback_scope="invocation",
                 fork_supported=False,
-                durable=False,
-                shared_across_pods=False,
-                reason="Studio uses an in-process LangGraph checkpointer",
+                durable=self._durable,
+                shared_across_pods=self._shared_across_pods,
+                reason=(
+                    "Managed Harness uses a durable LangGraph checkpointer"
+                    if self._durable
+                    else "Managed Harness uses an in-process LangGraph checkpointer"
+                ),
             ),
             ref={"status": state.status.value if state is not None else "unknown"},
         )
@@ -414,4 +452,36 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
-__all__ = ["ManagedHarnessRuntime", "ManagedHarnessRuntimeAdapter"]
+def managed_harness_capabilities(*, durable: bool) -> RuntimeCapabilityMatrix:
+    """Return the canonical control matrix for one concrete assembly tier."""
+
+    def available() -> RuntimeCapability:
+        return RuntimeCapability(supported=True, mode="native")
+
+    def unavailable(reason: str) -> RuntimeCapability:
+        return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+    durable_capability = (
+        available()
+        if durable
+        else unavailable("managed_harness_checkpoint_is_process_local")
+    )
+    return RuntimeCapabilityMatrix(
+        cancel=available(),
+        pause=unavailable("managed_harness_pause_not_implemented"),
+        resume=available(),
+        submit_interaction=unavailable("managed_harness_uses_checkpoint_resume"),
+        attach=durable_capability,
+        steer=unavailable("runtime_no_native_steer"),
+        inject=unavailable("runtime_no_native_inject"),
+        checkpoint=available(),
+        durable_restore=durable_capability,
+        interaction_mode="durable_resume" if durable else "unavailable",
+    )
+
+
+__all__ = [
+    "ManagedHarnessRuntime",
+    "ManagedHarnessRuntimeAdapter",
+    "managed_harness_capabilities",
+]

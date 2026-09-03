@@ -58,15 +58,24 @@ def _harness_capabilities() -> dict:
     （Workspace 状态目录 / Checkpoint DSN），目录如实标注当前声明。
     """
 
-    native = ManagedHarnessRuntime().native_capabilities()
+    # StudioPluginRuntime always supplies a Workspace state directory to the
+    # shipped DSH Harness provider. The catalog describes that product path,
+    # not a separately constructed in-memory SDK adapter.
+    native = ManagedHarnessRuntime(durable=True).native_capabilities()
     checkpoint = native.get("checkpoint") or {}
     session_continuity = native.get("session_continuity") or {}
     return {
         "session": True,
         "cancel": bool((native.get("cancel") or {}).get("supported")),
-        "resume": "in_process" if native.get("resume", {}).get("supported") else "not_supported",
+        "resume": (
+            "checkpoint_id" if session_continuity.get("durable")
+            else "in_process" if native.get("resume", {}).get("supported")
+            else "not_supported"
+        ),
         "checkpoint": (
-            "in_process" if checkpoint.get("supported") else "not_supported"
+            "workspace" if session_continuity.get("durable")
+            else "in_process" if checkpoint.get("supported")
+            else "not_supported"
         ),
         "checkpointGranularity": checkpoint.get("granularity"),
         "durableAcrossProcess": bool(session_continuity.get("durable")),
