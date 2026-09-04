@@ -829,6 +829,11 @@ class DirectAgentEngineCloudDeploymentGateway:
             or runtime_config.get("manifestSha256")
             or ""
         ).strip().lower()
+        kernel_ready_value = first("agent_kernel_ready", "agentKernelReady")
+        kernel_report_value = first("agent_kernel_runtime", "agentKernelRuntime")
+        kernel_report = (
+            kernel_report_value if isinstance(kernel_report_value, dict) else {}
+        )
         if not version_id and len(manifest_sha256) == 64:
             try:
                 bytes.fromhex(manifest_sha256)
@@ -871,6 +876,23 @@ class DirectAgentEngineCloudDeploymentGateway:
             "versionId": version_id or None,
             "updatedAt": str(
                 lifecycle_first("updated_at", "updatedAt", "update_time", "updateTime") or ""
+            ).strip()
+            or None,
+            # Keep cloud lifecycle and AgentKernel readiness separate. A Pod
+            # can be RUNNING while control admission still rejects chat; these
+            # fields let Studio explain that state without exposing credentials
+            # or the full Server deployment record.
+            "kernelReady": (
+                kernel_ready_value if isinstance(kernel_ready_value, bool) else None
+            ),
+            "deploymentPhase": str(
+                first("deployment_phase", "deploymentPhase") or ""
+            ).strip()
+            or None,
+            "statusMessage": str(first("message", "Message") or "").strip() or None,
+            "kernelReason": str(kernel_report.get("reason") or "").strip() or None,
+            "kernelObservedAt": str(
+                kernel_report.get("observed_at") or kernel_report.get("observedAt") or ""
             ).strip()
             or None,
         }

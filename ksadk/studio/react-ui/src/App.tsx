@@ -24,6 +24,7 @@ import { useStudioTheme } from "./useStudioTheme";
 import {
   mergeCloudChatTargets,
   resolveCloudChatRoute,
+  isCloudChatTargetSelectable,
   type AccountCloudAgentSummary,
   type CloudDeploymentSummary,
 } from "./cloudDeployments";
@@ -300,7 +301,9 @@ export default function App() {
       );
       setCloudDeployments(items);
       setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => (
-        item.id === previous && resolveCloudChatRoute(item).kind === "studio-session-events"
+        item.id === previous
+        && resolveCloudChatRoute(item).kind === "studio-session-events"
+        && isCloudChatTargetSelectable(item)
       )) ? previous : "");
     } catch {
       // Deployment receipts are optional for a local-only workspace.
@@ -330,7 +333,8 @@ export default function App() {
   }
 
   const studioCloudDeployments = cloudDeployments.filter(
-    item => resolveCloudChatRoute(item).kind === "studio-session-events",
+    item => resolveCloudChatRoute(item).kind === "studio-session-events"
+      && isCloudChatTargetSelectable(item),
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
@@ -646,17 +650,22 @@ export default function App() {
                 />
               )}
               {chatMounted && !isCloudChat && !currentAgentId && (
-                <div className="empty-state chat-agent-empty" role="status">
-                  <span className="empty-icon"><Bot /></span>
-                  <h2>{agentsLoaded && cloudDeploymentsLoaded ? "还没有可用的会话目标" : "正在载入会话目标"}</h2>
-                  <p>{agentsLoaded && cloudDeploymentsLoaded ? "可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。" : "正在同步本地工作区与账号云端 Agent…"}</p>
-                  {agentsLoaded && cloudDeploymentsLoaded && (
+                agentsLoaded && cloudDeploymentsLoaded ? (
+                  <div className="empty-state chat-agent-empty" role="status">
+                    <span className="empty-icon"><Bot /></span>
+                    <h2>还没有可用的会话目标</h2>
+                    <p>可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。</p>
                     <div className="empty-actions">
                       <button className="primary-button" type="button" onClick={openCreate}>创建本地 Agent</button>
                       <button className="button secondary" type="button" onClick={() => setView("deployments")}>查看云端 Agent</button>
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="chat-target-loading" role="status" aria-label="正在同步会话目标">
+                    <i />
+                    <span>正在同步会话目标…</span>
+                  </div>
+                )
               )}
             </div>
             {runPanelOpen && chatMounted && currentAgentId && !isCloudChat && (

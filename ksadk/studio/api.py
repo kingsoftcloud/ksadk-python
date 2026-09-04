@@ -8,7 +8,6 @@ import hmac
 import json
 import os
 import secrets
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -322,7 +321,6 @@ def create_studio_app(
         )
 
     static_root = Path(__file__).with_name("static")
-    _studio_startup_epoch = str(int(time.time()))
     shared_web = StudioSharedWebBridge(studio)
     cloud_web = CloudSharedWebBridge(studio.cloud)
     app.state.shared_web_bridge = shared_web
@@ -469,21 +467,10 @@ def create_studio_app(
     async def index():
         path = static_root / "index.html"
         html = path.read_text(encoding="utf-8")
-        # Inject a startup-scoped version so a restarted Studio with a rebuilt
-        # bundle always wins over a stale browser tab.  The bundle filenames
-        # are already content-hashed; this only defeats cached index.html.
-        if "?v=" not in html:
-            import re
-
-            def _add_version(match: "re.Match[str]") -> str:
-                attr, path_part = match.group(1), match.group(2)
-                return f'{attr}="/static/assets/{path_part}?v={_studio_startup_epoch}"'
-
-            html = re.sub(
-                r'(src|href)="/static/assets/([^"]+)"',
-                _add_version,
-                html,
-            )
+        # Vite filenames are content hashed and index.html is no-store. Keep
+        # entry module URLs byte-for-byte identical to their internal imports:
+        # adding a query only to the HTML entry makes browsers evaluate that
+        # module again when a lazy chunk imports the unversioned URL.
         response = Response(content=html, media_type="text/html")
         response.headers["Cache-Control"] = "no-store"
         if security_enabled:

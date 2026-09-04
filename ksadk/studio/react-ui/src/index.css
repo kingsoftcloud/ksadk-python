@@ -38,6 +38,30 @@
 }
 .chat-host > * { min-width: 0; min-height: 0; }
 .chat-agent-empty { margin: auto; }
+.chat-target-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
+  margin-top: 18px;
+  padding: 6px 10px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-control);
+}
+.chat-target-loading i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: studio-target-pulse 1.2s ease-in-out infinite;
+}
+@keyframes studio-target-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-target-loading i { animation: none; }
+}
 
 .studio-chat-shell {
   width: 100%;

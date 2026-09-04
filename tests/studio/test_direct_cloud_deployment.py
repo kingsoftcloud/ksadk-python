@@ -554,6 +554,30 @@ def test_account_agent_view_prefers_server_basic_lifecycle_and_public_endpoint()
     assert view["endpoint"] == "http://ar-running.agent-pre.example.test"
 
 
+def test_account_agent_view_preserves_kernel_readiness_diagnostics() -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            "basic": {"agent_id": "ar-kernel", "status": "RUNNING"},
+            "deployment": {
+                "agent_kernel_ready": False,
+                "deployment_phase": "DEPLOYING",
+                "message": "waiting for kernel report",
+                "agent_kernel_runtime": {
+                    "ready": False,
+                    "reason": "ReportStale",
+                    "observed_at": "2026-09-04T05:00:00Z",
+                },
+            },
+        }
+    )
+
+    assert view["kernelReady"] is False
+    assert view["deploymentPhase"] == "DEPLOYING"
+    assert view["statusMessage"] == "waiting for kernel report"
+    assert view["kernelReason"] == "ReportStale"
+    assert view["kernelObservedAt"] == "2026-09-04T05:00:00Z"
+
+
 @pytest.mark.asyncio
 async def test_account_native_runtime_dashboard_link_uses_official_root_path() -> None:
     class _NativeClient(_Client):
@@ -853,12 +877,13 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
         ("CreateSession", {"AgentId": "ar-receipt-bound"}),
         (
             "ListSessionMessages",
-            {
-                "agent_id": "ar-receipt-bound",
-                "session_id": "sess-cloud",
-                "after_seq_id": 4,
-                "limit": 100,
-            },
+                {
+                    "agent_id": "ar-receipt-bound",
+                    "session_id": "sess-cloud",
+                    "after_seq_id": 4,
+                    "before_seq_id": None,
+                    "limit": 100,
+                },
         ),
         ("DeleteSession", {"SessionId": "sess-cloud"}),
         (

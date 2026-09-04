@@ -1,10 +1,27 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isCloudChatTargetSelectable,
   mergeCloudChatTargets,
   resolveCloudChatRoute,
   selectCloudChatDeployments,
 } from "./cloudDeployments";
+
+describe("isCloudChatTargetSelectable", () => {
+  it("keeps runnable, failed, and historical status-less Agents available", () => {
+    expect(isCloudChatTargetSelectable({ status: "RUNNING" })).toBe(true);
+    expect(isCloudChatTargetSelectable({ status: "READY" })).toBe(true);
+    expect(isCloudChatTargetSelectable({ status: "FAILED" })).toBe(true);
+    expect(isCloudChatTargetSelectable({ status: "ERROR" })).toBe(true);
+    expect(isCloudChatTargetSelectable({})).toBe(true);
+  });
+
+  it("keeps deployments out of chat until the cloud lifecycle is runnable", () => {
+    expect(isCloudChatTargetSelectable({ status: "CREATING" })).toBe(false);
+    expect(isCloudChatTargetSelectable({ status: "DEPLOYING" })).toBe(false);
+    expect(isCloudChatTargetSelectable({ status: "DELETING" })).toBe(false);
+  });
+});
 
 describe("selectCloudChatDeployments", () => {
   it("shows one target per agent and prefers its READY receipt", () => {
@@ -47,6 +64,7 @@ describe("mergeCloudChatTargets", () => {
           agentId: "agent-1", name: "Managed Agent", status: "RUNNING",
           endpoint: "live", framework: "codex", versionId: "version-2",
           updatedAt: "2026-08-24T10:00:00Z",
+          kernelReady: false, deploymentPhase: "PENDING_KERNEL_REGISTRATION",
         },
         { agentId: "agent-2", name: "Existing Code", status: "RUNNING", framework: "langgraph" },
       ],
@@ -55,6 +73,7 @@ describe("mergeCloudChatTargets", () => {
         id: "dep-ready", agentId: "agent-1", agentName: "Managed Agent",
         status: "RUNNING", endpoint: "live", framework: "codex",
         versionId: "version-2", updatedAt: "2026-08-24T10:00:00Z",
+        kernelReady: false, deploymentPhase: "PENDING_KERNEL_REGISTRATION",
         source: "receipt",
       },
       {

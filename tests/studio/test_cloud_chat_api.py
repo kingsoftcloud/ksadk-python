@@ -370,12 +370,13 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
         ("CreateSession", {"AgentId": "ar-receipt-bound"}),
         (
             "ListSessionMessages",
-            {
-                "agent_id": "ar-receipt-bound",
-                "session_id": "sess-existing",
-                "after_seq_id": 4,
-                "limit": 100,
-            },
+                {
+                    "agent_id": "ar-receipt-bound",
+                    "session_id": "sess-existing",
+                    "after_seq_id": 4,
+                    "before_seq_id": None,
+                    "limit": 100,
+                },
         ),
         (
             "ListSessionEvents",
@@ -631,6 +632,11 @@ def test_account_cloud_agent_without_receipt_supports_directory_chat_dashboard_a
         "instanceId": None,
         "versionId": "version-existing-code",
         "updatedAt": "2026-08-24T10:00:00Z",
+        "kernelReady": None,
+        "deploymentPhase": None,
+        "statusMessage": None,
+        "kernelReason": None,
+        "kernelObservedAt": None,
     }
     assert sessions.status_code == 200
     assert sessions.json()["sessions"][0]["session_id"] == "sess-existing"
