@@ -26,6 +26,7 @@ from ksadk.studio.contracts import (
     BundleManifest,
     FileEntry,
 )
+from ksadk.studio.errors import StudioError
 from ksadk.studio.hosted_kernel import (
     build_hosted_kernel_requirement,
     hosted_kernel_requirement_digest,
@@ -63,6 +64,26 @@ class AgentBundleBuilder:
             draft.metadata.revision,
         )
         compiled = self.compiler.compile(draft)
+        if composition is None and any(
+            server.get("materialization") == "dsh-profile"
+            for server in compiled.resolved.capabilities.mcp_servers
+        ):
+            raise StudioError(
+                "PLUGIN_COMPOSITION_REQUIRED",
+                "动态 DSH MCP 必须通过当前草稿的 Plugin composition 构建",
+                status_code=409,
+                field="spec.bindings.mcpServers",
+            )
+        if composition is not None and (
+            not composition.source_digest
+            or composition.source_digest != compiled.resolved.source_digest
+        ):
+            raise StudioError(
+                "PLUGIN_COMPOSITION_SOURCE_MISMATCH",
+                "Plugin composition 与当前 Agent 草稿快照不一致，请重新编译",
+                status_code=409,
+                field="spec.bindings",
+            )
         # Bundle v2 already carries a deterministic empty lock.  P2-00A now
         # validates that wire shape through PluginLock while deliberately not
         # resolving or loading a PluginHost before P2-02/P2-03.

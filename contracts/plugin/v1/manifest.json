@@ -2,7 +2,7 @@
   "contract_set": "plugin/v1",
   "digest_algorithm": "sha256",
   "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
-  "aggregate_digest": "a7ae3fb4ef3186f8244b94575225214240c9bb63a20618057b45f0bea294981d",
+  "aggregate_digest": "fe7503f8d188e93359cb50042b9c988101988eaec6d3b7cc5da1a70201544985",
   "files": [
     {
       "path": "agent-bundle-manifest-v2.schema.json",
@@ -30,6 +30,11 @@
       "bytes": 3660
     },
     {
+      "path": "dsh-profile-capability-host.schema.json",
+      "sha256": "acd6de38b0fdcb122aed791258be272be9d270d307c9eb70d4ab174aab6d8c39",
+      "bytes": 3199
+    },
+    {
       "path": "fixtures/agent-bundle-manifest-v2.json",
       "sha256": "065b5a8df2185b2b23072cd08e7dc2a679137777bfc84de7dd3cb5524629f124",
       "bytes": 1175
@@ -53,6 +58,11 @@
       "path": "fixtures/dsh-agent-provider-host.json",
       "sha256": "3ed0ca5baaff9d1bb56a37f866a7f95621787521e1ab896fcf6b6497d0900e97",
       "bytes": 2709
+    },
+    {
+      "path": "fixtures/dsh-profile-capability-host.json",
+      "sha256": "def5b90affd18c0a67db868c93c6c309eff73829c1d01465a2622b84f1d56225",
+      "bytes": 1408
     },
     {
       "path": "fixtures/plugin-ecosystem-bridge-codex.json",
@@ -96,8 +106,8 @@
     },
     {
       "path": "plugin-lock.schema.json",
-      "sha256": "05ab0b941b97ed148b2b8444e853b74457ee9b71a56b80cbddbb603a03f78fd9",
-      "bytes": 1618
+      "sha256": "2dbd7a5f1dabc9a6b859ed58ddfd3dec80b761dbb0efa8de622ccf39ce898fb8",
+      "bytes": 2662
     },
     {
       "path": "subagent-provider.schema.json",

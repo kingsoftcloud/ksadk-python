@@ -41,8 +41,8 @@ class McpToolSpec:
     """MCP 工具条目(最小子集)。"""
 
     name: str
-    url: str
-    api_key: Optional[str] = None
+    url: str = field(repr=False)
+    api_key: Optional[str] = field(default=None, repr=False)
     tool_filter: tuple[str, ...] = ()
     tool_name_prefix: Optional[str] = None
 

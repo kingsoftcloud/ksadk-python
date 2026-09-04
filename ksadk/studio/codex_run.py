@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import zipfile
 from typing import Any, cast
@@ -9,9 +10,11 @@ from typing import Any, cast
 import yaml  # type: ignore[import-untyped]
 
 from ksadk.configs import ModelConfig
+from ksadk.plugins.contracts import plugin_lock_digest
 from ksadk.runtime import RuntimeLaunchContext
 from ksadk.studio.codex_builder import CodexBuildRepository
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
+from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
 from ksadk.studio.contracts import Instructions, ModelSpec
 from ksadk.studio.errors import StudioError
 from ksadk.studio.run_service import StudioRunSpec
@@ -32,6 +35,7 @@ class CodexRunSpecResolver:
         credential_resolver: Any = None,
         resource_catalog: Any = None,
         draft_repository: Any = None,
+        plugin_snapshot_store: CodexPluginSnapshotStore | None = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository or CodexBuildRepository(workspace)
@@ -39,6 +43,7 @@ class CodexRunSpecResolver:
         self.credentials = credential_resolver
         self.catalog = resource_catalog
         self.drafts = draft_repository
+        self.plugin_snapshots = plugin_snapshot_store or CodexPluginSnapshotStore(workspace)
 
     def resolve(
         self,
@@ -61,6 +66,7 @@ class CodexRunSpecResolver:
                 },
             )
         manifest = self._load_build_manifest(build.artifact_path)
+        plugin_bootstrap = self._plugin_bootstrap(build, manifest)
         selected_model = self._select_model(manifest, model)
         project_dir = self.workspace.root.resolve()
         skills = self._skill_inputs(manifest)
@@ -71,16 +77,23 @@ class CodexRunSpecResolver:
             override=sandbox,
             approval_mode=approval_profile or None,
         )
-        if sandbox == "workspace-write":
+        if sandbox == "workspace-write" and any(
+            str(server.get("transport") or ("http" if server.get("url") else "")).lower()
+            in {"http", "sse"}
+            for server in (manifest.mcp_servers or [])
+        ):
             # workspace-write 默认断网；MCP/搜索类工具需要显式放行网络
             codex_overrides = [*codex_overrides, "sandbox_workspace_write.network_access=true"]
         launch_config: dict[str, Any] = {
             "sandbox_read_only": sandbox == "read-only",
             "sandbox": sandbox,
             "approval_mode": approval,
+            "codex_home_key": build.id,
         }
         if codex_overrides:
             launch_config["codex_overrides"] = codex_overrides
+        if plugin_bootstrap is not None:
+            launch_config["codex_plugin_bootstrap"] = plugin_bootstrap
         runtime_env = {
             **self._resolve_model_env(build, manifest, selected_model),
             **self._resolve_mcp_env(manifest),
@@ -160,6 +173,75 @@ class CodexRunSpecResolver:
             request_config=request_config,
             manifest_sha256=build.manifest_sha256,
         )
+
+    def _plugin_bootstrap(
+        self,
+        build: Any,
+        manifest: CodexAgentManifest,
+    ) -> dict[str, Any] | None:
+        bindings = [item for item in (manifest.plugins or []) if item.enabled]
+        lock = getattr(build, "plugin_lock", None)
+        lock_digest = getattr(build, "plugin_lock_digest", None)
+        marketplace = getattr(build, "plugin_marketplace", None)
+        statuses = getattr(build, "plugin_runtime_status", None) or {}
+        if not bindings:
+            if lock is not None or lock_digest is not None or marketplace is not None:
+                raise StudioError(
+                    "CODEX_PLUGIN_BUILD_INVALID",
+                    "Codex Build 含有未绑定的插件锁信息",
+                    status_code=409,
+                    details={"buildId": build.id},
+                )
+            return None
+        if lock is None or lock_digest is None or marketplace is None:
+            raise StudioError(
+                "CODEX_PLUGIN_REBUILD_REQUIRED",
+                "Codex Build 缺少原生插件不可变快照，请重新构建",
+                status_code=409,
+                details={"buildId": build.id},
+            )
+        actual_lock_digest = plugin_lock_digest(lock)
+        if actual_lock_digest != lock_digest or marketplace.plugin_lock_digest != lock_digest:
+            raise StudioError(
+                "CODEX_PLUGIN_LOCK_DIGEST_MISMATCH",
+                "Codex Build 的 PluginLock 摘要不一致",
+                status_code=409,
+                details={
+                    "buildId": build.id,
+                    "expected": lock_digest,
+                    "actual": actual_lock_digest,
+                },
+            )
+        for binding in bindings:
+            stored = self.plugin_snapshots.load(binding.snapshot_digest)
+            if stored.plugin_ref != binding.plugin_ref:
+                raise StudioError(
+                    "CODEX_PLUGIN_BINDING_MISMATCH",
+                    "Codex 插件绑定与不可变快照身份不一致",
+                    status_code=409,
+                    details={"pluginRef": binding.plugin_ref},
+                )
+            stored.select_components(binding.components)
+            status = statuses.get(binding.plugin_ref) or {}
+            if status.get("runnable") is False or any(
+                selector.startswith("hook:") for selector in binding.components
+            ):
+                raise StudioError(
+                    "CODEX_PLUGIN_HOOK_TRUST_UNAVAILABLE",
+                    "Codex App Server 尚无可验证的 hook trust API；该绑定已安全阻断",
+                    status_code=409,
+                    details={
+                        "pluginRef": binding.plugin_ref,
+                        "hookTrust": status.get("hookTrust", "unsupported"),
+                    },
+                )
+        root = self.plugin_snapshots.verify_marketplace(marketplace)
+        return {
+            "marketplace_path": str(root),
+            "marketplace_name": marketplace.marketplace_name,
+            "plugin_names": list(marketplace.plugin_names),
+            "snapshot_digest": marketplace.marketplace_digest,
+        }
 
     def _resolve_model_env(
         self,
@@ -254,13 +336,30 @@ class CodexRunSpecResolver:
         overrides: list[str] = []
         for server in manifest.mcp_servers or []:
             name = str(server.get("name") or "").strip()
+            transport = str(
+                server.get("transport") or ("http" if server.get("url") else "")
+            ).lower()
             url = str(server.get("url") or "").strip()
-            if not name or not url:
+            if not name:
                 continue
-            overrides.append(f"mcp_servers.{name}.url={url}")
-            env_key = str(server.get("env_key") or "").strip()
-            if env_key:
-                overrides.append(f"mcp_servers.{name}.bearer_token_env_var={env_key}")
+            if transport == "stdio":
+                command = str(server.get("command") or "").strip()
+                if not command:
+                    continue
+                args = [str(argument) for argument in (server.get("args") or [])]
+                overrides.append(f"mcp_servers.{name}.command={json.dumps(command)}")
+                overrides.append(f"mcp_servers.{name}.args={json.dumps(args)}")
+                env_refs = server.get("env_refs") or {}
+                if isinstance(env_refs, dict) and env_refs:
+                    overrides.append(
+                        f"mcp_servers.{name}.env_vars="
+                        f"{json.dumps(sorted(str(key) for key in env_refs))}"
+                    )
+            elif transport in {"http", "sse"} and url:
+                overrides.append(f"mcp_servers.{name}.url={url}")
+                env_key = str(server.get("env_key") or "").strip()
+                if env_key:
+                    overrides.append(f"mcp_servers.{name}.bearer_token_env_var={env_key}")
         return overrides
 
     def _resolve_mcp_env(self, manifest: CodexAgentManifest) -> dict[str, str]:
@@ -272,10 +371,20 @@ class CodexRunSpecResolver:
         """
         env: dict[str, str] = {}
         for server in manifest.mcp_servers or []:
+            references: dict[str, str] = {}
             env_key = str(server.get("env_key") or "").strip()
-            if not env_key:
-                continue
-            if env_key in env:
+            if env_key:
+                references[env_key] = f"env://{env_key}"
+            raw_references = server.get("env_refs") or {}
+            if isinstance(raw_references, dict):
+                references.update(
+                    {
+                        str(name).strip(): str(reference).strip()
+                        for name, reference in raw_references.items()
+                        if str(name).strip() and str(reference).strip()
+                    }
+                )
+            if not references:
                 continue
             resolver = self.credentials
             if resolver is None:
@@ -283,19 +392,22 @@ class CodexRunSpecResolver:
 
                 resolver = CredentialResolver(self.workspace)
                 self.credentials = resolver
-            try:
-                env[env_key] = resolver.resolve(f"env://{env_key}")
-            except Exception as exc:
-                raise StudioError(
-                    "MCP_CREDENTIAL_MISSING",
-                    f"MCP Server「{server.get('name')}」需要凭证 {env_key}，"
-                    "请先在 MCP 页连接时保存该环境变量的值",
-                    status_code=422,
-                    details={
-                        "server": str(server.get("name") or ""),
-                        "reference": f"env://{env_key}",
-                    },
-                ) from exc
+            for name, reference in references.items():
+                if name in env:
+                    continue
+                try:
+                    env[name] = resolver.resolve(reference)
+                except Exception as exc:
+                    raise StudioError(
+                        "MCP_CREDENTIAL_MISSING",
+                        f"MCP Server「{server.get('name')}」需要凭证 {name}，"
+                        "请先保存对应 Secret 引用",
+                        status_code=422,
+                        details={
+                            "server": str(server.get("name") or ""),
+                            "reference": reference,
+                        },
+                    ) from exc
         return env
 
     @staticmethod

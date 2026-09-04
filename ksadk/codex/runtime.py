@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
-from ksadk.codex.client import CodexClient
+from ksadk.codex.client import CodexClient, CodexPluginBootstrap
 from ksadk.events.adapters.codex import CodexAdapterContext, CodexEventAdapter
 from ksadk.events.canonical import (
     ErrorInfo,
@@ -108,12 +108,16 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         sandbox_read_only: bool = True,
         turn_timeout_seconds: Optional[float] = None,
         bound_skill_paths: Mapping[str, str] | None = None,
+        plugin_bootstrap: CodexPluginBootstrap | None = None,
     ) -> None:
         super().__init__(_CodexAsBaseRuntime(client))
         self._client = client
         self._sandbox_read_only = sandbox_read_only
         self._turn_timeout_seconds = turn_timeout_seconds
         self._bound_skill_paths = dict(bound_skill_paths or {})
+        self._plugin_bootstrap = plugin_bootstrap
+        self._plugin_bootstrap_lock = asyncio.Lock()
+        self._plugins_bootstrapped = False
         self._threads: dict[str, _CodexThread] = {}
         self._requests: dict[str, StartRequest] = {}
         self._known_threads: set[str] = set()
@@ -155,6 +159,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     # ---- 六动词 ----
 
     async def start(self, request: StartRequest) -> RunHandle:
+        # A failed bootstrap must leave no native thread behind. The success
+        # bit is set only after marketplace/add, every plugin/install, and the
+        # enabled-inventory reconciliation all complete on this same client.
+        await self._bootstrap_plugins_once()
         # 新 thread 由后端分配真实 thread_id(thread_start);metadata 携带的 thread_id
         # 表示接入既有 thread(resume 语义,run_turn 时按 resume 接入)。
         if self._bound_skill_paths:
@@ -218,6 +226,16 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             runtime_type="codex",
             native_ref={"thread_id": thread_id, "user_id": request.user_id},
         )
+
+    async def _bootstrap_plugins_once(self) -> None:
+        config = self._plugin_bootstrap
+        if config is None or self._plugins_bootstrapped:
+            return
+        async with self._plugin_bootstrap_lock:
+            if self._plugins_bootstrapped:
+                return
+            await self._client.bootstrap_plugins(config)
+            self._plugins_bootstrapped = True
 
     def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         return self._stream_events(handle)

@@ -27,6 +27,7 @@ _MANIFEST_KEYS = (
     "soul_digest",
     "skills",
     "mcp_servers",
+    "plugins",
     "sandbox",
     "approval_mode",
     "context",

@@ -55,6 +55,7 @@ CREDENTIAL_FREE_NATIVE_TESTS = (
     "tests/e2e/test_codex_plugin_bridge_e2e.py",
     "tests/e2e/test_codex_provider_app_server_e2e.py",
     "tests/e2e/test_codex_subagent_provider_e2e.py",
+    "tests/studio/test_dsh_agent_binding.py",
 )
 MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
@@ -62,6 +63,7 @@ MANAGED_DSH_TOOLCHAIN_TESTS = (
 )
 BROWSER_GATES = (
     "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
+    "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",

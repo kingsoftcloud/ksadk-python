@@ -1,0 +1,20 @@
+{
+  "name": "ksadk-e2e",
+  "interface": {
+    "displayName": "KsADK Codex E2E"
+  },
+  "plugins": [
+    {
+      "name": "ksadk-bridge-e2e",
+      "source": {
+        "source": "local",
+        "path": "./plugins/ksadk-bridge-e2e"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

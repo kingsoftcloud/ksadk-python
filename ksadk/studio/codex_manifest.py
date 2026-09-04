@@ -13,7 +13,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
-from ksadk.studio.contracts import ContextSpec, MemorySpec, SoulDocument
+from ksadk.studio.contracts import ContextSpec, MemorySpec, NativePluginBinding, SoulDocument
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.soul import soul_digest as compute_soul_digest
 from ksadk.studio.workspace import Workspace
@@ -52,6 +52,7 @@ class CodexAgentManifest(BaseModel):
     soul_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     skills: list[str] | None = None
     mcp_servers: list[dict[str, Any]] | None = None
+    plugins: list[NativePluginBinding] | None = None
     sandbox: str | None = None
     approval_mode: str | None = None
     # PCM 策略（方案 §5.1）：严格类型化，Build 不可变。
@@ -95,16 +96,37 @@ class CodexAgentManifest(BaseModel):
                 if not isinstance(server, dict):
                     raise ValueError("mcp_servers 必须是对象列表")
                 name = str(server.get("name") or "").strip()
-                url = str(server.get("url") or "").strip()
+                transport = str(
+                    server.get("transport") or ("http" if server.get("url") else "")
+                ).strip()
+                url = str(server.get("url") or server.get("endpoint_url") or "").strip()
+                command = str(server.get("command") or "").strip()
                 if not name:
                     raise ValueError("mcp_servers 每项必须有 name")
-                if not url:
-                    raise ValueError("mcp_servers 每项必须有 url")
+                if transport == "stdio":
+                    args = server.get("args") or []
+                    if not command or not isinstance(args, list) or any(
+                        not isinstance(argument, str) for argument in args
+                    ):
+                        raise ValueError("stdio mcp_servers 必须有 command 与字符串 args")
+                    if url:
+                        raise ValueError("stdio mcp_servers 不能配置 url")
+                elif transport in {"http", "sse"}:
+                    if not url:
+                        raise ValueError("HTTP/SSE mcp_servers 每项必须有 url")
+                    if command:
+                        raise ValueError("HTTP/SSE mcp_servers 不能配置 command")
+                else:
+                    raise ValueError("mcp_servers transport 必须是 stdio/http/sse")
                 if name in mcp_seen:
                     raise ValueError("mcp_servers 不能包含重复 name")
                 mcp_seen.add(name)
                 mcp_deduped.append(server)
             self.mcp_servers = mcp_deduped
+        if self.plugins is not None:
+            refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
+            if len(refs) != len(set(refs)):
+                raise ValueError("plugins 不能包含重复的启用 pluginRef")
         if self.soul is None:
             if self.soul_source is not None or self.soul_digest is not None:
                 raise ValueError("soul source/digest require a SoulDocument")

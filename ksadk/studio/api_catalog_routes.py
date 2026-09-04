@@ -54,6 +54,8 @@ def register_catalog_routes(
     ):
         if kind == "model":
             await runtime_model_catalog()
+        if kind in {None, "mcp"} and source in {None, "provider"}:
+            await studio.ensure_dsh_catalog_available()
 
         def effective_status(resource) -> str:
             if resource.kind != "model":
@@ -126,6 +128,16 @@ def register_catalog_routes(
             raise StudioError(
                 "RESOURCE_KIND_INVALID",
                 "该 Resource 不是 MCP Server",
+                status_code=422,
+                details={"resourceId": resource_id},
+            )
+        if (
+            descriptor.source != "local"
+            or descriptor.contract.get("materialization") == "dsh-profile"
+        ):
+            raise StudioError(
+                "DSH_MCP_MANAGED_RESOURCE_REQUIRED",
+                "受管理的 DSH Profile MCP 由 Studio 生命周期服务探测，不能直接探测",
                 status_code=422,
                 details={"resourceId": resource_id},
             )
@@ -278,6 +290,12 @@ def register_catalog_routes(
         payload: MCPServerRef,
         timeout_seconds: int = Query(default=10, alias="timeoutSeconds", ge=1, le=60),
     ):
+        if payload.materialization == "dsh-profile":
+            raise StudioError(
+                "DSH_MCP_MANAGED_RESOURCE_REQUIRED",
+                "受管理的 DSH Profile MCP 不能通过原始连接参数探测",
+                status_code=422,
+            )
         return await studio.mcp_runtime.probe(payload, timeout_seconds=timeout_seconds)
 
     @app.post("/api/v1/secret-references:check")

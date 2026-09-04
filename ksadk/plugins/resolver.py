@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from ksadk.plugins.contracts import (
@@ -43,6 +43,11 @@ class ResolvedComposition:
     # This is an internal immutable projection, not another wire manifest: the
     # public Bundle continues to bind only CompositionProfile and PluginLock.
     manifests: tuple[PluginManifest, ...] = ()
+    # Studio stamps the exact AgentDraft snapshot used to select resources.
+    # Generic resolver callers leave this empty; a composed Studio build must
+    # require it so a composition from another revision cannot be paired with
+    # a newly compiled resolved-agent-spec.
+    source_digest: str = field(default="", compare=False, repr=False)
 
 
 def canonical_composition_profile(profile: CompositionProfile) -> bytes:
@@ -223,6 +228,8 @@ class PluginRegistry:
                     source=manifest.spec.provenance.source,
                     signature_ref=manifest.spec.provenance.signature_ref,
                     license=manifest.spec.provenance.license,
+                    upstream=manifest.spec.provenance.upstream,
+                    components=manifest.spec.provenance.components,
                     provides=[
                         LockedCapability(
                             definition=offer.definition,
