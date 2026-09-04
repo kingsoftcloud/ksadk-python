@@ -4694,6 +4694,52 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
     assert payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
 
 
+def test_build_responses_payload_preserves_canonical_usage_details():
+    payload = build_responses_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        usage={
+            "input_tokens": 2488,
+            "output_tokens": 576,
+            "total_tokens": 3064,
+            "cached_tokens": 2240,
+            "reasoning_tokens": 327,
+        },
+    )
+
+    assert payload["usage"] == {
+        "input_tokens": 2488,
+        "input_tokens_details": {"cached_tokens": 2240},
+        "output_tokens": 576,
+        "output_tokens_details": {"reasoning_tokens": 327},
+        "total_tokens": 3064,
+    }
+
+
+def test_build_responses_payload_preserves_official_usage_details():
+    payload = build_responses_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        usage={
+            "input_tokens": 2488,
+            "input_tokens_details": {"cached_tokens": 2240},
+            "output_tokens": 576,
+            "output_tokens_details": {"reasoning_tokens": 327},
+            "total_tokens": 3064,
+        },
+    )
+
+    assert payload["usage"] == {
+        "input_tokens": 2488,
+        "input_tokens_details": {"cached_tokens": 2240},
+        "output_tokens": 576,
+        "output_tokens_details": {"reasoning_tokens": 327},
+        "total_tokens": 3064,
+    }
+
+
 @pytest.mark.asyncio
 async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch):
     service = InMemorySessionService()

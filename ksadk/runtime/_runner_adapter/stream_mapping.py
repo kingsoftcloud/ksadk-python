@@ -46,6 +46,7 @@ from ksadk.events.content import DataContent, TextContent, ToolCallContent, Tool
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime.adapter import RunHandle
 from ksadk.runtime.preprocessing import PreparedRuntimeStart
+from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
 from ksadk.tools.gateway import approval_interrupt_info_from_result
 
@@ -230,7 +231,9 @@ class _RunnerStreamMappingMixin:
                     # _chunk_to_events 的 tool_result 分支,canonical 快速路径
                     # (stream_canonical_events)不覆盖该语义。
                     if getattr(
-                        self._runner, "supports_gateway_approval_semantic_resume", False  # type: ignore[attr-defined]
+                        self._runner,
+                        "supports_gateway_approval_semantic_resume",
+                        False,  # type: ignore[attr-defined]
                     ):
                         canonical_stream = None
                     stream_result = (
@@ -659,7 +662,11 @@ class _RunnerStreamMappingMixin:
         # ---- usage ----
         if chunk_type == "usage":
             raw_usage = chunk.get("usage")
-            usage_dict: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+            usage_dict = (
+                canonical_usage_payload(raw_usage, runtime_type=framework)
+                if isinstance(raw_usage, Mapping)
+                else {}
+            )
             item_id = stable_item_id(framework, run_id, "$run")
             return [
                 UsageReported(
@@ -750,41 +757,13 @@ class _RunnerStreamMappingMixin:
             # returned provider token accounting.
             raw_usage = chunk.get("usage")
             if isinstance(raw_usage, Mapping):
-                input_details = raw_usage.get("input_token_details")
-                output_details = raw_usage.get("output_token_details")
-
-                def _usage_int(value: Any) -> int:
-                    try:
-                        return int(value or 0)
-                    except (TypeError, ValueError):
-                        return 0
-
-                def _detail_value(details: Any, *keys: str) -> int:
-                    if not isinstance(details, Mapping):
-                        return 0
-                    for key in keys:
-                        if key in details:
-                            return _usage_int(details.get(key))
-                    return 0
-
-                input_tokens = _usage_int(raw_usage.get("input_tokens"))
-                output_tokens = _usage_int(raw_usage.get("output_tokens"))
-                total_tokens = _usage_int(
-                    raw_usage.get("total_tokens") or (input_tokens + output_tokens)
+                usage_dict = canonical_usage_payload(
+                    raw_usage,
+                    runtime_type=framework,
                 )
-                cached_tokens = _usage_int(raw_usage.get("cached_tokens")) or _detail_value(
-                    input_details,
-                    "cached_tokens",
-                    "cached",
-                    "cache_read",
-                )
-                reasoning_tokens = _usage_int(
-                    raw_usage.get("reasoning_tokens")
-                ) or _detail_value(
-                    output_details,
-                    "reasoning_tokens",
-                    "reasoning",
-                )
+                input_tokens = usage_dict["input_tokens"]
+                output_tokens = usage_dict["output_tokens"]
+                total_tokens = usage_dict["total_tokens"]
                 if input_tokens or output_tokens or total_tokens:
                     events.append(
                         UsageReported(
@@ -798,8 +777,8 @@ class _RunnerStreamMappingMixin:
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                             total_tokens=total_tokens,
-                            cached_tokens=cached_tokens,
-                            reasoning_tokens=reasoning_tokens,
+                            cached_tokens=usage_dict["cached_tokens"],
+                            reasoning_tokens=usage_dict["reasoning_tokens"],
                         )
                     )
             events.append(

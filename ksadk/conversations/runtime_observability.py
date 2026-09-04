@@ -45,6 +45,8 @@ def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
         "total_tokens",
         "prompt_tokens",
         "completion_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
     ):
         value = usage.get(key)
         if value is None:
@@ -57,6 +59,23 @@ def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
         value = usage.get(key)
         if isinstance(value, Mapping):
             normalized[key] = dict(value)
+    for source_key, target_key in (
+        ("input_tokens_details", "input_token_details"),
+        ("output_tokens_details", "output_token_details"),
+    ):
+        value = usage.get(source_key)
+        if isinstance(value, Mapping) and target_key not in normalized:
+            normalized[target_key] = dict(value)
+    cached_tokens = normalized.get("cached_tokens")
+    if cached_tokens is not None:
+        input_details = normalized.setdefault("input_token_details", {})
+        if not any(key in input_details for key in ("cached_tokens", "cached", "cache_read")):
+            input_details["cached"] = cached_tokens
+    reasoning_tokens = normalized.get("reasoning_tokens")
+    if reasoning_tokens is not None:
+        output_details = normalized.setdefault("output_token_details", {})
+        if not any(key in output_details for key in ("reasoning_tokens", "reasoning")):
+            output_details["reasoning"] = reasoning_tokens
     prompt_details = usage.get("prompt_tokens_details")
     if isinstance(prompt_details, Mapping):
         normalized["prompt_tokens_details"] = dict(prompt_details)

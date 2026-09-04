@@ -33,6 +33,7 @@ from ksadk.events.canonical import (
     RunStarted,
     RuntimeEvent,
     SourceRef,
+    UsageReported,
 )
 from ksadk.events.content import (
     DataContent,
@@ -408,6 +409,46 @@ async def test_runner_runtime_adapter_emits_reasoning_tool_and_terminal_contract
     assert runner.received[0]["ag-ui"] == {"inject_a2ui_tool": True}
     for event in events:
         json.dumps(event.model_dump(mode="json", by_alias=True, exclude_none=True))
+
+
+@pytest.mark.asyncio
+async def test_runner_runtime_adapter_preserves_nested_usage_chunk_details():
+    class _ChunkRunner:
+        async def stream(self, _input_data):
+            yield {
+                "type": "usage",
+                "usage": {
+                    "input_tokens": 2488,
+                    "output_tokens": 576,
+                    "total_tokens": 3064,
+                    "input_token_details": {"cache_read": 2240},
+                    "output_token_details": {"reasoning": 327},
+                },
+            }
+            yield {"type": "final", "output": "done"}
+
+    adapter = RunnerRuntimeAdapter(_ChunkRunner(), runtime_type="langgraph")
+    handle = await adapter.start(
+        StartRequest(input="go", user_id="u", session_id="s")
+    )
+
+    events = [event async for event in adapter.stream(handle)]
+    usage = next(event for event in events if isinstance(event, UsageReported))
+    assert usage.model_dump(
+        include={
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cached_tokens",
+            "reasoning_tokens",
+        }
+    ) == {
+        "input_tokens": 2488,
+        "output_tokens": 576,
+        "total_tokens": 3064,
+        "cached_tokens": 2240,
+        "reasoning_tokens": 327,
+    }
 
 
 @pytest.mark.asyncio
