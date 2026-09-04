@@ -77,6 +77,13 @@ class CloudSharedWebBridge:
     def __init__(self, cloud: CloudDeploymentService) -> None:
         self.cloud = cloud
 
+    @staticmethod
+    def require_session_id(payload: dict[str, Any]) -> str:
+        session_id = str(payload.get("SessionId") or "").strip()
+        if not session_id:
+            raise StudioError("SESSION_ID_REQUIRED", "云端运行需要会话标识", status_code=400)
+        return session_id
+
     async def bootstrap(self, agent_id: str) -> dict[str, Any]:
         target = cloud_chat_target(agent_id)
         normalized_agent_id = target.removeprefix("account:")
@@ -354,9 +361,7 @@ class CloudSharedWebBridge:
         }
 
     async def stream_run(self, agent_id: str, payload: dict[str, Any]) -> AsyncIterator[str]:
-        session_id = str(payload.get("SessionId") or "").strip()
-        if not session_id:
-            raise StudioError("SESSION_ID_REQUIRED", "云端运行需要会话标识", status_code=400)
+        session_id = self.require_session_id(payload)
         prompt = _input_text(payload)
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}] if prompt else []
         model = str(payload.get("Model") or "").strip() or None

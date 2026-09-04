@@ -311,6 +311,24 @@ def test_cloud_runagent_does_not_duplicate_canonical_terminal(tmp_path: Path) ->
     assert response.text.count("data: [DONE]") == 1
 
 
+def test_cloud_runagent_without_session_is_rejected_before_sse_starts(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": CLOUD_AGENT_ID,
+                "ResponsesInput": [{"role": "user", "content": "missing session"}],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "Code": 400,
+        "Message": "云端运行需要会话标识",
+        "Data": {"errorCode": "SESSION_ID_REQUIRED"},
+    }
+
+
 def test_cloud_interaction_submit_and_session_delete(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         receipt = _post(

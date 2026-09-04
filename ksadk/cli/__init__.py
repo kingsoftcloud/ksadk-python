@@ -408,7 +408,7 @@ def _register_commands():
     _register_optional_command(cli, "ksadk.cli.cmd_hermes", "hermes")
 
 
-def main():
+def _main():
     # 全局加载 .env 文件
     try:
         from dotenv import find_dotenv, load_dotenv
@@ -491,6 +491,18 @@ def main():
             cli_error = e
         emit_cli_error(cli_error)
         raise SystemExit(cli_error.exit_code) from None
+
+
+def main():
+    """Run the CLI without exposing a traceback for an operator interrupt."""
+
+    try:
+        return _main()
+    except KeyboardInterrupt:
+        # Ctrl+C can arrive while optional commands are still importing, before
+        # Click or Uvicorn installs its own signal handling.  Treat it as the
+        # same clean operator stop and preserve the conventional exit status.
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

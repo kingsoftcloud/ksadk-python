@@ -668,6 +668,9 @@ def create_studio_app(
                         cloud_target, str(payload.get("SessionId") or ""), payload
                     )
                 elif action == "RunAgent":
+                    # Validate before StreamingResponse commits status 200;
+                    # async-generator code otherwise runs after headers start.
+                    cloud_web.require_session_id(payload)
                     return StreamingResponse(
                         cloud_web.stream_run(cloud_target, payload),
                         media_type="text/event-stream",
