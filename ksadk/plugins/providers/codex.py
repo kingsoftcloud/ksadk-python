@@ -9,6 +9,7 @@ stream or transcript is created here.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -641,12 +642,12 @@ def _resolve_mcp(
     value: Any,
     *,
     credential_resolver: Any,
-) -> tuple[list[dict[str, str]], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if value is None:
         return [], {}
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise PluginHostError("codex_mcp_invalid", "Bundle MCP servers must be a list")
-    servers: list[dict[str, str]] = []
+    servers: list[dict[str, Any]] = []
     env: dict[str, str] = {}
     seen: set[str] = set()
     for index, item in enumerate(value):
@@ -659,26 +660,64 @@ def _resolve_mcp(
         url = str(item.get("endpointUrl") or item.get("endpoint_url") or "").strip()
         if not name or name in seen:
             raise PluginHostError("codex_mcp_invalid", "Bundle MCP names must be unique")
-        if transport not in {"http", "sse"} or not url:
-            raise PluginHostError(
-                "codex_mcp_transport_unsupported",
-                f"Codex Bundle MCP {name!r} requires an http/sse endpoint",
-            )
         env_refs = item.get("envRefs") or item.get("env_refs") or {}
         if not isinstance(env_refs, Mapping):
             raise PluginHostError(
                 "codex_mcp_invalid", f"Bundle MCP {name!r} envRefs must be an object"
             )
-        if len(env_refs) > 1:
+        if transport in {"http", "sse"} and len(env_refs) > 1:
             raise PluginHostError(
                 "codex_mcp_credentials_unsupported",
                 f"Codex HTTP MCP {name!r} accepts at most one bearer credential",
             )
-        server = {"name": name, "url": url}
+        if transport == "stdio":
+            command = str(item.get("command") or "").strip()
+            raw_args = item.get("args") or []
+            if (
+                not command
+                or not isinstance(raw_args, Sequence)
+                or isinstance(raw_args, (str, bytes))
+                or len(raw_args) > 128
+                or any(
+                    not isinstance(argument, str)
+                    or len(argument) > 4096
+                    or "\x00" in argument
+                    for argument in raw_args
+                )
+            ):
+                raise PluginHostError(
+                    "codex_mcp_invalid",
+                    f"Codex Bundle stdio MCP {name!r} has an invalid command or args",
+                )
+            executable = Path(command).name.casefold()
+            if executable in {"sh", "bash", "zsh", "cmd", "cmd.exe", "powershell", "pwsh"}:
+                raise PluginHostError(
+                    "codex_mcp_command_denied",
+                    f"Codex Bundle stdio MCP {name!r} cannot launch a shell",
+                )
+            if any(argument in {"-c", "-e", "--eval"} for argument in raw_args):
+                raise PluginHostError(
+                    "codex_mcp_command_denied",
+                    f"Codex Bundle stdio MCP {name!r} cannot use inline evaluation",
+                )
+            server: dict[str, Any] = {
+                "name": name,
+                "transport": "stdio",
+                "command": command,
+                "args": list(raw_args),
+            }
+        elif transport in {"http", "sse"} and url:
+            server = {"name": name, "transport": transport, "url": url}
+        else:
+            raise PluginHostError(
+                "codex_mcp_transport_unsupported",
+                f"Codex Bundle MCP {name!r} requires stdio or an http/sse endpoint",
+            )
+        forwarded_env: dict[str, str] = {}
         for env_name, reference in env_refs.items():
             env_key = str(env_name).strip()
             ref = str(reference).strip()
-            if not env_key or not ref.startswith(
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_key) or not ref.startswith(
                 ("env://", "secret://", "credential://", "vault://")
             ):
                 raise PluginHostError(
@@ -707,7 +746,12 @@ def _resolve_mcp(
                     f"Bundle MCP {name!r} credential is empty",
                 )
             env[env_key] = str(value)
-            server["env_key"] = env_key
+            if transport == "stdio":
+                forwarded_env[env_key] = ref
+            else:
+                server["env_key"] = env_key
+        if forwarded_env:
+            server["env_refs"] = forwarded_env
         servers.append(server)
         seen.add(name)
     return servers, env

@@ -1,13 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 
 from ksadk.plugins.bridges.codex import CodexAppServerPluginBridge, CodexBridgeError
+from ksadk.plugins.codex_manifest import (
+    CodexPluginSourceCoordinate,
+    snapshot_installed_codex_plugin,
+)
 from tests.e2e.codex_responses_stub import DeterministicResponsesStub
+
+
+class _McpStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str
+    tools: dict[str, dict]
+
+
+class _McpStatusList(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    data: tuple[_McpStatus, ...]
+
+
+class _McpToolCall(BaseModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    content: tuple[dict, ...]
+    structured_content: dict | None = Field(default=None, alias="structuredContent")
+    is_error: bool | None = Field(default=None, alias="isError")
 
 
 class _LoseFirstInstallReceipt:
@@ -88,7 +112,9 @@ requires_openai_auth = false
             )
         )
         async with CodexAppServerPluginBridge(transport=client) as bridge:
-            marketplace_name = await bridge.add_marketplace(marketplace)
+            marketplace_receipt = await bridge.add_marketplace_with_receipt(marketplace)
+            marketplace_name = marketplace_receipt.marketplace_name
+            assert Path(marketplace_receipt.installed_root).resolve() == Path(marketplace).resolve()
             before = await bridge.read_plugin(plugin_name, marketplace_name=marketplace_name)
             assert before.inventory.installed is False
 
@@ -105,15 +131,57 @@ requires_openai_auth = false
                 plugin_name,
                 marketplace_name=marketplace_name,
             )
-            assert installed_detail.skills == ("ksadk-bridge-e2e:bridge-check",)
-            skill_name = installed_detail.skills[0]
+            assert set(installed_detail.skills) == {
+                "ksadk-bridge-e2e:bridge-audit",
+                "ksadk-bridge-e2e:bridge-check",
+            }
+            assert installed_detail.mcp_servers == ("ksadk-fixture",)
             installed_skill_paths = tuple(
-                codex_home.glob(
-                    "plugins/cache/*/*/*/skills/bridge-check/SKILL.md"
-                )
+                codex_home.glob("plugins/cache/*/*/*/skills/*/SKILL.md")
             )
-            assert len(installed_skill_paths) == 1
-            skill_path = str(installed_skill_paths[0].resolve())
+            assert len(installed_skill_paths) == 2
+            installed_skills_by_name = {
+                path.parent.name: path.resolve() for path in installed_skill_paths
+            }
+            skill_inputs: list[dict[str, str]] = []
+            for skill_name in installed_detail.skills:
+                skill_component = next(
+                    component
+                    for component in installed_detail.components
+                    if component.kind == "skill" and component.name == skill_name
+                )
+                assert skill_component.path is not None
+                skill_path = Path(skill_component.path)
+                expected_source_skill = (
+                    Path(marketplace)
+                    / "plugins"
+                    / plugin_name
+                    / "skills"
+                    / skill_name.rsplit(":", 1)[-1]
+                    / "SKILL.md"
+                )
+                assert skill_path.resolve() == expected_source_skill.resolve()
+                installed_skill = installed_skills_by_name[skill_name.rsplit(":", 1)[-1]]
+                skill_inputs.append(
+                    {"type": "skill", "name": skill_name, "path": str(installed_skill)}
+                )
+
+            installed_plugin_root = installed_skill_paths[0].parents[2]
+            snapshot = snapshot_installed_codex_plugin(
+                installed_plugin_root,
+                source=CodexPluginSourceCoordinate(
+                    type="local",
+                    requested=str(Path(marketplace).resolve()),
+                    resolved=str(installed_plugin_root.resolve()),
+                    marketplace_name=marketplace_name,
+                ),
+            )
+            assert snapshot.manifest.name == plugin_name
+            assert {(component.kind, component.name) for component in snapshot.components} == {
+                ("skill", "bridge-audit"),
+                ("skill", "bridge-check"),
+                ("mcp", "ksadk-fixture"),
+            }
 
             thread = await client.thread_start(
                 {
@@ -124,18 +192,47 @@ requires_openai_auth = false
                     "ephemeral": True,
                 }
             )
+            mcp_status = await client.request(
+                "mcpServerStatus/list",
+                {
+                    "threadId": thread.thread.id,
+                    "cursor": None,
+                    "limit": 100,
+                    "detail": "toolsAndAuthOnly",
+                },
+                response_model=_McpStatusList,
+            )
+            fixture_servers = [
+                server for server in mcp_status.data if "echo_fixture" in server.tools
+            ]
+            assert fixture_servers, (
+                json.dumps(mcp_status.model_dump(mode="json"), indent=2)
+                + "\n"
+                + client._sync._stderr_tail()  # noqa: SLF001 - real-host diagnostic
+            )
+            fixture_server = fixture_servers[0]
+            called = await client.request(
+                "mcpServer/tool/call",
+                {
+                    "threadId": thread.thread.id,
+                    "server": fixture_server.name,
+                    "tool": "echo_fixture",
+                    "arguments": {"value": "app-server"},
+                },
+                response_model=_McpToolCall,
+            )
+            assert called.is_error is False
+            assert called.structured_content == {"echo": "app-server"}
+            assert called.content == ({"type": "text", "text": "plugin-echo:app-server"},)
             turn = await client.turn_start(
                 thread.thread.id,
                 [
                     {
                         "type": "text",
-                        "text": f"${skill_name} Verify the installed bridge fixture.",
+                        "text": " ".join(f"${name}" for name in installed_detail.skills)
+                        + " Verify both installed bridge fixture skills.",
                     },
-                    {
-                        "type": "skill",
-                        "name": skill_name,
-                        "path": skill_path,
-                    },
+                    *skill_inputs,
                 ],
             )
             completed = await asyncio.wait_for(
@@ -146,14 +243,15 @@ requires_openai_auth = false
 
             model_request = responses.single_request()
             skill_blocks = [
-                text
-                for text in model_request.input_texts("user")
-                if text.startswith("<skill>")
+                text for text in model_request.input_texts("user") if text.startswith("<skill>")
             ]
-            assert len(skill_blocks) == 1
-            assert f"<name>{skill_name}</name>" in skill_blocks[0]
-            assert f"<path>{skill_path}</path>" in skill_blocks[0]
-            assert "Report that the KsADK Codex bridge fixture is available." in skill_blocks[0]
+            assert len(skill_blocks) == 2, json.dumps(model_request.payload, indent=2)
+            combined_skills = "\n".join(skill_blocks)
+            for item in skill_inputs:
+                assert f"<name>{item['name']}</name>" in combined_skills
+                assert f"<path>{item['path']}</path>" in combined_skills
+            assert "Report that the KsADK Codex bridge fixture is available." in combined_skills
+            assert "second KsADK Codex bridge skill was explicitly selected" in combined_skills
 
             removed = await bridge.uninstall_plugin(installed.inventory.plugin_id)
             assert removed.installed is False
@@ -213,4 +311,4 @@ async def test_real_app_server_failed_install_restores_previous_inventory(
         )
         assert transport.failed is True
         assert after.inventory == before.inventory
-        assert not tuple(codex_home.glob("plugins/cache/*/*/*/skills/bridge-check/SKILL.md"))
+        assert not tuple(codex_home.glob("plugins/cache/*/*/*/skills/*/SKILL.md"))

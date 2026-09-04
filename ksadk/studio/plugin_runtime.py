@@ -21,6 +21,11 @@ from ksadk.plugins.builtins import (
 from ksadk.plugins.bundle import PluginBundleError, PluginBundleResolver, ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginHost, PluginHostError
+from ksadk.plugins.providers.dsh_mcp import (
+    DSH_PROFILE_MCP_PLUGIN_ID,
+    DshProfileMCPFactory,
+    dsh_profile_mcp_manifest,
+)
 from ksadk.plugins.providers.harness import (
     HarnessTurnResult,
     KsADKHarnessProviderFactory,
@@ -157,6 +162,7 @@ class StudioPluginRuntime:
         provider_manifests: Mapping[str, PluginManifest] | None = None,
         provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
+        dsh_capability_service: Any | None = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository
@@ -166,9 +172,12 @@ class StudioPluginRuntime:
         self._harness_reasoner = harness_reasoner
         self._provider_manifests = dict(provider_manifests or {})
         self._provider_factories = dict(provider_factories or {})
+        self._dsh_capability_service = dsh_capability_service
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
         self._lock = asyncio.Lock()
         self._hosts: dict[str, _HostEntry] = {}
+        self._admission_open = True
+        self._closed = False
 
     def replace_provider_registrations(
         self,
@@ -183,6 +192,8 @@ class StudioPluginRuntime:
             raise ValueError(
                 "plugin provider manifests and factories must use the same exact references"
             )
+        if self._closed:
+            raise RuntimeError("cannot replace provider registrations after runtime close")
         if self._hosts:
             raise RuntimeError("cannot replace provider registrations after activation")
         self._provider_manifests = manifests
@@ -205,6 +216,7 @@ class StudioPluginRuntime:
         bundle_root = self._bundle_root(build)
         bundle = self._resolve_bundle(bundle_root)
         self._preflight_bundle(bundle)
+        dynamic_dsh_mcp = self._bundle_uses_dynamic_dsh(bundle)
         selected_model = self._select_model(build, model)
         resolved = bundle.resolved_agent_spec
         instructions = resolved.get("instructions")
@@ -222,6 +234,7 @@ class StudioPluginRuntime:
                 "agent_system": str(instructions.get("system") or ""),
                 "agent_task": str(instructions.get("task") or ""),
                 "plugin_bundle_digest": bundle.bundle_digest,
+                "dynamic_dsh_mcp": dynamic_dsh_mcp,
             },
             manifest_sha256=build.resolved_digest,
             plugin_bundle_root=bundle_root,
@@ -248,8 +261,15 @@ class StudioPluginRuntime:
             entry.bundle,
             activation_key=session_id,
         )
-        raw = await activation.execute(dict(request))
-        return _normalize_result(raw, session_id=session_id)
+        try:
+            raw = await activation.execute(dict(request))
+            return _normalize_result(raw, session_id=session_id)
+        finally:
+            # Dynamic DSH leases are generation-bound. Rebuilding the
+            # activation per turn guarantees a restarted sidecar never leaves
+            # a session pinned to an expired port or scoped token.
+            if self._bundle_uses_dynamic_dsh(entry.bundle):
+                await activation.close()
 
     def kernel_adapter_provider(self, spec: StudioRunSpec):  # type: ignore[no-untyped-def]
         """Return a lazy, Build-pinned adapter factory for Scheduler Kernel."""
@@ -294,12 +314,66 @@ class StudioPluginRuntime:
         for entry in entries:
             await entry.host.close_activation(session_id)
 
-    async def aclose(self) -> None:
+    async def close_session_if_dynamic(self, spec: StudioRunSpec, session_id: str) -> None:
+        if bool(spec.request_config.get("dynamic_dsh_mcp")):
+            await self.close_session(session_id)
+
+    async def suspend_admission(self) -> None:
+        """Stop new activations and drain every currently owned host."""
+
         async with self._lock:
+            self._admission_open = False
             entries = tuple(self._hosts.values())
             self._hosts.clear()
-        for entry in entries:
-            await entry.host.dispose()
+        cleanup = asyncio.create_task(self._dispose_entries(entries))
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        cleanup.result()
+        if interrupted:
+            raise asyncio.CancelledError
+
+    async def resume_admission(self) -> None:
+        async with self._lock:
+            if self._closed:
+                raise PluginHostError(
+                    "plugin_runtime_closed",
+                    "Studio plugin runtime is closed",
+                )
+            self._admission_open = True
+
+    @staticmethod
+    async def _dispose_entries(entries: Sequence[_HostEntry]) -> None:
+        if entries:
+            results = await asyncio.gather(
+                *(entry.host.dispose() for entry in entries),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._admission_open = False
+            entries = tuple(self._hosts.values())
+            self._hosts.clear()
+        cleanup = asyncio.create_task(self._dispose_entries(entries))
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        cleanup.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
     async def _host_for(self, bundle_root: Path) -> _HostEntry:
         # Re-resolve every turn. This deliberately rechecks enabled receipts and
@@ -307,6 +381,16 @@ class StudioPluginRuntime:
         bundle = self._resolve_bundle(bundle_root)
         key = bundle.bundle_digest
         async with self._lock:
+            if self._closed:
+                raise PluginHostError(
+                    "plugin_runtime_closed",
+                    "Studio plugin runtime is closed",
+                )
+            if not self._admission_open:
+                raise PluginHostError(
+                    "plugin_runtime_reconfiguring",
+                    "Studio plugin runtime is reconfiguring",
+                )
             existing = self._hosts.get(key)
             if existing is not None:
                 return existing
@@ -356,6 +440,17 @@ class StudioPluginRuntime:
                 self._hosts.pop(digest, None)
                 await entry.host.dispose()
             return candidate
+
+    @staticmethod
+    def _bundle_uses_dynamic_dsh(bundle: ResolvedPluginBundle) -> bool:
+        reference = (
+            f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@"
+            f"{dsh_profile_mcp_manifest().metadata.version}"
+        )
+        return any(
+            capability.ref == reference
+            for capability in bundle.composition.profile.capabilities
+        )
 
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:
         registered_ids = {
@@ -421,6 +516,7 @@ class StudioPluginRuntime:
         manifests = [
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
+            dsh_profile_mcp_manifest(),
         ]
         external = self._external_manifest(profile)
         if external is not None:
@@ -442,10 +538,14 @@ class StudioPluginRuntime:
         manifests: list[PluginManifest] = [
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
+            dsh_profile_mcp_manifest(),
         ]
         factories = builtin_capability_factories(
             state_root=self.workspace.resolve(".agentkit/plugin-runtime/state"),
             secret_resolver=self._secret_resolver.resolve,
+        )
+        factories[DSH_PROFILE_MCP_PLUGIN_ID] = DshProfileMCPFactory(
+            self._dsh_capability_service
         )
         provider_id, provider_version = _parse_plugin_ref(
             bundle.composition.profile.agent_provider.ref
@@ -472,8 +572,10 @@ class StudioPluginRuntime:
             for manifest in (
                 *builtin_agent_provider_manifests(),
                 *builtin_capability_manifests(),
+                dsh_profile_mcp_manifest(),
             )
         }
+        builtin_ids.discard(DSH_PROFILE_MCP_PLUGIN_ID)
         allowed = {
             permission
             for manifest in manifests

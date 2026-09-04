@@ -21,11 +21,22 @@ def _to_camel(value: str) -> str:
     return head + "".join(part.capitalize() for part in tail)
 
 
-class _CodexWireModel(BaseModel):
+class _CodexPublicModel(BaseModel):
     model_config = ConfigDict(
         alias_generator=_to_camel,
         populate_by_name=True,
         extra="forbid",
+        frozen=True,
+    )
+
+
+class _CodexWireModel(_CodexPublicModel):
+    """Forward-compatible model for the experimental App Server surface."""
+
+    model_config = ConfigDict(
+        alias_generator=_to_camel,
+        populate_by_name=True,
+        extra="allow",
         frozen=True,
     )
 
@@ -130,7 +141,7 @@ class _PluginUninstallResponse(_CodexWireModel):
     pass
 
 
-class CodexPluginInventory(_CodexWireModel):
+class CodexPluginInventory(_CodexPublicModel):
     """Normalized observed state; install receipt never implies these fields."""
 
     plugin_id: str
@@ -149,29 +160,47 @@ class CodexPluginInventory(_CodexWireModel):
     )
 
 
-class CodexPluginDetail(_CodexWireModel):
+class CodexHostComponentDetail(_CodexPublicModel):
+    """Lossless-enough projection of a component reported by ``plugin/read``."""
+
+    kind: Literal["skill", "mcp", "hook", "app", "app-template", "scheduled-task"]
+    name: str
+    path: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CodexPluginDetail(_CodexPublicModel):
     inventory: CodexPluginInventory
     description: str | None = None
+    share_url: str | None = None
     skills: tuple[str, ...] = ()
     mcp_servers: tuple[str, ...] = ()
     hooks: tuple[str, ...] = ()
     apps: tuple[str, ...] = ()
     scheduled_tasks: tuple[str, ...] = ()
+    components: tuple[CodexHostComponentDetail, ...] = ()
+    host_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class CodexPluginInstallResult(_CodexWireModel):
+class CodexMarketplaceAddResult(_CodexPublicModel):
+    marketplace_name: str
+    installed_root: str
+    already_added: bool
+
+
+class CodexPluginInstallResult(_CodexPublicModel):
     inventory: CodexPluginInventory
     auth_policy: Literal["ON_INSTALL", "ON_USE"]
     apps_needing_auth: tuple[str, ...] = ()
 
 
-class CodexPluginUninstallResult(_CodexWireModel):
+class CodexPluginUninstallResult(_CodexPublicModel):
     plugin_id: str
     installed: Literal[False] = False
     enabled: Literal[False] = False
 
 
-class CodexBridgeHost(_CodexWireModel):
+class CodexBridgeHost(_CodexPublicModel):
     host_id: Literal["codex-app-server"] = "codex-app-server"
     version: str
     protocol: Literal["codex.app-server/v1"] = "codex.app-server/v1"
@@ -229,6 +258,63 @@ def _reported_host_version(metadata: Any) -> str:
         raw = payload.get("userAgent") or payload.get("user_agent")
     match = _HOST_VERSION.search(str(raw or ""))
     return match.group(1) if match is not None else "unreported"
+
+
+def _component_path(metadata: dict[str, Any]) -> str | None:
+    for field in (
+        "path",
+        "filePath",
+        "file_path",
+        "skillPath",
+        "skill_path",
+        "manifestPath",
+        "manifest_path",
+    ):
+        value = metadata.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _reported_components(plugin: _PluginDetailWire) -> tuple[CodexHostComponentDetail, ...]:
+    components: list[CodexHostComponentDetail] = []
+
+    def append(
+        kind: Literal["skill", "hook", "app", "app-template", "scheduled-task"],
+        items: tuple[dict[str, Any], ...],
+        identity_fields: tuple[str, ...],
+    ) -> None:
+        for index, item in enumerate(items):
+            name = next(
+                (
+                    str(item[field])
+                    for field in identity_fields
+                    if item.get(field) not in (None, "")
+                ),
+                f"{kind}:{index}",
+            )
+            components.append(
+                CodexHostComponentDetail(
+                    kind=kind,
+                    name=name,
+                    path=_component_path(item),
+                    metadata=dict(item),
+                )
+            )
+
+    append("skill", plugin.skills, ("name", "id", "key"))
+    append("hook", plugin.hooks, ("key", "name", "id"))
+    append("app", plugin.apps, ("id", "name", "key"))
+    append("app-template", plugin.app_templates, ("id", "name", "key"))
+    append(
+        "scheduled-task",
+        plugin.scheduled_tasks or (),
+        ("key", "name", "id"),
+    )
+    components.extend(
+        CodexHostComponentDetail(kind="mcp", name=name) for name in plugin.mcp_servers
+    )
+    return tuple(components)
 
 
 class CodexAppServerPluginBridge:
@@ -290,12 +376,27 @@ class CodexAppServerPluginBridge:
             await transport.close()
 
     async def add_marketplace(self, source: str, *, ref_name: str | None = None) -> str:
+        result = await self.add_marketplace_with_receipt(source, ref_name=ref_name)
+        return result.marketplace_name
+
+    async def add_marketplace_with_receipt(
+        self,
+        source: str,
+        *,
+        ref_name: str | None = None,
+    ) -> CodexMarketplaceAddResult:
+        """Add a marketplace while retaining its host-materialized root."""
+
         response = await self._request(
             "marketplace/add",
             {"source": source, "refName": ref_name, "sparsePaths": None},
             _MarketplaceAddResponse,
         )
-        return response.marketplace_name
+        return CodexMarketplaceAddResult(
+            marketplace_name=response.marketplace_name,
+            installed_root=response.installed_root,
+            already_added=response.already_added,
+        )
 
     async def list_plugins(
         self, *, force_refetch: bool = False
@@ -324,18 +425,20 @@ class CodexAppServerPluginBridge:
             _PluginReadResponse,
         )
         plugin = response.plugin
+        components = _reported_components(plugin)
         return CodexPluginDetail(
             inventory=self._inventory(marketplace, plugin.summary),
             description=plugin.description,
-            skills=tuple(str(item.get("name", "")) for item in plugin.skills if item.get("name")),
+            share_url=plugin.share_url,
+            skills=tuple(component.name for component in components if component.kind == "skill"),
             mcp_servers=plugin.mcp_servers,
-            hooks=tuple(str(item.get("key", "")) for item in plugin.hooks if item.get("key")),
-            apps=tuple(str(item.get("id", "")) for item in plugin.apps if item.get("id")),
+            hooks=tuple(component.name for component in components if component.kind == "hook"),
+            apps=tuple(component.name for component in components if component.kind == "app"),
             scheduled_tasks=tuple(
-                str(item.get("key", ""))
-                for item in (plugin.scheduled_tasks or ())
-                if item.get("key")
+                component.name for component in components if component.kind == "scheduled-task"
             ),
+            components=components,
+            host_metadata=dict(plugin.model_extra or {}),
         )
 
     async def install_plugin(
@@ -543,6 +646,8 @@ __all__ = [
     "CodexAppServerPluginBridge",
     "CodexBridgeError",
     "CodexBridgeHost",
+    "CodexHostComponentDetail",
+    "CodexMarketplaceAddResult",
     "CodexPluginApprovalRequired",
     "CodexPluginDetail",
     "CodexPluginInstallResult",

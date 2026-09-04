@@ -1,8 +1,10 @@
-"""Browser acceptance for installed DSH client bundle activation and disposal."""
+"""Browser acceptance that the legacy top-level DSH loader is denied by default."""
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -11,6 +13,21 @@ from playwright.sync_api import expect, sync_playwright
 from studio_e2e_support import studio_server
 
 PLUGIN = "@example/studio-workspace"
+
+
+def _browser_launch_options() -> dict[str, str]:
+    configured = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", "").strip()
+    candidates = (
+        configured,
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        shutil.which("google-chrome") or "",
+        shutil.which("chromium") or "",
+        shutil.which("chromium-browser") or "",
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return {"executable_path": candidate}
+    return {}
 
 
 def _write_profile(root: Path) -> tuple[Path, Path]:
@@ -95,17 +112,21 @@ def main() -> None:
             studio_server(workspace) as base_url,
             sync_playwright() as playwright,
         ):
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, **_browser_launch_options())
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 960})
                 page_errors: list[str] = []
+                requested_urls: list[str] = []
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
+                page.on("request", lambda request: requested_urls.append(request.url))
                 page.goto(base_url, wait_until="networkidle")
 
                 extension = page.get_by_role("button", name="DSH 扩展", exact=True)
-                expect(extension).to_be_visible()
-                extension.click()
-                expect(page.get_by_test_id("installed-dsh-workspace")).to_be_visible()
+                expect(extension).to_be_hidden()
+                expect(page.get_by_test_id("installed-dsh-workspace")).to_be_hidden()
+                assert not any(
+                    "/api/v1/plugin-ecosystems/dsh/client-bundle" in url for url in requested_urls
+                )
 
                 page.get_by_role("button", name="插件", exact=True).click()
                 expect(page.get_by_role("button", name="停用", exact=True)).to_be_visible()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass
@@ -13,6 +14,13 @@ from ksadk.harness.sandbox import HarnessSandboxExecutor
 from ksadk.mcp_runtime import MCPServerConfig, build_mcp_toolset
 
 ToolHandler = Callable[[dict[str, Any], str | None], Awaitable[Any]]
+
+HARNESS_SANDBOX_TOOL_NAMES = frozenset(
+    {
+        "sandbox_read_file",
+        "sandbox_run_command",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -89,11 +97,25 @@ async def load_mcp_tools(spec: McpToolSpec) -> tuple[Any, list[HarnessTool]]:
     toolset = build_mcp_toolset(config)
     try:
         native_tools = await toolset.get_tools_with_prefix()
-    except Exception as exc:
-        await toolset.close()
+    except BaseException as error:
+        cleanup = asyncio.create_task(toolset.close())
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        try:
+            cleanup.result()
+        except Exception:
+            pass
+        if interrupted or isinstance(error, asyncio.CancelledError):
+            raise asyncio.CancelledError
+        if not isinstance(error, Exception):
+            raise
         raise RuntimeError(
-            f"Harness MCP server {spec.name!r} at {spec.url!r} failed to start: {exc}"
-        ) from exc
+            f"Harness MCP server {spec.name!r} failed to start"
+        ) from None
 
     available_names = {str(tool.name) for tool in native_tools}
     expected_names = {
@@ -104,13 +126,13 @@ async def load_mcp_tools(spec: McpToolSpec) -> tuple[Any, list[HarnessTool]]:
     if missing_names:
         await toolset.close()
         raise RuntimeError(
-            f"Harness MCP server {spec.name!r} at {spec.url!r} did not expose configured "
+            f"Harness MCP server {spec.name!r} did not expose configured "
             f"tool(s): {missing_names}"
         )
     if not native_tools:
         await toolset.close()
         raise RuntimeError(
-            f"Harness MCP server {spec.name!r} at {spec.url!r} exposed no callable tools"
+            f"Harness MCP server {spec.name!r} exposed no callable tools"
         )
 
     tools: list[HarnessTool] = []
@@ -139,10 +161,10 @@ async def load_mcp_tools(spec: McpToolSpec) -> tuple[Any, list[HarnessTool]]:
                 context = await _new_tool_context(call_id or _tool_name)
                 result = await _native_tool.run_async(args=arguments, tool_context=context)
                 return _normalize_tool_result(result, context)
-            except Exception as exc:
+            except Exception:
                 raise RuntimeError(
-                    f"Harness MCP tool {_tool_name!r} on server {spec.name!r} failed: {exc}"
-                ) from exc
+                    f"Harness MCP tool {_tool_name!r} on server {spec.name!r} failed"
+                ) from None
 
         tools.append(
             HarnessTool(
@@ -219,4 +241,10 @@ def _normalize_json_schema(value: Any) -> Any:
     return value
 
 
-__all__ = ["HarnessTool", "load_mcp_tools", "sandbox_tools", "tool_result_text"]
+__all__ = [
+    "HARNESS_SANDBOX_TOOL_NAMES",
+    "HarnessTool",
+    "load_mcp_tools",
+    "sandbox_tools",
+    "tool_result_text",
+]

@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ksadk.plugins.codex_manifest import CodexPluginManifestError, load_codex_plugin_manifest
 from ksadk.plugins.ecosystem_bridge import (
     BridgeProbeExchange,
     BridgeProbeRequest,
@@ -111,9 +112,10 @@ def probe_ecosystem_manifests(
     codex_path = root / ".codex-plugin" / "plugin.json"
     if codex_path.exists():
         raw = _read_manifest(codex_path, root=root)
-        payload = _json_object(raw, name=".codex-plugin/plugin.json")
-        if not isinstance(payload.get("name"), str) or not payload["name"]:
-            raise EcosystemProbeError("Codex plugin manifest requires a non-empty name")
+        try:
+            load_codex_plugin_manifest(root)
+        except CodexPluginManifestError as exc:
+            raise EcosystemProbeError(str(exc)) from exc
         candidates.append(
             _candidate(
                 ecosystem="codex",
@@ -176,9 +178,7 @@ def probe_ecosystem_manifests(
             raise EcosystemProbeError("selected manifest was not detected in the source directory")
         selection_required = len(candidates) > 1 and selected_manifest_ref is None
         selected = (
-            None
-            if selection_required
-            else selected_manifest_ref or candidates[0].manifest_ref
+            None if selection_required else selected_manifest_ref or candidates[0].manifest_ref
         )
         result = BridgeProbeResult(
             candidates=tuple(candidates),

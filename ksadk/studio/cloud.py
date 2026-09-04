@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
 import tempfile
+import zipfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -1599,6 +1601,7 @@ class CloudDeploymentService:
             )
         archive = self.workspace.resolve(build.artifact_path, must_exist=True)
         bundle = archive.read_bytes()
+        self._reject_local_only_materializers(bundle, artifact_name=archive.name)
         checked_bundle = (
             preflight_hosted_kernel_bundle(bundle)
             if getattr(self.gateway, "requires_hosted_kernel_bundle_preflight", False)
@@ -1636,6 +1639,64 @@ class CloudDeploymentService:
         # profile for the concrete framework the deterministic build produced.
         provenance["runtimeType"] = str(manifest.get("runtimeType") or build.runtime_type)
         return build, bundle, provenance
+
+    @staticmethod
+    def _reject_local_only_materializers(
+        bundle_bytes: bytes,
+        *,
+        artifact_name: str,
+    ) -> None:
+        """Check the exact bytes that will be uploaded for local-only materializers."""
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as bundle:
+                def load_optional(name: str) -> dict[str, Any]:
+                    try:
+                        info = bundle.getinfo(name)
+                    except KeyError:
+                        return {}
+                    if info.file_size > 8 * 1024 * 1024:
+                        raise ValueError(f"{name} is too large")
+                    payload = json.loads(bundle.read(info).decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError(f"{name} must be an object")
+                    return payload
+
+                composition = load_optional("composition-profile.json")
+                resolved = load_optional("resolved-agent-spec.json")
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            zipfile.BadZipFile,
+            json.JSONDecodeError,
+        ) as error:
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "部署前无法验证 Bundle 的本地运行时依赖",
+                status_code=422,
+                details={"buildArtifact": artifact_name},
+            ) from error
+
+        dynamic_ref = any(
+            isinstance(item, dict)
+            and str(item.get("ref") or "").startswith(
+                "plugin://io.ksadk.mcp.dsh-profile@"
+            )
+            for item in composition.get("capabilities", [])
+        )
+        resolved_capabilities = resolved.get("capabilities")
+        dynamic_server = isinstance(resolved_capabilities, dict) and any(
+            isinstance(item, dict) and item.get("materialization") == "dsh-profile"
+            for item in resolved_capabilities.get("mcpServers", [])
+        )
+        if dynamic_ref or dynamic_server:
+            raise StudioError(
+                "DSH_MCP_DEPLOYMENT_UNSUPPORTED",
+                "DSH Profile MCP 当前只能由本地 Studio 按 activation 物化，尚不能部署到云端",
+                status_code=422,
+                details={"materialization": "dsh-profile"},
+            )
 
     def get(self, deployment_id: str) -> DeploymentRecord:
         path = self.workspace.resolve(Path(".agentkit/deployments") / f"{deployment_id}.json")

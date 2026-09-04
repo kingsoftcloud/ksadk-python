@@ -27,8 +27,10 @@ from ksadk.plugins.context_contributor import (
 from ksadk.plugins.contracts import (
     CapabilityDefinition,
     CompositionProfile,
+    LockedPluginComponent,
     PluginInventory,
     PluginLock,
+    PluginSourceSnapshot,
     canonical_plugin_lock,
     plugin_lock_digest,
 )
@@ -120,6 +122,7 @@ __all__ = [
     "BridgeTransitionPlan",
     "CapabilityDefinition",
     "CompositionProfile",
+    "LockedPluginComponent",
     "ContextClassification",
     "ContextContributorCacheability",
     "ContextContributorCapabilities",
@@ -135,6 +138,7 @@ __all__ = [
     "EcosystemPluginInventory",
     "PluginInventory",
     "PluginLock",
+    "PluginSourceSnapshot",
     "PluginDesiredState",
     "PluginEcosystem",
     "PluginEcosystemBridge",

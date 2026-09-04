@@ -109,6 +109,8 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         self._tool_lock = asyncio.Lock()
         self._mcp_toolsets: list[Any] = []
         self._sessions: dict[tuple[str, str, str], _HarnessSession] = {}
+        self._lifecycle_lock = asyncio.Lock()
+        self._closed = False
 
     @property
     def harness_config(self) -> HarnessConfig:
@@ -123,10 +125,15 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         return self._sandbox.workspace_root
 
     async def start(self, request: StartRequest) -> RunHandle:
-        run_id = str(request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}")
-        if run_id in self._runs:
-            raise ValueError(f"duplicate Harness invocation: {run_id}")
-        self._runs[run_id] = _HarnessRun(request=request)
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Harness runtime adapter is closed")
+            run_id = str(
+                request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}"
+            )
+            if run_id in self._runs:
+                raise ValueError(f"duplicate Harness invocation: {run_id}")
+            self._runs[run_id] = _HarnessRun(request=request)
         return RunHandle(
             run_id=run_id,
             session_id=request.session_id,
@@ -174,28 +181,29 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         )
 
     async def close(self, handle: RunHandle) -> None:
-        run = self._runs.pop(handle.run_id, None)
+        async with self._lifecycle_lock:
+            run = self._runs.pop(handle.run_id, None)
+            has_runs = bool(self._runs)
         if run is not None and run.task is not None and not run.task.done():
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
-        if not self._runs:
+        if not has_runs:
             await self._close_tools()
 
     async def close_all(self) -> None:
         """Dispose every process-local run owned by this adapter instance."""
 
-        for run_id, run in list(self._runs.items()):
-            await self.close(
-                RunHandle(
-                    run_id=run_id,
-                    session_id=run.request.session_id,
-                    runtime_type="harness",
-                    native_ref={
-                        "user_id": run.request.user_id,
-                        "agent_id": run.request.agent_id,
-                    },
-                )
-            )
+        async with self._lifecycle_lock:
+            self._closed = True
+            runs = tuple(self._runs.values())
+            self._runs.clear()
+            self._sessions.clear()
+        tasks = [run.task for run in runs if run.task is not None and not run.task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._close_tools()
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return handle.run_id in self._runs
