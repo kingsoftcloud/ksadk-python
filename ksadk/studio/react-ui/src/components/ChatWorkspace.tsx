@@ -183,7 +183,9 @@ export function ChatWorkspace({
         </header>
 
         {chat.bootstrapStatus === "loading" ? (
-          <div className="chat-empty" role="status"><h2>正在连接 Agent…</h2></div>
+          <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent">
+            <i />
+          </div>
         ) : chat.bootstrapStatus !== "ready" ? (
           <div className="chat-empty" role="alert">
             <span className="chat-empty-icon"><Bot size={22} /></span>

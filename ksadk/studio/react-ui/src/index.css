@@ -63,7 +63,45 @@
   .chat-target-loading i { animation: none; }
 }
 
+.chat-bootstrap-loading {
+  width: min(48rem, 100%);
+  min-height: 0;
+  flex: 1;
+  margin: 0 auto;
+  padding: 32px 24px;
+  color: var(--text-tertiary);
+}
+.chat-bootstrap-loading i {
+  position: relative;
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: studio-target-pulse 1.2s ease-in-out infinite;
+}
+.chat-bootstrap-loading i::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 1px solid currentColor;
+  border-radius: inherit;
+  animation: studio-bootstrap-breathe 1.2s ease-out infinite;
+}
+@keyframes studio-bootstrap-breathe {
+  0% { opacity: 0.4; transform: scale(0.7); }
+  70%, 100% { opacity: 0; transform: scale(1.35); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-bootstrap-loading i,
+  .chat-bootstrap-loading i::after { animation: none; }
+}
+
 .studio-chat-shell {
+  --ksadk-menu-background: var(--surface-raised);
+  --ksadk-menu-trigger-background: var(--surface-subtle);
+  --ksadk-menu-border: var(--border-strong);
+  --ksadk-menu-shadow: var(--shadow-overlay);
   width: 100%;
   height: 100%;
   min-width: 0;

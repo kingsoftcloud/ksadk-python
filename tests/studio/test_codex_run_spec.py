@@ -59,9 +59,9 @@ def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
         "agent_task": "",
         "cwd": str(tmp_path),
         "skills": [],
-        "sandbox": "read-only",
-        "sandbox_read_only": True,
-        "approval_mode": "deny_all",
+        "sandbox": "workspace-write",
+        "sandbox_read_only": False,
+        "approval_mode": "auto_review",
         "summary": "auto",
         "ephemeral": False,
         "max_input_tokens": None,
@@ -137,10 +137,7 @@ def test_editor_soul_update_reaches_managed_runtime_build_and_launch(
     soul = candidate.soul
     assert soul is not None
     expected_digest = soul_digest(soul)
-    expected_system = (
-        f"{render_soul_markdown(soul).rstrip()}\n\n"
-        "Review only verified evidence."
-    )
+    expected_system = f"{render_soul_markdown(soul).rstrip()}\n\nReview only verified evidence."
 
     assert artifact["prompt"] == "Review only verified evidence."
     assert artifact["soul"]["identity"] == "You are the release evidence reviewer."
@@ -286,7 +283,28 @@ def test_resolver_keeps_selected_model_profile_endpoint_and_credential(
         "OPENAI_BASE_URL": "https://kimi.example.com/v1",
         "OPENAI_API_BASE": "https://kimi.example.com/v1",
         "OPENAI_MODEL_NAME": "kimi-k2-code",
+        "KSADK_CODEX_USE_PROXY": "1",
     }
+
+
+def test_resolver_skips_capability_probe_for_legacy_kspmas_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    workspace.atomic_write_text(
+        ".agentkit/secrets.env",
+        "AGENTKIT_MODEL_API_KEY=workspace-model-key\n",
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
+    CodexManifestRepository(workspace).save(_manifest())
+    build = CodexStudioBuilder(workspace, runtime_inspector=_inspector).build()
+
+    spec = CodexRunSpecResolver(workspace).resolve(build.id, model="glm-5.2")
+
+    assert spec.launch_context.config["env"]["KSADK_CODEX_USE_PROXY"] == "1"
 
 
 @pytest.mark.parametrize(

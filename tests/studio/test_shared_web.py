@@ -119,9 +119,7 @@ async def _shared_runtime_events(request, handle):
         seq=3,
         item_id="msg-1",
         item_kind="message",
-        snapshot=ContentSnapshot(
-            parts=(TextContent(part_id="text-0", text=text),)
-        ),
+        snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text=text),)),
         source=source,
         **common,
     )
@@ -493,3 +491,77 @@ def test_shared_chat_api_requires_local_studio_session(tmp_path: Path):
         )
         assert allowed.status_code == 200
         assert allowed.json()["Data"]["Agent"]["AgentId"] == "demo-agent"
+        assert allowed.json()["Data"]["Capabilities"]["InteractionV1"] is True
+
+
+def test_shared_chat_submit_interaction_returns_canonical_receipt(tmp_path: Path):
+    service = StudioService(tmp_path)
+    service.create_agent(agent_id="demo-agent", name="Demo Agent")
+    submitted: list[dict] = []
+
+    async def submit_interaction(run_id: str, interaction_id: str, **kwargs):
+        submitted.append({"run_id": run_id, "interaction_id": interaction_id, **kwargs})
+        return {"resolutionEventId": 8, "eventId": 9}
+
+    service.run_service.submit_interaction = submit_interaction  # type: ignore[method-assign]
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agentengine/api/v1/SubmitInteraction",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "session-1",
+                "RunId": "run-1",
+                "InteractionId": "approval-1",
+                "ExpectedRevision": 1,
+                "Action": "approve",
+                "Response": {"decision": "approve"},
+                "IdempotencyKey": "interaction:approval-1:revision-1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["Data"] == {
+        "schema_version": 1,
+        "command_id": "9",
+        "status": "accepted",
+        "message_id": None,
+        "run_id": "run-1",
+        "accepted_seq": 9,
+    }
+    assert submitted == [
+        {
+            "run_id": "run-1",
+            "interaction_id": "approval-1",
+            "name": "approve",
+            "data": {"decision": "approve"},
+            "expected_revision": 1,
+            "idempotency_key": "interaction:approval-1:revision-1",
+        }
+    ]
+
+
+def test_shared_response_approval_item_uses_interaction_identity():
+    event_name, payload = StudioSharedWebBridge._response_item_event(
+        "approval.requested",
+        {
+            "approvalId": "approval-1",
+            "callId": "call-1",
+            "runId": "run-1",
+            "kind": "command",
+            "detail": {"command": "echo safe"},
+        },
+        {},
+    )
+
+    assert event_name == "response.output_item.added"
+    assert payload["item"] == {
+        "id": "approval-1",
+        "call_id": "call-1",
+        "type": "mcp_approval_request",
+        "name": "command",
+        "arguments": '{"command": "echo safe"}',
+        "run_id": "run-1",
+        "status": "in_progress",
+    }

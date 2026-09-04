@@ -2423,6 +2423,32 @@ td.actions-column {
   font-size: var(--font-size-meta);
 }
 
+.prompt-optimize-button.is-working:disabled {
+  color: var(--text-secondary);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  cursor: wait;
+  opacity: 1;
+}
+
+.prompt-optimize-button.is-working svg {
+  color: var(--accent);
+  animation: prompt-optimize-spin 900ms linear infinite;
+}
+
+.prompt-status.is-working .status-dot {
+  animation: prompt-status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes prompt-optimize-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes prompt-status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 28%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--info) 0%, transparent); }
+}
+
 .prompt-editor {
   font-size: var(--font-size-control);
   line-height: var(--line-height-editor);

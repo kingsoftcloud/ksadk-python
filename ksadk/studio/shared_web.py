@@ -90,6 +90,7 @@ class StudioSharedWebBridge:
                     "CheckpointResumePreview": False,
                 },
                 "ApprovalPolicy": tool_approval_capability(),
+                "InteractionV1": True,
                 "WorkspaceFiles": {"Enabled": False},
                 "NativeDashboard": {"Enabled": False},
                 "NativeTerminal": {"Enabled": False},
@@ -256,10 +257,9 @@ class StudioSharedWebBridge:
         runtime_input = self._runtime_input(payload)
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
-        approval_mode = str(payload.get("ApprovalMode") or "")
-        collaboration_mode = str(payload.get("CollaborationMode") or "")
-        goal_objective = str(payload.get("GoalObjective") or "")
-        reasoning_effort = str(payload.get("ReasoningEffort") or "")
+        approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
+            self._request_controls(payload)
+        )
         try:
             build = await self._ensure_build(agent_id)
             self._validate_conversation_turn(
@@ -390,10 +390,9 @@ class StudioSharedWebBridge:
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
-        approval_mode = str(payload.get("ApprovalMode") or "")
-        collaboration_mode = str(payload.get("CollaborationMode") or "")
-        goal_objective = str(payload.get("GoalObjective") or "")
-        reasoning_effort = str(payload.get("ReasoningEffort") or "")
+        approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
+            self._request_controls(payload)
+        )
         build = await self._ensure_build(agent_id)
         prompt = self._input_text(payload)
         runtime_input = self._runtime_input(payload)
@@ -448,9 +447,7 @@ class StudioSharedWebBridge:
     ) -> RunRecord:
         if build is None:
             build = await self._ensure_build(agent_id)
-        bound_agent = str(
-            getattr(build, "agent_name", None) or getattr(build, "agent_id", "")
-        )
+        bound_agent = str(getattr(build, "agent_name", None) or getattr(build, "agent_id", ""))
         if bound_agent != agent_id:
             raise StudioError(
                 "CONVERSATION_BUILD_MISMATCH",
@@ -584,6 +581,23 @@ class StudioSharedWebBridge:
                         )
                     )
                     continue
+                if event.type == "approval.resolved":
+                    projected.append(
+                        (
+                            "response.ksadk.approval_resolved",
+                            {
+                                "type": "response.ksadk.approval_resolved",
+                                "approvalRequestId": event.data.get("approvalId")
+                                or event.data.get("interactionId"),
+                                "decision": event.data.get("decision")
+                                or event.data.get("name")
+                                or "approved",
+                                "revision": event.data.get("revision") or 2,
+                                "runId": run.id,
+                            },
+                        )
+                    )
+                    continue
                 item_event = self._response_item_event(event.type, event.data, starts)
                 if item_event is not None:
                     projected.append(item_event)
@@ -612,7 +626,9 @@ class StudioSharedWebBridge:
                 "status": (
                     "failed"
                     if event_type.endswith("failed") or data.get("exitCode") not in {None, 0}
-                    else "completed" if done else "in_progress"
+                    else "completed"
+                    if done
+                    else "in_progress"
                 ),
                 "action": {
                     "commands": [command],
@@ -633,17 +649,24 @@ class StudioSharedWebBridge:
                 "status": (
                     "failed"
                     if event_type.endswith("failed")
-                    else "completed" if done else "in_progress"
+                    else "completed"
+                    if done
+                    else "in_progress"
                 ),
                 "output": data.get("output") or data.get("result") or "",
             }
         elif event_type == "approval.requested":
+            approval_id = str(data.get("approvalId") or data.get("interactionId") or call_id or "")
+            detail = data.get("detail")
+            arguments = detail if isinstance(detail, dict) else {"detail": detail}
             item = {
-                "id": call_id or f"approval_{uuid4().hex}",
+                "id": approval_id or f"approval_{uuid4().hex}",
                 "call_id": call_id,
-                "type": "approval_request",
+                "type": "mcp_approval_request",
+                "name": str(data.get("kind") or started.get("tool") or "人工确认"),
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+                "run_id": str(data.get("runId") or ""),
                 "status": "in_progress",
-                "action": data,
             }
         else:
             return None
@@ -815,10 +838,7 @@ class StudioSharedWebBridge:
             agent_id=agent_id,
             user_id="local-user",
         )
-        records = {
-            session.id: self._session_metadata_record(session)
-            for session in persisted
-        }
+        records = {session.id: self._session_metadata_record(session) for session in persisted}
         grouped: dict[str, list[RunRecord]] = {}
         for run in self.studio.event_store.list_runs():
             if run.agent_id != agent_id:
@@ -1052,6 +1072,63 @@ class StudioSharedWebBridge:
                 }
             )
         return activities
+
+    @staticmethod
+    def _request_controls(payload: dict[str, Any]) -> tuple[str, str, str, str]:
+        """Read turn controls from both legacy and shared-Web request shapes."""
+
+        metadata = payload.get("Metadata") or payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        agentengine = metadata.get("agentengine")
+        agentengine = agentengine if isinstance(agentengine, dict) else {}
+        model_options = payload.get("ModelOptions") or payload.get("model_options")
+        model_options = model_options if isinstance(model_options, dict) else {}
+
+        approval_mode = (
+            str(
+                payload.get("ApprovalMode")
+                or payload.get("approval_mode")
+                or metadata.get("approval_mode")
+                or metadata.get("approvalMode")
+                or agentengine.get("tool_approval_mode")
+                or agentengine.get("approval_mode")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        collaboration_mode = (
+            str(
+                payload.get("CollaborationMode")
+                or payload.get("collaboration_mode")
+                or metadata.get("collaboration_mode")
+                or metadata.get("collaborationMode")
+                or agentengine.get("collaboration_mode")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        goal_objective = str(
+            payload.get("GoalObjective")
+            or payload.get("goal_objective")
+            or metadata.get("goal_objective")
+            or metadata.get("goalObjective")
+            or agentengine.get("goal_objective")
+            or ""
+        ).strip()
+        reasoning_effort = (
+            str(
+                payload.get("ReasoningEffort")
+                or payload.get("reasoning_effort")
+                or model_options.get("reasoning_effort")
+                or model_options.get("reasoningEffort")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        return approval_mode, collaboration_mode, goal_objective, reasoning_effort
 
     @staticmethod
     def _input_text(payload: dict[str, Any]) -> str:

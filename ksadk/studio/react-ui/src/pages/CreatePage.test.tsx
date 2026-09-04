@@ -230,8 +230,88 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("uses Codex native tools instead of offering KsADK built-in Tools", async () => {
+    const user = userEvent.setup();
+    const provider = {
+      providerRef: "plugin://io.ksadk.codex-provider@1.0.0",
+      pluginId: "@kingsoftcloud/ksadk-codex-provider",
+      resolvedVersion: "1.0.0",
+      displayName: "Codex",
+      state: "enabled",
+      compatible: true,
+      selectable: true,
+      reason: null,
+      permissions: [],
+      isolation: "sidecar",
+      configSchemaDeclared: false,
+      secretFields: [],
+    };
+    const tool = {
+      resourceId: "tool:builtin:read-file",
+      kind: "tool",
+      name: "read-file",
+      displayName: "读取文件",
+      version: "1.0.0",
+      status: "ready",
+      source: "builtin",
+    };
+    mockedFetch.mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model, tool] });
+      if (path === "/api/v1/catalog/models") return response({ items: [] });
+      if (path === "/api/v1/agent-providers") return response({ items: [provider] });
+      if (path === "/api/v1/credentials/OPENAI_API_KEY") return response({ configured: true });
+      if (path === "/api/v1/agent-templates/blank:compose") {
+        return response({
+          spec: {
+            instructions: { system: "Codex provider agent.", task: "" },
+            bindings: {
+              modelProfileId: model.resourceId,
+              modelProfileIds: [model.resourceId],
+              tools: [{ resourceId: tool.resourceId }],
+              skills: [],
+              mcpServers: [],
+            },
+            capabilities: { tools: [{ name: "invented-tool" }] },
+          },
+        });
+      }
+      if (path === "/api/v1/authoring/quick") {
+        return response({ metadata: { id: "codex-provider-agent", revision: 1 } });
+      }
+      if (path === "/api/v1/agents/codex-provider-agent/builds") return response({ id: "codex-provider-build" });
+      if (path === "/api/v1/operations/codex-provider-build") return response({ status: "SUCCEEDED" });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "使用 Codex 完成任务。");
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: /Codex · Plugin/ }));
+    await user.click(screen.getByRole("button", { name: "继续" }));
+
+    expect(await screen.findByText("Codex 使用原生工具，不绑定 KsADK 内置 Tool")).toBeVisible();
+    expect(screen.queryByText("Tool 与权限")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByDisplayValue("Codex provider agent.");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+
+    await waitFor(() => {
+      const createCall = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(createCall?.[1]?.body));
+      expect(request.spec.bindings.tools).toEqual([]);
+      expect(request.spec.capabilities.tools).toEqual([]);
+    });
+  });
+
   it("uses the authoring model to optimize both the system prompt and task contract", async () => {
     const user = userEvent.setup();
+    let releaseOptimization!: () => void;
+    const optimizationGate = new Promise<void>(resolve => { releaseOptimization = resolve; });
     mockedFetch.mockImplementation(async (input) => {
       const path = String(input);
       if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model] });
@@ -257,6 +337,7 @@ describe("CreatePage quick authoring", () => {
         });
       }
       if (path === "/api/v1/authoring/conversations:compose") {
+        await optimizationGate;
         return response({
           proposal: {
             name: "销售日报 Agent",
@@ -298,6 +379,13 @@ describe("CreatePage quick authoring", () => {
 
     await screen.findByDisplayValue("你是销售助手。");
     await user.click(screen.getByRole("button", { name: "一键优化 Prompt" }));
+
+    const workingButton = await screen.findByRole("button", { name: "正在优化" });
+    expect(workingButton).toBeDisabled();
+    expect(workingButton).toHaveClass("is-working");
+    expect(workingButton).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("正在使用生成模型优化角色与任务契约，通常需要几十秒");
+    releaseOptimization();
 
     await waitFor(() => {
       expect(mockedFetch).toHaveBeenCalledWith(

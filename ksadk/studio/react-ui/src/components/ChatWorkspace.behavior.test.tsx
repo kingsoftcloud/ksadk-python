@@ -83,6 +83,7 @@ vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confi
 
 describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
+    mocks.chat.bootstrapStatus = "ready";
     mocks.useAgentChat.mockClear();
     mocks.facadeOptions.length = 0;
     mocks.timelineProps = null;
@@ -90,6 +91,14 @@ describe("ChatWorkspace shared conversation composition", () => {
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
+  });
+
+  it("keeps bootstrap progress quiet and inside the transcript region", () => {
+    mocks.chat.bootstrapStatus = "loading";
+    render(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+
+    expect(screen.getByRole("status", { name: "正在连接 Agent" })).toHaveClass("chat-bootstrap-loading");
+    expect(screen.queryByText("正在连接 Agent…")).not.toBeInTheDocument();
   });
 
   it("binds the shared controller to the selected agent and Studio fetch", () => {

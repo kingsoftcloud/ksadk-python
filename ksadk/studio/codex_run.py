@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import zipfile
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import yaml  # type: ignore[import-untyped]
 
@@ -184,12 +185,23 @@ class CodexRunSpecResolver:
             if profile is not None
             else ModelConfig().api_base.rstrip("/")
         )
-        return {
+        env = {
             "OPENAI_API_KEY": credential,
             "OPENAI_BASE_URL": base_url,
             "OPENAI_API_BASE": base_url,
             "OPENAI_MODEL_NAME": selected_model,
         }
+        # A chat-only profile necessarily needs the Responses-to-Chat bridge.
+        # KSPMAS build snapshots created before wireApi was persisted have the
+        # same requirement. Route those known profiles directly so every fresh
+        # Studio process does not spend several seconds probing /models and two
+        # /responses payload dialects before the user's first turn.
+        if "KSADK_CODEX_USE_PROXY" not in os.environ and (
+            (profile is not None and profile.wire_api == "chat")
+            or self._is_known_chat_model_gateway(base_url)
+        ):
+            env["KSADK_CODEX_USE_PROXY"] = "1"
+        return env
 
     def _resolve_model_profile(
         self,
@@ -247,6 +259,11 @@ class CodexRunSpecResolver:
             if raw.endswith(suffix):
                 return raw[: -len(suffix)]
         return raw
+
+    @staticmethod
+    def _is_known_chat_model_gateway(base_url: str) -> bool:
+        host = (urlparse(base_url).hostname or "").lower()
+        return host == "kspmas.ksyun.com" or host.startswith("kspmas-internal.")
 
     @staticmethod
     def _mcp_overrides(manifest: CodexAgentManifest) -> list[str]:
@@ -326,11 +343,16 @@ class CodexRunSpecResolver:
         if approval_mode:
             return approval_presets[normalize_tool_approval_mode(approval_mode)]
         raw = (
-            (override or os.environ.get("KSADK_CODEX_SANDBOX") or manifest.sandbox or "read_only")
+            (
+                override
+                or os.environ.get("KSADK_CODEX_SANDBOX")
+                or manifest.sandbox
+                or "workspace_write_auto"
+            )
             .strip()
             .lower()
         )
-        return presets.get(raw, ("read-only", "deny_all"))
+        return presets.get(raw, ("workspace-write", "auto_review"))
 
     def _skill_inputs(self, manifest: CodexAgentManifest) -> list[dict[str, str]]:
         """Resolve bound skill resource ids to codex SkillInput wire dicts."""

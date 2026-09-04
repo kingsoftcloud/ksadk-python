@@ -144,9 +144,7 @@ _CONTENT_WIRE_ALIASES = {
 def _normalize_cloud_runtime_event_wire(value: dict[str, Any]) -> dict[str, Any]:
     """Normalize only historic REST casing at the RuntimeEvent boundary."""
 
-    normalized = {
-        _RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()
-    }
+    normalized = {_RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()}
     source = normalized.get("source")
     if isinstance(source, dict):
         normalized["source"] = {
@@ -198,9 +196,7 @@ def _cloud_event_conversation_item(
     if raw_event is None:
         return None
     try:
-        runtime_event = parse_runtime_event_lenient(
-            _normalize_cloud_runtime_event_wire(raw_event)
-        )
+        runtime_event = parse_runtime_event_lenient(_normalize_cloud_runtime_event_wire(raw_event))
         item = project_conversation_item(
             runtime_event,  # type: ignore[arg-type]
             session_id=session_id,
@@ -515,9 +511,31 @@ def create_studio_app(
     async def openai_responses(payload: dict[str, Any]):
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        agent_id = str(metadata.get("agent_id") or metadata.get("agentId") or "") or None
+        agentengine_metadata = metadata.get("agentengine")
+        agentengine_metadata = (
+            agentengine_metadata if isinstance(agentengine_metadata, dict) else {}
+        )
+        agent_id = (
+            str(
+                metadata.get("agent_id")
+                or metadata.get("agentId")
+                or agentengine_metadata.get("agent_id")
+                or agentengine_metadata.get("agentId")
+                or ""
+            )
+            or None
+        )
         requested_approval_mode = (
-            str(metadata.get("approval_mode") or metadata.get("approvalMode") or "").strip().lower()
+            str(
+                metadata.get("approval_mode")
+                or metadata.get("approvalMode")
+                or agentengine_metadata.get("tool_approval_mode")
+                or agentengine_metadata.get("approval_mode")
+                or agentengine_metadata.get("approvalMode")
+                or ""
+            )
+            .strip()
+            .lower()
         )
         if requested_approval_mode and requested_approval_mode not in {"ask", "risk", "full"}:
             raise StudioError(
@@ -527,7 +545,13 @@ def create_studio_app(
                 field="metadata.approval_mode",
             )
         collaboration_mode = (
-            str(metadata.get("collaboration_mode") or metadata.get("collaborationMode") or "")
+            str(
+                metadata.get("collaboration_mode")
+                or metadata.get("collaborationMode")
+                or agentengine_metadata.get("collaboration_mode")
+                or agentengine_metadata.get("collaborationMode")
+                or ""
+            )
             .strip()
             .lower()
         )
@@ -539,7 +563,11 @@ def create_studio_app(
                 field="metadata.collaboration_mode",
             )
         goal_objective = str(
-            metadata.get("goal_objective") or metadata.get("goalObjective") or ""
+            metadata.get("goal_objective")
+            or metadata.get("goalObjective")
+            or agentengine_metadata.get("goal_objective")
+            or agentengine_metadata.get("goalObjective")
+            or ""
         ).strip()
         reasoning = payload.get("reasoning")
         reasoning = reasoning if isinstance(reasoning, dict) else {}
@@ -726,6 +754,33 @@ def create_studio_app(
                 )
             elif action == "CancelRun":
                 data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+            elif action == "SubmitInteraction":
+                run_id = str(payload.get("RunId") or "")
+                interaction_id = str(payload.get("InteractionId") or "")
+                resolved = await studio.run_service.submit_interaction(
+                    run_id,
+                    interaction_id,
+                    name=str(payload.get("Action") or "submit"),
+                    data=(
+                        dict(payload.get("Response"))
+                        if isinstance(payload.get("Response"), dict)
+                        else {}
+                    ),
+                    expected_revision=int(payload.get("ExpectedRevision") or 0),
+                    idempotency_key=str(payload.get("IdempotencyKey") or ""),
+                )
+                data = {
+                    "schema_version": 1,
+                    "command_id": str(
+                        resolved.get("eventId")
+                        or resolved.get("resolutionEventId")
+                        or f"interaction:{interaction_id}"
+                    ),
+                    "status": "accepted",
+                    "message_id": None,
+                    "run_id": run_id,
+                    "accepted_seq": int(resolved.get("eventId") or 0),
+                }
             elif action in {
                 "GetResponseFeedback",
                 "UpsertResponseFeedback",

@@ -43,6 +43,7 @@ from ksadk.evaluation.studio_build_adapter import (
 from ksadk.events.store import RuntimeEventStore
 from ksadk.observability.session_log import SessionLogError, export_session_log
 from ksadk.observability.trajectory import encode_sse, project_trajectory_event
+from ksadk.plugins.bundle_security import BundleSecurityError
 from ksadk.plugins.contracts import PluginManifest
 from ksadk.plugins.providers.legacy import LegacyHarnessSource
 from ksadk.plugins.providers.legacy_catalog import (
@@ -638,7 +639,31 @@ class StudioService:
 
     def _build_agent_bundle(self, draft: AgentDraft):
         composition = self.plugin_compositions.compile_if_required(draft)
-        record = self.builder.build(draft, composition=composition)
+        try:
+            record = self.builder.build(draft, composition=composition)
+        except BundleSecurityError as error:
+            first = error.findings[0]
+            reason = {
+                "literal-secret-field": "明文凭证",
+                "url-credentials": "含账号信息的 URL",
+                "local-home-path": "本机用户目录路径",
+                "invalid-structured-input": "无法解析的结构化数据",
+            }.get(first.kind, "敏感内容")
+            raise StudioError(
+                "BUNDLE_SECURITY_REJECTED",
+                f"AgentBundle 安全检查未通过：{first.path} 检测到{reason}",
+                status_code=422,
+                details={
+                    "securityFindings": [
+                        {
+                            "path": finding.path,
+                            "kind": finding.kind,
+                            "field": finding.field,
+                        }
+                        for finding in error.findings
+                    ]
+                },
+            ) from error
         if composition is not None:
             self.plugin_compositions.bind_build(
                 composition,
@@ -2656,7 +2681,7 @@ class StudioService:
             except Exception:
                 data = {}
         defaults = {
-            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
+            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
             "buildAfterCreate": True,
             "codexProxy": current_proxy_mode(),
             "cloudRegion": os.environ.get(

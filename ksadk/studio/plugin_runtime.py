@@ -17,10 +17,12 @@ from ksadk.harness.reasoner import (
 from ksadk.plugins.builtins import (
     builtin_capability_factories,
     builtin_capability_manifests,
+    builtin_capability_permissions,
 )
 from ksadk.plugins.bundle import PluginBundleError, PluginBundleResolver, ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginHost, PluginHostError
+from ksadk.plugins.providers.codex import CodexTurnResult
 from ksadk.plugins.providers.harness import (
     HarnessTurnResult,
     KsADKHarnessProviderFactory,
@@ -319,6 +321,7 @@ class StudioPluginRuntime:
             )
             services: dict[str, Any] = {
                 "session_service": self._session_service,
+                "runtime_state_root": self.workspace.resolve(".agentkit/plugin-runtime/state"),
                 # Providers resolve credential *references* at activation time.
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
@@ -358,9 +361,7 @@ class StudioPluginRuntime:
             return candidate
 
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:
-        registered_ids = {
-            manifest.metadata.id for manifest in self._provider_manifests.values()
-        }
+        registered_ids = {manifest.metadata.id for manifest in self._provider_manifests.values()}
         try:
             manifest, selection = self._legacy_bundles.select_from_bundle(
                 bundle_root,
@@ -390,9 +391,7 @@ class StudioPluginRuntime:
                     }
                 }
             )
-            registry = PluginRegistry(
-                [selection.manifest, *builtin_capability_manifests()]
-            )
+            registry = PluginRegistry([selection.manifest, *builtin_capability_manifests()])
             try:
                 resolved = json.loads(
                     (bundle_root / "resolved-agent-spec.json").read_text(encoding="utf-8")
@@ -467,19 +466,7 @@ class StudioPluginRuntime:
         manifests.append(manifest)
         factories[provider_id] = factory
 
-        builtin_ids = {
-            manifest.metadata.id
-            for manifest in (
-                *builtin_agent_provider_manifests(),
-                *builtin_capability_manifests(),
-            )
-        }
-        allowed = {
-            permission
-            for manifest in manifests
-            if manifest.metadata.id in builtin_ids
-            for permission in manifest.spec.permissions
-        }
+        allowed = set(builtin_capability_permissions(bundle.composition.profile))
         security = bundle.resolved_agent_spec.get("security")
         if isinstance(security, Mapping):
             raw = security.get("allowedPermissions") or security.get("allowed_permissions") or []
@@ -534,19 +521,13 @@ class StudioPluginRuntime:
             timeout_seconds=int(
                 execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 120
             ),
-            max_attempts=int(
-                retry.get("maxAttempts") or retry.get("max_attempts") or 2
-            ),
-            backoff_seconds=float(
-                retry.get("backoffSeconds") or retry.get("backoff_seconds") or 1
-            ),
+            max_attempts=int(retry.get("maxAttempts") or retry.get("max_attempts") or 2),
+            backoff_seconds=float(retry.get("backoffSeconds") or retry.get("backoff_seconds") or 1),
         )
 
     def _external_manifest(self, profile: CompositionProfile) -> PluginManifest | None:
         plugin_id, version = _parse_plugin_ref(profile.agent_provider.ref)
-        builtin_ids = {
-            manifest.metadata.id for manifest in builtin_agent_provider_manifests()
-        }
+        builtin_ids = {manifest.metadata.id for manifest in builtin_agent_provider_manifests()}
         if plugin_id in builtin_ids:
             return None
         provider_ref = f"plugin://{plugin_id}@{version}"
@@ -565,9 +546,7 @@ class StudioPluginRuntime:
             return cast(
                 CompositionProfile,
                 CompositionProfile.model_validate_json(
-                    (bundle_root / "composition-profile.json").read_text(
-                        encoding="utf-8"
-                    )
+                    (bundle_root / "composition-profile.json").read_text(encoding="utf-8")
                 ),
             )
         except (OSError, UnicodeError, ValueError) as error:
@@ -595,17 +574,13 @@ class StudioPluginRuntime:
 
     @staticmethod
     def _select_model(build: BuildRecord, requested: str | None) -> str:
-        allowed = [
-            str(item) for item in build.runtime_lock.get("models") or [] if str(item)
-        ]
+        allowed = [str(item) for item in build.runtime_lock.get("models") or [] if str(item)]
         default = str(build.runtime_lock.get("model") or "").strip()
         if default and default not in allowed:
             allowed.insert(0, default)
         selected = str(requested or default).strip()
         if not selected:
-            raise StudioError(
-                "AGENT_MODEL_REQUIRED", "Build 没有绑定可运行模型", status_code=422
-            )
+            raise StudioError("AGENT_MODEL_REQUIRED", "Build 没有绑定可运行模型", status_code=422)
         if allowed and selected not in allowed:
             raise StudioError(
                 "MODEL_NOT_BOUND",
@@ -615,13 +590,14 @@ class StudioPluginRuntime:
             )
         return selected
 
+
 def _parse_plugin_ref(value: str) -> tuple[str, str]:
     plugin_id, version = value.removeprefix("plugin://").rsplit("@", 1)
     return plugin_id, version
 
 
 def _normalize_result(raw: Any, *, session_id: str) -> StudioPluginTurnResult:
-    if isinstance(raw, HarnessTurnResult):
+    if isinstance(raw, (CodexTurnResult, HarnessTurnResult)):
         return StudioPluginTurnResult(
             output_text=raw.output_text,
             session_id=raw.session_id,
@@ -630,9 +606,7 @@ def _normalize_result(raw: Any, *, session_id: str) -> StudioPluginTurnResult:
             raw=raw,
         )
     if not isinstance(raw, Mapping):
-        raise PluginHostError(
-            "provider_result_invalid", "AgentProvider result must be an object"
-        )
+        raise PluginHostError("provider_result_invalid", "AgentProvider result must be an object")
     output_text = str(raw.get("outputText") or raw.get("output_text") or raw.get("output") or "")
     if not output_text:
         raise PluginHostError(

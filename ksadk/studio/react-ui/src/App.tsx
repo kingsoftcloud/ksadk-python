@@ -150,13 +150,20 @@ export default function App() {
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
   const initialRoute = parseStudioLocationHash(window.location.hash);
+  const [initialChatTarget] = useState(storedChatTarget);
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
   const [extensionPath, setExtensionPath] = useState(initialRoute.extensionPath);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId || "");
+  const [currentAgentId, setCurrentAgentId] = useState(
+    initialRoute.detailAgentId
+      || initialRoute.editingAgentId
+      || (initialRoute.view === "conversations" && initialChatTarget.kind === "local"
+        ? initialChatTarget.id
+        : ""),
+  );
   const [automationAgentScopeId, setAutomationAgentScopeId] = useState("");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
@@ -168,10 +175,9 @@ export default function App() {
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
-  const [cloudDeploymentId, setCloudDeploymentId] = useState(() => {
-    const saved = storedChatTarget();
-    return saved.kind === "cloud" ? saved.id : "";
-  });
+  const [cloudDeploymentId, setCloudDeploymentId] = useState(
+    initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
+  );
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);

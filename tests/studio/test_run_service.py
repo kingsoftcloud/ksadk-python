@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 
 from ksadk.events.canonical import (
+    ApprovalRequest,
     ContentSnapshot,
     InteractionRequested,
     ItemCompleted,
     ItemStarted,
     OutputRef,
     RunCompleted,
+    RunFailed,
     RunInterrupted,
     RunStarted,
     RuntimeEvent,
@@ -360,6 +362,34 @@ async def test_second_turn_receives_transport_neutral_session_history(
         {"role": "user", "content": "第二轮"},
     ]
     assert starts[1].metadata["thread_id"] == "thread-1"
+
+
+@pytest.mark.asyncio
+async def test_codex_feedback_turn_reuses_native_thread_after_cancelled_approval(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: _RecordingAdapter(calls, "codex"))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    spec = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+        build_id="build-codex",
+        agent_id="review-helper",
+    )
+
+    cancelled = await service.run(spec, "执行原命令", session_id="ses-feedback")
+    cancelled.status = RunStatus.CANCELLED
+    service.event_store.save(cancelled)
+    await service.run(spec, "请改成 echo 你好", session_id="ses-feedback")
+
+    starts = [value for name, value in calls if name == "start"]
+    assert starts[1].metadata["thread_id"] == "thread-1"
+    conversation = starts[1].conversation_preprocessing()
+    assert conversation is not None
+    assert conversation.messages == [{"role": "user", "content": "请改成 echo 你好"}]
 
 
 @pytest.mark.asyncio
@@ -952,6 +982,196 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
     assert "a2ui.action" in service_event_types(workspace, run.id)
 
 
+@pytest.mark.parametrize(
+    ("action", "response", "expected_decision", "expected_outcome", "expected_summary"),
+    [
+        ("approve", {}, "approve", "approved", "已同意"),
+        ("reject", {"decision": "reject"}, "deny", "rejected", "已拒绝"),
+        (
+            "cancel",
+            {"feedback": "请改成 echo 你好"},
+            "cancel",
+            "cancelled",
+            "已反馈给 Agent",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_live_approval_submits_with_native_provider_call_id(
+    tmp_path: Path,
+    action: str,
+    response: dict[str, str],
+    expected_decision: str,
+    expected_outcome: str,
+    expected_summary: str,
+) -> None:
+    class _ApprovalAdapter(_RecordingAdapter):
+        def __init__(self, calls: list[tuple[str, Any]]) -> None:
+            super().__init__(calls, "codex")
+            self.answered = asyncio.Event()
+
+        async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+            common = {
+                "schema_version": 2,
+                "timestamp": 1.0,
+                "run_id": handle.run_id,
+                "scope_id": f"scope-{handle.run_id}",
+                "source": SourceRef(framework="codex"),
+            }
+            yield InteractionRequested(
+                event_id="approval-requested",
+                seq=1,
+                interaction_id="item-canonical-approval",
+                interaction_kind="approval",
+                request=ApprovalRequest(
+                    call_id="call-native-tool",
+                    kind="command_execution",
+                    detail={"command": "echo approval-ok"},
+                ),
+                **common,
+            )
+            yield RunInterrupted(
+                event_id="approval-waiting",
+                seq=2,
+                status="interrupted",
+                reason="Codex requires user interaction",
+                interaction_id="item-canonical-approval",
+                continuation_id="thread-1",
+                **common,
+            )
+            await self.answered.wait()
+            yield RunCompleted(
+                event_id="approval-completed",
+                seq=3,
+                status="completed",
+                output_refs=(),
+                **common,
+            )
+
+        async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
+            self.calls.append(("submit", payload))
+            self.answered.set()
+
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: _ApprovalAdapter(calls))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    task = asyncio.create_task(
+        service.run(
+            StudioRunSpec(
+                launch_context=RuntimeLaunchContext(
+                    runtime_type="codex",
+                    project_dir=tmp_path,
+                ),
+                build_id="build-codex",
+                agent_id="approval-helper",
+            ),
+            "执行审批命令",
+            session_id="ses-approval",
+        )
+    )
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        run = service.event_store.list_runs(session_id="ses-approval")[0]
+        if run.status == RunStatus.WAITING_INPUT:
+            break
+    assert run.status == RunStatus.WAITING_INPUT
+
+    await service.submit_interaction(
+        run.id,
+        "item-canonical-approval",
+        name=action,
+        data=response,
+        expected_revision=1,
+        idempotency_key=f"interaction:item-canonical-approval:{action}:revision-1",
+    )
+    completed = await asyncio.wait_for(task, timeout=2)
+    assert completed.status == RunStatus.COMPLETED
+
+    submitted = [value for name, value in calls if name == "submit"][-1]
+    assert submitted.kind == "approval_decision"
+    assert submitted.call_id == "call-native-tool"
+    assert submitted.data == {**response, "decision": expected_decision}
+    resolved = next(
+        event for event in service.event_store.events(run.id) if event.type == "approval.resolved"
+    )
+    assert resolved.data["interactionId"] == "item-canonical-approval"
+    assert resolved.data["callId"] == "call-native-tool"
+    assert resolved.data["action"] == action
+    assert resolved.data["outcome"] == expected_outcome
+    assert resolved.data["actor"] == "user"
+    assert resolved.data["responseSummary"] == expected_summary
+    assert [name for name, _ in calls].count("submit") == 1
+    assert "a2ui.action" in service_event_types(workspace, run.id)
+    assert "run.interrupted" not in service_event_types(workspace, run.id)
+    assert service_event_types(workspace, run.id).count("approval.resolved") == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_expires_an_unresolved_approval_card(tmp_path: Path) -> None:
+    class _FailingApprovalAdapter(_RecordingAdapter):
+        async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+            common = {
+                "schema_version": 2,
+                "timestamp": 1.0,
+                "run_id": handle.run_id,
+                "scope_id": f"scope-{handle.run_id}",
+                "source": SourceRef(framework="codex"),
+            }
+            yield InteractionRequested(
+                event_id="approval-requested",
+                seq=1,
+                interaction_id="approval-orphan",
+                interaction_kind="approval",
+                request=ApprovalRequest(
+                    call_id="call-orphan",
+                    kind="command_execution",
+                    detail={"command": "echo never-ran"},
+                ),
+                **common,
+            )
+            yield RunFailed(
+                event_id="approval-failed",
+                seq=2,
+                status="failed",
+                error={
+                    "code": "RUNTIME_RUN_FAILED",
+                    "message": "transport closed",
+                    "source": "codex",
+                    "scope_id": handle.run_id,
+                },
+                **common,
+            )
+
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: _FailingApprovalAdapter([], "codex"))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+
+    record = await service.run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+            build_id="build-codex",
+            agent_id="approval-helper",
+        ),
+        "执行审批命令",
+        session_id="ses-failed-approval",
+    )
+
+    assert record.status == RunStatus.FAILED
+    expired = [
+        event
+        for event in service.event_store.events(record.id)
+        if event.type == "interaction.expired"
+    ]
+    assert len(expired) == 1
+    assert expired[0].data["interactionId"] == "approval-orphan"
+    assert expired[0].data["callId"] == "call-orphan"
+
+
 def test_a2ui_runtime_events_are_persisted_as_official_operations() -> None:
     event_type, payload = project_runtime_event(
         ItemStarted(
@@ -1027,9 +1247,7 @@ def test_completed_a2ui_operation_batch_keeps_surface_visible() -> None:
                         part_id="a2ui-surface",
                         data={
                             "surface_id": "surface-1",
-                            "components": [
-                                {"id": "root", "component": "Text", "text": "Hello"}
-                            ],
+                            "components": [{"id": "root", "component": "Text", "text": "Hello"}],
                         },
                     ),
                 )
