@@ -18,6 +18,7 @@ from ksadk.conversations.contracts import (
     ConversationTextPart,
     validate_conversation_input,
 )
+from ksadk.sessions.base import Session
 from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.service import StudioService
@@ -110,14 +111,14 @@ class StudioSharedWebBridge:
 
         return self._select_model(agent_id, str(requested or ""))
 
-    def list_sessions(
+    async def list_sessions(
         self,
         agent_id: str,
         *,
         page: int = 1,
         page_size: int = 30,
     ) -> dict[str, Any]:
-        sessions = self._sessions(agent_id)
+        sessions = await self._sessions(agent_id)
         safe_page = max(1, page)
         safe_size = min(100, max(1, page_size))
         start = (safe_page - 1) * safe_size
@@ -128,29 +129,27 @@ class StudioSharedWebBridge:
             "PageSize": safe_size,
         }
 
-    def create_session(self, agent_id: str) -> dict[str, Any]:
+    async def create_session(self, agent_id: str) -> dict[str, Any]:
         self._draft(agent_id)
         session_id = f"ses_{uuid4().hex}"
-        now = datetime.now(timezone.utc).isoformat()
-        return {
-            "Session": {
-                "SessionId": session_id,
-                "AgentId": agent_id,
-                "UserId": "local-user",
-                "Title": "新会话",
-                "CreatedAt": now,
-                "UpdatedAt": now,
-            }
-        }
+        session = await self.studio.session_service.create_session(
+            agent_id,
+            "local-user",
+            session_id,
+        )
+        return {"Session": self._session_metadata_record(session)}
 
-    def get_session(self, session_id: str) -> dict[str, Any]:
+    async def get_session(self, session_id: str) -> dict[str, Any]:
         runs = self.studio.event_store.list_runs(session_id=session_id)
-        if not runs:
+        if runs:
+            return {"Session": self._session_record(runs)}
+        session = await self.studio.session_service.get_session_metadata(session_id)
+        if session is None:
             raise not_found("session", session_id)
-        return {"Session": self._session_record(runs)}
+        return {"Session": self._session_metadata_record(session)}
 
-    def delete_session(self, session_id: str) -> dict[str, Any]:
-        self.studio.event_store.delete_session(session_id)
+    async def delete_session(self, session_id: str) -> dict[str, Any]:
+        await self.studio.delete_session(session_id)
         return {}
 
     async def list_messages(
@@ -811,15 +810,49 @@ class StudioSharedWebBridge:
                 return media_type
         return fallback
 
-    def _sessions(self, agent_id: str) -> list[dict[str, Any]]:
+    async def _sessions(self, agent_id: str) -> list[dict[str, Any]]:
+        persisted = await self.studio.session_service.list_session_metadata(
+            agent_id=agent_id,
+            user_id="local-user",
+        )
+        records = {
+            session.id: self._session_metadata_record(session)
+            for session in persisted
+        }
         grouped: dict[str, list[RunRecord]] = {}
         for run in self.studio.event_store.list_runs():
             if run.agent_id != agent_id:
                 continue
             grouped.setdefault(run.session_id, []).append(run)
-        records = [self._session_record(runs) for runs in grouped.values()]
-        records.sort(key=lambda item: item["UpdatedAt"], reverse=True)
-        return records
+        for session_id, runs in grouped.items():
+            records[session_id] = self._session_record(runs)
+        ordered = list(records.values())
+        ordered.sort(key=lambda item: item["UpdatedAt"], reverse=True)
+        return ordered
+
+    def _session_metadata_record(self, session: Session) -> dict[str, Any]:
+        title = session.title
+        if not title and session.first_prompt:
+            title = self._short_title(session.first_prompt)
+        return {
+            "SessionId": session.id,
+            "AgentId": session.agent_id,
+            "UserId": session.user_id or "local-user",
+            "Title": title or "新会话",
+            "FirstPrompt": session.first_prompt,
+            "LastPrompt": session.last_prompt,
+            "CreatedAt": self._timestamp(session.created_at),
+            "UpdatedAt": self._timestamp(session.updated_at),
+            "ActiveRunStatus": "",
+            "ActiveInvocationId": "",
+            "TokenUsage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "turns": 0,
+                "last_response_id": "",
+            },
+        }
 
     def _session_record(self, runs: list[RunRecord]) -> dict[str, Any]:
         ordered = sorted(
@@ -1116,8 +1149,12 @@ class StudioSharedWebBridge:
         return text if len(text) <= limit else f"{text[:limit]}..."
 
     @staticmethod
-    def _timestamp(value: datetime | None) -> str:
-        return (value or datetime.now(timezone.utc)).isoformat()
+    def _timestamp(value: datetime | float | int | None) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, (float, int)):
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+        return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
     def _sse(event: str, payload: dict[str, Any]) -> str:

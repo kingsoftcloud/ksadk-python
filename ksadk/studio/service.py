@@ -904,7 +904,8 @@ class StudioService:
         from ksadk.studio.errors import not_found
 
         runs = self.event_store.list_runs(session_id=session_id)
-        if not runs:
+        session = await self.session_service.get_session_metadata(session_id)
+        if not runs and session is None:
             raise not_found("session", session_id)
         if any(run.status == RunStatus.RUNNING for run in runs):
             raise StudioError(

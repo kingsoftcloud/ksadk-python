@@ -701,19 +701,19 @@ def create_studio_app(
                     shared_web.resolve_agent_id(requested_agent_id or None)
                 )
             elif action == "ListSessions":
-                data = shared_web.list_sessions(
+                data = await shared_web.list_sessions(
                     shared_web.resolve_agent_id(requested_agent_id or None),
                     page=int(payload.get("Page") or 1),
                     page_size=int(payload.get("PageSize") or 30),
                 )
             elif action == "CreateSession":
-                data = shared_web.create_session(
+                data = await shared_web.create_session(
                     shared_web.resolve_agent_id(requested_agent_id or None)
                 )
             elif action == "GetSession":
-                data = shared_web.get_session(str(payload.get("SessionId") or ""))
+                data = await shared_web.get_session(str(payload.get("SessionId") or ""))
             elif action == "DeleteSession":
-                data = shared_web.delete_session(str(payload.get("SessionId") or ""))
+                data = await shared_web.delete_session(str(payload.get("SessionId") or ""))
             elif action == "ListSessionMessages":
                 data = await shared_web.list_messages(
                     str(payload.get("SessionId") or ""),

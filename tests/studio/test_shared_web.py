@@ -13,7 +13,6 @@ from ksadk.events.canonical import (
     OutputRef,
     RunCompleted,
     RunStarted,
-    RuntimeEvent,
     SourceRef,
 )
 from ksadk.events.content import TextContent
@@ -206,6 +205,53 @@ def test_react_chat_has_one_root_entry_and_no_standalone_chat(tmp_path: Path):
         assert "/chat/" not in route_paths
         assert system["features"]["reactChat"] is True
         assert "sharedChat" not in system["features"]
+
+
+def test_shared_chat_empty_session_survives_session_reload(tmp_path: Path):
+    app = create_studio_app(tmp_path, security_enabled=False)
+
+    with TestClient(app) as client:
+        _create_agent(client)
+        created_response = client.post(
+            "/agentengine/api/v1/CreateSession",
+            json={"AgentId": "demo-agent"},
+        )
+        assert created_response.status_code == 200
+        created = created_response.json()["Data"]["Session"]
+
+    reloaded_app = create_studio_app(tmp_path, security_enabled=False)
+    with TestClient(reloaded_app) as client:
+        sessions = client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "Page": 1, "PageSize": 30},
+        ).json()["Data"]
+        assert sessions["Total"] == 1
+        assert sessions["Sessions"][0]["SessionId"] == created["SessionId"]
+        assert sessions["Sessions"][0]["Title"] == "新会话"
+
+        restored = client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": created["SessionId"]},
+        )
+        assert restored.status_code == 200
+        assert restored.json()["Data"]["Session"]["SessionId"] == created["SessionId"]
+
+        messages = client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={"SessionId": created["SessionId"], "Limit": 50},
+        ).json()["Data"]
+        assert messages["Messages"] == []
+
+        deleted = client.post(
+            "/agentengine/api/v1/DeleteSession",
+            json={"SessionId": created["SessionId"]},
+        )
+        assert deleted.status_code == 200
+        sessions_after_delete = client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent"},
+        ).json()["Data"]
+        assert sessions_after_delete["Total"] == 0
 
 
 def test_shared_chat_resolves_bound_model_profile(tmp_path: Path):
