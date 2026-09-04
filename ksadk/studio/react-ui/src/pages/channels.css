@@ -118,7 +118,7 @@
 .channels-page__create-form {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
 
 .channels-page__create-form .studio-form-field {
@@ -128,15 +128,30 @@
 .channels-page__form-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .channels-page__form-section-title {
-  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
   font-size: var(--font-size-control);
-  font-weight: var(--font-weight-medium);
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
+  font-weight: var(--font-weight-semibold);
+}
+
+.channels-page__form-section-title::before {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  content: attr(data-step);
 }
 
 .channels-page__form-row {
@@ -154,16 +169,15 @@
 .channels-page__platform-card {
   position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 16px 12px;
+  gap: 10px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  text-align: left;
 }
 
 .channels-page__platform-card:hover {
@@ -172,16 +186,17 @@
 
 .channels-page__platform-card.selected {
   border-color: var(--accent-strong);
-  background: var(--surface-subtle);
+  background: var(--accent-soft);
 }
 
 .channels-page__platform-card-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
   background: var(--surface-subtle);
   color: var(--text-secondary);
   transition: background 0.15s ease, color 0.15s ease;
@@ -190,6 +205,13 @@
 .channels-page__platform-card.selected .channels-page__platform-card-icon {
   background: var(--accent-strong);
   color: #fff;
+}
+
+.channels-page__platform-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .channels-page__platform-card-name {
@@ -202,12 +224,16 @@
   font-size: var(--font-size-caption);
   color: var(--text-tertiary);
   line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .channels-page__platform-card-check {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
   color: var(--accent-strong);
 }
 
@@ -266,14 +292,13 @@
 
 .channel-toggle-row {
   box-sizing: border-box;
-  min-height: 42px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--surface-subtle);
 }
 
 .channel-toggle-row input {
@@ -301,7 +326,7 @@
 }
 
 .channels-page__advanced-toggle {
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .channels-page__advanced-header {
@@ -309,14 +334,15 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 10px 0;
-  border: 0;
-  border-top: 1px solid var(--border);
-  background: transparent;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
   color: var(--text-secondary);
   font-size: var(--font-size-control);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .channels-page__advanced-header:hover {

@@ -1403,7 +1403,7 @@ async function submitChannel(event: React.FormEvent) {
        >
           <form id="channel-create-form" className="channels-page__create-form" onSubmit={submitChannel}>
             <div className="channels-page__form-section">
-              <div className="channels-page__form-section-title">选择平台</div>
+              <div className="channels-page__form-section-title" data-step="1">选择平台</div>
               <div className="channels-page__platform-cards">
                 {PLATFORM_LIST.map(({ value, label, desc, Icon }) => (
                   <button
@@ -1413,15 +1413,17 @@ async function submitChannel(event: React.FormEvent) {
                     onClick={() => setForm(prev => ({ ...prev, Channel: value }))}
                   >
                     <span className="channels-page__platform-card-icon"><Icon size={20} /></span>
-                    <span className="channels-page__platform-card-name">{label}</span>
-                    <span className="channels-page__platform-card-desc">{desc}</span>
+                    <span className="channels-page__platform-card-text">
+                      <span className="channels-page__platform-card-name">{label}</span>
+                      <span className="channels-page__platform-card-desc">{desc}</span>
+                    </span>
                     {form.Channel === value && <Check size={14} className="channels-page__platform-card-check" />}
                   </button>
                 ))}
               </div>
             </div>
             <div className="channels-page__form-section">
-              <div className="channels-page__form-section-title">接入配置</div>
+              <div className="channels-page__form-section-title" data-step="2">接入配置</div>
               <FormField label="渠道账号 ID" htmlFor="channel-account-id" requirement="required">
                 <input
                   id="channel-account-id"
@@ -1452,7 +1454,7 @@ async function submitChannel(event: React.FormEvent) {
               </div>
             </div>
             <div className="channels-page__form-section">
-              <div className="channels-page__form-section-title">Agent 绑定</div>
+              <div className="channels-page__form-section-title" data-step="3">Agent 绑定</div>
               <FormField label="Agent" htmlFor="channel-agent" requirement="required">
                 <StudioSelect
                   id="channel-agent"
