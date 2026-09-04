@@ -9,6 +9,7 @@ stream or transcript is created here.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -96,9 +97,7 @@ class CodexTurnRequest:
         raw_messages = value.get("messages")
         if raw_messages is None and value.get("input") is not None:
             raw_messages = ({"role": "user", "content": value.get("input")},)
-        if not isinstance(raw_messages, Sequence) or isinstance(
-            raw_messages, (str, bytes)
-        ):
+        if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, (str, bytes)):
             raise PluginHostError("codex_input_invalid", "Codex input requires messages")
         messages: list[Mapping[str, Any]] = []
         for index, message in enumerate(raw_messages):
@@ -114,29 +113,19 @@ class CodexTurnRequest:
                 )
             messages.append(dict(message))
         if not messages or messages[-1].get("role") != "user":
-            raise PluginHostError(
-                "codex_input_invalid", "Codex turn must end with a user message"
-            )
+            raise PluginHostError("codex_input_invalid", "Codex turn must end with a user message")
         metadata = value.get("request_metadata") or value.get("requestMetadata")
         if metadata is not None and not isinstance(metadata, Mapping):
-            raise PluginHostError(
-                "codex_input_invalid", "request_metadata must be an object"
-            )
-        session_id = str(
-            value.get("session_id") or value.get("sessionId") or ""
-        ).strip()
-        invocation_id = str(
-            value.get("invocation_id") or value.get("invocationId") or ""
-        ).strip()
+            raise PluginHostError("codex_input_invalid", "request_metadata must be an object")
+        session_id = str(value.get("session_id") or value.get("sessionId") or "").strip()
+        invocation_id = str(value.get("invocation_id") or value.get("invocationId") or "").strip()
         if len(invocation_id) > 256:
             raise PluginHostError(
                 "codex_input_invalid", "Codex invocation_id exceeds 256 characters"
             )
         model = str(value.get("model") or "").strip()
         if len(model) > 256:
-            raise PluginHostError(
-                "codex_input_invalid", "Codex model exceeds 256 characters"
-            )
+            raise PluginHostError("codex_input_invalid", "Codex model exceeds 256 characters")
         collaboration_mode = (
             str(value.get("collaboration_mode") or value.get("collaborationMode") or "")
             .strip()
@@ -234,9 +223,7 @@ class CodexAgentProviderRuntime:
         capabilities: PluginExecutionContext,
     ) -> "CodexAgentActivation":
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "codex_provider_unavailable", "Codex provider is not ready"
-            )
+            raise PluginHostError("codex_provider_unavailable", "Codex provider is not ready")
         _reject_external_execution(bundle, capabilities)
         config = _resolve_bundle_config(
             bundle,
@@ -330,9 +317,7 @@ class CodexAgentActivation:
 
     async def execute(self, request: Any) -> CodexTurnResult:
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "codex_activation_unavailable", "Codex activation is not ready"
-            )
+            raise PluginHostError("codex_activation_unavailable", "Codex activation is not ready")
         turn = CodexTurnRequest.parse(request)
         selected_model = turn.model or self._config.model
         if selected_model not in self._config.allowed_models:
@@ -379,9 +364,7 @@ class CodexAgentActivation:
         """
 
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "codex_activation_unavailable", "Codex activation is not ready"
-            )
+            raise PluginHostError("codex_activation_unavailable", "Codex activation is not ready")
         adapter = self._executor.create_adapter(self._launch_context)
         self._kernel_adapters.append(adapter)
         return adapter
@@ -563,14 +546,10 @@ def _resolve_allowed_models(
     instead of silently widening run-level model selection.
     """
 
-    if not any(
-        entry.path == "runtime-lock.json" for entry in bundle.manifest.files
-    ):
+    if not any(entry.path == "runtime-lock.json" for entry in bundle.manifest.files):
         return (default_model,)
     try:
-        payload = json.loads(
-            (bundle.root / "runtime-lock.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads((bundle.root / "runtime-lock.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise PluginHostError(
             "codex_bundle_model_inventory_invalid",
@@ -587,9 +566,7 @@ def _resolve_allowed_models(
             "codex_bundle_model_inventory_invalid",
             "Bundle runtime-lock.json must declare models as a list",
         )
-    models = tuple(
-        dict.fromkeys(str(item).strip() for item in raw_models if str(item).strip())
-    )
+    models = tuple(dict.fromkeys(str(item).strip() for item in raw_models if str(item).strip()))
     if not models or default_model not in models:
         raise PluginHostError(
             "codex_bundle_model_inventory_invalid",
@@ -624,9 +601,7 @@ def _resolve_skills(root: Path, value: Any) -> list[dict[str, str]]:
                 "codex_skill_invalid", f"Bundle Skill {name!r} escapes the Bundle root"
             ) from error
         if not (path / "SKILL.md").is_file():
-            raise PluginHostError(
-                "codex_skill_missing", f"Bundle Skill {name!r} has no SKILL.md"
-            )
+            raise PluginHostError("codex_skill_missing", f"Bundle Skill {name!r} has no SKILL.md")
         if name in seen:
             raise PluginHostError("codex_skill_invalid", f"duplicate Bundle Skill {name!r}")
         seen.add(name)
@@ -641,12 +616,12 @@ def _resolve_mcp(
     value: Any,
     *,
     credential_resolver: Any,
-) -> tuple[list[dict[str, str]], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if value is None:
         return [], {}
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise PluginHostError("codex_mcp_invalid", "Bundle MCP servers must be a list")
-    servers: list[dict[str, str]] = []
+    servers: list[dict[str, Any]] = []
     env: dict[str, str] = {}
     seen: set[str] = set()
     for index, item in enumerate(value):
@@ -659,26 +634,62 @@ def _resolve_mcp(
         url = str(item.get("endpointUrl") or item.get("endpoint_url") or "").strip()
         if not name or name in seen:
             raise PluginHostError("codex_mcp_invalid", "Bundle MCP names must be unique")
-        if transport not in {"http", "sse"} or not url:
-            raise PluginHostError(
-                "codex_mcp_transport_unsupported",
-                f"Codex Bundle MCP {name!r} requires an http/sse endpoint",
-            )
         env_refs = item.get("envRefs") or item.get("env_refs") or {}
         if not isinstance(env_refs, Mapping):
             raise PluginHostError(
                 "codex_mcp_invalid", f"Bundle MCP {name!r} envRefs must be an object"
             )
-        if len(env_refs) > 1:
+        if transport in {"http", "sse"} and len(env_refs) > 1:
             raise PluginHostError(
                 "codex_mcp_credentials_unsupported",
                 f"Codex HTTP MCP {name!r} accepts at most one bearer credential",
             )
-        server = {"name": name, "url": url}
+        if transport == "stdio":
+            command = str(item.get("command") or "").strip()
+            raw_args = item.get("args") or []
+            if (
+                not command
+                or not isinstance(raw_args, Sequence)
+                or isinstance(raw_args, (str, bytes))
+                or len(raw_args) > 128
+                or any(
+                    not isinstance(argument, str) or len(argument) > 4096 or "\x00" in argument
+                    for argument in raw_args
+                )
+            ):
+                raise PluginHostError(
+                    "codex_mcp_invalid",
+                    f"Codex Bundle stdio MCP {name!r} has an invalid command or args",
+                )
+            executable = Path(command).name.casefold()
+            if executable in {"sh", "bash", "zsh", "cmd", "cmd.exe", "powershell", "pwsh"}:
+                raise PluginHostError(
+                    "codex_mcp_command_denied",
+                    f"Codex Bundle stdio MCP {name!r} cannot launch a shell",
+                )
+            if any(argument in {"-c", "-e", "--eval"} for argument in raw_args):
+                raise PluginHostError(
+                    "codex_mcp_command_denied",
+                    f"Codex Bundle stdio MCP {name!r} cannot use inline evaluation",
+                )
+            server: dict[str, Any] = {
+                "name": name,
+                "transport": "stdio",
+                "command": command,
+                "args": list(raw_args),
+            }
+        elif transport in {"http", "sse"} and url:
+            server = {"name": name, "transport": transport, "url": url}
+        else:
+            raise PluginHostError(
+                "codex_mcp_transport_unsupported",
+                f"Codex Bundle MCP {name!r} requires stdio or an http/sse endpoint",
+            )
+        forwarded_env: dict[str, str] = {}
         for env_name, reference in env_refs.items():
             env_key = str(env_name).strip()
             ref = str(reference).strip()
-            if not env_key or not ref.startswith(
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_key) or not ref.startswith(
                 ("env://", "secret://", "credential://", "vault://")
             ):
                 raise PluginHostError(
@@ -707,7 +718,12 @@ def _resolve_mcp(
                     f"Bundle MCP {name!r} credential is empty",
                 )
             env[env_key] = str(value)
-            server["env_key"] = env_key
+            if transport == "stdio":
+                forwarded_env[env_key] = ref
+            else:
+                server["env_key"] = env_key
+        if forwarded_env:
+            server["env_refs"] = forwarded_env
         servers.append(server)
         seen.add(name)
     return servers, env

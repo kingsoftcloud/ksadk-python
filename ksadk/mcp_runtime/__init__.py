@@ -3,11 +3,12 @@ from __future__ import annotations
 import inspect
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Coroutine, Sequence, cast
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import Field
 
 from ksadk.compat.adk_compat import (
     CheckableMcpHttpClientFactory,
@@ -21,8 +22,8 @@ MCP_TOOLSET_KEY_ATTR = "_ksadk_mcp_toolset_key"
 @dataclass(frozen=True)
 class MCPServerConfig:
     name: str
-    url: str
-    api_key: str | None = None
+    url: str = field(repr=False)
+    api_key: str | None = field(default=None, repr=False)
     tool_filter: tuple[str, ...] = ()
     tool_name_prefix: str | None = None
 
@@ -68,7 +69,14 @@ def build_connection_params(
     kwargs["httpx_client_factory"] = httpx_client_factory or _default_httpx_client_factory(
         config.url
     )
-    return StreamableHTTPConnectionParams(**kwargs)
+    return _RedactedStreamableHTTPConnectionParams(**kwargs)
+
+
+class _RedactedStreamableHTTPConnectionParams(StreamableHTTPConnectionParams):
+    """Keep process-scoped MCP connection material out of debug reprs."""
+
+    url: str = Field(repr=False)
+    headers: dict[str, Any] | None = Field(default=None, repr=False)
 
 
 def build_mcp_toolset(

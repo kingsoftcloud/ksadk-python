@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
 import tempfile
+import zipfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,9 +112,7 @@ class CloudDeploymentGateway(Protocol):
         self, agent_id: str, *, version_id: str
     ) -> dict[str, Any]: ...
 
-    async def get_account_agent_dashboard_access(
-        self, agent_id: str
-    ) -> dict[str, str | None]: ...
+    async def get_account_agent_dashboard_access(self, agent_id: str) -> dict[str, str | None]: ...
 
     async def delete_account_agent(self, agent_id: str) -> bool: ...
 
@@ -226,9 +226,7 @@ class UnavailableCloudGateway:
             status_code=501,
         )
 
-    async def get_account_agent_dashboard_access(
-        self, _agent_id: str
-    ) -> dict[str, str | None]:
+    async def get_account_agent_dashboard_access(self, _agent_id: str) -> dict[str, str | None]:
         raise StudioError(
             "CLOUD_DASHBOARD_UNAVAILABLE",
             "当前未配置可用的云端签名账号，不能打开云端 Agent UI",
@@ -383,9 +381,7 @@ class InMemoryCloudGateway:
             "noop": False,
         }
 
-    async def get_account_agent_dashboard_access(
-        self, agent_id: str
-    ) -> dict[str, str | None]:
+    async def get_account_agent_dashboard_access(self, agent_id: str) -> dict[str, str | None]:
         return {
             "access_url": f"memory://dashboard/{agent_id}",
             "agent_id": agent_id,
@@ -741,9 +737,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         return False
 
     @classmethod
-    def _cloud_chat_route(
-        cls, *, runtime_type: str, capabilities: Any
-    ) -> tuple[str, str]:
+    def _cloud_chat_route(cls, *, runtime_type: str, capabilities: Any) -> tuple[str, str]:
         if cls._session_event_chat_declared(capabilities):
             return (
                 "studio-session-events",
@@ -767,9 +761,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             else {}
         )
         deployment = (
-            payload.get("deployment")
-            if isinstance(payload.get("deployment"), dict)
-            else {}
+            payload.get("deployment") if isinstance(payload.get("deployment"), dict) else {}
         )
         runtime_config = (
             deployment.get("runtime_config")
@@ -801,21 +793,24 @@ class DirectAgentEngineCloudDeploymentGateway:
             return None
 
         agent_id = str(
-            first("agent_id", "agentId", "agent_runtime_id", "agentRuntimeId", "id")
-            or fallback_id
+            first("agent_id", "agentId", "agent_runtime_id", "agentRuntimeId", "id") or fallback_id
         ).strip()
-        runtime_type = str(
-            first(
-                "framework",
-                "runtime_kind",
-                "runtimeKind",
-                "runtime_type",
-                "runtimeType",
-                "runtime_name",
-                "runtimeName",
+        runtime_type = (
+            str(
+                first(
+                    "framework",
+                    "runtime_kind",
+                    "runtimeKind",
+                    "runtime_type",
+                    "runtimeType",
+                    "runtime_name",
+                    "runtimeName",
+                )
+                or ""
             )
-            or ""
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         capabilities = first("capabilities", "Capabilities")
         chat_transport, chat_routing_reason = (
             DirectAgentEngineCloudDeploymentGateway._cloud_chat_route(
@@ -824,11 +819,11 @@ class DirectAgentEngineCloudDeploymentGateway:
             )
         )
         version_id = str(first("version_id", "versionId", "revision") or "").strip()
-        manifest_sha256 = str(
-            runtime_config.get("manifest_sha256")
-            or runtime_config.get("manifestSha256")
-            or ""
-        ).strip().lower()
+        manifest_sha256 = (
+            str(runtime_config.get("manifest_sha256") or runtime_config.get("manifestSha256") or "")
+            .strip()
+            .lower()
+        )
         if not version_id and len(manifest_sha256) == 64:
             try:
                 bytes.fromhex(manifest_sha256)
@@ -860,7 +855,8 @@ class DirectAgentEngineCloudDeploymentGateway:
                 or quick_access.get("privateEndpoint")
                 or lifecycle_first("endpoint")
                 or ""
-            ).strip() or None,
+            ).strip()
+            or None,
             "framework": runtime_type or None,
             "runtimeType": runtime_type or None,
             "capabilities": capabilities if isinstance(capabilities, dict) else None,
@@ -878,16 +874,8 @@ class DirectAgentEngineCloudDeploymentGateway:
     async def list_account_agents(self, *, page: int, size: int) -> dict[str, Any]:
         payload = await self.client.list_agents(page=page, page_size=size)
         raw_items = payload.get("agents") or payload.get("Agents") or []
-        items = [
-            self._account_agent_view(item)
-            for item in raw_items
-            if isinstance(item, dict)
-        ]
-        items = [
-            item
-            for item in items
-            if item["agentId"] and item["status"] != "DELETED"
-        ]
+        items = [self._account_agent_view(item) for item in raw_items if isinstance(item, dict)]
+        items = [item for item in items if item["agentId"] and item["status"] != "DELETED"]
         return {
             "items": items,
             "total": len(items),
@@ -912,9 +900,7 @@ class DirectAgentEngineCloudDeploymentGateway:
 
         return {
             "versionId": str(first("version_id", "VersionId", default="") or "").strip(),
-            "versionName": str(
-                first("version_name", "VersionName", default="") or ""
-            ).strip(),
+            "versionName": str(first("version_name", "VersionName", default="") or "").strip(),
             "tag": str(first("tag", "Tag", default="") or "").strip(),
             "status": str(first("status", "Status", default="") or "").strip(),
             "trafficPercentage": int(
@@ -929,8 +915,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 )
                 or ""
             ).strip(),
-            "createdAt": str(first("created_at", "CreatedAt", default="") or "").strip()
-            or None,
+            "createdAt": str(first("created_at", "CreatedAt", default="") or "").strip() or None,
             "createdBy": str(first("created_by", "CreatedBy", default="") or "").strip(),
         }
 
@@ -958,9 +943,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             ) from exc
         raw_items = payload.get("versions") or payload.get("Versions") or []
         items = [
-            self._account_agent_version_view(item)
-            for item in raw_items
-            if isinstance(item, dict)
+            self._account_agent_version_view(item) for item in raw_items if isinstance(item, dict)
         ]
         items = [item for item in items if item["versionId"]]
         current = next(
@@ -973,11 +956,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         )
         return {
             "items": items,
-            "total": int(
-                payload.get("total_count")
-                or payload.get("TotalCount")
-                or len(items)
-            ),
+            "total": int(payload.get("total_count") or payload.get("TotalCount") or len(items)),
             "currentVersionId": current,
         }
 
@@ -1016,16 +995,12 @@ class DirectAgentEngineCloudDeploymentGateway:
             ) from exc
         return {
             "agentId": str(payload.get("agent_id") or normalized_id),
-            "targetVersionId": str(
-                payload.get("target_version_id") or normalized_version_id
-            ),
+            "targetVersionId": str(payload.get("target_version_id") or normalized_version_id),
             "status": str(payload.get("status") or "UPDATING"),
             "noop": bool(payload.get("noop")),
         }
 
-    async def get_account_agent_dashboard_access(
-        self, agent_id: str
-    ) -> dict[str, str | None]:
+    async def get_account_agent_dashboard_access(self, agent_id: str) -> dict[str, str | None]:
         detail = await self.get_account_agent(agent_id)
         path = (
             _NATIVE_DASHBOARD_UI_PATH
@@ -1067,9 +1042,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             )
         return True
 
-    def _chat_agent_id(
-        self, deployment: DeploymentRecord | AccountCloudAgentReference
-    ) -> str:
+    def _chat_agent_id(self, deployment: DeploymentRecord | AccountCloudAgentReference) -> str:
         """Bind local cloud chat to an immutable Studio deployment receipt.
 
         In particular, the browser cannot provide an arbitrary AgentId and
@@ -1242,14 +1215,10 @@ class DirectAgentEngineCloudDeploymentGateway:
                 },
             ) from exc
 
-    async def list_deployment_chat_models(
-        self, deployment: DeploymentRecord
-    ) -> dict[str, Any]:
+    async def list_deployment_chat_models(self, deployment: DeploymentRecord) -> dict[str, Any]:
         """Read the Server-authoritative model catalog for this Agent."""
 
-        return await self.client.list_agent_models(
-            agent_id=self._chat_agent_id(deployment)
-        )
+        return await self.client.list_agent_models(agent_id=self._chat_agent_id(deployment))
 
     async def submit_deployment_chat_interaction(
         self,
@@ -1599,6 +1568,7 @@ class CloudDeploymentService:
             )
         archive = self.workspace.resolve(build.artifact_path, must_exist=True)
         bundle = archive.read_bytes()
+        self._reject_local_only_materializers(bundle, artifact_name=archive.name)
         checked_bundle = (
             preflight_hosted_kernel_bundle(bundle)
             if getattr(self.gateway, "requires_hosted_kernel_bundle_preflight", False)
@@ -1636,6 +1606,63 @@ class CloudDeploymentService:
         # profile for the concrete framework the deterministic build produced.
         provenance["runtimeType"] = str(manifest.get("runtimeType") or build.runtime_type)
         return build, bundle, provenance
+
+    @staticmethod
+    def _reject_local_only_materializers(
+        bundle_bytes: bytes,
+        *,
+        artifact_name: str,
+    ) -> None:
+        """Check the exact bytes that will be uploaded for local-only materializers."""
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as bundle:
+
+                def load_optional(name: str) -> dict[str, Any]:
+                    try:
+                        info = bundle.getinfo(name)
+                    except KeyError:
+                        return {}
+                    if info.file_size > 8 * 1024 * 1024:
+                        raise ValueError(f"{name} is too large")
+                    payload = json.loads(bundle.read(info).decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError(f"{name} must be an object")
+                    return payload
+
+                composition = load_optional("composition-profile.json")
+                resolved = load_optional("resolved-agent-spec.json")
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            zipfile.BadZipFile,
+            json.JSONDecodeError,
+        ) as error:
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "部署前无法验证 Bundle 的本地运行时依赖",
+                status_code=422,
+                details={"buildArtifact": artifact_name},
+            ) from error
+
+        dynamic_ref = any(
+            isinstance(item, dict)
+            and str(item.get("ref") or "").startswith("plugin://io.ksadk.mcp.dsh-profile@")
+            for item in composition.get("capabilities", [])
+        )
+        resolved_capabilities = resolved.get("capabilities")
+        dynamic_server = isinstance(resolved_capabilities, dict) and any(
+            isinstance(item, dict) and item.get("materialization") == "dsh-profile"
+            for item in resolved_capabilities.get("mcpServers", [])
+        )
+        if dynamic_ref or dynamic_server:
+            raise StudioError(
+                "DSH_MCP_DEPLOYMENT_UNSUPPORTED",
+                "DSH Profile MCP 当前只能由本地 Studio 按 activation 物化，尚不能部署到云端",
+                status_code=422,
+                details={"materialization": "dsh-profile"},
+            )
 
     def get(self, deployment_id: str) -> DeploymentRecord:
         path = self.workspace.resolve(Path(".agentkit/deployments") / f"{deployment_id}.json")
@@ -1751,9 +1778,7 @@ class CloudDeploymentService:
             )
         await deleter(deployment)
 
-        deleted_receipts = self._delete_receipts_for_agent(
-            agent_id, required=deployment
-        )
+        deleted_receipts = self._delete_receipts_for_agent(agent_id, required=deployment)
         return {"agentId": agent_id, "deletedReceiptIds": deleted_receipts}
 
     def _delete_receipts_for_agent(
@@ -1818,9 +1843,7 @@ class CloudDeploymentService:
             )
         return await rollback(agent_id, version_id=version_id)
 
-    async def account_agent_dashboard_access(
-        self, agent_id: str
-    ) -> dict[str, str | None]:
+    async def account_agent_dashboard_access(self, agent_id: str) -> dict[str, str | None]:
         reader = getattr(self.gateway, "get_account_agent_dashboard_access", None)
         if reader is None:
             raise StudioError(
@@ -1844,9 +1867,7 @@ class CloudDeploymentService:
             "deletedReceiptIds": self._delete_receipts_for_agent(agent_id),
         }
 
-    async def _chat_target(
-        self, target_id: str
-    ) -> DeploymentRecord | AccountCloudAgentReference:
+    async def _chat_target(self, target_id: str) -> DeploymentRecord | AccountCloudAgentReference:
         if not target_id.startswith("account:"):
             return self.get(target_id)
         agent_id = target_id.removeprefix("account:").strip()

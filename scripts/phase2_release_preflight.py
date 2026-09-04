@@ -55,6 +55,7 @@ CREDENTIAL_FREE_NATIVE_TESTS = (
     "tests/e2e/test_codex_plugin_bridge_e2e.py",
     "tests/e2e/test_codex_provider_app_server_e2e.py",
     "tests/e2e/test_codex_subagent_provider_e2e.py",
+    "tests/studio/test_dsh_agent_binding.py",
 )
 MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
@@ -62,6 +63,7 @@ MANAGED_DSH_TOOLCHAIN_TESTS = (
 )
 BROWSER_GATES = (
     "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
+    "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
@@ -261,11 +263,7 @@ def validate_distribution_archives(
             for prefix in REQUIRED_STATIC_PREFIXES
             if not any(name.startswith(prefix) for name in names)
         ]
-        leaked = sorted(
-            name
-            for name in names
-            if _is_forbidden_release_member(name)
-        )
+        leaked = sorted(name for name in names if _is_forbidden_release_member(name))
         if missing_files or missing_prefixes or leaked:
             details = []
             if missing_files:
@@ -302,9 +300,7 @@ def validate_generated_static_tracking_policy(
     except subprocess.CalledProcessError:
         if (root / "export-manifest.json").is_file():
             return
-        raise Phase2PreflightError(
-            "cannot verify generated static tracking without Git metadata"
-        )
+        raise Phase2PreflightError("cannot verify generated static tracking without Git metadata")
     tracked = [line for line in completed.stdout.splitlines() if line.strip()]
     if public_export:
         tracked_set = set(tracked)
@@ -318,11 +314,7 @@ def validate_generated_static_tracking_policy(
             for prefix in ("ksadk/server/static/assets/", "ksadk/studio/static/assets/")
             if not any(path.startswith(prefix) for path in tracked)
         ]
-        leaked_sources = sorted(
-            path
-            for path in tracked
-            if path.endswith((".map", ".ts", ".tsx"))
-        )
+        leaked_sources = sorted(path for path in tracked if path.endswith((".map", ".ts", ".tsx")))
         if missing_files or missing_asset_trees or leaked_sources:
             details = []
             if missing_files:
@@ -347,10 +339,9 @@ def is_public_export(root: Path = ROOT) -> bool:
     checkouts do the inverse, so both the CLI gate and its regression tests
     must derive the policy from the same repository shape.
     """
-    return (
-        (root / "export-manifest.json").is_file()
-        and not (root / "ksadk/studio/react-ui/package.json").is_file()
-    )
+    return (root / "export-manifest.json").is_file() and not (
+        root / "ksadk/studio/react-ui/package.json"
+    ).is_file()
 
 
 def _run(

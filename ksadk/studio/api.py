@@ -78,7 +78,11 @@ from ksadk.studio.api_helpers import (
     sse as _sse,
 )
 from ksadk.studio.api_memory_routes import register_memory_routes
-from ksadk.studio.api_plugin_routes import register_plugin_routes
+from ksadk.studio.api_plugin_routes import (
+    DSH_UI_SANDBOX_BUNDLE_PATH,
+    DSH_UI_SANDBOX_FRAME_PATH,
+    register_plugin_routes,
+)
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentAppearance,
@@ -96,6 +100,10 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
     "/api/v1/system/health",
     "/api/v1/system/session",
+}
+_PUBLIC_DSH_SANDBOX_GET_PATHS = {
+    DSH_UI_SANDBOX_BUNDLE_PATH,
+    DSH_UI_SANDBOX_FRAME_PATH,
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -144,9 +152,7 @@ _CONTENT_WIRE_ALIASES = {
 def _normalize_cloud_runtime_event_wire(value: dict[str, Any]) -> dict[str, Any]:
     """Normalize only historic REST casing at the RuntimeEvent boundary."""
 
-    normalized = {
-        _RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()
-    }
+    normalized = {_RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()}
     source = normalized.get("source")
     if isinstance(source, dict):
         normalized["source"] = {
@@ -198,9 +204,7 @@ def _cloud_event_conversation_item(
     if raw_event is None:
         return None
     try:
-        runtime_event = parse_runtime_event_lenient(
-            _normalize_cloud_runtime_event_wire(raw_event)
-        )
+        runtime_event = parse_runtime_event_lenient(_normalize_cloud_runtime_event_wire(raw_event))
         item = project_conversation_item(
             runtime_event,  # type: ignore[arg-type]
             session_id=session_id,
@@ -342,7 +346,15 @@ def create_studio_app(
                 request,
             )
         origin = request.headers.get("Origin")
-        if origin and not is_local_origin(origin, local_hosts=_LOCAL_HOSTS):
+        public_dsh_sandbox_get = (
+            request.method == "GET" and request.url.path in _PUBLIC_DSH_SANDBOX_GET_PATHS
+        )
+        null_origin_sandbox_request = public_dsh_sandbox_get and origin == "null"
+        if (
+            origin
+            and not null_origin_sandbox_request
+            and not is_local_origin(origin, local_hosts=_LOCAL_HOSTS)
+        ):
             return _error_response(
                 StudioError(
                     "LOCAL_ORIGIN_FORBIDDEN",
@@ -373,7 +385,11 @@ def create_studio_app(
             "/v1/responses/"
         )
         if security_enabled and (
-            (studio_api and request.url.path not in _PUBLIC_API_PATHS)
+            (
+                studio_api
+                and request.url.path not in _PUBLIC_API_PATHS
+                and not public_dsh_sandbox_get
+            )
             or shared_web_api
             or responses_api
         ):
@@ -402,13 +418,18 @@ def create_studio_app(
                     )
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
-        response.headers["Cache-Control"] = (
-            "no-store"
-            if request.url.path.startswith(("/api/", "/v1/"))
-            else response.headers.get("Cache-Control", "no-cache")
-        )
+        if not (request.method == "GET" and request.url.path == DSH_UI_SANDBOX_BUNDLE_PATH):
+            response.headers["Cache-Control"] = (
+                "no-store"
+                if request.url.path.startswith(("/api/", "/v1/"))
+                else response.headers.get("Cache-Control", "no-cache")
+            )
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
+        if request.method == "GET" and request.url.path == DSH_UI_SANDBOX_FRAME_PATH:
+            if "X-Frame-Options" in response.headers:
+                del response.headers["X-Frame-Options"]
+        else:
+            response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 

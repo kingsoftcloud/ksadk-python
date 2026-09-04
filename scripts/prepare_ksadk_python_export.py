@@ -134,10 +134,17 @@ PUBLIC_TEST_FILES = {
     "tests/e2e/test_codex_subagent_provider_e2e.py",
     "tests/e2e/fixtures/codex-marketplace/.agents/plugins/marketplace.json",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/plugin.json",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.mcp.json",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/scripts/fixture_mcp.py",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-audit/SKILL.md",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-check/SKILL.md",
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
     "tests/e2e/chat_completions_stub.py",
     "tests/e2e/codex_app_server_fixture.py",
+    "tests/fixtures/dsh-capability-fake-profile.mjs",
+    "tests/fixtures/dsh-node-tool-plugin/cordis.patch.yml",
+    "tests/fixtures/dsh-node-tool-plugin/index.mjs",
+    "tests/fixtures/dsh-node-tool-plugin/package.json",
     "tests/fixtures/dsh-node-agent-provider/cordis.patch.yml",
     "tests/fixtures/dsh-node-agent-provider/index.mjs",
     "tests/fixtures/dsh-node-agent-provider/package.json",
@@ -150,7 +157,14 @@ PUBLIC_TEST_FILES = {
     "tests/packaging/test_phase2_release_preflight.py",
     "tests/packaging/test_write_build_provenance.py",
     "tests/plugins/__init__.py",
+    "tests/plugins/test_codex_manifest.py",
+    "tests/plugins/test_codex_plugin_bridge.py",
+    "tests/plugins/test_codex_stdio_mcp.py",
+    "tests/plugins/test_plugin_lock_upstream.py",
     "tests/plugins/test_dsh_node_provider_e2e.py",
+    "tests/plugins/test_dsh_capability_host.py",
+    "tests/plugins/test_dsh_capability_host_e2e.py",
+    "tests/plugins/test_dsh_source_policy.py",
     "tests/plugins/test_codex_provider_vertical.py",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
@@ -163,10 +177,18 @@ PUBLIC_TEST_FILES = {
     "tests/studio/test_style_system.py",
     "tests/studio/__init__.py",
     "tests/studio/test_framework_bundle_integrity.py",
+    "tests/studio/test_codex_plugin_store.py",
+    "tests/studio/test_dsh_capability_service.py",
+    "tests/studio/test_dsh_agent_binding.py",
+    "tests/studio/test_dsh_plugin_api.py",
+    "tests/studio/test_dsh_ui_sandbox.py",
+    "tests/studio/test_native_plugin_binding.py",
     "tests/studio/runtime_adapter_fixtures.py",
     "tests/studio/e2e/conversation_items_browser_e2e.py",
     "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
     "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
+    "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
+    "tests/studio/e2e/fixtures/dsh_ui_sandbox_client.js",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
@@ -179,6 +201,7 @@ PUBLIC_TEST_FILES = {
     "tests/test_tracing_setup_otlp.py",
     "tests/cli/test_cmd_create_codex.py",
     "tests/runners/test_adapter_contract.py",
+    "tests/runners/test_codex_plugin_bootstrap.py",
     "tests/runners/test_codex_runner.py",
 }
 
@@ -271,13 +294,17 @@ def git_files(root: Path) -> list[str]:
 def git_source_provenance(root: Path) -> tuple[str, str]:
     """Return the reviewed source identity carried by a clean export."""
 
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip().lower()
+    commit = (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        .stdout.strip()
+        .lower()
+    )
     status = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=root,

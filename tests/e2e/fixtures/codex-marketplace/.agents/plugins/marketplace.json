@@ -1,7 +1,7 @@
 {
   "name": "ksadk-e2e",
   "interface": {
-    "displayName": "KsADK E2E"
+    "displayName": "KsADK Codex E2E"
   },
   "plugins": [
     {

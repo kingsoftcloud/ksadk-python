@@ -122,6 +122,10 @@ CommandRunner = Callable[[Sequence[str], Path, Mapping[str, str]], _CommandResul
 
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _PACKAGE_NAME = re.compile(r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+$")
+_PINNED_REGISTRY_SOURCE = re.compile(
+    r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+@"
+    r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 _HOST_VERSION = re.compile(r"\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b")
 _STATE_FILE = ".ksadk-dsh-plugins.json"
 _IMMUTABLE_SOURCE_DIR = "immutable-plugin-sources"
@@ -163,6 +167,18 @@ _DSH_SUBPROCESS_ENV_KEYS = (
     "COMSPEC",
     "PATHEXT",
 )
+
+
+def validate_dsh_registry_source(source: str) -> str:
+    """Return one exact, credential-free npm registry package coordinate."""
+
+    value = source.strip()
+    if not _PINNED_REGISTRY_SOURCE.fullmatch(value):
+        raise ValueError(
+            "DSH registry source must be <package>@<exact-semver>; "
+            "Git URLs, tags, and ranges are not allowed"
+        )
+    return value
 
 
 def dsh_subprocess_environment(*, dsh_home: Path | None = None) -> dict[str, str]:
@@ -700,9 +716,7 @@ class DshProfilePluginBridge:
         default = client.get("default") if isinstance(client, dict) else None
         return default if isinstance(default, str) else None
 
-    def _client_bundle_path(
-        self, name: str, package: Mapping[str, object]
-    ) -> Path | None:
+    def _client_bundle_path(self, name: str, package: Mapping[str, object]) -> Path | None:
         declared = self._client_export(package)
         if not declared:
             return None
@@ -948,9 +962,7 @@ class DshProfilePluginBridge:
                 )
             artifact = (self._dsh_home / receipt["artifact"]).resolve()
             if not artifact.is_relative_to(store) or not artifact.is_file():
-                raise DshPluginMutationError(
-                    f"DSH plugin {name!r} immutable source is unavailable"
-                )
+                raise DshPluginMutationError(f"DSH plugin {name!r} immutable source is unavailable")
             try:
                 actual = f"sha256:{hashlib.sha256(artifact.read_bytes()).hexdigest()}"
             except OSError as error:
@@ -958,9 +970,7 @@ class DshProfilePluginBridge:
                     f"DSH plugin {name!r} immutable source is unreadable"
                 ) from error
             if actual != receipt["digest"]:
-                raise DshPluginMutationError(
-                    f"DSH plugin {name!r} immutable source digest changed"
-                )
+                raise DshPluginMutationError(f"DSH plugin {name!r} immutable source digest changed")
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
@@ -1053,7 +1063,20 @@ class DshProfilePluginBridge:
             or value.startswith(("file:", "link:"))
             or value.startswith(("./", "../", "file:./", "file:../", "link:./", "link:../"))
         ):
-            raise ValueError("DSH plugin source must be a package, Git URL, or absolute local path")
+            raise ValueError(
+                "DSH plugin source must be an exact registry version or absolute local path"
+            )
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            if not candidate.exists():
+                raise ValueError("absolute local DSH plugin source does not exist")
+            return
+        # The Studio/CLI bridge deliberately excludes git, URL, npm tag and
+        # version-range resolution.  Those coordinates are mutable and can
+        # execute install scripts before KsADK has an immutable receipt.  DSH
+        # registry packages must be selected by exact SemVer; local developer
+        # sources are packed and content-addressed by _prepare_source.
+        validate_dsh_registry_source(value)
 
     @staticmethod
     def _validate_package_name(name: str) -> None:
@@ -1113,4 +1136,5 @@ __all__ = [
     "DshProfilePluginBridge",
     "DshProfileProjection",
     "dsh_subprocess_environment",
+    "validate_dsh_registry_source",
 ]
