@@ -25,6 +25,29 @@ the final artifact audit.
 
 KsADK does not define a third private package, manifest, or ABI. Plugins do not change Kernel contracts: a new Runtime is a coarse-grained AgentProvider in a standard DSH Bundle, while Codex plugins stay under App Server ownership.
 
+## Reuse the Codex and DSH data planes
+
+Both ecosystems retain their native hosts; neither is converted into a private KsADK plugin format:
+
+| Data plane | Assembly and execution | Immutable boundary |
+| --- | --- | --- |
+| Codex `skills` / `mcpServers` / `hooks` / `apps` | Codex App Server owns marketplace and installation lifecycle. KsADK creates a selective marketplace only after explicit admission into an Agent Build | `plugin.json`, component bytes, and executable bits enter a SHA-256 snapshot and `plugin.lock`; each Build gets an isolated `CODEX_HOME` |
+| DSH `ctx.tools` | The pinned DSH CLI starts a complete Profile. An ordinary wheel-owned Cordis Bundle projects `ctx.tools.schemas()` / `ctx.tools.execute()` through a real Streamable HTTP MCP endpoint | Profile, inventory, sidecar-version, and MCP-lease digests are fenced independently; drift fails closed |
+
+The Codex manifest reader accepts official camelCase and compatible snake_case spellings, but rejects alias collisions. Local, Git, and npm sources must resolve to immutable coordinates: Git requires a full commit SHA and npm requires an exact semver; host-reported integrity is retained in the source snapshot. Only selected components reach the Agent. Because Codex does not currently expose a verifiable hook-trust API, a Build that selects hooks is blocked rather than bypassing the host trust prompt.
+
+The DSH capability sidecar binds a random loopback port, uses a process-only bearer lease, and bounds request, argument, result, concurrency, deadline, and Node-heap resources. Cancellation reaches the Cordis `AbortSignal`; Profile mutation, disable/uninstall, and Studio shutdown revoke UI leases, cancel active calls, and clean up the complete sidecar process group. The shipped ten-method `dsh-agent-provider-host/v1` ABI remains unchanged. Tool projection uses a separate standard `mcp.connector/v1` data plane so existing Bundles keep working.
+
+The capability endpoint also publishes an in-memory provider MCP Resource that can be added directly to a Harness/Plugin Agent's MCP bindings. A Build locks only the Profile, descriptor, inventory, and tool-filter identity. PluginHost reacquires and fences the endpoint/bearer lease for every new Agent activation, so neither address nor credential enters Catalog files, the Agent spec, Bundle, or plugin lock. A Profile change withdraws the old Resource first, and an old Build fails closed on digest mismatch.
+
+The local capability host requires Node.js **>= 22.19** and the KsADK-pinned DSH release. It never falls back to an arbitrary DSH CLI from `PATH`.
+
+### DSH client UI
+
+The current secure vertical accepts only a self-contained `dsh.client` web bundle with no `external` or `inject` dependencies, and runs it in a credentialless, network-disabled, opaque-origin iframe with `sandbox="allow-scripts"`. The Studio API derives sidebar, route, and workspace-tab extension points from the enabled, digest-pinned plugin. The frame uses a short-lived capability, `MessageChannel`, and the closed `listTools` / `callTool` / `cancelTool` contract to reach the Python host and then the same MCP path. The upstream client dependency graph is not integrated yet; legacy authenticated top-level dynamic execution is disabled by default, while A2UI remains the separate Agent-output UI channel.
+
+This Python repository supplies the extension declarations, sandbox document, relay API, and an independent browser conformance fixture. The packaged SPA's React source is maintained in the external Web package, so visible navigation/tab wiring must consume those extension points in that package release; it is not implemented by editing this repository's minified static assets.
+
 ## Develop a DSH Bundle
 
 Developers do not need a DeepSeek Harness source checkout or local build. Install the pinned, managed DSH CLI from public npm, then create, validate, test, and pack a standard DSH Bundle:
@@ -93,6 +116,8 @@ agentengine plugin uninstall <bundle-name>
 `agentengine plugin dsh ...` remains only as a compatibility alias for early scripts.
 
 A DSH bundle may run install scripts, so host permissions require explicit confirmation. An AgentProvider appears in the Runtime selector only after handshake, permission, conversation-projection, and execution conformance pass.
+
+The DSH capability sidecar currently requires POSIX process-group isolation. Windows and cloud deployment fail closed until process-tree cleanup and Node Profile materialization can be verified; the host never degrades to parent-only termination.
 
 ## Create a local scheduled task
 

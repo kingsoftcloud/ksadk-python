@@ -1,0 +1,60 @@
+{
+  "contractFormat": "ksadk.dsh-capability-host/v1",
+  "ready": {
+    "protocolVersion": "ksadk.dsh-capability-host/v1",
+    "hostVersion": "1.0.0",
+    "dshVersion": "0.1.1-rc.2",
+    "profile": "fixture",
+    "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "definition": "mcp.connector/v1",
+    "transport": "streamable-http",
+    "endpoint": "http://127.0.0.1:43123/mcp",
+    "inventoryDigest": "sha256:b52df1abd852d76c0f94bde277ffcd1ce80bec1333dd95c4d88726beda30ac7b",
+    "tools": [
+      {
+        "name": "fixture_echo",
+        "description": "Echo",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": ["message"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "descriptor": {
+    "descriptorFormat": "dsh.profile-capability-descriptor/v1",
+    "ecosystem": "dsh",
+    "bridgePackage": "@kingsoftcloud/ksadk-dsh-capability-host",
+    "bridgeVersion": "1.0.0",
+    "dshVersion": "0.1.1-rc.2",
+    "profile": "fixture",
+    "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "definition": "mcp.connector/v1",
+    "transport": "streamable-http",
+    "mcpProtocol": "2025-06-18",
+    "inventoryDigest": "sha256:b52df1abd852d76c0f94bde277ffcd1ce80bec1333dd95c4d88726beda30ac7b",
+    "tools": [
+      {
+        "name": "fixture_echo",
+        "description": "Echo",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": ["message"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "descriptorDigest": "sha256:1b81be06c73260a7b0bcde3aacd1e2a8cb0acf8689cf1899f9a4f577135e5841"
+}

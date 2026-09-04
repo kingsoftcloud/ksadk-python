@@ -9,9 +9,12 @@ this module and retain their established source-build behavior.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 
+from ksadk.harness.tools import HARNESS_SANDBOX_TOOL_NAMES
 from ksadk.plugins.builtins import (
     BUILTIN_PLUGIN_VERSION,
     CORE_RENDERER_PLUGIN_ID,
@@ -30,12 +33,20 @@ from ksadk.plugins.composition import (
     RuntimePluginSelection,
 )
 from ksadk.plugins.contracts import PluginManifest
+from ksadk.plugins.providers.dsh_mcp import (
+    DSH_PROFILE_MCP_PLUGIN_ID,
+    DSH_PROFILE_MCP_PLUGIN_VERSION,
+    DSH_PROFILE_TOOL_PERMISSION,
+    dsh_harness_tool_alias,
+    dsh_profile_mcp_manifest,
+)
 from ksadk.plugins.providers.legacy_catalog import (
     BUILTIN_PROVIDER_VERSION,
     KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID,
     builtin_agent_provider_manifests,
 )
 from ksadk.plugins.resolver import PluginRegistry, ResolvedComposition
+from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.contracts import AgentDraft, CapabilityBinding
 from ksadk.studio.errors import StudioError
 from ksadk.studio.resource_catalog import LocalResourceCatalog
@@ -109,6 +120,7 @@ class StudioPluginCompositionCompiler:
         manifests = [
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
+            dsh_profile_mcp_manifest(),
         ]
         harness_ref = _plugin_ref(
             KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID,
@@ -165,9 +177,18 @@ class StudioPluginCompositionCompiler:
             default_runtime="harness",
         )
         try:
-            return CompositionCompiler(
+            resolved = CompositionCompiler(
                 PluginRegistry(manifests), self._catalog, policy
             ).compile(draft)
+            source_payload = draft.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode="json",
+            )
+            return replace(
+                resolved,
+                source_digest=sha256_digest(canonical_json(source_payload)),
+            )
         except CompositionCompileError as error:
             raise StudioError(
                 error.code.upper(),
@@ -288,13 +309,127 @@ class StudioPluginCompositionCompiler:
                         field=f"spec.bindings.{kind}",
                         details={"resourceId": binding.resource_id},
                     )
-                plugin_id = (
-                    WORKSPACE_MCP_PLUGIN_ID if kind == "mcp" else WORKSPACE_SKILL_PLUGIN_ID
-                )
+                config = deepcopy(binding.config)
+                if kind == "mcp" and descriptor.contract.get("materialization") == "dsh-profile":
+                    if binding.approval != "never":
+                        raise StudioError(
+                            "DSH_MCP_AUTONOMOUS_APPROVAL_REQUIRED",
+                            "Harness 尚不支持 DSH 工具逐调用审批；必须显式允许自主调用",
+                            status_code=422,
+                            field="spec.bindings.mcpServers.approval",
+                        )
+                    unknown = sorted(set(config) - {"toolFilter", "toolNamePrefix"})
+                    if unknown:
+                        raise StudioError(
+                            "DSH_MCP_BINDING_CONFIG_INVALID",
+                            "DSH MCP 绑定只支持 toolFilter 与 toolNamePrefix",
+                            status_code=422,
+                            field="spec.bindings.mcpServers",
+                            details={"unknownFields": unknown},
+                        )
+                    tool_filter = config.get("toolFilter")
+                    if (
+                        not isinstance(tool_filter, list)
+                        or not tool_filter
+                        or any(
+                            not isinstance(item, str) or not item.strip()
+                            for item in tool_filter
+                        )
+                        or len(tool_filter) != len(set(tool_filter))
+                        or len(tool_filter) > 32
+                        or sum(len(item.encode("utf-8")) for item in tool_filter) > 2048
+                    ):
+                        raise StudioError(
+                            "DSH_MCP_TOOL_FILTER_REQUIRED",
+                            "DSH MCP 绑定必须显式选择至少一个且不重复的工具",
+                            status_code=422,
+                            field="spec.bindings.mcpServers",
+                        )
+                    tool_filter = [item.strip() for item in tool_filter]
+                    config["toolFilter"] = tool_filter
+                    known_tools = {
+                        str(item.get("name"))
+                        for item in descriptor.contract.get("discoveredTools") or []
+                        if isinstance(item, Mapping)
+                    }
+                    unknown_tools = sorted(set(tool_filter) - known_tools)
+                    if unknown_tools:
+                        raise StudioError(
+                            "DSH_MCP_TOOL_FILTER_INVALID",
+                            "DSH MCP toolFilter 包含当前 Profile 不存在的工具",
+                            status_code=422,
+                            field="spec.bindings.mcpServers",
+                            details={"unknownTools": unknown_tools},
+                        )
+                    if (
+                        DSH_PROFILE_TOOL_PERMISSION
+                        not in draft.spec.security.allowed_permissions
+                    ):
+                        raise StudioError(
+                            "DSH_MCP_HOST_PERMISSION_REQUIRED",
+                            "DSH Profile 工具在宿主用户权限下运行，必须显式授权",
+                            status_code=422,
+                            field="spec.security.allowedPermissions",
+                            details={
+                                "missingPermissions": [DSH_PROFILE_TOOL_PERMISSION]
+                            },
+                        )
+                    prefix = config.get("toolNamePrefix")
+                    if prefix is not None and (
+                        not isinstance(prefix, str)
+                        or not prefix.strip()
+                        or len(prefix.strip()) > 16
+                        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,15}", prefix.strip())
+                        is None
+                    ):
+                        raise StudioError(
+                            "DSH_MCP_BINDING_CONFIG_INVALID",
+                            "DSH MCP toolNamePrefix 必须是 1-16 个字母、数字、下划线或连字符",
+                            status_code=422,
+                            field="spec.bindings.mcpServers",
+                        )
+                    prefix = prefix.strip() if isinstance(prefix, str) else None
+                    aliases = [dsh_harness_tool_alias(name, prefix) for name in tool_filter]
+                    if len(aliases) != len(set(aliases)):
+                        raise StudioError(
+                            "DSH_MCP_TOOL_ALIAS_COLLISION",
+                            "所选 DSH 工具映射为模型工具名后发生冲突",
+                            status_code=422,
+                            field="spec.bindings.mcpServers",
+                        )
+                    reserved_aliases = sorted(
+                        set(aliases) & HARNESS_SANDBOX_TOOL_NAMES
+                    )
+                    if reserved_aliases:
+                        raise StudioError(
+                            "DSH_MCP_TOOL_ALIAS_RESERVED",
+                            "DSH 工具名与 Harness 内置 sandbox 工具冲突，请设置 toolNamePrefix",
+                            status_code=422,
+                            field="spec.bindings.mcpServers",
+                            details={"reservedAliases": reserved_aliases},
+                        )
+                    config["toolNamePrefix"] = prefix
+                    plugin_id = DSH_PROFILE_MCP_PLUGIN_ID
+                    plugin_version = DSH_PROFILE_MCP_PLUGIN_VERSION
+                    config.update(
+                        {
+                            "profile": descriptor.contract.get("profile"),
+                            "profileDigest": descriptor.contract.get("profileDigest"),
+                            "descriptorDigest": descriptor.contract.get("descriptorDigest"),
+                            "inventoryDigest": descriptor.contract.get("inventoryDigest"),
+                        }
+                    )
+                else:
+                    plugin_id = (
+                        WORKSPACE_MCP_PLUGIN_ID
+                        if kind == "mcp"
+                        else WORKSPACE_SKILL_PLUGIN_ID
+                    )
+                    plugin_version = BUILTIN_PLUGIN_VERSION
                 materializations[binding.resource_id] = ResourcePluginMaterialization(
                     kind=kind,  # type: ignore[arg-type]
-                    plugin_ref=_plugin_ref(plugin_id, BUILTIN_PLUGIN_VERSION),
-                    config=deepcopy(binding.config),
+                    plugin_ref=_plugin_ref(plugin_id, plugin_version),
+                    config=config,
                 )
         return materializations
 

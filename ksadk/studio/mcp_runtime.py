@@ -193,6 +193,12 @@ class MCPRuntimeAdapter:
 
     @staticmethod
     def _validate(server: MCPServerRef) -> None:
+        if server.materialization == "dsh-profile":
+            raise StudioError(
+                "DSH_MCP_MANAGED_RESOURCE_REQUIRED",
+                "DSH Profile MCP 必须通过受管理的 PluginHost 租约使用",
+                status_code=422,
+            )
         transport = (server.transport or "stdio").lower()
         if transport == "stdio":
             command = Path(server.command or "").name.lower()

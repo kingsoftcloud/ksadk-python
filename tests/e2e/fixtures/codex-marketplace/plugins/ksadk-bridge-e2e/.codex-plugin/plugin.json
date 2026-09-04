@@ -1,0 +1,26 @@
+{
+  "name": "ksadk-bridge-e2e",
+  "version": "0.1.0",
+  "description": "Credential-free fixture for the real Codex App Server bridge E2E.",
+  "author": {
+    "name": "KsADK"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "ksadk",
+    "e2e"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "KsADK Bridge E2E",
+    "shortDescription": "Exercises native Codex plugin installation.",
+    "longDescription": "A deterministic local fixture used only by the KsADK test suite.",
+    "developerName": "KsADK",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": "Verify that the KsADK bridge fixture is available."
+  }
+}

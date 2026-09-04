@@ -107,9 +107,40 @@ class MCPServerRef(CapabilityRef):
     args: list[str] = Field(default_factory=list)
     endpoint_url: str | None = None
     env_refs: dict[str, str] = Field(default_factory=dict)
+    # ``dsh-profile`` is resolved at PluginHost activation time.  Only the
+    # immutable profile/inventory identity is allowed into an Agent Build;
+    # the loopback endpoint and bearer token remain process-scoped lease data.
+    materialization: Literal["dsh-profile"] | None = None
+    profile: str | None = None
+    profile_digest: str | None = None
+    descriptor_digest: str | None = None
+    inventory_digest: str | None = None
 
     @model_validator(mode="after")
     def validate_transport(self) -> "MCPServerRef":
+        dynamic_fields = (
+            self.profile,
+            self.profile_digest,
+            self.descriptor_digest,
+            self.inventory_digest,
+        )
+        if self.materialization == "dsh-profile":
+            if self.transport != "http":
+                raise ValueError("DSH Profile MCP 必须使用运行时 HTTP 租约")
+            if self.endpoint_url or self.command or self.args or self.env_refs:
+                raise ValueError("DSH Profile MCP 不能持久化 endpoint、命令或环境变量")
+            if not all(dynamic_fields):
+                raise ValueError("DSH Profile MCP 必须锁定 Profile 与能力摘要")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.profile or ""):
+                raise ValueError("DSH Profile 名称无效")
+            if any(
+                not re.fullmatch(r"sha256:[0-9a-f]{64}", value or "")
+                for value in dynamic_fields[1:]
+            ):
+                raise ValueError("DSH Profile MCP 摘要无效")
+            return self
+        if any(value is not None for value in dynamic_fields):
+            raise ValueError("静态 MCP 不能声明 DSH Profile 运行时字段")
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP 必须配置 command")
         if self.transport in {"http", "sse"} and not self.endpoint_url:
@@ -198,6 +229,46 @@ class CapabilityBinding(ContractModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class NativePluginBinding(ContractModel):
+    """Immutable component selection from a host-managed native plugin."""
+
+    ecosystem: Literal["codex", "dsh"]
+    plugin_ref: str = Field(min_length=12, max_length=256)
+    snapshot_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    components: list[str] = Field(min_length=1, max_length=128)
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("plugin_ref")
+    @classmethod
+    def validate_plugin_ref(cls, value: str) -> str:
+        if not re.fullmatch(
+            r"plugin://[a-z0-9]+(?:[._-][a-z0-9]+)*@"
+            r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            value,
+        ):
+            raise ValueError("插件绑定必须使用 plugin://<id>@<exact-version>")
+        return value
+
+    @field_validator("components")
+    @classmethod
+    def validate_components(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("插件组件不能重复")
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", component)
+            for component in value
+        ):
+            raise ValueError("插件组件 ID 无效")
+        return value
+
+    @field_validator("config")
+    @classmethod
+    def validate_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _reject_clear_runtime_secrets(value, path="pluginBinding.config")
+        return value
+
+
 class AgentBindings(ContractModel):
     model_profile_id: str | None = None
     model_profile_ids: list[str] = Field(default_factory=list)
@@ -206,6 +277,7 @@ class AgentBindings(ContractModel):
     tools: list[CapabilityBinding] = Field(default_factory=list)
     mcp_servers: list[CapabilityBinding] = Field(default_factory=list)
     skills: list[CapabilityBinding] = Field(default_factory=list)
+    plugins: list[NativePluginBinding] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_model_profiles(self) -> "AgentBindings":
@@ -219,6 +291,9 @@ class AgentBindings(ContractModel):
             and self.model_profile_id not in self.model_profile_ids
         ):
             raise ValueError("默认 modelProfileId 必须包含在 modelProfileIds 中")
+        plugin_refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
+        if len(plugin_refs) != len(set(plugin_refs)):
+            raise ValueError("启用的插件绑定不能重复 pluginRef")
         return self
 
 

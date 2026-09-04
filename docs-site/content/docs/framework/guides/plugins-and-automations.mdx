@@ -23,6 +23,29 @@ Conversation v1 headless 模块。候选源码、独立浏览器及真实部署�
 
 KsADK 不定义第三种私有插件包、manifest 或 ABI。插件不会修改 Kernel 合同；新增 Runtime 由标准 DSH Bundle 贡献粗粒度 AgentProvider，Codex 插件继续由 App Server 管理。
 
+## 复用 Codex 与 DSH 数据面
+
+这两个生态保留各自的原生宿主，不会被转换成 KsADK 私有插件：
+
+| 数据面 | 装配与执行 | 不可变边界 |
+| --- | --- | --- |
+| Codex `skills` / `mcpServers` / `hooks` / `apps` | Codex App Server 负责 marketplace 与安装生命周期；KsADK 只在显式准入后为 Agent Build 生成选择性 marketplace | `plugin.json`、组件和可执行位进入 SHA-256 快照与 `plugin.lock`；每个 Build 使用独立 `CODEX_HOME` |
+| DSH `ctx.tools` | 固定版本 DSH CLI 启动完整 Profile；wheel 内的普通 Cordis Bundle 将 `ctx.tools.schemas()` / `ctx.tools.execute()` 投影为真正的 Streamable HTTP MCP | Profile 摘要、工具清单摘要、sidecar 版本和 MCP lease 逐层校验，任何漂移均 fail closed |
+
+Codex manifest 同时接受官方 camelCase 和兼容的 snake_case 拼写，但同一字段出现两种拼写会被拒绝。local、git、npm 来源都必须解析为不可变坐标：Git 需要完整 commit SHA，npm 需要精确 semver；宿主报告的 integrity 会一并进入来源快照。Agent 只得到用户选择的组件。由于 Codex 当前没有可验证的 hook trust API，选择 hook 的 Build 会安全阻断，而不会绕过宿主信任提示。
+
+DSH capability sidecar 只监听随机 loopback 端口，使用进程内 bearer lease，并限制请求、参数、结果、并发、deadline 和 Node heap。取消会传到 Cordis `AbortSignal`；Profile 修改、插件停用/卸载、Studio 退出都会撤销 UI lease、取消在途调用并清理整个 sidecar 进程组。现有 `dsh-agent-provider-host/v1` 的 10 方法 ABI 保持不变，Tool 数据面使用独立且标准的 `mcp.connector/v1`，避免破坏已经发运的 Bundle。
+
+能力接口同时发布一个内存中的 provider MCP Resource，可直接加入 Harness/Plugin Agent 的 MCP bindings。Build 只锁定 Profile、descriptor、inventory 和工具过滤摘要；PluginHost 在每次新 Agent activation 时重新取得并核对 endpoint/bearer 租约，地址与凭证不会进入 Catalog 文件、Agent spec、Bundle 或 plugin lock。Profile 变化会先撤下旧 Resource，旧 Build 因摘要不匹配而 fail closed。
+
+本地 capability host 要求 Node.js **>= 22.19**，并使用 KsADK 固定的 DSH 版本；不会回退到 `PATH` 中任意版本的 CLI。
+
+### DSH 客户端 UI
+
+当前安全竖切只接受不含 `external` / `inject` 依赖的自包含 `dsh.client` web bundle，并将它放入 `sandbox="allow-scripts"`、无凭证、无网络的 opaque-origin iframe。Studio API 根据已启用插件和内容摘要声明 sidebar、route、workspace tab 三种 extension point；插件界面通过短期 capability、`MessageChannel` 和严格的 `listTools` / `callTool` / `cancelTool` 消息契约回到 Python 宿主，再走同一条 MCP 链路。上游完整 client dependency graph 尚未接入；旧的 authenticated top-level 动态执行默认关闭，A2UI 仍是 Agent 输出 UI 的独立通道。
+
+当前 Python 仓已提供 extension 声明、sandbox 页面、relay API 和独立浏览器 conformance fixture；打包 SPA 的 React 源码由外部 Web 包维护，因此可见导航/Tab 需要该包消费这些 extension point 后随其版本发布，不能通过修改本仓的 minified 静态文件完成。
+
 ## 开发 DSH Bundle
 
 开发者不需要检出或编译 DeepSeek Harness 源码。先从公网 npm 安装 KsADK 固定版本的受管理 DSH CLI，再创建、校验、测试和打包标准 DSH Bundle：
@@ -91,6 +114,8 @@ agentengine plugin uninstall <bundle-name>
 `agentengine plugin dsh ...` 只保留为早期脚本兼容别名。
 
 DSH bundle 可能运行安装脚本，必须显式确认宿主权限。只有通过握手、权限、会话投影与执行 conformance 的 AgentProvider 才能出现在 Runtime 选择器中。
+
+DSH capability sidecar 当前要求 POSIX 进程组隔离；Windows 与云部署在具备可验证的进程树回收和 Node Profile 物化能力前会明确拒绝，不会退化为只终止父进程的弱隔离。
 
 ## 创建本地定时任务
 

@@ -46,6 +46,26 @@ class AgentCompiler:
         self.catalog = catalog or LocalResourceCatalog(workspace)
 
     def compile(self, draft: AgentDraft) -> CompileResult:
+        if draft.spec.bindings.plugins:
+            raise StudioError(
+                "NATIVE_PLUGIN_RUNTIME_INCOMPATIBLE",
+                "Framework Agent 不直接绑定原生插件快照；DSH 工具请绑定其 provider MCP Resource",
+                status_code=422,
+                field="spec.bindings.plugins",
+            )
+        direct_dynamic = [
+            server.name
+            for server in draft.spec.capabilities.mcp_servers
+            if server.enabled and server.materialization == "dsh-profile"
+        ]
+        if direct_dynamic:
+            raise StudioError(
+                "DSH_MCP_MANAGED_BINDING_REQUIRED",
+                "DSH Profile MCP 必须从当前 Catalog Resource 显式绑定，不能直接写入 AgentSpec",
+                status_code=422,
+                field="spec.capabilities.mcpServers",
+                details={"servers": sorted(direct_dynamic)},
+            )
         source_payload = draft.model_dump(by_alias=True, exclude_none=True, mode="json")
         source_digest = sha256_digest(canonical_json(source_payload))
         materialized = self._materialize_bindings(draft)
@@ -126,6 +146,22 @@ class AgentCompiler:
             and not bindings.skills
         ):
             return draft
+        runtime_type = draft.spec.runtime.type if draft.spec.runtime is not None else None
+        for binding in bindings.mcp_servers:
+            if not binding.enabled:
+                continue
+            descriptor = self.catalog.get(binding.resource_id)
+            if (
+                descriptor.contract.get("materialization") == "dsh-profile"
+                and runtime_type != "harness"
+            ):
+                raise StudioError(
+                    "DSH_MCP_RUNTIME_INCOMPATIBLE",
+                    "DSH Profile MCP 当前只支持 Harness Runtime",
+                    status_code=422,
+                    field="spec.runtime.type",
+                    details={"runtimeType": runtime_type},
+                )
         materialized = draft.model_copy(deep=True)
         model = self.catalog.resolve_model(bindings) or materialized.spec.model
         if model is None:

@@ -20,6 +20,13 @@ from pydantic import ValidationError
 
 from ksadk.cli.model_catalog import fetch_provider_model_catalog
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.plugins.providers.dsh_capabilities import (
+    DshProfileCapabilityDescriptor,
+)
+from ksadk.plugins.providers.dsh_mcp import (
+    DSH_PROFILE_TOOL_PERMISSION,
+    dsh_harness_tool_alias,
+)
 from ksadk.studio.capabilities import (
     LocalCapabilityResolver,
     canonical_json,
@@ -162,6 +169,7 @@ class LocalResourceCatalog:
         self.skill_discovery = SkillDiscoveryService(workspace)
         self.python_tool_inspector = PythonToolInspector(workspace)
         self._provider_models: dict[str, ResourceDescriptor] = {}
+        self._dsh_mcp_resources: dict[str, ResourceDescriptor] = {}
         # api_base -> (monotonic_ts, descriptors, source)，见 discover_provider_models。
         self._provider_catalog_cache: dict[
             str, tuple[float, builtins.list[ResourceDescriptor], str]
@@ -274,6 +282,7 @@ class LocalResourceCatalog:
     ) -> builtins.list[ResourceDescriptor]:
         candidates = [
             *self._provider_models.values(),
+            *self._dsh_mcp_resources.values(),
             *self._builtin_tools(),
             *self._persisted("models"),
             *self._persisted("mcp"),
@@ -420,6 +429,77 @@ class LocalResourceCatalog:
             )
         return found
 
+    def replace_dsh_profile_mcp(
+        self,
+        descriptor: DshProfileCapabilityDescriptor,
+    ) -> ResourceDescriptor:
+        """Publish one live DSH Profile as a bindable, credential-free MCP.
+
+        This entry is intentionally memory-only.  The stable descriptor is
+        compiled into a Build when selected, while its endpoint and bearer
+        token are acquired later by the PluginHost runtime.
+        """
+
+        name = f"dsh-profile-{resource_slug(descriptor.profile)}"
+        server = MCPServerRef(
+            name=name,
+            version=descriptor.dsh_version,
+            transport="http",
+            materialization="dsh-profile",
+            profile=descriptor.profile,
+            profile_digest=descriptor.profile_digest,
+            descriptor_digest=descriptor.descriptor_digest,
+            inventory_digest=descriptor.inventory_digest,
+        )
+        resolved = self.resolver.resolve_mcp(server)
+        resolved["discoveredTools"] = [
+            ToolContract(
+                name=tool.name,
+                version=descriptor.dsh_version,
+                description=tool.description,
+                input_schema=tool.input_schema,
+                permissions=["network:mcp", DSH_PROFILE_TOOL_PERMISSION],
+                timeout_seconds=60,
+                side_effect="external",
+                approval="policy",
+                executor="mcp",
+                mcp_server=name,
+                group="dsh",
+                boundary="dsh-profile-sidecar",
+                backend="mcp",
+            ).model_dump(by_alias=True, exclude_none=True, mode="json")
+            for tool in descriptor.tools
+        ]
+        stable_id = resource_id("mcp", "provider", name, descriptor.dsh_version)
+        snapshot_suffix = descriptor.descriptor_digest.removeprefix("sha256:")[:20]
+        resource = ResourceDescriptor(
+            resource_id=f"{stable_id}:{snapshot_suffix}",
+            kind="mcp",
+            name=name,
+            display_name=f"DSH Profile: {descriptor.profile}",
+            version=descriptor.dsh_version,
+            digest=str(resolved["digest"]),
+            source="provider",
+            status="ready",
+            description="DSH/Cordis Profile tools exposed through a runtime MCP lease",
+            category="dsh",
+            contract=resolved,
+            health={
+                "profileDigest": descriptor.profile_digest,
+                "descriptorDigest": descriptor.descriptor_digest,
+                "inventoryDigest": descriptor.inventory_digest,
+            },
+        )
+        self._dsh_mcp_resources = {resource.resource_id: resource}
+        return resource
+
+    def clear_dsh_profile_mcp(self) -> None:
+        """Withdraw stale Profile resources before the DSH generation changes."""
+
+        # Copy-on-write keeps concurrent catalog readers on a complete old or
+        # new snapshot instead of mutating a dict while it is being iterated.
+        self._dsh_mcp_resources = {}
+
     def create_model_profile(
         self,
         *,
@@ -455,6 +535,13 @@ class LocalResourceCatalog:
         description: str,
         server: MCPServerRef,
     ) -> ResourceDescriptor:
+        if server.materialization == "dsh-profile":
+            raise StudioError(
+                "DSH_MCP_MANAGED_RESOURCE_REQUIRED",
+                "DSH Profile MCP 只能由当前受管理 Profile 发布",
+                status_code=422,
+                field="server.materialization",
+            )
         require_exact_version(server.version, field="version")
         resolved = self.resolver.resolve_mcp(server)
         descriptor = self._descriptor(
@@ -638,6 +725,13 @@ class LocalResourceCatalog:
         detail: str | None = None,
     ) -> ResourceDescriptor:
         descriptor = self.get(resource)
+        if descriptor.kind != "mcp" or descriptor.source != "local":
+            raise StudioError(
+                "RESOURCE_KIND_INVALID",
+                "只有本地 MCP Resource 可以保存探测结果",
+                status_code=422,
+                details={"resourceId": resource},
+            )
         updated = descriptor.model_copy(deep=True)
         updated.status = "unhealthy"
         updated.health = {
@@ -767,17 +861,35 @@ class LocalResourceCatalog:
             if not binding.enabled:
                 continue
             descriptor = self._ready_binding(binding, expected_kind="mcp")
+            raw_filter = binding.config.get("toolFilter")
+            tool_filter = (
+                {str(item).strip() for item in raw_filter}
+                if isinstance(raw_filter, list)
+                else None
+            )
+            raw_prefix = binding.config.get("toolNamePrefix")
+            prefix = raw_prefix.strip() if isinstance(raw_prefix, str) else ""
+            dynamic_dsh = descriptor.contract.get("materialization") == "dsh-profile"
             for payload in descriptor.contract.get("discoveredTools") or []:
                 tool = ToolContract.model_validate(payload)
+                if tool_filter is not None and tool.name not in tool_filter:
+                    continue
                 approval = self._effective_approval(
                     tool,
                     bindings.policy_template,
                     binding,
                 )
+                name = (
+                    dsh_harness_tool_alias(tool.name, prefix)
+                    if dynamic_dsh
+                    else f"{prefix}_{tool.name}"
+                    if prefix
+                    else tool.name
+                )
                 tools.append(
                     cast(
                         ToolContract,
-                        tool.model_copy(update={"approval": approval}),
+                        tool.model_copy(update={"name": name, "approval": approval}),
                     )
                 )
         return tools
@@ -1113,12 +1225,36 @@ class LocalResourceCatalog:
             )
 
     def _persisted(self, directory: str) -> Iterable[ResourceDescriptor]:
+        expected_kind = {
+            "models": "model",
+            "mcp": "mcp",
+            "tools": "tool",
+        }.get(directory)
+        if expected_kind is None:
+            return
         root = self.workspace.resolve(Path(".agentkit/catalog") / directory)
         for path in sorted(root.glob("*.yaml")):
             try:
-                yield ResourceDescriptor.model_validate(load_yaml_file(path))
+                descriptor = ResourceDescriptor.model_validate(load_yaml_file(path))
             except (StudioError, ValidationError):
                 continue
+            # Provider resources are live, memory-only projections. Never let
+            # a stale or forged workspace YAML shadow their lifecycle fence.
+            if descriptor.source != "local":
+                continue
+            if descriptor.kind != expected_kind:
+                continue
+            expected_id = resource_id(
+                descriptor.kind,
+                "local",
+                descriptor.name,
+                descriptor.version,
+            )
+            if descriptor.resource_id != expected_id:
+                continue
+            if descriptor.contract.get("materialization") == "dsh-profile":
+                continue
+            yield descriptor
 
     def _persist_descriptor(
         self,
@@ -1152,6 +1288,13 @@ class LocalResourceCatalog:
     def delete_resource(self, resource_id: str) -> None:
         """Remove a persisted catalog resource (model/tool/mcp/skill) by id."""
         descriptor = self.get(resource_id)
+        if descriptor.source != "local":
+            raise StudioError(
+                "RESOURCE_DELETE_FORBIDDEN",
+                "只有本地持久化 Resource 可以删除",
+                status_code=422,
+                details={"resourceId": resource_id, "source": descriptor.source},
+            )
         kind = descriptor.kind
         if kind == "skill":
             # Skill 以目录形式安装在 capabilities/skills/{name}

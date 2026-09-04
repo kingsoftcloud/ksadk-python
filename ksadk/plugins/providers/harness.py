@@ -8,8 +8,10 @@ not create another event stream or transcript store.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
@@ -129,7 +131,12 @@ class HarnessTurnResult:
 class HarnessMCPSource(Protocol):
     def harness_mcp_specs(
         self, bundle: ResolvedPluginBundle
-    ) -> Sequence[McpToolSpec]: ...
+    ) -> Sequence[McpToolSpec] | Awaitable[Sequence[McpToolSpec]]: ...
+
+
+@runtime_checkable
+class HarnessMCPActivationSource(Protocol):
+    async def release_harness_mcp_specs(self, specs: Sequence[McpToolSpec]) -> None: ...
 
 
 @runtime_checkable
@@ -273,93 +280,104 @@ class KsADKHarnessProviderRuntime:
                 "harness_provider_unavailable", "Harness provider is not ready"
             )
 
-        mcp_specs: list[McpToolSpec] = []
-        mcp_owners: list[str] = []
-        for binding in capabilities.all("mcp.connector/v1"):
-            if not isinstance(binding.runtime, HarnessMCPSource):
-                raise PluginHostError(
-                    "harness_mcp_incompatible",
-                    f"plugin {binding.plugin_id} cannot project Harness MCP config",
-                )
-            mcp_specs.extend(binding.runtime.harness_mcp_specs(bundle))
-            mcp_owners.append(binding.plugin_id)
+        async with AsyncExitStack() as mcp_cleanup:
+            mcp_specs: list[McpToolSpec] = []
+            mcp_owners: list[str] = []
+            for binding in capabilities.all("mcp.connector/v1"):
+                if not isinstance(binding.runtime, HarnessMCPSource):
+                    raise PluginHostError(
+                        "harness_mcp_incompatible",
+                        f"plugin {binding.plugin_id} cannot project Harness MCP config",
+                    )
+                projected = binding.runtime.harness_mcp_specs(bundle)
+                if isinstance(projected, Awaitable):
+                    projected = await projected
+                projected_specs = tuple(projected)
+                if isinstance(binding.runtime, HarnessMCPActivationSource):
+                    mcp_cleanup.push_async_callback(
+                        binding.runtime.release_harness_mcp_specs,
+                        projected_specs,
+                    )
+                mcp_specs.extend(projected_specs)
+                mcp_owners.append(binding.plugin_id)
 
-        skills: list[HarnessSkillContribution] = []
-        skill_owners: list[str] = []
-        for binding in capabilities.all("skill.source/v1"):
-            if not isinstance(binding.runtime, HarnessSkillSource):
-                raise PluginHostError(
-                    "harness_skill_incompatible",
-                    f"plugin {binding.plugin_id} cannot project Harness instructions",
-                )
-            contribution = binding.runtime.harness_skill(bundle)
-            if not contribution.name.strip() or not contribution.instructions.strip():
-                raise PluginHostError(
-                    "harness_skill_invalid",
-                    f"plugin {binding.plugin_id} returned an empty Skill contribution",
-                )
-            skills.append(contribution)
-            skill_owners.append(binding.plugin_id)
+            skills: list[HarnessSkillContribution] = []
+            skill_owners: list[str] = []
+            for binding in capabilities.all("skill.source/v1"):
+                if not isinstance(binding.runtime, HarnessSkillSource):
+                    raise PluginHostError(
+                        "harness_skill_incompatible",
+                        f"plugin {binding.plugin_id} cannot project Harness instructions",
+                    )
+                contribution = binding.runtime.harness_skill(bundle)
+                if not contribution.name.strip() or not contribution.instructions.strip():
+                    raise PluginHostError(
+                        "harness_skill_invalid",
+                        f"plugin {binding.plugin_id} returned an empty Skill contribution",
+                    )
+                skills.append(contribution)
+                skill_owners.append(binding.plugin_id)
 
-        context_sources: list[HarnessContextSource] = []
-        context_owners: list[str] = []
-        for binding in capabilities.all("context.contributor/v1"):
-            if not isinstance(binding.runtime, HarnessContextSource):
-                raise PluginHostError(
-                    "harness_context_incompatible",
-                    f"plugin {binding.plugin_id} cannot contribute Harness context",
-                )
-            context_sources.append(binding.runtime)
-            context_owners.append(binding.plugin_id)
+            context_sources: list[HarnessContextSource] = []
+            context_owners: list[str] = []
+            for binding in capabilities.all("context.contributor/v1"):
+                if not isinstance(binding.runtime, HarnessContextSource):
+                    raise PluginHostError(
+                        "harness_context_incompatible",
+                        f"plugin {binding.plugin_id} cannot contribute Harness context",
+                    )
+                context_sources.append(binding.runtime)
+                context_owners.append(binding.plugin_id)
 
-        execution = bundle.resolved_agent_spec.get("execution")
-        strategy = (
-            str(execution.get("strategy") or "direct").strip()
-            if isinstance(execution, Mapping)
-            else "direct"
-        )
-        if strategy != "direct":
-            raise PluginHostError(
-                "harness_execution_strategy_unsupported",
-                f"KsADK Harness Provider does not support {strategy!r}",
+            execution = bundle.resolved_agent_spec.get("execution")
+            strategy = (
+                str(execution.get("strategy") or "direct").strip()
+                if isinstance(execution, Mapping)
+                else "direct"
             )
+            if strategy != "direct":
+                raise PluginHostError(
+                    "harness_execution_strategy_unsupported",
+                    f"KsADK Harness Provider does not support {strategy!r}",
+                )
 
-        model, prompt = _bundle_model_and_prompt(bundle)
-        if skills:
-            prompt = _append_prompt_sections(
-                prompt,
-                [f"Skill {item.name}:\n{item.instructions}" for item in skills],
+            model, prompt = _bundle_model_and_prompt(bundle)
+            if skills:
+                prompt = _append_prompt_sections(
+                    prompt,
+                    [f"Skill {item.name}:\n{item.instructions}" for item in skills],
+                )
+            config = HarnessConfig(
+                model=model,
+                prompt=prompt,
+                mcp_tools=tuple(mcp_specs),
+                sandbox=SandboxPolicy(read_only=True),
+                runtime="yaml",
             )
-        config = HarnessConfig(
-            model=model,
-            prompt=prompt,
-            mcp_tools=tuple(mcp_specs),
-            sandbox=SandboxPolicy(read_only=True),
-            runtime="yaml",
-        )
-        inventory = HarnessProviderInventory(
-            provider=self._plugin_id,
-            execution_strategy=strategy,
-            model=model,
-            history_owner="canonical_session_service",
-            mcp_servers=tuple(mcp_owners),
-            skills=tuple(item.name for item in skills),
-            context_contributors=tuple(context_owners),
-        )
-        self._last_inventory = inventory
-        workspace_root = bundle.root / "runtime"
-        if not workspace_root.is_dir():
-            workspace_root = bundle.root
-        return KsADKHarnessActivation(
-            bundle=bundle,
-            config=config,
-            agent_name=bundle.manifest.agent_id,
-            workspace_root=workspace_root,
-            reasoner=self._reasoner,
-            context_sources=tuple(context_sources),
-            session_service=self._session_service,
-            inventory=inventory,
-        )
+            inventory = HarnessProviderInventory(
+                provider=self._plugin_id,
+                execution_strategy=strategy,
+                model=model,
+                history_owner="canonical_session_service",
+                mcp_servers=tuple(mcp_owners),
+                skills=tuple(item.name for item in skills),
+                context_contributors=tuple(context_owners),
+            )
+            self._last_inventory = inventory
+            workspace_root = bundle.root / "runtime"
+            if not workspace_root.is_dir():
+                workspace_root = bundle.root
+            return KsADKHarnessActivation(
+                bundle=bundle,
+                config=config,
+                agent_name=bundle.manifest.agent_id,
+                workspace_root=workspace_root,
+                reasoner=self._reasoner,
+                context_sources=tuple(context_sources),
+                session_service=self._session_service,
+                inventory=inventory,
+                mcp_cleanup=mcp_cleanup.pop_all(),
+            )
 
 
 class KsADKHarnessProviderFactory:
@@ -412,6 +430,7 @@ class KsADKHarnessActivation:
         context_sources: tuple[HarnessContextSource, ...],
         session_service: BaseSessionService,
         inventory: HarnessProviderInventory,
+        mcp_cleanup: AsyncExitStack | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -421,6 +440,8 @@ class KsADKHarnessActivation:
         self._context_sources = context_sources
         self._session_service = session_service
         self._inventory = inventory
+        self._mcp_cleanup = mcp_cleanup
+        self._mcp_cleanup_lock = asyncio.Lock()
         self._ready = False
         self._disposed = False
         self._executors: list[RuntimeExecutor] = []
@@ -504,9 +525,18 @@ class KsADKHarnessActivation:
     async def drain(self) -> None:
         self._ready = False
 
+    async def abort(self) -> None:
+        """Revoke external MCP credentials before waiting on a stuck turn."""
+
+        await self._release_mcp_credentials()
+
     async def dispose(self) -> None:
         self._ready = False
         first_error: BaseException | None = None
+        try:
+            await self._release_mcp_credentials()
+        except BaseException as error:  # cleanup must continue
+            first_error = error
         if self._kernel_adapter is not None:
             try:
                 await self._kernel_adapter.close_all()
@@ -523,6 +553,13 @@ class KsADKHarnessActivation:
         self._disposed = True
         if first_error is not None:
             raise first_error
+
+    async def _release_mcp_credentials(self) -> None:
+        async with self._mcp_cleanup_lock:
+            cleanup = self._mcp_cleanup
+            if cleanup is not None:
+                await cleanup.aclose()
+                self._mcp_cleanup = None
 
 
 def _build_direct_backend(
@@ -617,6 +654,7 @@ def _chat_history(history: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 __all__ = [
     "HarnessContextSource",
     "HarnessMCPSource",
+    "HarnessMCPActivationSource",
     "HarnessProviderInventory",
     "HarnessSkillContribution",
     "HarnessSkillSource",
