@@ -340,6 +340,28 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         return next_config
 
     @staticmethod
+    def _unwrap_resume_value(resume_value: Any) -> Any:
+        """从 ksadk_resume 包装中提取实际 resume value。
+
+        KsADK 的 ksadk_resume 协议把用户决策包在 ``{"type":"ksadk_resume",
+        "interrupt_id":..., "value":{...}}`` 里，但 ``Command(resume=...)``
+        期望直接收到框架能识别的值（如 HumanInTheLoopMiddleware 的
+        ``{"decisions":[...]}``）。这里拆掉外层包装，把 ``value`` 内容
+        作为 resume value 返回。
+
+        非 ksadk_resume 类型（mcp_approval_response 等）原样返回，保持
+        既有内置工具审批路径不变；ToolGateway 走 semantic resume 分支，
+        不经过此处。
+        """
+        if isinstance(resume_value, Mapping):
+            item_type = str(resume_value.get("type") or "").strip()
+            if item_type in {"ksadk_resume", "ksadk.approval_response"}:
+                inner = resume_value.get("value")
+                if inner is not None:
+                    return inner
+        return resume_value
+
+    @staticmethod
     def _checkpoint_resume_input(
         value: Any,
         *,
@@ -817,7 +839,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             # interrupt. A custom prepare-state hook is for new user input;
             # applying it here can rewrite an approval decision into ordinary
             # graph state and turn an approved HITL action into a rejection.
-            state = resume_value
+            state = self._unwrap_resume_value(resume_value)
         elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(
                 payload,
@@ -913,6 +935,19 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                             interrupt_id = str(getattr(intr, "id", "") or "")
                             if interrupt_id:
                                 info.setdefault("approval_request_id", interrupt_id)
+                            # HumanInTheLoopMiddleware 的 interrupt value 把 tool_name/arguments
+                            # 嵌在 action_requests[0] 里，下游 runtime_streaming/message_projection
+                            # 期望顶层有 tool_name/arguments，这里提取到顶层（保留 action_requests 原样）。
+                            action_requests = info.get("action_requests")
+                            if isinstance(action_requests, list) and action_requests:
+                                first = action_requests[0]
+                                if isinstance(first, Mapping):
+                                    info.setdefault("tool_name", str(first.get("name") or ""))
+                                    raw_args = first.get("args") or first.get("arguments")
+                                    if raw_args is not None:
+                                        info.setdefault("arguments", raw_args)
+                                    if first.get("description") is not None:
+                                        info.setdefault("description", str(first.get("description")))
                             return info
         return {}
 
