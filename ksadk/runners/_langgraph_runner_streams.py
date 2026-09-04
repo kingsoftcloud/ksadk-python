@@ -283,12 +283,7 @@ class _LangGraphStreamMixin:
                     usage = self._extract_usage(output) or self._extract_usage(data)
                     last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
                     run_key = model_run_key(event)
-                    event_metadata = event.get("metadata")
-                    is_non_streaming_invoke = (
-                        isinstance(event_metadata, Mapping)
-                        and event_metadata.get("ksadk_model_invocation") == "invoke"
-                    )
-                    if is_non_streaming_invoke or run_key not in stream_usage_run_keys:
+                    if run_key not in stream_usage_run_keys:
                         record_model_usage(event, last_usage or usage)
                     model_call_id = str(event.get("run_id") or "")
                     started_at = model_started_at.pop(model_call_id, None)

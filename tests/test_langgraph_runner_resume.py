@@ -389,45 +389,6 @@ class _InflatedEndUsageAfterStreamUsageAgent(_DummyAgent):
         }
 
 
-class _NonStreamingInvokeWithPartialStreamUsageAgent(
-    _InflatedEndUsageAfterStreamUsageAgent
-):
-    """Base Agent-style ainvoke: model metadata marks end usage authoritative."""
-
-    async def astream_events(self, state, version="v2", config=None):
-        self.last_astream_state = state
-        self.last_astream_config = config
-        yield {
-            "event": "on_chat_model_stream",
-            "name": "ChatOpenAI",
-            "run_id": "llm-1",
-            "metadata": {"ksadk_model_invocation": "invoke"},
-            "data": {
-                "chunk": _Chunk(
-                    content="final",
-                    usage_metadata={
-                        "input_tokens": 10,
-                        "output_tokens": 5,
-                        "total_tokens": 15,
-                    },
-                )
-            },
-        }
-        yield {
-            "event": "on_chat_model_end",
-            "name": "ChatOpenAI",
-            "run_id": "llm-1",
-            "metadata": {"ksadk_model_invocation": "invoke"},
-            "data": {
-                "output": _UsageMessage(
-                    input_tokens=100,
-                    output_tokens=50,
-                    reasoning_tokens=10,
-                )
-            },
-        }
-
-
 class _CheckpointResumeUpdatesAgent(_DummyAgent):
     def __init__(self):
         super().__init__()
@@ -571,12 +532,6 @@ def _make_missing_run_id_cumulative_stream_usage_runner() -> LangGraphRunner:
 def _make_inflated_end_usage_after_stream_usage_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _InflatedEndUsageAfterStreamUsageAgent()
-    return runner
-
-
-def _make_non_streaming_invoke_with_partial_stream_usage_runner() -> LangGraphRunner:
-    runner = _make_runner()
-    runner._agent = _NonStreamingInvokeWithPartialStreamUsageAgent()
     return runner
 
 
@@ -1040,42 +995,6 @@ async def test_stream_prefers_latest_stream_usage_when_end_usage_is_inflated():
                 "total_tokens": 2972,
                 "input_token_details": {},
                 "output_token_details": {"reasoning": 55},
-            },
-        },
-    }
-
-
-@pytest.mark.asyncio
-async def test_stream_prefers_end_usage_for_marked_non_streaming_invoke():
-    runner = _make_non_streaming_invoke_with_partial_stream_usage_runner()
-
-    chunks = [
-        chunk
-        async for chunk in runner.stream(
-            {
-                "session_id": "sess-non-streaming-invoke-partial-stream-usage",
-                "input": "hello",
-            }
-        )
-    ]
-
-    assert chunks[-1] == {
-        "output": "final",
-        "type": "final",
-        "usage": {
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "total_tokens": 150,
-            "input_token_details": {},
-            "output_token_details": {"reasoning": 10},
-        },
-        "metadata": {
-            "last_usage": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "total_tokens": 150,
-                "input_token_details": {},
-                "output_token_details": {"reasoning": 10},
             },
         },
     }
