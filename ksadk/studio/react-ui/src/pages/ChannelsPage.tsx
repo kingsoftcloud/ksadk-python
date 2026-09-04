@@ -11,6 +11,7 @@ import {
   QrCode,
  UserPlus,
  X,
+  Users,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { apiFetch } from "../api";
@@ -191,6 +192,12 @@ const PLATFORM_BADGE: Record<ChannelType, string> = {
   feishu: "飞书",
   wecom: "企微",
 };
+
+const PLATFORM_LIST: Array<{ value: ChannelType; label: string; desc: string; Icon: typeof MessageSquare }> = [
+  { value: "wps-xiezuo", label: "WPS 协作", desc: "金山办公协作平台", Icon: MessageSquare },
+  { value: "feishu", label: "飞书", desc: "字节跳动企业协作", Icon: Send },
+  { value: "wecom", label: "企业微信", desc: "腾讯企业即时通讯", Icon: Users },
+];
 
 const DM_POLICY_LABELS: Record<DmPolicy, string> = {
   pairing: "需配对",
@@ -1393,53 +1400,69 @@ async function submitChannel(event: React.FormEvent) {
               </button>
             </>
           )}
-        >
-          <form id="channel-create-form" className="channels-page__create form-grid two-columns" onSubmit={submitChannel}>
-            <FormField label="平台" requirement="required">
-              <StudioSelect
-                ariaLabel="平台"
-                value={form.Channel}
-                options={CHANNEL_OPTIONS}
-                onValueChange={value => setForm(prev => ({ ...prev, Channel: value as ChannelType }))}
-              />
-            </FormField>
-            <FormField label="渠道账号 ID" htmlFor="channel-account-id" requirement="required">
-              <input
-                id="channel-account-id"
-                value={form.ChannelAccountId}
-                onChange={event => setForm(prev => ({ ...prev, ChannelAccountId: event.target.value }))}
-                placeholder="如：wps-default"
-                required
-              />
-            </FormField>
-            <FormField label="绑定 Agent" htmlFor="channel-agent" requirement="required">
-              <StudioSelect
-                id="channel-agent"
-                ariaLabel="绑定 Agent"
-                options={agentOptions}
-                value={form.AgentId}
-                placeholder="选择要绑定的 Agent"
-                onValueChange={value => setForm(prev => ({ ...prev, AgentId: value }))}
-              />
-            </FormField>
-            <FormField label="App ID" htmlFor="channel-app-id" requirement={isEdit ? "optional" : "required"}>
-              <input
-                id="channel-app-id"
-                value={form.AppId}
-                onChange={event => setForm(prev => ({ ...prev, AppId: event.target.value }))}
-                placeholder={isEdit ? "留空则不修改" : "平台分配的应用 ID"}
-              />
-            </FormField>
-            <FormField label="App Secret" htmlFor="channel-app-secret" requirement={isEdit ? "optional" : "required"}>
-              <input
-                id="channel-app-secret"
-                type="password"
-                value={form.AppSecret}
-                onChange={event => setForm(prev => ({ ...prev, AppSecret: event.target.value }))}
-                placeholder={isEdit ? "留空则不修改" : "平台分配的应用密钥"}
-              />
-            </FormField>
-            <FormField className="channels-page__field--wide" label="启用状态">
+       >
+          <form id="channel-create-form" className="channels-page__create-form" onSubmit={submitChannel}>
+            <div className="channels-page__form-section">
+              <div className="channels-page__form-section-title">选择平台</div>
+              <div className="channels-page__platform-cards">
+                {PLATFORM_LIST.map(({ value, label, desc, Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`channels-page__platform-card${form.Channel === value ? " selected" : ""}`}
+                    onClick={() => setForm(prev => ({ ...prev, Channel: value }))}
+                  >
+                    <span className="channels-page__platform-card-icon"><Icon size={20} /></span>
+                    <span className="channels-page__platform-card-name">{label}</span>
+                    <span className="channels-page__platform-card-desc">{desc}</span>
+                    {form.Channel === value && <Check size={14} className="channels-page__platform-card-check" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="channels-page__form-section">
+              <div className="channels-page__form-section-title">接入配置</div>
+              <FormField label="渠道账号 ID" htmlFor="channel-account-id" requirement="required">
+                <input
+                  id="channel-account-id"
+                  value={form.ChannelAccountId}
+                  onChange={event => setForm(prev => ({ ...prev, ChannelAccountId: event.target.value }))}
+                  placeholder="如：wps-default"
+                  required
+                />
+              </FormField>
+              <div className="channels-page__form-row">
+                <FormField label="App ID" htmlFor="channel-app-id" requirement={isEdit ? "optional" : "required"}>
+                  <input
+                    id="channel-app-id"
+                    value={form.AppId}
+                    onChange={event => setForm(prev => ({ ...prev, AppId: event.target.value }))}
+                    placeholder={isEdit ? "留空则不修改" : "平台分配的应用 ID"}
+                  />
+                </FormField>
+                <FormField label="App Secret" htmlFor="channel-app-secret" requirement={isEdit ? "optional" : "required"}>
+                  <input
+                    id="channel-app-secret"
+                    type="password"
+                    value={form.AppSecret}
+                    onChange={event => setForm(prev => ({ ...prev, AppSecret: event.target.value }))}
+                    placeholder={isEdit ? "留空则不修改" : "平台分配的应用密钥"}
+                  />
+                </FormField>
+              </div>
+            </div>
+            <div className="channels-page__form-section">
+              <div className="channels-page__form-section-title">Agent 绑定</div>
+              <FormField label="Agent" htmlFor="channel-agent" requirement="required">
+                <StudioSelect
+                  id="channel-agent"
+                  ariaLabel="绑定 Agent"
+                  options={agentOptions}
+                  value={form.AgentId}
+                  placeholder="选择要绑定的 Agent"
+                  onValueChange={value => setForm(prev => ({ ...prev, AgentId: value }))}
+                />
+              </FormField>
               <label className="channel-toggle-row">
                 <input
                   type="checkbox"
@@ -1451,7 +1474,7 @@ async function submitChannel(event: React.FormEvent) {
                   <small>停用后渠道不再接收和发送消息</small>
                 </span>
               </label>
-            </FormField>
+            </div>
             <div className="channels-page__advanced-toggle">
               <button
                 type="button"
@@ -1468,45 +1491,47 @@ async function submitChannel(event: React.FormEvent) {
               </button>
             </div>
             {advancedOpen && (
-              <div className="channels-page__advanced-body form-grid two-columns">
-                <FormField label="私聊策略">
-                  <StudioSelect
-                    ariaLabel="私聊策略"
-                    value={form.DmPolicy}
-                    options={DM_POLICY_OPTIONS}
-                    onValueChange={value => setForm(prev => ({ ...prev, DmPolicy: value as DmPolicy }))}
-                  />
-                </FormField>
-                <FormField label="群聊策略">
-                  <StudioSelect
-                    ariaLabel="群聊策略"
-                    value={form.GroupPolicy}
-                    options={GROUP_POLICY_OPTIONS}
-                    onValueChange={value => setForm(prev => ({ ...prev, GroupPolicy: value as GroupPolicy }))}
-                  />
-                </FormField>
-                <FormField label="会话隔离">
-                  <StudioSelect
-                    ariaLabel="会话隔离"
-                    value={form.SessionScope}
-                    options={SESSION_SCOPE_OPTIONS}
-                    onValueChange={value => setForm(prev => ({ ...prev, SessionScope: value as SessionScope }))}
-                  />
-                </FormField>
-                <FormField className="channels-page__field--wide" label="群聊 @机器人">
-                  <label className="channel-toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={form.RequireMention}
-                      onChange={event => setForm(prev => ({ ...prev, RequireMention: event.target.checked }))}
+              <div className="channels-page__advanced-body">
+                <div className="channels-page__form-row">
+                  <FormField label="私聊策略">
+                    <StudioSelect
+                      ariaLabel="私聊策略"
+                      value={form.DmPolicy}
+                      options={DM_POLICY_OPTIONS}
+                      onValueChange={value => setForm(prev => ({ ...prev, DmPolicy: value as DmPolicy }))}
                     />
-                    <span>
-                      <strong>要求 @机器人</strong>
-                      <small>群聊中用户必须 @机器人才会触发响应</small>
-                    </span>
-                  </label>
-                </FormField>
-                <FormField className="channels-page__field--wide" label="扩展配置" htmlFor="channel-config-json" hint="JSON 格式的扩展配置，默认为空对象 {}">
+                  </FormField>
+                  <FormField label="群聊策略">
+                    <StudioSelect
+                      ariaLabel="群聊策略"
+                      value={form.GroupPolicy}
+                      options={GROUP_POLICY_OPTIONS}
+                      onValueChange={value => setForm(prev => ({ ...prev, GroupPolicy: value as GroupPolicy }))}
+                    />
+                  </FormField>
+                </div>
+                <div className="channels-page__form-row">
+                  <FormField label="会话隔离">
+                    <StudioSelect
+                      ariaLabel="会话隔离"
+                      value={form.SessionScope}
+                      options={SESSION_SCOPE_OPTIONS}
+                      onValueChange={value => setForm(prev => ({ ...prev, SessionScope: value as SessionScope }))}
+                    />
+                  </FormField>
+                </div>
+                <label className="channel-toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={form.RequireMention}
+                    onChange={event => setForm(prev => ({ ...prev, RequireMention: event.target.checked }))}
+                  />
+                  <span>
+                    <strong>要求 @机器人</strong>
+                    <small>群聊中用户必须 @机器人才会触发响应</small>
+                  </span>
+                </label>
+                <FormField label="扩展配置" htmlFor="channel-config-json" hint="JSON 格式的扩展配置，默认为空对象 {}">
                   <textarea
                     id="channel-config-json"
                     value={form.ConfigJson}

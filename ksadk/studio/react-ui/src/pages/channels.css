@@ -115,12 +115,100 @@
   font-size: var(--font-size-caption);
 }
 
-.channels-page__create {
-  align-items: start;
+.channels-page__create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
-.channels-page__create > .studio-form-field {
+.channels-page__create-form .studio-form-field {
   min-width: 0;
+}
+
+.channels-page__form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.channels-page__form-section-title {
+  color: var(--text-secondary);
+  font-size: var(--font-size-control);
+  font-weight: var(--font-weight-medium);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.channels-page__form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.channels-page__platform-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+.channels-page__platform-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  text-align: center;
+}
+
+.channels-page__platform-card:hover {
+  border-color: var(--accent-strong);
+}
+
+.channels-page__platform-card.selected {
+  border-color: var(--accent-strong);
+  background: var(--surface-subtle);
+}
+
+.channels-page__platform-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.channels-page__platform-card.selected .channels-page__platform-card-icon {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.channels-page__platform-card-name {
+  font-size: var(--font-size-control);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.channels-page__platform-card-desc {
+  font-size: var(--font-size-caption);
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+.channels-page__platform-card-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: var(--accent-strong);
 }
 
 .channels-page__form-hint {
@@ -213,7 +301,6 @@
 }
 
 .channels-page__advanced-toggle {
-  grid-column: 1 / -1;
   margin-top: 4px;
 }
 
@@ -253,7 +340,9 @@
 }
 
 .channels-page__advanced-body {
-  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .channels-page__row-actions {
