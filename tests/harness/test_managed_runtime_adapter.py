@@ -107,6 +107,7 @@ async def test_managed_adapter_passes_studio_conversation_history(tmp_path):
     assert any(
         '"event":"context.planned"' in payload
         and '"window_source":"model_profile"' in payload
+        and '"current_input"' in payload
         for payload in status_payloads
     )
 
@@ -123,7 +124,11 @@ async def test_managed_adapter_emits_reasoning_item_events(tmp_path):
                 reasoning="先检查历史，再回答。",
             )
 
-    adapter = ManagedHarnessRuntimeAdapter(_spec(), reasoner=_ReasoningReasoner(), workspace_root=tmp_path)
+    adapter = ManagedHarnessRuntimeAdapter(
+        _spec(),
+        reasoner=_ReasoningReasoner(),
+        workspace_root=tmp_path,
+    )
     handle = await adapter.start(
         StartRequest(
             input="hello",

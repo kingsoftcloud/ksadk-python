@@ -1,7 +1,8 @@
 """收口 6：Runner Conformance Matrix（plan §15.2）。
 
 同一套 Conformance 套件参数化跑在所有已注册 Runner 上：managed-langgraph
-（KsADK 默认 Harness 引擎）、native-harness-adapter（HarnessRuntimeAdapter）、
+（KsADK 默认 Harness 引擎，Studio 的 ``harness`` Runtime）、
+native-harness-adapter（兼容的 HarnessRuntimeAdapter）、
 adk、external-langgraph、codex（外部 Runner 经各自 RuntimeAdapter 驱动）。
 另有守恒测试：矩阵必须显式覆盖 factory 注册的全部 Runner，不允许静默漏测。
 """
@@ -139,11 +140,11 @@ def test_matrix_covers_all_registered_runners():
     from ksadk.runtime.factory import build_default_runtime_registry
 
     known = set(_IMPLEMENTED)
-    # factory 注册的 runner 名归一（managed ↔ managed-langgraph；
+    # factory 注册的 runner 名归一（harness/managed ↔ managed-langgraph；
     # langgraph ↔ external-langgraph）。
     normalize = {
         "managed": "managed-langgraph",
-        "harness": "native-harness-adapter",
+        "harness": "managed-langgraph",
         "langgraph": "external-langgraph",
     }
     registered = {

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ksadk.events.canonical import ItemCompleted
 from ksadk.harness import HarnessApp, HarnessConfig
 from ksadk.harness.config import McpToolSpec
 from ksadk.harness.reasoner import (
@@ -12,7 +13,6 @@ from ksadk.harness.reasoner import (
     LiteLLMHarnessReasoner,
     resolve_model_identifier,
 )
-from ksadk.events.canonical import ItemCompleted
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime import StartRequest
 
@@ -77,9 +77,7 @@ async def test_native_harness_reports_aggregated_model_usage(tmp_path):
         reasoner=UsageReasoner(),
         workspace_root=tmp_path,
     )
-    handle = await adapter.start(
-        StartRequest(input="calculate", user_id="u", session_id="s")
-    )
+    handle = await adapter.start(StartRequest(input="calculate", user_id="u", session_id="s"))
     events = [event async for event in adapter.stream(handle)]
     usage = next(event for event in events if event.event_type == "usage.reported")
 
@@ -206,6 +204,92 @@ async def test_production_reasoner_reassembles_streaming_text_and_usage(monkeypa
     )
     assert turn.final_text == "stream ok"
     assert turn.usage == {"input_tokens": 9, "output_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_stream_complete_uses_explicit_provider_configuration(monkeypatch):
+    import litellm
+
+    captured = {}
+
+    async def chunks():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="ok", tool_calls=[]))],
+            usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1),
+        )
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    reasoner = LiteLLMHarnessReasoner(
+        streaming=True,
+        base_url="https://provider.invalid/v1",
+        api_key="test-placeholder",
+    )
+    items = [
+        item
+        async for item in reasoner.stream_complete(
+            model="glm-5.3",
+            prompt="",
+            messages=({"role": "user", "content": "x"},),
+            tools=(),
+            max_output_tokens=23,
+        )
+    ]
+    assert captured["base_url"] == "https://provider.invalid/v1"
+    assert captured["api_key"] == "test-placeholder"
+    assert captured["max_tokens"] == 23
+    assert items[0] == {"text_delta": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_stream_complete_forwards_reasoning_deltas(monkeypatch):
+    import litellm
+
+    async def chunks():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content="先检查安全边界",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="不能提供。",
+                        reasoning_content=None,
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2),
+        )
+
+    async def fake_acompletion(**kwargs):
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    items = [
+        item
+        async for item in LiteLLMHarnessReasoner(streaming=True).stream_complete(
+            model="glm-5.3",
+            prompt="",
+            messages=({"role": "user", "content": "x"},),
+            tools=(),
+        )
+    ]
+    assert items[0] == {"reasoning_delta": "先检查安全边界"}
+    assert items[1] == {"text_delta": "不能提供。"}
+    assert items[-1]["turn"].reasoning == "先检查安全边界"
 
 
 @pytest.mark.asyncio
@@ -385,7 +469,8 @@ async def test_native_harness_emits_reasoning_item_events(tmp_path):
     events = [event async for event in adapter.stream(handle)]
 
     reasoning = [
-        event for event in events
+        event
+        for event in events
         if isinstance(event, ItemCompleted) and event.item_kind == "reasoning"
     ]
     assert reasoning, "reasoning item.completed missing"
@@ -407,6 +492,4 @@ async def test_native_harness_omits_reasoning_items_when_absent(tmp_path):
     handle = await adapter.start(StartRequest(input="hi", user_id="u", session_id="s"))
     events = [event async for event in adapter.stream(handle)]
 
-    assert not [
-        event for event in events if getattr(event, "item_kind", "") == "reasoning"
-    ]
+    assert not [event for event in events if getattr(event, "item_kind", "") == "reasoning"]

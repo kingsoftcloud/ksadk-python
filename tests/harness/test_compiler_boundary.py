@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from ksadk.harness.compiler import compile_revision_payload
+import pytest
+
+from ksadk.harness.compiler import HarnessCompileError, compile_revision_payload
 
 
 def test_compiler_accepts_full_control_plane_revision_shape() -> None:
     compiled = compile_revision_payload(
         {
             "role": {"name": "Finance", "objective": "Analyze a budget."},
-            "orchestration": {"pattern": "single-agent"},
+            "orchestration": {
+                "pattern": "single-agent",
+                "config": {
+                    "run_control": {
+                        "objective": "Analyze a budget.",
+                        "limits": {"max_model_calls": 8},
+                    }
+                },
+            },
             "model": {
                 "profileRef": "model-profile://finance@1.0.0",
                 "fallbackProfileRefs": ["model-profile://backup@1.0.0"],
@@ -36,3 +46,27 @@ def test_compiler_accepts_full_control_plane_revision_shape() -> None:
     assert compiled.model.fallback_profile_refs == ("model-profile://backup@1.0.0",)
     assert compiled.model.provider_policy.max_attempts_per_model == 3
     assert compiled.model.provider_policy.total_attempt_budget == 5
+    assert (
+        compiled.execution_strategy.config["run_control"]["limits"]["max_model_calls"]
+        == 8
+    )
+
+
+def test_compiler_rejects_invalid_run_control_before_build() -> None:
+    with pytest.raises(HarnessCompileError, match="run_control"):
+        compile_revision_payload(
+            {
+                "role": {"name": "Agent", "objective": "Do work."},
+                "orchestration": {
+                    "pattern": "single-agent",
+                    "config": {
+                        "run_control": {
+                            "objective": "Do work.",
+                            "limits": {},
+                        }
+                    },
+                },
+                "model": {"profileRef": "model-profile://test@1.0.0"},
+            },
+            revision_ref="agent-revision://test@1.0.0",
+        )

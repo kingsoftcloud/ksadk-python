@@ -88,9 +88,7 @@ def test_bound_sandbox_is_declared_before_first_observation():
         tools={"sandbox_read_file": sandbox_read_file},
     )
     events = _run(engine, _start_request())
-    declarations = [
-        event for event in events if event.event_type == EventType.CAPABILITY_DECLARED
-    ]
+    declarations = [event for event in events if event.event_type == EventType.CAPABILITY_DECLARED]
 
     sandbox_declarations = [
         event for event in declarations if event.payload.get("kind") == "sandbox"
@@ -140,6 +138,56 @@ def test_model_failure_maps_to_run_failed():
     assert "provider 500" in events[-1].payload["error"]
     # 失败流也必须过 conformance（run.started + 唯一终止事件）
     assert run_conformance_suite(events).ok
+
+
+def test_model_binding_output_budget_reaches_reasoner():
+    class _BudgetReasoner(HarnessReasoner):
+        def __init__(self) -> None:
+            self.max_output_tokens = None
+
+        async def complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
+            self.max_output_tokens = max_output_tokens
+            return HarnessReasoningTurn(final_text="ok")
+
+    reasoner = _BudgetReasoner()
+    engine = ManagedLangGraphEngine(reasoner=reasoner)
+    spec = HarnessSpec(
+        agent_revision_ref="agent-revision://proj-1@2",
+        model=ModelBinding(
+            profile_ref="model-profile://kimi-k3@1.0.0",
+            max_output_tokens=73,
+        ),
+        prompt=PromptSpec(instructions="助手"),
+    )
+
+    async def drive():
+        compiled = await engine.compile(spec)
+        handle = await engine.start(_start_request(), compiled)
+        return [event async for event in engine.stream(handle)]
+
+    events = asyncio.run(drive())
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+    assert reasoner.max_output_tokens == 73
+
+
+def test_streaming_reasoning_delta_is_emitted_before_final_answer():
+    class _StreamingReasoner(HarnessReasoner):
+        _streaming = True
+
+        async def stream_complete(self, **kwargs):
+            yield {"reasoning_delta": "检查安全边界"}
+            yield {"text_delta": "不能提供。"}
+            yield {
+                "turn": HarnessReasoningTurn(
+                    final_text="不能提供。",
+                    reasoning="检查安全边界",
+                )
+            }
+
+    events = _run(ManagedLangGraphEngine(reasoner=_StreamingReasoner()), _start_request())
+    kinds = [event.event_type for event in events]
+    assert kinds.index(EventType.REASONING_DELTA) < kinds.index(EventType.TEXT_DELTA)
+    assert kinds.index(EventType.TEXT_DELTA) < kinds.index(EventType.TEXT_COMPLETED)
 
 
 def test_primary_model_failure_uses_fallback_and_preserves_audit_events():

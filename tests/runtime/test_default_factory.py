@@ -13,7 +13,7 @@ import pytest
 import ksadk.runtime as runtime_api
 from ksadk.codex.client import CodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
-from ksadk.harness.runtime import HarnessRuntimeAdapter
+from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime import factory as runtime_factory
@@ -62,7 +62,7 @@ class _FactoryRunner(BaseRunner):
     ("runtime_type", "adapter_type"),
     [
         ("codex", CodexRuntimeAdapter),
-        ("harness", HarnessRuntimeAdapter),
+        ("harness", ManagedHarnessRuntimeAdapter),
         ("adk", ADKRuntimeAdapter),
         ("langgraph", LangGraphRuntimeAdapter),
     ],

@@ -20,11 +20,13 @@ from ksadk.runtime.launch import RuntimeLaunchContext
 
 
 def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
-    """Create the native KsADK Harness adapter from an immutable launch manifest."""
+    """Create the managed KsADK Harness adapter from an immutable launch manifest."""
 
-    from ksadk.harness.config import HarnessConfig
+    import re
+
+    from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
     from ksadk.harness.reasoner import LiteLLMHarnessReasoner
-    from ksadk.harness.runtime import HarnessRuntimeAdapter
+    from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 
     config = dict(context.config)
     prompt = str(config.get("prompt") or config.get("base_instructions") or "").strip()
@@ -33,18 +35,20 @@ def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
         raise ValueError("harness runtime requires prompt/base_instructions")
     if not model:
         raise ValueError("harness runtime requires model")
-    return HarnessRuntimeAdapter(
-        HarnessConfig.from_dict(
-            {
-                "runtime": "yaml",
-                "model": model,
-                "prompt": prompt,
-                "sandbox": {"read_only": bool(config.get("sandbox_read_only", True))},
-            },
-            source="RuntimeLaunchContext.config",
+    model_ref_name = re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "studio-model"
+    agent_ref_name = re.sub(
+        r"[^A-Za-z0-9._-]+", "-", str(config.get("agent_id") or "studio-agent")
+    ).strip("-") or "studio-agent"
+    spec = HarnessSpec(
+        agent_revision_ref=f"agent-revision://{agent_ref_name}@1",
+        model=ModelBinding(profile_ref=f"model-profile://{model_ref_name}@1"),
+        prompt=PromptSpec(instructions=prompt),
+    )
+    return ManagedHarnessRuntimeAdapter(
+        spec,
+        reasoner=LiteLLMHarnessReasoner(
+            base_url=str(config.get("base_url") or ""),
         ),
-        agent_name=str(config.get("agent_id") or "harness-agent"),
-        reasoner=LiteLLMHarnessReasoner(base_url=str(config.get("base_url") or "")),
         workspace_root=context.project_dir,
     )
 

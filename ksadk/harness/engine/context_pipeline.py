@@ -58,11 +58,23 @@ class EngineContextPipeline:
             for m in history
             if isinstance(m, dict) and m.get("role") in {"user", "assistant", "system"}
         ]
+        current_input = str(run.request.input or "")
+        # Studio/Draft 会把本轮输入同时放进 request.input 和历史末尾。历史副本
+        # 不能继续作为可丢弃 history_round 参与规划，否则超大本轮输入会在
+        # Planner 限额时被静默裁掉。只移除重复副本，本轮输入始终以 required
+        # current_input 单独进入 ContextPlan。
+        if (
+            current_input
+            and messages
+            and messages[-1].role is MessageRole.USER
+            and messages[-1].content == current_input
+        ):
+            messages = messages[:-1]
         # 长任务方案 §9：recall_memory_and_knowledge——规划前检索长期 Memory，
         # 命中以 system 段注入（planner 按 history_system 高优先级保留）。
         messages = self._recall_memory(run, messages) + messages
         window, source = self._resolve_window(run)
-        plan = self._plan_context(run, messages)
+        plan = self._plan_context(run, messages, current_input=current_input)
         self._emit_planned(run, plan, window, source)
         policy = run.compiled.spec.context_policy
         max_input = plan.budget.max_input_tokens
@@ -76,7 +88,7 @@ class EngineContextPipeline:
             )
             if compacted is not None:
                 messages = compacted
-                plan = self._plan_context(run, messages)
+                plan = self._plan_context(run, messages, current_input=current_input)
                 self._emit_planned(run, plan, window, source)
                 max_input = plan.budget.max_input_tokens
 
@@ -87,7 +99,7 @@ class EngineContextPipeline:
             )
             if compacted is not None:
                 messages = compacted
-                plan = self._plan_context(run, messages)
+                plan = self._plan_context(run, messages, current_input=current_input)
                 self._emit_planned(run, plan, window, source)
                 run.events.append(
                     self._event(
@@ -97,9 +109,12 @@ class EngineContextPipeline:
                     )
                 )
             if plan.planned_input_tokens > plan.budget.max_input_tokens:
+                current_tokens = count_tokens(current_input)
                 raise ContextEngineError(
-                    "紧急压缩后仍超出输入预算: "
-                    f"{plan.planned_input_tokens} > {plan.budget.max_input_tokens}"
+                    "紧急压缩后仍超出输入预算；本轮用户输入不会被静默丢弃: "
+                    f"planned_input_tokens={plan.planned_input_tokens}, "
+                    f"current_input_tokens={current_tokens}, "
+                    f"max_input_tokens={plan.budget.max_input_tokens}"
                 )
 
         assembled = self._context_engine.assemble_chat(plan)
@@ -258,25 +273,24 @@ class EngineContextPipeline:
             model_profile_window=int(raw_window) if isinstance(raw_window, (int, float)) else None
         )
 
-    def _plan_context(self, run: Any, messages: list[Message]) -> Any:
+    def _plan_context(
+        self,
+        run: Any,
+        messages: list[Message],
+        *,
+        current_input: str | None = None,
+    ) -> Any:
         """对给定历史做一次上下文规划（ContextRequest 以快照构建）。"""
         from ksadk.harness.context_engine import ContextRequest
 
         window, _source = self._resolve_window(run)
         snapshot = run.state.model_copy(update={"messages": messages})
-        current_input = str(run.request.input or "")
-        # Studio/Draft 的 conversation_history 可能已包含本轮用户输入。
-        # ContextEngine 另会把 user_input 作为 required current_input 加入；
-        # 若不去重，模型将在同一次请求中看到两份相同问题。
-        if messages:
-            latest = messages[-1]
-            if latest.role is MessageRole.USER and latest.content == current_input:
-                current_input = ""
+        effective_input = str(run.request.input or "") if current_input is None else current_input
         return self._context_engine.plan(
             ContextRequest(
                 spec=run.compiled.spec,
                 state=snapshot,
-                user_input=current_input,
+                user_input=effective_input,
                 context_window_tokens=window,
                 skill_catalog=tuple(run.skill_catalog),
             )

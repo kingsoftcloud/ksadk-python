@@ -496,3 +496,24 @@ async def test_context_engine_does_not_duplicate_current_user_input():
     ]
     assert len(exact_matches) == 1
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_oversized_current_input_fails_explicitly_instead_of_being_dropped():
+    """单条本轮输入超预算时必须失败，不能退回上一轮或伪装成功。"""
+    reasoner = _EchoReasoner()
+    runtime = DraftRuntime(
+        reasoner=reasoner,
+        context_engine=HarnessContextEngine(),
+    )
+    session = await runtime.compile(_draft_payload())
+
+    oversized = "本轮最新输入不可丢弃。" * 12000
+    events = await session.converse(oversized)
+
+    failed = [event for event in events if event.event_type == EventType.RUN_FAILED]
+    assert failed
+    assert "本轮用户输入不会被静默丢弃" in failed[-1].payload["error"]
+    assert "current_input_tokens=" in failed[-1].payload["error"]
+    assert not reasoner.seen_messages
+    await runtime.close()

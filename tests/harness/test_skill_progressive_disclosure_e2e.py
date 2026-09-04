@@ -113,6 +113,21 @@ class _ProgressiveDisclosureModel:
         )
 
 
+class _EmptyOnceAfterDisclosureModel(_ProgressiveDisclosureModel):
+    """模拟 Provider 在 L3 后先返回一次空 assistant，再正常收口。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.empty_emitted = False
+
+    async def complete(self, **kwargs):
+        turn = await super().complete(**kwargs)
+        if turn.final_text and not turn.tool_calls and not self.empty_emitted:
+            self.empty_emitted = True
+            return HarnessReasoningTurn(final_text="")
+        return turn
+
+
 @pytest.mark.asyncio
 async def test_revision_model_discloses_local_skill_l0_to_l3_end_to_end(tmp_path):
     skill_root = tmp_path / "finance-budget-analysis"
@@ -178,4 +193,50 @@ async def test_revision_model_discloses_local_skill_l0_to_l3_end_to_end(tmp_path
         and event.payload.get("text") == "已按 Skill 公式计算预算偏差率。"
         for event in events
     )
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_empty_answer_after_l3_gets_one_finalization_retry(tmp_path):
+    skill_root = tmp_path / "finance-budget-analysis"
+    resource_path = skill_root / _RESOURCE_REF
+    resource_path.parent.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: 预算偏差分析\ndescription: 分析预算与实际支出偏差\n---\n"
+        "先读取预算和实际支出，再读取 references/formula.md，最后给出答案。\n",
+        encoding="utf-8",
+    )
+    resource_path.write_text(
+        "variance_rate = (actual - budget) / budget\n",
+        encoding="utf-8",
+    )
+    spec = compile_revision_payload(
+        _revision_payload(), revision_ref=_REVISION_REF
+    )
+    model = _EmptyOnceAfterDisclosureModel()
+    engine = ManagedLangGraphEngine(
+        reasoner=model,
+        skill_runtime=SkillRuntime(LocalSkillSource({_SKILL_REF: skill_root})),
+    )
+    compiled = await engine.compile(spec)
+    handle = await engine.start(
+        StartRequest(
+            agent_id="finance-budget-agent",
+            user_id="user-1",
+            session_id="session-finalize-retry",
+            input="预算 100 万，实际支出 120 万，请给出偏差率。",
+            runtime_type="managed-langgraph",
+        ),
+        compiled,
+    )
+    events = [event async for event in engine.stream(handle)]
+
+    final_texts = [
+        str(event.payload.get("text") or "")
+        for event in events
+        if event.event_type == EventType.TEXT_COMPLETED
+        and event.phase == "final_answer"
+    ]
+    assert model.empty_emitted is True
+    assert final_texts == ["已按 Skill 公式计算预算偏差率。"]
     assert events[-1].event_type == EventType.RUN_COMPLETED

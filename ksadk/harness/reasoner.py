@@ -200,9 +200,7 @@ class LiteLLMHarnessReasoner:
         try:
             from litellm import acompletion
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError(
-                "Harness streaming requires the 'adk' extra (litellm)"
-            ) from exc
+            raise RuntimeError("Harness streaming requires the 'adk' extra (litellm)") from exc
 
         resolved_model = resolve_model_identifier(model)
         kwargs: dict[str, Any] = {
@@ -217,8 +215,8 @@ class LiteLLMHarnessReasoner:
             if max_output_tokens < 1:
                 raise ValueError("max_output_tokens must be positive")
             kwargs["max_tokens"] = max_output_tokens
-        base_url = os.getenv("OPENAI_BASE_URL")
-        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = self._base_url or os.getenv("OPENAI_BASE_URL")
+        api_key = self._api_key or os.getenv("OPENAI_API_KEY")
         if base_url:
             kwargs["base_url"] = base_url
         if api_key:
@@ -229,6 +227,7 @@ class LiteLLMHarnessReasoner:
             raise RuntimeError(f"Harness model {model!r} returned a non-stream response")
 
         text_chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         tool_fragments: dict[int, dict[str, str]] = {}
         usage_payload: dict[str, int] | None = None
         saw_choice = False
@@ -246,6 +245,12 @@ class LiteLLMHarnessReasoner:
                 if content is not None:
                     text_chunks.append(str(content))
                     yield {"text_delta": str(content)}
+                reasoning_content = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if reasoning_content is not None:
+                    reasoning_chunks.append(str(reasoning_content))
+                    yield {"reasoning_delta": str(reasoning_content)}
                 for call in getattr(delta, "tool_calls", None) or []:
                     index = int(getattr(call, "index", 0) or 0)
                     current = tool_fragments.setdefault(
@@ -279,6 +284,7 @@ class LiteLLMHarnessReasoner:
                 final_text=final_text,
                 tool_calls=calls,
                 usage=usage_payload,
+                reasoning="".join(reasoning_chunks) or None,
             )
         }
 
@@ -326,15 +332,11 @@ class LiteLLMHarnessReasoner:
                     )
                     incoming_id = str(getattr(call, "id", "") or "")
                     if incoming_id:
-                        current["id"] = cls._merge_stream_call_id(
-                            current["id"], incoming_id
-                        )
+                        current["id"] = cls._merge_stream_call_id(current["id"], incoming_id)
                     function = getattr(call, "function", None)
                     if function is not None:
                         current["name"] += str(getattr(function, "name", "") or "")
-                        current["arguments"] += str(
-                            getattr(function, "arguments", "") or ""
-                        )
+                        current["arguments"] += str(getattr(function, "arguments", "") or "")
         if not saw_choice and not usage_payload:
             raise RuntimeError(f"Harness model {model!r} returned an empty stream")
         raw_calls = [
@@ -365,9 +367,7 @@ class LiteLLMHarnessReasoner:
             return current
         if incoming.startswith(current):
             return incoming
-        if current.startswith(("call-", "call_")) and incoming.startswith(
-            ("call-", "call_")
-        ):
+        if current.startswith(("call-", "call_")) and incoming.startswith(("call-", "call_")):
             raise HarnessToolCallValidationError(
                 "conflicting_tool_call_id",
                 "Harness model stream emitted a conflicting tool call id",
@@ -388,7 +388,7 @@ class LiteLLMHarnessReasoner:
             except json.JSONDecodeError as exc:
                 raise HarnessToolCallValidationError(
                     "invalid_tool_arguments",
-                    f"Harness model emitted invalid JSON arguments for tool {name!r}"
+                    f"Harness model emitted invalid JSON arguments for tool {name!r}",
                 ) from exc
             call_id = str(getattr(call, "id", "") or "").strip()
             if not call_id:

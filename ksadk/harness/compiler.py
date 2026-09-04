@@ -49,6 +49,7 @@ class RevisionRoleInput(_RevisionInputModel):
 class OrchestrationInput(_RevisionInputModel):
     pattern: str
     config_ref: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class RevisionModelProviderPolicyInput(_RevisionInputModel):
@@ -245,10 +246,19 @@ def _compile_strategy(orchestration: OrchestrationInput | None) -> ExecutionStra
             f"orchestration.pattern {orchestration.pattern!r} 不在支持列表 "
             f"{sorted(_STRATEGY_BY_PATTERN)}"
         )
-    return ExecutionStrategySpec(
-        kind=kind,
-        config={"configRef": orchestration.config_ref} if orchestration.config_ref else {},
-    )
+    config = dict(orchestration.config)
+    if orchestration.config_ref:
+        config["configRef"] = orchestration.config_ref
+    if "run_control" in config:
+        from ksadk.harness.run_control import run_control_spec_from_config
+
+        try:
+            control = run_control_spec_from_config(config)
+        except ValueError as exc:
+            raise HarnessCompileError(f"orchestration.config.run_control 无效: {exc}") from exc
+        assert control is not None
+        config["run_control"] = control.model_dump(mode="json")
+    return ExecutionStrategySpec(kind=kind, config=config)
 
 
 def _inline_instructions(spec: HarnessRevisionInput) -> str | None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.model_provider import (
@@ -55,6 +55,9 @@ class ReasonInput:
     max_output_tokens: int | None = None
     #: 流式模式：True 时调 reasoner.stream_complete 逐 chunk 发 TEXT_DELTA。
     streaming: bool = False
+    #: 可选实时事件出口。流式引擎用它在模型调用尚未结束时交付 started/delta；
+    #: 事件仍保留在 ReasonOutput，供非流式调用方与审计使用。
+    live_event_sink: Callable[[RuntimeEvent], None] | None = None
 
 
 @dataclass
@@ -161,7 +164,10 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 "fallback": candidate_index > 1,
             }
             seq += 1
-            out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta))
+            started_event = _event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta)
+            out.events.append(started_event)
+            if inp.live_event_sink is not None:
+                inp.live_event_sink(started_event)
             try:
                 if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
                     text_parts: list[str] = []
@@ -179,14 +185,27 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                         if "text_delta" in item:
                             text_parts.append(item["text_delta"])
                             seq += 1
-                            out.events.append(
-                                _event(
-                                    EventType.TEXT_DELTA,
-                                    inp,
-                                    seq,
-                                    {"text": item["text_delta"]},
-                                ),
+                            delta_event = _event(
+                                EventType.TEXT_DELTA,
+                                inp,
+                                seq,
+                                {"text": item["text_delta"]},
                             )
+                            out.events.append(delta_event)
+                            if inp.live_event_sink is not None:
+                                inp.live_event_sink(delta_event)
+                        if "reasoning_delta" in item:
+                            seq += 1
+                            reasoning_event = _event(
+                                EventType.REASONING_DELTA,
+                                inp,
+                                seq,
+                                {"text": item["reasoning_delta"]},
+                                phase="commentary",
+                            )
+                            out.events.append(reasoning_event)
+                            if inp.live_event_sink is not None:
+                                inp.live_event_sink(reasoning_event)
                         if "turn" in item:
                             turn = item["turn"]
                 else:
@@ -270,10 +289,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             "output_tokens": int(usage.get("output_tokens") or 0),
             "total_tokens": int(
                 usage.get("total_tokens")
-                or (
-                    int(usage.get("input_tokens") or 0)
-                    + int(usage.get("output_tokens") or 0)
-                )
+                or (int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0))
             ),
         }
         if usage.get("cached_tokens") is not None:
