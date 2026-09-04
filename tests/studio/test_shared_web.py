@@ -207,6 +207,20 @@ def test_react_chat_has_one_root_entry_and_no_standalone_chat(tmp_path: Path):
         assert "sharedChat" not in system["features"]
 
 
+def test_shared_chat_run_output_accepts_serialized_status():
+    record = RunRecord(
+        id="run_status_only",
+        build_id="build_status_only",
+        agent_id="demo-agent",
+        session_id="ses_status_only",
+        trace_id="trace_status_only",
+        status=RunStatus.RUNNING,
+        input="hello",
+    )
+
+    assert StudioSharedWebBridge._run_output(record) == "运行状态：RUNNING"
+
+
 def test_shared_chat_empty_session_survives_session_reload(tmp_path: Path):
     app = create_studio_app(tmp_path, security_enabled=False)
 

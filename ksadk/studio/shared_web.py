@@ -1141,7 +1141,8 @@ class StudioSharedWebBridge:
             return run.output
         if run.error:
             return str(run.error.get("message") or "Agent 运行失败")
-        return f"运行状态：{run.status.value}"
+        status = run.status.value if isinstance(run.status, RunStatus) else str(run.status)
+        return f"运行状态：{status}"
 
     @staticmethod
     def _short_title(value: str, limit: int = 36) -> str:

@@ -668,11 +668,16 @@ def create_studio_app(
                         cloud_target, str(payload.get("SessionId") or ""), payload
                     )
                 elif action == "RunAgent":
-                    # Validate before StreamingResponse commits status 200;
-                    # async-generator code otherwise runs after headers start.
-                    cloud_web.require_session_id(payload)
+                    # Open the upstream connection before StreamingResponse
+                    # commits status 200, so admission failures remain a
+                    # structured HTTP error instead of an empty SSE body.
+                    upstream_stream = await cloud_web.open_run_stream(cloud_target, payload)
                     return StreamingResponse(
-                        cloud_web.stream_run(cloud_target, payload),
+                        cloud_web.stream_run(
+                            cloud_target,
+                            payload,
+                            upstream_stream=upstream_stream,
+                        ),
                         media_type="text/event-stream",
                         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
                     )

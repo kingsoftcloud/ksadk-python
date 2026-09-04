@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.cloud import AccountCloudAgentReference, CloudDeploymentGateway
+from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
 
 CLOUD_AGENT_ID = "ar-20260901184831-bd084c1c"
@@ -163,6 +164,17 @@ class _ScriptedCloudGateway(CloudDeploymentGateway):
         self, deployment: AccountCloudAgentReference, *, session_id: str
     ) -> bool:
         return True
+
+
+class _RejectedCloudGateway(_ScriptedCloudGateway):
+    async def stream_deployment_chat_message(
+        self, deployment: AccountCloudAgentReference, *, session_id: str, content: Any, **_: Any
+    ) -> AsyncIterator[bytes]:
+        raise StudioError(
+            "CLOUD_CHAT_STREAM_FAILED",
+            "runtime agent kernel is not ready",
+            status_code=502,
+        )
 
 
 def _client(
@@ -326,6 +338,25 @@ def test_cloud_runagent_without_session_is_rejected_before_sse_starts(tmp_path: 
         "Code": 400,
         "Message": "云端运行需要会话标识",
         "Data": {"errorCode": "SESSION_ID_REQUIRED"},
+    }
+
+
+def test_cloud_runagent_upstream_rejection_is_returned_before_sse_starts(tmp_path: Path) -> None:
+    with _client(tmp_path, _RejectedCloudGateway()) as client:
+        response = client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": CLOUD_AGENT_ID,
+                "SessionId": "sess-e2e-1",
+                "ResponsesInput": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "Code": 502,
+        "Message": "runtime agent kernel is not ready",
+        "Data": {"errorCode": "CLOUD_CHAT_STREAM_FAILED"},
     }
 
 

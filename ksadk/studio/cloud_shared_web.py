@@ -360,7 +360,11 @@ class CloudSharedWebBridge:
             "Limit": int(payload.get("limit") if payload.get("limit") is not None else safe_limit),
         }
 
-    async def stream_run(self, agent_id: str, payload: dict[str, Any]) -> AsyncIterator[str]:
+    async def open_run_stream(
+        self, agent_id: str, payload: dict[str, Any]
+    ) -> AsyncIterator[bytes]:
+        """Open the upstream response before Studio commits its SSE headers."""
+
         session_id = self.require_session_id(payload)
         prompt = _input_text(payload)
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}] if prompt else []
@@ -370,7 +374,7 @@ class CloudSharedWebBridge:
         goal_objective = (
             str(payload.get("GoalObjective") or payload.get("goal_objective") or "").strip() or None
         )
-        stream = await self.cloud.stream_cloud_chat_message(
+        return await self.cloud.stream_cloud_chat_message(
             cloud_chat_target(agent_id),
             session_id=session_id,
             content=content,
@@ -379,6 +383,17 @@ class CloudSharedWebBridge:
             collaboration_mode=collaboration_mode,
             goal_objective=goal_objective,
         )
+
+    async def stream_run(
+        self,
+        agent_id: str,
+        payload: dict[str, Any],
+        *,
+        upstream_stream: AsyncIterator[bytes] | None = None,
+    ) -> AsyncIterator[str]:
+        stream = upstream_stream
+        if stream is None:
+            stream = await self.open_run_stream(agent_id, payload)
         # Older cloud runtimes end with a bare Responses object. Newer ones
         # already emit canonical terminal events. Inspect without rewriting
         # the live deltas, and synthesize only the missing terminal state.
