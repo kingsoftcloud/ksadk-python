@@ -151,7 +151,7 @@ async def _stream_conversation_semantic_events(
             yield _response_sse(
                 "response.tool_call",
                 {
-                    "name": event.get("name"),
+                    "name": event.get("tool_name") or event.get("name"),
                     "args": event.get("args", {}),
                     "run_id": event.get("run_id"),
                     "stage": event.get("stage"),
@@ -164,7 +164,7 @@ async def _stream_conversation_semantic_events(
             yield _response_sse(
                 "response.tool_result",
                 {
-                    "name": event.get("name"),
+                    "name": event.get("tool_name") or event.get("name"),
                     "output": event.get("output", ""),
                     "run_id": event.get("run_id"),
                 },
@@ -174,7 +174,7 @@ async def _stream_conversation_semantic_events(
                 f"response.ksadk.{event_type}",
                 {
                     "type": event_type,
-                    "name": event.get("name"),
+                    "name": event.get("tool_name") or event.get("name"),
                     "args": event.get("args", {}),
                     "output": event.get("output", ""),
                     "run_id": event.get("run_id"),
@@ -476,12 +476,14 @@ async def _stream_responses_semantic_events(
             call_id = str(event.get("run_id") or f"call_{uuid.uuid4().hex[:12]}")
             item_id = f"fc_{uuid.uuid4().hex[:12]}"
             call_output_index = _next_output_index()
+            # tool_name 是 runner stream 的字段名；name 用于向后兼容旧事件源。
+            tool_name = event.get("tool_name") or event.get("name") or "unknown"
             item = {
                 "id": item_id,
                 "type": "function_call",
                 "status": "in_progress",
                 "call_id": call_id,
-                "name": event.get("name") or "unknown",
+                "name": tool_name,
                 "arguments": "",
             }
             yield _response_sse(
@@ -505,7 +507,7 @@ async def _stream_responses_semantic_events(
                     "response.ksadk.tool_call",
                     {
                         "type": "tool_call",
-                        "name": event.get("name"),
+                        "name": tool_name,
                         "args": event.get("args", {}),
                         "run_id": event.get("run_id"),
                         "stage": event.get("stage"),
@@ -520,7 +522,7 @@ async def _stream_responses_semantic_events(
             yield _response_sse(
                 "response.ksadk.tool_result",
                 {
-                    "name": event.get("name"),
+                    "name": event.get("tool_name") or event.get("name"),
                     "output": event.get("output", ""),
                     "run_id": event.get("run_id"),
                 },
@@ -532,7 +534,7 @@ async def _stream_responses_semantic_events(
                 f"response.ksadk.{event_type}",
                 {
                     "type": event_type,
-                    "name": event.get("name"),
+                    "name": event.get("tool_name") or event.get("name"),
                     "args": event.get("args", {}),
                     "output": event.get("output", ""),
                     "run_id": event.get("run_id"),
@@ -569,6 +571,19 @@ async def _stream_responses_semantic_events(
                     "arguments": arguments,
                     "server_label": str(interrupt_info.get("server_label") or "ksadk"),
                 }
+                # 透传 HumanInTheLoopMiddleware 的可读描述和允许决策类型，
+                # 供前端审批卡展示操作说明和 edit 按钮。
+                if interrupt_info.get("description"):
+                    approval_item["description"] = str(interrupt_info.get("description"))
+                review_configs = interrupt_info.get("review_configs")
+                if isinstance(review_configs, list) and review_configs:
+                    first_review = review_configs[0]
+                    if isinstance(first_review, Mapping):
+                        allowed = first_review.get("allowed_decisions")
+                        if isinstance(allowed, list) and allowed:
+                            approval_item["allowed_decisions"] = [
+                                str(d) for d in allowed
+                            ]
                 approval_output_index = _next_output_index()
                 yield _response_sse(
                     "response.output_item.added",
