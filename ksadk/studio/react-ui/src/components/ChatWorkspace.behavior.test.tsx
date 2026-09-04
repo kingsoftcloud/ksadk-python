@@ -1,392 +1,138 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const { apiFetch, showToast } = vi.hoisted(() => ({
-  apiFetch: vi.fn(),
-  showToast: vi.fn(),
-}));
-
-vi.mock("../api", () => ({ apiFetch }));
-vi.mock("./Toast", () => ({ showToast }));
-
+import { apiFetch } from "../api";
 import { ChatWorkspace } from "./ChatWorkspace";
 
-function jsonResponse(value: unknown, init?: ResponseInit) {
-  return new Response(JSON.stringify(value), {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-}
+const mocks = vi.hoisted(() => {
+  const chat = {
+    bootstrapStatus: "ready",
+    bootstrapErrorMessage: "",
+    sessions: [
+      {
+        SessionId: "session-1",
+        Title: "已有会话",
+        UpdatedAt: "2026-09-04T00:00:00Z",
+        ActiveRunStatus: "",
+      },
+    ],
+    currentSessionId: "session-1",
+    isLoadingSessions: false,
+    hasMoreSessions: false,
+    isMobile: false,
+    isStreaming: false,
+    uiCapabilities: {
+      StopRun: true,
+      Attachments: true,
+      Approval: true,
+      ApprovalPolicy: { Enabled: true },
+      Thinking: true,
+      RuntimeCapabilityMatrix: {},
+    },
+    pendingInteractions: [{ interaction_id: "interaction-1" }],
+    interactionRecords: [],
+    localCatalog: [],
+    createNewSession: vi.fn(),
+    deleteSession: vi.fn(),
+    selectSession: vi.fn(),
+    loadMoreSessions: vi.fn(),
+    loadOlderMessages: vi.fn(),
+    refresh: vi.fn(),
+    send: vi.fn(),
+    stop: vi.fn(),
+    cancelRemote: vi.fn(),
+    deleteResponseFeedback: vi.fn(),
+    submitResponseFeedback: vi.fn(),
+    respondToApproval: vi.fn(),
+    submitAguiAction: vi.fn(),
+    respondInteraction: vi.fn(),
+  };
+  return {
+    chat,
+    useAgentChat: vi.fn(() => chat),
+    facadeOptions: [] as Array<Record<string, unknown>>,
+    timelineProps: null as Record<string, unknown> | null,
+    composerProps: null as Record<string, unknown> | null,
+  };
+});
 
-describe("ChatWorkspace ConversationSurface behavior", () => {
+vi.mock("@kingsoftcloud/ksadk-web/hooks", () => ({
+  useAgentChat: mocks.useAgentChat,
+}));
+vi.mock("@kingsoftcloud/ksadk-web/runtime", () => ({
+  ApiFacadeImpl: class {
+    constructor(options: Record<string, unknown>) {
+      mocks.facadeOptions.push(options);
+    }
+  },
+}));
+vi.mock("@kingsoftcloud/ksadk-web/chat/timeline", () => ({
+  AgentConversationTimeline: (props: Record<string, unknown>) => {
+    mocks.timelineProps = props;
+    return <div data-testid="shared-timeline" />;
+  },
+}));
+vi.mock("@kingsoftcloud/ksadk-web/chat/composer", () => ({
+  AgentConversationComposer: (props: Record<string, unknown>) => {
+    mocks.composerProps = props;
+    return <div data-testid="shared-composer" />;
+  },
+}));
+vi.mock("../api", () => ({ apiFetch: vi.fn() }));
+vi.mock("./AgentAvatar", () => ({ AgentAvatar: () => <span data-testid="agent-avatar" /> }));
+vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confirm-dialog" /> }));
+
+describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    const values = new Map<string, string>();
-    const storage: Storage = {
-      get length() { return values.size; },
-      clear: () => values.clear(),
-      getItem: key => values.get(key) ?? null,
-      key: index => [...values.keys()][index] ?? null,
-      removeItem: key => { values.delete(key); },
-      setItem: (key, value) => { values.set(key, value); },
-    };
-    vi.stubGlobal("localStorage", storage);
+    mocks.useAgentChat.mockClear();
+    mocks.facadeOptions.length = 0;
+    mocks.timelineProps = null;
+    mocks.composerProps = null;
+    Object.values(mocks.chat).forEach(value => {
+      if (typeof value === "function" && "mockClear" in value) value.mockClear();
+    });
   });
 
-  it("fetches the agent-scoped surface and hides undeclared composer inputs", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/surface-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{
-            id: "qwen3.7-flash",
-            display_name: "qwen3.7-flash",
-            capabilities: { reasoning_efforts: ["low", "high"] },
-          }],
-        });
-      }
-      if (path.startsWith("/api/v1/agents/surface-agent/conversation-surface?sessionId=")) {
-        const sessionId = decodeURIComponent(path.split("sessionId=")[1]);
-        return jsonResponse({
-          buildId: "build-surface",
-          surface: {
-            apiVersion: "conversation.ksadk.io/v1",
-            kind: "ConversationSurface",
-            surfaceId: "studio.build.build-surface",
-            sessionId,
-            providerRef: "studio.runtime.langgraph",
-            inputs: [{ name: "text", mode: "native" }],
-            outputs: [{ name: "streaming", mode: "translated" }],
-          },
-        });
-      }
-      if (path === "/api/v1/builds/build-surface/conversation:stream") {
-        return new Response(
-          [
-            'id: 1\nevent: message.delta\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"answer-1","sourceEventIds":["event-1"],"sessionId":"session","runId":"run-1","kind":"assistant_text","operation":"append","lifecycle":"streaming","visibility":"public","payloadSchemaRef":"conversation.item.assistant_text/v1","payload":{"text":"完成"},"nativeRef":{}}}\n\n',
-            'id: 2\nevent: run.completed\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"run-end","sourceEventIds":["event-2"],"sessionId":"session","runId":"run-1","kind":"progress","operation":"completed","lifecycle":"completed","visibility":"public","payloadSchemaRef":"conversation.item.progress/v1","payload":{},"nativeRef":{}}}\n\n',
-          ].join(""),
-          { headers: { "Content-Type": "text/event-stream" } },
-        );
-      }
-      throw new Error(`unexpected request: ${path}`);
+  it("binds the shared controller to the selected agent and Studio fetch", () => {
+    render(<ChatWorkspace agentId="ar-cloud-1" agentName="云端 Agent" />);
+
+    expect(mocks.facadeOptions).toEqual([{ fetch: apiFetch, agentId: "ar-cloud-1" }]);
+    expect(mocks.useAgentChat).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "ar-cloud-1",
+      conversationClient: null,
+    }));
+    expect(screen.getByTestId("shared-timeline")).toBeInTheDocument();
+    expect(screen.getByTestId("shared-composer")).toBeInTheDocument();
+  });
+
+  it("passes stream, approval, HITL, and capability controls to shared components", () => {
+    render(<ChatWorkspace agentId="local-1" agentName="本地 Agent" />);
+
+    expect(mocks.timelineProps).toMatchObject({
+      isMobile: false,
+      onRespondToApproval: mocks.chat.respondToApproval,
+      onSubmitAguiAction: mocks.chat.submitAguiAction,
+      onCancelRemote: mocks.chat.cancelRemote,
     });
+    expect(mocks.composerProps).toMatchObject({
+      isMobile: false,
+      attachmentsEnabled: true,
+      approvalEnabled: true,
+      thinkingEnabled: true,
+      pendingInteractions: mocks.chat.pendingInteractions,
+    });
+  });
 
-    const user = userEvent.setup();
-    render(<ChatWorkspace agentId="surface-agent" agentName="Surface Agent" />);
-
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "消息" })).toBeEnabled());
-    expect(apiFetch).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/api\/v1\/agents\/surface-agent\/conversation-surface\?sessionId=/),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  it("keeps Studio session navigation and refresh wired to the shared controller", async () => {
+    const { rerender } = render(
+      <ChatWorkspace agentId="local-1" agentName="本地 Agent" refreshTick={0} />,
     );
-    expect(screen.queryByRole("button", { name: "添加附件或运行控制" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /批准模式/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /模型|推理强度/ })).not.toBeInTheDocument();
 
-    await user.type(screen.getByRole("textbox", { name: "消息" }), "只发送文字");
-    await user.click(screen.getByRole("button", { name: "发送消息" }));
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
-      "/api/v1/builds/build-surface/conversation:stream",
-      expect.objectContaining({ method: "POST" }),
-    ));
-    const responseCall = apiFetch.mock.calls.find(([path]) => path === "/api/v1/builds/build-surface/conversation:stream");
-    const body = JSON.parse(String(responseCall?.[1]?.body));
-    expect(body.input.parts).toEqual([{ kind: "text", text: "只发送文字" }]);
-    expect(body.input).not.toHaveProperty("modelRef");
-    expect(body.input).not.toHaveProperty("reasoning");
-    expect(body.input).not.toHaveProperty("approvalMode");
-    expect(body.input).not.toHaveProperty("collaborationMode");
-    expect(body.input).not.toHaveProperty("goalObjective");
-    expect(responseCall?.[1]?.headers).toMatchObject({
-      "Content-Type": "application/json",
-      "Idempotency-Key": body.input.idempotencyKey,
-    });
-    expect(apiFetch.mock.calls.some(([path]) => path === "/v1/responses")).toBe(false);
-  });
+    fireEvent.click(screen.getByRole("button", { name: "新对话" }));
+    fireEvent.click(screen.getByRole("button", { name: "已有会话" }));
+    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.selectSession).toHaveBeenCalledWith("session-1");
 
-  it("submits one turn when send is triggered twice before React commits state", async () => {
-    let resolveStream!: (response: Response) => void;
-    const pendingStream = new Promise<Response>((resolve) => {
-      resolveStream = resolve;
-    });
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/double-send-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
-        });
-      }
-      if (path.startsWith(
-        "/api/v1/agents/double-send-agent/conversation-surface?sessionId=",
-      )) {
-        const sessionId = decodeURIComponent(path.split("sessionId=")[1]);
-        return jsonResponse({
-          buildId: "build-double-send",
-          surface: {
-            apiVersion: "conversation.ksadk.io/v1",
-            kind: "ConversationSurface",
-            surfaceId: "studio.build.build-double-send",
-            sessionId,
-            providerRef: "studio.runtime.codex",
-            inputs: [{ name: "text", mode: "native" }],
-            outputs: [{ name: "streaming", mode: "native" }],
-          },
-        });
-      }
-      if (path === "/api/v1/builds/build-double-send/conversation:stream") {
-        return pendingStream;
-      }
-      throw new Error(`unexpected request: ${path}`);
-    });
-
-    const user = userEvent.setup();
-    render(<ChatWorkspace agentId="double-send-agent" agentName="Double Send Agent" />);
-    const textbox = await screen.findByRole("textbox", { name: "消息" });
-    await user.type(textbox, "只提交一次");
-    const send = screen.getByRole("button", { name: "发送消息" });
-
-    act(() => {
-      fireEvent.click(send);
-      fireEvent.click(send);
-    });
-
-    await waitFor(() => expect(apiFetch.mock.calls.filter(([path]) => (
-      path === "/api/v1/builds/build-double-send/conversation:stream"
-    ))).toHaveLength(1));
-
-    await act(async () => {
-      resolveStream(new Response(
-        'id: 1\nevent: run.completed\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"run-end","sourceEventIds":["event-1"],"sessionId":"session","runId":"run-1","kind":"progress","operation":"completed","lifecycle":"completed","visibility":"public","payloadSchemaRef":"conversation.item.progress/v1","payload":{"status":"completed"},"nativeRef":{}}}\n\n',
-        { headers: { "Content-Type": "text/event-stream" } },
-      ));
-      await pendingStream;
-    });
-  });
-
-  it("keeps the legacy composer when an older Studio has no surface endpoint", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/legacy-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
-        });
-      }
-      if (path.startsWith("/api/v1/agents/legacy-agent/conversation-surface?sessionId=")) {
-        return jsonResponse({ error: { message: "not found" } }, { status: 404 });
-      }
-      if (path === "/v1/responses") {
-        return new Response(
-          'event: response.completed\ndata: {"type":"response.completed","response":{"id":"legacy-response","status":"completed","output":[]}}\n\n',
-          { headers: { "Content-Type": "text/event-stream" } },
-        );
-      }
-      throw new Error(`unexpected request: ${path}`);
-    });
-
-    render(<ChatWorkspace agentId="legacy-agent" agentName="Legacy Agent" />);
-
-    expect(await screen.findByRole("button", { name: "添加附件或运行控制" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "批准模式：帮我批准" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "模型 qwen3.7-flash" })).toBeInTheDocument();
-
-    const user = userEvent.setup();
-    await user.type(screen.getByRole("textbox", { name: "消息" }), "旧 Agent 继续工作");
-    await user.click(screen.getByRole("button", { name: "发送消息" }));
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
-      "/v1/responses",
-      expect.objectContaining({ method: "POST" }),
-    ));
-  });
-
-  it("reconnects only the typed conversation transport from its durable event cursor", async () => {
-    const item = (sourceEventId: string, text: string, lifecycle = "streaming", operation = "append") => ({
-      apiVersion: "conversation.ksadk.io/v1",
-      kindVersion: 1,
-      itemId: "answer-1",
-      sourceEventIds: [sourceEventId],
-      sessionId: "session-reconnect",
-      runId: "run-reconnect",
-      kind: "assistant_text",
-      operation,
-      lifecycle,
-      visibility: "public",
-      payloadSchemaRef: "conversation.item.assistant_text/v1",
-      payload: { text },
-      nativeRef: {},
-    });
-    const frame = (id: number, type: string, payload: unknown) => (
-      `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(payload)}\n\n`
-    );
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/reconnect-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
-        });
-      }
-      if (path.startsWith("/api/v1/agents/reconnect-agent/conversation-surface?sessionId=")) {
-        const sessionId = decodeURIComponent(path.split("sessionId=")[1]);
-        return jsonResponse({
-          buildId: "build-reconnect",
-          surface: {
-            apiVersion: "conversation.ksadk.io/v1",
-            kind: "ConversationSurface",
-            surfaceId: "studio.build.build-reconnect",
-            sessionId,
-            providerRef: "studio.runtime.langgraph",
-            inputs: [{ name: "text", mode: "native" }],
-            outputs: [{ name: "streaming", mode: "translated" }],
-          },
-        });
-      }
-      if (path === "/api/v1/builds/build-reconnect/conversation:stream") {
-        return new Response(frame(1, "message.delta", { conversationItem: item("source-1", "part") }), {
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }
-      if (path === "/api/v1/runs/run-reconnect/events?after=1") {
-        return new Response([
-          frame(1, "message.delta", { conversationItem: item("source-1", "part") }),
-          frame(2, "run.completed", {
-            conversationItem: {
-              ...item("source-2", "", "completed", "completed"),
-              itemId: "run-end",
-              kind: "progress",
-              payloadSchemaRef: "conversation.item.progress/v1",
-              payload: {},
-            },
-          }),
-        ].join(""), { headers: { "Content-Type": "text/event-stream" } });
-      }
-      throw new Error(`unexpected request: ${path}`);
-    });
-
-    const user = userEvent.setup();
-    render(<ChatWorkspace agentId="reconnect-agent" agentName="Reconnect Agent" />);
-    const textbox = await screen.findByRole("textbox", { name: "消息" });
-    await user.type(textbox, "断线续流");
-    await user.click(screen.getByRole("button", { name: "发送消息" }));
-
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
-      "/api/v1/runs/run-reconnect/events?after=1",
-      expect.objectContaining({
-        headers: { "Last-Event-ID": "1" },
-        signal: expect.any(AbortSignal),
-      }),
-    ));
-    expect(apiFetch.mock.calls.filter(([path]) => (
-      path === "/api/v1/builds/build-reconnect/conversation:stream"
-    ))).toHaveLength(1);
-    expect(apiFetch.mock.calls.some(([path]) => path === "/v1/responses")).toBe(false);
-  });
-
-  it("does not guess a replay Run when the typed stream returned no canonical item", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/no-item-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
-        });
-      }
-      if (path.startsWith("/api/v1/agents/no-item-agent/conversation-surface?sessionId=")) {
-        const sessionId = decodeURIComponent(path.split("sessionId=")[1]);
-        return jsonResponse({
-          buildId: "build-no-item",
-          surface: {
-            apiVersion: "conversation.ksadk.io/v1",
-            kind: "ConversationSurface",
-            surfaceId: "studio.build.build-no-item",
-            sessionId,
-            providerRef: "studio.runtime.langgraph",
-            inputs: [{ name: "text", mode: "native" }],
-            outputs: [{ name: "streaming", mode: "translated" }],
-          },
-        });
-      }
-      if (path === "/api/v1/builds/build-no-item/conversation:stream") {
-        return new Response(
-          'id: 1\nevent: run.created\ndata: {"runId":"run-must-not-be-guessed"}\n\n',
-          { headers: { "Content-Type": "text/event-stream" } },
-        );
-      }
-      throw new Error(`unexpected request: ${path}`);
-    });
-
-    const user = userEvent.setup();
-    render(<ChatWorkspace agentId="no-item-agent" agentName="No Item Agent" />);
-    const textbox = await screen.findByRole("textbox", { name: "消息" });
-    await user.type(textbox, "不要猜 Run");
-    await user.click(screen.getByRole("button", { name: "发送消息" }));
-
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
-      "运行失败",
-      expect.stringContaining("可恢复的 Run 标识前中断"),
-      "error",
-    ));
-    expect(apiFetch.mock.calls.some(([path]) => (
-      String(path).startsWith("/api/v1/runs/run-must-not-be-guessed")
-    ))).toBe(false);
-  });
-
-  it("fails closed when the current Studio cannot prove the active surface", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/broken-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
-        });
-      }
-      if (path.startsWith("/api/v1/agents/broken-agent/conversation-surface?sessionId=")) {
-        return jsonResponse({ error: { message: "build failed" } }, { status: 500 });
-      }
-      throw new Error(`unexpected request: ${path}`);
-    });
-
-    render(<ChatWorkspace agentId="broken-agent" agentName="Broken Agent" />);
-
-    const input = await screen.findByRole("textbox", { name: "消息" });
-    await waitFor(() => expect(input).toBeDisabled());
-    expect(input).toHaveAttribute("placeholder", "会话能力加载失败，请刷新后重试");
-    expect(screen.queryByRole("button", { name: "添加附件或运行控制" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /批准模式/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /模型|推理强度/ })).not.toBeInTheDocument();
-    expect(apiFetch.mock.calls.some(([path]) => path === "/v1/responses")).toBe(false);
-  });
-
-  it("fails closed on a network error instead of guessing legacy capabilities", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/runs") return jsonResponse({ items: [] });
-      if (path === "/api/v1/agents/offline-agent/models") {
-        return jsonResponse({
-          Current: "qwen3.7-flash",
-          Models: [{ id: "qwen3.7-flash", display_name: "qwen3.7-flash" }],
-        });
-      }
-      if (path.startsWith("/api/v1/agents/offline-agent/conversation-surface?sessionId=")) {
-        throw new TypeError("Failed to fetch");
-      }
-      throw new Error(`unexpected request: ${path}`);
-    });
-
-    render(<ChatWorkspace agentId="offline-agent" agentName="Offline Agent" />);
-
-    const input = await screen.findByRole("textbox", { name: "消息" });
-    await waitFor(() => expect(input).toHaveAttribute(
-      "placeholder",
-      "会话能力加载失败，请刷新后重试",
-    ));
-    expect(input).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "添加附件或运行控制" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /批准模式/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /模型|推理强度/ })).not.toBeInTheDocument();
-    expect(apiFetch.mock.calls.some(([path]) => path === "/v1/responses")).toBe(false);
+    rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" refreshTick={1} />);
+    await waitFor(() => expect(mocks.chat.refresh).toHaveBeenCalledOnce());
   });
 });

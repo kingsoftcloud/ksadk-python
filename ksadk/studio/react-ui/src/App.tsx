@@ -16,7 +16,6 @@ import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
-import { CloudChatWorkspace } from "./components/CloudChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
 import { ToastRegion } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
@@ -623,9 +622,8 @@ export default function App() {
           <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
               {chatMounted && isCloudChat && selectedCloudDeployment && (
-                <CloudChatWorkspace
+                <ChatWorkspace
                   key={selectedCloudDeployment.id}
-                  deploymentId={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   active={view === "conversations"}

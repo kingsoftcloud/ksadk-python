@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import "@kingsoftcloud/ksadk-web/styles";
 import App from "./App.tsx";
 import { initializeStudioSession } from "./api";
 import { initializeStudioTheme } from "./studioTheme";

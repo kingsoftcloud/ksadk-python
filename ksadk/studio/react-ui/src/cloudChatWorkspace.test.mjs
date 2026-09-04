@@ -3,96 +3,31 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const source = readFileSync(resolve(import.meta.dirname, "components/CloudChatWorkspace.tsx"), "utf8");
-const composerSource = readFileSync(resolve(import.meta.dirname, "components/ChatComposer.tsx"), "utf8");
-const settingsSource = readFileSync(resolve(import.meta.dirname, "components/SettingsOverlay.tsx"), "utf8");
+const appSource = readFileSync(resolve(import.meta.dirname, "App.tsx"), "utf8");
+const workspaceSource = readFileSync(
+  resolve(import.meta.dirname, "components/ChatWorkspace.tsx"),
+  "utf8",
+);
 
-test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent as recovery", () => {
-  assert.match(source, /const \[waitingForResponse, setWaitingForResponse\] = useState\(false\)/);
-  assert.match(source, /rebuildPersistedSessionHistory/);
-  // Message read-model and SessionEvents are committed by one projection
-  // boundary.  This prevents two asynchronous writers from blanking or
-  // replaying a cloud transcript during a live foreground stream.
-  assert.match(source, /const refreshSessionProjection = useCallback/);
-  assert.match(source, /const \[rows, events\] = await Promise\.all/);
-  assert.doesNotMatch(source, /window\.setInterval/);
-  assert.match(source, /awaitingAcceptedSeqRef\.current/);
-  assert.match(source, /\[runId, invocationId\]\.filter\(Boolean\)\.includes\(eventRunId\)/);
-  assert.match(source, /const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq/);
-  assert.match(source, /if \(!matchesRun && !matchesAcceptedWindow\) continue/);
-  assert.match(source, /const sendInFlightRef = useRef\(false\)/);
-  assert.match(source, /const currentSessionIdRef = useRef\(""\)/);
-  assert.match(source, /const waitingForResponseRef = useRef\(false\)/);
-  assert.match(source, /waitingForResponse \|\| sendInFlightRef\.current/);
-  assert.match(source, /sendInFlightRef\.current = true/);
-  assert.match(source, /sendInFlightRef\.current = false/);
-  assert.match(source, /const awaitingInvocationIdRef = useRef\(""\)/);
-  assert.match(source, /\["run_status", "run\.status"\]/);
-  assert.match(source, /content\.status/);
-  assert.match(source, /const assistantIdsBeforeSendRef = useRef<Set<string>>\(new Set\(\)\)/);
-  assert.match(source, /!assistantIdsBeforeSendRef\.current\.has\(message\.id\)/);
-  assert.match(source, /\.map\(message => message\.id\)/);
-  assert.match(source, /refreshSessions\(\)\.catch\(\(\) => \{\}\)/);
-  assert.match(source, /const sessionId = currentSessionIdRef\.current \|\| await createSession\(\)/);
-  assert.match(source, /selectSession\(session\.id\)/);
-  assert.match(source, /waitingForResponseRef\.current = true/);
-  assert.match(source, /waitingForResponseRef\.current = false/);
-  assert.match(source, /messages\/stream/);
-  assert.match(source, /Accept: "text\/event-stream"/);
-  assert.match(source, /directStreamItemPatches/);
-  assert.match(source, /delta\.reasoning_content/);
-  assert.match(source, /delta\.tool_calls/);
-  assert.match(source, /response\.output_text\.delta/);
-  assert.match(source, /directStreamActiveRef/);
-  // A foreground item claims an identical durable event by identity.  No
-  // content-prefix or text-suffix heuristic is allowed: repeated text can be
-  // valid output and must never be silently removed.
-  assert.match(source, /const directMessageVisible = items\.some/);
-  assert.match(source, /claimExisting = false/);
-  assert.match(source, /Only change its transport ownership/);
-  assert.doesNotMatch(source, /directText\.slice\(sharedPrefix\)/);
-  assert.match(source, /projectedStreamEventIdsRef/);
-  assert.match(source, /const alreadyProjected = Boolean\(eventIdentity/);
-  assert.doesNotMatch(source, /directKindsSeenRef/);
+test("local and cloud targets mount the same shared conversation workspace", () => {
+  assert.doesNotMatch(appSource, /CloudChatWorkspace/);
+  assert.equal((appSource.match(/<ChatWorkspace/g) || []).length, 2);
+  assert.match(appSource, /isCloudChat && selectedCloudDeployment/);
+  assert.match(appSource, /!isCloudChat && currentAgentId/);
 });
 
-test("cloud chat exposes a failed run without implementation or credential copy", () => {
-  assert.match(source, /cloud-chat-run-warning/);
-  assert.match(source, /这次云端运行未完成/);
-  assert.doesNotMatch(source, /可查看运行详情/);
-  assert.doesNotMatch(source, /AK\/SK/);
-  assert.doesNotMatch(settingsSource, /AK\/SK/);
-  assert.doesNotMatch(settingsSource, /不可变 Bundle|deployment receipt|伪造身份/);
+test("Studio delegates conversation behavior to ksadk-web 0.3.5 entrypoints", () => {
+  assert.match(workspaceSource, /AgentConversationTimeline/);
+  assert.match(workspaceSource, /AgentConversationComposer/);
+  assert.match(workspaceSource, /useAgentChat/);
+  assert.match(workspaceSource, /new ApiFacadeImpl\(\{ fetch: apiFetch, agentId \}\)/);
+  assert.match(workspaceSource, /conversationClient: null/);
 });
 
-test("cloud composer reuses the shared controls and sends turn policy explicitly", () => {
-  assert.match(source, /<ChatComposer/);
-  assert.match(composerSource, /ComposerActionMenu/);
-  assert.match(composerSource, /ApprovalModeMenu/);
-  assert.match(composerSource, /ModelReasoningMenu/);
-  assert.match(source, /toolApprovalMode: approvalMode/);
-  assert.match(source, /collaborationMode/);
-  assert.match(source, /goalObjective/);
-  assert.match(source, /modelOptions: effectiveReasoningEffort/);
-  assert.match(source, /type: "input_image"/);
-  assert.match(source, /type: "input_file"/);
-  assert.doesNotMatch(source, /<select/);
-});
-
-test("cloud chat shares the responsive conversation and attachment-limit contract", () => {
-  assert.match(source, /chat-session-mobile-trigger/);
-  assert.match(source, /chat-session-mobile-close/);
-  assert.match(source, /aria-expanded=\{sessionPanelOpen\}/);
-  assert.match(source, /<h1>\{agentName\}<\/h1>/);
-  assert.match(source, /aria-busy=\{sending \|\| waitingForResponse\}/);
-  assert.match(source, /attachmentLimit=\{8\}/);
-  assert.match(source, /AI 生成内容可能不准确，请核对关键结论与工具操作/);
-});
-
-test("cloud chat normalizes projected approval lifecycle events", () => {
-  assert.match(source, /interruptInfo\.approval_request_id/);
-  assert.match(source, /resumeInput\.approval_request_id/);
-  assert.match(source, /\["interaction\.requested", "approval_request", "response\.approval_request"\]/);
-  assert.match(source, /frame\.InvocationId/);
-  assert.match(source, /"approval_response"/);
+test("shared capabilities gate thinking, approvals, attachments, and cancellation", () => {
+  assert.match(workspaceSource, /uiCapabilities\.Thinking/);
+  assert.match(workspaceSource, /uiCapabilities\.ApprovalPolicy/);
+  assert.match(workspaceSource, /uiCapabilities\.Attachments/);
+  assert.match(workspaceSource, /uiCapabilities\.StopRun/);
+  assert.match(workspaceSource, /pendingInteractions=\{chat\.pendingInteractions\}/);
 });

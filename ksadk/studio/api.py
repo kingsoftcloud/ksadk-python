@@ -79,6 +79,7 @@ from ksadk.studio.api_helpers import (
 )
 from ksadk.studio.api_memory_routes import register_memory_routes
 from ksadk.studio.api_plugin_routes import register_plugin_routes
+from ksadk.studio.cloud_shared_web import CloudSharedWebBridge, cloud_chat_target, is_cloud_agent_id
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentAppearance,
@@ -323,6 +324,7 @@ def create_studio_app(
     static_root = Path(__file__).with_name("static")
     _studio_startup_epoch = str(int(time.time()))
     shared_web = StudioSharedWebBridge(studio)
+    cloud_web = CloudSharedWebBridge(studio.cloud)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
 
@@ -618,6 +620,77 @@ def create_studio_app(
         try:
             cookie_agent_id = request.cookies.get("agentkit_studio_chat_agent")
             requested_agent_id = str(payload.get("AgentId") or cookie_agent_id or "")
+            cloud_mode = is_cloud_agent_id(requested_agent_id)
+            if cloud_mode:
+                # Cloud agents project onto the same shared-web action
+                # contract through the cloud-chat proxy, so the ksadk-web
+                # headless data layer drives them like hosted-ui does.
+                cloud_target = cloud_chat_target(requested_agent_id)
+                data = None
+                if action == "GetAgentUiBootstrap":
+                    data = await cloud_web.bootstrap(cloud_target)
+                elif action == "ListAgentModels":
+                    data = await cloud_web.list_models(cloud_target)
+                elif action == "ListSessions":
+                    data = await cloud_web.list_sessions(
+                        cloud_target,
+                        page=int(payload.get("Page") or 1),
+                        page_size=int(payload.get("PageSize") or 30),
+                    )
+                elif action == "CreateSession":
+                    data = await cloud_web.create_session(cloud_target)
+                elif action == "GetSession":
+                    data = await cloud_web.get_session(
+                        cloud_target, str(payload.get("SessionId") or "")
+                    )
+                elif action == "DeleteSession":
+                    data = await cloud_web.delete_session(
+                        cloud_target, str(payload.get("SessionId") or "")
+                    )
+                elif action == "ListSessionMessages":
+                    data = await cloud_web.list_messages(
+                        cloud_target,
+                        str(payload.get("SessionId") or ""),
+                        after_seq_id=_optional_int(payload.get("AfterSeqId")),
+                        before_seq_id=_optional_int(payload.get("BeforeSeqId")),
+                        limit=int(payload.get("Limit") or 50),
+                    )
+                elif action == "ListSessionEvents":
+                    data = await cloud_web.list_session_events(
+                        cloud_target,
+                        str(payload.get("SessionId") or ""),
+                        after_seq_id=_optional_int(payload.get("AfterSeqId")),
+                        offset=_optional_int(payload.get("Offset")),
+                        limit=int(payload.get("Limit") or 200),
+                    )
+                elif action == "SubmitInteraction":
+                    data = await cloud_web.submit_interaction(
+                        cloud_target, str(payload.get("SessionId") or ""), payload
+                    )
+                elif action == "RunAgent":
+                    return StreamingResponse(
+                        cloud_web.stream_run(cloud_target, payload),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+                    )
+                elif action in {
+                    "GetResponseFeedback",
+                    "UpsertResponseFeedback",
+                    "DeleteResponseFeedback",
+                    "ListSessionCheckpoints",
+                    "ListToolReceipts",
+                }:
+                    data = {"Feedback": None} if action == "GetResponseFeedback" else {}
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "Code": 404,
+                            "Message": f"Studio 尚未实现云端共享 Web 动作：{action}",
+                            "Data": {},
+                        },
+                    )
+                return {"Code": 0, "Message": "OK", "Data": data}
             if action == "GetAgentUiBootstrap":
                 data = shared_web.bootstrap(shared_web.resolve_agent_id(requested_agent_id or None))
             elif action == "ListAgentModels":

@@ -1109,6 +1109,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         *,
         session_id: str,
         after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
         """Return the Server/Runtime message projection for a bound session."""
@@ -1118,6 +1119,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 agent_id=self._chat_agent_id(deployment),
                 session_id=session_id,
                 after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id,
                 limit=limit,
             )
         except AgentEngineAPIError as exc:
@@ -1901,6 +1903,7 @@ class CloudDeploymentService:
         *,
         session_id: str,
         after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
         deployment = await self._chat_target(deployment_id)
@@ -1915,6 +1918,7 @@ class CloudDeploymentService:
             deployment,
             session_id=session_id,
             after_seq_id=after_seq_id,
+            before_seq_id=before_seq_id,
             limit=limit,
         )
 

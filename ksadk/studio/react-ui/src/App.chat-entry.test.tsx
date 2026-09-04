@@ -8,14 +8,11 @@ vi.mock("./useStudioViewportMode", () => ({ useStudioViewportMode: () => "deskto
 vi.mock("./useStudioTheme", () => ({
   useStudioTheme: () => ({ preference: "light", resolvedTheme: "light", setPreference: vi.fn() }),
 }));
-vi.mock("./components/CloudChatWorkspace", () => ({
-  CloudChatWorkspace: ({ agentId, agentName }: { agentId: string; agentName: string }) => (
-    <div data-testid="cloud-chat-workspace">{agentName} · {agentId}</div>
-  ),
-}));
 vi.mock("./components/ChatWorkspace", () => ({
-  ChatWorkspace: ({ agentName }: { agentName: string }) => (
-    <div data-testid="local-chat-workspace">{agentName}</div>
+  ChatWorkspace: ({ agentId, agentName }: { agentId: string; agentName: string }) => (
+    <div data-testid={agentId.startsWith("ar-") ? "cloud-chat-workspace" : "local-chat-workspace"}>
+      {agentName} · {agentId}
+    </div>
   ),
 }));
 vi.mock("./pages/CreatePage", () => ({
