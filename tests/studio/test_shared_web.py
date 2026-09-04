@@ -476,14 +476,13 @@ def test_shared_chat_api_requires_local_studio_session(tmp_path: Path):
         security_enabled=True,
     )
 
-    with TestClient(app) as anonymous:
-        denied = anonymous.post(
+    with TestClient(app) as client:
+        denied = client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",
             json={"AgentId": "demo-agent"},
         )
         assert denied.status_code == 401
 
-    with TestClient(app) as client:
         client.get("/")
         allowed = client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",

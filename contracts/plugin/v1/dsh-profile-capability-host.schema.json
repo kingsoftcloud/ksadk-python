@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/dsh-profile-capability-host.schema.json",
+  "title": "DSH Profile capability host descriptor and readiness contract",
+  "description": "Stable DSH tool inventory plus a process-scoped Streamable HTTP MCP endpoint. Tool calls are standard MCP and never use the AgentProvider JSONL ABI.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "profile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "inputSchema": {
+          "type": "object"
+        }
+      },
+      "required": ["name", "description", "inputSchema"]
+    },
+    "ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "const": "ksadk.dsh-capability-host/v1"
+        },
+        "hostVersion": {
+          "const": "1.0.0"
+        },
+        "dshVersion": {
+          "$ref": "#/$defs/semver"
+        },
+        "profile": {
+          "$ref": "#/$defs/profile"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "definition": {
+          "const": "mcp.connector/v1"
+        },
+        "transport": {
+          "const": "streamable-http"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}/mcp$"
+        },
+        "inventoryDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "SHA-256 over ksadk JSON value encoding v1: tagged types and lengths, object keys ordered by UTF-8 bytes, finite IEEE-754 binary64 numbers normalized to their hexadecimal form, and lone UTF-16 surrogates rejected."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool"
+          },
+          "maxItems": 2048
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "hostVersion",
+        "dshVersion",
+        "profile",
+        "profileDigest",
+        "definition",
+        "transport",
+        "endpoint",
+        "inventoryDigest",
+        "tools"
+      ]
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "descriptorFormat": {
+          "const": "dsh.profile-capability-descriptor/v1"
+        },
+        "ecosystem": {
+          "const": "dsh"
+        },
+        "bridgePackage": {
+          "const": "@kingsoftcloud/ksadk-dsh-capability-host"
+        },
+        "bridgeVersion": {
+          "const": "1.0.0"
+        },
+        "dshVersion": {
+          "$ref": "#/$defs/semver"
+        },
+        "profile": {
+          "$ref": "#/$defs/profile"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "definition": {
+          "const": "mcp.connector/v1"
+        },
+        "transport": {
+          "const": "streamable-http"
+        },
+        "mcpProtocol": {
+          "const": "2025-06-18"
+        },
+        "inventoryDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "SHA-256 over ksadk JSON value encoding v1: tagged types and lengths, object keys ordered by UTF-8 bytes, finite IEEE-754 binary64 numbers normalized to their hexadecimal form, and lone UTF-16 surrogates rejected."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool"
+          },
+          "maxItems": 2048
+        }
+      },
+      "required": [
+        "descriptorFormat",
+        "ecosystem",
+        "bridgePackage",
+        "bridgeVersion",
+        "dshVersion",
+        "profile",
+        "profileDigest",
+        "definition",
+        "transport",
+        "mcpProtocol",
+        "inventoryDigest",
+        "tools"
+      ]
+    }
+  },
+  "properties": {
+    "contractFormat": {
+      "const": "ksadk.dsh-capability-host/v1"
+    },
+    "ready": {
+      "$ref": "#/$defs/ready"
+    },
+    "descriptor": {
+      "$ref": "#/$defs/descriptor"
+    },
+    "descriptorDigest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "required": ["contractFormat", "ready", "descriptor", "descriptorDigest"]
+}

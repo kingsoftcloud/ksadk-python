@@ -1,0 +1,3 @@
+- insert:
+    - id: ksadk-test-tool-plugin
+      name: '@ksadk-test/dsh-node-tool-plugin'
