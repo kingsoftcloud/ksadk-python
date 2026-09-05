@@ -1,4 +1,3 @@
-import * as React from "react";
 import { apiFetch } from "../api";
 import {
   StudioContributionRegistry,
@@ -8,8 +7,7 @@ import {
   type StudioWorkspaceTabContribution,
 } from "./studioContributions";
 import type { DshUiExtensionPoint } from "./dshUiSandbox";
-import { requestDshUiSession } from "./dshUiSandbox";
-import type { DshClientPlugin } from "./studioDshRuntime";
+import { disposeDshUiSession, requestDshUiSession } from "./dshUiSandbox";
 import { StudioDshRuntime, studioDshRuntime } from "./studioDshRuntime";
 
 export interface StudioDshClientBundleProjection {
@@ -31,73 +29,6 @@ export interface StudioDshClientBundleProjection {
 export interface StudioDshProfileProjection {
   clientBundles: StudioDshClientBundleProjection[];
   clientGraphDigest: string;
-}
-
-interface ClientBundleRegistration {
-  factory(require: (id: string) => unknown): unknown;
-  id: string;
-}
-
-interface ModuleLoaderTarget {
-  load(registration: ClientBundleRegistration): void;
-}
-
-type BundleLoader = (bundle: StudioDshClientBundleProjection) => Promise<DshClientPlugin>;
-
-declare global {
-  interface Window {
-    __ModuleLoader__?: ModuleLoaderTarget;
-  }
-}
-
-function isClientPlugin(value: unknown): value is DshClientPlugin {
-  return typeof value === "object" && value !== null && typeof (value as DshClientPlugin).apply === "function";
-}
-
-/** Execute one immutable DSH client artifact through its canonical ModuleLoader handoff. */
-export async function loadDshClientBundle(
-  bundle: StudioDshClientBundleProjection,
-): Promise<DshClientPlugin> {
-  if (!bundle.url) {
-    throw new Error(`DSH client bundle ${bundle.pluginId} has no top-level loader URL`);
-  }
-  const url = bundle.url;
-  const previous = window.__ModuleLoader__;
-  let registration: ClientBundleRegistration | undefined;
-  window.__ModuleLoader__ = {
-    load(next) {
-      if (registration) throw new Error(`DSH client bundle ${bundle.pluginId} registered more than once`);
-      registration = next;
-    },
-  };
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const script = document.createElement("script");
-      script.async = true;
-      script.src = url;
-      script.onload = () => { script.remove(); resolve(); };
-      script.onerror = () => {
-        script.remove();
-        reject(new Error(`DSH client bundle ${bundle.pluginId} failed to load`));
-      };
-      document.head.append(script);
-    });
-  } finally {
-    if (previous) window.__ModuleLoader__ = previous;
-    else delete window.__ModuleLoader__;
-  }
-  if (!registration || registration.id !== bundle.pluginId) {
-    throw new Error(`DSH client bundle ${bundle.pluginId} registered an unexpected module`);
-  }
-  const modules: Record<string, unknown> = { react: React };
-  const plugin = registration.factory(id => {
-    if (!(id in modules)) throw new Error(`DSH client bundle ${bundle.pluginId} requires unavailable module ${id}`);
-    return modules[id];
-  });
-  if (!isClientPlugin(plugin)) {
-    throw new Error(`DSH client bundle ${bundle.pluginId} did not export a Cordis plugin`);
-  }
-  return plugin;
 }
 
 /** A live UI session plus its declared extension points, for one plugin. */
@@ -150,10 +81,11 @@ function registerExtensionPoints(
 }
 
 /**
- * Own the installed Profile's browser graph. Sandbox-compatible bundles get a
- * UI session and declarative contributions; the rest mount as native Cordis
- * plugins in an isolated root. The graph becomes visible only after it fully
- * succeeds.
+ * Own the installed Profile's browser graph. Every enabled bundle must be
+ * sandbox-compatible: it gets a UI session and declarative contributions.
+ * There is no top-level script execution path (the legacy ModuleLoader
+ * channel was retired; the backend default-denies it too). The graph becomes
+ * visible only after it fully succeeds.
  */
 export class StudioDshCompositionHost {
   private activeDigest = "";
@@ -162,10 +94,7 @@ export class StudioDshCompositionHost {
   private activeSandboxSessionDisposers: Array<() => Promise<void>> = [];
   private pending: Promise<void> = Promise.resolve();
 
-  constructor(
-    private readonly target: StudioDshRuntime,
-    private readonly bundleLoader: BundleLoader = loadDshClientBundle,
-  ) {}
+  constructor(private readonly target: StudioDshRuntime) {}
 
   refresh(): Promise<void> {
     return this.enqueue(async () => {
@@ -188,31 +117,20 @@ export class StudioDshCompositionHost {
     const sandboxDisposeSessions: Array<() => Promise<void>> = [];
     try {
       for (const bundle of enabled) {
-        if (bundle.sandboxCompatible) {
-          // Sandbox path: create a UI session and register its extension
-          // points declaratively. No top-level script execution.
-          const payload = await requestDshUiSession({
-            pluginId: bundle.pluginId,
-            clientDigest: bundle.digest,
-          });
-          const record: SandboxSessionRecord = { payload };
-          sandboxDisposers.push(
-            ...registerExtensionPoints(staging.contributions, record),
+        if (!bundle.sandboxCompatible) {
+          throw new Error(
+            `DSH client bundle ${bundle.pluginId} is not sandbox-compatible: ${bundle.sandboxIncompatibilityReason || bundle.incompatibilityReason || "unknown reason"}`,
           );
-          sandboxDisposeSessions.push(async () => {
-            const { disposeDshUiSession } = await import("./dshUiSandbox");
-            await disposeDshUiSession(payload.uiSessionId);
-          });
-        } else {
-          // Native path: mount as a Cordis plugin in the isolated root.
-          if (!bundle.compatible) {
-            throw new Error(
-              `DSH client bundle ${bundle.pluginId} is incompatible: ${bundle.incompatibilityReason || bundle.sandboxIncompatibilityReason || "unknown reason"}`,
-            );
-          }
-          const plugin = await this.bundleLoader(bundle);
-          await staging.mount(plugin);
         }
+        const payload = await requestDshUiSession({
+          pluginId: bundle.pluginId,
+          clientDigest: bundle.digest,
+        });
+        const record: SandboxSessionRecord = { payload };
+        sandboxDisposers.push(
+          ...registerExtensionPoints(staging.contributions, record),
+        );
+        sandboxDisposeSessions.push(() => disposeDshUiSession(payload.uiSessionId));
       }
     } catch (error) {
       sandboxDisposers.forEach(dispose => dispose());
