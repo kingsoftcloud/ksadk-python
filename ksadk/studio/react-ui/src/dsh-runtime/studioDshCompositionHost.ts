@@ -1,6 +1,14 @@
 import * as React from "react";
 import { apiFetch } from "../api";
-import { StudioContributionRegistry } from "./studioContributions";
+import {
+  StudioContributionRegistry,
+  STUDIO_DSH_SLOTS,
+  type StudioSidebarNavigationContribution,
+  type StudioRouteContribution,
+  type StudioWorkspaceTabContribution,
+} from "./studioContributions";
+import type { DshUiExtensionPoint } from "./dshUiSandbox";
+import { requestDshUiSession } from "./dshUiSandbox";
 import type { DshClientPlugin } from "./studioDshRuntime";
 import { StudioDshRuntime, studioDshRuntime } from "./studioDshRuntime";
 
@@ -13,7 +21,11 @@ export interface StudioDshClientBundleProjection {
   incompatibilityReason?: string | null;
   inject: string[];
   pluginId: string;
-  url: string;
+  url: string | null;
+  sandboxCompatible?: boolean;
+  sandboxBundleUrl?: string | null;
+  executionMode?: string;
+  sandboxIncompatibilityReason?: string | null;
 }
 
 export interface StudioDshProfileProjection {
@@ -46,6 +58,10 @@ function isClientPlugin(value: unknown): value is DshClientPlugin {
 export async function loadDshClientBundle(
   bundle: StudioDshClientBundleProjection,
 ): Promise<DshClientPlugin> {
+  if (!bundle.url) {
+    throw new Error(`DSH client bundle ${bundle.pluginId} has no top-level loader URL`);
+  }
+  const url = bundle.url;
   const previous = window.__ModuleLoader__;
   let registration: ClientBundleRegistration | undefined;
   window.__ModuleLoader__ = {
@@ -58,7 +74,7 @@ export async function loadDshClientBundle(
     await new Promise<void>((resolve, reject) => {
       const script = document.createElement("script");
       script.async = true;
-      script.src = bundle.url;
+      script.src = url;
       script.onload = () => { script.remove(); resolve(); };
       script.onerror = () => {
         script.remove();
@@ -84,13 +100,66 @@ export async function loadDshClientBundle(
   return plugin;
 }
 
+/** A live UI session plus its declared extension points, for one plugin. */
+interface SandboxSessionRecord {
+  payload: Awaited<ReturnType<typeof requestDshUiSession>>;
+}
+
 /**
- * Own the installed Profile's browser graph. New bundles mount in an isolated
- * Cordis root and become visible only after the whole graph succeeds.
+ * Register one sandbox session's extension points as declarative
+ * contributions. The workspaceTab contribution carries the session payload so
+ * the surface can mount the opaque-origin frame without a second lookup.
+ */
+function registerExtensionPoints(
+  registry: StudioContributionRegistry,
+  session: SandboxSessionRecord,
+): Array<() => void> {
+  const disposers: Array<() => void> = [];
+  for (const point of session.payload.extensionPoints) {
+    if (point.type === STUDIO_DSH_SLOTS.sidebarNavigation) {
+      disposers.push(
+        registry.register(STUDIO_DSH_SLOTS.sidebarNavigation, {
+          id: point.id,
+          label: point.label ?? point.id,
+          path: point.path ?? "/extensions",
+        } satisfies StudioSidebarNavigationContribution),
+      );
+    } else if (point.type === STUDIO_DSH_SLOTS.route) {
+      disposers.push(
+        registry.register(STUDIO_DSH_SLOTS.route, {
+          id: point.id,
+          path: point.path ?? "/extensions",
+          title: point.label ?? point.id,
+          workspaceTabId: point.workspaceTabId ?? "",
+        } satisfies StudioRouteContribution),
+      );
+    } else if (point.type === STUDIO_DSH_SLOTS.workspaceTab) {
+      disposers.push(
+        registry.register(STUDIO_DSH_SLOTS.workspaceTab, {
+          id: point.id,
+          label: point.label ?? point.id,
+          renderer: point.renderer,
+          session: session.payload,
+        } satisfies StudioWorkspaceTabContribution),
+      );
+    }
+    // Unknown contribution types are ignored: the backend may add new slots
+    // ahead of the frontend.
+  }
+  return disposers;
+}
+
+/**
+ * Own the installed Profile's browser graph. Sandbox-compatible bundles get a
+ * UI session and declarative contributions; the rest mount as native Cordis
+ * plugins in an isolated root. The graph becomes visible only after it fully
+ * succeeds.
  */
 export class StudioDshCompositionHost {
   private activeDigest = "";
   private activeRuntime: StudioDshRuntime | null = null;
+  private activeSandboxDisposers: Array<() => void> = [];
+  private activeSandboxSessionDisposers: Array<() => Promise<void>> = [];
   private pending: Promise<void> = Promise.resolve();
 
   constructor(
@@ -112,35 +181,68 @@ export class StudioDshCompositionHost {
 
   private async activate(projection: StudioDshProfileProjection): Promise<void> {
     if (projection.clientGraphDigest === this.activeDigest) return;
-    const active = projection.clientBundles.filter(bundle => bundle.enabled && bundle.compatible);
-    if (active.length !== projection.clientBundles.filter(bundle => bundle.enabled).length) {
-      const incompatible = projection.clientBundles.find(bundle => bundle.enabled && !bundle.compatible);
-      throw new Error(
-        `DSH client bundle ${incompatible?.pluginId || "unknown"} is incompatible: ${incompatible?.incompatibilityReason || "unknown reason"}`,
-      );
-    }
+    const enabled = projection.clientBundles.filter(bundle => bundle.enabled);
 
     const staging = new StudioDshRuntime();
+    const sandboxDisposers: Array<() => void> = [];
+    const sandboxDisposeSessions: Array<() => Promise<void>> = [];
     try {
-      for (const bundle of active) {
-        const plugin = await this.bundleLoader(bundle);
-        await staging.mount(plugin);
+      for (const bundle of enabled) {
+        if (bundle.sandboxCompatible) {
+          // Sandbox path: create a UI session and register its extension
+          // points declaratively. No top-level script execution.
+          const payload = await requestDshUiSession({
+            pluginId: bundle.pluginId,
+            clientDigest: bundle.digest,
+          });
+          const record: SandboxSessionRecord = { payload };
+          sandboxDisposers.push(
+            ...registerExtensionPoints(staging.contributions, record),
+          );
+          sandboxDisposeSessions.push(async () => {
+            const { disposeDshUiSession } = await import("./dshUiSandbox");
+            await disposeDshUiSession(payload.uiSessionId);
+          });
+        } else {
+          // Native path: mount as a Cordis plugin in the isolated root.
+          if (!bundle.compatible) {
+            throw new Error(
+              `DSH client bundle ${bundle.pluginId} is incompatible: ${bundle.incompatibilityReason || bundle.sandboxIncompatibilityReason || "unknown reason"}`,
+            );
+          }
+          const plugin = await this.bundleLoader(bundle);
+          await staging.mount(plugin);
+        }
       }
     } catch (error) {
+      sandboxDisposers.forEach(dispose => dispose());
+      await Promise.allSettled(sandboxDisposeSessions.map(dispose => dispose()));
       await staging.dispose();
       throw error;
     }
 
     const previous = this.activeRuntime;
+    const previousSandboxDisposers = this.activeSandboxDisposers;
+    const previousSandboxSessionDisposers = this.activeSandboxSessionDisposers;
     this.target.contributions.replaceAll(staging.contributions);
     this.activeRuntime = staging;
+    this.activeSandboxDisposers = sandboxDisposers;
+    this.activeSandboxSessionDisposers = sandboxDisposeSessions;
     this.activeDigest = projection.clientGraphDigest;
+    previousSandboxDisposers.forEach(dispose => dispose());
+    await Promise.allSettled(previousSandboxSessionDisposers.map(dispose => dispose()));
     await previous?.dispose();
   }
 
   dispose(): Promise<void> {
     return this.enqueue(async () => {
       this.target.contributions.replaceAll(new StudioContributionRegistry());
+      this.activeSandboxDisposers.forEach(dispose => dispose());
+      this.activeSandboxDisposers = [];
+      await Promise.allSettled(
+        this.activeSandboxSessionDisposers.map(dispose => dispose()),
+      );
+      this.activeSandboxSessionDisposers = [];
       await this.activeRuntime?.dispose();
       this.activeRuntime = null;
       this.activeDigest = "";

@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import { useSyncExternalStore } from "react";
+import type { DshUiSessionCreateResponse } from "./dshUiSandbox";
 
 export const STUDIO_DSH_SLOTS = {
   action: "studio.action",
@@ -35,9 +36,18 @@ export interface StudioWorkspaceTabProps {
   path: string;
 }
 
+export interface StudioWorkspaceTabRendererSandboxedIframe {
+  type: "sandboxed-iframe";
+  frameUrl: string;
+}
+
 export interface StudioWorkspaceTabContribution extends StudioContributionBase {
-  component: ComponentType<StudioWorkspaceTabProps>;
+  component?: ComponentType<StudioWorkspaceTabProps>;
   label: string;
+  /** Sandbox renderer declared by the backend; takes precedence over component. */
+  renderer?: StudioWorkspaceTabRendererSandboxedIframe;
+  /** Live UI session payload backing the sandboxed-iframe renderer. */
+  session?: DshUiSessionCreateResponse;
 }
 
 /**
