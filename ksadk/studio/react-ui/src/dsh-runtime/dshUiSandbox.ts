@@ -162,6 +162,22 @@ export async function requestDshUiSession(input: {
   return session;
 }
 
+/** Fetch the current DSH capability catalog's tool names (for session auth). */
+export async function fetchDshToolIds(): Promise<string[]> {
+  const response = await apiFetch(
+    "/api/v1/plugin-ecosystems/dsh/capabilities",
+  );
+  if (!response.ok) return [];
+  try {
+    const body = (await response.json()) as { tools?: Array<{ name?: string }> };
+    return (body.tools ?? [])
+      .map(tool => tool.name)
+      .filter((name): name is string => typeof name === "string" && name.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 /** Delete a session server-side (best-effort; it also expires on its own). */
 export async function disposeDshUiSession(sessionId: string): Promise<void> {
   try {
@@ -218,31 +234,18 @@ export function attachDshUiSandbox(
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
-    window.removeEventListener("message", onReady);
     channel.port1.onmessage = null;
     channel.port1.close();
     channel.port2.close();
     onDispose?.();
   };
 
-  const onReady = (event: MessageEvent) => {
-    // The frame is opaque-origin; its postMessage arrives with origin "null"
-    // and source === contentWindow. Accept only our session's ready frame.
-    if (event.source !== iframe.contentWindow) return;
-    const message = event.data as Record<string, unknown> | null;
-    if (
-      !message ||
-      typeof message !== "object" ||
-      message.protocolVersion !== DSH_UI_PROTOCOL_VERSION ||
-      message.kind !== "ready" ||
-      message.sessionId !== uiSessionId ||
-      message.sourceId !== sourceId
-    ) {
-      return;
-    }
-    ready = true;
-    window.removeEventListener("message", onReady);
-  };
+  // The frame posts its "ready" receipt over the transferred MessagePort
+  // (dsh_ui_sandbox.py bootstrap: port.postMessage({kind:"ready"})), not over
+  // window.message. Requests and the ready receipt share this one channel.
+  const handshakeTimer = window.setTimeout(() => {
+    if (!ready) cleanup();
+  }, READY_TIMEOUT_MS);
 
   const relay = async (envelope: RelayEnvelope) => {
     const response = await apiFetch(messagePath, {
@@ -259,7 +262,20 @@ export function attachDshUiSandbox(
   };
 
   channel.port1.onmessage = (event: MessageEvent) => {
-    const envelope = event.data as RelayEnvelope;
+    const message = event.data as Record<string, unknown> | null;
+    if (
+      message &&
+      typeof message === "object" &&
+      message.protocolVersion === DSH_UI_PROTOCOL_VERSION &&
+      message.kind === "ready" &&
+      message.sessionId === uiSessionId &&
+      message.sourceId === sourceId
+    ) {
+      ready = true;
+      window.clearTimeout(handshakeTimer);
+      return;
+    }
+    const envelope = message as unknown as RelayEnvelope;
     if (!envelope || envelope.kind !== "request") return;
     void relay(envelope)
       .then((reply: RelaySuccess | RelayFailure) => {
@@ -281,18 +297,6 @@ export function attachDshUiSandbox(
         channel.port1.postMessage(failure);
       });
   };
-
-  window.addEventListener("message", onReady);
-
-  const handshakeTimer = window.setTimeout(() => {
-    if (!ready) cleanup();
-  }, READY_TIMEOUT_MS);
-  window.addEventListener("message", function stopTimerOnce(event) {
-    if (event.source === iframe.contentWindow && (event.data as { kind?: string })?.kind === "ready") {
-      window.clearTimeout(handshakeTimer);
-      window.removeEventListener("message", stopTimerOnce);
-    }
-  });
 
   // Transfer the token once the frame document has loaded its bootstrap. The
   // iframe is same-origin in URL terms but opaque-origin in security terms;

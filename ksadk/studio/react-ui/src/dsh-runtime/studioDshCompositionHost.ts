@@ -7,7 +7,7 @@ import {
   type StudioWorkspaceTabContribution,
 } from "./studioContributions";
 import type { DshUiExtensionPoint } from "./dshUiSandbox";
-import { disposeDshUiSession, requestDshUiSession } from "./dshUiSandbox";
+import { disposeDshUiSession, fetchDshToolIds, requestDshUiSession } from "./dshUiSandbox";
 import { StudioDshRuntime, studioDshRuntime } from "./studioDshRuntime";
 
 export interface StudioDshClientBundleProjection {
@@ -115,6 +115,9 @@ export class StudioDshCompositionHost {
     const staging = new StudioDshRuntime();
     const sandboxDisposers: Array<() => void> = [];
     const sandboxDisposeSessions: Array<() => Promise<void>> = [];
+    // Authorize the session against the plugin's projected tools; without an
+    // explicit toolIds list the backend defaults to an empty allowlist.
+    const toolIds = await fetchDshToolIds();
     try {
       for (const bundle of enabled) {
         if (!bundle.sandboxCompatible) {
@@ -125,6 +128,7 @@ export class StudioDshCompositionHost {
         const payload = await requestDshUiSession({
           pluginId: bundle.pluginId,
           clientDigest: bundle.digest,
+          toolIds,
         });
         const record: SandboxSessionRecord = { payload };
         sandboxDisposers.push(
