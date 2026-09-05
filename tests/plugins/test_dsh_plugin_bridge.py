@@ -268,7 +268,7 @@ def test_mutable_package_manager_source_schemes_are_rejected(
     )
     bridge.start()
 
-    with pytest.raises(ValueError, match="package, Git URL, or absolute local path"):
+    with pytest.raises(ValueError, match="exact"):
         bridge.install_plugin(source, accept_host_permissions=True)
 
 
@@ -333,7 +333,7 @@ def test_install_is_disabled_until_explicit_enable_without_deactivating_existing
     bridge.start()
 
     installed = bridge.install_plugin(
-        NEW_PLUGIN_NAME,
+        f"{NEW_PLUGIN_NAME}@2.0.0",
         accept_host_permissions=True,
     )
 
@@ -543,7 +543,7 @@ def test_failed_first_install_removes_new_profile_tree(tmp_path: Path) -> None:
     bridge.start()
 
     with pytest.raises(DshPluginMutationError, match="install failed"):
-        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex", accept_host_permissions=True)
+        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex@1.0.0", accept_host_permissions=True)
 
     assert not (home / "profiles" / "ksadk").exists()
 
@@ -562,7 +562,7 @@ def test_install_refuses_unmanaged_existing_profile_directory(tmp_path: Path) ->
     bridge.start()
 
     with pytest.raises(DshPluginMutationError, match="no package manifest"):
-        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex", accept_host_permissions=True)
+        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex@1.0.0", accept_host_permissions=True)
 
     assert marker.read_text(encoding="utf-8") == "user-owned"
 
