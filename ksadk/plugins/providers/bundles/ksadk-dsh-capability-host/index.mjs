@@ -23,6 +23,56 @@ const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]+$/
 
 class RequestTooLargeError extends Error {}
 
+/** Minimal but real webServer service: a route table dispatched by the host's
+ * HTTP server. Plugins own their route handlers' full lifecycle; the host
+ * provides registration, matching, and disposal, matching the upstream
+ * @deepseek-ai/dsh webServer seam (exact/prefix routes + upgrade routes). */
+class HostWebServer {
+  constructor() {
+    this.exact = new Map()
+    this.prefix = new Map()
+    this.upgrades = new Map()
+  }
+
+  register(route) {
+    const table = route.kind === 'exact' ? this.exact : this.prefix
+    if (table.has(route.path)) {
+      throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`)
+    }
+    table.set(route.path, route)
+    return () => { table.delete(route.path) }
+  }
+
+  registerUpgrade(route) {
+    if (this.upgrades.has(route.path)) {
+      throw new Error(`webserver: duplicate upgrade route "${route.path}"`)
+    }
+    this.upgrades.set(route.path, route)
+    return () => { this.upgrades.delete(route.path) }
+  }
+
+  match(pathname) {
+    const exact = this.exact.get(pathname)
+    if (exact) return exact
+    let best = null
+    for (const [prefix, route] of this.prefix) {
+      if ((pathname === prefix || pathname.startsWith(prefix + '/')) &&
+          (best === null || prefix.length > best.path.length)) {
+        best = route
+      }
+    }
+    return best
+  }
+
+  matchUpgrade(pathname) {
+    return this.upgrades.get(pathname) ?? null
+  }
+
+  routeCount() {
+    return this.exact.size + this.prefix.size
+  }
+}
+
 function byteLength(value) {
   return Buffer.byteLength(JSON.stringify(value), 'utf8')
 }
@@ -433,9 +483,28 @@ export async function apply(ctx, config = {}) {
   let tools = []
   let inventoryDigest = digest(tools)
 
+  // Provide a real webServer service so plugins that inject it (e.g. upstream
+  // dsh-ssh) can activate. Routes are dispatched by the host HTTP server below.
+  // NOTE: the runtime profile already provides real systemPrompt and settings
+  // services, so we do not shadow them.
+  const webServerService = new HostWebServer()
+  ctx.provide('webServer', webServerService)
+
+  let driftCheckTimer = null
   ctx.on('tools/change', () => {
     lastToolChange = Date.now()
-    if (readyWritten) drifted = true
+    // Upstream plugins (e.g. dsh-ssh) dispose+re-register the same tools when
+    // settings re-sync; the intermediate state has a different fingerprint but
+    // converges. Debounce: only mark drift if the fingerprint is still
+    // different after the quiet window settles.
+    if (readyWritten) {
+      if (driftCheckTimer !== null) clearTimeout(driftCheckTimer)
+      driftCheckTimer = setTimeout(() => {
+        driftCheckTimer = null
+        const next = snapshotTools(ctx.tools, maxRequestBytes)
+        if (digest(next) !== inventoryDigest) drifted = true
+      }, inventoryQuietMs)
+    }
   }, { global: true })
 
   const server = createServer(async (request, response) => {
@@ -473,6 +542,23 @@ export async function apply(ctx, config = {}) {
       })
       return
     }
+
+    // Plugin webServer routes are dispatched before the MCP endpoint check:
+    // they own their path namespace and full response lifecycle (SSE, streams).
+    const pluginRoute = webServerService.match(parsedUrl.pathname)
+    if (pluginRoute !== null) {
+      try {
+        await pluginRoute.handler(request, response)
+      } catch (error) {
+        if (!response.headersSent) {
+          writeJson(response, 500, { error: 'plugin_route_failed' })
+        } else if (!response.writableEnded) {
+          response.end()
+        }
+      }
+      return
+    }
+
     if (request.method !== 'POST' || parsedUrl.pathname !== '/mcp' || parsedUrl.search !== '') {
       writeJson(response, 404, { error: 'not_found' })
       return
@@ -745,6 +831,10 @@ export async function apply(ctx, config = {}) {
 
   try {
     await listen(server)
+    // Reset the quiet baseline after listen: plugins that register tools during
+    // profile activation (like dsh-ssh) fire tools/change after the server
+    // binds. Waiting for quiet from module load time misses those.
+    lastToolChange = Date.now()
     while (Date.now() - lastToolChange < inventoryQuietMs) {
       await new Promise((resolve) => setTimeout(resolve, inventoryQuietMs))
     }
@@ -767,6 +857,7 @@ export async function apply(ctx, config = {}) {
       endpoint: `http://127.0.0.1:${address.port}/mcp`,
       inventoryDigest,
       tools,
+      webRouteCount: webServerService.routeCount(),
     })
   } catch (error) {
     await stop()

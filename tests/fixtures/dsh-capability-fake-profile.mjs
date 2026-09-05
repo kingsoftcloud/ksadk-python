@@ -90,6 +90,12 @@ const ctx = {
     if (typeof disposer === 'function') disposers.push(disposer)
     return disposer
   },
+  provide() {
+    // The real Cordis context exposes provide() for service registration
+    // (e.g. webServer). The fake profile does not dispatch services, so
+    // this is a no-op stub that lets the real capability host bundle
+    // activate without a TypeError.
+  },
 }
 
 await plugin.apply(ctx, {

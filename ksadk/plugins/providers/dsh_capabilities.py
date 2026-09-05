@@ -204,6 +204,7 @@ class DshProfileCapabilityReady(PluginContractModel):
     endpoint: str
     inventory_digest: str
     tools: tuple[DshCapabilityTool, ...] = Field(max_length=2048)
+    web_route_count: int = Field(default=0, ge=0)
 
     @field_validator("host_version", "dsh_version")
     @classmethod
@@ -480,6 +481,7 @@ class DshProfileCapabilityHost:
         max_result_bytes: int = 1024 * 1024,
         max_request_bytes: int = 1024 * 1024,
         max_in_flight: int = 64,
+        inventory_quiet: float = 2.0,
         circuit_failure_threshold: int = 3,
         circuit_recovery_timeout: float = 5.0,
     ) -> None:
@@ -517,6 +519,9 @@ class DshProfileCapabilityHost:
             max_request_bytes, "max_request_bytes", 8 * 1024 * 1024
         )
         self._max_in_flight = self._positive_int(max_in_flight, "max_in_flight", 1024)
+        self._inventory_quiet_ms = self._milliseconds(
+            inventory_quiet, "inventory_quiet", 5_000
+        )
         self._bundle = load_dsh_capability_bundle()
         self._circuit = DshCircuitBreaker(
             failure_threshold=circuit_failure_threshold,
@@ -734,6 +739,7 @@ class DshProfileCapabilityHost:
             f"        maxResultBytes: {self._max_result_bytes}\n"
             f"        maxRequestBytes: {self._max_request_bytes}\n"
             f"        maxInFlight: {self._max_in_flight}\n"
+            f"        inventoryQuietMs: {self._inventory_quiet_ms}\n"
         )
 
     def _base_environment(self) -> dict[str, str]:
