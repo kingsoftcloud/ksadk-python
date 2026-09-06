@@ -253,6 +253,10 @@ jobs:
             tests/studio/e2e/dsh_ui_sandbox_real_api_e2e.py \
             -v
 
+      - name: Run live sandbox-tab browser verification (real Chrome)
+        run: |
+          uv run --no-sync python scripts/verify_sandbox_tab.py
+
       - name: Run Codex plugin E2E (stub + real if binary available)
         env:
           KSADK_CODEX_PLUGIN_E2E_BIN: ${{ secrets.KSADK_CODEX_PLUGIN_E2E_BIN }}

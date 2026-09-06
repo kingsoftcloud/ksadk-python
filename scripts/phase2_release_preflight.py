@@ -72,6 +72,7 @@ BROWSER_GATES = (
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
     "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
     "tests/studio/e2e/conversation_items_browser_e2e.py",
+    "scripts/verify_sandbox_tab.py",
 )
 SOURCE_E2E_STATUS_KEYS = (
     "compatibilityRegression",

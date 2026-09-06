@@ -133,9 +133,10 @@ async def main() -> None:
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
-        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        chrome = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH") or \
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         async with async_playwright() as p:
-            b = await p.chromium.launch(headless=True, executable_path=chrome)
+            b = await p.chromium.launch(headless=True, executable_path=chrome if chrome else None)
             page = await b.new_page()
             errors: list[str] = []
             page.on("console", lambda m: errors.append(f"{m.type}: {m.text}") if m.type == "error" else None)
