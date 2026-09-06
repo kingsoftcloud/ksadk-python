@@ -349,7 +349,6 @@ async def test_ui_session_intersects_tools_and_relays_only_typed_capabilities(
         session = created.json()
         assert [tool["name"] for tool in session["allowedTools"]] == ["fixture.echo"]
         assert [point["type"] for point in session["extensionPoints"]] == [
-            "studio.sidebar.navigation",
             "studio.route",
             "studio.workspace.tab",
         ]

@@ -103,8 +103,8 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
-  const extensionPath = parts[0] === "extensions" && parts[1]
-    ? `/extensions/${decodeURIComponent(parts[1])}`
+  const extensionPath = parts[0] === "extensions" && parts.length >= 2
+    ? `/extensions/${parts.slice(1).map(decodeURIComponent).join("/")}`
     : "";
   const view = editingAgentId
     ? "create"

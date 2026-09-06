@@ -466,6 +466,7 @@ def _public_dsh_inventory(
                 "inject": list(client.inject),
                 "compatible": client.compatible,
                 "incompatibilityReason": client.incompatibility_reason or None,
+                "sandboxCompatible": _dsh_sandbox_client_compatibility(inventory)[0],
             }
             if client is not None
             else None
@@ -1041,12 +1042,6 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
                 "credentialless": True,
             },
             "extensionPoints": [
-                {
-                    "type": "studio.sidebar.navigation",
-                    "id": f"{extension_id}.navigation",
-                    "label": item.display_name,
-                    "path": extension_path,
-                },
                 {
                     "type": "studio.route",
                     "id": f"{extension_id}.route",

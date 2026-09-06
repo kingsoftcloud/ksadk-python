@@ -4,11 +4,17 @@ import { apiFetch } from "../api";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import { studioDshCompositionHost } from "../dsh-runtime/studioDshCompositionHost";
+import { requestDshUiSession } from "../dsh-runtime/dshUiSandbox";
 
 interface HostState { available: boolean; version?: string | null; }
 interface Capabilities { skills?: string[]; mcpServers?: string[]; hooks?: string[]; apps?: string[]; scheduledTasks?: string[]; }
 interface PluginRuntimeState { state?: string; providerRef?: string | null; provider_ref?: string | null; errorCode?: string | null; error_code?: string | null; }
-interface PluginClientBundle { compatible?: boolean; inject?: string[]; }
+interface PluginClientBundle {
+  compatible?: boolean;
+  inject?: string[];
+  digest?: string;
+  sandboxCompatible?: boolean;
+}
 export type PluginLifecycleState = "installed" | "enabled" | "ready" | "bound" | "failed";
 export interface InstalledPlugin {
   ecosystem: "dsh" | "codex";
@@ -173,7 +179,51 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
       <p className="plugin-detail-muted">{isReadyProvider ? "在创建或编辑 Agent 时从 Runtime 选择器使用。" : "Provider 尚未就绪，暂不能用于创建 Agent。"}</p>
       {isReadyProvider && <p><a className="button secondary" href="#/create">去创建 Agent</a></p>}
     </>}
-    {hasUiContribution && <p className="plugin-detail-muted">界面扩展启用后会自动出现在插件声明的页面、侧栏或 Tab。</p>}
+    {hasUiContribution && <>
+      <p className="plugin-detail-muted">界面扩展启用后会自动出现在插件声明的页面、侧栏或 Tab。</p>
+      {item.clientBundle?.sandboxCompatible && item.clientBundle?.digest && (
+        <p><button
+          className="button secondary"
+          onClick={async () => {
+            try {
+              const session = await requestDshUiSession({
+                pluginId: item.pluginId,
+                clientDigest: item.clientBundle!.digest!,
+              });
+              const route = session.extensionPoints.find(p => p.type === "studio.route");
+              if (route?.path) {
+                // Register the new session's extension points directly into the
+                // runtime registry — the composition host's refresh() only fires
+                // on graph digest changes, so a freshly created session would be
+                // invisible to the router without this.
+                const { studioDshRuntime } = await import("../dsh-runtime/studioDshRuntime");
+                const { STUDIO_DSH_SLOTS } = await import("../dsh-runtime/studioContributions");
+                for (const point of session.extensionPoints) {
+                  if (point.type === "studio.route") {
+                    studioDshRuntime.contributions.register(STUDIO_DSH_SLOTS.route, {
+                      id: point.id,
+                      path: point.path ?? "",
+                      title: point.label ?? point.id,
+                      workspaceTabId: point.workspaceTabId ?? "",
+                    });
+                  } else if (point.type === "studio.workspace.tab") {
+                    studioDshRuntime.contributions.register(STUDIO_DSH_SLOTS.workspaceTab, {
+                      id: point.id,
+                      label: point.label ?? point.id,
+                      renderer: point.renderer,
+                      session,
+                    });
+                  }
+                }
+                window.location.hash = `#${route.path}`;
+              }
+            } catch (e) {
+              console.error("打开插件界面失败:", e);
+            }
+          }}
+        >打开插件界面</button></p>
+      )}
+    </>}
     {bindableCapabilities.length > 0 && <>
       <p className="plugin-detail-muted">Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。</p>
       <p><a className="button secondary" href="#/agents">去 Agent 列表绑定</a></p>
