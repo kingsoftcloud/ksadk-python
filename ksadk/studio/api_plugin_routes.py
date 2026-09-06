@@ -1092,7 +1092,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             return success(
                 {
                     "tools": [
-                        tool.model_dump(by_alias=True, mode="json")
+                        {**tool.model_dump(by_alias=True, mode="json"), "id": tool.name}
                         for tool in tools
                         if tool.name in allowed
                     ]

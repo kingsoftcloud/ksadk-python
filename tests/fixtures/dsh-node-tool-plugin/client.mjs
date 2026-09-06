@@ -30,25 +30,41 @@
     report.methods.push("listTools");
 
     const callId = "fixture_echo_call";
-    const call = window.AgentKitDshUI.callTool(
+    const result = await window.AgentKitDshUI.callTool(
       "fixture_echo",
       { message: "sandbox-roundtrip" },
       { callId, deadlineMs: 10000 },
     );
     report.methods.push("callTool");
-    const result = await call;
     Object.assign(report, { tools, result });
 
-    const passed =
+    // Report the actual shape so failures are diagnosable.
+    const toolIds = (tools.tools || []).map((t) => t.id);
+    const ok =
       report.parentReadable === false &&
       report.cookieReadable === false &&
-      tools.tools.some((tool) => tool.id === "fixture_echo") &&
-      result.ok === true &&
-      result.result?.message === "sandbox-roundtrip";
-    document.body.dataset.fixtureStatus = passed ? "passed" : "failed";
+      toolIds.includes("fixture_echo") &&
+      result &&
+      result.isError === false &&
+      result.structuredContent &&
+      result.structuredContent.message === "sandbox-roundtrip";
+    document.body.dataset.fixtureStatus = ok ? "passed" : "failed";
+    if (!ok) {
+      document.body.dataset.fixtureDetail = JSON.stringify({
+        parentReadable: report.parentReadable,
+        cookieReadable: report.cookieReadable,
+        toolIds,
+        result: result,
+      });
+    }
   } catch (error) {
     report.error = String(error && error.message ? error.message : error);
     document.body.dataset.fixtureStatus = "failed";
+    document.body.dataset.fixtureDetail = JSON.stringify({
+      caught: true,
+      error: report.error,
+      methods: report.methods,
+    });
   }
   window.__dshUiSandboxFixture = report;
 })();
