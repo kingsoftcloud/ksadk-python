@@ -915,6 +915,199 @@ _BOOTSTRAP_TEMPLATE = r"""(() => {
     resolveReady();
   }
   window.addEventListener("message", receiveInit, true);
+
+  // ---- DSH client runtime (ModuleLoader + mini ctx) ----
+  // Vendored externals arrive as self-executing IIFE scripts (served by the
+  // backend with SRI); each registers into window.__DSH_EXTERNALS__ before
+  // the plugin bundle loads. The require shim resolves from that map.
+  function _require(name) {
+    // Map ESM-style import specifiers to the vendored CJS external names.
+    const canonical = {
+      "react-dom/client": "react-dom-client",
+      "react/jsx-runtime": "react-jsx-runtime",
+    }[name] || name;
+    const ext = window.__DSH_EXTERNALS__?.[canonical];
+    if (ext === undefined) {
+      throw new Error(`sandbox require: unknown module "${name}"`);
+    }
+    return ext;
+  }
+  // External scripts resolve their internal CJS requires through this hook.
+  window.__DSH_REQUIRE__ = _require;
+
+  // ModuleLoader facade: plugin bundles call __ModuleLoader__.load({id, factory}).
+  const _registered = [];
+  window.__ModuleLoader__ = {
+    load(registration) {
+      if (registration && typeof registration.id === "string" &&
+          typeof registration.factory === "function") {
+        _registered.push(registration);
+      }
+    }
+  };
+
+  // Mini client ctx: slots / locale / settingsScope / effect / get / provide.
+  const _ctx = (() => {
+    const services = new Map();
+    const disposers = [];
+    const root = document.createElement("div");
+    root.id = "dsh-sandbox-root";
+    root.style.cssText = "width:100%;height:100%;display:flex;flex-direction:column;";
+    document.body.appendChild(root);
+    function effect(callback, label) {
+      const disposer = callback();
+      if (typeof disposer === "function") disposers.push(disposer);
+      return disposer;
+    }
+    const slots = (() => {
+      const entries = new Map();
+      const renderers = new Map();
+      function _renderAll() {
+        // Render every declared slot's entries into the root container.
+        root.replaceChildren();
+        for (const [slotName, slotEntries] of entries) {
+          const container = document.createElement("div");
+          container.dataset.slot = slotName;
+          container.style.cssText = "display:flex;flex-direction:column;gap:12px;";
+          for (const entry of slotEntries) {
+            // dsh plugin convention: (spec, factory) where factory returns a
+            // React element. Call it and mount the result.
+            if (entry.factory) {
+              const rendered = entry.factory();
+              if (rendered && rendered.$$typeof) {
+                // React element — mount into a fresh container
+                const mountPoint = document.createElement("div");
+                container.appendChild(mountPoint);
+                // React is available via the require shim
+                const ReactDOM = _require("react-dom/client");
+                const reactRoot = ReactDOM.createRoot(mountPoint);
+                reactRoot.render(rendered);
+              }
+            } else if (entry.element instanceof Node) {
+              container.appendChild(entry.element);
+            }
+          }
+          root.appendChild(container);
+        }
+      }
+      return {
+        register(spec, factory) {
+          // Support both shapes: (spec, renderFn) from dsh plugins, and
+          // ({element, order}) from our own sandbox plugins.
+          const name = typeof spec === "string" ? spec : spec.name;
+          const list = entries.get(name) || [];
+          const entry = typeof spec === "string" ? { element: spec } : spec;
+          if (factory) entry.factory = factory;
+          list.push(entry);
+          entries.set(name, list);
+          _renderAll();
+          return () => {
+            const idx = (entries.get(name) || []).indexOf(entry);
+            if (idx >= 0) (entries.get(name) || []).splice(idx, 1);
+            _renderAll();
+          };
+        },
+        renderSlot(name) {
+          const container = root.querySelector(`[data-slot="${name}"]`) || root;
+          container.replaceChildren();
+          for (const entry of entries.get(name) || []) {
+            if (entry.factory) {
+              const rendered = entry.factory();
+              if (rendered && rendered.$$typeof) {
+                const mountPoint = document.createElement("div");
+                container.appendChild(mountPoint);
+                const ReactDOM = _require("react-dom/client");
+                const reactRoot = ReactDOM.createRoot(mountPoint);
+                reactRoot.render(rendered);
+              }
+            } else if (entry.element instanceof Node) {
+              container.appendChild(entry.element);
+            }
+          }
+        },
+        inject(name, callback) {
+          return effect(() => callback(), `slot-inject:${name}`);
+        },
+        // Renderer registration: the plugin that owns the slot surface calls
+        // this to provide the render function for a slot.
+        registerRenderer(name, fn) {
+          renderers.set(name, fn);
+          _renderAll();
+          return () => { renderers.delete(name); _renderAll(); };
+        },
+      };
+    })();
+    const locale = (() => {
+      const listeners = new Set();
+      const dictionaries = new Map();
+      let currentLocale = "en";
+      const notify = () => { for (const fn of listeners) fn(currentLocale); };
+      const service = {
+        register(ns, dict) {
+          dictionaries.set(ns, dict);
+          return () => dictionaries.delete(ns);
+        },
+        bind({ namespace }) {
+          return {
+            getSnapshot: () => ({
+              status: "ready",
+              value: dictionaries.get(namespace) ?? {},
+              locale: currentLocale,
+            }),
+            subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+            get: (key) => dictionaries.get(namespace)?.[key],
+          };
+        },
+        getSnapshot: () => ({ status: "ready", locale: currentLocale }),
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        setLocale: (locale) => { currentLocale = locale; notify(); },
+      };
+      return service;
+    })();
+    const settingsScope = {
+      bind({ namespace }) {
+        const store = new Map();
+        return {
+          getSnapshot: () => ({ status: "ready", value: Object.fromEntries(store) }),
+          subscribe: () => () => {},
+          get: (key) => store.get(key),
+          set: (key, value) => { store.set(key, value); },
+        };
+      },
+    };
+    return {
+      effect,
+      on: () => () => {},
+      provide: (name, value) => { services.set(name, value); },
+      get: (name) => services.get(name),
+      slots,
+      locale,
+      settingsScope,
+    };
+  })();
+
+  // After the plugin bundle registers via __ModuleLoader__, materialize and
+  // apply it. The document's bundle script fires this on load.
+  window.__DSH_APPLY_PLUGIN__ = () => {
+    // Wait for the handshake to complete before calling apply() so the
+    // capability token is set and tool calls are authenticated.
+    ready.then(() => {
+      for (const registration of _registered) {
+        try {
+          const plugin = registration.factory(_require);
+          if (plugin && typeof plugin.apply === "function") {
+            plugin.apply(_ctx);
+          }
+        } catch (error) {
+          console.error(`DSH UI plugin ${registration.id} failed to apply:`, error);
+          document.body.dataset.pluginError = String(error && error.message ? error.message : error);
+        }
+      }
+    }).catch(() => {
+      // handshake failed; nothing to apply
+    });
+  };
+
   window.addEventListener("pagehide", () => {
     rejectReady(safeError("DSH_UI_DISPOSED", "DSH UI frame was disposed"));
     for (const waiter of pending.values()) {
@@ -973,14 +1166,46 @@ def render_dsh_ui_sandbox_document(
         hashlib.sha256(bootstrap.encode("utf-8")).digest()
     ).decode("ascii")
     script_hashes = [bootstrap_sri]
+    # Externals: vendored React CJS production builds, served as SRI-pinned
+    # classic scripts that register into window.__DSH_EXTERNALS__. Load order
+    # is dependency order (react → scheduler → react-dom → react-dom-client
+    # → react-jsx-runtime); the require shim resolves already-registered ones.
+    externals_elements = ""
+    if client_bundle_url is not None:
+        from ksadk.studio.dsh_ui_externals import dsh_ui_external_digests
+
+        for ext_name in (
+            "react",
+            "scheduler",
+            "react-dom",
+            "react-dom-client",
+            "react-jsx-runtime",
+        ):
+            ext_digest = dsh_ui_external_digests()[ext_name]
+            ext_sri = "sha256-" + base64.b64encode(
+                bytes.fromhex(ext_digest.removeprefix("sha256:"))
+            ).decode("ascii")
+            script_hashes.append(ext_sri)
+            externals_elements += (
+                f'<script src="/api/v1/plugin-ecosystems/dsh/sandbox/externals/{ext_name}" '
+                f'integrity="{ext_sri}" crossorigin="anonymous"></script>'
+            )
     bundle_element = ""
     if client_bundle_url is not None:
         bundle_url = _validate_bundle_url(client_bundle_url, grant.client_digest)
         bundle_sri = _digest_to_sri(grant.client_digest)
         script_hashes.append(bundle_sri)
+        # After the bundle registers via __ModuleLoader__, apply it. The
+        # bootstrap defines __DSH_APPLY_PLUGIN__; this inline trigger runs it.
+        apply_script = "window.__DSH_APPLY_PLUGIN__ && window.__DSH_APPLY_PLUGIN__();"
+        apply_sri = "sha256-" + base64.b64encode(
+            hashlib.sha256(apply_script.encode("utf-8")).digest()
+        ).decode("ascii")
+        script_hashes.append(apply_sri)
         bundle_element = (
             f'<script src="{html.escape(bundle_url, quote=True)}" '
             f'integrity="{bundle_sri}" crossorigin="anonymous"></script>'
+            f"<script>{apply_script}</script>"
         )
     script_policy = " ".join(f"'{item}'" for item in script_hashes)
     directives = (
@@ -1010,7 +1235,7 @@ def render_dsh_ui_sandbox_document(
         '<meta http-equiv="Content-Security-Policy" content="'
         f'{html.escape(content_security_policy, quote=True)}">'
         f"<title>{escaped_title}</title></head><body>"
-        f"<script>{bootstrap}</script>{bundle_element}</body></html>"
+        f"<script>{bootstrap}</script>{externals_elements}{bundle_element}</body></html>"
     )
     headers = MappingProxyType(
         {

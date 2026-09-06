@@ -138,7 +138,17 @@ _IMMUTABLE_SOURCE_DIR = "immutable-plugin-sources"
 _SNAPSHOT_FILES = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", _STATE_FILE)
 _MAX_JSON_BYTES = 2 * 1024 * 1024
 _MAX_CLIENT_BUNDLE_BYTES = 8 * 1024 * 1024
-_STUDIO_CLIENT_EXTERNALS = frozenset({"react"})
+_STUDIO_CLIENT_EXTERNALS = frozenset({"react", "react-dom", "react-dom/client", "react/jsx-runtime"})
+_STUDIO_CLIENT_INJECT_SERVICES = frozenset(
+    {
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+    }
+)
 _PROFILE_LOCK_DIR = "profile-locks"
 _DSH_SUBPROCESS_ENV_KEYS = (
     "PATH",
@@ -752,7 +762,7 @@ class DshProfilePluginBridge:
             reason = "dsh.client tools must be a string array"
         elif target is None:
             reason = "exports[./client] does not resolve to a built bundle"
-        elif inject:
+        elif inject and any(item not in _STUDIO_CLIENT_INJECT_SERVICES for item in inject):
             reason = "client bundle dependencies are not present in the Studio graph"
         elif any(item not in _STUDIO_CLIENT_EXTERNALS for item in external):
             reason = "client bundle requests unsupported external modules"

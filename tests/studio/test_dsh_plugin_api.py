@@ -207,13 +207,13 @@ def _request_message(
     }
 
 
-def test_sandbox_metadata_rejects_a_bundle_that_needs_the_host_module_graph() -> None:
+def test_sandbox_metadata_rejects_a_bundle_with_unvendored_externals() -> None:
     dependent = _plugin().model_copy(
         update={
             "client_bundle": DshClientBundle(
                 digest=_BUNDLE_DIGEST,
                 content_bytes=len(_BUNDLE),
-                external=("react",),
+                external=("lodash",),
                 inject=(),
                 compatible=True,
             )
@@ -228,7 +228,7 @@ def test_sandbox_metadata_rejects_a_bundle_that_needs_the_host_module_graph() ->
     assert projected["executionMode"] == "deny"
     assert projected["url"] is None
     assert projected["sandboxBundleUrl"] is None
-    assert "self-contained" in projected["sandboxIncompatibilityReason"]
+    assert "vendored" in projected["sandboxIncompatibilityReason"]
 
 
 @pytest.fixture
@@ -295,7 +295,7 @@ async def test_public_sandbox_routes_are_exact_anonymous_and_cookie_free(
 
         dependent = _plugin().model_copy(
             update={
-                "client_bundle": _plugin().client_bundle.model_copy(update={"external": ("react",)})
+                "client_bundle": _plugin().client_bundle.model_copy(update={"external": ("lodash",)})
             }
         )
         monkeypatch.setattr(_FakeBridge, "get_plugin", lambda _bridge, _name: dependent)

@@ -59,6 +59,7 @@ from ksadk.studio.service import StudioService
 
 DSH_UI_SANDBOX_FRAME_PATH = "/api/v1/plugin-ecosystems/dsh/sandbox/frame"
 DSH_UI_SANDBOX_BUNDLE_PATH = "/api/v1/plugin-ecosystems/dsh/sandbox/client-bundle"
+DSH_UI_SANDBOX_EXTERNALS_PATH = "/api/v1/plugin-ecosystems/dsh/sandbox/externals"
 
 
 class CodexPluginInstallRequest(BaseModel):
@@ -517,17 +518,30 @@ def _public_dsh_client_bundle(
 def _dsh_sandbox_client_compatibility(
     inventory: DshPluginInventory,
 ) -> tuple[bool, str | None]:
-    """Accept only bundles that need no host module graph inside the opaque frame."""
+    """Accept bundles whose external deps the sandbox externals layer can satisfy."""
 
     client = inventory.client_bundle
     if client is None:
         return False, "plugin does not declare a web client bundle"
     if not client.compatible:
         return False, client.incompatibility_reason or "client bundle is not compatible"
-    if client.external or client.inject:
+    # Inject services are allowed if they map to the sandbox's mini client
+    # runtime services (locale, slots, settingsScope, etc.).
+    from ksadk.plugins.bridges.dsh import _STUDIO_CLIENT_INJECT_SERVICES
+
+    unsupported_inject = [name for name in client.inject if name not in _STUDIO_CLIENT_INJECT_SERVICES]
+    if unsupported_inject:
         return (
             False,
-            "sandbox client bundle must be self-contained (external and inject must be empty)",
+            f"sandbox client bundle inject services are not supported: {unsupported_inject}",
+        )
+    from ksadk.studio.dsh_ui_externals import read_dsh_ui_external
+
+    unsupported = [name for name in client.external if name not in ("react", "react-dom", "react-dom/client", "react/jsx-runtime")]
+    if unsupported:
+        return (
+            False,
+            f"sandbox client bundle externals are not vendored: {unsupported}",
         )
     return True, None
 
@@ -865,6 +879,35 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
                 status_code=409,
             )
         return Response(content=content, headers=dict(dsh_ui_client_bundle_headers(digest)))
+
+    # Vendor CJS production builds of the React graph (react, scheduler,
+    # react-dom, react-dom-client, react-jsx-runtime) so sandbox plugin
+    # client bundles can require() them through the ModuleLoader shim.
+    # Loaded once per process from the react-ui node_modules.
+    @app.get(DSH_UI_SANDBOX_EXTERNALS_PATH + "/{external_name}")
+    async def get_dsh_sandbox_external(external_name: str):
+        from ksadk.studio.dsh_ui_externals import read_dsh_ui_external
+
+        try:
+            payload = read_dsh_ui_external(external_name)
+        except KeyError:
+            raise StudioError(
+                "DSH_UI_EXTERNAL_NOT_FOUND",
+                f"Unknown DSH UI external: {external_name}",
+                status_code=404,
+            ) from None
+        return Response(
+            content=payload["content"],
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "Content-Type": "text/javascript; charset=utf-8",
+                "Cross-Origin-Resource-Policy": "cross-origin",
+                "ETag": f'"{payload["digest"]}"',
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get(DSH_UI_SANDBOX_FRAME_PATH)
     async def get_dsh_sandbox_frame(

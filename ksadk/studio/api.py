@@ -79,6 +79,7 @@ from ksadk.studio.api_helpers import (
 from ksadk.studio.api_memory_routes import register_memory_routes
 from ksadk.studio.api_plugin_routes import (
     DSH_UI_SANDBOX_BUNDLE_PATH,
+    DSH_UI_SANDBOX_EXTERNALS_PATH,
     DSH_UI_SANDBOX_FRAME_PATH,
     register_plugin_routes,
 )
@@ -104,6 +105,7 @@ _PUBLIC_API_PATHS = {
 _PUBLIC_DSH_SANDBOX_GET_PATHS = {
     DSH_UI_SANDBOX_BUNDLE_PATH,
     DSH_UI_SANDBOX_FRAME_PATH,
+    DSH_UI_SANDBOX_EXTERNALS_PATH,
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -346,8 +348,11 @@ def create_studio_app(
                 request,
             )
         origin = request.headers.get("Origin")
-        public_dsh_sandbox_get = (
-            request.method == "GET" and request.url.path in _PUBLIC_DSH_SANDBOX_GET_PATHS
+        # Frame and client-bundle are exact paths; externals is a prefix
+        # (per-module sub-paths like /sandbox/externals/react-dom-client).
+        public_dsh_sandbox_get = request.method == "GET" and (
+            request.url.path in (DSH_UI_SANDBOX_FRAME_PATH, DSH_UI_SANDBOX_BUNDLE_PATH)
+            or request.url.path.startswith(DSH_UI_SANDBOX_EXTERNALS_PATH + "/")
         )
         null_origin_sandbox_request = public_dsh_sandbox_get and origin == "null"
         if (
