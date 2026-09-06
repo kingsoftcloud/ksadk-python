@@ -469,11 +469,11 @@ session/transcript、审批决策、事件总线不迁出宿主。CodexRuntimeAd
 | Spec #2 授权边界未收窄 | 后端从 `dsh.client.tools` 声明服务端计算 allowed set，前端只收窄 | ✅ |
 | Spec #3 session 到期无重建 | `DshUiSandboxFrame` 提前 60s 触发 `onSessionExpired` | ✅ |
 | Spec #4 单插件故障阻断 | 改为跳过+降级 tab，不抛错 | ✅ |
-| Spec #5 upgrade + scoped routing | `server.on('upgrade')` 已接；per-route scoped token 仍 TODO | ⚠️ 部分 |
-| Spec #6 上游插件激活 | `ssh_list` 未出现仍在追踪 | ⏸ 未解决 |
+| Spec #5 upgrade + scoped routing | `server.on('upgrade')` 已接；per-route scoped token 收窄已实现（scoped token payload 增 `routes` 白名单，非 root 且无 routes 的请求被拒） | ✅ |
+| Spec #6 上游插件激活 | 换用 `@npm_thanks-for-forest/my-dsh-tool@0.1.2`（纯 tool 插件，无 settings 依赖），E2E 通过：`read_file` 工具真实调用返回 `upstream-roundtrip`。bridge 新增无 `dsh.bundle.patch` 插件的自动 patch 生成 | ✅ |
 | Spec #6 发布门禁 | DSH advisory 改 blocking；新 E2E 进 preflight | ✅ |
 
-未解决：Spec #5 的 per-route scoped token（需协议变更）、Spec #6 的 `dsh-ssh` 激活根因（可能需补 `systemPrompt`/`settings` 服务的更完整实现）。
+未解决：无。两个 P1 阻塞项（授权边界、上游插件激活）均已修复并 E2E 验证。
 
 ## 12. 可执行任务清单
 

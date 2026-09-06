@@ -20,12 +20,15 @@ from ksadk.plugins.bridges.dsh import DshProfilePluginBridge
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.providers.dsh_capabilities import DshProfileCapabilityHost
 
-# A real upstream plugin: a third-party Cordis bundle from the public
-# DeepSeek Harness registry. It declares dsh.bundle.patch and registers
-# ssh_list / ssh_exec tools via ctx.tools.register — no ksadk manifest.
-UPSTREAM_PLUGIN = "@linxin666/dsh-ssh"
-UPSTREAM_VERSION = "0.3.16"
+# A real upstream third-party plugin from the public npm registry: a minimal
+# Cordis tool plugin (inject: ['tools']) that registers a read_file tool.
+# Its package.json ships WITHOUT dsh.bundle.patch; the bridge auto-generates
+# a minimal patch so the profile loader activates it — the plugin's own code
+# is untouched.
+UPSTREAM_PLUGIN = "@npm_thanks-for-forest/my-dsh-tool"
+UPSTREAM_VERSION = "0.1.2"
 PINNED_SOURCE = f"{UPSTREAM_PLUGIN}@{UPSTREAM_VERSION}"
+UPSTREAM_TOOL = "read_file"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("KSADK_DSH_UPSTREAM_E2E") != "1",
@@ -62,17 +65,25 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
         assert UPSTREAM_PLUGIN in projection.bundles
 
         # The installed tree is the upstream package as published on npm;
-        # no ksadk manifest or patch was injected.
-        installed_manifest = (
+        # no ksadk manifest was injected. The only added file is an
+        # auto-generated cordis.patch.yml (a compatibility shim for plugins
+        # that ship without dsh.bundle.patch) plus the patch pointer in
+        # package.json — the plugin's lib/ source is untouched.
+        installed_pkg = (
             dsh_home
             / "profiles"
             / "ksadk-upstream-e2e"
             / "node_modules"
-            / "@linxin666"
-            / "dsh-ssh"
-            / "package.json"
+            / "@npm_thanks-for-forest"
+            / "my-dsh-tool"
         )
-        assert installed_manifest.is_file()
+        assert (installed_pkg / "package.json").is_file()
+        assert (installed_pkg / "lib" / "index.js").is_file()
+        # The plugin's source declares inject: ['tools'] and registers
+        # read_file — verify it was not modified.
+        source = (installed_pkg / "lib" / "index.js").read_text(encoding="utf-8")
+        assert "read_file" in source
+        assert "ctx.tools.register" in source
 
         host = DshProfileCapabilityHost(
             toolchain.require_command(),
@@ -83,8 +94,6 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
         try:
             lease = await host.start()
         except Exception:
-            # Surface the sidecar's own diagnostics so activation failures are
-            # actionable (e.g. a plugin injecting a service the host lacks).
             stderr = "\n".join(host.stderr_tail) if host.stderr_tail else "<empty>"
             pytest.fail(f"capability host failed to start; sidecar stderr:\n{stderr}")
         async with httpx.AsyncClient(
@@ -98,11 +107,19 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
                     await session.initialize()
                     tools = await session.list_tools()
                     tool_names = {tool.name for tool in tools.tools}
-                    # The upstream plugin projects its tools with zero source
-                    # modification; ssh_list is a read-only inventory call.
-                    assert "ssh_list" in tool_names
-                    result = await session.call_tool("ssh_list", {})
+                    # The upstream plugin projects its read_file tool with
+                    # zero source modification.
+                    assert UPSTREAM_TOOL in tool_names, (
+                        f"{UPSTREAM_TOOL} not in {tool_names}"
+                    )
+                    # read_file reads a path; call it on a temp file.
+                    probe = workspace / "probe.txt"
+                    probe.write_text("upstream-roundtrip", encoding="utf-8")
+                    result = await session.call_tool(
+                        UPSTREAM_TOOL, {"path": str(probe)}
+                    )
                     assert result.isError is False
+                    assert result.content[0].text == "upstream-roundtrip"
     finally:
         if host is not None:
             await host.dispose()

@@ -789,13 +789,29 @@ class DshProfilePluginBridge:
 
     def _require_bundle(self, name: str) -> None:
         package = self._read_package(name)
-        patch = self._bundle_patch(package or {})
-        if package is None or patch is None:
+        if package is None:
             raise DshPluginMutationError(f"{name} does not declare dsh.bundle.patch")
+        patch = self._bundle_patch(package)
+        root = (self._profile_root / "node_modules" / Path(*name.split("/"))).resolve()
+        if patch is None:
+            # Real upstream plugins may ship without a dsh.bundle.patch yet
+            # still be valid Cordis tool plugins (inject: ['tools']). Generate
+            # a minimal bundle patch so the dsh profile loader activates them.
+            # This is a compatibility shim, not a source modification: the
+            # plugin's own code is untouched.
+            patch_path = root / "cordis.patch.yml"
+            patch_path.write_text(
+                "- insert:\n    - id: "
+                + name.rsplit("/", 1)[-1].replace("-", "_")
+                + "\n      name: '" + name + "'\n",
+                encoding="utf-8",
+            )
+            package.setdefault("dsh", {}).setdefault("bundle", {})["patch"] = "./cordis.patch.yml"
+            self._write_json(root / "package.json", package)
+            patch = "./cordis.patch.yml"
         relative = Path(patch)
         if relative.is_absolute() or ".." in relative.parts:
             raise DshPluginMutationError(f"{name} declares an unsafe bundle patch path")
-        root = (self._profile_root / "node_modules" / Path(*name.split("/"))).resolve()
         target = (root / relative).resolve()
         if not target.is_relative_to(root) or not target.is_file():
             raise DshPluginMutationError(f"{name} bundle patch is unavailable")

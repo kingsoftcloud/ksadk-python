@@ -158,6 +158,14 @@ function secureTokenEqual(actual, expected) {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
+/** Whether a scoped token authorizes this plugin route path. The token's
+ * `routes` allowlist (an array of exact path prefixes) must cover the path. */
+function routeAllowed(authorization, pathname) {
+  const routes = authorization.routes
+  if (!Array.isArray(routes)) return false
+  return routes.some(route => pathname === route || pathname.startsWith(route + '/'))
+}
+
 function parseScopedToken(presented, token, profileDigest, tools, allowExpired = false) {
   const parts = presented.split('.')
   if (parts.length !== 3 || parts[0] !== 'ks1') return null
@@ -193,7 +201,12 @@ function parseScopedToken(presented, token, profileDigest, tools, allowExpired =
     typeof source !== 'string' ||
     !tools.some((tool) => tool.name === source)
   )) return null
-  return { root: false, scopeId: signature, aliases, expiresAt: payload.exp }
+  // Optional route allowlist: plugin HTTP routes the session may dispatch.
+  // Each entry is a path prefix; absent means no plugin routes authorized.
+  const routes = Array.isArray(payload.routes) ? payload.routes.filter(
+    r => typeof r === 'string' && r.length > 0 && r.length <= 256 && r.startsWith('/')
+  ) : []
+  return { root: false, scopeId: signature, aliases, routes, expiresAt: payload.exp }
 }
 
 function authorize(request, token, profileDigest, tools, revokedScopes) {
@@ -545,13 +558,16 @@ export async function apply(ctx, config = {}) {
 
     // Plugin webServer routes are dispatched before the MCP endpoint check:
     // they own their path namespace and full response lifecycle (SSE, streams).
-    // NOTE: the scoped bearer token authorizes the session, but plugin HTTP
-    // routes are not yet further restricted by the session's allowed tool set.
-    // A route handler that proxies to a tool must re-check the tool scope
-    // itself; tightening this to per-route scoped tokens is a protocol change
-    // tracked separately (see proposal §5.3 follow-up).
+    // Authorization: a root token (full access) or a scoped token whose
+    // payload explicitly lists this route in its `routes` allowlist may
+    // dispatch. A scoped token without a routes entry is denied — a UI
+    // session's tool scope does NOT implicitly authorize plugin HTTP routes.
     const pluginRoute = webServerService.match(parsedUrl.pathname)
     if (pluginRoute !== null) {
+      if (!authorization.root && !routeAllowed(authorization, parsedUrl.pathname)) {
+        writeJson(response, 403, { error: 'route_not_in_scope' })
+        return
+      }
       try {
         await pluginRoute.handler(request, response)
       } catch (error) {
