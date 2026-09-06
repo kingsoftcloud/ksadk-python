@@ -88,7 +88,6 @@ afterEach(async () => {
 describe("Studio DSH production composition host", () => {
   it("atomically installs all declared slots and removes them when Profile inventory is empty", async () => {
     const runtime = new StudioDshRuntime();
-    vi.spyOn(dshUiSandbox, "fetchDshToolIds").mockResolvedValue(["fixture_tool"]);
     const sessionSpy = vi
       .spyOn(dshUiSandbox, "requestDshUiSession")
       .mockImplementation(async ({ pluginId }) => fakeSessionPayload(pluginId));
@@ -111,9 +110,8 @@ describe("Studio DSH production composition host", () => {
     sessionSpy.mockRestore();
   });
 
-  it("keeps the old graph when a newly enabled bundle fails during session creation", async () => {
+  it("isolates a bundle that fails session creation as a degraded tab without aborting others", async () => {
     const runtime = new StudioDshRuntime();
-    vi.spyOn(dshUiSandbox, "fetchDshToolIds").mockResolvedValue(["fixture_tool"]);
     const sessionSpy = vi
       .spyOn(dshUiSandbox, "requestDshUiSession")
       .mockImplementation(async ({ pluginId }) => {
@@ -128,42 +126,45 @@ describe("Studio DSH production composition host", () => {
       clientGraphDigest: "graph:stable",
       clientBundles: [sandboxBundle("stable")],
     });
-    await expect(
-      host.reconcile({
-        clientGraphDigest: "graph:broken",
-        clientBundles: [sandboxBundle("broken")],
-      }),
-    ).rejects.toThrow("session creation failed");
+    // A graph with a broken bundle alongside the stable one: the broken
+    // bundle is isolated as a degraded tab, the stable one still activates.
+    await host.reconcile({
+      clientGraphDigest: "graph:broken",
+      clientBundles: [sandboxBundle("stable"), sandboxBundle("broken")],
+    });
 
-    expect(runtime.contributions.getEntries(STUDIO_DSH_SLOTS.sidebarNavigation).map(item => item.id))
-      .toEqual(["stable.navigation"]);
-    expect(runtime.contributions.getEntries(STUDIO_DSH_SLOTS.workspaceTab).map(item => item.id))
-      .toEqual(["stable.workspace"]);
+    const tabs = runtime.contributions.getEntries(STUDIO_DSH_SLOTS.workspaceTab);
+    const stable = tabs.find(t => t.id === "stable.workspace");
+    const broken = tabs.find(t => t.id.startsWith("dsh.ui.failed."));
+    expect(stable).toBeDefined();
+    expect(stable?.session).toBeDefined();
+    expect(broken).toBeDefined();
+    expect(broken?.failureReason).toContain("session creation failed");
     sessionSpy.mockRestore();
   });
 
-  it("rejects bundles that are not sandbox-compatible without executing anything", async () => {
+  it("isolates bundles that are not sandbox-compatible as degraded tabs without aborting the graph", async () => {
     const runtime = new StudioDshRuntime();
-    vi.spyOn(dshUiSandbox, "fetchDshToolIds").mockResolvedValue([]);
     const sessionSpy = vi.spyOn(dshUiSandbox, "requestDshUiSession");
     const host = new StudioDshCompositionHost(runtime);
     resources.push({ host, runtime });
 
-    await expect(
-      host.reconcile({
-        clientGraphDigest: "graph:legacy",
-        clientBundles: [incompatibleBundle("legacy-plugin")],
-      }),
-    ).rejects.toThrow("not sandbox-compatible");
+    await host.reconcile({
+      clientGraphDigest: "graph:legacy",
+      clientBundles: [incompatibleBundle("legacy-plugin")],
+    });
 
+    // The incompatible bundle does not create a session.
     expect(sessionSpy).not.toHaveBeenCalled();
-    expect(runtime.contributions.getEntries(STUDIO_DSH_SLOTS.workspaceTab)).toHaveLength(0);
+    // It registers a degraded tab with a failure reason instead of throwing.
+    const tabs = runtime.contributions.getEntries(STUDIO_DSH_SLOTS.workspaceTab);
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].failureReason).toBeTruthy();
     sessionSpy.mockRestore();
   });
 
   it("registers declarative extension points for sandbox-compatible bundles without executing scripts", async () => {
     const runtime = new StudioDshRuntime();
-    vi.spyOn(dshUiSandbox, "fetchDshToolIds").mockResolvedValue(["fixture_tool"]);
     const sessionSpy = vi
       .spyOn(dshUiSandbox, "requestDshUiSession")
       .mockImplementation(async ({ pluginId }) => fakeSessionPayload(pluginId));
@@ -181,7 +182,6 @@ describe("Studio DSH production composition host", () => {
     expect(sessionSpy).toHaveBeenCalledWith({
       pluginId: "dsh-ui-plugin",
       clientDigest: `sha256:${"2".repeat(64)}`,
-      toolIds: ["fixture_tool"],
     });
     expect(runtime.contributions.getEntries(STUDIO_DSH_SLOTS.sidebarNavigation)).toHaveLength(1);
     expect(runtime.contributions.getEntries(STUDIO_DSH_SLOTS.route)).toHaveLength(1);

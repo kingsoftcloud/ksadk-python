@@ -60,10 +60,13 @@ CREDENTIAL_FREE_NATIVE_TESTS = (
 MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
     "tests/plugins/test_dsh_node_provider_e2e.py",
+    "tests/plugins/test_dsh_capability_host_e2e.py",
+    "tests/plugins/test_dsh_upstream_plugin_e2e.py",
 )
 BROWSER_GATES = (
     "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
     "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
+    "tests/studio/e2e/dsh_ui_sandbox_real_api_e2e.py",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
@@ -708,28 +711,22 @@ def run_release_test_gates() -> dict[str, str]:
         },
     )
     # The managed DSH toolchain E2E suite drives the real ``dsh`` CLI via a
-    # pinned npm toolchain.  Its three cases fail on the headless ubuntu CI
-    # runner with ``dsh`` exit 127 (the pinned toolchain install does not land
-    # a usable binary there), while they pass on developer machines with a
-    # working ``dsh``.  Keep the suite in preflight as advisory for 0.8.3 so a
-    # CI-only toolchain gap does not block release; track and re-enable as a
-    # blocking gate once the CI toolchain install is reliable.
-    try:
-        _run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-q",
-                *MANAGED_DSH_TOOLCHAIN_TESTS,
-            ],
-            environment={"KSADK_DSH_TOOLCHAIN_E2E": "1"},
-        )
-    except (Phase2PreflightError, subprocess.CalledProcessError):
-        print(
-            "advisory: managed DSH toolchain E2E failed; non-blocking for 0.8.3",
-            file=sys.stderr,
-        )
+    # pinned npm toolchain, including a real upstream Cordis plugin (T5) and
+    # the real-API browser sandbox loop (T2). These are blocking release gates
+    # for the plugin ecosystem work; a failure here must stop the release.
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            *MANAGED_DSH_TOOLCHAIN_TESTS,
+        ],
+        environment={
+            "KSADK_DSH_TOOLCHAIN_E2E": "1",
+            "KSADK_DSH_UPSTREAM_E2E": "1",
+        },
+    )
     for browser_gate in BROWSER_GATES:
         python_path = os.pathsep.join(
             value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value

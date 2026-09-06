@@ -19,8 +19,10 @@ function MissingPluginState({ label }: { label: string }) {
 /** A workspace tab backed by an opaque-origin sandbox iframe. */
 function SandboxedWorkspaceTab({
   tab,
+  onSessionExpired,
 }: {
   tab: StudioWorkspaceTabContribution;
+  onSessionExpired?: (sessionId: string) => void;
 }) {
   const session = tab.session;
   if (!session) {
@@ -30,6 +32,7 @@ function SandboxedWorkspaceTab({
     <DshUiSandboxFrame
       session={session}
       title={tab.label}
+      onSessionExpired={onSessionExpired}
     />
   );
 }
@@ -38,10 +41,12 @@ export function DshWorkspaceSurface({
   currentAgentId,
   registry = studioDshRuntime.contributions,
   route,
+  onSessionExpired,
 }: {
   currentAgentId: string;
   registry?: StudioContributionRegistry;
   route: StudioRouteContribution;
+  onSessionExpired?: (sessionId: string) => void;
 }) {
   const tab = registry
     .getEntries(STUDIO_DSH_SLOTS.workspaceTab)
@@ -52,7 +57,10 @@ export function DshWorkspaceSurface({
 
   // Sandbox renderer declared by the backend takes precedence.
   if (tab.renderer?.type === "sandboxed-iframe") {
-    return <SandboxedWorkspaceTab tab={tab} />;
+    if (tab.failureReason) {
+      return <MissingPluginState label={`插件 ${tab.label} 启动失败：${tab.failureReason}`} />;
+    }
+    return <SandboxedWorkspaceTab tab={tab} onSessionExpired={onSessionExpired} />;
   }
   if (tab.component) {
     const Component = tab.component;

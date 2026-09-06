@@ -67,6 +67,7 @@ def _plugin() -> DshPluginInventory:
             external=(),
             inject=(),
             compatible=True,
+            declared_tools=("fixture.echo",),
         ),
     )
 

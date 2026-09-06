@@ -27,7 +27,8 @@
     "client": {
       "inject": [],
       "external": [],
-      "platform": "web"
+      "platform": "web",
+      "tools": ["fixture_echo"]
     }
   }
 }

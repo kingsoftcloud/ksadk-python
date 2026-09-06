@@ -946,8 +946,19 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
                 )
             descriptor, generation_id = await studio.dsh_capabilities.descriptor_generation()
             descriptor_tools = {tool.name: tool for tool in descriptor.tools}
+            # Server-side authorization: the allowed tool set is the plugin's
+            # own declared tools (read server-side from its package.json),
+            # intersected with the live capability descriptor and the
+            # frontend's request. The frontend can narrow but never expand
+            # this set — a plugin's UI cannot reach another plugin's tools.
+            declared = set(item.client_bundle.declared_tools) if item.client_bundle else set()
+            requested = set(payload.tool_ids)
             allowed_ids = tuple(
-                sorted(tool_id for tool_id in payload.tool_ids if tool_id in descriptor_tools)
+                sorted(
+                    tool_id
+                    for tool_id in (declared & descriptor_tools.keys())
+                    if tool_id in requested or not requested
+                )
             )
             extension_hash = hashlib.sha256(
                 f"{item.name}\0{payload.client_digest}".encode("utf-8")

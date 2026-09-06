@@ -456,6 +456,25 @@ session/transcript、审批决策、事件总线不迁出宿主。CodexRuntimeAd
 
 原方案曾记录 317 项通过等局部测试数字。这些历史结果不作为当前发布凭证；本方案没有重跑全部 E2E、全量测试或云端部署，也没有据此宣称所有会话问题已经修好。
 
+### 11.1 codex review 后的修复记录（2026-09-05，提交待定）
+
+针对 codex review 的 Standards/Spec 阻塞项，本轮修复：
+
+| 阻塞项 | 修复 | 状态 |
+|---|---|---|
+| Standards #1 E2E 用 sync Playwright | 改用 `async_playwright` | ✅ |
+| Standards #2 生命周期测试未触发销毁 | 补真实 unmount + `onChannelDisposed` 断言 | ✅ |
+| Standards #3 `DshUiSessionProvider` 未用 | 删除 | ✅ |
+| Spec #1 生产握手 postMessage 目标错 | 改 `'*'`（opaque-origin 唯一可达，接收方仍校验 source+origin） | ✅ |
+| Spec #2 授权边界未收窄 | 后端从 `dsh.client.tools` 声明服务端计算 allowed set，前端只收窄 | ✅ |
+| Spec #3 session 到期无重建 | `DshUiSandboxFrame` 提前 60s 触发 `onSessionExpired` | ✅ |
+| Spec #4 单插件故障阻断 | 改为跳过+降级 tab，不抛错 | ✅ |
+| Spec #5 upgrade + scoped routing | `server.on('upgrade')` 已接；per-route scoped token 仍 TODO | ⚠️ 部分 |
+| Spec #6 上游插件激活 | `ssh_list` 未出现仍在追踪 | ⏸ 未解决 |
+| Spec #6 发布门禁 | DSH advisory 改 blocking；新 E2E 进 preflight | ✅ |
+
+未解决：Spec #5 的 per-route scoped token（需协议变更）、Spec #6 的 `dsh-ssh` 激活根因（可能需补 `systemPrompt`/`settings` 服务的更完整实现）。
+
 ## 12. 可执行任务清单
 
 每项使用“现状 → 变更 → 验证 → 交付”的格式。新增文件名可以按现有工程风格调整；禁止通过检查源码中是否出现某个字符串，代替关键行为测试。

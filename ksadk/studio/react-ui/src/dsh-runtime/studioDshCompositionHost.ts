@@ -7,7 +7,7 @@ import {
   type StudioWorkspaceTabContribution,
 } from "./studioContributions";
 import type { DshUiExtensionPoint } from "./dshUiSandbox";
-import { disposeDshUiSession, fetchDshToolIds, requestDshUiSession } from "./dshUiSandbox";
+import { disposeDshUiSession, requestDshUiSession } from "./dshUiSandbox";
 import { StudioDshRuntime, studioDshRuntime } from "./studioDshRuntime";
 
 export interface StudioDshClientBundleProjection {
@@ -115,32 +115,48 @@ export class StudioDshCompositionHost {
     const staging = new StudioDshRuntime();
     const sandboxDisposers: Array<() => void> = [];
     const sandboxDisposeSessions: Array<() => Promise<void>> = [];
-    // Authorize the session against the plugin's projected tools; without an
-    // explicit toolIds list the backend defaults to an empty allowlist.
-    const toolIds = await fetchDshToolIds();
-    try {
-      for (const bundle of enabled) {
-        if (!bundle.sandboxCompatible) {
-          throw new Error(
-            `DSH client bundle ${bundle.pluginId} is not sandbox-compatible: ${bundle.sandboxIncompatibilityReason || bundle.incompatibilityReason || "unknown reason"}`,
-          );
-        }
+    // Per-plugin fault isolation: a bundle that fails compatibility or
+    // session creation is skipped (with a degraded contribution) rather
+    // than aborting the whole graph. Other plugins still activate.
+    const failures: Array<{ pluginId: string; reason: string }> = [];
+    for (const bundle of enabled) {
+      if (!bundle.sandboxCompatible) {
+        failures.push({
+          pluginId: bundle.pluginId,
+          reason: bundle.sandboxIncompatibilityReason || bundle.incompatibilityReason || "not sandbox-compatible",
+        });
+        continue;
+      }
+      try {
+        // The backend computes the allowed tool set server-side from the
+        // plugin's own declared tools; the frontend does not pass toolIds
+        // (passing none requests the full server-authorized set).
         const payload = await requestDshUiSession({
           pluginId: bundle.pluginId,
           clientDigest: bundle.digest,
-          toolIds,
         });
         const record: SandboxSessionRecord = { payload };
         sandboxDisposers.push(
           ...registerExtensionPoints(staging.contributions, record),
         );
         sandboxDisposeSessions.push(() => disposeDshUiSession(payload.uiSessionId));
+      } catch (error) {
+        failures.push({
+          pluginId: bundle.pluginId,
+          reason: error instanceof Error ? error.message : "session creation failed",
+        });
       }
-    } catch (error) {
-      sandboxDisposers.forEach(dispose => dispose());
-      await Promise.allSettled(sandboxDisposeSessions.map(dispose => dispose()));
-      await staging.dispose();
-      throw error;
+    }
+    // Register degraded placeholders for failed plugins so the user sees why
+    // a tab is unavailable instead of the tab silently disappearing.
+    for (const failure of failures) {
+      const safeId = failure.pluginId.replace(/[^A-Za-z0-9_-]/g, "");
+      staging.contributions.register(STUDIO_DSH_SLOTS.workspaceTab, {
+        id: `dsh.ui.failed.${safeId}`,
+        label: failure.pluginId,
+        renderer: { type: "sandboxed-iframe", frameUrl: "" },
+        failureReason: failure.reason,
+      });
     }
 
     const previous = this.activeRuntime;

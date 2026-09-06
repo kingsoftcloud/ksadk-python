@@ -62,6 +62,12 @@ class DshClientBundle(_DshModel):
     inject: tuple[str, ...] = ()
     compatible: bool
     incompatibility_reason: str = ""
+    # Tool names the plugin's client bundle is authorized to invoke from its
+    # sandbox UI. Declared in package.json under dsh.client.tools; the backend
+    # reads this server-side and intersects it with the live capability
+    # descriptor. The frontend's request toolIds are intersected further but
+    # never expand this set — a plugin's UI cannot reach another plugin's tools.
+    declared_tools: tuple[str, ...] = ()
 
 
 class DshPluginInventory(_DshModel):
@@ -737,10 +743,13 @@ class DshProfilePluginBridge:
             return None
         inject = self._string_tuple(declaration.get("inject"))
         external = self._string_tuple(declaration.get("external"))
+        declared_tools = self._string_tuple(declaration.get("tools"))
         target = self._client_bundle_path(name, package)
         reason = ""
         if inject is None or external is None:
             reason = "dsh.client inject/external must be string arrays"
+        elif declared_tools is None:
+            reason = "dsh.client tools must be a string array"
         elif target is None:
             reason = "exports[./client] does not resolve to a built bundle"
         elif inject:
@@ -755,6 +764,7 @@ class DshProfilePluginBridge:
                 external=external or (),
                 compatible=False,
                 incompatibility_reason=reason,
+                declared_tools=declared_tools or (),
             )
         try:
             size = target.stat().st_size
@@ -774,6 +784,7 @@ class DshProfilePluginBridge:
             external=external or (),
             compatible=not reason,
             incompatibility_reason=reason,
+            declared_tools=declared_tools or (),
         )
 
     def _require_bundle(self, name: str) -> None:

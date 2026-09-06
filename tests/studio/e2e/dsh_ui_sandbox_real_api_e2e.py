@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from playwright.sync_api import expect, sync_playwright
+from playwright.async_api import async_playwright, expect
 
 from ksadk.plugins.bridges.dsh import DshProfilePluginBridge
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
@@ -235,30 +235,30 @@ async def test_real_api_sandbox_round_trip(tmp_path: Path) -> None:
             else:
                 raise RuntimeError("studio API did not become ready")
 
-        # --- 4. Drive the browser ---
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True, **_browser_launch_options())
+        # --- 4. Drive the browser (async Playwright — no sync API in asyncio loop) ---
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True, **_browser_launch_options())
             try:
-                page = browser.new_page()
-                page.goto(host_origin, wait_until="load")
+                page = await browser.new_page()
+                await page.goto(host_origin, wait_until="load")
 
                 # The host page creates the session, mounts the frame, and
                 # relays the fixture_echo call. The client bundle inside the
                 # iframe sets data-fixture-status="passed" on success.
                 frame = page.frame_locator("#frame")
-                expect(frame.locator("body")).to_have_attribute(
+                await expect(frame.locator("body")).to_have_attribute(
                     "data-fixture-status", "passed", timeout=30000
                 )
-                expect(page.locator("#status")).to_have_text("ready")
+                await expect(page.locator("#status")).to_have_text("ready")
 
                 # Verify the capability token never appears in the DOM or URL.
                 iframe = page.locator("#frame")
-                assert "allow-same-origin" not in (iframe.get_attribute("sandbox") or "")
-                page_content = page.content()
+                assert "allow-same-origin" not in (await iframe.get_attribute("sandbox") or "")
+                page_content = await page.content()
                 # The host page should not leak any capability token.
                 assert "capabilityToken" not in page_content
             finally:
-                browser.close()
+                await browser.close()
     finally:
         host_server.shutdown()
         host_server.server_close()

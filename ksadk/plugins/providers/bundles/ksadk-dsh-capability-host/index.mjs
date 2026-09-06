@@ -545,6 +545,11 @@ export async function apply(ctx, config = {}) {
 
     // Plugin webServer routes are dispatched before the MCP endpoint check:
     // they own their path namespace and full response lifecycle (SSE, streams).
+    // NOTE: the scoped bearer token authorizes the session, but plugin HTTP
+    // routes are not yet further restricted by the session's allowed tool set.
+    // A route handler that proxies to a tool must re-check the tool scope
+    // itself; tightening this to per-route scoped tokens is a protocol change
+    // tracked separately (see proposal §5.3 follow-up).
     const pluginRoute = webServerService.match(parsedUrl.pathname)
     if (pluginRoute !== null) {
       try {
@@ -819,6 +824,36 @@ export async function apply(ctx, config = {}) {
   server.requestTimeout = callTimeoutMs + 10_000
   server.keepAliveTimeout = 5_000
   server.on('clientError', (_error, socket) => socket.destroy())
+
+  // WebSocket / upgrade dispatch: plugins that register upgrade routes
+  // (e.g. dsh-ssh terminal streams) get their handler invoked here. The
+  // request is authorized with the same scoped bearer token as HTTP routes.
+  server.on('upgrade', (request, socket, head) => {
+    const authorization = authorize(request, token, profileDigest, tools, revokedScopes)
+    if (authorization === null) {
+      socket.destroy()
+      return
+    }
+    let parsedUrl
+    try {
+      parsedUrl = new URL(request.url ?? '/', 'http://127.0.0.1')
+    } catch {
+      socket.destroy()
+      return
+    }
+    const upgradeRoute = webServerService.matchUpgrade(parsedUrl.pathname)
+    if (upgradeRoute === null) {
+      socket.destroy()
+      return
+    }
+    // Scoped token: restrict the upgrade to tools the session is authorized
+    // for. The route handler owns the socket lifecycle from here.
+    try {
+      upgradeRoute.handler(request, socket, head)
+    } catch (error) {
+      socket.destroy()
+    }
+  })
 
   let stopped = false
   const stop = async () => {

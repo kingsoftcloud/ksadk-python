@@ -225,7 +225,6 @@ export function attachDshUiSandbox(
   onDispose?: () => void,
 ): () => void {
   const { handshake, uiSessionId, sourceId } = session;
-  const parentOrigin = window.location.origin;
   const messagePath = `${DSH_UI_SESSIONS_PATH}/${encodeURIComponent(uiSessionId)}/messages`;
   let cleaned = false;
   let ready = false;
@@ -307,7 +306,13 @@ export function attachDshUiSandbox(
       cleanup();
       return;
     }
-    iframe.contentWindow.postMessage(handshake, parentOrigin, [channel.port2]);
+    // The iframe is sandbox="allow-scripts" without allow-same-origin, so it
+    // has an opaque origin: postMessage with a specific targetOrigin will NOT
+    // be delivered. The sender must use "*". The receiver still authenticates
+    // event.source and the exact parent origin from the handshake payload, so
+    // using "*" does not weaken security — it is the only way to reach an
+    // opaque-origin frame.
+    iframe.contentWindow.postMessage(handshake, "*", [channel.port2]);
   });
 
   return cleanup;

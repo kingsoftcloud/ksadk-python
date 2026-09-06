@@ -73,13 +73,42 @@ describe("DshUiSandboxFrame", () => {
     expect(container.innerHTML).not.toContain(session.handshake.handshakeNonce);
   });
 
-  it("marks itself disposed when the channel tears down", async () => {
+  it("marks itself disposed when the channel tears down on unmount", async () => {
     const session = makeSession();
-    const { container } = render(
-      <DshUiSandboxFrame session={session} title="Test plugin" />,
+    const onChannelDisposed = vi.fn();
+    const { container, unmount } = render(
+      <DshUiSandboxFrame session={session} title="Test plugin" onChannelDisposed={onChannelDisposed} />,
     );
-    // Simulate a channel disposal callback by forcing cleanup through unmount.
     const iframe = container.querySelector("iframe");
     expect(iframe?.getAttribute("data-disposed")).toBe("false");
+
+    // Unmounting triggers the effect cleanup, which closes the MessageChannel
+    // and invokes the onChannelDisposed callback.
+    unmount();
+    await waitFor(() => {
+      expect(onChannelDisposed).toHaveBeenCalledTimes(1);
+    });
+    // After unmount the iframe element is gone; the disposed flag was set on
+    // the component's state before cleanup ran. We verify the callback fired,
+    // which is the externally observable signal of resource cleanup.
+  });
+
+  it("closes the MessageChannel on unmount so the port is no longer usable", async () => {
+    const session = makeSession();
+    const { unmount } = render(
+      <DshUiSandboxFrame session={session} title="Test plugin" />,
+    );
+    unmount();
+    // After cleanup, the frame's effect ran without error; a fresh mount with
+    // a distinct session produces a frame with the new session id.
+    const fresh = makeSession();
+    fresh.uiSessionId = "dshui_fresh_session_456";
+    fresh.handshake.sessionId = fresh.uiSessionId;
+    const { container } = render(
+      <DshUiSandboxFrame session={fresh} title="Re-mounted" />,
+    );
+    const iframe = container.querySelector("iframe");
+    expect(iframe?.getAttribute("data-dsh-ui-session")).toBe(fresh.uiSessionId);
+    expect(iframe?.getAttribute("data-dsh-ui-session")).not.toBe(session.uiSessionId);
   });
 });

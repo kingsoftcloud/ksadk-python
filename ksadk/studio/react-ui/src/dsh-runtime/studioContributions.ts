@@ -48,6 +48,8 @@ export interface StudioWorkspaceTabContribution extends StudioContributionBase {
   renderer?: StudioWorkspaceTabRendererSandboxedIframe;
   /** Live UI session payload backing the sandboxed-iframe renderer. */
   session?: DshUiSessionCreateResponse;
+  /** If the plugin failed to activate, a human-readable reason for degraded UI. */
+  failureReason?: string;
 }
 
 /**
