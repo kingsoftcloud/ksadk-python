@@ -683,3 +683,56 @@ async def test_compaction_rejects_active_and_foreign_sessions(tmp_path):
     with pytest.raises(StudioError) as foreign:
         await bridge.compact_session("other", "s")
     assert foreign.value.status_code == 404
+
+
+def test_shared_history_uses_public_run_identity_without_mutating_native_event():
+    native = {"run_id": "native-run", "event_type": "item.completed", "item_id": "answer"}
+    persisted = {"runtimeEvent": native, "text": "answer"}
+    projected = StudioSharedWebBridge._shared_event_content(persisted, "studio-run")
+    assert projected["runtimeEvent"]["run_id"] == "studio-run"
+    assert native["run_id"] == "native-run"
+    assert projected["runtimeEvent"]["item_id"] == "answer"
+
+
+def test_shared_history_keeps_resumable_interruption_pending():
+    pending = {"runtimeEvent": {"interaction_id": "question-1"}}
+    assert StudioSharedWebBridge._shared_event_type("run.interrupted", pending) == "run.waiting"
+    assert StudioSharedWebBridge._shared_event_type("run.interrupted", {}) == "run.interrupted"
+    assert StudioSharedWebBridge._shared_event_type("run.cancelled", pending) == "run.cancelled"
+
+
+@pytest.mark.asyncio
+async def test_old_interaction_receipt_replay_preserves_new_pending_form(tmp_path):
+    import hashlib
+    import json
+
+    studio = StudioService(tmp_path)
+    record = RunRecord(
+        id="run_replay", build_id="b", agent_id="a", session_id="s", trace_id="t",
+        input="ask", status=RunStatus.WAITING_INPUT,
+    )
+    studio.event_store.create(record)
+    digest = hashlib.sha256(json.dumps(
+        {"name": "approve", "data": {}}, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    receipt = {"interactionId": "old-approval", "revision": 2}
+    studio.event_store.append("run_replay", "a2ui.action", {
+        "interactionId": "old-approval", "revision": 2, "idempotencyKey": "old-key",
+        "requestDigest": digest, "receipt": receipt,
+    })
+    studio.event_store.append("run_replay", "a2ui.interaction", {
+        "interactionId": "new-form", "revision": 1, "kind": "form",
+    })
+    studio.run_service._waiting_modes["run_replay"] = "resume"
+    try:
+        result = await studio.run_service.submit_interaction(
+            "run_replay", "old-approval", name="approve", data={},
+            expected_revision=1, idempotency_key="old-key",
+        )
+        assert result == receipt
+        assert studio.event_store.get("run_replay").status == RunStatus.WAITING_INPUT
+        assert studio.run_service._waiting_modes["run_replay"] == "resume"
+        history = await StudioSharedWebBridge(studio).list_messages("s")
+        assert history["Messages"][-1]["Content"]["text"] == ""
+    finally:
+        await studio.aclose()

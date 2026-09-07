@@ -234,7 +234,14 @@ class StudioSharedWebBridge:
                 {
                     "MessageId": f"{run.id}:assistant",
                     "Role": "assistant",
-                    "Content": {"text": self._run_output(run)},
+                    "Content": {
+                        # Run status is metadata, not an assistant reply. An
+                        # empty pending reply lets canonical reasoning/tools
+                        # restore without a synthetic status text shadowing them.
+                        "text": (
+                            run.output if self._active_status(run.status) else self._run_output(run)
+                        )
+                    },
                     "Timestamp": self._timestamp(run.completed_at or run.started_at),
                     "SeqId": sequence,
                     "InvocationId": run.id,
@@ -267,9 +274,9 @@ class StudioSharedWebBridge:
                 events.append(
                     {
                         "SeqId": sequence,
-                        "EventType": event.type,
+                        "EventType": self._shared_event_type(event.type, event.data),
                         "InvocationId": run.id,
-                        "Content": event.data,
+                        "Content": self._shared_event_content(event.data, run.id),
                         "Timestamp": self._timestamp(event.created_at),
                     }
                 )
@@ -279,6 +286,31 @@ class StudioSharedWebBridge:
             "Offset": 0,
             "Limit": len(events),
         }
+
+    @staticmethod
+    def _shared_event_type(event_type: str, data: dict[str, Any]) -> str:
+        native = data.get("runtimeEvent")
+        if (
+            event_type == "run.interrupted"
+            and isinstance(native, dict)
+            and native.get("interaction_id")
+        ):
+            # A resumable interaction is waiting, not a terminal interruption.
+            return "run.waiting"
+        return event_type
+
+    @staticmethod
+    def _shared_event_content(data: dict[str, Any], run_id: str) -> dict[str, Any]:
+        """Use the public Studio run identity in shared-Web history projections.
+
+        The persisted canonical event retains the adapter's native run ID.
+        ListSessionMessages uses the Studio ID, so its event projection must
+        use the same ID or hydration retains both copies of the answer.
+        """
+        native = data.get("runtimeEvent")
+        if not isinstance(native, dict):
+            return data
+        return {**data, "runtimeEvent": {**native, "run_id": run_id}}
 
     def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
         run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
@@ -312,8 +344,8 @@ class StudioSharedWebBridge:
                         "SeqId": offset + event.id,
                         "SessionId": session_id,
                         "InvocationId": invocation_id,
-                        "EventType": event.type,
-                        "Content": event.data,
+                        "EventType": self._shared_event_type(event.type, event.data),
+                        "Content": self._shared_event_content(event.data, run_id),
                         "Timestamp": self._timestamp(event.created_at),
                     },
                 )
@@ -346,7 +378,9 @@ class StudioSharedWebBridge:
         run_id = self._response_runs.get(response_id, response_id)
         return self.studio.event_store.get(run_id).session_id
 
-    async def stream_run(self, payload: dict[str, Any]) -> AsyncIterator[str]:
+    async def stream_run(
+        self, payload: dict[str, Any], *, shared_ui: bool = False
+    ) -> AsyncIterator[str]:
         agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
@@ -435,6 +469,15 @@ class StudioSharedWebBridge:
                         if event_name == "response.output_text.delta":
                             emitted_text += str(event_payload.get("delta") or "")
                         yield self._sse(event_name, event_payload)
+                        if (
+                            shared_ui
+                            and event_name == "a2ui.interaction"
+                            and event_payload.get("kind") in {"form", "structured_input"}
+                        ):
+                            # The shared UI restores the durable Interaction/v1
+                            # request, then subscribes to this same live run.
+                            # Leave the execution attached while input is pending.
+                            return
                 else:
                     idle_polls += 1
                     if idle_polls >= 20:

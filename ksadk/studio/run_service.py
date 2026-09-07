@@ -1047,11 +1047,8 @@ class StudioRunService:
                     "同一幂等键不能提交不同内容",
                     status_code=409,
                 )
-            record = self.event_store.get(run_id)
-            if record.status == RunStatus.WAITING_INPUT:
-                record.status = RunStatus.RUNNING
-                self.event_store.save(record)
-                self._waiting_modes.pop(run_id, None)
+            # A receipt replay is read-only. The run may already be waiting
+            # for a different interaction; never clear that newer wait state.
             return dict(prior.data.get("receipt") or {})
 
         interaction = next(

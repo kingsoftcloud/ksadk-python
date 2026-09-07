@@ -84,6 +84,8 @@ vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confi
 describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
     mocks.chat.bootstrapStatus = "ready";
+    mocks.chat.isStreaming = false;
+    mocks.chat.currentSessionId = "session-1";
     mocks.useAgentChat.mockClear();
     mocks.facadeOptions.length = 0;
     mocks.timelineProps = null;
@@ -91,6 +93,29 @@ describe("ChatWorkspace shared conversation composition", () => {
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
+  });
+
+  it("reconciles the same session when the transport ends without duplicating a run", () => {
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(mocks.chat.refresh).not.toHaveBeenCalled();
+    mocks.chat.isStreaming = true;
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(mocks.chat.refresh).not.toHaveBeenCalled();
+    mocks.chat.isStreaming = false;
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(mocks.chat.refresh).toHaveBeenCalledOnce();
+    expect(mocks.chat.send).not.toHaveBeenCalled();
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(mocks.chat.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("does not reconcile another session when switching away from a running session", () => {
+    mocks.chat.isStreaming = true;
+    const { rerender } = render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    mocks.chat.currentSessionId = "session-2";
+    mocks.chat.isStreaming = false;
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(mocks.chat.refresh).not.toHaveBeenCalled();
   });
 
   it("keeps bootstrap progress quiet and inside the transcript region", () => {

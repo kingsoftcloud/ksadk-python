@@ -755,7 +755,7 @@ def create_studio_app(
                 data = await shared_web.list_session_events(str(payload.get("SessionId") or ""))
             elif action == "RunAgent":
                 return StreamingResponse(
-                    shared_web.stream_run(payload),
+                    shared_web.stream_run(payload, shared_ui=True),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-store",
