@@ -14,6 +14,7 @@ from ksadk.configs import ModelConfig
 from ksadk.plugins.contracts import plugin_lock_digest
 from ksadk.runtime import RuntimeLaunchContext
 from ksadk.studio.codex_builder import CodexBuildRepository
+from ksadk.studio.codex_credentials import restore_mcp_oauth_credentials
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
 from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
 from ksadk.studio.contracts import Instructions, ModelSpec
@@ -67,6 +68,12 @@ class CodexRunSpecResolver:
                 },
             )
         manifest = self._load_build_manifest(build.artifact_path)
+        restore_mcp_oauth_credentials(
+            self.workspace.root,
+            build,
+            self.builds.list(),
+            manifest.mcp_servers or [],
+        )
         plugin_bootstrap = self._plugin_bootstrap(build, manifest)
         selected_model = self._select_model(manifest, model)
         project_dir = self.workspace.root.resolve()

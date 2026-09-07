@@ -357,7 +357,7 @@ describe("AgentEditor form", () => {
         draft: {
           metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 3 },
           spec: {
-            runtime: { type: "codex", version: "0.144.4" },
+            runtime: { type: "codex", version: "0.147.0" },
             instructions: { system: "Answer with evidence.", task: "" },
             soul: {
               schemaVersion: "agentkit.soul/v1",
@@ -388,6 +388,8 @@ describe("AgentEditor form", () => {
     expect(screen.getByText(/ManagedRuntime 启动时会把 Soul 确定性编译到 base_instructions/)).toBeVisible();
     const manifest = screen.getByRole("region", { name: "agentkit.yaml 源码" });
     await waitFor(() => {
+      expect(manifest).toHaveTextContent("version: 0.147.0");
+      expect(manifest).not.toHaveTextContent("0.144.4");
       expect(manifest).toHaveTextContent("soul:");
       expect(manifest).toHaveTextContent("identity:");
       expect(manifest).toHaveTextContent("A careful release reviewer.");

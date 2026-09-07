@@ -447,7 +447,9 @@ export function AgentEditor({
     "artifact_type: ManagedRuntime",
     "runtime:",
     "  name: codex",
-    "  version: 0.144.4",
+    ...(detail?.draft.spec.runtime?.version
+      ? [`  version: ${detail.draft.spec.runtime.version}`]
+      : []),
     `model: ${modelName(primaryModel) || fallbackModel}`,
     ...(manifestModels.length > 1 ? ["models:", ...manifestModels.map(item => `  - ${item}`)] : []),
     ...codexSoulYamlLines,

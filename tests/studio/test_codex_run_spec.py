@@ -364,3 +364,71 @@ def test_resolver_rejects_stale_build_after_manifest_edit(tmp_path: Path) -> Non
         CodexRunSpecResolver(workspace).resolve(build.id)
 
     assert captured.value.code == "CODEX_BUILD_STALE"
+
+
+def test_rebuild_preserves_only_bound_same_agent_mcp_oauth(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import stat
+
+    monkeypatch.delenv("KSADK_CODEX_HOME", raising=False)
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    manifests = CodexManifestRepository(workspace)
+    builder = CodexStudioBuilder(workspace, runtime_inspector=_inspector)
+    manifests.save(_manifest())
+    original = builder.build()
+    old_home = tmp_path / ".agentkit/codex-homes" / original.id
+    old_home.mkdir(parents=True)
+    grant = {
+        "server_name": "design",
+        "server_url": "https://design.example/mcp",
+        "access_token": "fake-token",
+    }
+    (old_home / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "design|hash": grant,
+                "unbound|hash": {**grant, "server_name": "unbound"},
+                "changed|hash": {**grant, "server_url": "https://other.example/mcp"},
+            }
+        )
+    )
+    (old_home / "auth.json").write_text('{"never_copy": true}')
+    updated = _manifest().model_copy(
+        update={
+            "mcp_servers": [
+                {"name": "design", "transport": "http", "url": "https://design.example/mcp"},
+            ]
+        }
+    )
+    manifests.save(updated)
+    build = builder.build()
+    resolver = CodexRunSpecResolver(workspace)
+    foreign = original.model_copy(update={"id": "build_abcdef01", "agent_name": "other-agent"})
+    foreign_home = old_home.parent / foreign.id
+    foreign_home.mkdir()
+    (foreign_home / ".credentials.json").write_text(json.dumps({"foreign|hash": grant}))
+    monkeypatch.setattr(resolver.builds, "list", lambda: [original, build, foreign])
+    resolver.resolve(build.id)
+    target = tmp_path / ".agentkit/codex-homes" / build.id / ".credentials.json"
+    assert target.exists(), "OAuth grant disappeared when the MCP binding changed the build"
+    assert json.loads(target.read_text()) == {"design|hash": grant}
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not (target.parent / "auth.json").exists()
+    # A refreshed token in the current build must not be overwritten by old state.
+    fresh = {**grant, "access_token": "fake-refreshed"}
+    target.write_text(json.dumps({"design|hash": fresh}))
+    resolver.resolve(build.id)
+    assert json.loads(target.read_text()) == {"design|hash": fresh}
+
+    # Logging out in this build must not recover a stale grant on the next run.
+    target.unlink()
+    resolver.resolve(build.id)
+    assert not target.exists()
+    # A subsequent build must not search past this logged-out predecessor.
+    manifests.save(updated.model_copy(update={"prompt": "Next revision"}))
+    next_build = builder.build()
+    monkeypatch.setattr(resolver.builds, "list", lambda: [original, build, next_build, foreign])
+    resolver.resolve(next_build.id)
+    next_target = target.parent.parent / next_build.id / ".credentials.json"
+    assert not next_target.exists()
