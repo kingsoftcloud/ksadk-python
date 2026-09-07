@@ -19,7 +19,7 @@ Studio 使用受管理的完整 DSH Core/Profile，并在自身界面中展示�
 
 Codex 云端交付把插件字节与准入引用冻结为 Agent 版本关联的不可变制品，需要控制面制品接口与存储支持。接口不可用时会阻断部署，不会静默丢弃插件。桌面 OAuth 凭证不会随制品复制；云端 MCP OAuth 和凭证管理在后续版本完善。发现 Skill 不等于其 MCP 已连接或已授权。
 
-通用 Python wheel 包含 Web 0.3.5 与编译后的 Studio 页面，不含 Python 依赖、Node/Codex/DSH 二进制、社区插件或凭证。按需安装 framework extra；完全断网安装还需准备依赖 wheelhouse 及原生工具链。既有云端 Agent 只有显式重新构建、更新部署后才变化。
+通用 Python wheel 包含 Web 0.3.5 与编译后的 Studio 页面，不含 Python 依赖、Node/Codex/DSH 二进制、社区插件或凭证。基础安装声明共享框架依赖，额外能力按需安装 extra；完全断网安装还需准备依赖 wheelhouse 及原生工具链。既有云端 Agent 只有显式重新构建、更新部署后才变化。
 
 ## 选择接入方式
 
