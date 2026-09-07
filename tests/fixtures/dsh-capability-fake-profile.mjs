@@ -147,7 +147,7 @@ if (crashChildPidFile) {
     stdio: 'ignore',
   })
   writeFileSync(crashChildPidFile, String(child.pid), 'utf8')
-  setTimeout(() => process.exit(17), 50)
+  // The test kills the leader after observing startup and this child.
 }
 
 async function shutdown() {
