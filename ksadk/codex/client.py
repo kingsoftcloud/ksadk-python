@@ -728,103 +728,19 @@ class AsyncCodexClient(CodexClient):
         if request_queue is None:
             return {"answers": {}}
 
-        surface_id = f"input-{interaction_id}"
-        components: list[dict[str, Any]] = []
-        question_components: list[dict[str, Any]] = []
-        input_schema: dict[str, Any] = {"type": "object", "properties": {}}
-        questions = raw.get("questions") if isinstance(raw.get("questions"), list) else []
-        for index, raw_question in enumerate(questions):
-            if not isinstance(raw_question, dict):
-                continue
-            question_id = str(raw_question.get("id") or f"question_{index + 1}")
-            raw_options = raw_question.get("options")
-            options = (
-                [dict(option) for option in raw_options if isinstance(option, dict)]
-                if isinstance(raw_options, list)
-                else []
-            )
-            multiple = bool(
-                raw_question.get("multiple")
-                or raw_question.get("isMultiple")
-                or raw_question.get("is_multiple")
-                or raw_question.get("isMultiSelect")
-                or raw_question.get("is_multi_select")
-            )
-            question_components.append(
-                {
-                    "id": question_id,
-                    "component": "MultipleChoice",
-                    "props": {
-                        "name": question_id,
-                        "label": str(
-                            raw_question.get("header")
-                            or raw_question.get("question")
-                            or question_id
-                        ),
-                        "description": str(raw_question.get("question") or ""),
-                        "options": options,
-                        "multiple": multiple,
-                        "allow_other": bool(
-                            raw_question.get("isOther") or raw_question.get("is_other")
-                        ),
-                        "secret": bool(
-                            raw_question.get("isSecret") or raw_question.get("is_secret")
-                        ),
-                    },
-                }
-            )
-            option_labels = [
-                str(option.get("label") or "") for option in options if option.get("label")
-            ]
-            input_schema["properties"][question_id] = (
-                {
-                    "type": "array",
-                    "items": {"type": "string", "enum": option_labels},
-                }
-                if multiple
-                else {"type": "string", "enum": option_labels}
-            )
-        components.append(
-            {
-                "id": "form",
-                "component": "Form",
-                "props": {"title": "需要你的反馈", "submit_label": "提交"},
-                "children": question_components,
-            }
-        )
+        # Preserve the native question contract (including multiple choice and
+        # custom answers) for the canonical interaction mapper. Legacy A2UI
+        # forms cannot provide the native continuation/response correlation.
         with self._approval_lock:
             self._pending_interactions[interaction_id] = pending
-            request_queue.put(
-                {
-                    "method": "a2ui/surface",
-                    "params": {
-                        "surface_id": surface_id,
-                        "surface": {
-                            "catalog_id": "https://a2ui.org/specification/v0_9/basic_catalog.json",
-                            "components": components,
-                            "data_model": {},
-                        },
-                    },
-                }
-            )
-            request_queue.put(
-                {
-                    "method": "a2ui/interaction",
-                    "params": {
-                        "surface_id": surface_id,
-                        "interaction_id": interaction_id,
-                        "kind": "form",
-                        "input_schema": input_schema,
-                        "is_blocking": bool(raw.get("isBlocking", raw.get("is_blocking", True))),
-                    },
-                }
-            )
+            request_queue.put({"id": interaction_id, "method": method, "params": raw})
         pending.resolved.wait()
         with self._approval_lock:
             self._pending_interactions.pop(interaction_id, None)
-        return pending.response or {"answers": {}}
+        response = pending.response or {"answers": {}}
+        request_queue.put({"id": interaction_id, "result": dict(response)})
+        return response
 
-    @staticmethod
     def _maybe_apply_proxy(
         config: Any,
         *,

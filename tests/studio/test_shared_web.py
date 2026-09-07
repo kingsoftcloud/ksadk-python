@@ -564,3 +564,80 @@ def test_shared_response_approval_item_uses_interaction_identity():
         "run_id": "run-1",
         "status": "in_progress",
     }
+
+
+@pytest.mark.parametrize("status", [RunStatus.RUNNING, RunStatus.WAITING_INPUT])
+def test_session_active_run_survives_newer_failed_turn(status):
+    bridge = StudioSharedWebBridge.__new__(StudioSharedWebBridge)
+    active = RunRecord(
+        id="active",
+        build_id="b",
+        agent_id="a",
+        session_id="s",
+        trace_id="t1",
+        status=status,
+        input="first",
+        started_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    failed = RunRecord(
+        id="failed",
+        build_id="b",
+        agent_id="a",
+        session_id="s",
+        trace_id="t2",
+        status=RunStatus.FAILED,
+        input="second",
+        started_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+    )
+    result = bridge._session_record([active, failed])
+    assert result["ActiveInvocationId"] == "active"
+    assert result["ActiveRunStatus"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_waits_through_user_input_and_replays_terminal(tmp_path):
+    studio = StudioService(tmp_path)
+    bridge = StudioSharedWebBridge(studio)
+    record = RunRecord(
+        id="waiting",
+        build_id="b",
+        agent_id="a",
+        session_id="s",
+        trace_id="t",
+        input="ask",
+        status=RunStatus.WAITING_INPUT,
+    )
+    studio.event_store.create(record)
+    studio.event_store.append(record.id, "a2ui.interaction", {"interactionId": "q"})
+    stream = bridge.subscribe_run_events("s", record.id, after_seq_id=0)
+    first = await anext(stream)
+    assert "a2ui.interaction" in first
+    # A waiting request is live; subscription must not emit [DONE].
+    heartbeat = await anext(stream)
+    assert "[DONE]" not in heartbeat
+    assert "ping" in heartbeat
+    record.status = RunStatus.COMPLETED
+    studio.event_store.save(record)
+    studio.event_store.append(record.id, "run.completed", {})
+    terminal = await anext(stream)
+    assert "run.completed" in terminal
+    assert "[DONE]" in await anext(stream)
+    await stream.aclose()
+    await studio.aclose()
+
+
+@pytest.mark.asyncio
+async def test_history_has_one_activity_per_surface_snapshot(tmp_path):
+    studio = StudioService(tmp_path)
+    bridge = StudioSharedWebBridge(studio)
+    record = RunRecord(
+        id="r", build_id="b", agent_id="a", session_id="s", trace_id="t", input="ask"
+    )
+    studio.event_store.create(record)
+    operations = [{"createSurface": {"surfaceId": "input-q"}}]
+    for kind in ["a2ui.surface.begin", "a2ui.surface.end"]:
+        studio.event_store.append("r", kind, {"surfaceId": "input-q", "a2uiOperations": operations})
+    activities = await bridge._run_activities(record)
+    assert len(activities) == 1
+    assert activities[0]["Content"]["a2ui_operations"] == operations
+    await studio.aclose()

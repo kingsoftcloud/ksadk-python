@@ -843,7 +843,14 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
                 seq=2,
                 interaction_id="question-1",
                 interaction_kind="structured_input",
-                request=StructuredInputRequest(prompt=None, schema={}),
+                request=StructuredInputRequest(
+                    prompt="检查范围",
+                    schema={
+                        "type": "object",
+                        "properties": {"scope": {"type": "array", "minItems": 1}},
+                        "required": ["scope"],
+                    },
+                ),
                 source=source,
                 **common,
             )
@@ -920,12 +927,24 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
         )
     assert stale.value.code == "INTERACTION_REVISION_MISMATCH"
 
+    with pytest.raises(StudioError) as empty_answer:
+        await service.submit_interaction(
+            run.id,
+            "question-1",
+            name="submit",
+            data={},
+            expected_revision=1,
+            idempotency_key="empty-answer",
+        )
+    assert empty_answer.value.code == "INTERACTION_RESPONSE_INVALID"
+    assert service.event_store.get(run.id).status == RunStatus.WAITING_INPUT
+
     with pytest.raises(StudioError) as provider_failure:
         await service.submit_interaction(
             run.id,
             "question-1",
             name="submit",
-            data={"note": "provider-failure"},
+            data={"scope": ["前端"], "note": "provider-failure"},
             expected_revision=1,
             idempotency_key="interaction:question-1:provider-failure",
         )
@@ -1388,3 +1407,68 @@ def test_generic_tool_error_marks_completed_event_failed() -> None:
     )
     assert payload["status"] == "failed"
     assert payload["error"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_same_session_rejects_overlap_before_start_and_releases_on_cancel(tmp_path):
+    calls = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingAdapter(_RecordingAdapter):
+        async def stream(self, handle):
+            entered.set()
+            await release.wait()
+            async for event in super().stream(handle):
+                yield event
+
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _: BlockingAdapter(calls))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    spec = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="langgraph", project_dir=tmp_path),
+        build_id="build",
+        agent_id="agent",
+    )
+    first = asyncio.create_task(service.run(spec, "first", session_id="same"))
+    await asyncio.wait_for(entered.wait(), 2)
+    try:
+        with pytest.raises(StudioError) as caught:
+            await service.run(spec, "overlap", session_id="same")
+        assert caught.value.code == "SESSION_RUN_ACTIVE"
+        assert caught.value.status_code == 409
+        assert len([c for c in calls if c[0] == "start"]) == 1
+    finally:
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+    release.set()
+    next_run = await service.run(spec, "next", session_id="same")
+    assert next_run.status == RunStatus.COMPLETED
+
+
+def test_native_question_projection_preserves_schema_and_submit_identity():
+    event = InteractionRequested(
+        schema_version=2,
+        event_id="question",
+        seq=1,
+        timestamp=1,
+        run_id="run",
+        scope_id="scope",
+        interaction_id="canonical-question",
+        interaction_kind="structured_input",
+        request=StructuredInputRequest(
+            prompt="选择范围",
+            schema={
+                "type": "object",
+                "properties": {"scope": {"type": "string"}},
+                "required": ["scope"],
+            },
+        ),
+        source=SourceRef(framework="codex", native_event_id="native-question"),
+    )
+    _, data = project_runtime_event(event)
+    assert data["inputSchema"]["required"] == ["scope"]
+    assert data["callId"] == "native-question"
+    assert data["message"] == "选择范围"

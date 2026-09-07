@@ -227,6 +227,50 @@ class StudioSharedWebBridge:
             "Limit": len(events),
         }
 
+    def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
+        run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
+        record = self.studio.event_store.get(run_id)
+        if record.session_id != session_id:
+            raise not_found("run", invocation_id)
+        return run_id
+
+    async def subscribe_run_events(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: int = 0,
+    ) -> AsyncIterator[str]:
+        run_id = self.subscription_run_id(session_id, invocation_id)
+        # Match ListSessionEvents' session cursor without rereading every old
+        # run on every live poll. Only the subscribed run can still grow.
+        offset = 0
+        for record in self.studio.event_store.list_runs(session_id=session_id):
+            if record.id == run_id:
+                break
+            offset += len(self.studio.event_store.events(record.id))
+        cursor = max(0, after_seq_id - offset)
+        while True:
+            for event in await self.studio.run_service.events(run_id, after=cursor):
+                cursor = max(cursor, event.id)
+                yield self._sse(
+                    "message",
+                    {
+                        "SeqId": offset + event.id,
+                        "SessionId": session_id,
+                        "InvocationId": invocation_id,
+                        "EventType": event.type,
+                        "Content": event.data,
+                        "Timestamp": self._timestamp(event.created_at),
+                    },
+                )
+            record = self.studio.event_store.get(run_id)
+            if not self._active_status(record.status):
+                yield "event: done\ndata: [DONE]\n\n"
+                return
+            yield ": ping\n\n"
+            await asyncio.sleep(0.25)
+
     def cancel_run(self, invocation_id: str) -> dict[str, Any]:
         operation_id = self._operations_by_invocation.get(invocation_id)
         if operation_id:
@@ -883,6 +927,7 @@ class StudioSharedWebBridge:
         )
         first = ordered[0]
         latest = ordered[-1]
+        active = next((run for run in reversed(ordered) if self._active_status(run.status)), None)
         usage = {
             "input_tokens": sum(run.usage.input_tokens for run in ordered),
             "output_tokens": sum(run.usage.output_tokens for run in ordered),
@@ -899,8 +944,8 @@ class StudioSharedWebBridge:
             "LastPrompt": latest.input,
             "CreatedAt": self._timestamp(first.started_at),
             "UpdatedAt": self._timestamp(latest.completed_at or latest.started_at),
-            "ActiveRunStatus": self._active_status(latest.status),
-            "ActiveInvocationId": latest.id if latest.status == RunStatus.RUNNING else "",
+            "ActiveRunStatus": self._active_status(active.status) if active else "",
+            "ActiveInvocationId": active.id if active else "",
             "TokenUsage": usage,
         }
 
@@ -1050,7 +1095,7 @@ class StudioSharedWebBridge:
         return self.studio.agent_detail(agent_id)["draft"]
 
     async def _run_activities(self, run: RunRecord) -> list[dict[str, Any]]:
-        activities: list[dict[str, Any]] = []
+        activities: dict[str, dict[str, Any]] = {}
         for event in await self.studio.run_service.events(run.id):
             operations = (
                 event.data.get("a2uiOperations")
@@ -1062,16 +1107,21 @@ class StudioSharedWebBridge:
             surface_id = str(
                 event.data.get("surfaceId") or event.data.get("surface_id") or f"{run.id}-surface"
             )
-            activities.append(
-                {
-                    "SeqId": event.id,
-                    "Type": event.type,
-                    "MessageId": f"{run.id}:assistant",
-                    "SurfaceId": surface_id,
-                    "Content": {"a2ui_operations": operations},
-                }
+            previous = activities.get(surface_id)
+            # Snapshot updates may repeat createSurface; only the latest full
+            # snapshot should become a history row. Delta-only batches append.
+            reset = any(isinstance(op, dict) and "createSurface" in op for op in operations)
+            previous_operations = (
+                previous["Content"]["a2ui_operations"] if previous and not reset else []
             )
-        return activities
+            activities[surface_id] = {
+                "SeqId": event.id,
+                "Type": event.type,
+                "MessageId": f"{run.id}:assistant",
+                "SurfaceId": surface_id,
+                "Content": {"a2ui_operations": [*previous_operations, *operations]},
+            }
+        return list(activities.values())
 
     @staticmethod
     def _request_controls(payload: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -1210,7 +1260,7 @@ class StudioSharedWebBridge:
 
     @staticmethod
     def _active_status(status: RunStatus) -> str:
-        return "running" if status == RunStatus.RUNNING else ""
+        return "running" if status in {RunStatus.RUNNING, RunStatus.WAITING_INPUT} else ""
 
     @staticmethod
     def _run_output(run: RunRecord) -> str:

@@ -243,7 +243,10 @@ def create_studio_app(
     app.state.session_token = session_secret
     app.state.csrf_token = csrf_secret
     from ksadk.studio.dsh_models import studio_model_projection
-    studio.dsh_capabilities.model_projection = lambda: studio_model_projection(studio.catalog, studio.credentials)
+
+    studio.dsh_capabilities.model_projection = lambda: studio_model_projection(
+        studio.catalog, studio.credentials
+    )
 
     def _stream_studio_run(
         build_id: str,
@@ -371,10 +374,7 @@ def create_studio_app(
             "/v1/responses/"
         )
         if security_enabled and (
-            (
-                studio_api
-                and request.url.path not in _PUBLIC_API_PATHS
-            )
+            (studio_api and request.url.path not in _PUBLIC_API_PATHS)
             or shared_web_api
             or responses_api
         ):
@@ -817,12 +817,20 @@ def create_studio_app(
             )
 
     @app.get("/agentengine/api/v1/SubscribeRunEvents")
-    async def shared_chat_subscribe_run_events():
-        async def completed_stream():
-            yield "event: done\ndata: [DONE]\n\n"
-
+    async def shared_chat_subscribe_run_events(
+        session_id: str = Query(alias="SessionId"),
+        invocation_id: str = Query(alias="InvocationId"),
+        after_seq_id: int = Query(default=0, alias="AfterSeqId", ge=0),
+    ):
+        # Validate before StreamingResponse sends headers; invalid identities
+        # remain ordinary actionable HTTP errors.
+        shared_web.subscription_run_id(session_id, invocation_id)
         return StreamingResponse(
-            completed_stream(),
+            shared_web.subscribe_run_events(
+                session_id,
+                invocation_id,
+                after_seq_id=after_seq_id,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
@@ -2166,6 +2174,9 @@ def create_studio_app(
     register_plugin_routes(app, studio)
 
     from ksadk.studio.dsh_application import register_dsh_application
-    register_dsh_application(app, studio, session_secret=session_secret, security_enabled=security_enabled)
+
+    register_dsh_application(
+        app, studio, session_secret=session_secret, security_enabled=security_enabled
+    )
 
     return app

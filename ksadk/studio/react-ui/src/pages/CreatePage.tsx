@@ -21,6 +21,7 @@ import { StudioDrawer } from "../components/ui/StudioDialog";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { applyApiFieldErrors } from "../lib/formErrors";
+import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import {
   parseProviderConfig,
   providerOptionDescription,
@@ -750,8 +751,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) {
+        setCreateError(d?.error?.message || `创建失败（${res.status}）`);
         if (applyApiFieldErrors(d, quickForm.setError)) {
-          setStep(1);
           return;
         }
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
@@ -940,6 +941,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) {
+        setConvError(d?.error?.message || `创建失败（${res.status}）`);
         if (applyApiFieldErrors(d, conversationForm.setError)) return;
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
       }
@@ -1315,9 +1317,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                           ariaLabel="选择对话 Agent MCP Server"
                           items={mcps}
                           selectedIds={convMcp}
+                          disabledIds={mcps.filter(item => !convMcp.includes(item.resourceId) && mcpUnavailableReason(item, conversationRuntime)).map(item => item.resourceId)}
                           getId={item => item.resourceId}
                           getLabel={item => item.displayName}
-                          getDescription={item => `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool`}
+                          getDescription={item => mcpUnavailableReason(item, conversationRuntime) || `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool`}
                           onChange={setConvMcp}
                           searchPlaceholder="搜索 MCP Server"
                           emptyMessage="没有已连接的 MCP Server"
@@ -1798,9 +1801,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       ariaLabel="选择 MCP Server"
                       items={mcps}
                       selectedIds={selectedMcp}
+                      disabledIds={mcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId)}
                       getId={item => item.resourceId}
                       getLabel={item => item.displayName}
-                      getDescription={item => `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool · ${item.status === "ready" ? "Ready" : item.status}`}
+                      getDescription={item => mcpUnavailableReason(item, runtime) || `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool · ${item.status === "ready" ? "Ready" : item.status}`}
                       onChange={ids => { setSelectedMcp(ids); markDirty(); }}
                       searchPlaceholder="搜索 MCP Server"
                       emptyMessage="没有已连接的 MCP Server"

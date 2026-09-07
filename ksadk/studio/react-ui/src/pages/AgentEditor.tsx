@@ -11,6 +11,7 @@ import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { applyApiFieldErrors } from "../lib/formErrors";
+import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import { agentEditSchema, type AgentEditFormValues } from "../schemas/agentForms";
 import {
   parseProviderConfig,
@@ -25,7 +26,7 @@ export interface EditorCatalogItem {
   displayName: string;
   version: string;
   status: string;
-  contract?: { model?: string; executor?: string };
+  contract?: { model?: string; executor?: string; materialization?: string; discoveredTools?: unknown[] };
   health?: { toolCount?: number };
 }
 
@@ -643,7 +644,7 @@ export function AgentEditor({
       );
       const saved = await response.json().catch(() => null);
       if (!response.ok) {
-        if (applyApiFieldErrors(saved, agentForm.setError)) return;
+        applyApiFieldErrors(saved, agentForm.setError);
         throw new Error(saved?.error?.message || `保存失败（${response.status}）`);
       }
       const savedId = saved?.metadata?.id || agentId;
@@ -1003,9 +1004,9 @@ export function AgentEditor({
               selectedIds={selectedMcp}
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
-              getDescription={item => `${item.version} · ${item.health?.toolCount || 0} Tool`}
+              getDescription={item => mcpUnavailableReason(item, runtime) || `${item.version} · ${item.health?.toolCount || 0} Tool`}
               onChange={["codex", "plugin"].includes(runtime) ? setSelectedMcp : () => undefined}
-              disabledIds={["codex", "plugin"].includes(runtime) ? [] : selectedMcp}
+              disabledIds={["codex", "plugin"].includes(runtime) ? visibleMcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId) : selectedMcp}
               searchPlaceholder="搜索 MCP"
               emptyMessage={["codex", "plugin"].includes(runtime) ? "没有已连接的 MCP" : "当前 Runtime 不支持新增 MCP"}
             />

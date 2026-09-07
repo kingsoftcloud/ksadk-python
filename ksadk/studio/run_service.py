@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from jsonschema import Draft202012Validator
+
 from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.conversations.projector import (
     project_conversation_item,
@@ -109,6 +111,7 @@ class StudioRunService:
         self.runtime_events = runtime_events or RuntimeEventStore(self.session_service)
         self.plugin_runtime = plugin_runtime
         self._active_handles: dict[str, Any] = {}
+        self._active_sessions: set[tuple[str, str]] = set()
         self._cancel_flags: dict[str, bool] = {}
         self._control_queues: dict[
             str,
@@ -158,6 +161,38 @@ class StudioRunService:
         runtime_input: Any = None,
         session_id: str | None = None,
         on_event: Callable[[RunEvent], None] | None = None,
+    ) -> RunRecord:
+        session = session_id or f"ses_{uuid4().hex}"
+        key = (spec.agent_id, session)
+        # Claim before the first await, including preparation and plugin runs.
+        # A second turn must never attach another adapter to the live thread.
+        if key in self._active_sessions:
+            raise StudioError(
+                "SESSION_RUN_ACTIVE",
+                "上一轮仍在运行或等待回答，请先完成回答或停止运行。",
+                status_code=409,
+                details={"sessionId": session},
+            )
+        self._active_sessions.add(key)
+        try:
+            return await self._run_owned(
+                spec,
+                user_input,
+                runtime_input=runtime_input,
+                session_id=session,
+                on_event=on_event,
+            )
+        finally:
+            self._active_sessions.discard(key)
+
+    async def _run_owned(
+        self,
+        spec: StudioRunSpec,
+        user_input: str,
+        *,
+        runtime_input: Any,
+        session_id: str,
+        on_event: Callable[[RunEvent], None] | None,
     ) -> RunRecord:
         run_id = f"run_{uuid4().hex}"
         session = session_id or f"ses_{uuid4().hex}"
@@ -1048,6 +1083,15 @@ class StudioRunService:
                 status_code=409,
             )
         kind = str(interaction.data.get("kind") or "form")
+        if kind != "approval" and name not in {"cancel", "skip"}:
+            schema = interaction.data.get("inputSchema") or {}
+            errors = list(Draft202012Validator(schema).iter_errors(data))
+            if errors:
+                raise StudioError(
+                    "INTERACTION_RESPONSE_INVALID",
+                    "请填写必填问题后再提交。",
+                    status_code=422,
+                )
         provider_call_id = str(
             interaction.data.get("callId") or interaction.data.get("call_id") or ""
         )
@@ -1661,7 +1705,9 @@ def project_runtime_event(
             payload = {
                 "interactionId": event.interaction_id,
                 "kind": "form",
-                "inputSchema": {},
+                "inputSchema": event.request.schema_,
+                "message": event.request.prompt or "",
+                "callId": event.source.native_event_id or event.interaction_id,
             }
     elif isinstance(event, InteractionResolved):
         if event.interaction_kind == "approval":

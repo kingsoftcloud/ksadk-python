@@ -44,6 +44,7 @@ from ksadk.runtime.adapter import (
 
 # ---- helpers for valid codex notification messages ----
 
+
 def _turn_started(thread_id: str, turn_id: str = "turn-1") -> dict:
     return {
         "method": "turn/started",
@@ -332,15 +333,11 @@ async def test_default_request_uses_native_codex_agent_loop() -> None:
 
     client = _LoopCodex()
     adapter = CodexRuntimeAdapter(client)
-    handle = await adapter.start(
-        StartRequest(input="执行任务", user_id="u", session_id="s")
-    )
+    handle = await adapter.start(StartRequest(input="执行任务", user_id="u", session_id="s"))
 
     events = [event async for event in adapter.stream(handle)]
 
-    assert client.turn_calls == [
-        (handle.run_id, "执行任务", {"sandbox_read_only": True})
-    ]
+    assert client.turn_calls == [(handle.run_id, "执行任务", {"sandbox_read_only": True})]
     assert isinstance(events[-1], RunCompleted)
 
 
@@ -589,8 +586,7 @@ async def test_cancel_cascades_pending_approvals():
     requested_events = [
         event
         for event in events
-        if hasattr(event, "event_type")
-        and event.event_type == "interaction.requested"
+        if hasattr(event, "event_type") and event.event_type == "interaction.requested"
     ]
     assert len(requested_events) >= 1
     expected_id = requested_events[0].interaction_id
@@ -785,31 +781,27 @@ async def test_sdk_request_user_input_bridge_waits_for_structured_answers():
             )
         )
 
-    worker = threading.Thread(target=request)
+    worker = threading.Thread(target=request, daemon=True)
     worker.start()
-    surface_event = await asyncio.to_thread(client._approval_queues["thread-1"].get)
-    interaction_event = await asyncio.to_thread(client._approval_queues["thread-1"].get)
-
-    assert surface_event["method"] == "a2ui/surface"
-    assert surface_event["params"]["surface"]["components"][0]["component"] == "Form"
-    choice = surface_event["params"]["surface"]["components"][0]["children"][0]
-    assert choice["props"]["multiple"] is True
-    assert interaction_event["params"]["input_schema"]["properties"]["scope"] == {
-        "type": "array",
-        "items": {"type": "string", "enum": ["前端", "全栈"]},
-    }
-    assert interaction_event["method"] == "a2ui/interaction"
-    assert interaction_event["params"]["interaction_id"] == "question-1"
-    assert worker.is_alive()
-
-    assert (
-        await client.resolve_interaction(
-            "question-1", {"scope": ["前端", "全栈"], "note": "忽略生成文件"}
+    interaction_event = await asyncio.to_thread(client._approval_queues["thread-1"].get, True, 1)
+    try:
+        assert interaction_event["method"] == "item/tool/requestUserInput"
+        assert interaction_event["id"] == "question-1"
+        question = interaction_event["params"]["questions"][0]
+        assert question["isMultiSelect"] is True
+        assert question["isOther"] is True
+        assert worker.is_alive()
+    finally:
+        assert (
+            await client.resolve_interaction(
+                "question-1", {"scope": ["前端", "全栈"], "note": "忽略生成文件"}
+            )
+            is True
         )
-        is True
-    )
-    worker.join(timeout=1)
+        worker.join(timeout=1)
     assert not worker.is_alive()
+    response_event = client._approval_queues["thread-1"].get(timeout=1)
+    assert response_event == {"id": "question-1", "result": result}
     assert result == {
         "answers": {
             "scope": {"answers": ["前端", "全栈"]},
@@ -1075,11 +1067,13 @@ async def test_command_execution_is_projected_as_auditable_tool_events():
     from ksadk.events.content import ToolCallContent, ToolResultContent
 
     started = next(
-        event for event in events
+        event
+        for event in events
         if isinstance(event, ItemStarted) and event.item_kind == "tool_call"
     )
     completed = next(
-        event for event in events
+        event
+        for event in events
         if isinstance(event, ItemCompleted) and event.item_kind == "tool_call"
     )
     call_part = started.initial.parts[0]
@@ -1156,11 +1150,13 @@ async def test_mcp_tool_call_is_projected_as_tool_events():
     from ksadk.events.content import ToolCallContent, ToolResultContent
 
     started = next(
-        event for event in events
+        event
+        for event in events
         if isinstance(event, ItemStarted) and event.item_kind == "tool_call"
     )
     completed = next(
-        event for event in events
+        event
+        for event in events
         if isinstance(event, ItemCompleted) and event.item_kind == "tool_call"
     )
     call_part = started.initial.parts[0]
@@ -1229,12 +1225,9 @@ async def test_mcp_tool_call_error_is_surfaced_in_tool_end_event():
     handle = await runtime.start(StartRequest(input="x", user_id="u", session_id="s"))
     events = [event async for event in runtime.stream(handle)]
 
-
     # Canonical: failed MCP tool is projected as ItemFailed + ItemUpdated(replace).
 
-    failed = next(
-        event for event in events if isinstance(event, ItemFailed)
-    )
+    failed = next(event for event in events if isinstance(event, ItemFailed))
     assert failed.item_kind == "tool_call"
     # Canonical: ItemFailed carries a generic error code/message.
     # The specific "upstream timeout" is in the snapshot correction, not the
@@ -1523,3 +1516,94 @@ def test_codex_is_optional_extra_not_default():
     assert re.search(r"^codex = \[", pyproject, re.M)
     default_deps = pyproject.split("dependencies = [", 1)[1].split("]", 1)[0]
     assert "openai-codex" not in default_deps
+
+
+@pytest.mark.asyncio
+async def test_native_questions_wait_for_answer_and_resolve_on_same_stream(tmp_path):
+    from ksadk.codex.client import AsyncCodexClient
+    from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry
+    from ksadk.studio.contracts import RunStatus
+    from ksadk.studio.run_service import StudioRunService, StudioRunSpec
+    from ksadk.studio.workspace import Workspace
+
+    bridge = AsyncCodexClient.__new__(AsyncCodexClient)
+    bridge._approval_queues = {"codex_thread_1": queue.Queue()}
+    bridge._pending_interactions = {}
+    bridge._approval_lock = threading.Lock()
+    answer = {}
+
+    class NativeQuestionClient(_ControllableCodex):
+        def run_turn(self, thread_id, prompt, *, config=None):
+            async def gen():
+                yield _turn_started(thread_id)
+                worker = asyncio.create_task(
+                    asyncio.to_thread(
+                        bridge._handle_user_input_request,
+                        "item/tool/requestUserInput",
+                        {
+                            "threadId": thread_id,
+                            "turnId": "turn-1",
+                            "itemId": "native-q",
+                            "questions": [
+                                {
+                                    "id": "scope",
+                                    "header": "范围",
+                                    "question": "怎么改？",
+                                    "isOther": True,
+                                    "isMultiSelect": True,
+                                    "options": [{"label": "前端", "description": "UI"}],
+                                }
+                            ],
+                        },
+                    )
+                )
+                yield await asyncio.to_thread(bridge._approval_queues[thread_id].get, True, 3)
+                answer.update(await worker)
+                yield await asyncio.to_thread(bridge._approval_queues[thread_id].get, True, 3)
+                yield _turn_completed(thread_id)
+
+            return gen()
+
+        async def resolve_interaction(self, interaction_id, data):
+            return await bridge.resolve_interaction(interaction_id, data)
+
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _: CodexRuntimeAdapter(NativeQuestionClient(block=False)))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    spec = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+        build_id="b",
+        agent_id="a",
+    )
+    task = asyncio.create_task(service.run(spec, "ask", session_id="s"))
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            runs = service.event_store.list_runs(session_id="s")
+            if runs and runs[0].status == RunStatus.WAITING_INPUT:
+                break
+        assert not task.done(), task.result() if task.done() else None
+        record = runs[0]
+        assert record.status == RunStatus.WAITING_INPUT
+        question = next(
+            e for e in service.event_store.events(record.id) if e.type == "a2ui.interaction"
+        )
+        assert question.data["inputSchema"]["properties"]["scope"]["type"] == "array"
+        await service.submit_interaction(
+            record.id,
+            question.data["interactionId"],
+            name="submit",
+            data={"scope": ["前端", "请改成 echo 你好"]},
+            expected_revision=1,
+            idempotency_key="answer",
+        )
+        completed = await asyncio.wait_for(task, 3)
+        assert completed.status == RunStatus.COMPLETED, completed.error
+        assert answer == {"answers": {"scope": {"answers": ["前端", "请改成 echo 你好"]}}}
+    finally:
+        await bridge.resolve_interaction("native-q", {})
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

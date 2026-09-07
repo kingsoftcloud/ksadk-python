@@ -72,6 +72,41 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it('disables incompatible DSH MCP choices and explains why', async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input).includes('/catalog/resources')
+      ? Promise.resolve(response({ items: [model, {
+        resourceId: 'mcp-dsh', kind: 'mcp', displayName: 'DSH Profile: web',
+        contract: { materialization: 'dsh-profile' }, health: { toolCount: 0 },
+      }] })) : base(input, init));
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await userEvent.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), '你是一个本地验证助手，请简洁回答。');
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await userEvent.click(await screen.findByRole('button', { name: '选择 MCP Server' }));
+    const option = screen.getByRole('option', { name: /DSH Profile/ });
+    expect(option).toHaveAttribute('aria-disabled', 'true');
+    expect(option).toHaveTextContent('尚未接入');
+  });
+
+  it('shows backend binding errors even when their spec field is not a visible form input', async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input) === '/api/v1/authoring/quick'
+      ? Promise.resolve({ ok: false, status: 422, json: async () => ({ error: {
+        field: 'spec.runtime.type', message: 'DSH Profile MCP 当前只支持 Harness Runtime',
+      } }) } as Response) : base(input, init));
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await userEvent.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), '你是一个本地验证助手，请简洁回答。');
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await userEvent.click(await screen.findByRole('button', { name: '选择模型' }));
+    await userEvent.click(screen.getByRole('option', { name: /Local Test Model/ }));
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await screen.findByRole('button', { name: '一键优化 Prompt' });
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await userEvent.click(screen.getByRole('button', { name: '创建 Agent' }));
+    expect(await screen.findByText('DSH Profile MCP 当前只支持 Harness Runtime')).toBeVisible();
+  });
+
   it("uses the global Agent breadcrumb instead of duplicating a back action in the header", () => {
     render(
       <CreatePage
