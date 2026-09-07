@@ -82,7 +82,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist --skip-tests
-          echo 'Package checks passed. Combined source E2E is verified by local public-preflight; this CI report is incomplete release evidence.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Package checks passed. Full release verification still requires local public-preflight; this CI report is incomplete release evidence.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run full Phase 2 release preflight (manual)
         if: github.event_name != 'pull_request'
