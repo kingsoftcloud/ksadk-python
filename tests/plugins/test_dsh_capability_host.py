@@ -143,6 +143,7 @@ async def test_readiness_stdout_parser_handles_large_utf8_lines(
         endpoint="http://127.0.0.1:43123/mcp",
         inventory_digest=inventory_digest,
         tools=(tool,),
+        web_route_count=2,
     )
     line = (
         "@@KSADK_DSH_CAPABILITY_READY@@"

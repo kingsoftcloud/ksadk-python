@@ -54,7 +54,6 @@ def test_export_plan_includes_public_preflight_contract_files():
         "tests/events/fixtures/runtime_projection_golden.json",
         "tests/packaging/test_phase2_release_preflight.py",
         "tests/studio/e2e/conversation_items_browser_e2e.py",
-        "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
         "tests/studio/e2e/studio_browser_smoke.py",
         "tests/studio/e2e/studio_e2e_support.py",
         "tests/studio/e2e/studio_responsive_smoke.py",

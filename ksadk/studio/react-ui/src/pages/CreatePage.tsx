@@ -36,12 +36,6 @@ import {
   type ProjectImportFormValues,
   type QuickAgentFormValues,
 } from "../schemas/agentForms";
-import {
-  STUDIO_DSH_SLOTS,
-  useStudioDshContributions,
-} from "../dsh-runtime/studioContributions";
-import { studioDshRuntime } from "../dsh-runtime/studioDshRuntime";
-import { createStudioRuntimeOptions } from "../dsh-runtime/runtimeOptions";
 
 /* 四种创建方式；quick 模式即四步向导。 */
 type Mode = "quick" | "conversation" | "import" | "project";
@@ -57,6 +51,11 @@ interface ResItem {
 
 const DRAFT_PREFIX = "agentkit.studio.agentDraft.v1";
 const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
+const BUILTIN_RUNTIME_OPTIONS = [
+  { value: "codex", label: "Codex · ManagedRuntime" },
+  { value: "adk", label: "Google ADK · Python source" },
+  { value: "langgraph", label: "LangGraph · Python graph" },
+];
 
 function isCodexAgentProvider(providerRef: string): boolean {
   return providerRef.startsWith(CODEX_AGENT_PROVIDER_PREFIX);
@@ -202,11 +201,6 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [providerConfigText, setProviderConfigText] = useState("{}");
   const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
-  const dshAgentProviders = useStudioDshContributions(
-    studioDshRuntime.contributions,
-    STUDIO_DSH_SLOTS.agentProvider,
-  );
-
   /* 向导状态 */
   const [step, setStep] = useState(1);
   const [maxStep, setMaxStep] = useState(1);
@@ -395,27 +389,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const mcps = useMemo(() => catalog.filter(i => i.kind === "mcp"), [catalog]);
   const skills = useMemo(() => catalog.filter(i => i.kind === "skill" && i.status === "ready"), [catalog]);
   const effectiveAgentProviders = useMemo<AgentProviderCatalogItem[]>(() => {
-    const known = new Set(agentProviders.map(item => item.providerRef));
-    return [
-      ...agentProviders,
-      ...dshAgentProviders.filter(item => (
-        item.state === "ready" && item.compatible && !known.has(item.providerRef)
-      )).map(item => ({
-        providerRef: item.providerRef,
-        pluginId: item.id,
-        resolvedVersion: "cordis",
-        displayName: item.displayName,
-        state: "enabled" as const,
-        compatible: true,
-        selectable: true,
-        reason: null,
-        permissions: [],
-        isolation: "cordis",
-        configSchemaDeclared: false,
-        secretFields: [],
-      })),
-    ];
-  }, [agentProviders, dshAgentProviders]);
+    return agentProviders;
+  }, [agentProviders]);
   const selectedProvider = useMemo(
     () => effectiveAgentProviders.find(item => item.providerRef === selectedProviderRef),
     [effectiveAgentProviders, selectedProviderRef],
@@ -430,8 +405,18 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     disabled: !item.selectable,
   })), [effectiveAgentProviders]);
   const quickRuntimeOptions = useMemo(
-    () => createStudioRuntimeOptions(dshAgentProviders, agentProviders),
-    [agentProviders, dshAgentProviders],
+    () => agentProviders.some(item => item.selectable)
+      ? [
+          ...BUILTIN_RUNTIME_OPTIONS,
+          {
+            value: "plugin",
+            label: agentProviders.filter(item => item.selectable).length === 1
+              ? `${agentProviders.find(item => item.selectable)?.displayName || "DSH AgentProvider"} · Plugin`
+              : `DSH AgentProvider · ${agentProviders.filter(item => item.selectable).length} 个可用`,
+          },
+        ]
+      : [...BUILTIN_RUNTIME_OPTIONS],
+    [agentProviders],
   );
 
   useEffect(() => {

@@ -55,7 +55,7 @@ def _dsh_command() -> tuple[str, ...] | None:
 
 
 def _dsh_profile() -> str:
-    return os.environ.get(DSH_PROFILE_ENV, "").strip() or "ksadk"
+    return os.environ.get(DSH_PROFILE_ENV, "").strip() or "web"
 
 
 def _codex_inventory_payload(value: Any) -> dict[str, Any]:

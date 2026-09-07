@@ -10,7 +10,6 @@ sidecar.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -49,13 +48,6 @@ _JSON_RPC_ENVELOPE_BYTES = 16 * 1024
 
 BridgeFactory = Callable[..., DshProfilePluginBridge]
 HostFactory = Callable[..., DshProfileCapabilityHost]
-
-
-def dsh_ui_mcp_call_id(session_id: str, call_id: str) -> str:
-    """Derive a bounded sidecar call id without exposing either UI identifier."""
-
-    material = f"{session_id}\0{call_id}".encode("utf-8")
-    return f"ui-{hashlib.sha256(material).hexdigest()}"
 
 
 @dataclass(frozen=True)
@@ -120,7 +112,7 @@ class StudioDshCapabilityService:
         workspace: Path,
         *,
         dsh_home: Path,
-        profile: str = "studio",
+        profile: str = "web",
         dsh_command: Sequence[str] | None = None,
         bridge_factory: BridgeFactory = DshProfilePluginBridge,
         host_factory: HostFactory = DshProfileCapabilityHost,
@@ -167,7 +159,7 @@ class StudioDshCapabilityService:
             if configured_home
             else root / ".agentkit" / "dsh-home"
         )
-        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "studio"
+        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
         return cls(
@@ -821,5 +813,4 @@ __all__ = [
     "DshCapabilityRuntimeSnapshot",
     "DshCapabilitySnapshot",
     "StudioDshCapabilityService",
-    "dsh_ui_mcp_call_id",
 ]

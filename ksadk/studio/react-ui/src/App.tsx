@@ -35,14 +35,6 @@ import {
   type NavigationView,
 } from "./components/NavigationRail";
 import { Bot, RefreshCw, PanelLeftClose, PanelLeftOpen, PanelRight } from "lucide-react";
-import { DshWorkspaceSurface } from "./dsh-runtime/DshWorkspaceSurface";
-import {
-  STUDIO_DSH_SLOTS,
-  type StudioRouteContribution,
-  useStudioDshContributions,
-} from "./dsh-runtime/studioContributions";
-import { studioDshRuntime } from "./dsh-runtime/studioDshRuntime";
-import { studioDshCompositionHost } from "./dsh-runtime/studioDshCompositionHost";
 
 type View = NavigationView;
 
@@ -60,7 +52,6 @@ const VIEW_TITLE: Record<View, string> = {
   plugins: "已安装插件",
   automations: "自动化",
   orchestration: "任务编排",
-  extension: "插件",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
@@ -90,7 +81,6 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
-  extensionPath: string;
 } {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
@@ -103,22 +93,17 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
-  const extensionPath = parts[0] === "extensions" && parts.length >= 2
-    ? `/extensions/${parts.slice(1).map(decodeURIComponent).join("/")}`
-    : "";
   const view = editingAgentId
     ? "create"
     : detailAgentId
       ? "agent-detail"
-      : extensionPath
-        ? "extension"
-        : VALID_VIEWS.includes(candidate)
+      : VALID_VIEWS.includes(candidate)
         ? candidate
         : "agents";
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, extensionPath };
+  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -130,14 +115,6 @@ export function parseChatTargetValue(value: string): {
   const kind = value.slice(0, separator);
   if (kind !== "cloud" && kind !== "local") return { kind: "", id: "" };
   return { kind, id: value.slice(separator + 1) };
-}
-
-export function shouldResetUnavailableExtension(
-  view: NavigationView,
-  extensionPath: string,
-  routes: readonly StudioRouteContribution[],
-): boolean {
-  return view === "extension" && !routes.some(route => route.path === extensionPath);
 }
 
 interface AgentSummary {
@@ -153,7 +130,6 @@ export default function App() {
   const [initialChatTarget] = useState(storedChatTarget);
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
-  const [extensionPath, setExtensionPath] = useState(initialRoute.extensionPath);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -181,21 +157,6 @@ export default function App() {
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
-  const extensionNavigation = useStudioDshContributions(
-    studioDshRuntime.contributions,
-    STUDIO_DSH_SLOTS.sidebarNavigation,
-  );
-  const extensionRoutes = useStudioDshContributions(
-    studioDshRuntime.contributions,
-    STUDIO_DSH_SLOTS.route,
-  );
-
-  useEffect(() => {
-    void studioDshCompositionHost.refresh().catch(error => {
-      console.warn("DSH Profile client graph was not activated", error);
-    });
-  }, []);
-
   useEffect(() => {
     document.body.classList.toggle("create-mode", view === "create");
     return () => document.body.classList.remove("create-mode");
@@ -209,7 +170,6 @@ export default function App() {
       setEditingAgentId(route.editingAgentId);
       setDetailAgentId(route.detailAgentId);
       setEvaluationRunId(route.evaluationRunId);
-      setExtensionPath(route.extensionPath);
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -229,7 +189,6 @@ export default function App() {
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
     setEvaluationRunId("");
-    if (v !== "extension") setExtensionPath("");
     const nextHash = v === "resources" ? `#/resources/${resourceKind}` : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
@@ -513,25 +472,6 @@ export default function App() {
     }
   }
 
-  function navigateToExtension(path: string) {
-    const route = extensionRoutes.find(item => item.path === path);
-    if (!route) return;
-    setViewState("extension");
-    setExtensionPath(path);
-    setEvaluationRunId("");
-    const nextHash = `#/extensions/${encodeURIComponent(path.replace(/^\/extensions\//, ""))}`;
-    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
-  }
-
-  const activeExtensionRoute = extensionRoutes.find(item => item.path === extensionPath);
-
-  useEffect(() => {
-    if (!shouldResetUnavailableExtension(view, extensionPath, extensionRoutes)) return;
-    setExtensionPath("");
-    setViewState("agents");
-    window.history.replaceState(null, "", "#/agents");
-  }, [extensionPath, extensionRoutes, view]);
-
   return (
     <>
       <a className="skip-link" href="#mainContent">跳到主要内容</a>
@@ -544,9 +484,6 @@ export default function App() {
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
         onNavigate={navigateFromRail}
-        extensionItems={extensionNavigation}
-        activeExtensionPath={extensionPath}
-        onNavigateExtension={item => navigateToExtension(item.path)}
         onOpenSettings={() => {
           setSettingsSection("general");
           setSettingsOpen(true);
@@ -740,9 +677,6 @@ export default function App() {
             {view === "plugins" && <PluginsPage />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
-            {view === "extension" && activeExtensionRoute && (
-              <DshWorkspaceSurface currentAgentId={currentAgentId} route={activeExtensionRoute} />
-            )}
           </div>
         </main>
       </div>

@@ -12,7 +12,6 @@
     "test:ui": "vitest run"
   },
   "dependencies": {
-    "@deepseek-ai/cordis": "4.0.1",
     "@hookform/resolvers": "^5.7.1",
     "@kingsoftcloud/ksadk-web": "0.3.5",
     "@radix-ui/react-dialog": "^1.1.23",

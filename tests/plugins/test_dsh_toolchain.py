@@ -12,6 +12,9 @@ import pytest
 from ksadk.plugins.bridges import dsh as dsh_bridge
 from ksadk.plugins.bridges.dsh import DshPluginInventory, DshProfileProjection
 from ksadk.plugins.dsh_toolchain import (
+    DSH_CORE_PACKAGES,
+    DSH_GITHUB_COMMIT,
+    DSH_GITHUB_TAG,
     DSH_PACKAGE,
     DSH_VERSION,
     PNPM_VERSION,
@@ -53,9 +56,25 @@ class _InstallRunner:
             target.parent.mkdir(parents=True)
             target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
             (target.parents[1] / "package.json").write_text(
-                json.dumps({"name": DSH_PACKAGE, "version": DSH_VERSION}) + "\n",
+                json.dumps(
+                    {
+                        "name": DSH_PACKAGE,
+                        "version": DSH_VERSION,
+                        "dependencies": {
+                            package: f"^{DSH_VERSION}" for package in DSH_CORE_PACKAGES
+                        },
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
+            for package in DSH_CORE_PACKAGES:
+                manifest = cwd / "node_modules" / Path(*package.split("/")) / "package.json"
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text(
+                    json.dumps({"name": package, "version": DSH_VERSION}) + "\n",
+                    encoding="utf-8",
+                )
             dependency = cwd / "node_modules" / ".pnpm" / "cordis" / "index.js"
             dependency.parent.mkdir(parents=True)
             dependency.write_text("export class Context {}\n", encoding="utf-8")
@@ -99,6 +118,11 @@ def test_managed_toolchain_installs_published_dsh_without_source_checkout(tmp_pa
     }
     assert (manager.root / "pnpm-lock.yaml").is_file()
     assert Path(state.executable or "").resolve().is_relative_to(manager.root)
+    receipt = json.loads((manager.root / "toolchain.json").read_text(encoding="utf-8"))
+    assert receipt["githubTag"] == DSH_GITHUB_TAG
+    assert receipt["githubCommit"] == DSH_GITHUB_COMMIT
+    assert receipt["distribution"] == "core"
+    assert receipt["corePackages"] == list(DSH_CORE_PACKAGES)
     install_argv = [call[0][1:] for call in runner.calls if len(call[0]) > 1]
     assert (
         "install",

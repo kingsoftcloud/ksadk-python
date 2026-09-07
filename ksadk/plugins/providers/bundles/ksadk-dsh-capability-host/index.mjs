@@ -1,8 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createServer } from 'node:http'
 
 export const name = 'ksadk-dsh-capability-host'
-export const inject = ['tools']
+export const inject = ['tools', 'webServer', 'connection']
 
 export const HOST_PROTOCOL = 'ksadk.dsh-capability-host/v1'
 export const HOST_VERSION = '1.0.0'
@@ -22,56 +21,6 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]+$/
 
 class RequestTooLargeError extends Error {}
-
-/** Minimal but real webServer service: a route table dispatched by the host's
- * HTTP server. Plugins own their route handlers' full lifecycle; the host
- * provides registration, matching, and disposal, matching the upstream
- * @deepseek-ai/dsh webServer seam (exact/prefix routes + upgrade routes). */
-class HostWebServer {
-  constructor() {
-    this.exact = new Map()
-    this.prefix = new Map()
-    this.upgrades = new Map()
-  }
-
-  register(route) {
-    const table = route.kind === 'exact' ? this.exact : this.prefix
-    if (table.has(route.path)) {
-      throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`)
-    }
-    table.set(route.path, route)
-    return () => { table.delete(route.path) }
-  }
-
-  registerUpgrade(route) {
-    if (this.upgrades.has(route.path)) {
-      throw new Error(`webserver: duplicate upgrade route "${route.path}"`)
-    }
-    this.upgrades.set(route.path, route)
-    return () => { this.upgrades.delete(route.path) }
-  }
-
-  match(pathname) {
-    const exact = this.exact.get(pathname)
-    if (exact) return exact
-    let best = null
-    for (const [prefix, route] of this.prefix) {
-      if ((pathname === prefix || pathname.startsWith(prefix + '/')) &&
-          (best === null || prefix.length > best.path.length)) {
-        best = route
-      }
-    }
-    return best
-  }
-
-  matchUpgrade(pathname) {
-    return this.upgrades.get(pathname) ?? null
-  }
-
-  routeCount() {
-    return this.exact.size + this.prefix.size
-  }
-}
 
 function byteLength(value) {
   return Buffer.byteLength(JSON.stringify(value), 'utf8')
@@ -158,14 +107,6 @@ function secureTokenEqual(actual, expected) {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
-/** Whether a scoped token authorizes this plugin route path. The token's
- * `routes` allowlist (an array of exact path prefixes) must cover the path. */
-function routeAllowed(authorization, pathname) {
-  const routes = authorization.routes
-  if (!Array.isArray(routes)) return false
-  return routes.some(route => pathname === route || pathname.startsWith(route + '/'))
-}
-
 function parseScopedToken(presented, token, profileDigest, tools, allowExpired = false) {
   const parts = presented.split('.')
   if (parts.length !== 3 || parts[0] !== 'ks1') return null
@@ -201,12 +142,7 @@ function parseScopedToken(presented, token, profileDigest, tools, allowExpired =
     typeof source !== 'string' ||
     !tools.some((tool) => tool.name === source)
   )) return null
-  // Optional route allowlist: plugin HTTP routes the session may dispatch.
-  // Each entry is a path prefix; absent means no plugin routes authorized.
-  const routes = Array.isArray(payload.routes) ? payload.routes.filter(
-    r => typeof r === 'string' && r.length > 0 && r.length <= 256 && r.startsWith('/')
-  ) : []
-  return { root: false, scopeId: signature, aliases, routes, expiresAt: payload.exp }
+  return { root: false, scopeId: signature, aliases, expiresAt: payload.exp }
 }
 
 function authorize(request, token, profileDigest, tools, revokedScopes) {
@@ -440,36 +376,16 @@ function normalizedProtocol(requested) {
   return SUPPORTED_MCP_PROTOCOLS.has(requested) ? requested : MCP_PROTOCOL_VERSION
 }
 
-async function listen(server) {
-  await new Promise((resolve, reject) => {
-    const onError = (error) => {
-      server.off('listening', onListening)
-      reject(error)
-    }
-    const onListening = () => {
-      server.off('error', onError)
-      resolve()
-    }
-    server.once('error', onError)
-    server.once('listening', onListening)
-    server.listen(0, '127.0.0.1')
-  })
-}
-
-async function closeServer(server, pending) {
-  for (const entry of pending.values()) entry.controller.abort(new Error('DSH capability host is stopping'))
-  const closed = new Promise((resolve) => server.close(resolve))
-  const timer = new Promise((resolve) => setTimeout(resolve, 2_000))
-  await Promise.race([closed, timer])
-  server.closeAllConnections?.()
-}
-
 function emitReadyRecord(record) {
   process.stdout.write(`@@KSADK_DSH_CAPABILITY_READY@@${JSON.stringify(record)}\n`)
 }
 
 function emitRuntimeToken(token) {
   process.stdout.write(`@@KSADK_DSH_CAPABILITY_TOKEN@@${token}\n`)
+}
+
+function emitBrowserToken(token) {
+  process.stdout.write(`@@KSADK_DSH_CORE_TOKEN@@${token}\n`)
 }
 
 export async function apply(ctx, config = {}) {
@@ -496,13 +412,6 @@ export async function apply(ctx, config = {}) {
   let tools = []
   let inventoryDigest = digest(tools)
 
-  // Provide a real webServer service so plugins that inject it (e.g. upstream
-  // dsh-ssh) can activate. Routes are dispatched by the host HTTP server below.
-  // NOTE: the runtime profile already provides real systemPrompt and settings
-  // services, so we do not shadow them.
-  const webServerService = new HostWebServer()
-  ctx.provide('webServer', webServerService)
-
   let driftCheckTimer = null
   ctx.on('tools/change', () => {
     lastToolChange = Date.now()
@@ -520,16 +429,11 @@ export async function apply(ctx, config = {}) {
     }
   }, { global: true })
 
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff')
+    response.setHeader('Referrer-Policy', 'no-referrer')
     if (!originAllowed(request)) {
       writeJson(response, 403, { error: 'origin_denied' })
-      return
-    }
-    const authorization = authorize(request, token, profileDigest, tools, revokedScopes)
-    if (authorization === null) {
-      response.setHeader('WWW-Authenticate', 'Bearer')
-      writeJson(response, 401, { error: 'unauthorized' })
       return
     }
 
@@ -541,7 +445,14 @@ export async function apply(ctx, config = {}) {
       return
     }
 
+    const authorization = authorize(request, token, profileDigest, tools, revokedScopes)
+
     if (request.method === 'GET' && parsedUrl.pathname === '/health' && parsedUrl.search === '') {
+      if (authorization === null) {
+        response.setHeader('WWW-Authenticate', 'Bearer')
+        writeJson(response, 401, { error: 'unauthorized' })
+        return
+      }
       writeJson(response, drifted || draining ? 503 : 200, {
         protocolVersion: HOST_PROTOCOL,
         healthy: !drifted && !draining,
@@ -556,32 +467,13 @@ export async function apply(ctx, config = {}) {
       return
     }
 
-    // Plugin webServer routes are dispatched before the MCP endpoint check:
-    // they own their path namespace and full response lifecycle (SSE, streams).
-    // Authorization: a root token (full access) or a scoped token whose
-    // payload explicitly lists this route in its `routes` allowlist may
-    // dispatch. A scoped token without a routes entry is denied — a UI
-    // session's tool scope does NOT implicitly authorize plugin HTTP routes.
-    const pluginRoute = webServerService.match(parsedUrl.pathname)
-    if (pluginRoute !== null) {
-      if (!authorization.root && !routeAllowed(authorization, parsedUrl.pathname)) {
-        writeJson(response, 403, { error: 'route_not_in_scope' })
-        return
-      }
-      try {
-        await pluginRoute.handler(request, response)
-      } catch (error) {
-        if (!response.headersSent) {
-          writeJson(response, 500, { error: 'plugin_route_failed' })
-        } else if (!response.writableEnded) {
-          response.end()
-        }
-      }
-      return
-    }
-
     if (request.method !== 'POST' || parsedUrl.pathname !== '/mcp' || parsedUrl.search !== '') {
       writeJson(response, 404, { error: 'not_found' })
+      return
+    }
+    if (authorization === null) {
+      response.setHeader('WWW-Authenticate', 'Bearer')
+      writeJson(response, 401, { error: 'unauthorized' })
       return
     }
     if (!(request.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
@@ -827,91 +719,64 @@ export async function apply(ctx, config = {}) {
         const abortGrace = setTimeout(() => {
           if (!pending.has(key)) return
           draining = true
-          server.closeAllConnections?.()
           process.exit(70)
         }, 250)
         abortGrace.unref()
         void completion.then(() => clearTimeout(abortGrace))
       }
     }
-  })
-  server.maxHeadersCount = 64
-  server.headersTimeout = 10_000
-  server.requestTimeout = callTimeoutMs + 10_000
-  server.keepAliveTimeout = 5_000
-  server.on('clientError', (_error, socket) => socket.destroy())
-
-  // WebSocket / upgrade dispatch: plugins that register upgrade routes
-  // (e.g. dsh-ssh terminal streams) get their handler invoked here. The
-  // request is authorized with the same scoped bearer token as HTTP routes.
-  server.on('upgrade', (request, socket, head) => {
-    const authorization = authorize(request, token, profileDigest, tools, revokedScopes)
-    if (authorization === null) {
-      socket.destroy()
-      return
-    }
-    let parsedUrl
-    try {
-      parsedUrl = new URL(request.url ?? '/', 'http://127.0.0.1')
-    } catch {
-      socket.destroy()
-      return
-    }
-    const upgradeRoute = webServerService.matchUpgrade(parsedUrl.pathname)
-    if (upgradeRoute === null) {
-      socket.destroy()
-      return
-    }
-    // Scoped token: restrict the upgrade to tools the session is authorized
-    // for. The route handler owns the socket lifecycle from here.
-    try {
-      upgradeRoute.handler(request, socket, head)
-    } catch (error) {
-      socket.destroy()
-    }
-  })
-
-  let stopped = false
-  const stop = async () => {
-    if (stopped) return
-    stopped = true
+  }
+  const disposeMcp = ctx.webServer.register({ kind: 'exact', path: '/mcp', handler: handleRequest })
+  const disposeHealth = ctx.webServer.register({ kind: 'exact', path: '/health', handler: handleRequest })
+  ctx.effect(() => () => {
     draining = true
-    await closeServer(server, pending)
-  }
-  ctx.effect(() => stop)
+    for (const entry of pending.values()) {
+      entry.controller.abort(new Error('DSH capability host is stopping'))
+    }
+    disposeHealth()
+    disposeMcp()
+  })
 
-  try {
-    await listen(server)
-    // Reset the quiet baseline after listen: plugins that register tools during
-    // profile activation (like dsh-ssh) fire tools/change after the server
-    // binds. Waiting for quiet from module load time misses those.
-    lastToolChange = Date.now()
-    while (Date.now() - lastToolChange < inventoryQuietMs) {
-      await new Promise((resolve) => setTimeout(resolve, inventoryQuietMs))
-    }
-    tools = snapshotTools(ctx.tools, maxRequestBytes)
-    inventoryDigest = digest(tools)
-    const address = server.address()
-    if (address === null || typeof address === 'string' || address.address !== '127.0.0.1') {
-      throw new Error('capability host did not bind a loopback TCP address')
-    }
-    readyWritten = true
-    emitRuntimeToken(token)
-    emitReadyRecord({
-      protocolVersion: HOST_PROTOCOL,
-      hostVersion: HOST_VERSION,
-      dshVersion,
-      profile,
-      profileDigest,
-      definition: 'mcp.connector/v1',
-      transport: 'streamable-http',
-      endpoint: `http://127.0.0.1:${address.port}/mcp`,
-      inventoryDigest,
-      tools,
-      webRouteCount: webServerService.routeCount(),
-    })
-  } catch (error) {
-    await stop()
-    throw error
+  // Reset the quiet baseline after the official Core server has activated:
+  // plugins may still be registering tools while the overlay starts.
+  lastToolChange = Date.now()
+  while (Date.now() - lastToolChange < inventoryQuietMs) {
+    await new Promise((resolve) => setTimeout(resolve, inventoryQuietMs))
   }
+  tools = snapshotTools(ctx.tools, maxRequestBytes)
+  inventoryDigest = digest(tools)
+  const port = ctx.webServer.port
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535 || ctx.webServer.host !== '127.0.0.1') {
+    throw new Error('DSH Core webServer must bind a loopback TCP port')
+  }
+  const coreUrl = new URL(ctx.connection.authenticatedUrl(`http://127.0.0.1:${port}`))
+  const browserTokens = coreUrl.searchParams.getAll('token')
+  if (
+    coreUrl.protocol !== 'http:' ||
+    coreUrl.hostname !== '127.0.0.1' ||
+    coreUrl.port !== String(port) ||
+    coreUrl.pathname !== '/' ||
+    coreUrl.hash !== '' ||
+    [...coreUrl.searchParams.keys()].some((key) => key !== 'token') ||
+    browserTokens.length !== 1 ||
+    !/^[A-Za-z0-9_-]{32,128}$/.test(browserTokens[0])
+  ) {
+    throw new Error('DSH Core connection did not provide an authenticated browser URL')
+  }
+  readyWritten = true
+  emitRuntimeToken(token)
+  emitBrowserToken(browserTokens[0])
+  emitReadyRecord({
+    protocolVersion: HOST_PROTOCOL,
+    hostVersion: HOST_VERSION,
+    dshVersion,
+    profile,
+    profileDigest,
+    definition: 'mcp.connector/v1',
+    transport: 'streamable-http',
+    endpoint: `http://127.0.0.1:${port}/mcp`,
+    inventoryDigest,
+    tools,
+    webRouteCount: 2,
+  })
 }

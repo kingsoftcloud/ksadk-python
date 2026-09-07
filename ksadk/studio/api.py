@@ -77,12 +77,7 @@ from ksadk.studio.api_helpers import (
     sse as _sse,
 )
 from ksadk.studio.api_memory_routes import register_memory_routes
-from ksadk.studio.api_plugin_routes import (
-    DSH_UI_SANDBOX_BUNDLE_PATH,
-    DSH_UI_SANDBOX_EXTERNALS_PATH,
-    DSH_UI_SANDBOX_FRAME_PATH,
-    register_plugin_routes,
-)
+from ksadk.studio.api_plugin_routes import register_plugin_routes
 from ksadk.studio.cloud_shared_web import CloudSharedWebBridge, cloud_chat_target, is_cloud_agent_id
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
@@ -101,11 +96,6 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
     "/api/v1/system/health",
     "/api/v1/system/session",
-}
-_PUBLIC_DSH_SANDBOX_GET_PATHS = {
-    DSH_UI_SANDBOX_BUNDLE_PATH,
-    DSH_UI_SANDBOX_FRAME_PATH,
-    DSH_UI_SANDBOX_EXTERNALS_PATH,
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -348,18 +338,7 @@ def create_studio_app(
                 request,
             )
         origin = request.headers.get("Origin")
-        # Frame and client-bundle are exact paths; externals is a prefix
-        # (per-module sub-paths like /sandbox/externals/react-dom-client).
-        public_dsh_sandbox_get = request.method == "GET" and (
-            request.url.path in (DSH_UI_SANDBOX_FRAME_PATH, DSH_UI_SANDBOX_BUNDLE_PATH)
-            or request.url.path.startswith(DSH_UI_SANDBOX_EXTERNALS_PATH + "/")
-        )
-        null_origin_sandbox_request = public_dsh_sandbox_get and origin == "null"
-        if (
-            origin
-            and not null_origin_sandbox_request
-            and not is_local_origin(origin, local_hosts=_LOCAL_HOSTS)
-        ):
+        if origin and not is_local_origin(origin, local_hosts=_LOCAL_HOSTS):
             return _error_response(
                 StudioError(
                     "LOCAL_ORIGIN_FORBIDDEN",
@@ -393,7 +372,6 @@ def create_studio_app(
             (
                 studio_api
                 and request.url.path not in _PUBLIC_API_PATHS
-                and not public_dsh_sandbox_get
             )
             or shared_web_api
             or responses_api
@@ -423,18 +401,13 @@ def create_studio_app(
                     )
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
-        if not (request.method == "GET" and request.url.path == DSH_UI_SANDBOX_BUNDLE_PATH):
-            response.headers["Cache-Control"] = (
-                "no-store"
-                if request.url.path.startswith(("/api/", "/v1/"))
-                else response.headers.get("Cache-Control", "no-cache")
-            )
+        response.headers["Cache-Control"] = (
+            "no-store"
+            if request.url.path.startswith(("/api/", "/v1/"))
+            else response.headers.get("Cache-Control", "no-cache")
+        )
         response.headers["X-Content-Type-Options"] = "nosniff"
-        if request.method == "GET" and request.url.path == DSH_UI_SANDBOX_FRAME_PATH:
-            if "X-Frame-Options" in response.headers:
-                del response.headers["X-Frame-Options"]
-        else:
-            response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 

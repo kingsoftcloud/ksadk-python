@@ -64,15 +64,11 @@ MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/plugins/test_dsh_upstream_plugin_e2e.py",
 )
 BROWSER_GATES = (
-    "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
-    "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
-    "tests/studio/e2e/dsh_ui_sandbox_real_api_e2e.py",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
     "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
     "tests/studio/e2e/conversation_items_browser_e2e.py",
-    "scripts/verify_sandbox_tab.py",
 )
 SOURCE_E2E_STATUS_KEYS = (
     "compatibilityRegression",
@@ -713,7 +709,7 @@ def run_release_test_gates() -> dict[str, str]:
     )
     # The managed DSH toolchain E2E suite drives the real ``dsh`` CLI via a
     # pinned npm toolchain, including a real upstream Cordis plugin (T5) and
-    # the real-API browser sandbox loop (T2). These are blocking release gates
+    # the single full-Core Web UI and MCP process. These are blocking release gates
     # for the plugin ecosystem work; a failure here must stop the release.
     _run(
         [

@@ -105,13 +105,11 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.dsh_capability_service import (
     StudioDshCapabilityService,
-    dsh_ui_mcp_call_id,
 )
 from ksadk.studio.dsh_provider_registration import (
     StudioDshProviderRegistrationError,
     StudioDshProviderRegistrationManager,
 )
-from ksadk.studio.dsh_ui_sandbox import DshUiSandboxSessionStore
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.framework_run import FrameworkRunSpecResolver
@@ -173,7 +171,6 @@ class StudioService:
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_provider_registration_manager: StudioDshProviderRegistrationManager | None = None,
         dsh_capability_service: StudioDshCapabilityService | None = None,
-        dsh_ui_sessions: DshUiSandboxSessionStore | None = None,
     ) -> None:
         provider_manifests = dict(plugin_provider_manifests or {})
         provider_factories = dict(plugin_provider_factories or {})
@@ -196,7 +193,6 @@ class StudioService:
             dsh_capability_service
             or StudioDshCapabilityService.discover_or_create_workspace_default(self.workspace.root)
         )
-        self.dsh_ui_sessions = dsh_ui_sessions or DshUiSandboxSessionStore()
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -391,20 +387,9 @@ class StudioService:
         self._started = True
 
     async def reset_dsh_capability_state(self) -> None:
-        """Revoke browser grants, cancel calls, and drop the current DSH generation."""
+        """Drop the current DSH capability/Core generation."""
 
         self.catalog.clear_dsh_profile_mcp()
-        revoked = self.dsh_ui_sessions.revoke_all()
-        call_ids = [
-            dsh_ui_mcp_call_id(session_id, call_id)
-            for session_id, active in revoked.items()
-            for call_id in active
-        ]
-        if call_ids:
-            await asyncio.gather(
-                *(self.dsh_capabilities.cancel(call_id) for call_id in call_ids),
-                return_exceptions=True,
-            )
         await self.dsh_capabilities.refresh()
 
     async def refresh_dsh_catalog_resource(self):  # type: ignore[no-untyped-def]
@@ -1095,7 +1080,6 @@ class StudioService:
             if self._closed:
                 return
             self._closed = True
-            self.dsh_ui_sessions.revoke_all()
             cleanup = asyncio.create_task(self._close_owned_plugin_services())
             interrupted = False
             while not cleanup.done():

@@ -3,18 +3,10 @@ import { AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, Plug, Puzzle, 
 import { apiFetch } from "../api";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
-import { studioDshCompositionHost } from "../dsh-runtime/studioDshCompositionHost";
-import { requestDshUiSession } from "../dsh-runtime/dshUiSandbox";
 
 interface HostState { available: boolean; version?: string | null; }
 interface Capabilities { skills?: string[]; mcpServers?: string[]; hooks?: string[]; apps?: string[]; scheduledTasks?: string[]; }
 interface PluginRuntimeState { state?: string; providerRef?: string | null; provider_ref?: string | null; errorCode?: string | null; error_code?: string | null; }
-interface PluginClientBundle {
-  compatible?: boolean;
-  inject?: string[];
-  digest?: string;
-  sandboxCompatible?: boolean;
-}
 export type PluginLifecycleState = "installed" | "enabled" | "ready" | "bound" | "failed";
 export interface InstalledPlugin {
   ecosystem: "dsh" | "codex";
@@ -35,7 +27,6 @@ export interface InstalledPlugin {
   host?: HostState;
   description?: string | null;
   capabilities?: Capabilities;
-  clientBundle?: PluginClientBundle | null;
 }
 
 export function normalizeInstalledPlugin(payload: any): InstalledPlugin {
@@ -89,7 +80,6 @@ export function normalizeInstalledPlugin(payload: any): InstalledPlugin {
     host: item.host,
     description: payload?.description || item.description,
     capabilities: payload?.capabilities || item.capabilities,
-    clientBundle: item.clientBundle || item.client_bundle,
   };
 }
 
@@ -125,7 +115,7 @@ function pluginKind(item: InstalledPlugin) {
   const curated = curatedPluginIdentity[item.pluginId];
   if (curated) return curated.kind;
   if (item.providerRef) return "Agent Provider";
-  if (item.clientBundle?.compatible || (item.capabilities?.apps || []).length) return "界面扩展";
+  if ((item.capabilities?.apps || []).length) return "界面扩展";
   if ((item.capabilities?.skills || []).length || (item.capabilities?.mcpServers || []).length) return "Agent 能力";
   return item.ecosystem === "dsh" ? "Harness 扩展" : "工作台扩展";
 }
@@ -168,10 +158,13 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
     ...(item.capabilities?.skills || []),
     ...(item.capabilities?.mcpServers || []),
   ];
-  const hasUiContribution = Boolean(
-    item.clientBundle?.compatible || (item.capabilities?.apps || []).length,
-  );
-  if (!item.providerRef && bindableCapabilities.length === 0 && !hasUiContribution) return null;
+  const hasUiContribution = Boolean((item.capabilities?.apps || []).length);
+  if (
+    item.ecosystem !== "dsh"
+    && !item.providerRef
+    && bindableCapabilities.length === 0
+    && !hasUiContribution
+  ) return null;
   return <section className="plugin-detail-section" aria-label="贡献能力与使用方式">
     <h3>贡献能力与使用方式</h3>
     {item.providerRef && <>
@@ -179,56 +172,37 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
       <p className="plugin-detail-muted">{isReadyProvider ? "在创建或编辑 Agent 时从 Runtime 选择器使用。" : "Provider 尚未就绪，暂不能用于创建 Agent。"}</p>
       {isReadyProvider && <p><a className="button secondary" href="#/create">去创建 Agent</a></p>}
     </>}
-    {hasUiContribution && <>
-      <p className="plugin-detail-muted">界面扩展启用后会自动出现在插件声明的页面、侧栏或 Tab。</p>
-      {item.clientBundle?.sandboxCompatible && item.clientBundle?.digest && (
-        <p><button
-          className="button secondary"
-          onClick={async () => {
-            try {
-              const session = await requestDshUiSession({
-                pluginId: item.pluginId,
-                clientDigest: item.clientBundle!.digest!,
-              });
-              const route = session.extensionPoints.find(p => p.type === "studio.route");
-              if (route?.path) {
-                // Register the new session's extension points directly into the
-                // runtime registry — the composition host's refresh() only fires
-                // on graph digest changes, so a freshly created session would be
-                // invisible to the router without this.
-                const { studioDshRuntime } = await import("../dsh-runtime/studioDshRuntime");
-                const { STUDIO_DSH_SLOTS } = await import("../dsh-runtime/studioContributions");
-                for (const point of session.extensionPoints) {
-                  if (point.type === "studio.route") {
-                    studioDshRuntime.contributions.register(STUDIO_DSH_SLOTS.route, {
-                      id: point.id,
-                      path: point.path ?? "",
-                      title: point.label ?? point.id,
-                      workspaceTabId: point.workspaceTabId ?? "",
-                    });
-                  } else if (point.type === "studio.workspace.tab") {
-                    studioDshRuntime.contributions.register(STUDIO_DSH_SLOTS.workspaceTab, {
-                      id: point.id,
-                      label: point.label ?? point.id,
-                      renderer: point.renderer,
-                      session,
-                    });
-                  }
-                }
-                window.location.hash = `#${route.path}`;
-              }
-            } catch (e) {
-              console.error("打开插件界面失败:", e);
-            }
-          }}
-        >打开插件界面</button></p>
-      )}
+    {item.ecosystem === "dsh" && <>
+      <p className="plugin-detail-muted">插件界面由同一个完整 DSH Core 运行时加载。</p>
+      <p><button
+        className="button secondary"
+        onClick={() => void openDshCore()}
+      >打开 DSH Core</button></p>
     </>}
     {bindableCapabilities.length > 0 && <>
       <p className="plugin-detail-muted">Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。</p>
       <p><a className="button secondary" href="#/agents">去 Agent 列表绑定</a></p>
     </>}
   </section>;
+}
+
+async function openDshCore() {
+  const target = window.open("about:blank", "_blank");
+  if (target) target.opener = null;
+  try {
+    const response = await apiFetch("/api/v1/plugin-ecosystems/dsh/core/session", {
+      method: "POST",
+    });
+    const payload = await response.json();
+    if (!response.ok || typeof payload?.browserUrl !== "string") {
+      throw new Error(responseError(payload, "完整 DSH Core 启动失败"));
+    }
+    if (target) target.location.replace(payload.browserUrl);
+    else window.location.assign(payload.browserUrl);
+  } catch (error) {
+    target?.close();
+    showToast(error instanceof Error ? error.message : "完整 DSH Core 启动失败", "error");
+  }
 }
 
 export function PluginsPage() {
@@ -274,14 +248,6 @@ export function PluginsPage() {
       .filter(group => group.items.length > 0);
   }, [catalogQuery, codexCatalog]);
 
-  async function refreshDshClientGraph() {
-    try {
-      await studioDshCompositionHost.refresh();
-    } catch (cause: any) {
-      showToast("插件状态已更新", cause?.message || "界面扩展装载失败，已保留原界面");
-    }
-  }
-
   async function installDsh() {
     if (!accepted || !source.trim()) return;
     setBusy("install"); setError("");
@@ -295,7 +261,6 @@ export function PluginsPage() {
       const installed = normalizeInstalledPlugin(payload);
       setSelectedKey(keyOf(installed)); setAccepted(false); setSource("");
       showToast(installed.enabled ? "插件已安装" : "已安装，待启用", installed.displayName || installed.pluginId); await load();
-      await refreshDshClientGraph();
     } catch (cause: any) { setError(cause?.message || "DSH 插件安装失败"); }
     finally { setBusy(""); }
   }
@@ -325,7 +290,6 @@ export function PluginsPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(responseError(payload, "DSH 插件状态更新失败"));
       await load();
-      await refreshDshClientGraph();
     } catch (cause: any) { setError(cause?.message || "DSH 插件状态更新失败"); }
     finally { setBusy(""); }
   }
@@ -340,7 +304,6 @@ export function PluginsPage() {
         throw new Error(responseError(payload, "插件卸载失败"));
       }
       setSelectedKey(""); await load();
-      if (item.ecosystem === "dsh") await refreshDshClientGraph();
     } catch (cause: any) { setError(cause?.message || "插件卸载失败"); }
     finally { setBusy(""); }
   }

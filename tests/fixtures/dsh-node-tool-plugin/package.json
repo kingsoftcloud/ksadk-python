@@ -5,30 +5,22 @@
   "type": "module",
   "exports": {
     ".": "./index.mjs",
-    "./client": "./client.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "index.mjs",
-    "client.mjs",
     "cordis.patch.yml"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [],
-      "external": ["react", "react-dom/client", "react/jsx-runtime"],
-      "platform": "web",
-      "tools": ["fixture_echo"]
     }
   }
 }
