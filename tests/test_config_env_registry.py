@@ -41,6 +41,8 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
         "KSADK_DSH_CORE_TOKEN",
         "KSADK_DSH_PROFILE_DIGEST",
         "KSADK_DSH_VERSION",
+        # Generated per-model secret references passed only to the DSH child.
+        "KSADK_STUDIO_MODEL_",
         "KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID",
     }
     assert _source_ksadk_env_names() - non_environment_symbols <= registry_names
