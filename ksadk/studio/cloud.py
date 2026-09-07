@@ -1264,6 +1264,50 @@ class DirectAgentEngineCloudDeploymentGateway:
             idempotency_key=idempotency_key,
         )
 
+    async def prepare_plugin_delivery(
+        self, workspace: Workspace, build_id: str, manifest: str, runtime_version: str
+    ) -> list[dict[str, Any]]:
+        from ksadk.plugins.delivery import PluginDelivery
+        from ksadk.studio.codex_builder import CodexStudioBuilder
+
+        capabilities = await self.client.get_plugin_delivery_capabilities()
+        if not capabilities.get("deployment_admission") or runtime_version not in capabilities.get(
+            "codex_runtime_versions", []
+        ):
+            raise StudioError(
+                "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE",
+                "云端运行时尚未通过插件恢复验收，未上传插件",
+                status_code=409,
+            )
+        builder = CodexStudioBuilder(workspace)
+        build = builder.repository.get(build_id)
+        if (
+            build.runtime_version != runtime_version
+            or build.manifest_sha256 != hashlib.sha256(manifest.encode()).hexdigest()
+        ):
+            raise StudioError(
+                "PLUGIN_BUILD_MISMATCH", "部署声明与冻结 Build 不一致", status_code=409
+            )
+        receipt, archive = builder.export_plugin_artifact(build_id)
+        uploaded = await self.client.upload_plugin_artifact(archive, receipt.model_dump())
+        if uploaded.get("receipt") != receipt.model_dump():
+            raise StudioError("PLUGIN_UPLOAD_INVALID", "云端插件上传回执不匹配", status_code=502)
+        pinned = build.plugin_marketplace
+        delivery = PluginDelivery(
+            artifact_id=uploaded["artifact_id"],
+            receipt=receipt,
+            build_id=build_id,
+            manifest_sha256=build.manifest_sha256,
+            marketplace_name=pinned.marketplace_name,
+            plugin_names=list(pinned.plugin_names),
+            snapshot_digest=pinned.marketplace_digest,
+            bindings=[
+                b for b in yaml.safe_load(manifest).get("plugins", []) if b.get("enabled", True)
+            ],
+        )
+        delivery.validate_manifest(yaml.safe_load(manifest))
+        return [delivery.model_dump()]
+
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
         request: DeploymentRequest = kwargs["request"]
         digest = str(kwargs["manifest_digest"])
@@ -1276,6 +1320,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 runtime_version=str(kwargs["runtime_version"]),
                 request=request,
                 runtime_environment=runtime_environment,
+                plugin_artifacts=kwargs.get("plugin_artifacts"),
             )
         )
         agent_id = str(result.get("agent_id") or "").strip()
@@ -1322,6 +1367,10 @@ class DirectAgentEngineCloudDeploymentGateway:
                 "manifest": str(kwargs["manifest"]),
             },
         }
+        if kwargs.get("plugin_artifacts"):
+            update_payload["managed_runtime_config"]["plugin_artifacts"] = kwargs[
+                "plugin_artifacts"
+            ]
         if runtime_environment:
             # A changed MCP/model binding can introduce a new credential ref.
             # Re-resolve it for every immutable revision instead of relying on
@@ -1386,6 +1435,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         runtime_version: str,
         request: DeploymentRequest,
         runtime_environment: dict[str, str] | None = None,
+        plugin_artifacts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "name": _server_agent_name(agent_name),
@@ -1408,6 +1458,8 @@ class DirectAgentEngineCloudDeploymentGateway:
             "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
             "auth_type": "ApiKey",
         }
+        if plugin_artifacts:
+            payload["managed_runtime_config"]["plugin_artifacts"] = plugin_artifacts
         if runtime_environment:
             # Model credentials are resolved only for this in-memory deployment
             # request.  They are never written into the YAML build or local
@@ -1515,21 +1567,24 @@ class CloudDeploymentService:
                 status_code=409,
                 details={"deploymentId": replacing.id},
             )
-        # This transport delivers a YAML declaration only. Local marketplace
-        # snapshots are not uploaded, so accepting native bindings here would
-        # create a cloud Agent with fewer capabilities than its verified build.
+        plugin_artifacts = None
         if runtime_name == "codex":
             declaration = yaml.safe_load(manifest) or {}
-            bindings = declaration.get("plugins") or []
-            if any(
-                not isinstance(binding, dict) or binding.get("enabled", True)
-                for binding in bindings
-            ):
-                raise StudioError(
-                    "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE",
-                    "当前云端部署仅交付 YAML，尚不能上传原生插件快照；"
-                    "请先完成插件交付配置，避免部署后插件丢失。",
-                    status_code=409,
+            bindings = [
+                b
+                for b in declaration.get("plugins", [])
+                if not isinstance(b, dict) or b.get("enabled", True)
+            ]
+            if bindings:
+                prepare = getattr(self.gateway, "prepare_plugin_delivery", None)
+                if prepare is None:
+                    raise StudioError(
+                        "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE",
+                        "云端尚未声明插件交付能力",
+                        status_code=409,
+                    )
+                plugin_artifacts = await prepare(
+                    self.workspace, build_id, manifest, runtime_version
                 )
         if replacing is None:
             record = await self.gateway.create_managed_runtime_deployment(
@@ -1541,6 +1596,7 @@ class CloudDeploymentService:
                 manifest_digest=manifest_digest,
                 request=request,
                 runtime_environment=runtime_environment,
+                plugin_artifacts=plugin_artifacts,
             )
         else:
             record = await self.gateway.replace_managed_runtime_deployment(
@@ -1552,6 +1608,7 @@ class CloudDeploymentService:
                 manifest_digest=manifest_digest,
                 request=request,
                 runtime_environment=runtime_environment,
+                plugin_artifacts=plugin_artifacts,
             )
         self._save(record, request)
         return record
