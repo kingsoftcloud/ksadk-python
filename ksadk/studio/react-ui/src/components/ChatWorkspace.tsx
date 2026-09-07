@@ -56,6 +56,19 @@ export function ChatWorkspace({
   const [deleteSessionId, setDeleteSessionId] = useState("");
   const previousRefreshTick = useRef(refreshTick);
   const refreshChat = chat.refresh;
+  const previousTransport = useRef({ agentId, sessionId: chat.currentSessionId, streaming: false });
+
+  useEffect(() => {
+    const previous = previousTransport.current;
+    const settled = previous.agentId === agentId
+      && previous.sessionId === chat.currentSessionId
+      && previous.streaming && !chat.isStreaming;
+    previousTransport.current = { agentId, sessionId: chat.currentSessionId, streaming: chat.isStreaming };
+    // Reconcile the durable transcript after every transport settles, including
+    // a clean EOF without response.completed. If the run remains active, the
+    // shared session loader resumes its event subscription without re-running it.
+    if (settled) void refreshChat();
+  }, [agentId, chat.currentSessionId, chat.isStreaming, refreshChat]);
 
   const filteredSessions = useMemo(() => {
     const keyword = query.trim().toLowerCase();

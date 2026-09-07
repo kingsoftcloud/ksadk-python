@@ -106,6 +106,7 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/studio/test_shared_web.py",
     "tests/__init__.py",
     "tests/conftest.py",
     "tests/events/fixtures/runtime_projection_golden.json",
