@@ -164,7 +164,7 @@ describe("PluginsPage", () => {
     render(<PluginsPage/>);
     await userEvent.click(await screen.findByRole("tab", { name: "DeepSeek Harness 插件" }));
     await screen.findByLabelText("DSH 插件来源");
-    await userEvent.type(screen.getByLabelText("DSH 插件来源"), "@example/demo");
+    await userEvent.type(screen.getByLabelText("DSH 插件来源"), "@example/demo@1.0.0");
     await userEvent.click(screen.getByText(/DSH 包及安装脚本/));
     await userEvent.click(screen.getByRole("button", { name: "安装到 Profile" }));
 
