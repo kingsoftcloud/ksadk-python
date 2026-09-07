@@ -120,10 +120,11 @@ def main() -> None:
                                 "button", name=label, exact=True
                             ).click()
                             if name == "conversations":
-                                expect(page.locator(".chat-composer")).to_be_visible()
-                                composer = page.locator(".chat-composer").bounding_box()
+                                message_box = page.get_by_role("textbox", name="发送消息")
+                                expect(message_box).to_be_visible()
+                                composer = message_box.bounding_box()
                                 assert composer and composer["y"] + composer["height"] <= height
-                                page.get_by_role("textbox", name="消息").fill("检查窄屏输入与焦点")
+                                message_box.fill("检查窄屏输入与焦点")
                                 expect(page.get_by_role("button", name="发送消息")).to_be_enabled()
                             capture(name)
                             if name == "agents":

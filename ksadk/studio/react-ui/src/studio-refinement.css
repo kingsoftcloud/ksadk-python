@@ -1,5 +1,5 @@
 /*
- * Studio visual refinement for the public static distribution.
+ * Studio visual refinement, bundled after the existing Studio style layers.
  * Load after the compiled stylesheet. Keep behavior and responsive layout in
  * the original bundle; this file owns the visual tokens and component finish.
  * Migrate these styles into the source theme before replacing the bundle.

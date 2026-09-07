@@ -6,6 +6,7 @@ import { initializeStudioSession } from "./api";
 import { initializeStudioTheme } from "./studioTheme";
 import "./index.css";
 import "./kingdesign.css";
+import "./studio-refinement.css";
 
 async function main() {
   initializeStudioTheme();
