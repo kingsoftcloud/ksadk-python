@@ -21,7 +21,7 @@ Studio uses a managed full DSH Core/Profile and renders plugin settings in its o
 
 Codex cloud delivery freezes plugin bytes and admitted references into immutable artifacts associated with the Agent version. It requires compatible control-plane artifact APIs and storage; an unsupported endpoint blocks deployment instead of silently dropping plugins. It does not copy desktop OAuth credentials. Cloud MCP OAuth and credential management are deferred. A skill being present does not prove its MCP server is connected or authenticated.
 
-The universal Python wheel includes Web 0.3.5 and built Studio pages. It does not include Python dependencies, Node/Codex/DSH binaries, community plugins or credentials. Use the framework extra you need; a fully disconnected installation also requires a prepared dependency wheelhouse and any native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
+The universal Python wheel includes Web 0.3.5 and built Studio pages. It does not include Python dependencies, Node/Codex/DSH binaries, community plugins or credentials. The base package declares shared framework dependencies, with extras for additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and any native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
 
 ## Choose an integration mode
 
