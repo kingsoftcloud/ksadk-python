@@ -29,6 +29,7 @@ from ksadk.conversations.runtime import (
     append_context_checkpoint_event,
     append_run_checkpoint_event,
     append_run_resume_event,
+    append_run_status_event,
     build_chat_completions_payload,
     build_compaction_sse_event,
     build_responses_payload,
@@ -4417,6 +4418,48 @@ async def test_invoke_conversation_once_checkpoint_resume_writes_runtime_event(m
 
 
 @pytest.mark.asyncio
+async def test_prepared_checkpoint_resume_lifecycle_is_not_written_twice(monkeypatch):
+    class CountingService(InMemorySessionService):
+        def __init__(self):
+            super().__init__()
+            self.event_reads = 0
+
+        async def get_events(self, *args, **kwargs):
+            self.event_reads += 1
+            return await super().get_events(*args, **kwargs)
+
+    service = CountingService()
+    await service.create_session("demo-agent", "user-1", "prepared-resume")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    await append_run_resume_event(
+        session_id="prepared-resume", author="demo-agent", run_id="run-1",
+        checkpoint_id="cp-1", resume_attempt_id="resume-1", framework="langgraph",
+        framework_ref={}, invocation_id="inv-1", session_service_provider=lambda: service,
+    )
+    await append_run_status_event(
+        session_id="prepared-resume", author="demo-agent", status="resuming",
+        invocation_id="inv-1", detail="checkpoint_resume",
+        session_service_provider=lambda: service,
+    )
+    service.event_reads = 0
+
+    await build_run_input(
+        agent_id="demo-agent", user_id="user-1", session_id="prepared-resume", messages=[],
+        resume_input={
+            "type": "agentengine.resume_checkpoint", "run_id": "run-1",
+            "checkpoint_id": "cp-1", "resume_attempt_id": "resume-1",
+            "framework": "langgraph", "framework_ref": {},
+        },
+        invocation_id="inv-1", session_service_provider=lambda: service,
+        resume_lifecycle_prepared=True,
+    )
+
+    events = await InMemorySessionService.get_events(service, "prepared-resume")
+    assert [event.event_type for event in events] == ["run_resume", "run_status"]
+    assert service.event_reads == 1
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_failure_does_not_write_completed_or_assistant(monkeypatch):
     service = InMemorySessionService()
     await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-fail")
@@ -5416,3 +5459,49 @@ def test_plan_compaction_keeps_pending_approval_group_out_of_checkpoint():
     assert [[item.seq_id for item in group] for group in plan.groups_to_compact] == [[1, 2]]
     assert plan.pinned_state["pending_approvals"]
     assert "当前任务" in plan.pinned_state["current_user_goal"]
+
+
+@pytest.mark.asyncio
+async def test_prepared_checkpoint_resume_lifecycle_is_not_written_twice():
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "prepared-resume")
+    await append_run_resume_event(
+        session_id="prepared-resume",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="cp-1",
+        resume_attempt_id="resume-1",
+        framework="langgraph",
+        framework_ref={},
+        invocation_id="inv-1",
+        session_service_provider=lambda: service,
+    )
+    await append_run_status_event(
+        session_id="prepared-resume",
+        author="demo-agent",
+        status="resuming",
+        invocation_id="inv-1",
+        detail="checkpoint_resume",
+        session_service_provider=lambda: service,
+    )
+
+    await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="prepared-resume",
+        messages=[],
+        resume_input={
+            "type": "agentengine.resume_checkpoint",
+            "run_id": "run-1",
+            "checkpoint_id": "cp-1",
+            "resume_attempt_id": "resume-1",
+            "framework": "langgraph",
+            "framework_ref": {},
+        },
+        invocation_id="inv-1",
+        session_service_provider=lambda: service,
+        resume_lifecycle_prepared=True,
+    )
+
+    events = await service.get_events("prepared-resume")
+    assert [event.event_type for event in events] == ["run_resume", "run_status"]

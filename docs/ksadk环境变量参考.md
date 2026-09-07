@@ -251,7 +251,12 @@
 | `KSADK_SESSION_NAMESPACE` | Sessions | 否 | 未设置 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 会话 namespace。 |
 | `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
 | `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
-| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | `KSADK_CHECKPOINT_BACKEND=postgres` 时的 LangGraph checkpointer PostgreSQL DSN。 |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | 平台 | 否 | 设为 `1` 时仅通过项目导出的 `ksadk_graph_factory(*, checkpointer)` 安全创建托管 PostgreSQL graph；不会修改 compiled graph 私有字段。 |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | 托管 LangGraph checkpointer PostgreSQL DSN。 |
+| `KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS` | Builder 内部常量 | 否 | 代码常量 | 无 | 否 | KsADK | 否 | 托管 Code Runtime 的 LangGraph PostgreSQL checkpointer 依赖集合，不建议业务覆盖。 |
+| `KSADK_PERSISTENCE_PROBE_TIMEOUT` | Runtime bootstrap | 否 | `2` | 无 | 否 | 平台 | 否 | PostgreSQL readiness 探测超时秒数。 |
+| `KSADK_PERSISTENCE_PROBE_CACHE_TTL` | Runtime bootstrap | 否 | `30` | 无 | 否 | 平台 | 否 | PostgreSQL readiness 结果缓存秒数；缓存键仅含 DSN 的 SHA-256 摘要。 |
+| `KSADK_AGENT_ID` | LangGraph checkpoint | 否 | `default` | `AGENTENGINE_AGENT_ID` 优先 | 否 | 平台 | 否 | 托管 checkpointer namespace 的 Agent id fallback。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
 | `KSADK_WORKSPACE_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_WORKSPACE_ID` | 否 | 平台 | 否 | workspace id。 |
 | `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`，但 ADK/STM 仍可读。 |
@@ -261,7 +266,7 @@
 | `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
 | `KSADK_ADK_SESSION_BACKEND` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session backend。 |
 | `KSADK_ADK_SESSION_PATH` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session sqlite 路径。 |
-| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
+| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。接受 `postgresql://`、`postgres://` 和 ADK/SQLAlchemy 使用的 `postgresql+asyncpg://`；持久化探针会将后者转换为 asyncpg 原生 DSN。统一 session DSN 也可兜底。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
 | `KSADK_MEMORY_PREFIX` | MemoryManager | 否 | `ksadk:memory:` | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager key prefix。 |
@@ -323,7 +328,7 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.3` | 可显式设置已发布版本，如 `0.3.3` | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.4` | 可显式设置已发布版本，如 `0.3.4` | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |

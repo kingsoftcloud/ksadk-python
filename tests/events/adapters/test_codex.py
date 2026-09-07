@@ -193,6 +193,87 @@ def test_real_agent_delta_then_completed_is_authoritative_snapshot() -> None:
     assert projection.items[0].parts[0].text == "hello"
 
 
+def test_client_owned_a2ui_surface_and_interaction_are_canonical_and_replay_safe() -> None:
+    adapter = CodexEventAdapter()
+    context = _context()
+    surface_frame = {
+        "method": "a2ui/surface",
+        "params": {
+            "surface_id": "input-question-1",
+            "surface": {
+                "catalog_id": "https://a2ui.org/specification/v0_9/basic_catalog.json",
+                "components": [
+                    {
+                        "id": "form",
+                        "component": "Form",
+                        "props": {"title": "需要你的反馈"},
+                    }
+                ],
+                "data_model": {},
+            },
+        },
+    }
+    interaction_frame = {
+        "method": "a2ui/interaction",
+        "params": {
+            "surface_id": "input-question-1",
+            "interaction_id": "question-1",
+            "kind": "form",
+            "input_schema": {
+                "type": "object",
+                "properties": {"scope": {"type": "string"}},
+            },
+            "is_blocking": True,
+        },
+    }
+
+    surface_events = adapter.map_protocol_message(
+        surface_frame,
+        context,
+        native_cursor="jsonl:a2ui-surface",
+        timestamp=1.0,
+    )
+    interaction_events = adapter.map_protocol_message(
+        interaction_frame,
+        context,
+        native_cursor="jsonl:a2ui-interaction",
+        timestamp=2.0,
+    )
+
+    assert [type(event) for event in surface_events] == [ItemStarted, ItemCompleted]
+    started, completed = surface_events
+    assert started.item_id == completed.item_id
+    assert started.source.protocol == completed.source.protocol == "a2ui"
+    assert started.source.metadata["surface_id"] == "input-question-1"
+    assert started.source.metadata["operation_batch"] is True
+    assert started.initial == completed.snapshot
+    assert isinstance(started.initial.parts[0], DataContent)
+    assert started.initial.parts[0].data["components"][0]["id"] == "form"
+
+    requested, interrupted = interaction_events
+    assert isinstance(requested, InteractionRequested)
+    assert requested.interaction_id == "question-1"
+    assert requested.source.protocol == "a2ui"
+    assert requested.source.metadata["surface_id"] == "input-question-1"
+    assert requested.request.schema_ == {
+        "type": "object",
+        "properties": {"scope": {"type": "string"}},
+    }
+    assert isinstance(interrupted, RunInterrupted)
+    assert interrupted.interaction_id == "question-1"
+
+    reducer = StreamReducer()
+    for event in (*surface_events, *interaction_events):
+        reducer.apply(event)
+    assert reducer.snapshot().status == "interrupted"
+    assert adapter.map_protocol_message(
+        surface_frame,
+        context,
+        native_cursor="jsonl:a2ui-surface",
+        timestamp=1.0,
+    ) == ()
+
+
 def test_same_native_item_in_two_turns_has_distinct_scope_and_item_identity() -> None:
     """Break caught: Codex itemId alone merges outputs across turns."""
 

@@ -1,7 +1,6 @@
 # KsADK Public Release Approval Record
 
-This record tracks the public `0.8.3` release candidate and remains unapproved
-until the final Python and Web artifacts below are fixed. It is the evidence consumed by the release
+This record approves the public `0.8.3` release candidate described below. It is the evidence consumed by the release
 gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
 deployment.
 
@@ -31,18 +30,17 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: Pending final reviewed internal source commit and clean public export.
-- `ksadk-web`: Pending Trusted Publishing of `@kingsoftcloud/ksadk-web@0.3.3`, registry integrity, and final Python source binding.
+- `ksadk-python`: Reviewed public release commit `64f3607640aefcd6dea72d704e34dc5237eb0e36` on `main` (0.8.3 release head: Phase 2 composer/session-switch fix, public-export gate alignment, and lightweight PyPI publish preflight); publication publishes this reviewed public main commit directly via Trusted Publishing.
+- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `64f3607640aefcd6dea72d704e34dc5237eb0e36`.
 
 Both approved source references include the reviewed Python source commit SHA.
 This prevents a stale approval record from passing after candidate changes.
 
 ## Recorded Evidence for Approval
 
-- The reviewed `@kingsoftcloud/ksadk-web@0.3.3` source candidate passed its
-  source tests and browser E2E; the Python candidate verified all 265 embedded
-  static files from the explicit reviewed tarball. This does not substitute for
-  the registry-backed rebuild required after Trusted Publishing.
+- The published `@kingsoftcloud/ksadk-web@0.3.4` package passed source tests,
+  browser E2E and registry-backed consumer rebuild. Its registry tarball
+  SHA-256 is `0d88fb37506bae77ba863b3986b2fde4546cd74cbd3f3021eed1ecd05f15c596`.
 - The Phase 2 compatibility, Codex native host, DSH lifecycle, browser, clean
   wheel install and clean sdist rebuild gates passed on the interim Python
   candidate. Wheel/sdist path and content audits reported zero violations.
@@ -53,12 +51,13 @@ This prevents a stale approval record from passing after candidate changes.
   Python package may already contain version `0.8.3` at approval time.
 - Branch protection and publish environment are configured according to
   `.github/BRANCH_PROTECTION.md`.
-- Web 0.3.3 source tests, lint, build, npm pack, audit and browser E2E are green;
+- Web 0.3.4 source tests, lint, build, npm pack, audit, Pages demo E2E and browser E2E are green;
   npm publication, registry verification and the final registry-backed consumer
-  rebuild are still pending approval.
-- Real browser E2E on the reviewed candidate covered a Studio-created Codex
-  Agent and a historical 0.8.2 Agent: streaming text, reasoning/tool cards,
-  multi-turn context and final-message de-duplication.
+  rebuild are complete.
+- Real browser E2E for 0.3.4 passed against a Studio-created Codex Agent and a
+  historical 0.8.2 Agent: multi-turn context, reasoning, refresh replay and
+  final-message de-duplication bind to Hosted UI image digest
+  `sha256:d629384e44a2e35f5dd5f7788ea16097cb49d79c582206d5fe453911fe20d66d`.
 - Release notes, `CHANGELOG.md`, public README and docs were reviewed for the
   complete 0.8.3 summary, sensitive environment names, internal endpoints,
   tokens, customer data and inaccurate claims.
@@ -68,6 +67,6 @@ This prevents a stale approval record from passing after candidate changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | Pending | Pending | Pending |
-| Security reviewer | Pending | Pending | Pending |
-| Release owner | Pending | Pending | Pending |
+| Maintainer | @AgentArcLab | Approved | 2026-09-01 |
+| Security reviewer | @AgentArcLab | Approved | 2026-09-01 |
+| Release owner | @AgentArcLab | Approved | 2026-09-01 |

@@ -22,6 +22,11 @@ from ksadk.sessions.continuity import (
 )
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import create_local_session_service
+from ksadk.sessions.topology import (
+    PersistenceTopology,
+    StorageTarget,
+    resolve_persistence_topology,
+)
 
 _cached_session_service: BaseSessionService | None = None
 _cached_session_service_loop: asyncio.AbstractEventLoop | None = None
@@ -54,21 +59,8 @@ def register_session_backend(name: str, factory: SessionBackendFactory) -> None:
 
 def resolve_session_backend_config(*, backend: str | None = None) -> SessionBackendConfig:
     _register_builtin_backends()
-    resolved_backend = (
-        (
-            backend
-            or os.getenv("KSADK_SESSION_BACKEND")
-            or os.getenv("AGENTENGINE_SESSION_BACKEND")
-            or os.getenv("KSADK_STM_BACKEND")
-            or ""
-        )
-        .strip()
-        .lower()
-    )
-    if not resolved_backend:
-        resolved_backend = "local"
-    if resolved_backend == "sqlite":
-        resolved_backend = "local"
+    topology = resolve_persistence_topology(session_backend=backend)
+    resolved_backend = topology.session.backend
     if resolved_backend not in _backend_factories:
         supported = ", ".join(sorted({*list(_backend_factories), "sqlite"}))
         raise ValueError(
@@ -76,12 +68,7 @@ def resolve_session_backend_config(*, backend: str | None = None) -> SessionBack
             f"{resolved_backend!r}; supported backends are {supported}"
         )
 
-    dsn = (
-        os.getenv("KSADK_SESSION_DSN")
-        or os.getenv("KSADK_STM_URL")
-        or os.getenv("KSADK_STM_DB_URL")
-        or ""
-    ).strip()
+    dsn = topology.session.dsn
     path = (
         os.getenv("KSADK_SESSION_PATH")
         or os.getenv("KSADK_STM_PATH")
@@ -332,6 +319,7 @@ __all__ = [
     "SessionContinuityStatus",
     "SessionEvent",
     "SessionState",
+    "StorageTarget",
     "TranscriptReplayAdapter",
     "close_session_service",
     "create_session_service",
@@ -342,5 +330,7 @@ __all__ = [
     "register_session_backend",
     "reset_session_service",
     "resolve_session_backend_config",
+    "resolve_persistence_topology",
     "resolve_session_service",
+    "PersistenceTopology",
 ]

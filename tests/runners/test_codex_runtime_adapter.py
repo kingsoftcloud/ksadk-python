@@ -867,9 +867,6 @@ async def test_codex_runtime_projects_request_user_input_as_a2ui_and_submits_liv
     handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
     events = [event async for event in adapter.stream(handle)]
 
-    # Canonical: a2ui/surface and a2ui/interaction are not standard 0.144.4
-    # notification methods; the CodexEventAdapter raises CodexMappingError.
-    # This test will fail until the adapter supports A2UI methods.
     surface = next(
         (event for event in events if hasattr(event, "item_kind") and event.item_kind == "data"),
         None,
@@ -878,10 +875,15 @@ async def test_codex_runtime_projects_request_user_input_as_a2ui_and_submits_liv
         (event for event in events if isinstance(event, InteractionRequested)),
         None,
     )
-    if surface is not None:
-        assert surface.source.metadata.get("surface_id") == "input-question-1"
-    if interaction is not None:
-        assert interaction.interaction_id == "question-1"
+    assert surface is not None
+    assert surface.source.protocol == "a2ui"
+    assert surface.source.metadata.get("surface_id") == "input-question-1"
+    assert interaction is not None, [
+        (type(event).__name__, getattr(getattr(event, "error", None), "message", None))
+        for event in events
+    ]
+    assert interaction.source.protocol == "a2ui"
+    assert interaction.interaction_id == "question-1"
 
     await adapter.submit(
         handle,

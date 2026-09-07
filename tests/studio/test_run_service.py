@@ -1014,6 +1014,48 @@ def test_a2ui_runtime_events_are_persisted_as_official_operations() -> None:
     ]
 
 
+def test_completed_a2ui_operation_batch_keeps_surface_visible() -> None:
+    event_type, payload = project_runtime_event(
+        ItemCompleted(
+            event_id="e2",
+            seq=2,
+            item_id="surface-batch-1",
+            item_kind="data",
+            snapshot=ContentSnapshot(
+                parts=(
+                    DataContent(
+                        part_id="a2ui-surface",
+                        data={
+                            "surface_id": "surface-1",
+                            "components": [
+                                {"id": "root", "component": "Text", "text": "Hello"}
+                            ],
+                        },
+                    ),
+                )
+            ),
+            schema_version=2,
+            timestamp=2.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(
+                framework="codex",
+                protocol="a2ui",
+                metadata={
+                    "surface_id": "surface-1",
+                    "operation_batch": True,
+                    "surface_lifecycle": "begin",
+                },
+            ),
+        )
+    )
+
+    assert event_type == "a2ui.surface.begin"
+    assert [
+        next(iter(operation.keys() - {"version"})) for operation in payload["a2uiOperations"]
+    ] == ["createSurface", "updateComponents"]
+
+
 def service_event_types(workspace: Workspace, run_id: str) -> list[str]:
     return [
         event.type

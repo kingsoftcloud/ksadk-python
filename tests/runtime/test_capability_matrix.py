@@ -91,6 +91,19 @@ class _AttachableRunner(_FakeRunner):
         return True
 
 
+class _LoadAwareAttachRunner(_FakeRunner):
+    def __init__(self) -> None:
+        super().__init__(checkpoint=True, durable=True, shared_across_pods=True)
+        self.loaded = False
+
+    def load_agent(self) -> None:
+        self.loaded = True
+
+    def attach_runtime_handle(self, handle: RunHandle) -> bool:
+        del handle
+        return self.loaded
+
+
 class _MinimalRuntime(BaseRuntime):
     runtime_type = "minimal"
 
@@ -343,6 +356,18 @@ async def test_runner_adapter_checkpoint_runner_matrix() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_adapter_loads_runner_before_durable_attach() -> None:
+    runner = _LoadAwareAttachRunner()
+    adapter = RunnerRuntimeAdapter(runner, runtime_type="langgraph")
+    handle = _handle("langgraph")
+
+    restored = await adapter.attach(handle)
+
+    assert restored is handle
+    assert runner.loaded is True
+
+
+@pytest.mark.asyncio
 async def test_runner_adapter_in_memory_checkpoint_is_not_durable() -> None:
     # durable=False 的 checkpoint 不允许声明 durable_restore。
     adapter = RunnerRuntimeAdapter(
@@ -351,6 +376,8 @@ async def test_runner_adapter_in_memory_checkpoint_is_not_durable() -> None:
     )
     matrix = adapter.capabilities()
     assert matrix.checkpoint.supported is True
+    assert matrix.attach.supported is False
+    assert matrix.attach.reason == "attach_requires_cross_process_checkpoint"
     assert matrix.durable_restore.supported is False
     assert matrix.durable_restore.reason == "durable_restore_requires_cross_process_checkpoint"
 

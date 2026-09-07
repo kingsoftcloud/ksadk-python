@@ -29,6 +29,7 @@ from ksadk.events.canonical import (
     InteractionRequested,
     ItemCompleted,
     ItemUpdated,
+    RunCompleted,
     RuntimeEvent,
     SourceRef,
     UnknownCanonicalEvent,
@@ -265,6 +266,55 @@ def test_codex_native_plan_and_goal_keep_typed_conversation_items() -> None:
         "objective": "ship Phase 2",
         "status": "active",
     }
+
+
+def test_codex_user_message_is_transcript_and_only_run_event_is_terminal() -> None:
+    user = ItemCompleted(
+        schema_version=2,
+        event_id="user-message-completed",
+        seq=1,
+        timestamp=1.0,
+        run_id="turn-1",
+        scope_id="scope-1",
+        source=SourceRef(
+            framework="codex",
+            native_item_id="user-1",
+            metadata={"native_item_kind": "userMessage"},
+        ),
+        item_id="user-1",
+        item_kind="data",
+        snapshot=ContentSnapshot(
+            parts=(
+                DataContent(
+                    part_id="user-data",
+                    data={
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "继续查询"}],
+                    },
+                ),
+            )
+        ),
+    )
+    run_completed = RunCompleted(
+        schema_version=2,
+        event_id="run-completed",
+        seq=2,
+        timestamp=2.0,
+        run_id="turn-1",
+        scope_id="scope-1",
+        source=SourceRef(framework="codex"),
+        status="completed",
+        output_refs=(),
+    )
+
+    user_item = project_conversation_item(user, session_id="session-1")
+    terminal_item = project_conversation_item(run_completed, session_id="session-1")
+
+    assert user_item.kind == "user_message"
+    assert user_item.payload == {"text": "继续查询"}
+    assert user_item.lifecycle == "completed"
+    assert terminal_item.kind == "progress"
+    assert terminal_item.payload == {"status": "completed"}
 
 
 def test_reconnect_replays_event_idempotently_but_appends_new_delta() -> None:

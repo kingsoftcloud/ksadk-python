@@ -10,7 +10,7 @@
 | Codex 插件兼容 | App Server 的 list/read/install/uninstall、隔离宿主 E2E，以及真实 Codex MCP 多轮调用已实现 | 外部 marketplace 仍由 Codex 管理认证与权限；KsADK 不承诺所有第三方插件可用 |
 | 旧 KsADK Python 插件实验实现 | `ksadk-plugin.yaml`、Python entry point、独立包管理/API/UI 和对应合同已删除；语言无关 Provider RPC 由 DSH Bundle 承载 | 不进入稳定产品规范，也不保留隐藏兼容命令。历史 0.8.2 Agent 本来就不依赖该实验格式 |
 | Scheduler Lite | 本地 SQLite、once/interval/cron、IANA timezone、CRUD、run now、misfire、并发保护、occurrence 历史、全局页与 Agent 详情 Tab 已实现；真实浏览器已完成 accepted/terminal 与刷新回放对账 | 基于最终发布制品复验；云端 24×7 worker 属于后续阶段 |
-| ConversationSurface / Renderer / A2UI | 合同、投影、identity reducer、核心 Renderer、A2UI action bridge 已实现；Studio 与 Hosted UI 复用 `ksadk-web` 的版本化 headless conversation 模块，新增未知事件保留在 replay/audit 但不污染对话；0.3.3 源码门禁、独立浏览器 E2E、真实部署的新/历史 Agent 两轮会话及思考/工具卡片已通过 | `ksadk-web@0.3.3` 正式发布后必须从公开 registry 重建 Studio 与 Hosted UI；最终 clean commit 的制品 provenance、公开审计和维护者审批仍是发布门禁 |
+| ConversationSurface / Renderer / A2UI | 合同、投影、identity reducer、核心 Renderer、A2UI action bridge 已实现；Studio 与 Hosted UI 复用 `ksadk-web` 的版本化 headless conversation 模块，新增未知事件保留在 replay/audit 但不污染对话；0.3.4 源码门禁、独立浏览器 E2E 与 Pages 演示 E2E 已通过 | `ksadk-web@0.3.4` 正式发布后必须从公开 registry 重建 Studio、预发 Hosted UI 与线上 Hosted UI；新 Agent 和历史 0.8.2 Agent 的最终真实部署回归、制品 provenance、公开审计和维护者审批仍是发布门禁 |
 
 稳定产品只承认两种插件来源：默认的 DSH Bundle/Profile（由 Cordis 组合）和由 Codex App Server 管理的 Codex 插件。`ksadk plugin` 只是统一产品入口，不定义第三种安装包、manifest 或 ABI。
 
@@ -86,10 +86,10 @@ make phase2-release-preflight
 该预检只证明当前源码与本地构建制品。仓库中的 0.8.2 历史 Bundle fixture 会自动验证旧 Agent 的非破坏性解析和本地 Session 路径，但这不等于云端、预发、多副本或已经在线的真实 Agent 已完成验收；真实线上 Agent 的打开、会话和状态仍是独立部署门禁。
 
 当前 0.8.3 候选还额外完成了真实部署浏览器门禁：同一份显式固定的
-`ksadk-web@0.3.3` 候选制品被装入 Hosted UI 后，Studio 创建的 Codex Agent
-完成两轮会话与上下文续接；一个 0.8.2 历史 Agent 完成两轮会话，并保留
-reasoning 与工具调用卡片。该结果只证明被记录制品和目标 Agent，不替代
-npm 正式发布后的 registry 重建与最终制品审计。
+`ksadk-web@0.3.4` 候选制品已通过本地共享静态载荷校验和独立浏览器 E2E。
+npm 正式发布后必须从公开 registry 重建 Hosted UI，并在预发对 Studio 创建的
+Codex Agent 与一个 0.8.2 历史 Agent 分别完成两轮会话、上下文续接、刷新回放、
+reasoning、工具和审批卡片验证；只有绑定最终镜像 digest 的证据才计入发布门禁。
 
 ## Codex 生态桥接验证
 

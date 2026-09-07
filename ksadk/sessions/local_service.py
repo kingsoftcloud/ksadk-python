@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Optional
@@ -24,8 +24,10 @@ from ksadk.sessions._local_tables import (
 from ksadk.sessions.base import (
     CANONICAL_EVENT_STORAGE_CAPABILITIES,
     BaseSessionService,
+    CheckpointEventQuery,
     Session,
     SessionEvent,
+    SessionEventQuery,
     SessionState,
 )
 
@@ -62,6 +64,8 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
         )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
+        self._checkpoint_scan_lock = asyncio.Lock()
+        self._checkpoint_snapshot_by_task: dict[asyncio.Task[object], int] = {}
         self._ensure_schema()
 
     async def create_session(
@@ -189,6 +193,84 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
                 session_id,
                 after_seq_id,
                 before_seq_id,
+            )
+
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        async with self._lock:
+            return await asyncio.to_thread(self._get_sessions_by_ids_sync, session_ids)
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        async with self._lock:
+            return await asyncio.to_thread(self._list_session_metadata_sync, agent_id, user_id)
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        async with self._lock:
+            return await asyncio.to_thread(self._query_events_sync, query, False)
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        async with self._lock:
+            return int(await asyncio.to_thread(self._query_events_sync, query, True))
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, object]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._checkpoint_lookup_stats_sync, session_id, run_id, checkpoint_id
+            )
+
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        async with self._lock:
+            return await asyncio.to_thread(self._scan_checkpoint_events_sync, query)
+
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        async with self._checkpoint_scan_lock:
+            async with self._lock:
+                snapshot_rowid = await asyncio.to_thread(self._checkpoint_max_rowid_sync)
+            task = asyncio.current_task()
+            if task is not None:
+                self._checkpoint_snapshot_by_task[task] = snapshot_rowid
+            offset = query.offset
+            try:
+                while True:
+                    async with self._lock:
+                        batch = await asyncio.to_thread(
+                            self._scan_checkpoint_events_sync,
+                            CheckpointEventQuery(**{**query.__dict__, "offset": offset}),
+                            snapshot_rowid,
+                        )
+                    if not batch:
+                        break
+                    yield batch
+                    offset += len(batch)
+                    if len(batch) < query.limit:
+                        break
+            finally:
+                if task is not None:
+                    self._checkpoint_snapshot_by_task.pop(task, None)
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        async with self._lock:
+            task = asyncio.current_task()
+            snapshot_rowid = (
+                self._checkpoint_snapshot_by_task.get(task) if task is not None else None
+            )
+            return await asyncio.to_thread(
+                self._get_checkpoint_stats_sync, keys, snapshot_rowid
             )
 
     async def get_events_for_agent(

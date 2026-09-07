@@ -844,6 +844,7 @@ export function ChatWorkspace({
   const messageListRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const submissionInFlightRef = useRef(false);
   const followBottomRef = useRef(true);
   const scrollBySessionRef = useRef(new Map<string, number>());
   const previewSurfaceSessionId = useMemo(() => uniqueId("ses_surface"), [agentId]);
@@ -1100,6 +1101,14 @@ export function ChatWorkspace({
   function selectSession(sessionId: string) {
     const list = messageListRef.current;
     if (list && currentSessionId) scrollBySessionRef.current.set(currentSessionId, list.scrollTop);
+    // Drop the live run's stream so the composer reflects the selected
+    // session's own runs.  Without this, leaving a streaming session keeps
+    // ``stream.status === "streaming"`` and the composer stays disabled, and
+    // a subsequent submit fails with an already-attached runtime handle.
+    setStream(null);
+    setInput("");
+    setAttachments([]);
+    setOptimisticPrompt("");
     setCurrentSessionId(sessionId);
     setSessionPanelOpen(false);
     followBottomRef.current = !scrollBySessionRef.current.has(sessionId);
@@ -1179,7 +1188,7 @@ export function ChatWorkspace({
     const sourceInput = retrying ? inputOverride : input;
     const turnSourceAttachments = retrying ? [] : attachments;
     const submission = parseComposerSubmission(sourceInput);
-    if (isGenerating) return;
+    if (isGenerating || submissionInFlightRef.current) return;
     if (surfaceLoading) {
       showToast("正在确认会话能力", "请稍后再发送。", "error");
       return;
@@ -1225,6 +1234,7 @@ export function ChatWorkspace({
       return;
     }
     if (!content && !turnSourceAttachments.length) return;
+    submissionInFlightRef.current = true;
     const sessionId = currentSessionId
       || (conversationSurface.status === "declared"
         ? conversationSurface.surface.sessionId
@@ -1345,6 +1355,7 @@ export function ChatWorkspace({
       }
     } finally {
       abortRef.current = null;
+      submissionInFlightRef.current = false;
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }

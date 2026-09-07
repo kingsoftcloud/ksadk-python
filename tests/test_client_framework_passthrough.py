@@ -67,7 +67,7 @@ async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch
 
     monkeypatch.setattr(client, "_action", fake_action)
     checksum = "a" * 64
-    command = ["ksadk", "web", "/app/code/runtime", "--port", "8080"]
+    command = ["ksadk", "web", "/app/code", "--port", "8080"]
     await client.create_agent(
         {
             **_build_create_payload(),
@@ -181,7 +181,11 @@ async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monk
     monkeypatch.setattr(client, "_action", fake_action)
 
     await client.list_session_events(
-        agent_id="ar-cloud", session_id="sess-cloud", after_seq_id=7, limit=200
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        after_seq_id=7,
+        offset=400,
+        limit=200,
     )
     await client.submit_interaction(
         agent_id="ar-cloud",
@@ -201,6 +205,7 @@ async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monk
                 "AgentId": "ar-cloud",
                 "SessionId": "sess-cloud",
                 "AfterSeqId": 7,
+                "Offset": 400,
                 "Limit": 200,
             },
         ),

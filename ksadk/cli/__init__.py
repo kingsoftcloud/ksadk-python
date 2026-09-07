@@ -339,16 +339,33 @@ def _register_optional_command(cli: click.Group, module_path: str, *cmd_names: s
 
 
 def _register_commands():
+    # Runtime fast path: when the hosted entrypoint runs ``ksadk web`` the
+    # process only needs the web command. Importing the other commands here
+    # pulls in deploy/create/run deps (ks3, questionary, ...) that the hosted
+    # Python runtime image does not ship, so a full register crashes the
+    # runtime before the server starts. Only import what argv actually needs;
+    # ``--help`` and other exploratory invocations still register everything.
+    import sys as _sys
+
+    _argv = [a for a in _sys.argv[1:] if not a.startswith("-")]
+    _runtime_only = bool(_argv) and _argv[0] == "web"
+
+    from ksadk.cli.cmd_web import web
+
+    _add_command_once(cli, web)
+
+    if _runtime_only:
+        # Skip create/deploy/run/managed_runtime imports on the runtime path.
+        return
+
     from ksadk.cli.cmd_create import create
     from ksadk.cli.cmd_deploy import deploy
     from ksadk.cli.cmd_managed_runtime import managed_runtime
     from ksadk.cli.cmd_run import run
-    from ksadk.cli.cmd_web import web
 
     # 注册现有命令
     _add_command_once(cli, run)
     _add_command_once(cli, deploy)
-    _add_command_once(cli, web)
     _add_command_once(cli, managed_runtime)
 
     # init 作为主命令 (PRD 规范)

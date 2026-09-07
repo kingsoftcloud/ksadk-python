@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 class _LangGraphStreamMixin:
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
+        await self.prepare_runtime_capabilities()
         payload = dict(input_data)
         payload.pop("_ksadk_force_graph_invoke", None)
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
@@ -693,6 +694,47 @@ class _LangGraphStreamMixin:
                             (ckpt_config.get("configurable") or {}).get("checkpoint_id", "") or ""
                         )
                         if ckpt_id:
+                            # Extract next_node from graph state so the
+                            # projection layer can surface it in the REST
+                            # checkpoint payload.
+                            next_nodes_raw = (
+                                ckpt_state.get("next")
+                                if isinstance(ckpt_state, dict)
+                                else getattr(ckpt_state, "next", None)
+                            )
+                            ckpt_next_node = ""
+                            if isinstance(next_nodes_raw, str):
+                                ckpt_next_node = next_nodes_raw.strip()
+                            elif isinstance(next_nodes_raw, (list, tuple, set)):
+                                ckpt_next_node = str(next(iter(next_nodes_raw)) or "").strip()
+                            # Enrich source metadata with checkpoint
+                            # capability (backend/scope/durable) so the
+                            # projection layer does not fall back to unknown.
+                            ckpt_capability = self.describe_checkpoint_capability()
+                            ckpt_source_metadata: dict[str, Any] = {"checkpoint": True}
+                            if isinstance(ckpt_capability, dict):
+                                ckpt_is_terminal = not bool(ckpt_next_node)
+                                ckpt_is_resumable = bool(
+                                    ckpt_capability.get("Supported")
+                                    and ckpt_next_node
+                                    and ckpt_capability.get("Scope") != "process_local"
+                                )
+                                ckpt_source_metadata["capability"] = {
+                                    "backend": str(ckpt_capability.get("Backend") or "unknown"),
+                                    "scope": str(ckpt_capability.get("Scope") or "unknown"),
+                                    "durable": bool(ckpt_capability.get("Durable", False)),
+                                    "is_terminal": ckpt_is_terminal,
+                                    "is_resumable": ckpt_is_resumable,
+                                    "resume_status": (
+                                        "resumable" if ckpt_is_resumable else "disabled"
+                                    ),
+                                    "resume_disabled_reason": (
+                                        "该 checkpoint 已是终态；可选择更早恢复点重跑"
+                                        if ckpt_is_terminal
+                                        else str(ckpt_capability.get("Reason") or "")
+                                    ),
+                                    **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
+                                }
                             ckpt_ref = {
                                 "thread_id": str(
                                     (ckpt_config.get("configurable") or {}).get(
@@ -701,6 +743,7 @@ class _LangGraphStreamMixin:
                                 ),
                                 "checkpoint_ns": "",
                                 "checkpoint_id": ckpt_id,
+                                **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
                             }
                             continuation_id = stable_item_id(
                                 "langgraph",
@@ -729,7 +772,7 @@ class _LangGraphStreamMixin:
                                 source=SourceRef(
                                     framework="langgraph",
                                     native_run_id=run_id,
-                                    metadata={"checkpoint": True},
+                                    metadata=ckpt_source_metadata,
                                 ),
                                 continuation_id=continuation_id,
                                 continuation_kind="graph_checkpoint",

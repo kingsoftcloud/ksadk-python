@@ -19,6 +19,7 @@ from scripts.phase2_release_preflight import (
     PHASE2_E2E_STATUS_KEYS,
     Phase2PreflightError,
     build_phase2_evidence_report,
+    is_public_export,
     phase2_contract_digest,
     run_release_test_gates,
     validate_clean_artifact_installations,
@@ -277,7 +278,19 @@ def test_artifact_gate_rejects_mismatched_wheel_and_sdist_provenance(
 
 
 def test_generated_static_payload_is_not_tracked() -> None:
-    validate_generated_static_tracking_policy(public_export=False)
+    validate_generated_static_tracking_policy(public_export=is_public_export())
+
+
+def test_public_export_detection_requires_manifest_without_editable_frontend(
+    tmp_path: Path,
+) -> None:
+    assert is_public_export(tmp_path) is False
+    (tmp_path / "export-manifest.json").write_text("{}", encoding="utf-8")
+    assert is_public_export(tmp_path) is True
+    frontend = tmp_path / "ksadk/studio/react-ui"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text("{}", encoding="utf-8")
+    assert is_public_export(tmp_path) is False
 
 
 def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_path: Path) -> None:

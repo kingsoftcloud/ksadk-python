@@ -198,6 +198,38 @@ test("resumes a typed Conversation stream by SSE cursor without replaying item s
   assert.deepEqual(state.conversationItems.items.map(item => item.itemId), ["answer-1", "run-end"]);
 });
 
+test("uses the outer run event as terminal authority even when its item was replayed", async () => {
+  const chat = await loadChatProtocol();
+  const progressItem = {
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId: "run-progress",
+    sourceEventIds: ["source-progress"],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "progress",
+    operation: "completed",
+    lifecycle: "completed",
+    visibility: "public",
+    payloadSchemaRef: "conversation.item.progress/v1",
+    payload: {},
+    nativeRef: {},
+  };
+
+  let state = chat.createChatStreamState("local", "session-1");
+  state = chat.reduceChatStreamEvent(state, {
+    type: "message.completed",
+    conversationItem: progressItem,
+  });
+  assert.equal(state.status, "streaming");
+
+  state = chat.reduceChatStreamEvent(state, {
+    type: "run.completed",
+    conversationItem: progressItem,
+  });
+  assert.equal(state.status, "completed");
+});
+
 test("stops typed Conversation reconnect after the explicit retry limit", async () => {
   const chat = await loadChatProtocol();
   const initial = new Response(
