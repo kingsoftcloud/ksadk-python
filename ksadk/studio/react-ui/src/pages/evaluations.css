@@ -15,9 +15,9 @@
   min-height: 42px;
   align-items: center;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--studio-border);
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--studio-surface);
 }
 
 .evaluation-page__fail-fast input {
@@ -33,9 +33,9 @@
 .evaluation-page__evaluator-options .checkbox-row {
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--studio-border);
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--studio-surface);
 }
 
 .evaluation-page__evaluator-options small {
@@ -60,7 +60,7 @@
 .evaluation-page__evalset-path {
   min-width: 0;
   overflow: hidden;
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   text-overflow: ellipsis;
@@ -71,13 +71,13 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 16px;
-  border-block: 1px solid var(--border);
+  border-block: 1px solid var(--studio-border);
 }
 
 .evaluation-page__metrics > div {
   min-height: 72px;
   padding: 12px 18px;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--studio-border);
 }
 
 .evaluation-page__metrics > div:last-child {
@@ -101,9 +101,9 @@
 .evaluation-page__run-list,
 .evaluation-detail-page__report {
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--studio-border);
   border-radius: var(--radius-surface);
-  background: var(--surface);
+  background: var(--studio-surface);
 }
 
 .evaluation-page__run-list > .studio-data-table {
@@ -115,14 +115,14 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 20px;
-  border-block: 1px solid var(--border);
+  border-block: 1px solid var(--studio-border);
 }
 
 .evaluation-detail-page__overview > div {
   min-width: 0;
   min-height: 88px;
   padding: 16px 20px;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--studio-border);
 }
 
 .evaluation-detail-page__overview > div:last-child {
@@ -151,8 +151,8 @@
   gap: 12px;
   min-height: 72px;
   padding: 16px;
-  border-block: 1px solid var(--border);
-  color: var(--text-secondary);
+  border-block: 1px solid var(--studio-border);
+  color: var(--studio-text-secondary);
 }
 
 .evaluation-detail-page__pending strong,
@@ -173,7 +173,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
 }
 
 .evaluation-page__panel-header strong,
@@ -206,14 +206,14 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
 }
 
 .evaluation-page__snapshot > div {
   min-width: 0;
   padding: 12px 16px;
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--studio-border);
 }
 
 .evaluation-page__snapshot dt {
@@ -230,7 +230,7 @@
 }
 
 .evaluation-page__dataset {
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
 }
 
 .evaluation-page__dataset-heading {
@@ -240,7 +240,7 @@
   justify-content: space-between;
   gap: 16px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
 }
 
 .evaluation-page__dataset-heading h2,
@@ -268,7 +268,7 @@
 .evaluation-page__dataset-summary > div {
   min-width: 0;
   padding: 11px 16px;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--studio-border);
 }
 
 .evaluation-page__dataset-summary > div:last-child {
@@ -296,7 +296,7 @@
 
 .evaluation-page__case-list {
   overflow: auto;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--studio-border);
 }
 
 .evaluation-page__case-list > button {
@@ -308,7 +308,7 @@
   gap: 12px;
   padding: 10px 14px;
   border: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
   color: var(--text-primary);
   background: transparent;
   text-align: left;
@@ -349,7 +349,7 @@
 }
 
 .evaluation-page__case-detail section + section {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--studio-border);
 }
 
 .evaluation-page__case-detail > section {
@@ -368,7 +368,7 @@
   overflow: auto;
   border-radius: var(--radius-control);
   color: var(--code-text);
-  background: var(--code-bg);
+  background: var(--studio-code-bg);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   white-space: pre-wrap;
@@ -407,15 +407,15 @@
 
 .evaluation-page__expected-tools code {
   padding: 3px 7px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--studio-border);
   border-radius: var(--radius-control);
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   background: var(--surface-subtle);
   font-size: var(--font-size-caption);
 }
 
 .evaluation-page__assertions {
-  border-block: 1px solid var(--border);
+  border-block: 1px solid var(--studio-border);
 }
 
 .evaluation-page__assertions > div {
@@ -425,7 +425,7 @@
   align-items: center;
   min-height: 48px;
   padding: 8px 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
 }
 
 .evaluation-page__assertions > div:last-child {
@@ -446,7 +446,7 @@
 .evaluation-page__assertions code {
   max-height: 88px;
   overflow: auto;
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   font-size: var(--font-size-caption);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -466,7 +466,7 @@
 }
 
 .evaluation-page__case-evidence details > summary {
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   font-size: var(--font-size-meta);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
@@ -505,7 +505,7 @@
   }
 
   .evaluation-page__dataset-summary > div:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--studio-border);
   }
 }
 
@@ -547,7 +547,7 @@
 
   .evaluation-page__dataset-summary > div {
     border-right: 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--studio-border);
   }
 
   .evaluation-page__dataset-summary > div:last-child {
@@ -558,12 +558,12 @@
   .evaluation-page__snapshot > div,
   .evaluation-page__case-list {
     border-right: 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--studio-border);
   }
 
   .evaluation-page__metrics > div {
-    border-right: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--studio-border);
+    border-bottom: 1px solid var(--studio-border);
   }
 
   .evaluation-page__metrics > div:nth-child(even) {

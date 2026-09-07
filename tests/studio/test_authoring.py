@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.authoring import AgentAuthoringService
 from ksadk.studio.contracts import (
+    AgentBindings,
     AgentSpec,
+    CapabilityBinding,
     Instructions,
     MCPServerRef,
     ModelSpec,
@@ -142,6 +144,25 @@ def test_quick_authoring_generates_local_id_when_slug_is_omitted(tmp_path: Path)
 
     assert re.fullmatch(r"agentkit-[0-9a-f]{8}", draft.metadata.id)
     assert draft.metadata.labels["agentkit.ksyun.com/slug"] == draft.metadata.id
+
+
+def test_codex_agent_provider_drops_ksadk_tool_bindings(tmp_path: Path) -> None:
+    studio = StudioService(tmp_path)
+
+    draft = studio.create_authored_agent(
+        name="Codex Provider Agent",
+        runtime_type="plugin",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref="plugin://io.ksadk.codex-provider@1.0.0",
+            ),
+            bindings=AgentBindings(tools=[CapabilityBinding(resource_id="tool:builtin:read-file")]),
+            instructions=Instructions(system="Use Codex native tools."),
+        ),
+    )
+
+    assert draft.spec.bindings.tools == []
 
 
 def test_generated_local_id_is_never_overwritten(tmp_path: Path) -> None:
@@ -381,9 +402,7 @@ async def test_conversation_authoring_merges_a_partial_follow_up_patch(
         + json.dumps(
             {
                 "description": "Checks release readiness and rollback safety.",
-                "spec": {
-                    "instructions": {"task": "Return blockers, proof, and rollback steps."}
-                },
+                "spec": {"instructions": {"task": "Return blockers, proof, and rollback steps."}},
             }
         )
         + "\n```"
@@ -466,13 +485,17 @@ async def test_conversation_authoring_returns_local_fallback_for_invalid_model_p
 def test_conversation_prompt_only_response_is_migrated_to_complete_spec(tmp_path: Path) -> None:
     from ksadk.studio.authoring import AgentAuthoringService
 
-    proposal = AgentAuthoringService.parse_conversation_proposal(json.dumps({
-        "name": "Legacy Helper",
-        "slug": "legacy-helper",
-        "runtimeType": "codex",
-        "description": "Legacy response",
-        "instructions": {"system": "Keep this prompt.", "task": "Keep this task."},
-    }))
+    proposal = AgentAuthoringService.parse_conversation_proposal(
+        json.dumps(
+            {
+                "name": "Legacy Helper",
+                "slug": "legacy-helper",
+                "runtimeType": "codex",
+                "description": "Legacy response",
+                "instructions": {"system": "Keep this prompt.", "task": "Keep this task."},
+            }
+        )
+    )
 
     assert proposal.spec.description == "Legacy response"
     assert proposal.spec.instructions == Instructions(
@@ -626,14 +649,18 @@ def test_project_import_reports_unresolved_bindings_instead_of_dropping_them(
     project = tmp_path / "projects/unresolved-adk"
     project.mkdir(parents=True)
     (project / "agent.py").write_text("root_agent = object()\n")
-    (project / "ksadk.yaml").write_text(yaml.safe_dump({
-        "name": "unresolved-adk",
-        "framework": "adk",
-        "entry_point": "agent.py",
-        "agent_variable": "root_agent",
-        "tools": [{"legacy": "opaque-tool-config"}],
-        "skills": ["skill-not-installed"],
-    }))
+    (project / "ksadk.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "unresolved-adk",
+                "framework": "adk",
+                "entry_point": "agent.py",
+                "agent_variable": "root_agent",
+                "tools": [{"legacy": "opaque-tool-config"}],
+                "skills": ["skill-not-installed"],
+            }
+        )
+    )
 
     inspection = studio.inspect_agent_project("projects/unresolved-adk")
 
@@ -763,9 +790,7 @@ async def test_conversation_authoring_requests_json_object_response(
             "slug": "release-reviewer",
             "runtimeType": "codex",
             "description": "Checks releases.",
-            "spec": {
-                "instructions": {"system": "Review releases.", "task": "Return evidence."}
-            },
+            "spec": {"instructions": {"system": "Review releases.", "task": "Return evidence."}},
         }
     )
     model_client = _AuthoringModelClient(valid)
@@ -896,15 +921,9 @@ async def test_conversation_authoring_emits_start_and_finish_logs(
         )
 
     messages = [record.message for record in caplog.records]
-    assert any(
-        message.startswith("conversation authoring started") for message in messages
-    )
-    assert any(
-        message.startswith("conversation authoring finished") for message in messages
-    )
-    assert any(
-        message.startswith("conversation authoring model resolved") for message in messages
-    )
+    assert any(message.startswith("conversation authoring started") for message in messages)
+    assert any(message.startswith("conversation authoring finished") for message in messages)
+    assert any(message.startswith("conversation authoring model resolved") for message in messages)
 
 
 def test_conversation_authoring_status_endpoint(tmp_path: Path) -> None:
@@ -948,7 +967,11 @@ def test_parse_conversation_proposal_coerces_invalid_credential_ref():
             "description": "摘要",
             "spec": {
                 "instructions": {"system": "s", "task": "t"},
-                "model": {"model": "deepseek-v4-pro", "credentialRef": {}, "baseUrl": "https://api.example.com/v1"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": {},
+                    "baseUrl": "https://api.example.com/v1",
+                },
             },
         }
     )

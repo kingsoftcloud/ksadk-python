@@ -107,6 +107,9 @@ class _PluginRuntime:
         del spec, session_id
         return self.delegate
 
+    async def close_session_if_dynamic(self, spec: StudioRunSpec, session_id: str) -> None:
+        del spec, session_id
+
 
 def _spec(tmp_path: Path) -> StudioRunSpec:
     return StudioRunSpec(

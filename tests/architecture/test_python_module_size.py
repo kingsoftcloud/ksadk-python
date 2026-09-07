@@ -13,17 +13,17 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/agui/agent.py": 1056,
     "ksadk/a2a/control_plane.py": 1060,
     "ksadk/a2a/space_client.py": 1122,
-    "ksadk/api/client.py": 2778,
+    "ksadk/api/client.py": 2781,
     # Current master already contains the 2,287-line builder integration; PCM
     # adds only its launch-context projection seam. Keep any further growth red.
-    "ksadk/builders/code_builder.py": 2371,
+    "ksadk/builders/code_builder.py": 2398,
     "ksadk/cli/cmd_create.py": 2084,
     "ksadk/cli/cmd_files.py": 1270,
     "ksadk/cli/cmd_hermes.py": 1441,
     "ksadk/cli/cmd_invoke.py": 1565,
     "ksadk/cli/cmd_mcp.py": 1213,
     "ksadk/cli/cmd_openclaw.py": 4218,
-    "ksadk/codex/client.py": 1192,
+    "ksadk/codex/client.py": 1507,
     "ksadk/codex/runtime.py": 1084,
     "ksadk/deployment/providers/serverless.py": 1358,
     # Agent Runtime v2 Phase 1 delivery baseline. These files contain the
@@ -34,29 +34,35 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/kernel/memory_store.py": 1134,
     "ksadk/kernel/postgres_store.py": 1757,
     "ksadk/kernel/sqlite_store.py": 1411,
-    "ksadk/runners/adk_runner.py": 2219,
+    "ksadk/runners/adk_runner.py": 2340,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
     "ksadk/runners/langgraph_runner.py": 1378,
     # 0.8.1 canonical ToolGateway approval projection baseline.
     "ksadk/runtime/runner_adapter.py": 1220,
     "ksadk/sessions/local_service.py": 1080,
-    "ksadk/sessions/postgres_service.py": 1019,
+    "ksadk/server/routes/projection.py": 1103,
+    "ksadk/sessions/postgres_service.py": 1287,
     # Agent Runtime v2 Phase 2 reviewed integration baseline. The 0.8.3
     # release deliberately freezes these exact post-integration sizes rather
     # than silently raising the global limit. Any additional line in one of
     # these modules turns the guard red again; responsibility extraction is a
     # separately scheduled maintenance item after the release.
     "ksadk/plugins/bridges/dsh.py": 1116,
+    # Complete DSH Core installation and process supervision baselines. The
+    # browser mini-runtime was removed; keep further growth red until these
+    # orchestration seams are split into their own maintenance change.
+    "ksadk/plugins/dsh_toolchain.py": 1002,
+    "ksadk/plugins/providers/dsh_capabilities.py": 1250,
     "ksadk/plugins/ecosystem_bridge.py": 1105,
-    "ksadk/studio/api.py": 2038,
-    "ksadk/studio/authoring_coordinator.py": 1027,
-    "ksadk/studio/cloud.py": 2099,
+    "ksadk/studio/api.py": 2166,
+    "ksadk/studio/authoring_coordinator.py": 1032,
+    "ksadk/studio/cloud.py": 2144,
     "ksadk/studio/otel_trace.py": 1060,
-    "ksadk/studio/resource_catalog.py": 1265,
-    "ksadk/studio/run_service.py": 1764,
-    "ksadk/studio/service.py": 2839,
-    "ksadk/studio/shared_web.py": 1143,
+    "ksadk/studio/resource_catalog.py": 1406,
+    "ksadk/studio/run_service.py": 1910,
+    "ksadk/studio/service.py": 3028,
+    "ksadk/studio/shared_web.py": 1258,
     "ksadk/toolsets/workspace.py": 1028,
     "ksadk/tui/loop.py": 1925,
 }

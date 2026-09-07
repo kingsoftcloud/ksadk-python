@@ -78,7 +78,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       endpoint: "http://ar-cloud-new.example.test",
       artifactId: "managed-runtime",
     });
-    return new Response(JSON.stringify({ items }));
+    return new Response(JSON.stringify({ items, currentIdentity: { userName: "credential-user", userId: "credential-id" } }));
   }
   if (path === "/api/v1/cloud-agents?size=100") {
     return new Response(JSON.stringify({ items: accountAgentItems, total: accountAgentItems.length }));
@@ -296,6 +296,17 @@ describe("DeploymentsPage", () => {
   const renderPage = (onOpenChat = vi.fn(), onSelectBuild = vi.fn()) => render(
     <DeploymentsPage onCreate={vi.fn()} onOpenChat={onOpenChat} onSelectBuild={onSelectBuild} />,
   );
+
+  it("labels credential fallback only for local receipts without a recorded creator", async () => {
+    accountAgentItems = [
+      { agentId: "ar-cloud-ui", name: "Managed YAML Agent", status: "RUNNING", creatorName: null },
+      { agentId: "ar-other", name: "Other Agent", status: "RUNNING", creatorName: null },
+    ];
+    renderPage();
+    expect(await screen.findByText("credential-user")).toBeInTheDocument();
+    expect(screen.getByText("当前凭证")).toBeInTheDocument();
+    expect(screen.getByText("创建人未记录")).toBeInTheDocument();
+  });
 
   it("keeps the Server cloud projection authoritative after refreshing a local receipt", async () => {
     const user = userEvent.setup();

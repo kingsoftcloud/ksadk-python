@@ -53,6 +53,29 @@ def _profile(home: Path, *, enabled: bool = True) -> Path:
     return root
 
 
+def _pristine_web_profile(home: Path) -> Path:
+    root = home / "profiles" / "web"
+    _write_json(
+        root / "package.json",
+        {
+            "name": "dsh-profile-web",
+            "private": True,
+            "dependencies": {},
+            "dsh": {
+                "profile": {
+                    "bundles": [
+                        "@deepseek-ai/dsh-base",
+                        "@deepseek-ai/dsh-web-app",
+                    ],
+                    "patchReload": "live",
+                }
+            },
+        },
+    )
+    (root / "pnpm-workspace.yaml").write_text("packages: []\n", encoding="utf-8")
+    return root
+
+
 class Runner:
     def __init__(self) -> None:
         self.commands: list[tuple[str, ...]] = []
@@ -156,7 +179,6 @@ def test_bridge_projects_inventory_and_digest_without_raw_profile(tmp_path: Path
         "installed": True,
         "enabled": True,
         "permissionsDeclared": False,
-        "clientBundle": None,
         "riskDisclosures": [
             "DSH packages and install scripts run with the native host user privileges.",
             "DSH bundle manifests do not declare a complete runtime permission set.",
@@ -167,42 +189,6 @@ def test_bridge_projects_inventory_and_digest_without_raw_profile(tmp_path: Path
     assert projection.config_digest.startswith("sha256:")
     assert projection.config_bytes > 0
     assert not hasattr(projection, "config")
-
-
-def test_bridge_projects_and_digest_fences_studio_client_bundle(tmp_path: Path) -> None:
-    home = tmp_path / "dsh-home"
-    root = _profile(home)
-    package = root / "node_modules" / "@example" / "dsh-plugin"
-    manifest = json.loads((package / "package.json").read_text(encoding="utf-8"))
-    manifest.update(
-        exports={"./client": {"default": "./lib/client.js"}},
-        dsh={
-            "bundle": {"patch": "./cordis.patch.yml"},
-            "client": {"platform": "web", "external": ["react"]},
-        },
-    )
-    _write_json(package / "package.json", manifest)
-    content = b'window.__ModuleLoader__.load({id:"@example/dsh-plugin",factory:()=>({apply(){}})})'
-    client_path = package / "lib" / "client.js"
-    client_path.parent.mkdir()
-    client_path.write_bytes(content)
-
-    bridge = DshProfilePluginBridge(
-        dsh_home=home,
-        profile="test-profile",
-        dsh_command=("dsh-fixture",),
-        command_runner=Runner(),
-    )
-    bridge.start()
-    client = bridge.get_plugin(PLUGIN_NAME).client_bundle
-    assert client is not None
-    assert client.compatible is True
-    assert client.digest.startswith("sha256:")
-    assert bridge.read_client_bundle(PLUGIN_NAME, expected_digest=client.digest) == content
-
-    client_path.write_text("changed", encoding="utf-8")
-    with pytest.raises(DshPluginMutationError, match="digest fence"):
-        bridge.read_client_bundle(PLUGIN_NAME, expected_digest=client.digest)
 
 
 def test_local_source_receipt_fails_closed_when_immutable_archive_changes(
@@ -268,7 +254,7 @@ def test_mutable_package_manager_source_schemes_are_rejected(
     )
     bridge.start()
 
-    with pytest.raises(ValueError, match="package, Git URL, or absolute local path"):
+    with pytest.raises(ValueError, match="exact"):
         bridge.install_plugin(source, accept_host_permissions=True)
 
 
@@ -296,8 +282,9 @@ def test_enable_disable_is_transactional_and_preflighted(tmp_path: Path) -> None
     assert (root / "package.json").read_bytes() == before
 
 
+@pytest.mark.parametrize("source", [NEW_PLUGIN_NAME, f"{NEW_PLUGIN_NAME}@2.0.0"])
 def test_install_is_disabled_until_explicit_enable_without_deactivating_existing_bundle(
-    tmp_path: Path,
+    tmp_path: Path, source: str,
 ) -> None:
     home = tmp_path / "dsh-home"
     root = _profile(home, enabled=True)
@@ -305,7 +292,11 @@ def test_install_is_disabled_until_explicit_enable_without_deactivating_existing
 
     class InstallRunner(Runner):
         def __call__(self, command, cwd, environment):  # noqa: ANN001
+            if command[:2] == ("npm", "view"):
+                assert command == ("npm", "view", f"{NEW_PLUGIN_NAME}@latest", "version", "--json")
+                return dsh_bridge._CommandResult(stdout='"2.0.0"')
             if len(command) >= 2 and command[-2] == "add":
+                assert command[-1] == f"{NEW_PLUGIN_NAME}@2.0.0"
                 manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
                 manifest["dependencies"][NEW_PLUGIN_NAME] = "2.0.0"
                 manifest["dsh"]["profile"]["bundles"].append(NEW_PLUGIN_NAME)
@@ -333,7 +324,7 @@ def test_install_is_disabled_until_explicit_enable_without_deactivating_existing
     bridge.start()
 
     installed = bridge.install_plugin(
-        NEW_PLUGIN_NAME,
+        source,
         accept_host_permissions=True,
     )
 
@@ -523,6 +514,28 @@ def test_install_requires_explicit_host_permission_acceptance(tmp_path: Path) ->
         bridge.install_plugin("@deepseek-ai/dsh-subagent-codex")
 
 
+@pytest.mark.parametrize(
+    "response", ['null', '["1.0.0", "2.0.0"]', '"latest"', '"file:/tmp/pkg"', 'not json']
+)
+def test_latest_resolution_failure_does_not_mutate_profile(tmp_path: Path, response: str) -> None:
+    home = tmp_path / "dsh-home"
+    root = _profile(home)
+    before = (root / "package.json").read_bytes()
+    commands = []
+
+    def runner(command, cwd, environment):
+        commands.append(command)
+        return dsh_bridge._CommandResult(stdout=response)
+
+    bridge = DshProfilePluginBridge(
+        dsh_home=home, profile="test-profile", dsh_command=("dsh-fixture",), command_runner=runner,
+    )
+    with pytest.raises(DshPluginMutationError, match="exact version"):
+        bridge.install_plugin(NEW_PLUGIN_NAME, accept_host_permissions=True)
+    assert commands == [("npm", "view", f"{NEW_PLUGIN_NAME}@latest", "version", "--json")]
+    assert (root / "package.json").read_bytes() == before
+
+
 def test_failed_first_install_removes_new_profile_tree(tmp_path: Path) -> None:
     home = tmp_path / "dsh-home"
 
@@ -530,7 +543,7 @@ def test_failed_first_install_removes_new_profile_tree(tmp_path: Path) -> None:
         def __call__(self, command, cwd, environment):
             if command[-1] == "--version":
                 return super().__call__(command, cwd, environment)
-            profile_root = home / "profiles" / "ksadk"
+            profile_root = home / "profiles" / "web"
             _write_json(profile_root / "package.json", {"dependencies": {}})
             (profile_root / "node_modules").mkdir(parents=True)
             raise DshPluginMutationError("install failed")
@@ -543,14 +556,14 @@ def test_failed_first_install_removes_new_profile_tree(tmp_path: Path) -> None:
     bridge.start()
 
     with pytest.raises(DshPluginMutationError, match="install failed"):
-        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex", accept_host_permissions=True)
+        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex@1.0.0", accept_host_permissions=True)
 
-    assert not (home / "profiles" / "ksadk").exists()
+    assert not (home / "profiles" / "web").exists()
 
 
 def test_install_refuses_unmanaged_existing_profile_directory(tmp_path: Path) -> None:
     home = tmp_path / "dsh-home"
-    unmanaged = home / "profiles" / "ksadk"
+    unmanaged = home / "profiles" / "web"
     unmanaged.mkdir(parents=True)
     marker = unmanaged / "keep.txt"
     marker.write_text("user-owned", encoding="utf-8")
@@ -562,9 +575,48 @@ def test_install_refuses_unmanaged_existing_profile_directory(tmp_path: Path) ->
     bridge.start()
 
     with pytest.raises(DshPluginMutationError, match="no package manifest"):
-        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex", accept_host_permissions=True)
+        bridge.install_plugin("@deepseek-ai/dsh-subagent-codex@1.0.0", accept_host_permissions=True)
 
     assert marker.read_text(encoding="utf-8") == "user-owned"
+
+
+def test_failed_first_install_restores_pristine_official_web_profile(tmp_path: Path) -> None:
+    home = tmp_path / "dsh-home"
+    root = _pristine_web_profile(home)
+    before_manifest = (root / "package.json").read_bytes()
+    before_workspace = (root / "pnpm-workspace.yaml").read_bytes()
+
+    class FailedWebInstallRunner(Runner):
+        def __call__(self, command, cwd, environment):  # noqa: ANN001
+            if len(command) >= 2 and command[-2] == "add":
+                manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
+                manifest["dependencies"][NEW_PLUGIN_NAME] = "2.0.0"
+                _write_json(root / "package.json", manifest)
+                (root / "pnpm-lock.yaml").write_text(
+                    "lockfileVersion: '9.0'\n", encoding="utf-8"
+                )
+                (root / "node_modules" / "partial").mkdir(parents=True)
+                raise DshPluginMutationError("simulated install failure")
+            return super().__call__(command, cwd, environment)
+
+    bridge = DshProfilePluginBridge(
+        dsh_home=home,
+        profile="web",
+        dsh_command=("dsh-fixture",),
+        command_runner=FailedWebInstallRunner(),
+    )
+    bridge.start()
+
+    with pytest.raises(DshPluginMutationError, match="simulated install failure"):
+        bridge.install_plugin(
+            f"{NEW_PLUGIN_NAME}@2.0.0",
+            accept_host_permissions=True,
+        )
+
+    assert (root / "package.json").read_bytes() == before_manifest
+    assert (root / "pnpm-workspace.yaml").read_bytes() == before_workspace
+    assert not (root / "pnpm-lock.yaml").exists()
+    assert not (root / "node_modules").exists()
 
 
 def test_package_update_refuses_profile_without_rollback_lock(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 {
   "name": "ksadk-bridge-e2e",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Deterministic local plugin for the KsADK Codex bridge E2E.",
   "author": {
     "name": "KsADK"
@@ -24,5 +24,6 @@
       "Run the KsADK bridge check."
     ],
     "brandColor": "#2F6BFF"
-  }
+  },
+  "mcpServers": "./.mcp.json"
 }

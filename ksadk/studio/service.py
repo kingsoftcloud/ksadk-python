@@ -8,10 +8,11 @@ import json
 import logging
 import os
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Literal, TypeVar, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -43,6 +44,7 @@ from ksadk.evaluation.studio_build_adapter import (
 from ksadk.events.store import RuntimeEventStore
 from ksadk.observability.session_log import SessionLogError, export_session_log
 from ksadk.observability.trajectory import encode_sse, project_trajectory_event
+from ksadk.plugins.bundle_security import BundleSecurityError
 from ksadk.plugins.contracts import PluginManifest
 from ksadk.plugins.providers.legacy import LegacyHarnessSource
 from ksadk.plugins.providers.legacy_catalog import (
@@ -82,6 +84,7 @@ from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
     CodexManifestRepository,
 )
+from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
 from ksadk.studio.codex_run import CodexRunSpecResolver
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
@@ -99,6 +102,9 @@ from ksadk.studio.contracts import (
     RunStatus,
     RuntimeRef,
     ToolContract,
+)
+from ksadk.studio.dsh_capability_service import (
+    StudioDshCapabilityService,
 )
 from ksadk.studio.dsh_provider_registration import (
     StudioDshProviderRegistrationError,
@@ -133,6 +139,8 @@ from ksadk.studio.templates import (
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
 
+_T = TypeVar("_T")
+
 _TRAJECTORY_KEEPALIVE_SECONDS = 15.0
 _EVALUATION_TARGET_LABELS = {
     TargetKind.A2A: "A2A Agent",
@@ -162,6 +170,7 @@ class StudioService:
         plugin_provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_provider_registration_manager: StudioDshProviderRegistrationManager | None = None,
+        dsh_capability_service: StudioDshCapabilityService | None = None,
     ) -> None:
         provider_manifests = dict(plugin_provider_manifests or {})
         provider_factories = dict(plugin_provider_factories or {})
@@ -180,8 +189,13 @@ class StudioService:
                 self.workspace.root
             )
         )
+        self.dsh_capabilities = (
+            dsh_capability_service
+            or StudioDshCapabilityService.discover_or_create_workspace_default(self.workspace.root)
+        )
         self._start_lock = asyncio.Lock()
         self._started = False
+        self._closed = False
         self._apply_persisted_settings()
         self.avatar_assets = AgentAvatarAssetStore(self.workspace)
         self.conversation_attachments = ConversationAttachmentStore(self.workspace)
@@ -209,6 +223,7 @@ class StudioService:
         self.codex_manifests = CodexManifestRepository(self.workspace)
         self.codex_builds = CodexBuildRepository(self.workspace)
         self.codex_drafts = CodexDraftRepository(self.workspace)
+        self.codex_plugin_snapshots = CodexPluginSnapshotStore(self.workspace)
         codex_builder_kwargs = {}
         if codex_runtime_inspector is not None:
             codex_builder_kwargs["runtime_inspector"] = codex_runtime_inspector
@@ -218,6 +233,7 @@ class StudioService:
             build_repository=self.codex_builds,
             resource_catalog=self.catalog,
             draft_repository=self.codex_drafts,
+            plugin_snapshot_store=self.codex_plugin_snapshots,
             **codex_builder_kwargs,
         )
         self.runtime_executor = runtime_executor or RuntimeExecutor(
@@ -241,6 +257,8 @@ class StudioService:
             manifest_repository=self.codex_manifests,
             credential_resolver=self.credentials,
             resource_catalog=self.catalog,
+            draft_repository=self.codex_drafts,
+            plugin_snapshot_store=self.codex_plugin_snapshots,
         )
         self.framework_runs = FrameworkRunSpecResolver(
             self.workspace,
@@ -260,6 +278,7 @@ class StudioService:
             provider_manifests=provider_manifests,
             provider_factories=provider_factories,
             legacy_harness_sources=legacy_harness_sources,
+            dsh_capability_service=self.dsh_capabilities,
         )
         self.run_service.plugin_runtime = self.plugin_runs
         self.scheduler_runtimes = StudioScheduledKernelRegistry(
@@ -288,6 +307,7 @@ class StudioService:
         """Bind ready managed DSH registrations before build or execution."""
 
         async with self._start_lock:
+            self._ensure_open()
             if self._started:
                 return
             await self._bootstrap_official_dsh_defaults()
@@ -304,23 +324,134 @@ class StudioService:
         """Rebind the exact current DSH Profile and release stale activations."""
 
         async with self._start_lock:
-            if self._dsh_provider_registration_manager is None:
-                self._dsh_provider_registration_manager = (
-                    StudioDshProviderRegistrationManager.discover_or_create_workspace_default(
-                        self.workspace.root
-                    )
+            self._ensure_open()
+            safe_to_resume = False
+            try:
+                await self.plugin_runs.suspend_admission()
+                await self.reset_dsh_capability_state()
+                await self._bind_dsh_provider_registrations_locked(refresh=True)
+                await self._refresh_dsh_catalog_resource(required=False)
+                safe_to_resume = True
+            finally:
+                if safe_to_resume:
+                    await self.plugin_runs.resume_admission()
+
+    async def reconfigure_dsh_profile(
+        self,
+        operation: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        """Run one Profile mutation while all Agent admission is suspended."""
+
+        async with self._start_lock:
+            self._ensure_open()
+            safe_to_resume = False
+            try:
+                await self.plugin_runs.suspend_admission()
+                await self.reset_dsh_capability_state()
+                try:
+                    result = await operation()
+                except BaseException:
+                    try:
+                        await self._bind_dsh_provider_registrations_locked(refresh=True)
+                        await self._refresh_dsh_catalog_resource(required=False)
+                        safe_to_resume = True
+                    except Exception as recovery_error:  # noqa: BLE001
+                        logging.getLogger(__name__).warning(
+                            "DSH provider recovery after mutation failure skipped: %s",
+                            recovery_error,
+                        )
+                    raise
+                await self._bind_dsh_provider_registrations_locked(refresh=True)
+                await self._refresh_dsh_catalog_resource(required=False)
+                safe_to_resume = True
+                return result
+            finally:
+                if safe_to_resume:
+                    await self.plugin_runs.resume_admission()
+
+    async def _bind_dsh_provider_registrations_locked(self, *, refresh: bool) -> None:
+        if self._dsh_provider_registration_manager is None:
+            self._dsh_provider_registration_manager = (
+                StudioDshProviderRegistrationManager.discover_or_create_workspace_default(
+                    self.workspace.root
                 )
-            await self._bootstrap_official_dsh_defaults()
-            if self._started:
-                await self.plugin_runs.aclose()
-            manifests, factories, manager_refs = await self._provider_snapshot(refresh=True)
-            self.plugin_compositions.replace_provider_registrations(manifests)
-            self.plugin_runs.replace_provider_registrations(manifests, factories)
-            self._active_provider_manifests = manifests
-            manager = self._dsh_provider_registration_manager
-            if manager is not None and manager_refs is not None:
-                manager.mark_bound(manager_refs)
-            self._started = True
+            )
+        await self._bootstrap_official_dsh_defaults()
+        manifests, factories, manager_refs = await self._provider_snapshot(refresh=refresh)
+        self.plugin_compositions.replace_provider_registrations(manifests)
+        self.plugin_runs.replace_provider_registrations(manifests, factories)
+        self._active_provider_manifests = manifests
+        manager = self._dsh_provider_registration_manager
+        if manager is not None and manager_refs is not None:
+            manager.mark_bound(manager_refs)
+        self._started = True
+
+    async def reset_dsh_capability_state(self) -> None:
+        """Drop the current DSH capability/Core generation."""
+
+        self.catalog.clear_dsh_profile_mcp()
+        await self.dsh_capabilities.refresh()
+
+    async def refresh_dsh_catalog_resource(self):  # type: ignore[no-untyped-def]
+        """Validate and publish the current DSH Profile as a bindable MCP."""
+
+        _snapshot, resource = await self.dsh_capability_catalog_snapshot()
+        return resource
+
+    async def dsh_capability_catalog_snapshot(self):  # type: ignore[no-untyped-def]
+        """Atomically snapshot and publish one current DSH generation."""
+
+        async with self._start_lock:
+            self._ensure_open()
+            snapshot = await self.dsh_capabilities.capability_snapshot()
+            resource = self.catalog.replace_dsh_profile_mcp(snapshot.descriptor)
+            return snapshot, resource
+
+    async def ensure_dsh_catalog_available(self) -> None:
+        """Publish an explicitly enabled DSH Profile for the generic selector.
+
+        The normal Studio startup remains side-effect free for legacy users.
+        The generic MCP catalog request performs only a profile metadata check;
+        it starts the managed capability host when the user has already enabled
+        at least one DSH plugin.
+        """
+
+        async with self._start_lock:
+            self._ensure_open()
+            existing = self.catalog.list(kind="mcp", source="provider", limit=200)
+            if any(item.contract.get("materialization") == "dsh-profile" for item in existing):
+                return
+            checker = getattr(self.dsh_capabilities, "has_enabled_profile_plugins", None)
+            if checker is None:
+                return
+            try:
+                enabled = await checker()
+            except Exception as error:  # noqa: BLE001 - optional ecosystem boundary
+                logging.getLogger(__name__).warning("DSH catalog discovery skipped: %s", error)
+                return
+            if enabled:
+                await self._refresh_dsh_catalog_resource(required=False)
+
+    @asynccontextmanager
+    async def dsh_profile_read_transaction(self) -> AsyncIterator[None]:
+        """Fence a UI grant read against Profile mutation and shutdown."""
+
+        async with self._start_lock:
+            self._ensure_open()
+            yield
+
+    async def _refresh_dsh_catalog_resource(self, *, required: bool):  # type: ignore[no-untyped-def]
+        try:
+            snapshot = await self.dsh_capabilities.capability_snapshot()
+            return self.catalog.replace_dsh_profile_mcp(snapshot.descriptor)
+        except Exception as error:  # noqa: BLE001 - optional ecosystem boundary
+            self.catalog.clear_dsh_profile_mcp()
+            if required:
+                raise
+            logging.getLogger(__name__).warning(
+                "DSH capability catalog publication skipped: %s", error
+            )
+            return None
 
     async def _bootstrap_official_dsh_defaults(self) -> None:
         manager = self._dsh_provider_registration_manager
@@ -638,7 +769,31 @@ class StudioService:
 
     def _build_agent_bundle(self, draft: AgentDraft):
         composition = self.plugin_compositions.compile_if_required(draft)
-        record = self.builder.build(draft, composition=composition)
+        try:
+            record = self.builder.build(draft, composition=composition)
+        except BundleSecurityError as error:
+            first = error.findings[0]
+            reason = {
+                "literal-secret-field": "明文凭证",
+                "url-credentials": "含账号信息的 URL",
+                "local-home-path": "本机用户目录路径",
+                "invalid-structured-input": "无法解析的结构化数据",
+            }.get(first.kind, "敏感内容")
+            raise StudioError(
+                "BUNDLE_SECURITY_REJECTED",
+                f"AgentBundle 安全检查未通过：{first.path} 检测到{reason}",
+                status_code=422,
+                details={
+                    "securityFindings": [
+                        {
+                            "path": finding.path,
+                            "kind": finding.kind,
+                            "field": finding.field,
+                        }
+                        for finding in error.findings
+                    ]
+                },
+            ) from error
         if composition is not None:
             self.plugin_compositions.bind_build(
                 composition,
@@ -904,7 +1059,8 @@ class StudioService:
         from ksadk.studio.errors import not_found
 
         runs = self.event_store.list_runs(session_id=session_id)
-        if not runs:
+        session = await self.session_service.get_session_metadata(session_id)
+        if not runs and session is None:
             raise not_found("session", session_id)
         if any(run.status == RunStatus.RUNNING for run in runs):
             raise StudioError(
@@ -920,9 +1076,42 @@ class StudioService:
     async def aclose(self) -> None:
         """Release local provider activations and supervised plugin processes."""
 
-        await self.plugin_runs.aclose()
+        async with self._start_lock:
+            if self._closed:
+                return
+            self._closed = True
+            cleanup = asyncio.create_task(self._close_owned_plugin_services())
+            interrupted = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    interrupted = True
+            cleanup.result()
+            if interrupted:
+                raise asyncio.CancelledError
+
+    async def _close_owned_plugin_services(self) -> None:
+        first_error: BaseException | None = None
+        owned = [self.plugin_runs.aclose, self.dsh_capabilities.aclose]
         if self._dsh_provider_registration_manager is not None:
-            await self._dsh_provider_registration_manager.aclose()
+            owned.append(self._dsh_provider_registration_manager.aclose)
+        for close in owned:
+            try:
+                await close()
+            except BaseException as error:  # cleanup must continue
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise StudioError(
+                "STUDIO_SERVICE_CLOSED",
+                "Studio service 已关闭",
+                status_code=503,
+            )
 
     async def _require_runtime_session(self, session_id: str) -> None:
         if await self.session_service.get_session_metadata(session_id) is None:
@@ -2655,7 +2844,7 @@ class StudioService:
             except Exception:
                 data = {}
         defaults = {
-            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
+            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
             "buildAfterCreate": True,
             "codexProxy": current_proxy_mode(),
             "cloudRegion": os.environ.get(

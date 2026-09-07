@@ -166,16 +166,12 @@ def test_input_requires_only_the_surface_capabilities_it_uses() -> None:
     with pytest.raises(ValueError, match="approval"):
         validate_conversation_input(
             surface,
-            conversation_input.model_copy(
-                update={"extensions": {"ksadk.approval": "risk"}}
-            ),
+            conversation_input.model_copy(update={"extensions": {"ksadk.approval": "risk"}}),
         )
     with pytest.raises(ValueError, match="plan"):
         validate_conversation_input(
             surface,
-            conversation_input.model_copy(
-                update={"extensions": {"ksadk.collaboration": "plan"}}
-            ),
+            conversation_input.model_copy(update={"extensions": {"ksadk.collaboration": "plan"}}),
         )
     with pytest.raises(ValueError, match="goal"):
         validate_conversation_input(
@@ -544,6 +540,7 @@ def test_durable_interaction_fact_upgrades_runtime_item_without_duplicate_card()
         )
     )
     assert "revision" not in runtime_pending.payload
+    assert runtime_pending.payload["callId"] == "call-1"
     assert durable_pending is not None
     assert durable_terminal is not None
 

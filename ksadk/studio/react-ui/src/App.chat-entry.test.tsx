@@ -8,14 +8,11 @@ vi.mock("./useStudioViewportMode", () => ({ useStudioViewportMode: () => "deskto
 vi.mock("./useStudioTheme", () => ({
   useStudioTheme: () => ({ preference: "light", resolvedTheme: "light", setPreference: vi.fn() }),
 }));
-vi.mock("./components/CloudChatWorkspace", () => ({
-  CloudChatWorkspace: ({ agentId, agentName }: { agentId: string; agentName: string }) => (
-    <div data-testid="cloud-chat-workspace">{agentName} · {agentId}</div>
-  ),
-}));
 vi.mock("./components/ChatWorkspace", () => ({
-  ChatWorkspace: ({ agentName }: { agentName: string }) => (
-    <div data-testid="local-chat-workspace">{agentName}</div>
+  ChatWorkspace: ({ agentId, agentName }: { agentId: string; agentName: string }) => (
+    <div data-testid={agentId.startsWith("ar-") ? "cloud-chat-workspace" : "local-chat-workspace"}>
+      {agentName} · {agentId}
+    </div>
   ),
 }));
 vi.mock("./pages/CreatePage", () => ({
@@ -112,6 +109,39 @@ describe("Studio chat entry", () => {
       );
     });
     expect(screen.queryByTestId("local-chat-workspace")).not.toBeInTheDocument();
+  });
+
+  it("restores the selected local Agent after a full page reload", async () => {
+    window.localStorage.setItem(
+      "agentkit-studio:chat-target:v1",
+      "local:local-2",
+    );
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [
+          { metadata: { id: "local-1", name: "第一个 Agent" } },
+          { metadata: { id: "local-2", name: "已选 Agent" } },
+        ] });
+      }
+      if (path === "/api/v1/agents/local-1" || path === "/api/v1/agents/local-2") {
+        return response({ builds: [] });
+      }
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent(
+        "已选 Agent · local-2",
+      );
+    });
   });
 
   it("keeps an explicitly created local Agent selected while its directory refreshes", async () => {

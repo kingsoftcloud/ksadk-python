@@ -145,7 +145,7 @@ def test_real_dsh_profile_installs_official_codex_bundle(tmp_path: Path) -> None
 
     source = os.environ.get(
         "KSADK_DSH_OFFICIAL_PLUGIN_SPEC",
-        "@deepseek-ai/dsh-subagent-codex@0.1.1-rc.2",
+        "@deepseek-ai/dsh-subagent-codex@0.1.2-rc.1",
     ).strip()
     assert source.startswith("@deepseek-ai/dsh-subagent-codex@")
 

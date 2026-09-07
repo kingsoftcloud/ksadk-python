@@ -554,6 +554,30 @@ def test_account_agent_view_prefers_server_basic_lifecycle_and_public_endpoint()
     assert view["endpoint"] == "http://ar-running.agent-pre.example.test"
 
 
+def test_account_agent_view_preserves_kernel_readiness_diagnostics() -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            "basic": {"agent_id": "ar-kernel", "status": "RUNNING"},
+            "deployment": {
+                "agent_kernel_ready": False,
+                "deployment_phase": "DEPLOYING",
+                "message": "waiting for kernel report",
+                "agent_kernel_runtime": {
+                    "ready": False,
+                    "reason": "ReportStale",
+                    "observed_at": "2026-09-04T05:00:00Z",
+                },
+            },
+        }
+    )
+
+    assert view["kernelReady"] is False
+    assert view["deploymentPhase"] == "DEPLOYING"
+    assert view["statusMessage"] == "waiting for kernel report"
+    assert view["kernelReason"] == "ReportStale"
+    assert view["kernelObservedAt"] == "2026-09-04T05:00:00Z"
+
+
 @pytest.mark.asyncio
 async def test_account_native_runtime_dashboard_link_uses_official_root_path() -> None:
     class _NativeClient(_Client):
@@ -853,12 +877,13 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
         ("CreateSession", {"AgentId": "ar-receipt-bound"}),
         (
             "ListSessionMessages",
-            {
-                "agent_id": "ar-receipt-bound",
-                "session_id": "sess-cloud",
-                "after_seq_id": 4,
-                "limit": 100,
-            },
+                {
+                    "agent_id": "ar-receipt-bound",
+                    "session_id": "sess-cloud",
+                    "after_seq_id": 4,
+                    "before_seq_id": None,
+                    "limit": 100,
+                },
         ),
         ("DeleteSession", {"SessionId": "sess-cloud"}),
         (
@@ -923,3 +948,77 @@ async def test_cloud_chat_rejects_receipts_without_an_agent_id() -> None:
         await gateway.list_deployment_chat_sessions(deployment)
 
     assert exc_info.value.status_code == 409
+
+@pytest.mark.asyncio
+async def test_yaml_deployment_rejects_native_plugin_bindings_without_deliverable_bytes(
+    tmp_path: Path,
+) -> None:
+    class Gateway:
+        called = False
+
+        async def create_managed_runtime_deployment(self, **kwargs):
+            self.called = True
+            raise AssertionError("must reject before creating a cloud Agent")
+
+    gateway = Gateway()
+    service = CloudDeploymentService(workspace=Workspace(tmp_path), gateway=gateway)
+    with pytest.raises(StudioError) as error:
+        await service.deploy_managed_runtime(
+            build_id="build_plugins",
+            agent_name="plugin-agent",
+            manifest=(
+                "name: plugin-agent\nplugins:\n"
+                "  - pluginRef: plugin://example.plugin@1.0.0\n    enabled: true\n"
+            ),
+            runtime_name="codex",
+            runtime_version="0.147.0",
+            manifest_digest="a" * 64,
+            request=DeploymentRequest(
+                target=DeploymentTarget(region="pre-online", environment="preproduction")
+            ),
+        )
+    assert error.value.code == "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE"
+    assert gateway.called is False
+
+
+@pytest.mark.asyncio
+async def test_deployment_captures_cached_creator_and_preserves_it_after_credential_change(tmp_path):
+    from ksadk.studio.cloud import InMemoryCloudGateway
+
+    class Gateway(InMemoryCloudGateway):
+        identity = {"userName": "original-user", "userId": "original-id"}
+
+        def cached_identity(self):
+            return self.identity
+
+    gateway = Gateway()
+    service = CloudDeploymentService(workspace=Workspace(tmp_path), gateway=gateway)
+    request = DeploymentRequest(target=DeploymentTarget(region="test", environment="test"))
+    params = dict(build_id="build", agent_name="agent", manifest="name: agent\nframework: codex\n",
+                  runtime_name="codex", runtime_version="0.147.0", manifest_digest="a" * 64,
+                  request=request)
+    first = await service.deploy_managed_runtime(**params)
+    assert service.get(first.id).created_by_name == "original-user"
+    assert service.get(first.id).created_by_user_id == "original-id"
+    gateway.identity = {"userName": "new-user", "userId": "new-id"}
+    assert service.get(first.id).created_by_name == "original-user"
+    revised = await service.deploy_managed_runtime(**params, replacing=first)
+    assert revised.created_by_name == "original-user"
+    assert revised.created_by_user_id == "original-id"
+
+
+def test_gateway_reads_only_matching_identity_cache(monkeypatch):
+    from ksadk.identity.resolver import ResolvedIdentity
+    seen = []
+
+    def read(key):
+        seen.append(key)
+        return ResolvedIdentity("user-id", "account-id", "cached-user", None, "fingerprint")
+
+    monkeypatch.setattr("ksadk.identity.get_cached_identity", read)
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="test", client=object(),
+        ks3_credentials={"access_key": "test-ak", "secret_key": "test-sk"},
+    )
+    assert gateway.cached_identity() == {"userName": "cached-user", "userId": "user-id"}
+    assert seen == ["test-ak"]

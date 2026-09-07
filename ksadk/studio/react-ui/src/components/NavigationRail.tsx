@@ -11,7 +11,6 @@ import {
   MessagesSquare,
   PackageCheck,
   Plug,
-  Puzzle,
   ServerCog,
   Settings,
   Workflow,
@@ -34,14 +33,7 @@ export type NavigationView =
   | "runtime-resources"
   | "plugins"
   | "automations"
-  | "orchestration"
-  | "extension";
-
-export interface ExtensionNavigationItem {
-  id: string;
-  label: string;
-  path: string;
-}
+  | "orchestration";
 
 interface NavigationItem {
   id: NavigationView;
@@ -133,9 +125,6 @@ export interface NavigationRailProps {
   workspacePath: string;
   runtimeReady: boolean;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
-  extensionItems?: readonly ExtensionNavigationItem[];
-  activeExtensionPath?: string;
-  onNavigateExtension?: (item: ExtensionNavigationItem) => void;
   onOpenSettings: () => void;
 }
 
@@ -147,9 +136,6 @@ export function NavigationRail({
   workspacePath,
   runtimeReady,
   onNavigate,
-  extensionItems = [],
-  activeExtensionPath = "",
-  onNavigateExtension = () => undefined,
   onOpenSettings,
 }: NavigationRailProps) {
   return (
@@ -204,30 +190,6 @@ export function NavigationRail({
               })}
             </div>
           ))}
-          {extensionItems.length > 0 && (
-            <div className="nav-group" data-testid="dsh-extension-navigation">
-              <div className="nav-label">插件</div>
-              {extensionItems.map(item => {
-                const active = view === "extension" && activeExtensionPath === item.path;
-                const button = (
-                  <button
-                    key={item.id}
-                    className={`nav-item${active ? " active" : ""}`}
-                    type="button"
-                    aria-label={item.label}
-                    aria-current={active ? "page" : undefined}
-                    onClick={() => onNavigateExtension(item)}
-                  >
-                    <Puzzle size={18} />
-                    <span>{item.label}</span>
-                  </button>
-                );
-                return expanded ? button : (
-                  <RailTooltip key={item.id} label={item.label}>{button}</RailTooltip>
-                );
-              })}
-            </div>
-          )}
         </nav>
 
         <div className="sidebar-footer">

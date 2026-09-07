@@ -7,6 +7,16 @@ from ksadk.studio.cloud import DirectAgentEngineCloudDeploymentGateway
 from ksadk.studio.service import StudioService
 
 
+def test_new_workspace_defaults_to_risk_confirmed_workspace_access(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("KSADK_CODEX_SANDBOX", raising=False)
+
+    settings = StudioService(tmp_path / "ws").get_settings()
+
+    assert settings["sandbox"] == "workspace-write-auto"
+
+
 def test_persisted_sandbox_is_applied_to_env_on_service_start(tmp_path: Path, monkeypatch) -> None:
     """重启后 settings.yaml 必须回填进程环境,否则运行解析回落默认值。"""
     monkeypatch.delenv("KSADK_CODEX_SANDBOX", raising=False)
