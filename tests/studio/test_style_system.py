@@ -137,7 +137,7 @@ def test_core_components_keep_shared_visual_contracts() -> None:
         ".button,\n.icon-button": "--button-height",
         ".field label": "--font-size-control",
         ".status-badge": "--status-height",
-        "input,\nselect {": "--control-height",
+        'input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),\nselect {': "--control-height",
     }
 
     for selector, token in expected_contracts.items():
@@ -151,7 +151,7 @@ def test_trace_explorer_keeps_nested_scroll_and_waterfall_layouts() -> None:
         ".trace-list {": ["overflow-y: auto", "min-height: 0"],
         ".trace-span-tree {": ["overflow: auto", "min-width: 0"],
         ".trace-detail-body {": ["overflow: auto", "min-height: 0"],
-        ".trace-raw {": ["overflow: hidden", "background: var(--surface)"],
+        ".trace-raw {": ["overflow: hidden", "background: var(--studio-surface)"],
         ".trace-raw-tree {": ["overflow: auto", "min-height: 0"],
     }.items():
         block = _block(stylesheet, selector)
@@ -396,7 +396,7 @@ def test_trace_detail_can_collapse_and_raw_otlp_uses_a_light_json_tree() -> None
     assert '<pre className="trace-raw"' not in source
     assert '"react-json-view-lite"' in package
     assert ".otlp-json {" in stylesheet
-    assert "background: var(--surface)" in _block(stylesheet, ".otlp-json {")
+    assert "background: var(--studio-surface)" in _block(stylesheet, ".otlp-json {")
     assert ".trace-detail-expand" not in responsive or "display: none" not in _block(
         responsive, ".trace-detail-expand"
     )
