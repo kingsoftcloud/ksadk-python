@@ -102,7 +102,7 @@ requires_openai_auth = false
         )
         client = AsyncCodexClient(
             CodexConfig(
-                codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN"),
+                codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN") or None,
                 cwd=str(workspace),
                 env={
                     "CODEX_HOME": str(codex_home),
@@ -278,7 +278,7 @@ async def test_real_app_server_failed_install_restores_previous_inventory(
     workspace.mkdir()
     client = AsyncCodexClient(
         CodexConfig(
-            codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN"),
+            codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN") or None,
             cwd=str(workspace),
             env={
                 "CODEX_HOME": str(codex_home),
