@@ -722,9 +722,12 @@ def create_studio_app(
             if action == "GetAgentUiBootstrap":
                 data = shared_web.bootstrap(shared_web.resolve_agent_id(requested_agent_id or None))
             elif action == "ListAgentModels":
-                data = shared_web.list_models(
-                    shared_web.resolve_agent_id(requested_agent_id or None)
-                )
+                model_agent_id = shared_web.resolve_agent_id(requested_agent_id or None)
+                # A cold Studio process has no discovered provider descriptors.
+                # Resolve the same cached catalog as Resources before projecting
+                # model windows; visiting Resources must not be a prerequisite.
+                await runtime_model_catalog()
+                data = shared_web.list_models(model_agent_id)
             elif action == "ListSessions":
                 data = await shared_web.list_sessions(
                     shared_web.resolve_agent_id(requested_agent_id or None),
@@ -1348,7 +1351,9 @@ def create_studio_app(
 
     @app.get("/api/v1/agents/{agent_id}/models")
     async def get_agent_models(agent_id: str):
-        return shared_web.list_models(shared_web.resolve_agent_id(agent_id))
+        model_agent_id = shared_web.resolve_agent_id(agent_id)
+        await runtime_model_catalog()
+        return shared_web.list_models(model_agent_id)
 
     @app.put("/api/v1/agents/{agent_id}")
     async def update_agent(

@@ -736,3 +736,32 @@ async def test_old_interaction_receipt_replay_preserves_new_pending_form(tmp_pat
         assert history["Messages"][-1]["Content"]["text"] == ""
     finally:
         await studio.aclose()
+
+
+@pytest.mark.parametrize("legacy_route", [False, True])
+def test_cold_chat_model_catalog_reports_provider_window(tmp_path, monkeypatch, legacy_route):
+    from ksadk.studio.contracts import AgentSpec, RuntimeRef, Instructions
+
+    async def catalog(**kwargs):
+        return [{"id": "deepseek-v4-flash", "context_window_tokens": 1_024_000}]
+
+    monkeypatch.setattr("ksadk.studio.resource_catalog.fetch_provider_model_catalog", catalog)
+    studio = StudioService(
+        tmp_path, codex_runtime_inspector=lambda runtime: ("0.8.4", "0.147.0", "codex-cli 0.147.0"),
+    )
+    studio.create_studio_agent(
+        agent_id="cold-model", name="Cold Model",
+        spec=AgentSpec(
+            instructions=Instructions(system="Answer the user."),
+            runtime=RuntimeRef(type="codex", version="0.147.0"),
+            model=ModelSpec(model="deepseek-v4-flash", endpoint_url="https://model.example.com/v1/chat/completions", credential_ref="env://MODEL_API_KEY"),
+        ),
+    )
+    assert not studio.catalog._provider_models
+    with TestClient(create_studio_app(tmp_path, service=studio, security_enabled=False)) as client:
+        response = (client.get("/api/v1/agents/cold-model/models") if legacy_route else client.post(
+            "/agentengine/api/v1/ListAgentModels", json={"AgentId": "cold-model"},
+        ))
+        assert response.status_code == 200
+        data = response.json() if legacy_route else response.json()["Data"]
+        assert data["Models"][0]["context_window_tokens"] == 1_024_000
