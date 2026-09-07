@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import re
 from pathlib import Path
@@ -150,13 +151,20 @@ def _public_codex_source(source: BaseModel) -> dict[str, Any]:
 def _public_codex_inventory(
     inventory: CodexPluginInventory, *, host: CodexBridgeHost, home_mode: str
 ) -> dict[str, Any]:
+    presentation = _public_plugin_interface(inventory.interface)
+    if not presentation.get("logoUrl"):
+        artwork = _local_plugin_artwork(inventory)
+        if artwork:
+            presentation["logoUrl"] = artwork
     return {
         "ecosystem": "codex",
         "integrationMode": "bridged",
         "pluginId": inventory.plugin_id,
         "resolvedVersion": inventory.version,
         "distributionName": inventory.name,
-        "displayName": inventory.name,
+        "displayName": inventory.interface.get("displayName") or inventory.name,
+        "description": inventory.interface.get("shortDescription"),
+        "interface": presentation,
         "marketplaceName": inventory.marketplace_name,
         "source": _public_codex_source(inventory.source),
         "installed": inventory.installed,
@@ -170,6 +178,70 @@ def _public_codex_inventory(
         "runtimeState": None,
         "host": _public_host("codex", host, home_mode=home_mode),
     }
+
+
+def _local_plugin_artwork(inventory: CodexPluginInventory) -> str | None:
+    """Read only bounded image assets inside the host-reported local plugin.
+
+    Never expose host paths, accept browser-supplied filenames, or fetch URLs.
+    SVGs remain image data (not executable same-origin HTML documents).
+    """
+    if inventory.source.type != "local":
+        return None
+    root = Path(inventory.source.path)
+    if not root.is_absolute():
+        if not inventory.marketplace_path:
+            return None
+        root = Path(inventory.marketplace_path) / root
+    root = root.resolve()
+    if not (root / ".codex-plugin" / "plugin.json").is_file():
+        return None
+    for key in ("logo", "composerIcon"):
+        raw = inventory.interface.get(key)
+        if not isinstance(raw, str):
+            continue
+        path = Path(raw)
+        path = (path if path.is_absolute() else root / path).resolve()
+        if not path.is_relative_to(root):
+            continue
+        try:
+            with path.open("rb") as stream:
+                data = stream.read(256 * 1024 + 1)
+        except OSError:
+            continue
+        if len(data) > 256 * 1024:
+            continue
+        mime = None
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            mime = "image/png"
+        elif data.startswith(b"\xff\xd8\xff"):
+            mime = "image/jpeg"
+        elif data.startswith((b"GIF87a", b"GIF89a")):
+            mime = "image/gif"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            mime = "image/webp"
+        elif path.suffix.lower() == ".svg" and b"<svg" in data[:1024]:
+            mime = "image/svg+xml"
+        if mime:
+            return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    return None
+
+
+def _public_plugin_interface(value: dict[str, Any]) -> dict[str, Any]:
+    """Project marketplace display data, never filesystem paths or host state."""
+    result = {
+        key: value[key] for key in (
+            "displayName", "shortDescription", "longDescription", "developerName", "category",
+        ) if isinstance(value.get(key), str)
+    }
+    for key in ("defaultPrompt", "capabilities"):
+        if isinstance(value.get(key), list):
+            result[key] = [item for item in value[key] if isinstance(item, str)]
+    for key in ("logoUrl", "logoUrlDark", "composerIconUrl", "websiteUrl", "privacyPolicyUrl", "termsOfServiceUrl"):
+        raw = value.get(key)
+        if isinstance(raw, str) and urlparse(raw).scheme == "https" and not urlparse(raw).username:
+            result[key] = raw
+    return result
 
 
 def _public_codex_detail(

@@ -153,6 +153,7 @@ class CodexPluginInventory(_CodexPublicModel):
     enabled: bool
     availability: str
     source: CodexPluginSource = Field(discriminator="type")
+    interface: dict[str, Any] = Field(default_factory=dict)
     permissions_declared: Literal[False] = False
     risk_disclosures: tuple[str, ...] = (
         "Codex plugin permissions are host-managed and not declared in the plugin manifest.",
@@ -639,6 +640,7 @@ class CodexAppServerPluginBridge:
             enabled=summary.enabled,
             availability=summary.availability,
             source=summary.source,
+            interface=summary.interface or {},
         )
 
 

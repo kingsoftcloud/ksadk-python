@@ -1,42 +1,58 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, it, vi } from "vitest";
-import { apiFetch } from "../api";
-import { DshPluginWorkspace } from "./DshPluginWorkspace";
+import { act, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, it, vi } from 'vitest';
+import { apiFetch } from '../api';
+import { DshPluginWorkspace } from './DshPluginWorkspace';
 
-vi.mock("../api", () => ({ apiFetch: vi.fn() }));
-const fetchMock = vi.mocked(apiFetch);
-beforeEach(() => fetchMock.mockReset());
+vi.mock('../api', () => ({ apiFetch: vi.fn() }));
+afterEach(() => { delete window.__STUDIO_DSH__; vi.clearAllMocks(); });
 
-it("opens the official UI inside Studio without a popup", async () => {
-  fetchMock.mockResolvedValue({ ok: true, json: async () => ({ browserUrl: "http://127.0.0.1:43123/?token=test" }) } as Response);
-  const open = vi.spyOn(window, "open");
-  const onBack = vi.fn();
+it('does not select even a single UI plugin before the user chooses', async () => {
+  const attach = vi.fn(() => vi.fn());
+  window.__STUDIO_DSH__ = { sections: () => [{ id: 'im', label: 'IM机器人' }], subscribe: () => () => {}, attach };
+  const { container } = render(<DshPluginWorkspace onBack={() => {}}/>);
+  expect(screen.getByText('选择要配置的插件')).toBeInTheDocument();
+  expect(attach).not.toHaveBeenCalled();
+  expect(container.querySelector('iframe')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'IM机器人' }));
+  expect(attach).toHaveBeenCalledWith('im', expect.any(HTMLElement), expect.any(Function));
+});
+
+it('switches multiple plugin surfaces, detaches the old surface and handles removal', async () => {
+  let sections = [{ id: 'im', label: 'IM机器人' }, { id: 'ssh', label: 'SSH主机' }];
+  let notify = () => {};
+  const detached: string[] = [];
+  const attach = vi.fn((id: string) => () => { detached.push(id); });
+  window.__STUDIO_DSH__ = { sections: () => sections, subscribe: cb => { notify = cb; return () => {}; }, attach };
+  render(<DshPluginWorkspace onBack={() => {}}/>);
+  expect(attach).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: 'IM机器人' }));
+  await userEvent.click(screen.getByRole('button', { name: 'SSH主机' }));
+  expect(detached).toEqual(['im']);
+  expect(screen.getByRole('button', { name: 'SSH主机' })).toHaveAttribute('aria-current', 'page');
+  act(() => { sections = [sections[0]]; notify(); });
+  expect(detached).toEqual(['im', 'ssh']);
+  expect(screen.getByText('选择要配置的插件')).toBeInTheDocument();
+  expect(attach).toHaveBeenCalledTimes(2);
+});
+
+it('returns from a selected plugin to the chooser without leaving Studio', async () => {
+  const detach = vi.fn(), onBack = vi.fn();
+  window.__STUDIO_DSH__ = { sections: () => [{ id: 'im', label: 'IM机器人' }], subscribe: () => () => {}, attach: () => detach };
   render(<DshPluginWorkspace onBack={onBack}/>);
-  expect(screen.getByRole("status")).toHaveTextContent("正在打开插件工作台");
-  const frame = await screen.findByTitle("DSH 插件工作台");
-  expect(frame).toHaveAttribute("src", "http://127.0.0.1:43123/?token=test");
-  fireEvent.load(frame);
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  expect(open).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: "返回插件列表" }));
+  await userEvent.click(screen.getByRole('button', { name: 'IM机器人' }));
+  await userEvent.click(screen.getByRole('button', { name: '所有插件设置' }));
+  expect(detach).toHaveBeenCalledOnce();
+  expect(onBack).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: '返回插件' }));
   expect(onBack).toHaveBeenCalledOnce();
-  open.mockRestore();
 });
 
-it("keeps startup errors visible and lets the user retry", async () => {
-  fetchMock.mockResolvedValueOnce({ ok: false, json: async () => ({ error: { message: "DSH capability host 当前不可用" } }) } as Response);
+it('keeps bootstrap errors visible and supports retry', async () => {
+  vi.mocked(apiFetch).mockResolvedValue({ ok: false, json: async () => ({ error: { message: 'Core不可用' } }) } as Response);
   render(<DshPluginWorkspace onBack={() => {}}/>);
-  expect(await screen.findByRole("alert")).toHaveTextContent("DSH capability host 当前不可用");
-  expect(screen.queryByTitle("DSH 插件工作台")).not.toBeInTheDocument();
-  fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ browserUrl: "http://127.0.0.1:43124/?token=test" }) } as Response);
-  await userEvent.click(screen.getByRole("button", { name: "重试" }));
-  expect(await screen.findByTitle("DSH 插件工作台")).toBeInTheDocument();
-});
-
-it("does not navigate an embedded browser to an unexpected origin", async () => {
-  fetchMock.mockResolvedValue({ ok: true, json: async () => ({ browserUrl: "https://example.com/?token=test" }) } as Response);
-  render(<DshPluginWorkspace onBack={() => {}}/>);
-  expect(await screen.findByRole("alert")).toHaveTextContent("插件工作台地址无效");
-  expect(screen.queryByTitle("DSH 插件工作台")).not.toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Core不可用');
+  await userEvent.click(screen.getByRole('button', { name: '重试' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Core不可用');
+  expect(apiFetch).toHaveBeenCalledTimes(2);
 });

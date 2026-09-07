@@ -487,6 +487,8 @@ class DshProfileCapabilityHost:
         cwd: Path | None = None,
         environment: Mapping[str, str] | None = None,
         node_command: str | Path | None = None,
+        studio_index: Path | None = None,
+        studio_models: Any = None,
         startup_timeout: float = 15.0,
         shutdown_timeout: float = 5.0,
         health_timeout: float = 2.0,
@@ -537,6 +539,8 @@ class DshProfileCapabilityHost:
             inventory_quiet, "inventory_quiet", 5_000
         )
         self._bundle = load_dsh_capability_bundle()
+        self._studio_index = studio_index
+        self._studio_models = studio_models
         self._circuit = DshCircuitBreaker(
             failure_threshold=circuit_failure_threshold,
             recovery_timeout=circuit_recovery_timeout,
@@ -604,6 +608,8 @@ class DshProfileCapabilityHost:
             self._process_failure_recorded = False
             try:
                 environment = self._base_environment()
+                if self._studio_models is not None:
+                    environment.update(self._studio_models.environment)
                 await self._require_node_version(environment)
                 await self._verify_projection(environment)
                 runtime_dir = Path(tempfile.mkdtemp(prefix="ksadk-dsh-capability-"))
@@ -755,7 +761,7 @@ class DshProfileCapabilityHost:
 
     def _overlay_text(self) -> str:
         entrypoint = json.dumps(self._bundle.entrypoint.as_uri())
-        return (
+        overlay = (
             "- insert:\n"
             "    - id: ksadk-dsh-capability-host\n"
             f"      name: {entrypoint}\n"
@@ -767,6 +773,31 @@ class DshProfileCapabilityHost:
             f"        maxInFlight: {self._max_in_flight}\n"
             f"        inventoryQuietMs: {self._inventory_quiet_ms}\n"
         )
+        if self._studio_index is not None:
+            app = self._bundle.root.parent / "ksadk-dsh-studio" / "index.mjs"
+            overlay += (
+                # Studio owns the settings outlet. The stock settings shell
+                # declares the same child slot and must not compete for it.
+                # Core's settings service, settingsScope and RPC stay enabled.
+                "- id: ui-settings-general\n"
+                "  disabled: true\n"
+                "- insert:\n"
+                "    - id: ksadk-studio-app\n"
+                f"      name: {json.dumps(app.as_uri())}\n"
+                "      config:\n"
+                f"        indexPath: {json.dumps(str(self._studio_index))}\n"
+            )
+        if self._studio_models is not None and self._studio_models.providers:
+            overlay += (
+                "- id: llm-pi-ai\n"
+                "  config:\n"
+                f"    providers: {json.dumps(self._studio_models.providers)}\n"
+                "- id: agent-default-model\n"
+                "  config:\n"
+                f"    provider: {json.dumps(self._studio_models.default_provider)}\n"
+                f"    model: {json.dumps(self._studio_models.default_model)}\n"
+            )
+        return overlay
 
     def _base_environment(self) -> dict[str, str]:
         environment = cast(dict[str, str], dsh_subprocess_environment(dsh_home=self._dsh_home))

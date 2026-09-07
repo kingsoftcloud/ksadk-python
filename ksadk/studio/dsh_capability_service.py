@@ -149,6 +149,7 @@ class StudioDshCapabilityService:
         self._generation_id: str | None = None
         self._active_calls: dict[str, _ActiveCall] = {}
         self._closed = False
+        self.model_projection = None
 
     @classmethod
     def discover_or_create_workspace_default(cls, workspace: Path) -> "StudioDshCapabilityService":
@@ -172,6 +173,16 @@ class StudioDshCapabilityService:
     @property
     def profile(self) -> str:
         return self._profile
+
+    async def application_lease(self) -> DshMcpConnectorLease:
+        """Reuse the live generation for browser assets and long-lived streams.
+
+        Management mutations dispose the generation explicitly. Avoid running
+        Profile projection and health checks for every CSS/JS/RPC request.
+        """
+        if self._lease is not None and self._host is not None and self._host.pid is not None:
+            return self._lease
+        return await self.connector_lease()
 
     async def has_enabled_profile_plugins(self) -> bool:
         """Inspect Profile metadata without starting the capability sidecar."""
@@ -491,6 +502,8 @@ class StudioDshCapabilityService:
                 projection=projection,
                 dsh_home=self._dsh_home,
                 cwd=self._workspace,
+                studio_index=Path(__file__).with_name("static") / "index.html",
+                studio_models=self.model_projection() if self.model_projection else None,
                 max_argument_bytes=self._max_argument_bytes,
                 max_result_bytes=self._max_result_bytes,
                 max_request_bytes=self._max_argument_bytes + 16 * 1024,

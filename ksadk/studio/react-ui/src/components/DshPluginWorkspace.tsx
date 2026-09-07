@@ -1,55 +1,42 @@
-import { useEffect, useState } from "react";
-import { ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
-import { apiFetch } from "../api";
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, LoaderCircle } from 'lucide-react';
+import { apiFetch } from '../api';
 
-/** Render the official Core client; Studio does not emulate its plugin APIs. */
+/** Mount official slot contributions inside Studio, preserving their Core context. */
 export function DshPluginWorkspace({ onBack }: { onBack: () => void }) {
+  const bridge = window.__STUDIO_DSH__;
+  const [sections, setSections] = useState(() => bridge?.sections() || []);
+  const [selected, setSelected] = useState('');
+  const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
-  const [browserUrl, setBrowserUrl] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
+  const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError("");
-    setBrowserUrl("");
-    void (async () => {
-      try {
-        const response = await apiFetch("/api/v1/plugin-ecosystems/dsh/core/session", {
-          method: "POST", signal: controller.signal,
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.error?.message || "插件工作台启动失败");
-        const url = new URL(payload.browserUrl);
-        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password) {
-          throw new Error("插件工作台地址无效");
-        }
-        // Ephemeral handoff only: never persist the token in location or storage.
-        if (!controller.signal.aborted) setBrowserUrl(url.href);
-      } catch (cause) {
-        if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : "插件工作台启动失败");
-        setLoading(false);
-      }
-    })();
-    return () => controller.abort();
-  }, [attempt]);
-
-  return <section className="dsh-plugin-workspace" aria-label="DSH 插件工作台">
-    <header>
-      <button className="button secondary" onClick={onBack}><ArrowLeft size={16}/>返回插件列表</button>
-      <span>DSH 插件工作台</span>
-      <button className="button secondary" disabled={loading} onClick={() => setAttempt(value => value + 1)}><RefreshCw size={16}/>{error ? "重试" : "重新加载"}</button>
-    </header>
-    {loading && <p className="dsh-workspace-status" role="status"><LoaderCircle className="animate-spin" size={18}/>正在打开插件工作台…</p>}
-    {error && <p className="form-error" role="alert">{error}</p>}
-    {browserUrl && <iframe
-      title="DSH 插件工作台"
-      src={browserUrl}
-      referrerPolicy="no-referrer"
-      onLoad={() => setLoading(false)}
-      onError={() => { setLoading(false); setError("插件工作台加载失败，请重试"); }}
-    />}
+    if (!bridge) {
+      const controller = new AbortController();
+      void apiFetch('/api/v1/plugin-ecosystems/dsh/core/session', { method: 'POST', signal: controller.signal })
+        .then(async response => {
+          if (!response.ok) throw new Error((await response.json())?.error?.message || '插件服务启动失败');
+          window.location.assign('/studio-core/#/plugins');
+        }).catch(cause => { if (!controller.signal.aborted) setError(String(cause.message || cause)); });
+      return () => controller.abort();
+    }
+    const update = () => setSections(bridge.sections());
+    update();
+    return bridge.subscribe(update);
+  }, [bridge, attempt]);
+  const active = sections.some(section => section.id === selected) ? selected : undefined;
+  useEffect(() => {
+    if (bridge && active && container.current) return bridge.attach(active, container.current, onBack);
+  }, [bridge, active, onBack]);
+  return <section className="dsh-plugin-workspace" aria-label="插件设置">
+    <header><button className="button tertiary" onClick={active ? () => setSelected('') : onBack}><ArrowLeft size={16}/>{active ? '所有插件设置' : '返回插件'}</button><h2>插件设置</h2></header>
+    {error && <div><p className="form-error" role="alert">{error}</p><button className="button secondary" onClick={() => { setError(''); setAttempt(value => value + 1); }}>重试</button></div>}
+    {!bridge && !error && <p role="status"><LoaderCircle className="animate-spin" size={16}/>正在准备插件…</p>}
+    {bridge && <div className={`studio-plugin-settings${active ? '' : ' choosing'}`}>
+      {!active && !!sections.length && <p>选择要配置的插件</p>}
+      <nav aria-label="插件设置页面">{sections.map(section => <button key={section.id} aria-current={active === section.id ? 'page' : undefined} className={active === section.id ? 'active' : ''} onClick={() => setSelected(section.id)}>{section.label}</button>)}</nav>
+      {active && <div ref={container} className="studio-plugin-surface"/>}
+      {!sections.length && <p>当前插件没有提供设置页面。</p>}
+    </div>}
   </section>;
 }

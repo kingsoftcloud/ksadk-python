@@ -242,6 +242,8 @@ def create_studio_app(
     app.state.studio_service = studio
     app.state.session_token = session_secret
     app.state.csrf_token = csrf_secret
+    from ksadk.studio.dsh_models import studio_model_projection
+    studio.dsh_capabilities.model_projection = lambda: studio_model_projection(studio.catalog, studio.credentials)
 
     def _stream_studio_run(
         build_id: str,
@@ -2162,5 +2164,8 @@ def create_studio_app(
     )
     register_memory_routes(app, studio)
     register_plugin_routes(app, studio)
+
+    from ksadk.studio.dsh_application import register_dsh_application
+    register_dsh_application(app, studio, session_secret=session_secret, security_enabled=security_enabled)
 
     return app
