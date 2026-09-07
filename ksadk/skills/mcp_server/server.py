@@ -25,20 +25,18 @@ from typing import Any, Callable
 logger = logging.getLogger("ksadk.skills.mcp_server")
 
 # ---------------------------------------------------------------------------
-# Refresh callback registry (P2 #5: decouple from runtime-specific injectors)
+# Refresh callback registry — delegated to _registry module to avoid
+# __main__ / canonical module double-instance (S4 fix).
 # ---------------------------------------------------------------------------
-_refresh_callbacks: list[Callable[[str, list[Any]], None]] = []
+from ksadk.skills.mcp_server._registry import (
+    register_refresh_callback,
+    get_refresh_callbacks,
+)
 
 
-def register_refresh_callback(callback: Callable[[str, list[Any]], None]) -> None:
-    """Register a callback invoked when the skill manifest is refreshed.
-
-    Callbacks receive ``(instruction_text, items)`` where *instruction_text*
-    is the aggregated SKILL.md text and *items* is the list of manifest items.
-    Runtime-specific injectors (Hermes, OpenClaw, etc.) register themselves
-    here instead of being hard-wired into the server.
-    """
-    _refresh_callbacks.append(callback)
+def _refresh_callbacks():
+    """Return registered refresh callbacks (compat shim for existing call sites)."""
+    return get_refresh_callbacks()
 
 
 def _import_mcp_server_class():
@@ -141,7 +139,7 @@ def _start_background_skill_refresh() -> None:
                 if not items:
                     continue
                 instruction_text = cache.build_instruction_text()
-                for callback in _refresh_callbacks:
+                for callback in get_refresh_callbacks():
                     try:
                         callback(instruction_text, items)
                     except Exception as exc:

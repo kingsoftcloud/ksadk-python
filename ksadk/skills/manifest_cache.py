@@ -167,6 +167,24 @@ class ManifestCache:
                     all_items.append(item)
         return all_items[: self._limit]
 
+    def _get_all_untruncated(self, *, force_refresh: bool = False) -> list[ManifestItem]:
+        """Return all manifest items without the display limit (for search)."""
+        all_items: list[ManifestItem] = []
+        seen_names: set[str] = set()
+        for space_id in user_skill_space_ids():
+            for item in self.get_space(space_id, force_refresh=force_refresh):
+                key = item.name.lower()
+                if key and key not in seen_names:
+                    seen_names.add(key)
+                    all_items.append(item)
+        for space_id in public_skill_space_ids():
+            for item in self.get_space(space_id, force_refresh=force_refresh):
+                key = item.name.lower()
+                if key and key not in seen_names:
+                    seen_names.add(key)
+                    all_items.append(item)
+        return all_items
+
     def invalidate(self, space_id: str | None = None) -> None:
         with self._lock:
             if space_id is None:
@@ -180,7 +198,11 @@ class ManifestCache:
         query_lower = query.lower().strip()
         if not query_lower:
             return []
-        source = self.get_space(space_id) if space_id else self.get_all()
+        # R4 fix: search the full candidate set, not the truncated get_all() result.
+        if space_id:
+            source = self.get_space(space_id)
+        else:
+            source = self._get_all_untruncated()
         results: list[tuple[int, ManifestItem]] = []
         for item in source:
             score = _match_score(item, query_lower)

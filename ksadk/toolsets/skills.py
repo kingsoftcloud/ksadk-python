@@ -22,7 +22,11 @@ from ksadk.skills.tool_defs import (
 from ksadk.skills.tool_defs import (
     build_execute_skills_tool as build_runtime_execute_skills_tool,
 )
+from ksadk.skills.loader import load_local_skill
+from ksadk.skills.package_store import PackageStore, SkillPackageError
+from ksadk.skills.runtime import loader as runtime_loader
 from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
+import tempfile
 from ksadk.toolsets._langchain import as_tool
 
 _log = logging.getLogger("ksadk.skills.execute_skills")
@@ -161,10 +165,60 @@ def list_skills(space_id: str | None = None) -> dict[str, Any]:
 
 
 def load_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
-    """Return manifest-level info for a skill without downloading the package.
+    """Download and load a skill\'s SKILL.md instructions from configured Skill Spaces.
 
     ``space_id`` 指定时只在该 space 内按名匹配,用于多 space 下精确定位、避免同名冲突;
     缺省按配置顺序(user space 优先于 public)取第一个匹配。
+    """
+
+    target = str(skill_name or "").strip().lower()
+    if not target:
+        return {"ok": False, "error_message": "skill_name is required"}
+    try:
+        client = _skill_service_client()
+        available: list[str] = []
+        for sid, skill in _iter_remote_skills(client, space_id=space_id):
+            if not skill.name:
+                continue
+            available.append(skill.name)
+            if skill.name.strip().lower() != target:
+                continue
+            package = _get_or_download_package(client, skill)
+            local_skill = load_local_skill(package.root_dir)
+            return {
+                "ok": True,
+                "execution_context": "outer_agent",
+                "name": local_skill.name,
+                "description": local_skill.description,
+                "space_id": sid,
+                "skill_id": skill.skill_id,
+                "version_id": skill.version_id,
+                "version": skill.version,
+                "cache_hit": bool(getattr(package, "cache_hit", False)),
+                "root_dir": str(local_skill.root_dir),
+                "has_scripts_dir": (local_skill.root_dir / "scripts").is_dir(),
+                "script_files": _script_files(local_skill.root_dir),
+                "instructions": local_skill.body,
+                "usage": (
+                    "Read these instructions and complete the user\'s task in the outer "
+                    "agent unless the skill explicitly requires isolated execution."
+                ),
+            }
+        return {
+            "ok": False,
+            "error_message": f"Skill not found: {skill_name}",
+            "space_id": space_id,
+            "available_skills": available,
+        }
+    except Exception as exc:
+        return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+
+
+def preview_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
+    """Return manifest-level info for a skill without downloading the package.
+
+    Lightweight preview that does not download or unpack the skill package.
+    Use ``load_skill`` for the full SKILL.md instructions and scripts directory.
     """
 
     target = str(skill_name or "").strip().lower()
@@ -194,8 +248,8 @@ def load_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
                 "instructions": skill.description or "",
                 "usage": (
                     "Manifest-level preview. To execute, call execute_skills "
-                    "with the workflow_prompt and skill_names. Full SKILL.md "
-                    "instructions are loaded inside the sandbox during execution."
+                    "with the workflow_prompt and skill_names. For full SKILL.md "
+                    "instructions, use load_skill instead."
                 ),
             }
         return {
@@ -206,6 +260,32 @@ def load_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
         }
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+
+
+def _get_or_download_package(client: SkillServiceClient, skill):
+    cache_dir = Path(
+        os.environ.get("KSADK_SKILL_CACHE_DIR") or Path(tempfile.gettempdir()) / "ksadk-skill-cache"
+    )
+    store = PackageStore(cache_dir=cache_dir)
+    package = store.get_cached(skill)
+    if package is not None:
+        return package
+    archive = client.download_skill_archive(skill)
+    try:
+        return store.store_archive(skill, archive)
+    except SkillPackageError:
+        if not runtime_loader._allow_hash_mismatch():
+            raise
+        return runtime_loader._store_unverified_archive(store, skill, archive)
+
+
+def _script_files(root_dir: Path) -> list[str]:
+    scripts_dir = root_dir / "scripts"
+    if not scripts_dir.is_dir():
+        return []
+    return [
+        str(path.relative_to(root_dir)) for path in sorted(scripts_dir.rglob("*")) if path.is_file()
+    ][:20]
 
 
 def search_skills(query: str, max_results: int = 10, space_id: str | None = None) -> dict[str, Any]:
@@ -314,6 +394,7 @@ def get_skill_tools() -> list:
         as_tool(list_skill_spaces),
         as_tool(search_skills),
         as_tool(load_skill),
+    as_tool(preview_skill),
         as_tool(execute_skills),
     ]
 

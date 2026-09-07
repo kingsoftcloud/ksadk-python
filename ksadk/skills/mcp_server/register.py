@@ -74,9 +74,56 @@ def _collect_env() -> dict[str, str]:
                 env_vars["KSADK_SKILL_SERVICE_URL"] = url
         except Exception:
             pass
-    if not env_vars.get("KSADK_TOOL_APPROVAL_MODE"):
-        env_vars["KSADK_TOOL_APPROVAL_MODE"] = "full"
     return env_vars
+
+
+def _is_safe_single_segment(name: str) -> bool:
+    """Validate that *name* is a safe single-path-segment identifier.
+
+    Rejects empty, absolute paths, parent traversal, separators, and
+    other characters that could escape the base directory.
+    """
+    if not name or not name.strip():
+        return False
+    if "/" in name or "\\" in name or name.startswith("."):
+        return False
+    if name in {".", ".."}:
+        return False
+    # Reject null bytes and other control characters
+    if any(ord(c) < 32 for c in name):
+        return False
+    return True
+
+
+def _is_safe_skill_dir(base_dir: str, skill_name: str) -> bool:
+    """Check that joining base_dir + skill_name stays within base_dir.
+
+    Returns True if the resolved path is inside base_dir and the name
+    passes single-segment validation.
+    """
+    if not _is_safe_single_segment(skill_name):
+        return False
+    resolved = pathlib_resolve(base_dir, skill_name)
+    base_resolved = pathlib_resolve(base_dir)
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        return False
+    return True
+
+
+def pathlib_resolve(*parts: str) -> "pathlib.PosixPath | pathlib.WindowsPath":
+    import pathlib as _pl
+    return _pl.Path(*parts).resolve()
+
+
+def _is_managed_dir(skill_dir: str) -> bool:
+    """Check if a directory is already managed by Skill Center.
+
+    Returns True only if the .ksadk-skill-center marker file exists,
+    meaning we created this directory and can safely overwrite/delete it.
+    """
+    return os.path.isfile(os.path.join(skill_dir, _SKILL_CENTER_MARKER))
 
 
 def _hermes_home() -> str:
@@ -188,20 +235,35 @@ def _inject_openclaw_workspace(instruction_text: str) -> None:
     tools_md = os.environ.get("OPENCLAW_TOOLS_MD", "/home/node/.openclaw/workspace/TOOLS.md")
     if not os.path.isdir(os.path.dirname(tools_md)):
         return
-    marker = "## Available Skills (Skill Center)"
+    start_marker = "<!-- skill-center-start -->"
+    end_marker = "<!-- skill-center-end -->"
+    # Backward-compat: also remove old single-marker block
+    old_marker = "## Available Skills (Skill Center)"
     try:
         existing = ""
         if os.path.isfile(tools_md):
             existing = open(tools_md, encoding="utf-8").read()
-        # Remove old skill center block if present
-        if marker in existing:
-            parts = existing.split(marker, 1)
+        # Remove old single-marker block (backward compat)
+        if old_marker in existing:
+            parts = existing.split(old_marker, 1)
             existing = parts[0].rstrip()
+        # Remove paired-marker block
+        if start_marker in existing and end_marker in existing:
+            before = existing.split(start_marker, 1)[0]
+            after = existing.rsplit(end_marker, 1)[-1]
+            existing = (before.rstrip() + "\n" + after.rstrip()).rstrip()
+        elif start_marker in existing:
+            existing = existing.split(start_marker, 1)[0].rstrip()
+        # Reconstruct: keep existing content + new paired block
         if not instruction_text.strip():
+            # Empty manifest: just remove our block, keep everything else
+            with open(tools_md, "w", encoding="utf-8") as f:
+                f.write(existing.rstrip() + "\n" if existing.strip() else "")
             return
-        content = existing.rstrip() + "\n" + instruction_text if existing else instruction_text
+        block = f"{start_marker}\n{instruction_text.strip()}\n{end_marker}"
+        content = existing.rstrip() + "\n\n" + block if existing.strip() else block
         with open(tools_md, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.write(content + "\n")
         logger.info("OpenClaw workspace TOOLS.md updated with skill manifest")
     except Exception as exc:
         logger.warning("OpenClaw workspace injection failed: %s", exc)
@@ -258,8 +320,14 @@ def _inject_hermes_skill_hub(
             skill_name = getattr(item, "name", "")
             if not skill_name:
                 continue
+            if not _is_safe_single_segment(skill_name):
+                logger.warning("Skipping unsafe skill name: %r", skill_name)
+                continue
             skill_desc = getattr(item, "description", "") or "No description"
             skill_dir = os.path.join(base_dir, skill_name)
+            if os.path.isdir(skill_dir) and not _is_managed_dir(skill_dir):
+                logger.warning("Skipping %s: directory exists but is not Skill Center-managed", skill_name)
+                continue
             os.makedirs(skill_dir, exist_ok=True)
             skill_md_path = os.path.join(skill_dir, "SKILL.md")
             with open(os.path.join(skill_dir, _SKILL_CENTER_MARKER), "w") as mf:
@@ -393,8 +461,15 @@ def _inject_openclaw_skill_hub(
             skill_name = getattr(item, "name", "")
             if not skill_name:
                 continue
+            if not _is_safe_single_segment(skill_name):
+                logger.warning("Skipping unsafe skill name: %r", skill_name)
+                continue
             skill_desc = getattr(item, "description", "") or "No description"
             skill_dir = os.path.join(base_dir, skill_name)
+            # S1 fix: do not overwrite a pre-existing directory we don't own
+            if os.path.isdir(skill_dir) and not _is_managed_dir(skill_dir):
+                logger.warning("Skipping %s: directory exists but is not Skill Center-managed", skill_name)
+                continue
             os.makedirs(skill_dir, exist_ok=True)
             with open(os.path.join(skill_dir, _SKILL_CENTER_MARKER), "w") as mf:
                 mf.write("1")

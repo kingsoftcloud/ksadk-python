@@ -153,19 +153,19 @@ def test_load_skill_resolves_same_name_by_space(multi_space_env, monkeypatch, tm
     )
     _patch_client(monkeypatch, client)
 
-    # load_skill now returns manifest-level info (no package download).
-    result_b = skills_toolset.load_skill("common-skill", space_id="ss-b")
+    # preview_skill returns manifest-level info (no package download).
+    result_b = skills_toolset.preview_skill("common-skill", space_id="ss-b")
     assert result_b["ok"] is True
     assert result_b["space_id"] == "ss-b"
     assert result_b["skill_id"] == "sk-b"
     assert result_b["execution_context"] == "manifest_preview"
 
-    result_a = skills_toolset.load_skill("common-skill", space_id="ss-a")
+    result_a = skills_toolset.preview_skill("common-skill", space_id="ss-a")
     assert result_a["space_id"] == "ss-a"
     assert result_a["skill_id"] == "sk-a"
 
     # 不带 space_id 时按配置顺序取第一个(user space ss-a 在前)。
-    result_default = skills_toolset.load_skill("common-skill")
+    result_default = skills_toolset.preview_skill("common-skill")
     assert result_default["space_id"] == "ss-a"
 
 
