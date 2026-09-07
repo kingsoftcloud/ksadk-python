@@ -56,6 +56,13 @@ describe("selectCloudChatDeployments", () => {
 });
 
 describe("mergeCloudChatTargets", () => {
+  it("does not revive an account ID from a receipt when the server reports no creator", () => {
+    const [target] = mergeCloudChatTargets(
+      [{ id: "receipt", agentId: "agent", status: "READY", creatorName: "1000000000" }],
+      [{ agentId: "agent", status: "RUNNING", creatorName: null }],
+    );
+    expect(target.creatorName).toBeNull();
+  });
   it("keeps receipt provenance while merging account metadata and adding account-only Agents", () => {
     expect(mergeCloudChatTargets(
       [{ id: "dep-ready", agentId: "agent-1", status: "READY", endpoint: "stale" }],

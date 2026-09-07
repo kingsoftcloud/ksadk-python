@@ -148,7 +148,7 @@ function mergeCloudProjection(
     chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
     versionId: account.versionId || deployment.versionId,
     updatedAt: account.updatedAt || deployment.updatedAt,
-    creatorName: account.creatorName || deployment.creatorName,
+    creatorName: account.creatorName !== undefined ? account.creatorName : deployment.creatorName,
   };
 }
 
@@ -469,7 +469,15 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         item.agentId ? [[item.agentId, item] as const] : []
       )));
       for (const detail of accountDetails) {
-        if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
+        if (detail?.agentId) {
+          const listed = accountByAgentId.get(detail.agentId);
+          accountByAgentId.set(detail.agentId, {
+            ...listed, ...detail,
+            // Older GetAgent responses substitute the owning account ID for
+            // a missing creator. ListAgents preserves the recorded value.
+            creatorName: listed?.creatorName !== undefined ? listed.creatorName : detail.creatorName,
+          });
+        }
       }
       const accountItems = [...accountByAgentId.values()];
       const receiptById = new Map(receipts.map(item => [item.id, item]));
@@ -767,7 +775,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
           versionId: account.versionId || deployment.versionId,
           updatedAt: account.updatedAt || deployment.updatedAt,
-          creatorName: account.creatorName || deployment.creatorName,
+          creatorName: account.creatorName !== undefined ? account.creatorName : deployment.creatorName,
         };
         const versions = await versionsPromise;
         if (signal?.aborted) return;
@@ -1137,7 +1145,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <div className="api-contract" aria-label="云端部署事实">
             <div><span>名称</span><strong>{detail.deployment.agentName || detail.sourceAgentName}</strong></div>
             <div><span>来源</span><strong>{hasReceipt ? "Studio 部署记录" : "账号云端 Agent"}</strong></div>
-            <div><span>创建子账号</span><strong>{detail.deployment.creatorName || "-"}</strong></div>
+            <div><span>创建子账号</span><strong>{detail.deployment.creatorName || "创建人未记录"}</strong></div>
             <div><span>状态</span><strong>{deploymentLabel(detail.deployment.status)}</strong></div>
             <div><span>云端 Agent</span><code>{detail.deployment.agentId || "尚未返回"}</code></div>
             <div><span>类型</span><code>{detail.deployment.framework || detail.deployment.artifactId || "尚未返回"}</code></div>
@@ -1254,7 +1262,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
                   <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong>{deployment.source === "receipt" && <small>Studio 部署记录</small>}</td>
-                  <td>{deployment.creatorName || "-"}</td>
+                  <td>{deployment.creatorName || "创建人未记录"}</td>
                   <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
                   <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
                   <td className="delivery-row-actions">

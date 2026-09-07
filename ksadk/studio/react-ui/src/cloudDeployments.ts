@@ -189,7 +189,7 @@ export function mergeCloudChatTargets(
       chatRoutingReason: account?.chatRoutingReason || item.chatRoutingReason,
       versionId: account?.versionId || item.versionId,
       updatedAt: account?.updatedAt || item.updatedAt,
-      creatorName: account?.creatorName || item.creatorName,
+      creatorName: account?.creatorName !== undefined ? account.creatorName : item.creatorName,
       kernelReady: account?.kernelReady ?? item.kernelReady,
       deploymentPhase: account?.deploymentPhase || item.deploymentPhase,
       statusMessage: account?.statusMessage || item.statusMessage,
