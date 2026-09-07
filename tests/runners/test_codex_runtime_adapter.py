@@ -885,7 +885,7 @@ async def test_codex_runtime_projects_request_user_input_as_a2ui_and_submits_liv
             data={"decision": "submit", "scope": "全栈"},
         ),
     )
-    assert client.resolved_interactions == [("question-1", {"scope": "全栈"})]
+    assert client.resolved_interactions == [("question-1", {"decision": "submit", "scope": "全栈"})]
 
 
 @pytest.mark.asyncio
@@ -1607,3 +1607,163 @@ async def test_native_questions_wait_for_answer_and_resolve_on_same_stream(tmp_p
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision,expected",
+    [
+        ("submit", {"action": "accept", "content": {"allowed": True}}),
+        ("cancel", {"action": "cancel"}),
+        ("skip", {"action": "decline"}),
+    ],
+)
+async def test_mcp_elicitation_reaches_ui_and_preserves_form_response(decision, expected):
+    from ksadk.codex.client import AsyncCodexClient
+
+    client = AsyncCodexClient.__new__(AsyncCodexClient)
+    client._approval_queues = {"thread-1": queue.Queue()}
+    client._pending_interactions = {}
+    client._approval_lock = threading.Lock()
+    result = {}
+    worker = threading.Thread(
+        target=lambda: result.update(
+            client._handle_server_request(
+                "mcpServer/elicitation/request",
+                {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "serverName": "figma",
+                    "mode": "form",
+                    "message": "Allow font inspection?",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {"allowed": {"type": "boolean"}},
+                    },
+                },
+            )
+        ),
+        daemon=True,
+    )
+    worker.start()
+    try:
+        event = await asyncio.to_thread(client._approval_queues["thread-1"].get, True, 0.3)
+        assert worker.is_alive(), "MCP approval was answered without showing UI"
+        assert event["method"] == "mcpServer/elicitation/request"
+        assert await client.resolve_interaction(
+            event["id"], {"decision": decision, "allowed": True}
+        )
+    finally:
+        for pending in client._pending_interactions.values():
+            pending.resolved.set()
+        worker.join(timeout=1)
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "policy, kind, schema, expected",
+    [
+        (
+            {"sandbox": "full-access", "approval_mode": "deny_all"},
+            "mcp_tool_call",
+            {"type": "object", "properties": {}},
+            "accept",
+        ),
+        (
+            {"sandbox": "full-access", "approval_mode": "manual"},
+            "mcp_tool_call",
+            {"type": "object", "properties": {}},
+            "cancel",
+        ),
+        (
+            {"sandbox": "read-only", "approval_mode": "deny_all"},
+            "mcp_tool_call",
+            {"type": "object", "properties": {}},
+            "cancel",
+        ),
+        (
+            {"sandbox": "full-access", "approval_mode": "deny_all"},
+            "oauth",
+            {"type": "object", "properties": {}},
+            "cancel",
+        ),
+        (
+            {"sandbox": "full-access", "approval_mode": "deny_all"},
+            "mcp_tool_call",
+            {"type": "object", "properties": {"secret": {"type": "string"}}},
+            "cancel",
+        ),
+    ],
+)
+def test_full_access_only_accepts_native_mcp_tool_approval(policy, kind, schema, expected):
+    from ksadk.codex.client import AsyncCodexClient
+
+    client = AsyncCodexClient.__new__(AsyncCodexClient)
+    client._approval_queues = {"thread-1": queue.Queue()} if expected == "accept" else {}
+    client._approval_lock = threading.Lock()
+    client._thread_approval_configs = {"thread-1": policy}
+    result = client._handle_server_request(
+        "mcpServer/elicitation/request",
+        {
+            "threadId": "thread-1",
+            "mode": "form",
+            "requestedSchema": schema,
+            "_meta": {"codex_approval_kind": kind},
+        },
+    )
+    assert result["action"] == expected
+
+
+@pytest.mark.asyncio
+async def test_native_compaction_waits_for_completion_and_returns_last_usage():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from ksadk.codex.client import AsyncCodexClient
+
+    client = AsyncCodexClient.__new__(AsyncCodexClient)
+    compact = AsyncMock()
+    client._threads = {
+        "t": SimpleNamespace(
+            compact=compact,
+            read=AsyncMock(
+                side_effect=[
+                    SimpleNamespace(thread=SimpleNamespace(turns=[])),
+                    SimpleNamespace(
+                        thread=SimpleNamespace(turns=[SimpleNamespace(id="compact-1")])
+                    ),
+                ]
+            ),
+        )
+    }
+    events = [
+        {"method": "turn/started", "params": {"threadId": "t", "turn": {"id": "compact-1"}}},
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "t",
+                "tokenUsage": {"last": {"totalTokens": 100}, "total": {"totalTokens": 9000}},
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {"threadId": "t", "item": {"type": "contextCompaction"}},
+        },
+        {
+            "method": "turn/completed",
+            "params": {"threadId": "t", "turn": {"id": "compact-1", "status": "completed"}},
+        },
+    ]
+    read = AsyncMock(side_effect=events)
+    client._codex = SimpleNamespace(
+        _client=SimpleNamespace(
+            next_turn_notification=read,
+            register_turn_notifications=Mock(),
+            unregister_turn_notifications=Mock(),
+        )
+    )
+    client._notification_to_event_dict = lambda event: event
+    result = await client.compact_thread("t")
+    compact.assert_awaited_once()
+    assert read.await_count == 4
+    assert result["last"]["totalTokens"] == 100

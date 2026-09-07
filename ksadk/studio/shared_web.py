@@ -95,6 +95,7 @@ class StudioSharedWebBridge:
                 "NativeDashboard": {"Enabled": False},
                 "NativeTerminal": {"Enabled": False},
                 "Thinking": False,
+                "ContextCompaction": self.studio.is_codex_agent(agent_id),
             },
         }
 
@@ -148,6 +149,58 @@ class StudioSharedWebBridge:
         if session is None:
             raise not_found("session", session_id)
         return {"Session": self._session_metadata_record(session)}
+
+    async def compact_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
+        from ksadk.codex.runtime import CodexRuntimeAdapter
+
+        runs = self.studio.event_store.list_runs(session_id=session_id, agent_id=agent_id)
+        if not runs:
+            raise not_found("session", session_id)
+        latest = runs[-1]
+        if latest.runtime_type != "codex":
+            raise StudioError("COMPACTION_UNSUPPORTED", "此运行时尚未提供手动压缩", status_code=409)
+        key = (agent_id, session_id)
+        service = self.studio.run_service
+        if key in service._active_sessions or any(self._active_status(run.status) for run in runs):
+            raise StudioError(
+                "SESSION_RUN_ACTIVE", "请等待当前运行完成后压缩上下文", status_code=409
+            )
+        thread_id = str((latest.runtime_handle.get("native_ref") or {}).get("thread_id") or "")
+        if not thread_id:
+            raise StudioError(
+                "CONTEXT_UNAVAILABLE", "此会话尚无可压缩的原生上下文", status_code=409
+            )
+        service._active_sessions.add(key)
+        adapter = None
+        try:
+            spec = self.studio.resolve_run_spec(latest.build_id, model=latest.model or None)
+            adapter = self.studio.runtime_executor.create_adapter(spec.launch_context)
+            if not isinstance(adapter, CodexRuntimeAdapter):
+                raise StudioError(
+                    "COMPACTION_UNSUPPORTED", "此运行时尚未提供手动压缩", status_code=409
+                )
+            usage = await adapter.compact_session(thread_id, dict(spec.request_config))
+            last = usage.get("last") or {}
+            context_usage = {
+                "used_tokens": last.get("totalTokens"),
+                "source": "runtime",
+                "model": latest.model,
+            }
+            self.studio.event_store.append(
+                latest.id,
+                "context.compaction.completed",
+                {
+                    "trigger": "manual",
+                    "contextUsage": context_usage,
+                },
+            )
+            return {"Status": "completed", "ContextUsage": context_usage}
+        finally:
+            try:
+                if adapter is not None:
+                    await adapter.close_all()
+            finally:
+                service._active_sessions.discard(key)
 
     async def delete_session(self, session_id: str) -> dict[str, Any]:
         await self.studio.delete_session(session_id)
@@ -947,7 +1000,22 @@ class StudioSharedWebBridge:
             "ActiveRunStatus": self._active_status(active.status) if active else "",
             "ActiveInvocationId": active.id if active else "",
             "TokenUsage": usage,
+            "ContextUsage": self._context_usage(latest),
         }
+
+    def _context_usage(self, latest: RunRecord) -> dict[str, Any] | None:
+        if latest.runtime_type != "codex":
+            return None
+        for event in reversed(self.studio.event_store.events(latest.id)):
+            if event.type == "context.compaction.completed":
+                return event.data.get("contextUsage")
+        if latest.runtime_type == "codex" and latest.usage.input_tokens > 0:
+            return {
+                "used_tokens": latest.usage.input_tokens,
+                "source": "last_request",
+                "model": latest.model,
+            }
+        return None
 
     def _model_descriptor(
         self, agent_id: str, models: list[dict[str, Any]] | None = None
@@ -1025,7 +1093,7 @@ class StudioSharedWebBridge:
             "id": model_name,
             "display_name": model_name,
             "source": "agentkit-studio",
-            "context_window_tokens": draft.spec.context.max_input_tokens,
+            "input_budget_tokens": draft.spec.context.max_input_tokens,
             "max_output_tokens": 2048,
             "capabilities": {
                 "function_calling": True,
@@ -1050,8 +1118,8 @@ class StudioSharedWebBridge:
             "id": model_id,
             "display_name": resolved_display_name,
             "source": "agentkit-studio",
-            "context_window_tokens": metadata.get("context_window_tokens")
-            or draft.spec.context.max_input_tokens,
+            "context_window_tokens": metadata.get("context_window_tokens"),
+            "input_budget_tokens": draft.spec.context.max_input_tokens,
             "max_output_tokens": max_output_tokens,
             "capabilities": {
                 **dict(metadata.get("capabilities") or {}),
@@ -1069,7 +1137,7 @@ class StudioSharedWebBridge:
             "id": model_id,
             "display_name": model_id if model_id != "unconfigured-model" else "未配置模型",
             "source": "agentkit-studio",
-            "context_window_tokens": draft.spec.context.max_input_tokens,
+            "input_budget_tokens": draft.spec.context.max_input_tokens,
             "max_output_tokens": 2048,
             "capabilities": {
                 "function_calling": True,

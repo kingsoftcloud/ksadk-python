@@ -214,6 +214,7 @@ export function ChatWorkspace({
               interactionRecords={chat.interactionRecords}
             />
             <AgentConversationComposer
+              onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
               composerMaxHeight={176}
               submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
                 chat.send(text, { attachments, executionMode });

@@ -390,6 +390,9 @@ class CodexClient(ABC):
         产出规范化事件 dict(``{"method": ..., "params": ...}``)。"""
         raise NotImplementedError
 
+    async def compact_thread(self, thread_id: str) -> dict[str, Any]:
+        raise RuntimeError("connected Codex client does not support context compaction")
+
     def run_goal(
         self,
         thread_id: str,
@@ -500,6 +503,7 @@ class AsyncCodexClient(CodexClient):
         self._codex = AsyncCodex(config=config)
         self.sdk_version = sdk_version
         self._threads: dict[str, Any] = {}  # thread_id -> AsyncThread
+        self._thread_approval_configs: dict[str, dict[str, Any]] = {}
         self._active_handles: dict[str, Any] = {}  # thread_id -> 活跃 AsyncTurnHandle
         self._goal_states: dict[str, Any] = {}
         self._approval_queues: dict[str, queue.Queue[Any]] = {}
@@ -648,7 +652,7 @@ class AsyncCodexClient(CodexClient):
             "item/fileChange/requestApproval",
         }:
             return self._handle_approval_request(method, params)
-        if method == "item/tool/requestUserInput":
+        if method in {"item/tool/requestUserInput", "mcpServer/elicitation/request"}:
             return self._handle_user_input_request(method, params)
         return {}
 
@@ -711,6 +715,22 @@ class AsyncCodexClient(CodexClient):
     ) -> dict[str, Any]:
         raw = dict(params or {})
         thread_id, request_queue = self._active_request_queue(raw)
+        policy = getattr(self, "_thread_approval_configs", {}).get(thread_id, {})
+        metadata = raw.get("_meta") or {}
+        # Full access authorizes tool execution, never OAuth login or arbitrary
+        # server forms. Only Codex's native, empty tool-approval form qualifies.
+        schema = raw.get("requestedSchema") or {}
+        if (
+            method == "mcpServer/elicitation/request"
+            and request_queue is not None
+            and isinstance(metadata, dict)
+            and metadata.get("codex_approval_kind") == "mcp_tool_call"
+            and raw.get("mode") == "form"
+            and schema == {"type": "object", "properties": {}}
+            and policy.get("sandbox") == "full-access"
+            and policy.get("approval_mode") == "deny_all"
+        ):
+            return {"action": "accept", "content": {}}
         interaction_id = str(
             raw.get("itemId")
             or raw.get("item_id")
@@ -725,8 +745,11 @@ class AsyncCodexClient(CodexClient):
             method=method,
             params=raw,
         )
+        default_response = (
+            {"action": "cancel"} if method == "mcpServer/elicitation/request" else {"answers": {}}
+        )
         if request_queue is None:
-            return {"answers": {}}
+            return default_response
 
         # Preserve the native question contract (including multiple choice and
         # custom answers) for the canonical interaction mapper. Legacy A2UI
@@ -737,7 +760,7 @@ class AsyncCodexClient(CodexClient):
         pending.resolved.wait()
         with self._approval_lock:
             self._pending_interactions.pop(interaction_id, None)
-        response = pending.response or {"answers": {}}
+        response = pending.response or default_response
         request_queue.put({"id": interaction_id, "result": dict(response)})
         return response
 
@@ -940,6 +963,55 @@ class AsyncCodexClient(CodexClient):
         self._threads[thread.id] = thread
         return str(thread.id)
 
+    async def compact_thread(self, thread_id: str) -> dict[str, Any]:
+        """Wait for native compaction completion, not just request admission.
+
+        The caller owns an idle, dedicated client and closes it on timeout.
+        No model prompt or shell command is used to emulate compaction.
+        """
+        thread = self._threads[thread_id]
+        low_level = self._codex._client
+        turn_id = None
+        compacted = False
+        usage: dict[str, Any] = {}
+        try:
+            async with asyncio.timeout(120):
+                before = await thread.read(include_turns=True)
+                previous_ids = {turn.id for turn in before.thread.turns}
+                await thread.compact()
+                # compact/start returns no turn id. The SDK buffers scoped
+                # notifications until their turn is registered; global reads
+                # deliberately exclude them. Discover the new turn first.
+                while turn_id is None:
+                    current = await thread.read(include_turns=True)
+                    new_turns = [
+                        turn for turn in current.thread.turns if turn.id not in previous_ids
+                    ]
+                    if new_turns:
+                        turn_id = new_turns[-1].id
+                        low_level.register_turn_notifications(turn_id)
+                        break
+                    await asyncio.sleep(0.25)
+                while True:
+                    notification = await low_level.next_turn_notification(turn_id)
+                    event = self._notification_to_event_dict(notification) or {}
+                    params = event.get("params") or {}
+                    if params.get("threadId") != thread_id:
+                        continue
+                    method = event.get("method")
+                    if method == "item/completed":
+                        compacted |= (params.get("item") or {}).get("type") == "contextCompaction"
+                    elif method == "thread/tokenUsage/updated":
+                        usage = dict(params.get("tokenUsage") or {})
+                    elif method == "turn/completed":
+                        turn = params["turn"]
+                        if turn.get("status") != "completed" or not compacted:
+                            raise RuntimeError("Codex context compaction did not complete")
+                        return usage
+        finally:
+            if turn_id is not None:
+                low_level.unregister_turn_notifications(turn_id)
+
     async def resume_thread(self, thread_id: str, config: Optional[dict[str, Any]] = None) -> str:
         # An ephemeral thread has no rollout on disk, so SDK thread_resume would
         # fail with -32600. Reuse its live AsyncThread for same-process resume.
@@ -1060,6 +1132,7 @@ class AsyncCodexClient(CodexClient):
         approval_queue: queue.Queue[Any] = queue.Queue()
         with self._approval_lock:
             self._approval_queues[thread_id] = approval_queue
+            self._thread_approval_configs[thread_id] = dict(config or {})
         handle = await self._start_turn(thread, self._coerce_input(prompt), config)
         self._active_handles[thread_id] = handle
         notifications = handle.stream()
@@ -1116,6 +1189,7 @@ class AsyncCodexClient(CodexClient):
         approval_queue: queue.Queue[Any] = queue.Queue()
         with self._approval_lock:
             self._approval_queues[thread_id] = approval_queue
+            self._thread_approval_configs[thread_id] = dict(config or {})
         state, _logical_turn_id = await low_level.start_goal_operation(thread_id, objective)
         self._goal_states[thread_id] = state
         notifications = _AsyncGoalNotificationStream(
@@ -1266,7 +1340,25 @@ class AsyncCodexClient(CodexClient):
             pending = self._pending_interactions.get(interaction_id)
             if pending is None:
                 return False
-            pending.response = {"answers": answers}
+            if pending.method == "mcpServer/elicitation/request":
+                action = data.get("action") or {
+                    "cancel": "cancel",
+                    "skip": "decline",
+                    "reject": "decline",
+                    "deny": "decline",
+                    "decline": "decline",
+                }.get(str(data.get("decision") or ""), "accept")
+                if action not in {"accept", "decline", "cancel"}:
+                    raise ValueError("MCP elicitation action must be accept, decline, or cancel")
+                pending.response = {"action": action}
+                if action == "accept":
+                    pending.response["content"] = {
+                        key: value
+                        for key, value in data.items()
+                        if key not in {"action", "decision"}
+                    }
+            else:
+                pending.response = {"answers": answers}
             pending.resolved.set()
         return True
 
@@ -1286,7 +1378,11 @@ class AsyncCodexClient(CodexClient):
             with approval_lock:
                 interactions = list(getattr(self, "_pending_interactions", {}).values())
         for interaction in interactions:
-            interaction.response = {"answers": {}}
+            interaction.response = (
+                {"action": "cancel"}
+                if interaction.method == "mcpServer/elicitation/request"
+                else {"answers": {}}
+            )
             interaction.resolved.set()
         for thread_id, state in list(getattr(self, "_goal_states", {}).items()):
             try:

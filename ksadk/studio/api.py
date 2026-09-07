@@ -737,6 +737,11 @@ def create_studio_app(
                 )
             elif action == "GetSession":
                 data = await shared_web.get_session(str(payload.get("SessionId") or ""))
+            elif action == "CompactSession":
+                data = await shared_web.compact_session(
+                    shared_web.resolve_agent_id(requested_agent_id or None),
+                    str(payload.get("SessionId") or ""),
+                )
             elif action == "DeleteSession":
                 data = await shared_web.delete_session(str(payload.get("SessionId") or ""))
             elif action == "ListSessionMessages":

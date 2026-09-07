@@ -314,7 +314,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         elif payload.kind == "hitl_answer":
             resolved = await self._client.resolve_interaction(
                 payload.call_id,
-                {key: value for key, value in raw.items() if key != "decision"},
+                raw,
             )
         else:
             raise ValueError("Codex live submit requires approval_decision or hitl_answer")
@@ -393,6 +393,12 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     async def close(self, handle: RunHandle) -> None:
         self._do_not_persist.add(handle.run_id)
         await self.close_all()
+
+    async def compact_session(self, thread_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        """Compact an existing native session using this build's client."""
+        await self._bootstrap_plugins_once()
+        await self._client.resume_thread(thread_id, config)
+        return await self._client.compact_thread(thread_id)
 
     async def close_all(self) -> None:
         """Dispose every thread and the activation-owned App Server process.

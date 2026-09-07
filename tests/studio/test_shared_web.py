@@ -641,3 +641,45 @@ async def test_history_has_one_activity_per_surface_snapshot(tmp_path):
     assert len(activities) == 1
     assert activities[0]["Content"]["a2ui_operations"] == operations
     await studio.aclose()
+
+
+def test_model_input_budget_is_not_reported_as_model_window():
+    from types import SimpleNamespace
+
+    draft = SimpleNamespace(spec=SimpleNamespace(context=SimpleNamespace(max_input_tokens=32000)))
+    spec = ModelSpec.model_validate(_valid_spec()["model"])
+    descriptor = StudioSharedWebBridge._model_descriptor_from_spec(draft, spec)
+    assert descriptor["context_window_tokens"] is None
+    assert descriptor["input_budget_tokens"] == 32000
+
+
+@pytest.mark.asyncio
+async def test_compaction_rejects_active_and_foreign_sessions(tmp_path):
+    from types import SimpleNamespace
+
+    from ksadk.studio.errors import StudioError
+
+    store = SimpleNamespace(
+        list_runs=lambda **kwargs: (
+            [
+                SimpleNamespace(
+                    runtime_type="codex",
+                    status=RunStatus.WAITING_INPUT,
+                )
+            ]
+            if kwargs["agent_id"] == "owner"
+            else []
+        )
+    )
+    bridge = StudioSharedWebBridge(
+        SimpleNamespace(
+            event_store=store,
+            run_service=SimpleNamespace(_active_sessions=set()),
+        )
+    )
+    with pytest.raises(StudioError) as active:
+        await bridge.compact_session("owner", "s")
+    assert active.value.code == "SESSION_RUN_ACTIVE"
+    with pytest.raises(StudioError) as foreign:
+        await bridge.compact_session("other", "s")
+    assert foreign.value.status_code == 404
