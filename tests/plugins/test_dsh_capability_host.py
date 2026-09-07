@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 from collections import deque
 from pathlib import Path
 
@@ -599,10 +600,18 @@ async def test_unexpected_leader_exit_reaps_children_and_runtime_dir(tmp_path: P
         for _ in range(300):
             if child_pid_file.is_file():
                 child_pid = int(child_pid_file.read_text())
-            if child_pid is not None and host._runtime_dir is None:  # noqa: SLF001
+            if child_pid is not None:
                 break
             await asyncio.sleep(0.01)
         assert child_pid is not None
+        # Crash only after startup and child creation have been observed. A
+        # fixture timer could kill the leader before the initial health probe.
+        assert host.pid is not None
+        os.kill(host.pid, signal.SIGKILL)
+        for _ in range(300):
+            if host._runtime_dir is None:  # noqa: SLF001
+                break
+            await asyncio.sleep(0.01)
         assert host._runtime_dir is None  # noqa: SLF001
         assert runtime_dir is not None and not runtime_dir.exists()
         for _ in range(100):
