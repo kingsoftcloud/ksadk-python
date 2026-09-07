@@ -45,7 +45,7 @@ artifacts.
 make sync-ksadk-web-static
 
 # Pin the concrete 0.8.3 release-candidate version
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.4
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.5
 ```
 
 <Callout type="warning" title="Do not pull GitHub latest release at wheel build time">
@@ -78,7 +78,7 @@ instead provide a complete, validated `ksadk/studio/static` payload.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.4` | published npm package version; release candidates must pin a concrete version |
+| `KSADK_WEB_VERSION` | `0.3.5` | published npm package version; release candidates must pin a concrete version |
 | `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm package name |
 | `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | Tarball filename, derived from the version |
 | `KSADK_WEB_RELEASE_URL` | empty | Explicit tarball URL fallback; takes precedence over `npm pack` |
@@ -94,13 +94,13 @@ to exist before it is copied over `ksadk/server/static`.
 Each `ksadk-python` release note should record:
 
 - The `ksadk-python` version (e.g. `0.8.3`).
-- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.3` maps to `@kingsoftcloud/ksadk-web@0.3.4`).
-- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.4`).
+- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.3` maps to `@kingsoftcloud/ksadk-web@0.3.5`).
+- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.5`).
 - The wheel / sdist audit result (`make public-build-check` / `twine check dist/*`).
 
 <Callout type="info" title="0.8.3 candidate record example">
 - `ksadk-python`: `0.8.3`
-- npm package: `@kingsoftcloud/ksadk-web@0.3.4`
-- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.4`
+- npm package: `@kingsoftcloud/ksadk-web@0.3.5`
+- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.5`
 - audit: `make public-build-check` passed, `twine check dist/*` passed
 </Callout>

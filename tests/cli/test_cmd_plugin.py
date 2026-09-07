@@ -304,7 +304,7 @@ class _FakeDshCLIHost:
             bundles=("@deepseek-ai/dsh-base",),
             config_digest="sha256:" + "a" * 64,
             config_bytes=128,
-            host_version="0.1.1-rc.2",
+            host_version="0.1.2-rc.1",
         )
 
 
@@ -322,7 +322,7 @@ def test_top_level_dsh_lifecycle_and_explicit_alias_are_identical(
         _FakeDshCLIHost,
     )
     dsh = tmp_path / "dsh"
-    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.1-rc.2'\n", encoding="utf-8")
+    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.2-rc.1'\n", encoding="utf-8")
     dsh.chmod(0o755)
     environment = {
         DSH_HOME_ENV: str(tmp_path / "dsh-home"),

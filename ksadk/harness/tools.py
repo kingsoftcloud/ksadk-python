@@ -113,7 +113,9 @@ async def load_mcp_tools(spec: McpToolSpec) -> tuple[Any, list[HarnessTool]]:
             raise asyncio.CancelledError
         if not isinstance(error, Exception):
             raise
-        raise RuntimeError(f"Harness MCP server {spec.name!r} failed to start") from None
+        raise RuntimeError(
+            f"Harness MCP server {spec.name!r} at {spec.url} failed to start"
+        ) from None
 
     available_names = {str(tool.name) for tool in native_tools}
     expected_names = {

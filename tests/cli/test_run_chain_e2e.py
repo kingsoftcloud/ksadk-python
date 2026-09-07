@@ -130,9 +130,10 @@ def test_run_cancel_resume_replay_chain():
         _sess.resolve_session_service = orig
 
     assert result.exit_code == 0, result.output
-    # 首段 + 续跑事件都可回放(commentary item 首段被 final snapshot 覆盖为空,
-    # 但 commentary 行存在;续跑 final_answer 文本可见)
-    assert "[text/commentary]" in result.output
+    # 首段 commentary 已被同一 message item 的 final snapshot 收敛；checkpoint
+    # 与续跑 final answer 仍必须保留，不能制造一条空 commentary 行。
+    assert "[checkpoint.created]" in result.output
+    assert "[text/final_answer]" in result.output
     assert "续跑" in result.output
 
 

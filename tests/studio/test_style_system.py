@@ -240,8 +240,11 @@ def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     assert "width: fit-content" in user_bubble
     assert "padding: 0" in assistant
     assert "ChatWorkspace" in source
-    assert 'apiFetch("/v1/responses"' in source
-    assert '"@kingsoftcloud/ksadk-web": "0.3.4"' in package
+    assert "AgentConversationTimeline" in source
+    assert "AgentConversationComposer" in source
+    assert "useAgentChat" in source
+    assert "ApiFacadeImpl" in source
+    assert '"@kingsoftcloud/ksadk-web": "0.3.5"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
     # 强制重定向到创建页。
@@ -260,8 +263,9 @@ def test_react_chat_keeps_compact_sessions_and_streaming_controls() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet
     assert "<time>" not in source
     assert "chat-composer-hint" not in source
-    assert 'aria-label="暂停生成"' in source
-    assert "<Pause" in source
+    assert "onStopGeneration={chat.stop}" in source
+    assert "stopGeneration={chat.stop}" in source
+    assert "onCancelRemote=" in source
 
 
 def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
@@ -278,9 +282,12 @@ def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
     assert "请求批准" in approval_source
     assert "帮我批准" in approval_source
     assert "完全访问权限" in approval_source
-    assert "approval_mode: approvalModeForTurn" in source
+    assert "approvalEnabled={Boolean(chat.uiCapabilities.Approval)}" in source
+    assert "approvalPolicy={chat.uiCapabilities.ApprovalPolicy}" in source
+    assert "pendingInteractions={chat.pendingInteractions}" in source
+    assert "onRespondInteraction=" in source
     assert "下一轮生效" in composer_source
-    assert "<ChatComposer" in source
+    assert "<AgentConversationComposer" in source
     assert ".chat-approval-trigger" in stylesheet
     assert ".chat-approval-menu" in stylesheet
 

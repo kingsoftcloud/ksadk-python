@@ -162,7 +162,7 @@ def test_codex_home_uses_runtime_state_when_code_bundle_is_read_only(
     """Managed Code bundles are read-only, but Codex still needs isolated state."""
 
     project_dir = tmp_path / "read-only-code"
-    blocked_home = project_dir / ".agentkit" / "codex-home"
+    blocked_home = project_dir / ".agentkit" / "codex-homes" / "unscoped"
     state_dir = tmp_path / "runtime-state"
     original_mkdir = Path.mkdir
 
@@ -176,8 +176,9 @@ def test_codex_home_uses_runtime_state_when_code_bundle_is_read_only(
     monkeypatch.delenv("KSADK_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setenv("KSADK_SESSION_PATH", str(state_dir / "sessions.sqlite"))
 
-    assert runtime_factory._isolated_codex_home(project_dir) == state_dir / "codex-home"
-    assert (state_dir / "codex-home").is_dir()
+    expected_home = state_dir / "codex-homes" / "unscoped"
+    assert runtime_factory._isolated_codex_home(project_dir) == expected_home
+    assert expected_home.is_dir()
 
 
 def test_framework_factory_requires_detection_without_injected_runner(

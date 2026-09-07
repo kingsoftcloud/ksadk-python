@@ -126,14 +126,14 @@ def test_phase2_schema_artifact_inventory_excludes_unpublished_package_formats()
         for contract_set, directory in CONTRACT_SETS.items()
     }
     assert {name: len(paths) for name, paths in inventory.items()} == {
-        "plugin": 9,
+        "plugin": 10,
         "conversation": 3,
         "scheduler": 2,
     }
     # Some source contracts (for example EcosystemPluginDescriptor and its
     # receipt) intentionally share one schema artifact.  This counts files,
     # not the number of frozen public models.
-    assert sum(map(len, inventory.values())) == 14
+    assert sum(map(len, inventory.values())) == 15
 
 
 def test_unpublished_plugin_package_schema_is_absent_from_current_and_baseline() -> None:
