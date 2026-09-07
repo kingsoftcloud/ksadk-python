@@ -235,3 +235,24 @@ def test_multiple_inconsistent_registration_sources_are_rejected() -> None:
     with pytest.raises(StudioDshProviderRegistrationError) as captured:
         merge_provider_registrations(first, second)
     assert captured.value.code == "dsh_provider_registration_conflict"
+
+
+def test_official_default_marker_is_scoped_to_the_owned_profile(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    manager = StudioDshProviderRegistrationManager(
+        workspace,
+        dsh_home=workspace / ".agentkit" / "dsh-home",
+        profile="web",
+        dsh_command=("dsh",),
+    )
+    legacy_marker = workspace / ".agentkit" / "official-dsh-defaults.json"
+    legacy_marker.parent.mkdir(parents=True)
+    legacy_marker.write_text(
+        json.dumps({"version": 1, "codexProviderApplied": True}),
+        encoding="utf-8",
+    )
+
+    assert manager._default_marker_path == (  # noqa: SLF001 - migration contract
+        workspace / ".agentkit" / "official-dsh-defaults-web.json"
+    )
+    assert manager._read_default_marker(manager._default_marker_path) == {}  # noqa: SLF001

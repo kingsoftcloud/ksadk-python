@@ -327,7 +327,12 @@ class StudioDshProviderRegistrationManager:
 
     @property
     def _default_marker_path(self) -> Path:
-        return self._workspace / ".agentkit" / "official-dsh-defaults.json"
+        # Scope the bootstrap receipt to the owned Profile.  Older Studio
+        # builds used one workspace-wide marker while their default Profile
+        # was ``studio``.  Reusing that marker after the default moved to
+        # official Core's ``web`` Profile incorrectly skipped first-run
+        # installation and left Studio with no runnable DSH Profile.
+        return self._workspace / ".agentkit" / f"official-dsh-defaults-{self._profile}.json"
 
     @staticmethod
     def _read_default_marker(path: Path) -> dict[str, object]:
