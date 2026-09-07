@@ -23,6 +23,8 @@ Codex cloud delivery freezes plugin bytes and admitted references into immutable
 
 The universal Python wheel includes Web 0.3.5 and built Studio pages. It does not include Python dependencies, Node/Codex/DSH binaries, community plugins or credentials. The base package declares shared framework dependencies, with extras for additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and any native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
 
+The verified DSH plugin environment uses Node.js 22 and `pnpm@10.33.2` on PATH. The managed toolchain installer uses its own pinned pnpm through Corepack; DSH profile add/remove commands use pnpm from PATH. Avoid pnpm 11.7.0 for profile operations for now: removing the official Codex bundle can print completion without terminating the process.
+
 ## Choose an integration mode
 
 | Mode | Owner | Current use |
