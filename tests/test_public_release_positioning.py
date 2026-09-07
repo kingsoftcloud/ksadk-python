@@ -326,8 +326,8 @@ def test_docs_versioned_facts_match_083_source():
     ):
         assert stale not in public_surfaces
 
-    assert 'version = "0.8.3"' in _read("pyproject.toml")
-    assert "0.8.3" in _read("docs-site/app/[lang]/(home)/page.tsx")
+    assert 'version = "0.8.4"' in _read("pyproject.toml")
+    assert "0.8.4" in _read("docs-site/app/[lang]/(home)/page.tsx")
 
     for relative in (
         "framework/guides/web-ui-source.mdx",
@@ -425,8 +425,8 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.3"
-    assert 'VERSION = "0.8.3"' in version_text
+    assert pyproject["project"]["version"] == "0.8.4"
+    assert 'VERSION = "0.8.4"' in version_text
     assert "## [0.8.3] - 2026-09-01" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
@@ -616,7 +616,7 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Branch protection and publish environment are configured" in approval_record
 
 
-def test_public_release_candidate_tracks_current_version():
+def test_historical_public_release_approval_is_not_reused_for_unpublished_candidate():
     approval_record = _read("docs/maintainer-approval-record.md")
 
     assert "| Python package version | 0.8.3 |" in approval_record

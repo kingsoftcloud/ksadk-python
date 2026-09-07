@@ -150,6 +150,7 @@ PUBLIC_TEST_FILES = {
     "tests/plugins/test_dsh_node_provider_e2e.py",
     "tests/plugins/test_dsh_capability_host.py",
     "tests/plugins/test_dsh_capability_host_e2e.py",
+    "tests/plugins/test_dsh_upstream_plugin_e2e.py",
     "tests/plugins/test_dsh_source_policy.py",
     "tests/plugins/test_codex_provider_vertical.py",
     "tests/test_check_approval_record.py",
