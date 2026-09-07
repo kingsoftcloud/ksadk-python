@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -99,6 +99,13 @@ describe("PluginsPage", () => {
     expect(screen.getAllByText("KsADK 官方 · Agent Provider")).toHaveLength(2);
     expect(screen.getAllByText("让 Agent 使用 Codex App Server 的原生会话、工具与审批能力。")).toHaveLength(2);
     expect(screen.getByText("@kingsoftcloud/ksadk-codex-provider")).toBeInTheDocument();
+    const detail = within(screen.getByRole("complementary", { name: "插件详情" }));
+    expect(detail.queryByRole("button", { name: /DSH/ })).not.toBeInTheDocument();
+    expect(detail.getByRole("link", { name: "去创建 Agent" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "打开 DSH 插件工作台" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "DeepSeek Harness 插件" }));
+    expect(screen.getByRole("button", { name: "打开 DSH 插件工作台" })).toBeInTheDocument();
+    expect(detail.queryByRole("button", { name: /DSH/ })).not.toBeInTheDocument();
   });
 
   it("shows concise five-state labels without treating enabled as ready", async () => {

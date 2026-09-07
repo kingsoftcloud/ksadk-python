@@ -172,13 +172,7 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
       <p className="plugin-detail-muted">{isReadyProvider ? "在创建或编辑 Agent 时从 Runtime 选择器使用。" : "Provider 尚未就绪，暂不能用于创建 Agent。"}</p>
       {isReadyProvider && <p><a className="button secondary" href="#/create">去创建 Agent</a></p>}
     </>}
-    {item.ecosystem === "dsh" && <>
-      <p className="plugin-detail-muted">插件界面由同一个完整 DSH Core 运行时加载。</p>
-      <p><button
-        className="button secondary"
-        onClick={() => void openDshCore()}
-      >打开 DSH Core</button></p>
-    </>}
+    {item.ecosystem === "dsh" && !item.providerRef && <p className="plugin-detail-muted">如插件提供界面，可从下方 DeepSeek Harness 插件区域进入工作台使用。</p>}
     {bindableCapabilities.length > 0 && <>
       <p className="plugin-detail-muted">Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。</p>
       <p><a className="button secondary" href="#/agents">去 Agent 列表绑定</a></p>
@@ -321,6 +315,10 @@ export function PluginsPage() {
     <section className="plugin-marketplace block">
       <div className="plugin-marketplace-heading"><div><h2>发现插件</h2><p>{marketplaceTab === "codex" ? <><span>兼容格式 · 生命周期由 Codex App Server 管理</span><small>安装后仍需按 Agent 显式授权。</small></> : <><span>默认插件格式 · 当前 DSH Profile</span><small>安装到当前工作区，可随后启用并绑定给 Agent。</small></>}</p></div>{marketplaceTab === "codex" && <label className="plugin-search"><Search size={16}/><span className="sr-only">搜索插件</span><input value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>}</div>
       <div className="plugin-marketplace-tabs" role="tablist" aria-label="插件市场"><button type="button" role="tab" aria-selected={marketplaceTab === "codex"} onClick={() => setMarketplaceTab("codex")}>Codex 插件</button><button type="button" role="tab" aria-selected={marketplaceTab === "dsh"} onClick={() => setMarketplaceTab("dsh")}>DeepSeek Harness 插件</button></div>
+      {marketplaceTab === "dsh" && <div className="plugin-marketplace-heading">
+        <div><h3>DSH 插件工作台</h3><p>打开已安装 DSH 插件提供的界面与设置。</p></div>
+        <button type="button" className="button secondary" disabled={!hosts.dsh?.available} onClick={() => void openDshCore()}>打开 DSH 插件工作台</button>
+      </div>}
       {marketplaceTab === "codex" ? busy === "load" ? <div className="plugin-marketplace-loading"><LoaderCircle className="animate-spin" size={18}/><span>正在读取 Codex 插件目录…</span></div> : codexCatalog.length > 0 ? <>
         <label className={`codex-risk-confirmation${codexAccepted ? " accepted" : ""}`}><AlertCircle size={18}/><input type="checkbox" checked={codexAccepted} onChange={event => setCodexAccepted(event.target.checked)}/><span><strong>安装前确认权限</strong><small>Codex 插件由 App Server 以当前用户权限管理，请确认插件来源可信。</small></span><em>{codexAccepted ? "已确认" : "勾选后可安装"}</em></label>
         <div className="plugin-category-list" aria-label="可安装 Codex 插件">{catalogGroups.map(group => <section className="plugin-category" key={group.category}><h3>{group.category}</h3><div className="plugin-marketplace-list">{group.items.map(item => <div className="plugin-marketplace-row" key={keyOf(item)}><span className="plugin-avatar" data-ecosystem="codex"><Plug size={16}/></span><span><strong>{pluginTitle(item)}</strong><small>{pluginPublisher(item)} · {pluginKind(item)}</small><em>{pluginSummary(item)}</em></span><button className="button secondary small" disabled={!codexAccepted || Boolean(busy)} onClick={() => void installCodex(item)}>{busy === `codex:${keyOf(item)}` ? <LoaderCircle className="animate-spin" size={15}/> : "安装"}</button></div>)}</div></section>)}</div>
