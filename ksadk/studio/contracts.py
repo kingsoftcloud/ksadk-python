@@ -493,9 +493,7 @@ class RuntimeRef(ContractModel):
         return self
 
 
-_RUNTIME_SECRET_KEY = re.compile(
-    r"(?:secret|password|token|api[_-]?key)", re.IGNORECASE
-)
+_RUNTIME_SECRET_KEY = re.compile(r"(?:secret|password|token|api[_-]?key)", re.IGNORECASE)
 _RUNTIME_SECRET_REF_PREFIXES = (
     "secret://",
     "env://",
@@ -511,9 +509,7 @@ def _reject_clear_runtime_secrets(value: Any, *, path: str = "providerConfig") -
         for key, child in value.items():
             child_path = f"{path}.{key}"
             if _RUNTIME_SECRET_KEY.search(str(key)) and child is not None:
-                if not isinstance(child, str) or not child.startswith(
-                    _RUNTIME_SECRET_REF_PREFIXES
-                ):
+                if not isinstance(child, str) or not child.startswith(_RUNTIME_SECRET_REF_PREFIXES):
                     raise ValueError(f"{child_path} 必须保存 Secret 引用，不能保存明文")
             _reject_clear_runtime_secrets(child, path=child_path)
     elif isinstance(value, list):
@@ -929,6 +925,10 @@ class DeploymentRequest(ContractModel):
 
 
 class DeploymentRecord(ContractModel):
+    # Identity observed when the cloud Agent was created, never inferred from
+    # whichever credentials happen to be configured when history is read.
+    created_by_name: str | None = None
+    created_by_user_id: str | None = None
     id: str
     build_id: str
     bundle_digest: str

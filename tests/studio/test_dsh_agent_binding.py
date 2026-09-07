@@ -102,10 +102,7 @@ def _descriptor() -> DshProfileCapabilityDescriptor:
 
 def _provider_manifests() -> dict[str, PluginManifest]:
     manifest = legacy_harness_agent_provider_manifest()
-    ref = (
-        f"plugin://{KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID}"
-        f"@{BUILTIN_PROVIDER_VERSION}"
-    )
+    ref = f"plugin://{KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID}@{BUILTIN_PROVIDER_VERSION}"
     return {ref: manifest}
 
 
@@ -175,11 +172,7 @@ def test_dsh_profile_catalog_resource_is_bindable_but_never_persisted(
             display_name="forged",
             description="forged",
             server=MCPServerRef.model_validate(
-                {
-                    key: value
-                    for key, value in resource.contract.items()
-                    if key != "discoveredTools"
-                }
+                {key: value for key, value in resource.contract.items() if key != "discoveredTools"}
             ),
         )
     assert created.value.code == "DSH_MCP_MANAGED_RESOURCE_REQUIRED"
@@ -219,9 +212,7 @@ def test_static_mcp_wire_and_digest_remain_backward_compatible(tmp_path: Path) -
 
     assert resolved["digest"] == legacy_digest
     assert "materialization" not in resolved
-    assert {
-        key: value for key, value in resolved.items() if key != "digest"
-    } == legacy_wire
+    assert {key: value for key, value in resolved.items() if key != "digest"} == legacy_wire
 
 
 def test_dynamic_mcp_requires_explicit_scope_permission_and_autonomous_opt_in(
@@ -307,9 +298,7 @@ def test_dsh_tool_filter_is_canonicalized_before_lock_and_tool_projection(
         if item.ref.startswith(f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@")
     )
 
-    assert capability.config["resources"][0]["materializer"]["toolFilter"] == [
-        "fixture.echo"
-    ]
+    assert capability.config["resources"][0]["materializer"]["toolFilter"] == ["fixture.echo"]
     assert [tool["name"] for tool in resolved["capabilities"]["tools"]] == [
         dsh_harness_tool_alias("fixture.echo", "dsh")
     ]
@@ -436,9 +425,7 @@ def test_cross_directory_yaml_cannot_forge_managed_dsh_resource(
     resource = studio.catalog.replace_dsh_profile_mcp(_descriptor())
     forged = resource.model_copy(
         update={
-            "resource_id": resource_id(
-                "mcp", "local", resource.name, resource.version
-            ),
+            "resource_id": resource_id("mcp", "local", resource.name, resource.version),
             "source": "local",
             "description": "forged",
         }
@@ -450,9 +437,7 @@ def test_cross_directory_yaml_cannot_forge_managed_dsh_resource(
     )
     studio.catalog.clear_dsh_profile_mcp()
 
-    assert all(
-        item.resource_id != forged.resource_id for item in studio.catalog.list(limit=200)
-    )
+    assert all(item.resource_id != forged.resource_id for item in studio.catalog.list(limit=200))
     with pytest.raises(StudioError) as absent:
         studio.catalog.get(forged.resource_id)
     assert absent.value.code == "RESOURCE_NOT_FOUND"
@@ -476,9 +461,7 @@ def test_composition_and_bundle_lock_the_dsh_descriptor_without_a_lease(
 ) -> None:
     studio, descriptor, resource, composition, bundle_root = _build(tmp_path)
 
-    capability_ref = (
-        f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@{DSH_PROFILE_MCP_PLUGIN_VERSION}"
-    )
+    capability_ref = f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@{DSH_PROFILE_MCP_PLUGIN_VERSION}"
     capability = next(
         item for item in composition.profile.capabilities if item.ref == capability_ref
     )
@@ -491,18 +474,14 @@ def test_composition_and_bundle_lock_the_dsh_descriptor_without_a_lease(
         "inventoryDigest": descriptor.inventory_digest,
     }
     lock = next(
-        item
-        for item in composition.plugin_lock.plugins
-        if item.id == DSH_PROFILE_MCP_PLUGIN_ID
+        item for item in composition.plugin_lock.plugins if item.id == DSH_PROFILE_MCP_PLUGIN_ID
     )
     assert lock.upstream is not None and lock.upstream.ecosystem == "dsh"
     assert lock.components is not None and lock.components[0].kind == "mcp"
 
     resolved = json.loads((bundle_root / "resolved-agent-spec.json").read_text())
     server = next(
-        item
-        for item in resolved["capabilities"]["mcpServers"]
-        if item["name"] == resource.name
+        item for item in resolved["capabilities"]["mcpServers"] if item["name"] == resource.name
     )
     assert server["materialization"] == "dsh-profile"
     assert server["descriptorDigest"] == descriptor.descriptor_digest
@@ -552,9 +531,7 @@ async def test_dynamic_dsh_bundle_is_rejected_before_cloud_side_effects(
         gateway=gateway,
         build_repository=studio.builds,
     )
-    request = DeploymentRequest(
-        target=DeploymentTarget(region="cn-beijing-6", environment="test")
-    )
+    request = DeploymentRequest(target=DeploymentTarget(region="cn-beijing-6", environment="test"))
     archive = studio.workspace.resolve(build.artifact_path, must_exist=True)
     dynamic_bundle = archive.read_bytes()
     benign_buffer = io.BytesIO()
@@ -692,9 +669,7 @@ async def test_runtime_refreshes_the_ephemeral_lease_for_each_activation(
     assert first_activation[0].api_key.startswith("ks1.")
     assert "runtime-secret-token" not in first_activation[0].api_key
     assert second_activation[0].url == "http://127.0.0.1:43003/mcp"
-    assert second_activation[0].tool_filter == (
-        dsh_harness_tool_alias("fixture.echo", "dsh"),
-    )
+    assert second_activation[0].tool_filter == (dsh_harness_tool_alias("fixture.echo", "dsh"),)
     assert second_activation[0].tool_name_prefix is None
     assert "runtime-secret-token" not in repr(second_activation[0])
     assert "127.0.0.1" not in repr(second_activation[0])
@@ -880,9 +855,7 @@ async def test_kernel_adapter_releases_dynamic_binding_after_delegate_failure(
             assert session_id == "fixture-session"
             return delegate
 
-        async def close_session_if_dynamic(
-            self, _spec: StudioRunSpec, session_id: str
-        ) -> None:
+        async def close_session_if_dynamic(self, _spec: StudioRunSpec, session_id: str) -> None:
             self.closed_sessions.append(session_id)
 
     plugin_runtime = PluginRuntime()
@@ -1093,9 +1066,7 @@ async def test_shutdown_serializes_after_reconfigure_and_is_terminal(
     async def no_op() -> None:
         return None
 
-    monkeypatch.setattr(
-        studio, "_bind_dsh_provider_registrations_locked", blocking_bind
-    )
+    monkeypatch.setattr(studio, "_bind_dsh_provider_registrations_locked", blocking_bind)
     reconfigure = asyncio.create_task(studio.reconfigure_dsh_profile(no_op))
     await bind_entered.wait()
     close = asyncio.create_task(studio.aclose())

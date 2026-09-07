@@ -17,7 +17,6 @@ from ksadk.plugins.bridges.codex import (
 from ksadk.plugins.bridges.dsh import (
     DshBridgeError,
     DshBridgeHost,
-    DshClientBundle,
     DshHostUnavailableError,
     DshPluginApprovalRequired,
     DshPluginInventory,
@@ -38,7 +37,6 @@ __all__ = [
     "CodexPluginNotFoundError",
     "DshBridgeError",
     "DshBridgeHost",
-    "DshClientBundle",
     "DshHostUnavailableError",
     "DshPluginApprovalRequired",
     "DshPluginInventory",

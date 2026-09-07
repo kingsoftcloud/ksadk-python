@@ -174,9 +174,7 @@ def test_installed_root_rejects_host_coordinate_traversal(tmp_path: Path) -> Non
 
 def test_installed_root_rejects_symlink_escape_from_codex_cache(tmp_path: Path) -> None:
     codex_home = tmp_path / "codex-home"
-    version_parent = (
-        codex_home / "plugins" / "cache" / "fixture-marketplace" / "fixture-plugin"
-    )
+    version_parent = codex_home / "plugins" / "cache" / "fixture-marketplace" / "fixture-plugin"
     version_parent.mkdir(parents=True)
     outside = _plugin_root(tmp_path / "outside")
     try:
@@ -200,14 +198,10 @@ def test_marketplace_contains_only_selected_components_and_sorted_native_names(
     workspace = _workspace(tmp_path)
     store = CodexPluginSnapshotStore(workspace)
     zeta = store.commit(
-        _observed(
-            _plugin_root(tmp_path / "zeta", name="zeta-plugin", plugin_id="aaa.plugin")
-        )
+        _observed(_plugin_root(tmp_path / "zeta", name="zeta-plugin", plugin_id="aaa.plugin"))
     )
     alpha = store.commit(
-        _observed(
-            _plugin_root(tmp_path / "alpha", name="alpha-plugin", plugin_id="zzz.plugin")
-        )
+        _observed(_plugin_root(tmp_path / "alpha", name="alpha-plugin", plugin_id="zzz.plugin"))
     )
     zeta_selected = zeta.select_components(("skill:alpha", "mcp:first"))
     alpha_selected = alpha.select_components(("skill:beta",))
@@ -221,9 +215,7 @@ def test_marketplace_contains_only_selected_components_and_sorted_native_names(
     assert receipt.plugin_names == ("alpha-plugin", "zeta-plugin")
     marketplace_root = store.verify_marketplace(receipt)
     payload = json.loads(
-        (marketplace_root / ".agents" / "plugins" / "marketplace.json").read_text(
-            encoding="utf-8"
-        )
+        (marketplace_root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
     )
     assert [item["name"] for item in payload["plugins"]] == [
         "alpha-plugin",
@@ -346,9 +338,10 @@ def test_builder_compiles_native_binding_into_content_pinned_plugin_lock(
     assert statuses[snapshot.plugin_ref]["runnable"] is True
     digest = plugin_lock_digest(lock)
     assert CodexStudioBuilder._build_id("f" * 64, {}) == "build_" + "f" * 20
-    assert CodexStudioBuilder._build_id(
-        "f" * 64, {}, plugin_lock_digest_value=digest
-    ) != "build_" + "f" * 20
+    assert (
+        CodexStudioBuilder._build_id("f" * 64, {}, plugin_lock_digest_value=digest)
+        != "build_" + "f" * 20
+    )
 
 
 def test_hook_binding_is_fail_closed_before_runtime_bootstrap(tmp_path: Path) -> None:
@@ -386,9 +379,9 @@ def test_hook_binding_is_fail_closed_before_runtime_bootstrap(tmp_path: Path) ->
     )
 
     with pytest.raises(StudioError) as raised:
-        CodexRunSpecResolver(
-            workspace, plugin_snapshot_store=store
-        )._plugin_bootstrap(build, manifest)
+        CodexRunSpecResolver(workspace, plugin_snapshot_store=store)._plugin_bootstrap(
+            build, manifest
+        )
     assert raised.value.code == "CODEX_PLUGIN_HOOK_TRUST_UNAVAILABLE"
     assert statuses[snapshot.plugin_ref]["hookTrust"] == "unsupported"
 
@@ -418,9 +411,7 @@ def _inventory(
     "inventory",
     [
         _inventory(source={"type": "git", "url": "https://example.test/p.git", "refName": "main"}),
-        _inventory(
-            source={"type": "git", "url": "https://example.test/p.git", "sha": "deadbeef"}
-        ),
+        _inventory(source={"type": "git", "url": "https://example.test/p.git", "sha": "deadbeef"}),
         _inventory(source={"type": "npm", "package": "fixture", "version": "latest"}),
         _inventory(source={"type": "npm", "package": "fixture", "version": "^1.2.0"}),
         _inventory(source={"type": "local", "path": "/fixture"}, version=None),
@@ -515,12 +506,7 @@ def test_plugin_get_does_not_create_a_workspace_snapshot(
 ) -> None:
     codex_home = tmp_path / "codex-home"
     installed = (
-        codex_home
-        / "plugins"
-        / "cache"
-        / "fixture-marketplace"
-        / "fixture-plugin"
-        / "1.2.3"
+        codex_home / "plugins" / "cache" / "fixture-marketplace" / "fixture-plugin" / "1.2.3"
     )
     plugin = _plugin_root(tmp_path / "installed")
     installed.parent.mkdir(parents=True)
@@ -545,12 +531,7 @@ def test_explicit_snapshot_post_admits_existing_install(
 ) -> None:
     codex_home = tmp_path / "codex-home"
     installed = (
-        codex_home
-        / "plugins"
-        / "cache"
-        / "fixture-marketplace"
-        / "fixture-plugin"
-        / "1.2.3"
+        codex_home / "plugins" / "cache" / "fixture-marketplace" / "fixture-plugin" / "1.2.3"
     )
     plugin = _plugin_root(tmp_path / "installed")
     installed.parent.mkdir(parents=True)

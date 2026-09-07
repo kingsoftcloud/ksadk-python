@@ -44,6 +44,7 @@ from ksadk.evaluation.studio_build_adapter import (
 from ksadk.events.store import RuntimeEventStore
 from ksadk.observability.session_log import SessionLogError, export_session_log
 from ksadk.observability.trajectory import encode_sse, project_trajectory_event
+from ksadk.plugins.bundle_security import BundleSecurityError
 from ksadk.plugins.contracts import PluginManifest
 from ksadk.plugins.providers.legacy import LegacyHarnessSource
 from ksadk.plugins.providers.legacy_catalog import (
@@ -104,13 +105,11 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.dsh_capability_service import (
     StudioDshCapabilityService,
-    dsh_ui_mcp_call_id,
 )
 from ksadk.studio.dsh_provider_registration import (
     StudioDshProviderRegistrationError,
     StudioDshProviderRegistrationManager,
 )
-from ksadk.studio.dsh_ui_sandbox import DshUiSandboxSessionStore
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.framework_run import FrameworkRunSpecResolver
@@ -172,7 +171,6 @@ class StudioService:
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_provider_registration_manager: StudioDshProviderRegistrationManager | None = None,
         dsh_capability_service: StudioDshCapabilityService | None = None,
-        dsh_ui_sessions: DshUiSandboxSessionStore | None = None,
     ) -> None:
         provider_manifests = dict(plugin_provider_manifests or {})
         provider_factories = dict(plugin_provider_factories or {})
@@ -193,11 +191,8 @@ class StudioService:
         )
         self.dsh_capabilities = (
             dsh_capability_service
-            or StudioDshCapabilityService.discover_or_create_workspace_default(
-                self.workspace.root
-            )
+            or StudioDshCapabilityService.discover_or_create_workspace_default(self.workspace.root)
         )
-        self.dsh_ui_sessions = dsh_ui_sessions or DshUiSandboxSessionStore()
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -392,20 +387,9 @@ class StudioService:
         self._started = True
 
     async def reset_dsh_capability_state(self) -> None:
-        """Revoke browser grants, cancel calls, and drop the current DSH generation."""
+        """Drop the current DSH capability/Core generation."""
 
         self.catalog.clear_dsh_profile_mcp()
-        revoked = self.dsh_ui_sessions.revoke_all()
-        call_ids = [
-            dsh_ui_mcp_call_id(session_id, call_id)
-            for session_id, active in revoked.items()
-            for call_id in active
-        ]
-        if call_ids:
-            await asyncio.gather(
-                *(self.dsh_capabilities.cancel(call_id) for call_id in call_ids),
-                return_exceptions=True,
-            )
         await self.dsh_capabilities.refresh()
 
     async def refresh_dsh_catalog_resource(self):  # type: ignore[no-untyped-def]
@@ -435,10 +419,7 @@ class StudioService:
         async with self._start_lock:
             self._ensure_open()
             existing = self.catalog.list(kind="mcp", source="provider", limit=200)
-            if any(
-                item.contract.get("materialization") == "dsh-profile"
-                for item in existing
-            ):
+            if any(item.contract.get("materialization") == "dsh-profile" for item in existing):
                 return
             checker = getattr(self.dsh_capabilities, "has_enabled_profile_plugins", None)
             if checker is None:
@@ -446,9 +427,7 @@ class StudioService:
             try:
                 enabled = await checker()
             except Exception as error:  # noqa: BLE001 - optional ecosystem boundary
-                logging.getLogger(__name__).warning(
-                    "DSH catalog discovery skipped: %s", error
-                )
+                logging.getLogger(__name__).warning("DSH catalog discovery skipped: %s", error)
                 return
             if enabled:
                 await self._refresh_dsh_catalog_resource(required=False)
@@ -790,7 +769,31 @@ class StudioService:
 
     def _build_agent_bundle(self, draft: AgentDraft):
         composition = self.plugin_compositions.compile_if_required(draft)
-        record = self.builder.build(draft, composition=composition)
+        try:
+            record = self.builder.build(draft, composition=composition)
+        except BundleSecurityError as error:
+            first = error.findings[0]
+            reason = {
+                "literal-secret-field": "明文凭证",
+                "url-credentials": "含账号信息的 URL",
+                "local-home-path": "本机用户目录路径",
+                "invalid-structured-input": "无法解析的结构化数据",
+            }.get(first.kind, "敏感内容")
+            raise StudioError(
+                "BUNDLE_SECURITY_REJECTED",
+                f"AgentBundle 安全检查未通过：{first.path} 检测到{reason}",
+                status_code=422,
+                details={
+                    "securityFindings": [
+                        {
+                            "path": finding.path,
+                            "kind": finding.kind,
+                            "field": finding.field,
+                        }
+                        for finding in error.findings
+                    ]
+                },
+            ) from error
         if composition is not None:
             self.plugin_compositions.bind_build(
                 composition,
@@ -1056,7 +1059,8 @@ class StudioService:
         from ksadk.studio.errors import not_found
 
         runs = self.event_store.list_runs(session_id=session_id)
-        if not runs:
+        session = await self.session_service.get_session_metadata(session_id)
+        if not runs and session is None:
             raise not_found("session", session_id)
         if any(run.status == RunStatus.RUNNING for run in runs):
             raise StudioError(
@@ -1076,7 +1080,6 @@ class StudioService:
             if self._closed:
                 return
             self._closed = True
-            self.dsh_ui_sessions.revoke_all()
             cleanup = asyncio.create_task(self._close_owned_plugin_services())
             interrupted = False
             while not cleanup.done():
@@ -2841,7 +2844,7 @@ class StudioService:
             except Exception:
                 data = {}
         defaults = {
-            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
+            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
             "buildAfterCreate": True,
             "codexProxy": current_proxy_mode(),
             "cloudRegion": os.environ.get(

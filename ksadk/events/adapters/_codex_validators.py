@@ -8,15 +8,19 @@ from typing import Any, Literal, NoReturn, cast
 
 from pydantic import JsonValue
 
-_CODEX_ERROR_INFO_VALUES = frozenset("""
+_CODEX_ERROR_INFO_VALUES = frozenset(
+    """
     contextWindowExceeded sessionBudgetExceeded usageLimitExceeded serverOverloaded
     cyberPolicy internalServerError unauthorized badRequest threadRollbackFailed
     sandboxError other
-    """.split())
-_CODEX_ERROR_INFO_VARIANTS = frozenset("""
+    """.split()
+)
+_CODEX_ERROR_INFO_VARIANTS = frozenset(
+    """
     httpConnectionFailed responseStreamConnectionFailed responseStreamDisconnected
     responseTooManyFailedAttempts activeTurnNotSteerable
-    """.split())
+    """.split()
+)
 
 
 class CodexMappingError(ValueError):
@@ -151,16 +155,23 @@ def _question_schema(
                     )
                 )
                 option_details.append(_json_value(option))
+        multiple = bool(question.get("isMultiSelect", False))
+        allow_other = bool(question.get("isOther", False))
         property_schema: dict[str, JsonValue] = {
-            "type": "string",
+            "type": "array" if multiple else "string",
             "title": header,
             "description": prompt,
             "x-codex-options": option_details,
             "x-codex-is-secret": is_secret,
             "x-codex-is-other": bool(question.get("isOther", False)),
         }
-        if labels:
-            property_schema["enum"] = cast(JsonValue, labels)
+        value_schema: dict[str, JsonValue] = {"type": "string", "minLength": 1}
+        if labels and not allow_other:
+            value_schema["enum"] = cast(JsonValue, labels)
+        if multiple:
+            property_schema.update({"items": value_schema, "minItems": 1, "uniqueItems": True})
+        else:
+            property_schema.update(value_schema)
         properties[question_id] = property_schema
         required.append(question_id)
         prompts.append(prompt)

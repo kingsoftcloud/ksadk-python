@@ -9,11 +9,13 @@ stream or transcript is created here.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
@@ -97,9 +99,7 @@ class CodexTurnRequest:
         raw_messages = value.get("messages")
         if raw_messages is None and value.get("input") is not None:
             raw_messages = ({"role": "user", "content": value.get("input")},)
-        if not isinstance(raw_messages, Sequence) or isinstance(
-            raw_messages, (str, bytes)
-        ):
+        if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, (str, bytes)):
             raise PluginHostError("codex_input_invalid", "Codex input requires messages")
         messages: list[Mapping[str, Any]] = []
         for index, message in enumerate(raw_messages):
@@ -115,29 +115,19 @@ class CodexTurnRequest:
                 )
             messages.append(dict(message))
         if not messages or messages[-1].get("role") != "user":
-            raise PluginHostError(
-                "codex_input_invalid", "Codex turn must end with a user message"
-            )
+            raise PluginHostError("codex_input_invalid", "Codex turn must end with a user message")
         metadata = value.get("request_metadata") or value.get("requestMetadata")
         if metadata is not None and not isinstance(metadata, Mapping):
-            raise PluginHostError(
-                "codex_input_invalid", "request_metadata must be an object"
-            )
-        session_id = str(
-            value.get("session_id") or value.get("sessionId") or ""
-        ).strip()
-        invocation_id = str(
-            value.get("invocation_id") or value.get("invocationId") or ""
-        ).strip()
+            raise PluginHostError("codex_input_invalid", "request_metadata must be an object")
+        session_id = str(value.get("session_id") or value.get("sessionId") or "").strip()
+        invocation_id = str(value.get("invocation_id") or value.get("invocationId") or "").strip()
         if len(invocation_id) > 256:
             raise PluginHostError(
                 "codex_input_invalid", "Codex invocation_id exceeds 256 characters"
             )
         model = str(value.get("model") or "").strip()
         if len(model) > 256:
-            raise PluginHostError(
-                "codex_input_invalid", "Codex model exceeds 256 characters"
-            )
+            raise PluginHostError("codex_input_invalid", "Codex model exceeds 256 characters")
         collaboration_mode = (
             str(value.get("collaboration_mode") or value.get("collaborationMode") or "")
             .strip()
@@ -196,11 +186,13 @@ class CodexAgentProviderRuntime:
         session_service: BaseSessionService,
         codex_client_factory: Callable[..., Any] | None,
         credential_resolver: Any = None,
+        runtime_state_root: Path | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
         self._client_factory = codex_client_factory
         self._credentials = credential_resolver
+        self._runtime_state_root = runtime_state_root
         self._ready = False
         self._disposed = False
         self._last_activation: CodexAgentActivation | None = None
@@ -235,14 +227,13 @@ class CodexAgentProviderRuntime:
         capabilities: PluginExecutionContext,
     ) -> "CodexAgentActivation":
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "codex_provider_unavailable", "Codex provider is not ready"
-            )
+            raise PluginHostError("codex_provider_unavailable", "Codex provider is not ready")
         _reject_external_execution(bundle, capabilities)
         config = _resolve_bundle_config(
             bundle,
             plugin_id=self._plugin_id,
             credential_resolver=self._credentials,
+            runtime_state_root=self._runtime_state_root,
         )
         activation = CodexAgentActivation(
             bundle=bundle,
@@ -285,11 +276,16 @@ class CodexAgentProviderFactory:
             )
         client_factory = self._client_factory or services.get("codex_client_factory")
         credentials = self._credentials or services.get("credential_resolver")
+        raw_state_root = services.get("runtime_state_root")
+        runtime_state_root = (
+            Path(str(raw_state_root)).expanduser().resolve() if raw_state_root is not None else None
+        )
         self.runtime = CodexAgentProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
             codex_client_factory=client_factory,
             credential_resolver=credentials,
+            runtime_state_root=runtime_state_root,
         )
         return self.runtime
 
@@ -331,9 +327,7 @@ class CodexAgentActivation:
 
     async def execute(self, request: Any) -> CodexTurnResult:
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "codex_activation_unavailable", "Codex activation is not ready"
-            )
+            raise PluginHostError("codex_activation_unavailable", "Codex activation is not ready")
         turn = CodexTurnRequest.parse(request)
         selected_model = turn.model or self._config.model
         if selected_model not in self._config.allowed_models:
@@ -380,9 +374,7 @@ class CodexAgentActivation:
         """
 
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "codex_activation_unavailable", "Codex activation is not ready"
-            )
+            raise PluginHostError("codex_activation_unavailable", "Codex activation is not ready")
         adapter = self._executor.create_adapter(self._launch_context)
         self._kernel_adapters.append(adapter)
         return adapter
@@ -473,6 +465,7 @@ def _resolve_bundle_config(
     *,
     plugin_id: str,
     credential_resolver: Any,
+    runtime_state_root: Path | None,
 ) -> _CodexBundleConfig:
     spec = bundle.resolved_agent_spec
     raw_model = spec.get("model")
@@ -513,28 +506,37 @@ def _resolve_bundle_config(
             "codex_tools_unsupported", "Codex only accepts its native tools, MCP, and Skills"
         )
     skills = _resolve_skills(bundle.root, capabilities.get("skills"))
-    mcp_servers, env = _resolve_mcp(
+    mcp_servers, mcp_env = _resolve_mcp(
         capabilities.get("mcpServers") or capabilities.get("mcp_servers"),
+        credential_resolver=credential_resolver,
+    )
+    model_env = _resolve_model_env(
+        raw_model,
+        model=model,
         credential_resolver=credential_resolver,
     )
     execution = spec.get("execution")
     execution = execution if isinstance(execution, Mapping) else {}
-    project_dir = bundle.root / "runtime"
-    if not project_dir.is_dir():
-        project_dir = bundle.root
+    project_dir = _resolve_runtime_workspace(
+        bundle,
+        runtime_state_root=runtime_state_root,
+    )
     launch_config: dict[str, Any] = {
         "model": model,
         "models": list(allowed_models),
         "prompt": str(instructions.get("system") or "").strip(),
         "task_prompt": str(instructions.get("task") or "").strip(),
-        "sandbox": str(execution.get("sandbox") or "read_only"),
+        # Match Studio's workspace default.  A missing execution stanza should
+        # still allow ordinary project work while auto-reviewing risky actions;
+        # read-only remains available when the Bundle declares it explicitly.
+        "sandbox": str(execution.get("sandbox") or "workspace_write_auto"),
         "approval_mode": str(execution.get("approvalMode") or execution.get("approval_mode") or ""),
         "turn_timeout_seconds": int(
             execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 120
         ),
         "mcp_servers": mcp_servers,
         "skills": skills,
-        "env": env,
+        "env": {**mcp_env, **model_env},
     }
     return _CodexBundleConfig(
         model=model,
@@ -551,6 +553,116 @@ def _resolve_bundle_config(
     )
 
 
+def _resolve_runtime_workspace(
+    bundle: ResolvedPluginBundle,
+    *,
+    runtime_state_root: Path | None,
+) -> Path:
+    """Keep Codex state and generated files outside the immutable Bundle.
+
+    A Bundle is integrity-checked again whenever a session opens. Using it as
+    Codex's working directory lets CODEX_HOME and ordinary workspace writes add
+    undeclared files, which makes the next open look like bundle corruption.
+    """
+
+    state_root = (
+        runtime_state_root
+        if runtime_state_root is not None
+        else bundle.root.parent / ".runtime-state"
+    ).resolve()
+    safe_agent_id = (
+        "".join(
+            character if character.isalnum() or character in {"-", "_", "."} else "-"
+            for character in bundle.manifest.agent_id
+        ).strip("-.")
+        or "agent"
+    )
+    workspace = (state_root / "codex-workspaces" / safe_agent_id).resolve()
+    try:
+        workspace.relative_to(bundle.root)
+    except ValueError:
+        pass
+    else:
+        raise PluginHostError(
+            "codex_runtime_state_invalid",
+            "Codex runtime state must be outside the immutable Bundle",
+        )
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise PluginHostError(
+            "codex_runtime_state_unavailable",
+            "Codex runtime workspace could not be initialized",
+        ) from error
+    return workspace
+
+
+def _resolve_model_env(
+    value: Mapping[str, Any],
+    *,
+    model: str,
+    credential_resolver: Any,
+) -> dict[str, str]:
+    """Resolve the Bundle-pinned model connection for the Codex subprocess."""
+
+    endpoint = str(
+        value.get("endpointUrl")
+        or value.get("endpoint_url")
+        or value.get("baseUrl")
+        or value.get("base_url")
+        or ""
+    ).strip()
+    for suffix in ("/chat/completions", "/responses"):
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[: -len(suffix)]
+            break
+
+    env = {"OPENAI_MODEL_NAME": model}
+    if endpoint:
+        env["OPENAI_BASE_URL"] = endpoint.rstrip("/")
+        env["OPENAI_API_BASE"] = endpoint.rstrip("/")
+
+    wire_api = str(value.get("wireApi") or value.get("wire_api") or "").strip().lower()
+    host = (urlparse(endpoint).hostname or "").lower() if endpoint else ""
+    if "KSADK_CODEX_USE_PROXY" not in os.environ and (
+        wire_api == "chat" or host == "kspmas.ksyun.com" or host.endswith(".kspmas.ksyun.com")
+    ):
+        # Codex speaks Responses natively.  Known chat-only gateways need the
+        # local protocol bridge and must not spend the first turn probing an
+        # endpoint whose protocol is already declared by the immutable Bundle.
+        env["KSADK_CODEX_USE_PROXY"] = "1"
+
+    reference = str(value.get("credentialRef") or value.get("credential_ref") or "").strip()
+    if not reference:
+        return env
+    if credential_resolver is None:
+        raise PluginHostError(
+            "codex_model_credential_unavailable",
+            "Codex Bundle model requires a credential resolver",
+        )
+    try:
+        credential = (
+            credential_resolver.resolve(reference)
+            if hasattr(credential_resolver, "resolve")
+            else credential_resolver(reference)
+        )
+    except Exception as error:
+        raise PluginHostError(
+            "codex_model_credential_unavailable",
+            "Codex Bundle model credential could not be resolved",
+        ) from error
+    if not str(credential):
+        raise PluginHostError(
+            "codex_model_credential_unavailable",
+            "Codex Bundle model credential is empty",
+        )
+    # Model connection keys are reserved for the model. An MCP binding may use
+    # arbitrary environment names, but it must not replace the model gateway's
+    # credential or endpoint in the child process.
+    env["OPENAI_API_KEY"] = str(credential)
+    return env
+
+
 def _resolve_allowed_models(
     bundle: ResolvedPluginBundle,
     *,
@@ -564,14 +676,10 @@ def _resolve_allowed_models(
     instead of silently widening run-level model selection.
     """
 
-    if not any(
-        entry.path == "runtime-lock.json" for entry in bundle.manifest.files
-    ):
+    if not any(entry.path == "runtime-lock.json" for entry in bundle.manifest.files):
         return (default_model,)
     try:
-        payload = json.loads(
-            (bundle.root / "runtime-lock.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads((bundle.root / "runtime-lock.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise PluginHostError(
             "codex_bundle_model_inventory_invalid",
@@ -588,9 +696,7 @@ def _resolve_allowed_models(
             "codex_bundle_model_inventory_invalid",
             "Bundle runtime-lock.json must declare models as a list",
         )
-    models = tuple(
-        dict.fromkeys(str(item).strip() for item in raw_models if str(item).strip())
-    )
+    models = tuple(dict.fromkeys(str(item).strip() for item in raw_models if str(item).strip()))
     if not models or default_model not in models:
         raise PluginHostError(
             "codex_bundle_model_inventory_invalid",
@@ -625,9 +731,7 @@ def _resolve_skills(root: Path, value: Any) -> list[dict[str, str]]:
                 "codex_skill_invalid", f"Bundle Skill {name!r} escapes the Bundle root"
             ) from error
         if not (path / "SKILL.md").is_file():
-            raise PluginHostError(
-                "codex_skill_missing", f"Bundle Skill {name!r} has no SKILL.md"
-            )
+            raise PluginHostError("codex_skill_missing", f"Bundle Skill {name!r} has no SKILL.md")
         if name in seen:
             raise PluginHostError("codex_skill_invalid", f"duplicate Bundle Skill {name!r}")
         seen.add(name)
@@ -679,9 +783,7 @@ def _resolve_mcp(
                 or isinstance(raw_args, (str, bytes))
                 or len(raw_args) > 128
                 or any(
-                    not isinstance(argument, str)
-                    or len(argument) > 4096
-                    or "\x00" in argument
+                    not isinstance(argument, str) or len(argument) > 4096 or "\x00" in argument
                     for argument in raw_args
                 )
             ):

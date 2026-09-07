@@ -23,7 +23,7 @@ canonical store（``ksadk/events/canonical_store.py`` 及 ``canonical.py`` 的�
 | Responses 历史 | ``conversations/context.py::project_responses_history`` | Responses API 请求回放 input | OpenAI Responses input items（``type``/``call_id``/``output``/role 消息），仅可靠 call_id 的 tool 项 |
 | 模型 history | ``conversations/context.py::project_model_messages`` | 运行时模型上下文（内部投喂） | ``role``/``content`` 消息列表；control 事件不进入上下文 |
 | server checkpoint payload | ``server/routes/projection.py::_checkpoint_event_to_action_payload`` | REST 断点续跑/预览接口 | ``EventId``/``SessionId``/``RunId``/``CheckpointId``/``Framework``/``FrameworkRef``/``IsResumable``/``ResumeStatus``/``IsTerminal``/``NextNode``（经 ``run_checkpoint`` 元数据或 ``continuation.created`` 投影） |
-| server 动作事件 payload | ``server/routes/projection.py::_event_to_action_payload`` | REST 会话动作接口（事件原始形态透传） | ``EventId``/``SessionId``/``Author``/``EventType``/``Content``/``Timestamp``/``SeqId``（可选 ``InvocationId``）——序列化存储形态本身，非 canonical 派生 |
+| server 动作事件 payload | ``server/routes/projection.py::_event_to_action_payload`` | REST 会话动作接口（事件原始形态透传） | ``EventId``/``SessionId``/``Author``/``EventType``/``Content``/``Timestamp``/``SeqId``（可选 ``InvocationId``）——序列化存储形态本身，非 canonical 派生；canonical runtime 事件额外注入 ``Content.parts[0].text`` 兼容旧前端 |
 
 内部不保证（任何投影都不承诺、消费方不得依赖）：
 - ``seq``/``run_seq`` 的具体数值与连续性（仅保序语义）；

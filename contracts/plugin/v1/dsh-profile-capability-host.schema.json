@@ -77,6 +77,11 @@
             "$ref": "#/$defs/tool"
           },
           "maxItems": 2048
+        },
+        "webRouteCount": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "Routes mounted by the KsADK overlay on the same official DSH Core web server."
         }
       },
       "required": [
@@ -89,7 +94,8 @@
         "transport",
         "endpoint",
         "inventoryDigest",
-        "tools"
+        "tools",
+        "webRouteCount"
       ]
     },
     "descriptor": {

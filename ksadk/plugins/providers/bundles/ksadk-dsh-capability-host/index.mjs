@@ -1,8 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createServer } from 'node:http'
 
 export const name = 'ksadk-dsh-capability-host'
-export const inject = ['tools']
+export const inject = ['tools', 'webServer', 'connection']
 
 export const HOST_PROTOCOL = 'ksadk.dsh-capability-host/v1'
 export const HOST_VERSION = '1.0.0'
@@ -377,36 +376,16 @@ function normalizedProtocol(requested) {
   return SUPPORTED_MCP_PROTOCOLS.has(requested) ? requested : MCP_PROTOCOL_VERSION
 }
 
-async function listen(server) {
-  await new Promise((resolve, reject) => {
-    const onError = (error) => {
-      server.off('listening', onListening)
-      reject(error)
-    }
-    const onListening = () => {
-      server.off('error', onError)
-      resolve()
-    }
-    server.once('error', onError)
-    server.once('listening', onListening)
-    server.listen(0, '127.0.0.1')
-  })
-}
-
-async function closeServer(server, pending) {
-  for (const entry of pending.values()) entry.controller.abort(new Error('DSH capability host is stopping'))
-  const closed = new Promise((resolve) => server.close(resolve))
-  const timer = new Promise((resolve) => setTimeout(resolve, 2_000))
-  await Promise.race([closed, timer])
-  server.closeAllConnections?.()
-}
-
 function emitReadyRecord(record) {
   process.stdout.write(`@@KSADK_DSH_CAPABILITY_READY@@${JSON.stringify(record)}\n`)
 }
 
 function emitRuntimeToken(token) {
   process.stdout.write(`@@KSADK_DSH_CAPABILITY_TOKEN@@${token}\n`)
+}
+
+function emitBrowserToken(token) {
+  process.stdout.write(`@@KSADK_DSH_CORE_TOKEN@@${token}\n`)
 }
 
 export async function apply(ctx, config = {}) {
@@ -433,21 +412,28 @@ export async function apply(ctx, config = {}) {
   let tools = []
   let inventoryDigest = digest(tools)
 
+  let driftCheckTimer = null
   ctx.on('tools/change', () => {
     lastToolChange = Date.now()
-    if (readyWritten) drifted = true
+    // Upstream plugins (e.g. dsh-ssh) dispose+re-register the same tools when
+    // settings re-sync; the intermediate state has a different fingerprint but
+    // converges. Debounce: only mark drift if the fingerprint is still
+    // different after the quiet window settles.
+    if (readyWritten) {
+      if (driftCheckTimer !== null) clearTimeout(driftCheckTimer)
+      driftCheckTimer = setTimeout(() => {
+        driftCheckTimer = null
+        const next = snapshotTools(ctx.tools, maxRequestBytes)
+        if (digest(next) !== inventoryDigest) drifted = true
+      }, inventoryQuietMs)
+    }
   }, { global: true })
 
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff')
+    response.setHeader('Referrer-Policy', 'no-referrer')
     if (!originAllowed(request)) {
       writeJson(response, 403, { error: 'origin_denied' })
-      return
-    }
-    const authorization = authorize(request, token, profileDigest, tools, revokedScopes)
-    if (authorization === null) {
-      response.setHeader('WWW-Authenticate', 'Bearer')
-      writeJson(response, 401, { error: 'unauthorized' })
       return
     }
 
@@ -459,7 +445,14 @@ export async function apply(ctx, config = {}) {
       return
     }
 
+    const authorization = authorize(request, token, profileDigest, tools, revokedScopes)
+
     if (request.method === 'GET' && parsedUrl.pathname === '/health' && parsedUrl.search === '') {
+      if (authorization === null) {
+        response.setHeader('WWW-Authenticate', 'Bearer')
+        writeJson(response, 401, { error: 'unauthorized' })
+        return
+      }
       writeJson(response, drifted || draining ? 503 : 200, {
         protocolVersion: HOST_PROTOCOL,
         healthy: !drifted && !draining,
@@ -473,8 +466,14 @@ export async function apply(ctx, config = {}) {
       })
       return
     }
+
     if (request.method !== 'POST' || parsedUrl.pathname !== '/mcp' || parsedUrl.search !== '') {
       writeJson(response, 404, { error: 'not_found' })
+      return
+    }
+    if (authorization === null) {
+      response.setHeader('WWW-Authenticate', 'Bearer')
+      writeJson(response, 401, { error: 'unauthorized' })
       return
     }
     if (!(request.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
@@ -720,56 +719,64 @@ export async function apply(ctx, config = {}) {
         const abortGrace = setTimeout(() => {
           if (!pending.has(key)) return
           draining = true
-          server.closeAllConnections?.()
           process.exit(70)
         }, 250)
         abortGrace.unref()
         void completion.then(() => clearTimeout(abortGrace))
       }
     }
-  })
-  server.maxHeadersCount = 64
-  server.headersTimeout = 10_000
-  server.requestTimeout = callTimeoutMs + 10_000
-  server.keepAliveTimeout = 5_000
-  server.on('clientError', (_error, socket) => socket.destroy())
-
-  let stopped = false
-  const stop = async () => {
-    if (stopped) return
-    stopped = true
+  }
+  const disposeMcp = ctx.webServer.register({ kind: 'exact', path: '/mcp', handler: handleRequest })
+  const disposeHealth = ctx.webServer.register({ kind: 'exact', path: '/health', handler: handleRequest })
+  ctx.effect(() => () => {
     draining = true
-    await closeServer(server, pending)
-  }
-  ctx.effect(() => stop)
+    for (const entry of pending.values()) {
+      entry.controller.abort(new Error('DSH capability host is stopping'))
+    }
+    disposeHealth()
+    disposeMcp()
+  })
 
-  try {
-    await listen(server)
-    while (Date.now() - lastToolChange < inventoryQuietMs) {
-      await new Promise((resolve) => setTimeout(resolve, inventoryQuietMs))
-    }
-    tools = snapshotTools(ctx.tools, maxRequestBytes)
-    inventoryDigest = digest(tools)
-    const address = server.address()
-    if (address === null || typeof address === 'string' || address.address !== '127.0.0.1') {
-      throw new Error('capability host did not bind a loopback TCP address')
-    }
-    readyWritten = true
-    emitRuntimeToken(token)
-    emitReadyRecord({
-      protocolVersion: HOST_PROTOCOL,
-      hostVersion: HOST_VERSION,
-      dshVersion,
-      profile,
-      profileDigest,
-      definition: 'mcp.connector/v1',
-      transport: 'streamable-http',
-      endpoint: `http://127.0.0.1:${address.port}/mcp`,
-      inventoryDigest,
-      tools,
-    })
-  } catch (error) {
-    await stop()
-    throw error
+  // Reset the quiet baseline after the official Core server has activated:
+  // plugins may still be registering tools while the overlay starts.
+  lastToolChange = Date.now()
+  while (Date.now() - lastToolChange < inventoryQuietMs) {
+    await new Promise((resolve) => setTimeout(resolve, inventoryQuietMs))
   }
+  tools = snapshotTools(ctx.tools, maxRequestBytes)
+  inventoryDigest = digest(tools)
+  const port = ctx.webServer.port
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535 || ctx.webServer.host !== '127.0.0.1') {
+    throw new Error('DSH Core webServer must bind a loopback TCP port')
+  }
+  const coreUrl = new URL(ctx.connection.authenticatedUrl(`http://127.0.0.1:${port}`))
+  const browserTokens = coreUrl.searchParams.getAll('token')
+  if (
+    coreUrl.protocol !== 'http:' ||
+    coreUrl.hostname !== '127.0.0.1' ||
+    coreUrl.port !== String(port) ||
+    coreUrl.pathname !== '/' ||
+    coreUrl.hash !== '' ||
+    [...coreUrl.searchParams.keys()].some((key) => key !== 'token') ||
+    browserTokens.length !== 1 ||
+    !/^[A-Za-z0-9_-]{32,128}$/.test(browserTokens[0])
+  ) {
+    throw new Error('DSH Core connection did not provide an authenticated browser URL')
+  }
+  readyWritten = true
+  emitRuntimeToken(token)
+  emitBrowserToken(browserTokens[0])
+  emitReadyRecord({
+    protocolVersion: HOST_PROTOCOL,
+    hostVersion: HOST_VERSION,
+    dshVersion,
+    profile,
+    profileDigest,
+    definition: 'mcp.connector/v1',
+    transport: 'streamable-http',
+    endpoint: `http://127.0.0.1:${port}/mcp`,
+    inventoryDigest,
+    tools,
+    webRouteCount: 2,
+  })
 }

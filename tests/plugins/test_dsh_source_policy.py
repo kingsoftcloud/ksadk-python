@@ -24,7 +24,6 @@ def test_exact_registry_sources_are_accepted(source: str) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        "@deepseek-ai/dsh-tool-web",
         "@deepseek-ai/dsh-tool-web@latest",
         "@deepseek-ai/dsh-tool-web@^1.0.0",
         "https://github.com/example/plugin.git",
@@ -48,3 +47,10 @@ def test_local_source_is_cli_only_and_must_exist(tmp_path: Path) -> None:
         DshPluginInstallRequest(source=str(source))
     with pytest.raises(ValueError, match="does not exist"):
         DshProfilePluginBridge._validate_source(str(tmp_path / "missing"))
+
+
+def test_bare_package_is_a_request_but_not_an_immutable_install_source():
+    source = "@deepseek-ai/dsh-tool-web"
+    assert DshPluginInstallRequest(source=source).source == source
+    with pytest.raises(ValueError, match="exact-semver"):
+        validate_dsh_registry_source(source)

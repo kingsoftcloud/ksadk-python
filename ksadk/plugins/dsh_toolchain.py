@@ -32,10 +32,26 @@ from ksadk.plugins.bridges.dsh import (
 )
 
 DSH_PACKAGE = "@deepseek-ai/dsh"
-DSH_VERSION = "0.1.1-rc.2"
+DSH_VERSION = "0.1.2-rc.1"
 DSH_PACKAGE_SPEC = f"{DSH_PACKAGE}@{DSH_VERSION}"
-CORDIS_VERSION_RANGE = "^4.0.1"
+DSH_GITHUB_TAG = "dsh-v0.1.2-rc.1"
+DSH_GITHUB_COMMIT = "a66e4702047846cdaa10c66c9d3df3951f5ea70d"
+CORDIS_VERSION_RANGE = "^4.0.2"
 PNPM_VERSION = "11.7.0"
+
+# The managed package is a complete Core DSH distribution.  Keep these
+# packages explicit so a registry/dist-tag mistake cannot silently degrade the
+# installation into the old capability-only mini host.
+DSH_CORE_PACKAGES = (
+    "@deepseek-ai/dsh-base",
+    "@deepseek-ai/dsh-web-app",
+    "@deepseek-ai/dsh-cordis-client-runner",
+    "@deepseek-ai/dsh-client-ui-cordis",
+    "@deepseek-ai/dsh-app-boot",
+    "@deepseek-ai/dsh-headless",
+    "@deepseek-ai/dsh-sdk-app",
+    "@deepseek-ai/dsh-mcp-client",
+)
 
 TOOLCHAIN_HOME_ENV = "AGENTENGINE_PLUGIN_TOOLCHAIN_HOME"
 PNPM_BIN_ENV = "AGENTENGINE_PNPM_BIN"
@@ -65,7 +81,7 @@ class _ToolchainModel(BaseModel):
 
 class DshToolchainStatus(_ToolchainModel):
     package: Literal["@deepseek-ai/dsh"] = DSH_PACKAGE
-    expected_version: Literal["0.1.1-rc.2"] = DSH_VERSION
+    expected_version: Literal["0.1.2-rc.1"] = DSH_VERSION
     installed: bool
     usable: bool
     root: str
@@ -128,9 +144,16 @@ class DshPluginSourceError(DshToolchainError):
 
 
 class DshPluginValidationError(DshToolchainError):
-    def __init__(self, stage: str, message: str = "DSH plugin validation failed") -> None:
+    def __init__(
+        self,
+        stage: str,
+        message: str = "DSH plugin validation failed",
+        *,
+        diagnostic: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.stage = stage
+        self.diagnostic = diagnostic
 
 
 class DshPluginPackError(DshToolchainError):
@@ -244,6 +267,16 @@ class DshToolchainManager:
                 actual_version=actual,
                 problem="version_mismatch",
             )
+        if not self._core_package_graph_is_complete():
+            return self._status(
+                installed=True,
+                usable=False,
+                pnpm_path=pnpm_path,
+                pnpm_version=pnpm_version,
+                executable=str(executable),
+                actual_version=actual,
+                problem="core_packages_missing_or_mismatched",
+            )
         return self._status(
             installed=True,
             usable=True,
@@ -306,6 +339,10 @@ class DshToolchainManager:
                 if actual != DSH_VERSION:
                     raise DshToolchainVersionMismatchError(
                         f"expected DSH {DSH_VERSION}, got {actual}"
+                    )
+                if not self._core_package_graph_is_complete(staging):
+                    raise DshToolchainInstallError(
+                        "installed DSH package does not contain the pinned Core runtime graph"
                     )
                 self._write_receipt(staging, actual)
                 if self._root.exists():
@@ -405,11 +442,22 @@ class DshToolchainManager:
 
     def require_pnpm(self) -> tuple[str, ...]:
         command = self._resolve_pnpm_command()
-        result = self._runner(
-            (*command, "--version"),
-            self._pnpm_probe_cwd(),
-            self._pnpm_environment(),
-        )
+        if self._root.exists():
+            result = self._runner(
+                (*command, "--version"),
+                self._root,
+                self._pnpm_environment(),
+            )
+        else:
+            # pnpm walks parent directories looking for packageManager.  A
+            # first install under a home directory must not inherit an
+            # unrelated Yarn/npm project from one of those parents.
+            with tempfile.TemporaryDirectory(prefix="ksadk-pnpm-probe-") as directory:
+                result = self._runner(
+                    (*command, "--version"),
+                    Path(directory),
+                    self._pnpm_environment(),
+                )
         match = _VERSION.search(result.stdout or result.stderr)
         if match is None:
             raise DshToolchainUnavailableError("pnpm did not report a parseable version")
@@ -472,15 +520,6 @@ class DshToolchainManager:
         executable = self._resolve_program(command[0])
         return (executable, *command[1:])
 
-    def _pnpm_probe_cwd(self) -> Path:
-        # require_pnpm() must also work before the managed toolchain root
-        # exists (first install), so the version probe cannot unconditionally
-        # use self._root as cwd.
-        if self._root.exists():
-            return self._root
-        self._base_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return self._base_dir
-
     def _manifest_is_pinned(self, path: Path | None = None) -> bool:
         manifest_path = path or self._root / "package.json"
         try:
@@ -504,6 +543,34 @@ class DshToolchainManager:
         except (FileNotFoundError, OSError, UnicodeError):
             return False
         return DSH_PACKAGE in value and DSH_VERSION in value
+
+    def _core_package_graph_is_complete(self, root: Path | None = None) -> bool:
+        install_root = root or self._root
+        dsh_manifest = install_root / "node_modules" / DSH_PACKAGE / "package.json"
+        try:
+            resolved_manifest = dsh_manifest.resolve(strict=True)
+            payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        dependencies = payload.get("dependencies") if isinstance(payload, dict) else None
+        if not isinstance(dependencies, dict):
+            return False
+        for package in DSH_CORE_PACKAGES:
+            requirement = dependencies.get(package)
+            # pnpm keeps transitive dependencies beside the real dsh package
+            # inside its virtual store, not necessarily at the project root.
+            manifest = (
+                resolved_manifest.parent.parent.parent
+                / Path(*package.split("/"))
+                / "package.json"
+            )
+            if (
+                not isinstance(requirement, str)
+                or DSH_VERSION not in requirement
+                or not manifest.is_file()
+            ):
+                return False
+        return True
 
     def _command_version(self, command: Sequence[str], *, cwd: Path) -> str:
         result = self._invoke((*command, "--version"), cwd=cwd)
@@ -556,6 +623,10 @@ class DshToolchainManager:
                 "package": DSH_PACKAGE,
                 "requestedVersion": DSH_VERSION,
                 "actualVersion": actual,
+                "githubTag": DSH_GITHUB_TAG,
+                "githubCommit": DSH_GITHUB_COMMIT,
+                "distribution": "core",
+                "corePackages": list(DSH_CORE_PACKAGES),
                 "packageManager": f"pnpm@{PNPM_VERSION}",
             },
         )
@@ -791,10 +862,23 @@ class DshPluginDeveloper:
                     )
             except DshToolchainError:
                 raise
+            except ValueError as error:
+                if stage == "install":
+                    raise DshPluginSourceError(str(error)) from error
+                raise DshPluginValidationError(
+                    stage,
+                    diagnostic=_redact_diagnostic(str(error)),
+                ) from error
             except DshBridgeError as error:
-                raise DshPluginValidationError(stage) from error
+                raise DshPluginValidationError(
+                    stage,
+                    diagnostic=_redact_diagnostic(str(error)),
+                ) from error
             except Exception as error:
-                raise DshPluginValidationError(stage) from error
+                raise DshPluginValidationError(
+                    stage,
+                    diagnostic=_redact_diagnostic(str(error)),
+                ) from error
 
     def pack(
         self,
@@ -902,6 +986,9 @@ class DshPluginDeveloper:
 
 __all__ = [
     "CORDIS_VERSION_RANGE",
+    "DSH_CORE_PACKAGES",
+    "DSH_GITHUB_COMMIT",
+    "DSH_GITHUB_TAG",
     "DSH_PACKAGE",
     "DSH_PACKAGE_SPEC",
     "DSH_VERSION",

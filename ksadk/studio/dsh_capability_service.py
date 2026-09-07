@@ -10,7 +10,6 @@ sidecar.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -49,13 +48,6 @@ _JSON_RPC_ENVELOPE_BYTES = 16 * 1024
 
 BridgeFactory = Callable[..., DshProfilePluginBridge]
 HostFactory = Callable[..., DshProfileCapabilityHost]
-
-
-def dsh_ui_mcp_call_id(session_id: str, call_id: str) -> str:
-    """Derive a bounded sidecar call id without exposing either UI identifier."""
-
-    material = f"{session_id}\0{call_id}".encode("utf-8")
-    return f"ui-{hashlib.sha256(material).hexdigest()}"
 
 
 @dataclass(frozen=True)
@@ -120,7 +112,7 @@ class StudioDshCapabilityService:
         workspace: Path,
         *,
         dsh_home: Path,
-        profile: str = "studio",
+        profile: str = "web",
         dsh_command: Sequence[str] | None = None,
         bridge_factory: BridgeFactory = DshProfilePluginBridge,
         host_factory: HostFactory = DshProfileCapabilityHost,
@@ -157,6 +149,7 @@ class StudioDshCapabilityService:
         self._generation_id: str | None = None
         self._active_calls: dict[str, _ActiveCall] = {}
         self._closed = False
+        self.model_projection = None
 
     @classmethod
     def discover_or_create_workspace_default(cls, workspace: Path) -> "StudioDshCapabilityService":
@@ -167,7 +160,7 @@ class StudioDshCapabilityService:
             if configured_home
             else root / ".agentkit" / "dsh-home"
         )
-        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "studio"
+        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
         return cls(
@@ -180,6 +173,16 @@ class StudioDshCapabilityService:
     @property
     def profile(self) -> str:
         return self._profile
+
+    async def application_lease(self) -> DshMcpConnectorLease:
+        """Reuse the live generation for browser assets and long-lived streams.
+
+        Management mutations dispose the generation explicitly. Avoid running
+        Profile projection and health checks for every CSS/JS/RPC request.
+        """
+        if self._lease is not None and self._host is not None and self._host.pid is not None:
+            return self._lease
+        return await self.connector_lease()
 
     async def has_enabled_profile_plugins(self) -> bool:
         """Inspect Profile metadata without starting the capability sidecar."""
@@ -257,9 +260,7 @@ class StudioDshCapabilityService:
         expected_descriptor_digest: str | None = None,
         expected_generation_id: str | None = None,
     ) -> tuple[DshCapabilityTool, ...]:
-        self._validate_expected_generation(
-            expected_descriptor_digest, expected_generation_id
-        )
+        self._validate_expected_generation(expected_descriptor_digest, expected_generation_id)
         async with self._lock:
             host, lease = await self._ensure_ready_locked()
             self._require_expected_generation(
@@ -319,9 +320,7 @@ class StudioDshCapabilityService:
         expected_descriptor_digest: str | None = None,
         expected_generation_id: str | None = None,
     ) -> dict[str, Any]:
-        self._validate_expected_generation(
-            expected_descriptor_digest, expected_generation_id
-        )
+        self._validate_expected_generation(expected_descriptor_digest, expected_generation_id)
         if not _CALL_ID.fullmatch(call_id):
             raise StudioError(
                 "DSH_CAPABILITY_CALL_ID_INVALID",
@@ -503,6 +502,8 @@ class StudioDshCapabilityService:
                 projection=projection,
                 dsh_home=self._dsh_home,
                 cwd=self._workspace,
+                studio_index=Path(__file__).with_name("static") / "index.html",
+                studio_models=self.model_projection() if self.model_projection else None,
                 max_argument_bytes=self._max_argument_bytes,
                 max_result_bytes=self._max_result_bytes,
                 max_request_bytes=self._max_argument_bytes + 16 * 1024,
@@ -586,8 +587,7 @@ class StudioDshCapabilityService:
         generation_id: str | None,
     ) -> None:
         if descriptor_digest is not None and (
-            not isinstance(descriptor_digest, str)
-            or not _DIGEST.fullmatch(descriptor_digest)
+            not isinstance(descriptor_digest, str) or not _DIGEST.fullmatch(descriptor_digest)
         ):
             raise StudioError(
                 "DSH_CAPABILITY_DESCRIPTOR_INVALID",
@@ -595,8 +595,7 @@ class StudioDshCapabilityService:
                 status_code=422,
             )
         if generation_id is not None and (
-            not isinstance(generation_id, str)
-            or not _GENERATION_ID.fullmatch(generation_id)
+            not isinstance(generation_id, str) or not _GENERATION_ID.fullmatch(generation_id)
         ):
             raise StudioError(
                 "DSH_CAPABILITY_GENERATION_INVALID",
@@ -611,15 +610,9 @@ class StudioDshCapabilityService:
         expected_generation_id: str | None,
     ) -> None:
         if (
-            (
-                expected_descriptor_digest is not None
-                and descriptor.descriptor_digest != expected_descriptor_digest
-            )
-            or (
-                expected_generation_id is not None
-                and expected_generation_id != self._generation_id
-            )
-        ):
+            expected_descriptor_digest is not None
+            and descriptor.descriptor_digest != expected_descriptor_digest
+        ) or (expected_generation_id is not None and expected_generation_id != self._generation_id):
             raise StudioError(
                 "DSH_CAPABILITY_GENERATION_CHANGED",
                 "DSH capability generation 已变化，请刷新后重试",
@@ -833,5 +826,4 @@ __all__ = [
     "DshCapabilityRuntimeSnapshot",
     "DshCapabilitySnapshot",
     "StudioDshCapabilityService",
-    "dsh_ui_mcp_call_id",
 ]

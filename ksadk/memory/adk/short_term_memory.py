@@ -33,6 +33,7 @@ from ksadk.compat.adk_compat import (
     InMemorySessionService,
     Session,
 )
+from ksadk.sessions.topology import StorageTarget, resolve_persistence_topology
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,20 @@ def _normalize_backend_name(backend: str) -> str:
 
 
 def _normalize_database_url(db_url: str) -> str:
-    """Normalize sqlite URLs for google.adk DatabaseSessionService.
+    """Normalize database URLs for google.adk DatabaseSessionService.
 
-    ADK uses SQLAlchemy async engines underneath, so plain `sqlite:///...`
-    URLs fail while `sqlite+aiosqlite:///...` works.
+    ADK uses SQLAlchemy async engines underneath, so plain PostgreSQL and
+    SQLite URLs need their corresponding async driver schemes.
     """
     normalized = str(db_url or "").strip()
     if not normalized:
         return ""
+    if normalized.startswith("postgresql+asyncpg:"):
+        return normalized
+    if normalized.startswith("postgresql:"):
+        return "postgresql+asyncpg:" + normalized[len("postgresql:") :]
+    if normalized.startswith("postgres:"):
+        return "postgresql+asyncpg:" + normalized[len("postgres:") :]
     if normalized.startswith("sqlite+aiosqlite:"):
         return normalized
     if normalized.startswith("sqlite:"):
@@ -159,9 +166,7 @@ class ShortTermMemory(BaseModel):
             self._session_service = ResilientADKSessionService(
                 DatabaseSessionService(db_url=normalized_db_url, **service_kwargs)
             )
-            logger.info(
-                f"ShortTermMemory: using DatabaseSessionService " f"({normalized_db_url[:30]}...)"
-            )
+            logger.info("ShortTermMemory: using DatabaseSessionService")
         except ImportError:
             logger.warning(
                 "DatabaseSessionService not available. "
@@ -170,10 +175,11 @@ class ShortTermMemory(BaseModel):
             )
             self._session_service = InMemorySessionService()
             self.backend = "local"
-        except Exception as e:
+        except Exception as exc:
             logger.error(
-                f"Failed to create DatabaseSessionService: {e}. "
-                f"Falling back to InMemorySessionService."
+                "Failed to create DatabaseSessionService (%s); "
+                "falling back to InMemorySessionService.",
+                type(exc).__name__,
             )
             self._session_service = InMemorySessionService()
             self.backend = "local"
@@ -238,6 +244,13 @@ class ShortTermMemory(BaseModel):
             return None
 
     @classmethod
+    def from_persistence_target(cls, target: StorageTarget) -> "ShortTermMemory":
+        """Build ADK-native state from an effective Checkpoint storage target."""
+        if target.backend == "postgres" and target.dsn:
+            return cls(backend="database", db_url=_normalize_database_url(target.dsn))
+        return cls(backend="local")
+
+    @classmethod
     def from_env(cls) -> "ShortTermMemory":
         """从环境变量创建 ShortTermMemory
 
@@ -251,6 +264,10 @@ class ShortTermMemory(BaseModel):
             KSADK_SESSION_BACKEND: 统一 session backend fallback
             KSADK_SESSION_DSN: 统一 session DSN fallback
         """
+        topology = resolve_persistence_topology(framework="adk")
+        if topology.checkpoint.backend == "postgres" and topology.checkpoint.dsn:
+            return cls.from_persistence_target(topology.checkpoint)
+
         explicit_backend = _normalize_backend_name(
             _env_first(
                 "KSADK_ADK_SESSION_BACKEND",

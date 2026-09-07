@@ -102,9 +102,7 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
         request_config["goal_objective"] = goal_objective
     raw_skills = config.get("skills")
     if isinstance(raw_skills, (list, tuple)):
-        request_config["skills"] = [
-            dict(item) for item in raw_skills if isinstance(item, dict)
-        ]
+        request_config["skills"] = [dict(item) for item in raw_skills if isinstance(item, dict)]
     defaults["config"] = request_config
     return defaults
 
@@ -129,9 +127,7 @@ def apply_runtime_start_request_defaults(
     default_model = str(defaults.get("model") or "").strip() or None
     requested_model = str(request.model or "").strip()
     allowed_models = {
-        str(item).strip()
-        for item in (defaults.get("allowed_models") or [])
-        if str(item).strip()
+        str(item).strip() for item in (defaults.get("allowed_models") or []) if str(item).strip()
     }
     selected_model = (
         requested_model
@@ -162,9 +158,7 @@ def _manifest_mcp_overrides(config: dict[str, Any]) -> list[str]:
         if not isinstance(server, dict):
             continue
         name = str(server.get("name") or "").strip()
-        transport = str(
-            server.get("transport") or ("http" if server.get("url") else "")
-        ).lower()
+        transport = str(server.get("transport") or ("http" if server.get("url") else "")).lower()
         url = str(server.get("url") or "").strip()
         if not name:
             continue
@@ -211,6 +205,12 @@ def _codex_plugin_bootstrap(config: Mapping[str, Any]) -> CodexPluginBootstrap |
 
     raw = config.get("codex_plugin_bootstrap")
     if raw is None:
+        declared = config.get("plugins") or []
+        if any(not isinstance(item, Mapping) or item.get("enabled", True) for item in declared):
+            raise ValueError(
+                "原生插件绑定缺少可验证的交付快照；当前启动只收到 plugins 声明，"
+                "无法恢复插件。请提供完整插件交付配置后再启动。"
+            )
         return None
     if not isinstance(raw, Mapping):
         raise ValueError("codex_plugin_bootstrap must be an object")
@@ -268,9 +268,7 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
             )
         env = dict(getattr(base_cfg, "env", None) or {})
         isolated_home = _isolated_codex_home(context.project_dir, codex_home_key)
-        bound_skill_paths = _materialize_bound_codex_skills(
-            isolated_home, config.get("skills")
-        )
+        bound_skill_paths = _materialize_bound_codex_skills(isolated_home, config.get("skills"))
         env.setdefault("CODEX_HOME", str(isolated_home))
         # HOME 级隔离：codex app-server 还会按约定扫 ~/.agents/skills、
         # ~/.claude/skills 等宿主目录，仅设 CODEX_HOME 挡不住。隔离 HOME 后这些
@@ -330,9 +328,7 @@ def _isolated_codex_home(project_dir: Any, codex_home_key: str = "unscoped") -> 
     # Source bundles are deliberately mounted read-only in managed runtimes.
     # Keep the preferred workspace-local isolation for local development, but
     # never make a Codex turn depend on being able to mutate that bundle.
-    workspace_home = (
-        Path(str(project_dir)) / ".agentkit" / "codex-homes" / codex_home_key
-    )
+    workspace_home = Path(str(project_dir)) / ".agentkit" / "codex-homes" / codex_home_key
     try:
         workspace_home.mkdir(parents=True, exist_ok=True)
         return workspace_home
@@ -357,9 +353,7 @@ def _isolated_codex_home(project_dir: Any, codex_home_key: str = "unscoped") -> 
     return fallback_home
 
 
-def _materialize_bound_codex_skills(
-    codex_home: Path, value: Any
-) -> dict[str, str]:
+def _materialize_bound_codex_skills(codex_home: Path, value: Any) -> dict[str, str]:
     """Expose immutable Bundle Skills through Codex's native skill catalog.
 
     Passing an arbitrary ``SkillInput`` path is accepted by the Python SDK but

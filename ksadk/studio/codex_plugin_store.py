@@ -75,9 +75,7 @@ class CodexWorkspacePluginSnapshot(ContractModel):
         self, selectors: Iterable[str]
     ) -> tuple[CodexPluginComponentSnapshot, ...]:
         requested = tuple(dict.fromkeys(str(item) for item in selectors))
-        by_selector = {
-            component_selector(component): component for component in self.components
-        }
+        by_selector = {component_selector(component): component for component in self.components}
         missing = [selector for selector in requested if selector not in by_selector]
         if missing:
             raise StudioError(
@@ -90,9 +88,7 @@ class CodexWorkspacePluginSnapshot(ContractModel):
 
 
 class CodexPinnedMarketplace(ContractModel):
-    marketplace_format: Literal["codex.pinned-marketplace/v1"] = (
-        "codex.pinned-marketplace/v1"
-    )
+    marketplace_format: Literal["codex.pinned-marketplace/v1"] = "codex.pinned-marketplace/v1"
     marketplace_name: str
     marketplace_path: str
     marketplace_digest: str
@@ -149,9 +145,7 @@ def _sha256(raw: bytes) -> str:
 def _snapshot_identity(snapshot: CodexInstalledPluginSnapshot) -> dict[str, Any]:
     return {
         "source": snapshot.source.model_dump(by_alias=True, exclude_none=True, mode="json"),
-        "manifest": snapshot.manifest.model_dump(
-            by_alias=True, exclude_none=True, mode="json"
-        ),
+        "manifest": snapshot.manifest.model_dump(by_alias=True, exclude_none=True, mode="json"),
         "manifestDigest": snapshot.manifest_digest,
         "artifactDigest": snapshot.artifact_digest,
         "components": [
@@ -211,9 +205,7 @@ class CodexPluginSnapshotStore:
         self.workspace = workspace
         self.root = workspace.resolve(".agentkit/codex-plugin-snapshots")
 
-    def lookup(
-        self, snapshot: CodexInstalledPluginSnapshot
-    ) -> CodexWorkspacePluginSnapshot | None:
+    def lookup(self, snapshot: CodexInstalledPluginSnapshot) -> CodexWorkspacePluginSnapshot | None:
         """Return an already-admitted snapshot without mutating the workspace.
 
         The installed bytes still need to be hashed to derive their content
@@ -227,9 +219,7 @@ class CodexPluginSnapshotStore:
             return None
         return self.load(digest)
 
-    def commit(
-        self, snapshot: CodexInstalledPluginSnapshot
-    ) -> CodexWorkspacePluginSnapshot:
+    def commit(self, snapshot: CodexInstalledPluginSnapshot) -> CodexWorkspacePluginSnapshot:
         source_root = Path(snapshot.installed_root)
         try:
             observed = snapshot_installed_codex_plugin(source_root, source=snapshot.source)
@@ -414,9 +404,7 @@ class CodexPluginSnapshotStore:
             raise ValueError("plugin_lock_digest must be a lowercase sha256 digest")
         selected_plugins = tuple(selections)
         suffix = plugin_lock_digest.removeprefix("sha256:")
-        directory = self.workspace.resolve(
-            Path(".agentkit/codex-plugin-marketplaces") / suffix
-        )
+        directory = self.workspace.resolve(Path(".agentkit/codex-plugin-marketplaces") / suffix)
         receipt_path = directory / "receipt.json"
         if receipt_path.is_file():
             receipt = CodexPinnedMarketplace.model_validate_json(
@@ -473,8 +461,7 @@ class CodexPluginSnapshotStore:
                         },
                         "category": (
                             snapshot.manifest.interface.category
-                            if snapshot.manifest.interface
-                            and snapshot.manifest.interface.category
+                            if snapshot.manifest.interface and snapshot.manifest.interface.category
                             else "Productivity"
                         ),
                     }
@@ -576,9 +563,7 @@ class CodexPluginSnapshotStore:
         # Remove all source declaration files before writing canonical selected
         # companions. Inline MCP declarations are replaced in plugin.json.
         companion_paths = {
-            relative
-            for _name, _config, relative in (*mcp_servers, *hooks, *apps)
-            if relative
+            relative for _name, _config, relative in (*mcp_servers, *hooks, *apps) if relative
         }
         if isinstance(manifest.mcp_servers, str):
             companion_paths.add(manifest.mcp_servers)
@@ -587,9 +572,7 @@ class CodexPluginSnapshotStore:
         if isinstance(manifest.hooks, str):
             companion_paths.add(manifest.hooks)
         elif isinstance(manifest.hooks, tuple):
-            companion_paths.update(
-                item for item in manifest.hooks if isinstance(item, str)
-            )
+            companion_paths.update(item for item in manifest.hooks if isinstance(item, str))
         elif manifest.hooks is None and (root / "hooks" / "hooks.json").is_file():
             companion_paths.add("./hooks/hooks.json")
         for relative in companion_paths:
@@ -597,9 +580,7 @@ class CodexPluginSnapshotStore:
             if candidate.is_file():
                 candidate.unlink()
         selected_mcp = {
-            name: config
-            for name, config, _path in mcp_servers
-            if ("mcp", name) in selected_keys
+            name: config for name, config, _path in mcp_servers if ("mcp", name) in selected_keys
         }
         selected_hooks = {
             name: config["hooks"]
@@ -607,22 +588,14 @@ class CodexPluginSnapshotStore:
             if ("hook", name) in selected_keys
         }
         selected_apps = {
-            name: config
-            for name, config, _path in apps
-            if ("app", name) in selected_keys
+            name: config for name, config, _path in apps if ("app", name) in selected_keys
         }
         if selected_mcp:
-            (root / ".mcp.json").write_bytes(
-                _canonical_bytes({"mcpServers": selected_mcp}) + b"\n"
-            )
+            (root / ".mcp.json").write_bytes(_canonical_bytes({"mcpServers": selected_mcp}) + b"\n")
         if selected_hooks:
-            (root / "hooks.json").write_bytes(
-                _canonical_bytes({"hooks": selected_hooks}) + b"\n"
-            )
+            (root / "hooks.json").write_bytes(_canonical_bytes({"hooks": selected_hooks}) + b"\n")
         if selected_apps:
-            (root / ".app.json").write_bytes(
-                _canonical_bytes({"apps": selected_apps}) + b"\n"
-            )
+            (root / ".app.json").write_bytes(_canonical_bytes({"apps": selected_apps}) + b"\n")
 
         payload = manifest.model_dump(by_alias=True, exclude_none=True, mode="json")
         for key in ("skills", "mcpServers", "mcp_servers", "hooks", "apps"):

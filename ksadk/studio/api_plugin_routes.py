@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import base64
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable, Literal
-from urllib.parse import urlencode, urlparse
+from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ksadk.plugins.bridges.codex import (
@@ -30,7 +30,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginMutationError,
     DshPluginNotFoundError,
     DshProfilePluginBridge,
-    validate_dsh_registry_source,
+    validate_dsh_registry_request,
 )
 from ksadk.plugins.codex_manifest import (
     CodexInstalledPluginSnapshot,
@@ -38,27 +38,14 @@ from ksadk.plugins.codex_manifest import (
     snapshot_installed_codex_plugin,
 )
 from ksadk.plugins.dsh_toolchain import DshToolchainError, DshToolchainManager
+from ksadk.plugins.host import PluginHostError
 from ksadk.studio.codex_plugin_store import (
     CodexWorkspacePluginSnapshot,
     component_selector,
     find_installed_codex_plugin_root,
 )
-from ksadk.studio.dsh_capability_service import dsh_ui_mcp_call_id
-from ksadk.studio.dsh_ui_sandbox import (
-    DSH_UI_PROTOCOL_VERSION,
-    DshClientBundleExecution,
-    DshUiErrorResponse,
-    DshUiResponseError,
-    DshUiSuccessResponse,
-    dsh_ui_client_bundle_headers,
-    render_dsh_ui_sandbox_document,
-    select_dsh_client_bundle_execution,
-)
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
-
-DSH_UI_SANDBOX_FRAME_PATH = "/api/v1/plugin-ecosystems/dsh/sandbox/frame"
-DSH_UI_SANDBOX_BUNDLE_PATH = "/api/v1/plugin-ecosystems/dsh/sandbox/client-bundle"
 
 
 class CodexPluginInstallRequest(BaseModel):
@@ -95,45 +82,12 @@ class DshPluginInstallRequest(BaseModel):
             raise ValueError(
                 "Studio only accepts registry packages; use the local CLI for development"
             )
-        return validate_dsh_registry_source(normalized)
+        return validate_dsh_registry_request(normalized)
 
 
 class DshPluginUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     accept_host_permissions: bool = Field(default=False, alias="acceptHostPermissions")
-
-
-class DshUiSessionCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    plugin_id: str = Field(alias="pluginId", min_length=1, max_length=256)
-    client_digest: str = Field(
-        alias="clientDigest", pattern=r"^sha256:[0-9a-f]{64}$"
-    )
-    tool_ids: list[str] = Field(default_factory=list, alias="toolIds", max_length=256)
-    agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=256)
-
-    @field_validator("tool_ids")
-    @classmethod
-    def validate_tool_ids(cls, value: list[str]) -> list[str]:
-        if any(
-            not item
-            or len(item) > 128
-            or re.fullmatch(r"[A-Za-z0-9_.:-]+", item) is None
-            for item in value
-        ):
-            raise ValueError("toolIds contains an invalid DSH tool name")
-        if len(value) != len(set(value)):
-            raise ValueError("toolIds must be unique")
-        return value
-
-
-class DshUiRelayRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    source_id: str = Field(
-        alias="sourceId", pattern=r"^frame_[A-Za-z0-9_-]{16,96}$"
-    )
-    frame_origin: Literal["null"] = Field(default="null", alias="frameOrigin")
-    message: dict[str, Any]
 
 
 def _studio_codex_home(studio: StudioService) -> tuple[Path, str]:
@@ -160,7 +114,7 @@ def _studio_dsh_options(studio: StudioService) -> tuple[Path, str, tuple[str, ..
             # Keep the bridge's established PATH lookup when the optional
             # pinned toolchain has not been installed or is unusable.
             command = None
-    profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "studio"
+    profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
     return home, profile, command, "explicit" if configured_home else "workspace-isolated"
 
 
@@ -197,13 +151,20 @@ def _public_codex_source(source: BaseModel) -> dict[str, Any]:
 def _public_codex_inventory(
     inventory: CodexPluginInventory, *, host: CodexBridgeHost, home_mode: str
 ) -> dict[str, Any]:
+    presentation = _public_plugin_interface(inventory.interface)
+    if not presentation.get("logoUrl"):
+        artwork = _local_plugin_artwork(inventory)
+        if artwork:
+            presentation["logoUrl"] = artwork
     return {
         "ecosystem": "codex",
         "integrationMode": "bridged",
         "pluginId": inventory.plugin_id,
         "resolvedVersion": inventory.version,
         "distributionName": inventory.name,
-        "displayName": inventory.name,
+        "displayName": inventory.interface.get("displayName") or inventory.name,
+        "description": inventory.interface.get("shortDescription"),
+        "interface": presentation,
         "marketplaceName": inventory.marketplace_name,
         "source": _public_codex_source(inventory.source),
         "installed": inventory.installed,
@@ -217,6 +178,73 @@ def _public_codex_inventory(
         "runtimeState": None,
         "host": _public_host("codex", host, home_mode=home_mode),
     }
+
+
+def _local_plugin_artwork(inventory: CodexPluginInventory) -> str | None:
+    """Read only bounded image assets inside the host-reported local plugin.
+
+    Never expose host paths, accept browser-supplied filenames, or fetch URLs.
+    SVGs remain image data (not executable same-origin HTML documents).
+    """
+    if inventory.source.type != "local":
+        return None
+    root = Path(inventory.source.path)
+    if not root.is_absolute():
+        if not inventory.marketplace_path:
+            return None
+        root = Path(inventory.marketplace_path) / root
+    root = root.resolve()
+    if not (root / ".codex-plugin" / "plugin.json").is_file():
+        return None
+    for key in ("logo", "composerIcon"):
+        raw = inventory.interface.get(key)
+        if not isinstance(raw, str):
+            continue
+        path = Path(raw)
+        path = (path if path.is_absolute() else root / path).resolve()
+        if not path.is_relative_to(root):
+            continue
+        try:
+            with path.open("rb") as stream:
+                data = stream.read(256 * 1024 + 1)
+        except OSError:
+            continue
+        if len(data) > 256 * 1024:
+            continue
+        mime = None
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            mime = "image/png"
+        elif data.startswith(b"\xff\xd8\xff"):
+            mime = "image/jpeg"
+        elif data.startswith((b"GIF87a", b"GIF89a")):
+            mime = "image/gif"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            mime = "image/webp"
+        elif path.suffix.lower() == ".svg" and b"<svg" in data[:1024]:
+            mime = "image/svg+xml"
+        if mime:
+            return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    return None
+
+
+def _public_plugin_interface(value: dict[str, Any]) -> dict[str, Any]:
+    """Project marketplace display data, never filesystem paths or host state."""
+    result = {
+        key: value[key] for key in (
+            "displayName", "shortDescription", "longDescription", "developerName", "category",
+        ) if isinstance(value.get(key), str)
+    }
+    for key in ("defaultPrompt", "capabilities"):
+        if isinstance(value.get(key), list):
+            result[key] = [item for item in value[key] if isinstance(item, str)]
+    for key in (
+        "logoUrl", "logoUrlDark", "composerIconUrl", "websiteUrl",
+        "privacyPolicyUrl", "termsOfServiceUrl",
+    ):
+        raw = value.get(key)
+        if isinstance(raw, str) and urlparse(raw).scheme == "https" and not urlparse(raw).username:
+            result[key] = raw
+    return result
 
 
 def _public_codex_detail(
@@ -390,9 +418,7 @@ def _commit_codex_snapshot(
     codex_home: Path,
     inventory: CodexPluginInventory,
 ) -> CodexWorkspacePluginSnapshot:
-    return studio.codex_plugin_snapshots.commit(
-        _observe_codex_snapshot(codex_home, inventory)
-    )
+    return studio.codex_plugin_snapshots.commit(_observe_codex_snapshot(codex_home, inventory))
 
 
 def _snapshot_failure_details(error: Exception) -> dict[str, Any]:
@@ -431,7 +457,6 @@ def _public_dsh_inventory(
     home_mode: str,
     runtime_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    client = inventory.client_bundle
     if inventory.source_digest is not None:
         source = {
             "type": "local-immutable",
@@ -464,80 +489,8 @@ def _public_dsh_inventory(
         "riskDisclosures": list(inventory.risk_disclosures),
         "isolation": "host-managed",
         "runtimeState": runtime_state,
-        "clientBundle": (
-            {
-                "platform": client.platform,
-                "digest": client.digest,
-                "contentBytes": client.content_bytes,
-                "external": list(client.external),
-                "inject": list(client.inject),
-                "compatible": client.compatible,
-                "incompatibilityReason": client.incompatibility_reason or None,
-            }
-            if client is not None
-            else None
-        ),
         "host": _public_host("dsh", host, home_mode=home_mode),
     }
-
-
-def _public_dsh_client_bundle(
-    inventory: DshPluginInventory,
-    *,
-    allow_legacy_top_level: bool = False,
-) -> dict[str, Any] | None:
-    client = inventory.client_bundle
-    if client is None:
-        return None
-    sandbox_compatible, sandbox_reason = _dsh_sandbox_client_compatibility(inventory)
-    query = urlencode({"pluginName": inventory.name, "digest": client.digest})
-    execution = select_dsh_client_bundle_execution(
-        sandbox_compatible=sandbox_compatible,
-        legacy_compatible=client.compatible,
-        explicit_legacy_opt_in=allow_legacy_top_level,
-    )
-    return {
-        "pluginId": inventory.name,
-        "enabled": inventory.enabled,
-        # The source-free legacy Studio loader understands only this field and
-        # executes compatible bundles in the authenticated top-level window.
-        # Keep it false unless a trusted caller adds an explicit legacy gate.
-        "compatible": execution == DshClientBundleExecution.LEGACY_TOP_LEVEL,
-        "sandboxCompatible": sandbox_compatible,
-        "executionMode": execution.value,
-        "digest": client.digest,
-        "contentBytes": client.content_bytes,
-        "external": list(client.external),
-        "inject": list(client.inject),
-        "incompatibilityReason": client.incompatibility_reason or None,
-        "sandboxIncompatibilityReason": sandbox_reason,
-        "url": (
-            f"/api/v1/plugin-ecosystems/dsh/client-bundle?{query}"
-            if execution == DshClientBundleExecution.LEGACY_TOP_LEVEL
-            else None
-        ),
-        "sandboxBundleUrl": (
-            f"{DSH_UI_SANDBOX_BUNDLE_PATH}?{query}" if sandbox_compatible else None
-        ),
-    }
-
-
-def _dsh_sandbox_client_compatibility(
-    inventory: DshPluginInventory,
-) -> tuple[bool, str | None]:
-    """Accept only bundles that need no host module graph inside the opaque frame."""
-
-    client = inventory.client_bundle
-    if client is None:
-        return False, "plugin does not declare a web client bundle"
-    if not client.compatible:
-        return False, client.incompatibility_reason or "client bundle is not compatible"
-    if client.external or client.inject:
-        return (
-            False,
-            "sandbox client bundle must be self-contained (external and inject must be empty)",
-        )
-    return True, None
 
 
 def _codex_error(error: Exception) -> StudioError:
@@ -597,21 +550,33 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
         except Exception as error:
             raise _dsh_error(error) from None
 
-    async def cancel_ui_calls(
-        session_calls: dict[str, tuple[str, ...]],
-    ) -> None:
-        internal_ids = (
-            dsh_ui_mcp_call_id(session_id, call_id)
-            for session_id, call_ids in session_calls.items()
-            for call_id in call_ids
-        )
-        await asyncio.gather(
-            *(studio.dsh_capabilities.cancel(call_id) for call_id in internal_ids),
-            return_exceptions=True,
-        )
+    @app.post("/api/v1/plugin-ecosystems/dsh/core/session")
+    async def start_dsh_core_session(response: Response):
+        """Start the official full Core DSH Web profile on demand.
 
-    async def purge_expired_ui_sessions() -> None:
-        await cancel_ui_calls(studio.dsh_ui_sessions.purge_expired())
+        The token-bearing URL is returned only from this authenticated,
+        CSRF-protected local POST and must never be persisted in Studio state.
+        """
+
+        try:
+            lease = await studio.dsh_capabilities.connector_lease()
+            descriptor = await studio.dsh_capabilities.describe()
+            browser_url = lease.browser_url()
+        except PluginHostError as error:
+            raise StudioError(
+                "DSH_CORE_RUNTIME_UNAVAILABLE",
+                "完整 DSH Core 当前无法启动",
+                status_code=503,
+                details={"reason": error.code},
+            ) from error
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "protocolVersion": "ksadk.dsh-core-runtime/v1",
+            "version": descriptor.dsh_version,
+            "profile": descriptor.profile,
+            "endpoint": browser_url.split("?", 1)[0],
+            "browserUrl": browser_url,
+        }
 
     @app.get("/api/v1/plugin-ecosystems/codex/plugins")
     async def list_codex_plugins(
@@ -801,99 +766,13 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.get("/api/v1/plugin-ecosystems/dsh/profile")
     async def get_dsh_profile_projection():
-        host, result = await asyncio.to_thread(
-            call_dsh, lambda bridge: (bridge.project_profile(), bridge.list_plugins())
+        host, projection = await asyncio.to_thread(
+            call_dsh, lambda bridge: bridge.project_profile()
         )
-        projection, items = result
-        bundles = [
-            projected
-            for item in items
-            if item.enabled
-            for projected in [_public_dsh_client_bundle(item)]
-            if projected is not None
-        ]
-        graph_hash = hashlib.sha256(projection.config_digest.encode("utf-8"))
-        for bundle in bundles:
-            for value in (str(bundle["pluginId"]), str(bundle["digest"])):
-                encoded = value.encode("utf-8")
-                graph_hash.update(f"{len(encoded)}:".encode("ascii"))
-                graph_hash.update(encoded)
         return {
             "host": _public_host("dsh", host, home_mode=dsh_mode),
             "profile": projection.model_dump(mode="json", by_alias=True),
-            "clientGraphDigest": f"sha256:{graph_hash.hexdigest()}",
-            "clientBundles": bundles,
         }
-
-    @app.get("/api/v1/plugin-ecosystems/dsh/client-bundle")
-    async def get_dsh_client_bundle(
-        plugin_name: str = Query(alias="pluginName", min_length=1, max_length=256),
-        digest: str = Query(pattern=r"^sha256:[0-9a-f]{64}$"),
-    ):
-        _, content = await asyncio.to_thread(
-            call_dsh,
-            lambda bridge: bridge.read_client_bundle(plugin_name, expected_digest=digest),
-        )
-        return Response(
-            content=content,
-            media_type="application/javascript; charset=utf-8",
-            headers={
-                "Cache-Control": "private, max-age=31536000, immutable",
-                "ETag": f'"{digest}"',
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
-    @app.get(DSH_UI_SANDBOX_BUNDLE_PATH)
-    async def get_dsh_sandbox_client_bundle(
-        plugin_name: str = Query(alias="pluginName", min_length=1, max_length=256),
-        digest: str = Query(pattern=r"^sha256:[0-9a-f]{64}$"),
-    ):
-        """Serve code only, anonymously, after rechecking the enabled digest fence."""
-
-        _, item_and_content = await asyncio.to_thread(
-            call_dsh,
-            lambda bridge: (
-                bridge.get_plugin(plugin_name),
-                bridge.read_client_bundle(plugin_name, expected_digest=digest),
-            ),
-        )
-        item, content = item_and_content
-        if not item.enabled:
-            raise StudioError(
-                "DSH_UI_CLIENT_UNAVAILABLE",
-                "DSH UI client 未启用，不能在 sandbox 中执行",
-                status_code=409,
-            )
-        sandbox_compatible, _reason = _dsh_sandbox_client_compatibility(item)
-        if not sandbox_compatible:
-            raise StudioError(
-                "DSH_UI_CLIENT_NOT_SELF_CONTAINED",
-                "DSH UI client 依赖宿主模块图，不能在独立 sandbox 中执行",
-                status_code=409,
-            )
-        return Response(content=content, headers=dict(dsh_ui_client_bundle_headers(digest)))
-
-    @app.get(DSH_UI_SANDBOX_FRAME_PATH)
-    async def get_dsh_sandbox_frame(
-        ui_session_id: str = Query(
-            alias="uiSessionId", pattern=r"^dshui_[A-Za-z0-9_-]{24,96}$"
-        ),
-    ):
-        """Return a token-free opaque-origin shell for one live UI session."""
-
-        await purge_expired_ui_sessions()
-        grant = studio.dsh_ui_sessions.frame_grant(ui_session_id)
-        bundle_query = urlencode(
-            {"pluginName": grant.plugin_id, "digest": grant.client_digest}
-        )
-        document = render_dsh_ui_sandbox_document(
-            grant,
-            client_bundle_url=f"{DSH_UI_SANDBOX_BUNDLE_PATH}?{bundle_query}",
-            title=f"{grant.plugin_id} extension",
-            limits=studio.dsh_ui_sessions.limits,
-        )
-        return Response(content=document.html, headers=dict(document.response_headers))
 
     @app.get("/api/v1/plugin-ecosystems/dsh/capabilities")
     async def get_dsh_capabilities():
@@ -909,239 +788,8 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             "inventoryDigest": descriptor.inventory_digest,
             "state": inventory.model_dump(by_alias=True, mode="json"),
             "tools": [tool.model_dump(by_alias=True, mode="json") for tool in tools],
-            "bindableResource": resource.model_dump(
-                by_alias=True, exclude_none=True, mode="json"
-            ),
-            "uiExtensionContract": {
-                "format": "agentkit.dsh-ui-extension/v1",
-                "rendering": "sandboxed-iframe",
-                "protocolVersion": DSH_UI_PROTOCOL_VERSION,
-                "messageMethods": ["listTools", "callTool", "cancelTool"],
-                "contributionTypes": [
-                    "studio.sidebar.navigation",
-                    "studio.route",
-                    "studio.workspace.tab",
-                ],
-                "payloadKind": "declarative-metadata-only",
-            },
+            "bindableResource": resource.model_dump(by_alias=True, exclude_none=True, mode="json"),
         }
-
-    async def revoke_ui_session(ui_session_id: str) -> tuple[str, ...]:
-        calls = studio.dsh_ui_sessions.revoke_session(ui_session_id)
-        await cancel_ui_calls({ui_session_id: calls})
-        return calls
-
-    @app.post("/api/v1/plugin-ecosystems/dsh/ui-sessions", status_code=201)
-    async def create_dsh_ui_session(payload: DshUiSessionCreateRequest, request: Request):
-        await purge_expired_ui_sessions()
-        async with studio.dsh_profile_read_transaction():
-            host, item_and_content = await asyncio.to_thread(
-                call_dsh,
-                lambda bridge: (
-                    bridge.get_plugin(payload.plugin_id),
-                    bridge.read_client_bundle(
-                        payload.plugin_id,
-                        expected_digest=payload.client_digest,
-                    ),
-                ),
-            )
-            item, _content = item_and_content
-            sandbox_compatible, _reason = _dsh_sandbox_client_compatibility(item)
-            if (
-                not item.enabled
-                or not sandbox_compatible
-                or item.client_bundle is None
-                or item.client_bundle.digest != payload.client_digest
-            ):
-                raise StudioError(
-                    "DSH_UI_CLIENT_UNAVAILABLE",
-                    "DSH UI client 未启用、不可兼容或摘要已变化",
-                    status_code=409,
-                )
-            descriptor, generation_id = (
-                await studio.dsh_capabilities.descriptor_generation()
-            )
-            descriptor_tools = {tool.name: tool for tool in descriptor.tools}
-            allowed_ids = tuple(
-                sorted(tool_id for tool_id in payload.tool_ids if tool_id in descriptor_tools)
-            )
-            extension_hash = hashlib.sha256(
-                f"{item.name}\0{payload.client_digest}".encode("utf-8")
-            ).hexdigest()[:20]
-            extension_id = f"dsh.ui.{extension_hash}"
-            extension_path = f"/extensions/dsh/{extension_hash}"
-            request_origin = request.headers.get("Origin") or (
-                f"{request.url.scheme}://{request.url.netloc}"
-            )
-            grant = studio.dsh_ui_sessions.create_session(
-                plugin_id=item.name,
-                extension_id=extension_id,
-                client_digest=payload.client_digest,
-                descriptor_digest=descriptor.descriptor_digest,
-                generation_id=generation_id,
-                parent_origin=request_origin,
-                allowed_tool_ids=allowed_ids,
-                agent_id=payload.agent_id,
-            )
-        frame_url = f"{DSH_UI_SANDBOX_FRAME_PATH}?{urlencode({'uiSessionId': grant.session_id})}"
-        return {
-            "uiSessionId": grant.session_id,
-            "sourceId": grant.source_id,
-            "expiresInSeconds": grant.expires_in_seconds,
-            "protocolVersion": grant.protocol_version,
-            "descriptorDigest": descriptor.descriptor_digest,
-            "inventoryDigest": descriptor.inventory_digest,
-            "allowedTools": [
-                descriptor_tools[tool_id].model_dump(by_alias=True, mode="json")
-                for tool_id in allowed_ids
-            ],
-            "handshake": grant.host_handshake(),
-            "frame": {
-                "url": frame_url,
-                "sandbox": "allow-scripts",
-                "referrerPolicy": "no-referrer",
-                "credentialless": True,
-            },
-            "extensionPoints": [
-                {
-                    "type": "studio.sidebar.navigation",
-                    "id": f"{extension_id}.navigation",
-                    "label": item.display_name,
-                    "path": extension_path,
-                },
-                {
-                    "type": "studio.route",
-                    "id": f"{extension_id}.route",
-                    "path": extension_path,
-                    "workspaceTabId": extension_id,
-                },
-                {
-                    "type": "studio.workspace.tab",
-                    "id": extension_id,
-                    "label": item.display_name,
-                    "renderer": {
-                        "type": "sandboxed-iframe",
-                        "frameUrl": frame_url,
-                    },
-                },
-            ],
-            "host": _public_host("dsh", host, home_mode=dsh_mode),
-        }
-
-    @app.post("/api/v1/plugin-ecosystems/dsh/ui-sessions/{ui_session_id}/messages")
-    async def relay_dsh_ui_message(
-        ui_session_id: str,
-        payload: DshUiRelayRequest,
-        request: Request,
-    ):
-        await purge_expired_ui_sessions()
-        request_origin = request.headers.get("Origin") or (
-            f"{request.url.scheme}://{request.url.netloc}"
-        )
-        message = payload.message
-        if message.get("sessionId") != ui_session_id:
-            raise StudioError(
-                "DSH_UI_SESSION_INVALID",
-                "DSH UI 会话无效、已过期或来源不匹配",
-                status_code=403,
-            )
-        authorized = studio.dsh_ui_sessions.authorize_message(
-            message,
-            parent_origin=request_origin,
-            source_id=payload.source_id,
-            frame_origin=payload.frame_origin,
-        )
-        descriptor, generation_id = await studio.dsh_capabilities.descriptor_generation()
-        if (
-            descriptor.descriptor_digest != authorized.descriptor_digest
-            or generation_id != authorized.generation_id
-        ):
-            await revoke_ui_session(ui_session_id)
-            raise StudioError(
-                "DSH_UI_DESCRIPTOR_CHANGED",
-                "DSH capability descriptor 已变化，请重新打开插件界面",
-                status_code=409,
-            )
-
-        def success(result: Any) -> dict[str, Any]:
-            return DshUiSuccessResponse(
-                session_id=ui_session_id,
-                request_id=authorized.request_id,
-                result=result,
-            ).model_dump(by_alias=True, mode="json")
-
-        def failure(error: StudioError) -> dict[str, Any]:
-            code = error.code if re.fullmatch(r"[A-Z0-9_]{1,128}", error.code) else "DSH_UI_ERROR"
-            return DshUiErrorResponse(
-                session_id=ui_session_id,
-                request_id=authorized.request_id,
-                error=DshUiResponseError(code=code, message=error.message[:1024]),
-            ).model_dump(by_alias=True, mode="json")
-
-        if authorized.method == "listTools":
-            try:
-                tools = await studio.dsh_capabilities.list_tools(
-                    expected_descriptor_digest=authorized.descriptor_digest,
-                    expected_generation_id=authorized.generation_id,
-                )
-            except StudioError as error:
-                if error.code == "DSH_CAPABILITY_GENERATION_CHANGED":
-                    await revoke_ui_session(ui_session_id)
-                    raise StudioError(
-                        "DSH_UI_DESCRIPTOR_CHANGED",
-                        "DSH capability descriptor 已变化，请重新打开插件界面",
-                        status_code=409,
-                    ) from error
-                return failure(error)
-            allowed = set(authorized.allowed_tool_ids)
-            return success(
-                {
-                    "tools": [
-                        tool.model_dump(by_alias=True, mode="json")
-                        for tool in tools
-                        if tool.name in allowed
-                    ]
-                }
-            )
-        internal_call_id = dsh_ui_mcp_call_id(
-            ui_session_id,
-            authorized.call_id or "missing",
-        )
-        if authorized.method == "cancelTool":
-            cancelled = await studio.dsh_capabilities.cancel(internal_call_id)
-            return success({"cancelled": cancelled})
-        try:
-            try:
-                result = await studio.dsh_capabilities.call_tool(
-                    call_id=internal_call_id,
-                    tool_name=authorized.tool_id or "",
-                    arguments=authorized.arguments or {},
-                    deadline_ms=authorized.deadline_ms or 30_000,
-                    expected_descriptor_digest=authorized.descriptor_digest,
-                    expected_generation_id=authorized.generation_id,
-                )
-                return success(result)
-            except StudioError as error:
-                if error.code == "DSH_CAPABILITY_GENERATION_CHANGED":
-                    await revoke_ui_session(ui_session_id)
-                    raise StudioError(
-                        "DSH_UI_DESCRIPTOR_CHANGED",
-                        "DSH capability descriptor 已变化，请重新打开插件界面",
-                        status_code=409,
-                    ) from error
-                return failure(error)
-        finally:
-            if authorized.call_id is not None:
-                studio.dsh_ui_sessions.complete_call(
-                    ui_session_id,
-                    authorized.call_id,
-                )
-
-    @app.delete("/api/v1/plugin-ecosystems/dsh/ui-sessions/{ui_session_id}", status_code=204)
-    async def revoke_dsh_ui_session(ui_session_id: str):
-        await purge_expired_ui_sessions()
-        await revoke_ui_session(ui_session_id)
-        return Response(status_code=204)
 
     @app.post("/api/v1/plugin-ecosystems/dsh/plugins:install", status_code=201)
     async def install_dsh_plugin(payload: DshPluginInstallRequest):
@@ -1151,9 +799,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
         async def install():  # type: ignore[no-untyped-def]
             return await asyncio.to_thread(
                 call_dsh,
-                lambda bridge: bridge.install_plugin(
-                    payload.source, accept_host_permissions=True
-                ),
+                lambda bridge: bridge.install_plugin(payload.source, accept_host_permissions=True),
             )
 
         host, item = await studio.reconfigure_dsh_profile(install)
@@ -1195,9 +841,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
         async def update():  # type: ignore[no-untyped-def]
             return await asyncio.to_thread(
                 call_dsh,
-                lambda bridge: bridge.update_plugin(
-                    plugin_name, accept_host_permissions=True
-                ),
+                lambda bridge: bridge.update_plugin(plugin_name, accept_host_permissions=True),
             )
 
         host, item = await studio.reconfigure_dsh_profile(update)
@@ -1217,11 +861,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 __all__ = [
     "CodexPluginInstallRequest",
     "CodexPluginSnapshotRequest",
-    "DSH_UI_SANDBOX_BUNDLE_PATH",
-    "DSH_UI_SANDBOX_FRAME_PATH",
     "DshPluginInstallRequest",
     "DshPluginUpdateRequest",
-    "DshUiRelayRequest",
-    "DshUiSessionCreateRequest",
     "register_plugin_routes",
 ]

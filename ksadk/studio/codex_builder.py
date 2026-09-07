@@ -24,6 +24,7 @@ from ksadk.managed_runtime import (
     validate_installed_runtime,
     validate_runtime_binary,
 )
+from ksadk.plugins.artifacts import PluginArtifactReceipt
 from ksadk.plugins.contracts import (
     LockedPluginComponent,
     PluginLock,
@@ -395,6 +396,34 @@ class CodexStudioBuilder:
         )
         return self.repository.save(record)
 
+    def export_plugin_artifact(self, build_id: str) -> tuple[PluginArtifactReceipt, Path]:
+        """Export frozen plugin bytes without mutating the Build or installing.
+
+        This is the C1 content boundary. Deployment must still negotiate
+        control-plane support and validate the target dependency environment.
+        """
+        from ksadk.plugins.artifacts import export_plugin_artifact
+
+        build = self.repository.get(build_id)
+        pinned = build.plugin_marketplace
+        if pinned is None or build.plugin_lock is None:
+            raise StudioError("PLUGIN_ARTIFACT_EMPTY", "此 Build 未绑定原生插件", status_code=422)
+        if plugin_lock_digest(build.plugin_lock) != build.plugin_lock_digest:
+            raise StudioError("PLUGIN_LOCK_INVALID", "Build 插件锁摘要不匹配", status_code=422)
+        if pinned.plugin_lock_digest != build.plugin_lock_digest:
+            raise StudioError("PLUGIN_LOCK_INVALID", "插件快照与 Build 锁不匹配", status_code=422)
+        root = self.plugin_snapshots.verify_marketplace(pinned)
+        receipt, archive = export_plugin_artifact(
+            root,
+            self.workspace.resolve(".agentkit/plugin-artifacts"),
+            runtime_version=build.runtime_version,
+            plugin_lock_digest=build.plugin_lock_digest,
+        )
+        # Reject concurrent modifications; exported bytes must correspond to
+        # the frozen receipt, never a mutable workspace installation.
+        self.plugin_snapshots.verify_marketplace(pinned)
+        return receipt, archive
+
     def is_current(self, record: CodexBuildRecord) -> bool:
         snapshot = self.manifests.load(record.agent_name)
         if record.manifest_sha256 != snapshot.manifest_sha256:
@@ -479,9 +508,7 @@ class CodexStudioBuilder:
         dict[str, dict[str, Any]],
     ]:
         entries: list[PluginLockEntry] = []
-        selections: list[
-            tuple[CodexWorkspacePluginSnapshot, tuple[Any, ...]]
-        ] = []
+        selections: list[tuple[CodexWorkspacePluginSnapshot, tuple[Any, ...]]] = []
         statuses: dict[str, dict[str, Any]] = {}
         for binding in bindings:
             if not binding.enabled:
@@ -528,9 +555,7 @@ class CodexStudioBuilder:
                 )
             )
             hook_selectors = [
-                component_selector(component)
-                for component in selected
-                if component.kind == "hook"
+                component_selector(component) for component in selected if component.kind == "hook"
             ]
             statuses[binding.plugin_ref] = (
                 {

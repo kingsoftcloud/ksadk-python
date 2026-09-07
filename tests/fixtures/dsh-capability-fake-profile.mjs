@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
 
 const args = process.argv.slice(2)
 if (args.includes('--dump-config')) {
@@ -79,8 +80,47 @@ const tools = {
   },
 }
 
+const routes = new Map()
+const server = createServer((request, response) => {
+  const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
+  const route = routes.get(pathname)
+  if (!route) {
+    response.writeHead(404)
+    response.end()
+    return
+  }
+  Promise.resolve(route.handler(request, response)).catch(() => {
+    if (!response.headersSent) response.writeHead(500)
+    response.end()
+  })
+})
+await new Promise((resolve, reject) => {
+  server.once('error', reject)
+  server.listen(0, '127.0.0.1', resolve)
+})
+const address = server.address()
+if (address === null || typeof address === 'string') throw new Error('fake web server failed')
+const webServer = {
+  host: '127.0.0.1',
+  port: address.port,
+  register(route) {
+    if (route.kind !== 'exact' || routes.has(route.path)) throw new Error('invalid fake route')
+    routes.set(route.path, route)
+    return () => routes.delete(route.path)
+  },
+}
+const connection = {
+  authenticatedUrl(baseUrl) {
+    const url = new URL(baseUrl)
+    url.searchParams.set('token', 'fake-browser-launch-token-0123456789abcd')
+    return url.toString()
+  },
+}
+
 const ctx = {
   tools,
+  webServer,
+  connection,
   on(event, listener) {
     listeners.set(event, listener)
     return () => listeners.delete(event)
@@ -107,11 +147,13 @@ if (crashChildPidFile) {
     stdio: 'ignore',
   })
   writeFileSync(crashChildPidFile, String(child.pid), 'utf8')
-  setTimeout(() => process.exit(17), 50)
+  // The test kills the leader after observing startup and this child.
 }
 
 async function shutdown() {
   for (const dispose of disposers.reverse()) await dispose()
+  server.closeAllConnections?.()
+  await new Promise((resolve) => server.close(resolve))
   process.exit(0)
 }
 process.on('SIGTERM', shutdown)

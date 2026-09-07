@@ -246,13 +246,7 @@ class CodexPluginManifest(_CodexUpstreamModel):
     license: str | None = None
     keywords: tuple[str, ...] = ()
     skills: str | tuple[str, ...] | None = None
-    hooks: (
-        str
-        | tuple[str, ...]
-        | dict[str, Any]
-        | tuple[dict[str, Any], ...]
-        | None
-    ) = None
+    hooks: str | tuple[str, ...] | dict[str, Any] | tuple[dict[str, Any], ...] | None = None
     mcp_servers: str | dict[str, dict[str, Any]] | None = Field(
         default=None,
         alias="mcpServers",
@@ -331,8 +325,10 @@ class CodexPluginManifest(_CodexUpstreamModel):
         if value is None:
             return None
         paths = [value] if isinstance(value, str) else value
-        if not isinstance(paths, (list, tuple)) or not paths or not all(
-            isinstance(item, str) for item in paths
+        if (
+            not isinstance(paths, (list, tuple))
+            or not paths
+            or not all(isinstance(item, str) for item in paths)
         ):
             raise ValueError("skills must be a path or non-empty array of paths")
         normalized = tuple(
@@ -617,9 +613,7 @@ def _component_paths(root: Path, manifest: CodexPluginManifest) -> dict[str, tup
                 seen.add(resolved)
 
     skill_paths = (
-        (manifest.skills,)
-        if isinstance(manifest.skills, str)
-        else tuple(manifest.skills or ())
+        (manifest.skills,) if isinstance(manifest.skills, str) else tuple(manifest.skills or ())
     )
     add("skills", skill_paths, (), expected="either")
     mcp_path = manifest.mcp_servers if isinstance(manifest.mcp_servers, str) else None
@@ -727,17 +721,11 @@ def _load_hooks(
                 "Codex hooks manifest description must be a non-empty string"
             )
         if "hooks" not in payload or not isinstance(payload["hooks"], dict):
-            raise CodexPluginManifestError(
-                "Codex hooks manifest must contain a 'hooks' object"
-            )
+            raise CodexPluginManifestError("Codex hooks manifest must contain a 'hooks' object")
         for event, hooks in payload["hooks"].items():
             if not isinstance(event, str) or not event.strip():
-                raise CodexPluginManifestError(
-                    "Codex hook event names must be non-empty strings"
-                )
-            if not isinstance(hooks, list) or not all(
-                isinstance(item, dict) for item in hooks
-            ):
+                raise CodexPluginManifestError("Codex hook event names must be non-empty strings")
+            if not isinstance(hooks, list) or not all(isinstance(item, dict) for item in hooks):
                 raise CodexPluginManifestError(
                     f"Codex hooks for event {event!r} must be an array of objects"
                 )
