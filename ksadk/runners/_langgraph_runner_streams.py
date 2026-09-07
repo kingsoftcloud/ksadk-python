@@ -92,6 +92,7 @@ class _LangGraphStreamMixin:
         model_step_indexes: dict[str, int] = {}
         first_token_seen: set[str] = set()
         next_step_index = 0
+        internal_model_runs: set[str] = set()
 
         def model_run_key(
             event: Mapping[str, Any],
@@ -191,6 +192,19 @@ class _LangGraphStreamMixin:
             async for event in self._agent.astream_events(stream_input, **stream_kwargs):
                 event_kind = event.get("event", "")
 
+                # This metadata is scoped to a model call, not the whole graph.
+                # Remember it because subsequent chunks may omit metadata.
+                event_run_id = str(event.get("run_id") or "")
+                event_metadata = event.get("metadata") or {}
+                internal_output = (
+                    isinstance(event_metadata, Mapping)
+                    and event_metadata.get("ksadk_output_visibility") == "internal"
+                )
+                if event_kind.startswith("on_chat_model_"):
+                    if internal_output and event_run_id:
+                        internal_model_runs.add(event_run_id)
+                    internal_output = internal_output or event_run_id in internal_model_runs
+
                 if event_kind == "on_chat_model_start":
                     model_call_id = str(event.get("run_id") or "")
                     if model_call_id:
@@ -248,6 +262,11 @@ class _LangGraphStreamMixin:
                             run_key = model_run_key(event)
                             stream_usage_run_keys.add(run_key)
                             record_model_usage(event, latest_stream_usage)
+
+                    # Collect usage/lifecycle above even for internal calls, but
+                    # never feed their text into the shared reasoning parser.
+                    if internal_output:
+                        continue
 
                     # 推理内容
                     reasoning = getattr(chunk, "reasoning_content", None)
