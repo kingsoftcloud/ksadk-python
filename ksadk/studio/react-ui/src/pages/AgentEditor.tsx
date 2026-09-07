@@ -5,6 +5,7 @@ import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { apiFetch } from "../api";
 import { showToast } from "../components/Toast";
 import { AgentAppearanceEditor } from "../components/AgentAppearanceEditor";
+import { NativePluginBindings, type NativePluginBinding } from "../components/NativePluginBindings";
 import type { AgentAppearance } from "../components/AgentAvatar";
 import { FormField } from "../components/ui/FormField";
 import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
@@ -90,6 +91,7 @@ interface AgentDetail {
         skills?: CapabilityBindingValue[];
         mcpServers?: CapabilityBindingValue[];
         tools?: CapabilityBindingValue[];
+        plugins?: NativePluginBinding[];
         [key: string]: unknown;
       };
       security?: {
@@ -225,6 +227,8 @@ export function AgentEditor({
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [selectedPlugins, setSelectedPlugins] = useState<NativePluginBinding[]>([]);
+  const [pluginsPending, setPluginsPending] = useState(false);
   const [visibleSection, setVisibleSection] = useState(activeSection);
   const [runtimeProjectPath, setRuntimeProjectPath] = useState(".");
   const [runtimeEntryPoint, setRuntimeEntryPoint] = useState("");
@@ -322,6 +326,7 @@ export function AgentEditor({
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedTools((bindings.tools || []).map((item: { resourceId: string }) => item.resourceId));
+        setSelectedPlugins(bindings.plugins || []);
         setRuntimeProjectPath(String(draft.spec?.runtime?.projectPath || "."));
         setRuntimeEntryPoint(String(draft.spec?.runtime?.entryPoint || (draft.spec?.runtime?.type === "langgraph" ? "graph.py" : "agent.py")));
         setRuntimeAgentVariable(String(draft.spec?.runtime?.agentVariable || (draft.spec?.runtime?.type === "langgraph" ? "app" : "root_agent")));
@@ -481,7 +486,7 @@ export function AgentEditor({
   ].join("\n");
 
   async function save(values: AgentEditFormValues) {
-    if (!detail || saving) return;
+    if (!detail || saving || pluginsPending) return;
     const resolvedDefaultModel = defaultModel || selectedModels[0] || "";
     if (!resolvedDefaultModel && !preservesManifestModel) {
       setSaveError("请至少绑定一个模型并设置为默认模型");
@@ -598,6 +603,7 @@ export function AgentEditor({
         skills: mergeCapabilityBindings(original.bindings?.skills, selectedSkills),
         mcpServers: mergeCapabilityBindings(original.bindings?.mcpServers, selectedMcp),
         tools: mergeCapabilityBindings(original.bindings?.tools, selectedTools),
+        plugins: selectedPlugins,
       };
       spec.context = {
         ...(original.context || {}),
@@ -1011,6 +1017,7 @@ export function AgentEditor({
             />
           </div>
         </div>
+        {runtime === "codex" && visibleSection === 2 && <NativePluginBindings key={agentId} value={selectedPlugins} onChange={setSelectedPlugins} onPendingChange={setPluginsPending} />}
         {detail.bindingProjection?.unresolvedMcpServers?.length ? (
           <div className="inline-alert warning" role="status">
             <CircleAlert size={16} />
@@ -1196,7 +1203,7 @@ export function AgentEditor({
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />
             <span><strong>{isManagedDeclaration ? "保存后生成配置快照" : "保存后构建新 Bundle"}</strong><small>{isManagedDeclaration ? "校验 YAML 并生成可追溯的部署输入" : "新 Bundle 完成后进入会话工作台"}</small></span>
           </label>
-          <button className="button accent" type="submit" disabled={saving}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
+          <button className="button accent" type="submit" disabled={saving || pluginsPending}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
         </div>
         {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>操作未完成</strong><p>{saveError}</p></div></div>}
       </form>

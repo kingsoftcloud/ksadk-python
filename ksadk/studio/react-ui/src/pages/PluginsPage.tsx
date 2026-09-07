@@ -161,7 +161,8 @@ const stateLabel: Record<PluginLifecycleState, string> = {
 
 function PluginState({ item }: { item: InstalledPlugin }) {
   const Icon = item.failed ? AlertCircle : item.state === "installed" ? CircleOff : CheckCircle2;
-  return <span className="plugin-state" data-state={item.state}><Icon size={13}/> {stateLabel[item.state]}</span>;
+  const label = item.ecosystem === "codex" && item.state === "enabled" ? "已安装" : stateLabel[item.state];
+  return <span className="plugin-state" data-state={item.state}><Icon size={13}/> {label}</span>;
 }
 
 function PluginUsage({ item }: { item: InstalledPlugin }) {
@@ -185,10 +186,11 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
       {isReadyProvider && <p><a className="button secondary" href="#/create">去创建 Agent</a></p>}
     </>}
     {item.ecosystem === "dsh" && !item.providerRef && <p className="plugin-detail-muted">插件提供的设置页面直接在 Studio 中使用。</p>}
-    {bindableCapabilities.length > 0 && <>
-      <p className="plugin-detail-muted">Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。</p>
+    {(bindableCapabilities.length > 0 || (item.ecosystem === "codex" && hasUiContribution)) && <>
+      <p className="plugin-detail-muted">{item.ecosystem === "codex" ? "在 Agent 编辑页的「能力绑定 → 绑定插件」选择此插件，保存并生成配置快照后，在新会话中使用。" : "Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。"}</p>
       <p><a className="button secondary" href="#/agents">去 Agent 列表绑定</a></p>
     </>}
+    {item.ecosystem === "codex" && hasUiContribution && <p className="plugin-detail-muted">此插件包含应用连接。安装和绑定会加载技能；实际操作应用还需要在运行环境中完成 Codex 账户登录及对应应用授权，模型 API Key 不代替应用授权。</p>}
   </section>;
 }
 

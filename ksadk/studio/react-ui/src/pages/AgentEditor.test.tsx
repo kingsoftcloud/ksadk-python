@@ -765,3 +765,28 @@ it.each(["update", "build"])("preserves multiple model selections when %s loses 
   expect(onSaved).not.toHaveBeenCalled();
   expect(mockedFetch.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
 });
+
+it("saves the installed Figma plugin snapshot as an Agent binding", async () => {
+  mockedFetch.mockReset();
+  const snapshot = { pluginRef: "plugin://codex.figma@2.0.20", snapshotDigest: `sha256:${"a".repeat(64)}`, components: [{ id: "app:figma", kind: "app" }, { id: "skill:figma-use", kind: "skill" }] };
+  mockedFetch.mockImplementation(async (input, init) => {
+    const url = String(input);
+    let data: unknown = { draft: { metadata: { id: "agent-test", name: "Designer", revision: 1 }, spec: { runtime: { type: "codex" }, instructions: { system: "Help with product designs." }, bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a"], plugins: [] } } } };
+    if (url.includes("/plugin-ecosystems/")) data = url.includes("?")
+      ? { items: [{ pluginId: "figma@official", displayName: "Figma", installed: true, enabled: true }] }
+      : { item: { displayName: "Figma" }, snapshot };
+    if (init?.method === "PUT") data = { metadata: { id: "agent-test", revision: 2 } };
+    return { ok: true, json: async () => data } as Response;
+  });
+  render(<AgentEditor agentId="agent-test" activeSection={2} catalog={[{ resourceId: "model-a", kind: "model", name: "model-a", displayName: "model-a", version: "1", status: "ready" }]} onSaved={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "选择绑定插件" }));
+  await userEvent.click(await screen.findByRole("option", { name: /Figma/ }));
+  await userEvent.keyboard("{Escape}");
+  fireEvent.click(screen.getByRole("checkbox", { name: /保存后生成配置快照/ }));
+  fireEvent.submit(screen.getByRole("button", { name: "保存修改" }).closest("form")!);
+  await waitFor(() => {
+    const put = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(put).toBeDefined();
+    expect(JSON.parse(String(put![1]!.body)).bindings.plugins).toEqual([{ ecosystem: "codex", pluginRef: snapshot.pluginRef, snapshotDigest: snapshot.snapshotDigest, components: ["app:figma", "skill:figma-use"], enabled: true, config: {} }]);
+  });
+});
