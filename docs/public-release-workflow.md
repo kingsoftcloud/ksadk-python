@@ -33,6 +33,12 @@
 5. GitHub Release、PyPI 包、Pages 文档必须能追溯到同一个已审核 GitHub `main` 提交。
 6. `.pypirc`、私有 registry 凭证、kubeconfig、真实 API key、临时 token 不得进入仓库。
 
+## 0.8.4 CI 与本地门禁分工
+
+PR 的 Release Check 负责源码清洁检查、前端构建、可追溯的 wheel/sdist、全新环境安装和制品内容审计。它使用 `--skip-tests` 避免在组合门禁里重复执行实时运行时 E2E；报告中的 source E2E 保持 `not_run`，不得把该报告当作完整发布证据。
+
+原因：#67 的组合门禁在兼容测试全部通过后出现长时间无输出，本地相同代码的完整门禁和 Python 3.11 对照均通过，尚未确定远端卡住的具体调用。独立 CI 的全量测试、原生运行时、浏览器页面及真实插件任务保留；本地 `make public-preflight` 仍必须通过。手动运行 Release Check 仍执行完整组合门禁，并启用详细测试输出及 90 秒线程栈诊断，整体任务限时 25 分钟。定位并修复卡点后再恢复 PR 中的组合 source E2E，不以修改断言或虚报通过代替验证。
+
 ## 准备 ksadk-web
 
 `ksadk-web` 是共享 UI 源头。需要新 UI 时，先在 `agentengine/ksadk-web` 发 npm 版本，再让 `ksadk-python` 和 `agentengine-hosted-ui` 消费 registry 里的固定版本。
