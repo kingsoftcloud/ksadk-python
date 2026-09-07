@@ -30,7 +30,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginMutationError,
     DshPluginNotFoundError,
     DshProfilePluginBridge,
-    validate_dsh_registry_source,
+    validate_dsh_registry_request,
 )
 from ksadk.plugins.codex_manifest import (
     CodexInstalledPluginSnapshot,
@@ -82,7 +82,7 @@ class DshPluginInstallRequest(BaseModel):
             raise ValueError(
                 "Studio only accepts registry packages; use the local CLI for development"
             )
-        return validate_dsh_registry_source(normalized)
+        return validate_dsh_registry_request(normalized)
 
 
 class DshPluginUpdateRequest(BaseModel):
@@ -237,7 +237,10 @@ def _public_plugin_interface(value: dict[str, Any]) -> dict[str, Any]:
     for key in ("defaultPrompt", "capabilities"):
         if isinstance(value.get(key), list):
             result[key] = [item for item in value[key] if isinstance(item, str)]
-    for key in ("logoUrl", "logoUrlDark", "composerIconUrl", "websiteUrl", "privacyPolicyUrl", "termsOfServiceUrl"):
+    for key in (
+        "logoUrl", "logoUrlDark", "composerIconUrl", "websiteUrl",
+        "privacyPolicyUrl", "termsOfServiceUrl",
+    ):
         raw = value.get(key)
         if isinstance(raw, str) and urlparse(raw).scheme == "https" and not urlparse(raw).username:
             result[key] = raw

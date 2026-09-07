@@ -23,6 +23,20 @@ from ksadk.studio.service import StudioService
 _PLUGIN_ID = "@example/core-plugin"
 
 
+@pytest.mark.parametrize("source", ["@xmanrui/dsh-im", "dsh-plugin", "@xmanrui/dsh-im@4.13.0"])
+def test_install_request_accepts_names_and_exact_versions(source: str) -> None:
+    assert api_plugin_routes.DshPluginInstallRequest(source=source).source == source
+
+
+@pytest.mark.parametrize("source", [
+    "--help", "@xmanrui/dsh-im@^4", "@xmanrui/dsh-im@beta",
+    "https://example.com/plugin.tgz", "/tmp/plugin", "name\n",
+])
+def test_install_request_rejects_other_source_kinds(source: str) -> None:
+    with pytest.raises(ValueError):
+        api_plugin_routes.DshPluginInstallRequest(source=source)
+
+
 def _descriptor() -> DshProfileCapabilityDescriptor:
     tool = DshCapabilityTool(
         name="fixture.echo",

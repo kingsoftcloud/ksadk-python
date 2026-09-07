@@ -25,6 +25,17 @@ window.__ModuleLoader__.load({
       const mounts = new Map();
       const listeners = new Set();
       const notify = () => listeners.forEach(listener => listener());
+      function packageForSection(entry) {
+        const registrant = entry.registrant || entry.options.registrant;
+        if (!registrant) return undefined;
+        // Cordis uses the client export's name, which need not equal its npm ID.
+        // Resolve only the official boot graph; ambiguous names stay unassigned.
+        const matches = (window.__DSH_BOOT__?.entries || []).filter(row => {
+          try { return require(row.id).name === registrant; }
+          catch { return false; } // A deferred module may not have arrived yet.
+        });
+        return matches.length === 1 ? matches[0].id : undefined;
+      }
       const bridge = {
         sections: () => ctx.slots.entriesOfSlot('settings.section')
           .filter(entry => typeof entry.options.id === 'string' && !['general', 'models', 'plugins', 'agent-presets'].includes(entry.options.id))
@@ -32,6 +43,8 @@ window.__ModuleLoader__.load({
           .map(entry => ({
             id: entry.options.id,
             label: sectionLabel(entry),
+            // Display/navigation attribution only, never an authorization key.
+            pluginId: packageForSection(entry),
           })),
         subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
         attach: (id, container, close) => {

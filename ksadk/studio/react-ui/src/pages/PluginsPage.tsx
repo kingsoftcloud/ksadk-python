@@ -202,7 +202,8 @@ function PluginIcon({ item, large = false }: { item: InstalledPlugin; large?: bo
 }
 
 export function PluginsPage() {
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(() => new URLSearchParams(window.location.search).has('pluginSettings'));
+  const [settingsPluginId, setSettingsPluginId] = useState<string | undefined>(() => new URLSearchParams(window.location.search).get('pluginSettings') || undefined);
   const [items, setItems] = useState<InstalledPlugin[]>([]);
   const [codexCatalog, setCodexCatalog] = useState<InstalledPlugin[]>([]);
   const [hosts, setHosts] = useState<Record<string, HostState | undefined>>({});
@@ -324,10 +325,17 @@ export function PluginsPage() {
     finally { setBusy(""); }
   }
 
-  if (workspaceOpen) return <DshPluginWorkspace onBack={() => { setWorkspaceOpen(false); void load(); }}/>;
+  if (workspaceOpen) return <DshPluginWorkspace pluginId={settingsPluginId} onBack={() => {
+    setWorkspaceOpen(false);
+    const url = new URL(window.location.href); url.searchParams.delete('pluginSettings');
+    window.history.replaceState(null, '', url);
+    void load();
+  }}/>;
 
   const permissionChoice = <label className="plugin-install-consent"><input type="checkbox" checked={codexAccepted} onChange={event => setCodexAccepted(event.target.checked)}/>我信任此插件来源，允许以当前用户权限安装</label>;
   const select = (item: InstalledPlugin) => { setSelectedKey(keyOf(item)); setCodexAccepted(false); };
+  const detailDescription = (selected?.interface?.longDescription || selected?.description || '').trim();
+  const showDetailDescription = selected && detailDescription && detailDescription.replace(/\s+/g, ' ') !== pluginSummary(selected).replace(/\s+/g, ' ');
   return <div className="page-container plugins-page plugin-store" data-layout="document">
     <PageHeaderActions><button className="icon-button tertiary" aria-label="刷新插件" onClick={() => void load()}><RefreshCw size={16}/></button></PageHeaderActions>
     {error && <p className="form-error" role="alert">{error}</p>}
@@ -342,8 +350,8 @@ export function PluginsPage() {
       </header>
       {!selected.installed && !isOfficialCodex(selected) && permissionChoice}
       {!!selected.interface?.defaultPrompt?.length && <div className="plugin-examples" aria-label="使用示例">{selected.interface.defaultPrompt.map(prompt => <p key={prompt}><span>{prompt}</span><ArrowUpRight size={16}/></p>)}</div>}
-      <p className="plugin-long-description">{selected.interface?.longDescription || selected.description || pluginSummary(selected)}</p>
-      {selected.ecosystem === 'dsh' && selected.enabled && !selected.providerRef && <button className="button secondary" onClick={() => setWorkspaceOpen(true)}>打开插件设置<ArrowUpRight size={15}/></button>}
+      {showDetailDescription && <p className="plugin-long-description">{detailDescription}</p>}
+      {selected.ecosystem === 'dsh' && selected.enabled && !selected.providerRef && <button className="button secondary" onClick={() => { setSettingsPluginId(selected.pluginId); setWorkspaceOpen(true); }}>打开插件设置<ArrowUpRight size={15}/></button>}
       {selected.failed && <p className="form-error">{selected.errorCode || '插件当前不可用'}</p>}
       <PluginUsage item={selected}/>
       <section className="plugin-product-info"><h3>信息</h3><dl>
@@ -357,7 +365,7 @@ export function PluginsPage() {
     </article> : <>
       <header className="plugins-intro"><h2>插件</h2><p>为你的 Agent 添加工具、技能和应用。</p></header>
       <label className="plugin-store-search"><Search size={16}/><input aria-label="搜索插件" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>
-      <section className="plugin-installed-strip"><header><h3>已安装 <small>{items.length}</small></h3><button className="plugin-text-button" onClick={() => setWorkspaceOpen(true)}>插件设置</button></header>
+      <section className="plugin-installed-strip"><header><h3>已安装 <small>{items.length}</small></h3><button className="plugin-text-button" onClick={() => { setSettingsPluginId(undefined); setWorkspaceOpen(true); }}>插件设置</button></header>
         <div>{items.filter(item => !catalogQuery || [pluginTitle(item), pluginSummary(item)].some(value => value.toLowerCase().includes(catalogQuery.toLowerCase()))).map(item => <button key={keyOf(item)} aria-label={pluginTitle(item)} title={pluginTitle(item)} onClick={() => select(item)}><PluginIcon item={item}/><span>{pluginTitle(item)}</span></button>)}</div>
       </section>
       <div className="plugin-marketplace-tabs" role="tablist" aria-label="插件市场"><button role="tab" aria-selected={marketplaceTab === 'codex'} onClick={() => setMarketplaceTab('codex')}>Codex 插件</button><button role="tab" aria-selected={marketplaceTab === 'dsh'} onClick={() => setMarketplaceTab('dsh')}>DeepSeek Harness 插件</button></div>
@@ -367,8 +375,8 @@ export function PluginsPage() {
           {group.items.map(item => <button className="plugin-discovery-item" key={keyOf(item)} onClick={() => select(item)}><PluginIcon item={item}/><span><strong>{pluginTitle(item)}</strong><small>{pluginSummary(item)}</small></span><Plus size={16}/></button>)}
         </div></section>)}
         {!catalogGroups.length && busy !== 'load' && <p className="plugin-discovery-empty">{hosts.codex?.available ? '没有匹配的插件。' : 'Codex 插件服务当前不可用，请稍后刷新。'}</p>}
-      </div> : <section className="plugin-source-panel"><h3>从来源添加</h3><p>输入带精确版本的 npm 包名。</p>
-        <div className="plugin-source-form"><label className="sr-only" htmlFor="dshSource">DSH 插件来源</label><input id="dshSource" value={source} onChange={event => setSource(event.target.value)} placeholder="@xmanrui/dsh-im@4.13.0"/><button className="button secondary" disabled={!accepted || !source.trim() || Boolean(busy)} onClick={() => void installDsh()}>{busy === 'install' ? <LoaderCircle className="animate-spin" size={15}/> : <Box size={15}/>}安装</button></div>
+      </div> : <section className="plugin-source-panel"><h3>从来源添加</h3><p>输入 npm 包名安装最新版本，也可用 @版本号指定版本。</p>
+        <div className="plugin-source-form"><label className="sr-only" htmlFor="dshSource">DSH 插件来源</label><input id="dshSource" value={source} onChange={event => setSource(event.target.value)} placeholder="@xmanrui/dsh-im"/><button className="button secondary" disabled={!accepted || !source.trim() || Boolean(busy)} onClick={() => void installDsh()}>{busy === 'install' ? <LoaderCircle className="animate-spin" size={15}/> : <Box size={15}/>}安装</button></div>
         <label className="plugin-install-consent"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)}/>我已知悉：DSH 包及安装脚本以当前系统用户权限运行。</label>
       </section>}
     </>}

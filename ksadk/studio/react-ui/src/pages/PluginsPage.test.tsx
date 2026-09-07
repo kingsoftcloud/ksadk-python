@@ -92,6 +92,13 @@ describe("PluginsPage", () => {
     expect(await screen.findByRole('link', { name: '去 Agent 列表绑定' })).toBeInTheDocument();
   });
 
+  it('does not repeat the summary when there is no distinct long description', async () => {
+    catalog([{ ecosystem: 'codex', pluginId: 'sample', displayName: 'Sample', installed: false, description: 'A useful plugin' }]);
+    render(<PluginsPage/>);
+    await userEvent.click(await screen.findByRole('button', { name: /Sample/ }));
+    expect(screen.getAllByText('A useful plugin')).toHaveLength(1);
+  });
+
   it('installs official Codex plugins on click without an extra trust checkbox', async () => {
     const item = { ecosystem: 'codex', pluginId: 'github', displayName: 'GitHub', marketplaceName: 'openai-curated', installed: false };
     catalog([item]);

@@ -7,6 +7,45 @@ import { DshPluginWorkspace } from './DshPluginWorkspace';
 vi.mock('../api', () => ({ apiFetch: vi.fn() }));
 afterEach(() => { delete window.__STUDIO_DSH__; vi.clearAllMocks(); });
 
+it('opens the explicitly requested plugin directly without selecting another plugin', () => {
+  const attach = vi.fn(() => vi.fn());
+  window.__STUDIO_DSH__ = {
+    sections: () => [
+      { id: 'ssh-settings', label: 'SSH', pluginId: '@example/ssh' },
+      { id: 'im-settings', label: 'IM机器人', pluginId: '@example/im' },
+    ], subscribe: () => () => {}, attach,
+  };
+  render(<DshPluginWorkspace pluginId="@example/im" onBack={() => {}}/>);
+  expect(attach).toHaveBeenCalledWith('im-settings', expect.any(HTMLElement), expect.any(Function));
+  expect(screen.queryByText('选择要配置的插件')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'SSH' })).not.toBeInTheDocument();
+});
+
+it('asks only which page when the chosen plugin contributes several pages', async () => {
+  const attach = vi.fn(() => vi.fn());
+  window.__STUDIO_DSH__ = {
+    sections: () => [
+      { id: 'im', label: 'IM机器人', pluginId: '@example/im' },
+      { id: 'ssh-hosts', label: '主机', pluginId: '@example/ssh' },
+      { id: 'ssh-keys', label: '密钥', pluginId: '@example/ssh' },
+    ], subscribe: () => () => {}, attach,
+  };
+  render(<DshPluginWorkspace pluginId="@example/ssh" onBack={() => {}}/>);
+  expect(attach).not.toHaveBeenCalled();
+  expect(screen.getByText('选择设置页面')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'IM机器人' })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: '密钥' }));
+  expect(attach).toHaveBeenCalledWith('ssh-keys', expect.any(HTMLElement), expect.any(Function));
+});
+
+it('never substitutes another plugin when the requested plugin has no active page', () => {
+  const attach = vi.fn(() => vi.fn());
+  window.__STUDIO_DSH__ = { sections: () => [{ id: 'im', label: 'IM机器人', pluginId: '@example/im' }], subscribe: () => () => {}, attach };
+  render(<DshPluginWorkspace pluginId="@example/missing" onBack={() => {}}/>);
+  expect(screen.getByText('当前插件没有提供设置页面。')).toBeInTheDocument();
+  expect(attach).not.toHaveBeenCalled();
+});
+
 it('does not select even a single UI plugin before the user chooses', async () => {
   const attach = vi.fn(() => vi.fn());
   window.__STUDIO_DSH__ = { sections: () => [{ id: 'im', label: 'IM机器人' }], subscribe: () => () => {}, attach };

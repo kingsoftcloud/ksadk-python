@@ -167,6 +167,14 @@ def validate_dsh_registry_source(source: str) -> str:
     return value
 
 
+def validate_dsh_registry_request(source: str) -> str:
+    """Accept a package name for latest resolution, or an exact coordinate."""
+    value = source.strip()
+    if len(value) <= 214 and not value.startswith("-") and _PACKAGE_NAME.fullmatch(value):
+        return value
+    return validate_dsh_registry_source(value)
+
+
 def dsh_subprocess_environment(*, dsh_home: Path | None = None) -> dict[str, str]:
     """Build the explicit environment inherited by DSH and pnpm children.
 
@@ -321,6 +329,7 @@ class DshProfilePluginBridge:
                 "explicit approval is required"
             )
         self._validate_source(source)
+        source = self._resolve_install_source(source.strip())
         with self._profile_transaction(exclusive=True):
             self._require_package_mutation_rollback(new_profile_allowed=True)
             snapshot = self._snapshot()
@@ -773,6 +782,26 @@ class DshProfilePluginBridge:
         manifest["dsh"] = dsh
         self._write_json(self._manifest_path(), manifest)
 
+    def _resolve_install_source(self, source: str) -> str:
+        if not _PACKAGE_NAME.fullmatch(source):
+            return source
+        # Resolve metadata before running package scripts. The mutable latest
+        # selector never reaches `dsh plugin add`; the exact version does.
+        result = self._invoke(
+            ("npm", "view", f"{source}@latest", "version", "--json"), cwd=self._cwd
+        )
+        try:
+            if len(result.stdout) > _MAX_JSON_BYTES:
+                raise ValueError("oversized registry response")
+            version = json.loads(result.stdout)
+            if not isinstance(version, str):
+                raise ValueError("expected one version")
+            return validate_dsh_registry_source(f"{source}@{version}")
+        except (ValueError, TypeError) as error:
+            raise DshPluginMutationError(
+                "npm latest did not resolve to one exact version"
+            ) from error
+
     def _prepare_source(self, source: str) -> _PreparedSource:
         value = source.strip()
         candidate = Path(value).expanduser()
@@ -994,12 +1023,10 @@ class DshProfilePluginBridge:
             if not candidate.exists():
                 raise ValueError("absolute local DSH plugin source does not exist")
             return
-        # The Studio/CLI bridge deliberately excludes git, URL, npm tag and
-        # version-range resolution.  Those coordinates are mutable and can
-        # execute install scripts before KsADK has an immutable receipt.  DSH
-        # registry packages must be selected by exact SemVer; local developer
-        # sources are packed and content-addressed by _prepare_source.
-        validate_dsh_registry_source(value)
+        # Bare names resolve latest to an exact version before package mutation.
+        # Git, URL, explicit tags and ranges remain unsupported. Local sources
+        # are packed and content-addressed by _prepare_source.
+        validate_dsh_registry_request(value)
 
     @staticmethod
     def _validate_package_name(name: str) -> None:
