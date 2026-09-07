@@ -741,6 +741,7 @@ class AsyncCodexClient(CodexClient):
         request_queue.put({"id": interaction_id, "result": dict(response)})
         return response
 
+    @staticmethod
     def _maybe_apply_proxy(
         config: Any,
         *,
