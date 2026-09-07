@@ -487,6 +487,15 @@ class DirectAgentEngineCloudDeploymentGateway:
         self.stream_client = stream_client or self.client
         self._bundles: dict[str, dict[str, str]] = {}
 
+    def cached_identity(self) -> dict[str, str] | None:
+        """Read the SDK's per-AK identity cache without making an IAM request."""
+        from ksadk.identity import get_cached_identity
+
+        identity = get_cached_identity(self._ks3_credentials["access_key"])
+        if not identity or not identity.user_uuid or not identity.user_name:
+            return None
+        return {"userName": identity.user_name, "userId": identity.user_uuid}
+
     async def upload_bundle(self, **kwargs) -> str:
         bundle = bytes(kwargs["bundle"])
         provenance = dict(kwargs["provenance"])
@@ -1610,6 +1619,7 @@ class CloudDeploymentService:
                 runtime_environment=runtime_environment,
                 plugin_artifacts=plugin_artifacts,
             )
+        record = self._capture_creator(record, replacing)
         self._save(record, request)
         return record
 
@@ -1647,8 +1657,29 @@ class CloudDeploymentService:
                 bundle_digest=build.bundle_digest,
                 request=request,
             )
+        record = self._capture_creator(record, replacing)
         self._save(record, request)
         return record
+
+    def cached_identity(self) -> dict[str, str] | None:
+        reader = getattr(self.gateway, "cached_identity", None)
+        return reader() if reader else None
+
+    def _capture_creator(
+        self, record: DeploymentRecord, replacing: DeploymentRecord | None
+    ) -> DeploymentRecord:
+        if replacing is not None:
+            return record.model_copy(update={
+                "created_by_name": replacing.created_by_name,
+                "created_by_user_id": replacing.created_by_user_id,
+            })
+        identity = self.cached_identity()
+        if not identity:
+            return record
+        return record.model_copy(update={
+            "created_by_name": identity["userName"],
+            "created_by_user_id": identity["userId"],
+        })
 
     def _prepared_build(self, build_id: str) -> tuple[BuildRecord, bytes, dict[str, Any]]:
         build = self.build_repository.get(build_id)

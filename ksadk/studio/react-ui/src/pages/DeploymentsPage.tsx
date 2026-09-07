@@ -36,6 +36,7 @@ interface Deployment {
     | "studio-compatible-framework";
   updatedAt?: string;
   creatorName?: string;
+  createdByName?: string;
 }
 
 interface StudioCloudAgentSummary extends AccountCloudAgentSummary {
@@ -401,6 +402,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   onSelectBuild: () => void;
 }) {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [credentialUserName, setCredentialUserName] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
@@ -445,6 +447,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       ]);
       if (!receiptResponse.ok) throw new Error(`读取部署记录失败（${receiptResponse.status}）`);
       const receiptPayload = await receiptResponse.json();
+      if (!signal?.aborted) setCredentialUserName(String(receiptPayload.currentIdentity?.userName || ""));
       const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
       const receipts: Deployment[] = Array.isArray(receiptPayload.items) ? receiptPayload.items : [];
       const receiptAgentIds = [...new Set(receipts.flatMap(item => (
@@ -1262,10 +1265,16 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
                   <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong>{deployment.source === "receipt" && <small>Studio 部署记录</small>}</td>
-                  <td>{deployment.creatorName || "创建人未记录"}</td>
+                  <td>{deployment.creatorName || deployment.createdByName || (
+                    deployment.source === "receipt" && credentialUserName
+                      ? <span title="当前工作区 AK/SK 对应的身份；历史创建人未记录">
+                        {credentialUserName}<small>当前凭证</small>
+                      </span>
+                      : "创建人未记录"
+                  )}</td>
                   <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
                   <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
-                  <td className="delivery-row-actions">
+                  <td><div className="delivery-row-actions">
                     {deploymentState(deployment.status) === "ready" && deployment.agentId && (
                       <button
                         className="button secondary compact"
@@ -1297,7 +1306,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           : []),
                       ]}
                     />
-                  </td>
+                  </div></td>
                 </tr>;
               })}</tbody>
             </table>

@@ -979,3 +979,46 @@ async def test_yaml_deployment_rejects_native_plugin_bindings_without_deliverabl
         )
     assert error.value.code == "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE"
     assert gateway.called is False
+
+
+@pytest.mark.asyncio
+async def test_deployment_captures_cached_creator_and_preserves_it_after_credential_change(tmp_path):
+    from ksadk.studio.cloud import InMemoryCloudGateway
+
+    class Gateway(InMemoryCloudGateway):
+        identity = {"userName": "original-user", "userId": "original-id"}
+
+        def cached_identity(self):
+            return self.identity
+
+    gateway = Gateway()
+    service = CloudDeploymentService(workspace=Workspace(tmp_path), gateway=gateway)
+    request = DeploymentRequest(target=DeploymentTarget(region="test", environment="test"))
+    params = dict(build_id="build", agent_name="agent", manifest="name: agent\nframework: codex\n",
+                  runtime_name="codex", runtime_version="0.147.0", manifest_digest="a" * 64,
+                  request=request)
+    first = await service.deploy_managed_runtime(**params)
+    assert service.get(first.id).created_by_name == "original-user"
+    assert service.get(first.id).created_by_user_id == "original-id"
+    gateway.identity = {"userName": "new-user", "userId": "new-id"}
+    assert service.get(first.id).created_by_name == "original-user"
+    revised = await service.deploy_managed_runtime(**params, replacing=first)
+    assert revised.created_by_name == "original-user"
+    assert revised.created_by_user_id == "original-id"
+
+
+def test_gateway_reads_only_matching_identity_cache(monkeypatch):
+    from ksadk.identity.resolver import ResolvedIdentity
+    seen = []
+
+    def read(key):
+        seen.append(key)
+        return ResolvedIdentity("user-id", "account-id", "cached-user", None, "fingerprint")
+
+    monkeypatch.setattr("ksadk.identity.get_cached_identity", read)
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="test", client=object(),
+        ks3_credentials={"access_key": "test-ak", "secret_key": "test-sk"},
+    )
+    assert gateway.cached_identity() == {"userName": "cached-user", "userId": "user-id"}
+    assert seen == ["test-ak"]

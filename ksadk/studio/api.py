@@ -1809,7 +1809,7 @@ def create_studio_app(
     async def list_deployments():
         """Read local deployment receipts without implicit cloud refreshes."""
 
-        return {"items": studio.cloud.list()}
+        return {"items": studio.cloud.list(), "currentIdentity": studio.cloud.cached_identity()}
 
     @app.get("/api/v1/cloud-agents")
     async def list_account_cloud_agents(

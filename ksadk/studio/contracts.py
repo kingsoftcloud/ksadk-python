@@ -925,6 +925,10 @@ class DeploymentRequest(ContractModel):
 
 
 class DeploymentRecord(ContractModel):
+    # Identity observed when the cloud Agent was created, never inferred from
+    # whichever credentials happen to be configured when history is read.
+    created_by_name: str | None = None
+    created_by_user_id: str | None = None
     id: str
     build_id: str
     bundle_digest: str
