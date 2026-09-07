@@ -99,6 +99,8 @@ webui
 ksadk/server/static/**
 # Generated from the tracked React Studio source during release/build.
 ksadk/studio/static/**
+# Reviewable visual layer for the public Studio static distribution.
+!ksadk/studio/static/studio-refinement.css
 # Generated immediately before packaging and embedded in wheel/sdist.  Release
 # gates verify it against the checked-out source commit; it is never source.
 ksadk/_build_provenance.json
