@@ -27,7 +27,7 @@ from ksadk.plugins.bridges.dsh import (
     DshProfileProjection,
 )
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
-from ksadk.plugins.dsh_toolchain import DshToolchainManager
+from ksadk.plugins.dsh_toolchain import DSH_CORE_PACKAGES, DshToolchainManager
 from ksadk.plugins.host import ManagedPlugin, PluginHostError
 from ksadk.plugins.providers.codex_dsh import (
     SHIPPED_CODEX_DSH_PACKAGE,
@@ -51,7 +51,7 @@ from ksadk.plugins.providers.harness_dsh import (
 
 _PROFILE_FILES = ("package.json", "cordis.patch.yml", "index.mjs")
 _MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024
-_DSH_PLATFORM_BUNDLES = frozenset({"@deepseek-ai/dsh-base"})
+_DSH_PLATFORM_BUNDLES = frozenset(DSH_CORE_PACKAGES)
 _SHIPPED_PROVIDER_PACKAGES = frozenset({SHIPPED_CODEX_DSH_PACKAGE, SHIPPED_HARNESS_DSH_PACKAGE})
 
 
