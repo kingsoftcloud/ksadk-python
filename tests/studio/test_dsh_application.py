@@ -72,3 +72,12 @@ def test_websocket_checks_authentication_before_connecting(application):
             pass
     assert error.value.code == 1008
     capabilities.application_lease.assert_not_awaited()
+
+
+@pytest.mark.parametrize("path", ["/chat?agentId=demo-agent", "/chat/"])
+def test_retired_chat_does_not_start_core(application, path):
+    client, capabilities, observed = application
+    client.cookies.set("agentkit_studio_session", "test-session")
+    assert client.get(path).status_code == 404
+    capabilities.application_lease.assert_not_awaited()
+    assert observed == []

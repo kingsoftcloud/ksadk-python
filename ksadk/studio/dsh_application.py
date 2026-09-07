@@ -60,7 +60,8 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
     async def core_http(core_path: str, request: Request):
         if not authorized(request.cookies):
             raise StudioError("LOCAL_SESSION_REQUIRED", "缺少有效的 Studio 本地会话", status_code=401)
-        if core_path.startswith(("api/v1/", "v1/")):
+        # Retired Studio chat URLs must not start Core or depend on its availability.
+        if core_path.rstrip("/") == "chat" or core_path.startswith(("api/v1/", "v1/")):
             raise StudioError("NOT_FOUND", "接口不存在", status_code=404)
         # Browser mutations must originate in this document; never treat a
         # cross-port loopback origin as trusted just because it is local.

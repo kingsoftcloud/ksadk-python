@@ -234,6 +234,13 @@ jobs:
         with:
           node-version: "22"
 
+      # Core invokes pnpm by name when mutating a profile, even when its
+      # managed installation was bootstrapped through corepack.
+      - name: Set up pnpm for DSH profile plugins
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.7.0"
+
       - name: Install KsADK (dev extras)
         run: uv sync --extra dev
 
