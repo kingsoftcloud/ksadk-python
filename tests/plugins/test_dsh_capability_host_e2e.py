@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -83,6 +84,9 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
             cwd=workspace,
         )
         lease = await host.start()
+        # An independently running DSH (or another Studio workspace) may own
+        # the default port. The supervised Core must use an OS-assigned port.
+        assert urlsplit(lease.endpoint).port != 3080
         assert lease.web_route_count == 2
         assert any(tool.name == "fixture_echo" for tool in host.descriptor.tools)
         async with httpx.AsyncClient(

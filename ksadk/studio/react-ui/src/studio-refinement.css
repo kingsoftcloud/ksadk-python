@@ -7,8 +7,8 @@
 
 /* King Design reference: https://design.ksyun.com/ and
  * https://github.com/ksc-fe/kpc/blob/master/styles/theme.ts.
- * Brand blue and neutral colors follow the official theme. Text-bearing blue
- * controls use its palette(+1/+2/+3) shades to retain 4.5:1 white-text contrast.
+ * Component spacing follows the PR 66 refinements. The light palette follows
+ * the approved warm-neutral Studio reference; keep chat surfaces white.
  * Dark surfaces adapt the same hue family to Studio's existing dark mode.
  */
 :root {
@@ -31,39 +31,40 @@
 }
 
 :root:not(.dark) {
-  --canvas: #f3f5f6;
-  --sidebar: #ffffff;
-  --surface: #ffffff;
+  --brand: #30342b;
+  --canvas: #faf9f6;
+  --studio-sidebar: #f2f1ed;
+  --studio-surface: #ffffff;
   --surface-raised: #ffffff;
-  --surface-subtle: #f3f5f6;
-  --surface-sunken: #f0f2f4;
-  --surface-hover: #edf0f2;
-  --hover: #edf0f2;
-  --selected: #e6f7ff;
-  --text: #3c4449;
-  --text-primary: #151b1e;
-  --text-label: #3c4449;
-  --text-secondary: #59656d;
-  --text-tertiary: #626e76;
-  --text-faint: #626e76;
-  --text-disabled: #848f9a;
-  --border: #e4e8eb;
-  --border-card: #e0e5e8;
-  --border-strong: #d0d5d9;
-  --accent: #0063a8;
-  --accent-strong: #004d87;
-  --accent-soft: #e6f7ff;
-  --accent-hover: #d5effd;
-  --accent-active: #bfe5fa;
-  --accent-border: #a9dffa;
+  --surface-subtle: #f3f2ee;
+  --surface-sunken: #f2f1ed;
+  --surface-hover: #eeeee8;
+  --hover: #eeeee8;
+  --selected: #e7e8e0;
+  --text: #3e4238;
+  --text-primary: #30342b;
+  --text-label: #3e4238;
+  --studio-text-secondary: #666b5e;
+  --text-tertiary: #737769;
+  --text-faint: #737769;
+  --text-disabled: #999d91;
+  --studio-border: #e7e7df;
+  --border-card: #e7e7df;
+  --border-strong: #cacdbf;
+  --studio-accent: #454b3d;
+  --accent-strong: #30342b;
+  --accent-soft: #e7e8e0;
+  --accent-hover: #dddfd4;
+  --accent-active: #d1d5c6;
+  --accent-border: #cacdbf;
   --focus-ring: var(--brand);
-  --button-primary-bg: #0079c9;
-  --button-primary-bg-hover: #0063a8;
-  --button-primary-bg-active: #004d87;
+  --button-primary-bg: #454b3d;
+  --button-primary-bg-hover: #383e31;
+  --button-primary-bg-active: #30342b;
   --button-primary-text: #ffffff;
   --success: #09791a;
   --success-soft: #e6ffe6;
-  --info: var(--accent);
+  --info: var(--studio-accent);
   --info-soft: var(--accent-soft);
   --warning: #8c5b01;
   --warning-text: #8c5b01;
@@ -78,20 +79,20 @@
   --cloud-border: var(--accent-border);
   --route: var(--warning);
   --route-soft: var(--warning-soft);
-  --code-bg: #f3f5f6;
-  --code-text: #3c4449;
-  --code-token-comment: #626e76;
+  --studio-code-bg: #f5f5f0;
+  --code-text: #3e4238;
+  --code-token-comment: #737769;
   --shadow-overlay: 0 4px 32px 4px #00000014;
-  --shadow-focus: 0 0 0 3px #0091ea26;
-  --shadow-focus-subtle: 0 0 0 3px #0091ea18;
+  --shadow-focus: 0 0 0 3px #454b3d26;
+  --shadow-focus-subtle: 0 0 0 3px #454b3d18;
   --shadow-control: 0 1px 2px #151b1e0a;
   --shadow-toast: 0 2px 16px 2px #00000014;
 }
 
 :root.dark {
   --canvas: #151b1e;
-  --sidebar: #1b2226;
-  --surface: #22292d;
+  --studio-sidebar: #1b2226;
+  --studio-surface: #22292d;
   --surface-raised: #293237;
   --surface-subtle: #2a3338;
   --surface-sunken: #1b2226;
@@ -101,14 +102,14 @@
   --text: #e6eaed;
   --text-primary: #f3f5f6;
   --text-label: #d0d5d9;
-  --text-secondary: #bec3c5;
+  --studio-text-secondary: #bec3c5;
   --text-tertiary: #a6afb5;
   --text-faint: #a6afb5;
   --text-disabled: #737f87;
-  --border: #343e43;
+  --studio-border: #343e43;
   --border-card: #3b464c;
   --border-strong: #526169;
-  --accent: #6ec6f4;
+  --studio-accent: #6ec6f4;
   --accent-strong: #a9dffa;
   --accent-soft: #173b50;
   --accent-hover: #1e4b63;
@@ -121,7 +122,7 @@
   --button-primary-text: #ffffff;
   --success: #82d988;
   --success-soft: #203a2a;
-  --info: var(--accent);
+  --info: var(--studio-accent);
   --info-soft: var(--accent-soft);
   --warning: #ffc375;
   --warning-text: #ffc375;
@@ -136,7 +137,7 @@
   --cloud-border: var(--accent-border);
   --route: var(--warning);
   --route-soft: var(--warning-soft);
-  --code-bg: #1b2226;
+  --studio-code-bg: #1b2226;
   --code-text: #d0d5d9;
   --code-token-comment: #a6afb5;
   --shadow-overlay: 0 4px 32px 4px #0000004d;
@@ -147,7 +148,7 @@
 }
 
 :root:not(.dark), :root.dark {
-  --rail-divider: var(--border);
+  --rail-divider: var(--studio-border);
   --success-deep: var(--success);
   --warning-deep: var(--warning-text);
   --danger-deep: var(--danger);
@@ -156,11 +157,11 @@
   --kc-accent-fill-strong: var(--accent-soft);
   --kc-user-bubble: var(--accent-soft);
   --kc-user-bubble-border: transparent;
-  --kc-think-border: var(--border);
+  --kc-think-border: var(--studio-border);
   --kc-think-fill: var(--surface-sunken);
   --kc-think-hover: var(--surface-hover);
-  --kc-think-divider: var(--border);
-  --kc-code-fill: var(--code-bg);
+  --kc-think-divider: var(--studio-border);
+  --kc-code-fill: var(--studio-code-bg);
   --kc-composer-border: var(--border-strong);
   --kc-graph-fill: var(--surface-sunken);
   --kc-graph-dot: var(--border-strong);
@@ -186,7 +187,7 @@
 .navigation-rail .product-copy span { color: var(--text-tertiary); }
 .navigation-rail .workspace-switcher {
   background: transparent;
-  border-color: var(--border);
+  border-color: var(--studio-border);
   border-radius: var(--radius-control);
   box-shadow: none;
   margin-block: 8px 16px;
@@ -196,7 +197,7 @@
   background: var(--surface-subtle);
 }
 .navigation-rail .workspace-mark {
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   background: transparent;
 }
 .navigation-rail .nav-label {
@@ -214,26 +215,26 @@
 }
 .navigation-rail .nav-item svg { stroke-width: 1.7; }
 .navigation-rail .nav-item.active {
-  color: var(--accent);
+  color: var(--studio-accent);
   background: var(--selected);
   font-weight: var(--font-weight-semibold);
 }
-.navigation-rail .nav-item.active svg { color: var(--accent); }
+.navigation-rail .nav-item.active svg { color: var(--studio-accent); }
 .navigation-rail .nav-item.active::before { content: none; }
 .navigation-rail .sidebar-footer,
 :root.dark .navigation-rail .sidebar-footer {
-  background: var(--sidebar);
-  border-top-color: var(--border);
+  background: var(--studio-sidebar);
+  border-top-color: var(--studio-border);
 }
 .navigation-rail .user-avatar {
-  background: var(--surface);
-  border-color: var(--border);
+  background: var(--studio-surface);
+  border-color: var(--studio-border);
   border-radius: var(--radius-control);
 }
 .global-header,
 :root.dark .global-header {
-  background: var(--surface);
-  border-bottom-color: var(--border);
+  background: var(--studio-surface);
+  border-bottom-color: var(--studio-border);
   backdrop-filter: none;
 }
 .global-header .header-identity { gap: 4px; }
@@ -258,23 +259,23 @@ input, textarea, select, .studio-select-trigger, .studio-multi-select-trigger,
 .button.secondary:hover:not(:disabled),
 .icon-button.secondary:hover:not(:disabled) {
   border-color: var(--brand);
-  color: var(--accent);
-  background: var(--surface);
+  color: var(--studio-accent);
+  background: var(--studio-surface);
 }
 /* The public bundle's generic button rule also matches destructive actions. */
 .button.danger, .button.subtle-danger {
   color: var(--danger);
   background: var(--danger-soft);
-  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--studio-border));
 }
 .button.danger:hover:not(:disabled), .button.subtle-danger:hover:not(:disabled) {
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  background: color-mix(in srgb, var(--danger) 12%, var(--studio-surface));
   border-color: var(--danger);
 }
 .button:disabled, .icon-button:disabled { opacity: 0.55; }
 .studio-select-trigger, .studio-multi-select-trigger {
-  background: var(--surface);
+  background: var(--studio-surface);
   outline: none;
 }
 .app-shell :is(button, a, [role="tab"], [role="combobox"]):focus-visible,
@@ -286,7 +287,7 @@ input, textarea, select, .studio-select-trigger, .studio-multi-select-trigger,
 .search-field:focus-within {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
-  border-color: var(--accent);
+  border-color: var(--studio-accent);
 }
 /* Selection controls use a background change instead of an accent frame. */
 .studio-select-trigger:hover:not(:disabled),
@@ -326,7 +327,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .page-tabs button:hover:not(:disabled),
 .page-tabs button.active, .page-tabs button[aria-selected="true"] {
   background: transparent;
-  color: var(--accent);
+  color: var(--studio-accent);
   box-shadow: none;
 }
 .page-tabs button.active, .page-tabs button[aria-selected="true"] {
@@ -347,8 +348,8 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .segmented-control button { border-radius: var(--radius-control); }
 .segmented-control button.selected, .segmented-control button[aria-selected="true"] {
   border-color: var(--accent-border);
-  background: var(--surface);
-  color: var(--accent);
+  background: var(--studio-surface);
+  color: var(--studio-accent);
   box-shadow: var(--shadow-control);
 }
 :is(.block:not(.runtime-resource-group), .table-section, .trace-list-page,
@@ -360,7 +361,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .studio-select-content, .studio-multi-select-popover, .more-actions-menu,
 .composer-action-menu, .composer-command-menu, .chat-model-menu,
 .chat-approval-menu {
-  border-color: var(--border);
+  border-color: var(--studio-border);
   border-radius: var(--radius-surface);
 }
 /* Keep selected and hovered rows visibly separate across shared menus. */
@@ -390,7 +391,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .chat-model-option[data-state="checked"],
 .chat-approval-option:not(.full)[data-state="checked"] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--studio-accent);
 }
 .studio-select-item + .studio-select-item,
 .more-actions-item + .more-actions-item,
@@ -406,7 +407,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   outline: none;
 }
 .studio-dialog, .overlay .drawer {
-  border-color: var(--border);
+  border-color: var(--studio-border);
   border-radius: var(--radius-surface);
   box-shadow: var(--shadow-overlay) !important;
 }
@@ -416,7 +417,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .stat-strip.compact-summary {
   background: transparent;
   border-top: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--studio-border);
   padding-block: 4px 16px;
 }
 .stat-strip.compact-summary > * { background: transparent; }
@@ -430,7 +431,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   gap: 12px;
 }
 .app-shell .data-page-body .agents-catalog-section > .section-toolbar {
-  background: var(--surface);
+  background: var(--studio-surface);
 }
 .agents-catalog-section .section-toolbar .search-field {
   flex: 0 1 420px;
@@ -442,13 +443,13 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 }
 .studio-data-table { border-radius: var(--radius-control); }
 .studio-data-table thead th {
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   background: var(--surface-sunken);
-  border-bottom-color: var(--border);
+  border-bottom-color: var(--studio-border);
   font-size: var(--font-size-caption);
   height: 42px;
 }
-.studio-data-table tbody td { border-bottom-color: var(--border); }
+.studio-data-table tbody td { border-bottom-color: var(--studio-border); }
 .studio-data-table tbody tr:hover,
 .studio-data-table tbody tr:focus-visible { background: var(--surface-sunken); }
 .app-shell .data-page-body > .section-toolbar,
@@ -469,13 +470,13 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   max-width: 480px;
 }
 .empty-state .empty-icon, .chat-empty-icon {
-  color: var(--text-secondary);
+  color: var(--studio-text-secondary);
   background: var(--surface-subtle);
-  border: 1px solid var(--border);
+  border: 1px solid var(--studio-border);
   border-radius: var(--radius-surface);
 }
 .empty-state h2 { color: var(--text-primary); font-weight: var(--font-weight-medium); }
-.empty-state p { color: var(--text-secondary); line-height: 1.7; }
+.empty-state p { color: var(--studio-text-secondary); line-height: 1.7; }
 .empty-state > div:has(> .button) {
   display: flex;
   flex-wrap: wrap;
@@ -501,7 +502,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .create-shell .wizard-step.active {
   border-color: transparent;
   background: var(--selected);
-  color: var(--accent);
+  color: var(--studio-accent);
 }
 .create-shell .template-card.selected {
   border-color: var(--accent-border);
@@ -515,14 +516,14 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 }
 .create-shell .wizard-actions,
 :root.dark .create-shell .wizard-actions {
-  background: var(--surface);
-  border-top-color: var(--border);
+  background: var(--studio-surface);
+  border-top-color: var(--studio-border);
   box-shadow: none;
 }
-.panel-heading p { color: var(--text-secondary); }
+.panel-heading p { color: var(--studio-text-secondary); }
 
 /* Conversation: align the reading column and composer without extra chrome. */
-.studio-chat-shell { border-color: var(--border); border-radius: 0; }
+.studio-chat-shell { border-color: var(--studio-border); border-radius: 0; }
 .chat-session-sidebar { background: var(--canvas); }
 .chat-session-header, .chat-session-search { background: transparent; }
 .chat-session-search { border-bottom: 0; }
@@ -532,7 +533,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   background: var(--selected);
 }
 .chat-conversation { border: 0; border-radius: 0; }
-.chat-conversation-header { border-bottom-color: var(--border); }
+.chat-conversation-header { border-bottom-color: var(--studio-border); }
 .chat-message-list .message.user .message-content {
   border: 0;
   border-radius: 12px 12px 4px 12px;
@@ -551,8 +552,8 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   margin-top: 10px;
 }
 .chat-empty .suggestion-list button {
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: 1px solid var(--studio-border);
+  background: var(--studio-surface);
   border-radius: var(--radius-control);
   padding: 14px;
   line-height: 1.7;
@@ -560,11 +561,11 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .chat-composer-wrap { border-top: 0; padding-top: 16px; }
 .chat-composer {
   border-radius: 12px;
-  background: var(--surface);
+  background: var(--studio-surface);
   box-shadow: var(--shadow-control) !important;
 }
 .chat-composer:focus-within {
-  border-color: var(--accent);
+  border-color: var(--studio-accent);
   box-shadow: var(--shadow-focus-subtle) !important;
 }
 .chat-composer textarea,
@@ -597,9 +598,9 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
     position: sticky;
     top: 0;
     z-index: 2;
-    background: var(--surface);
+    background: var(--studio-surface);
     padding-block: 8px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--studio-border);
   }
   .settings-group { scroll-margin-top: 64px; }
 }

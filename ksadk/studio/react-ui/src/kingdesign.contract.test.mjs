@@ -57,18 +57,18 @@ test("uses soft borders for the creation workbench and blue only for selection",
   // obsolete literal from the reference branch.
   assert.match(tokens, /--border-card:\s*#[0-9a-f]{6};/i);
   assert.match(tokens, /--border-strong:\s*#[0-9a-f]{6};/i);
-  assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.create-shell \.template-card\.selected\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.authoring-mode-tabs button\.active,[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.wizard-step \.step-number\s*\{[\s\S]*?border:\s*1px solid var\(--border-strong\)/);
-  assert.match(finalLayer, /\.global-header \.crumb\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.global-header \.crumb\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
 });
 
 test("resets browser button chrome and gives shared selection controls soft borders", () => {
   assert.match(finalLayer, /button\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?border:\s*0;/);
   assert.match(finalLayer, /\.page-tabs button,[\s\S]*?\.segmented-control button\s*\{[\s\S]*?border:\s*1px solid transparent;/);
   assert.match(finalLayer, /\.page-tabs button\[aria-selected="true"\],[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
-  assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.chat-session-main\s*\{[\s\S]*?border:\s*1px solid transparent;/);
 });
 

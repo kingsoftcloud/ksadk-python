@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, Plug, Puzzle, RefreshCw, Search, Trash2 } from "lucide-react";
 import { apiFetch } from "../api";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
+import { DshPluginWorkspace } from "../components/DshPluginWorkspace";
 import { showToast } from "../components/Toast";
 
 interface HostState { available: boolean; version?: string | null; }
@@ -180,26 +181,8 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
   </section>;
 }
 
-async function openDshCore() {
-  const target = window.open("about:blank", "_blank");
-  if (target) target.opener = null;
-  try {
-    const response = await apiFetch("/api/v1/plugin-ecosystems/dsh/core/session", {
-      method: "POST",
-    });
-    const payload = await response.json();
-    if (!response.ok || typeof payload?.browserUrl !== "string") {
-      throw new Error(responseError(payload, "完整 DSH Core 启动失败"));
-    }
-    if (target) target.location.replace(payload.browserUrl);
-    else window.location.assign(payload.browserUrl);
-  } catch (error) {
-    target?.close();
-    showToast(error instanceof Error ? error.message : "完整 DSH Core 启动失败", "error");
-  }
-}
-
 export function PluginsPage() {
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [items, setItems] = useState<InstalledPlugin[]>([]);
   const [codexCatalog, setCodexCatalog] = useState<InstalledPlugin[]>([]);
   const [hosts, setHosts] = useState<Record<string, HostState | undefined>>({});
@@ -302,6 +285,8 @@ export function PluginsPage() {
     finally { setBusy(""); }
   }
 
+  if (workspaceOpen) return <DshPluginWorkspace onBack={() => { setWorkspaceOpen(false); void load(); }}/>;
+
   return <div className="page-container plugins-page" data-layout="document">
     <PageHeaderActions><button className="icon-button tertiary" aria-label="刷新插件" onClick={() => void load()}><RefreshCw size={16}/></button></PageHeaderActions>
     <header className="plugins-intro">
@@ -317,7 +302,7 @@ export function PluginsPage() {
       <div className="plugin-marketplace-tabs" role="tablist" aria-label="插件市场"><button type="button" role="tab" aria-selected={marketplaceTab === "codex"} onClick={() => setMarketplaceTab("codex")}>Codex 插件</button><button type="button" role="tab" aria-selected={marketplaceTab === "dsh"} onClick={() => setMarketplaceTab("dsh")}>DeepSeek Harness 插件</button></div>
       {marketplaceTab === "dsh" && <div className="plugin-marketplace-heading">
         <div><h3>DSH 插件工作台</h3><p>打开已安装 DSH 插件提供的界面与设置。</p></div>
-        <button type="button" className="button secondary" disabled={!hosts.dsh?.available} onClick={() => void openDshCore()}>打开 DSH 插件工作台</button>
+        <button type="button" className="button secondary" disabled={!hosts.dsh?.available} onClick={() => setWorkspaceOpen(true)}>打开 DSH 插件工作台</button>
       </div>}
       {marketplaceTab === "codex" ? busy === "load" ? <div className="plugin-marketplace-loading"><LoaderCircle className="animate-spin" size={18}/><span>正在读取 Codex 插件目录…</span></div> : codexCatalog.length > 0 ? <>
         <label className={`codex-risk-confirmation${codexAccepted ? " accepted" : ""}`}><AlertCircle size={18}/><input type="checkbox" checked={codexAccepted} onChange={event => setCodexAccepted(event.target.checked)}/><span><strong>安装前确认权限</strong><small>Codex 插件由 App Server 以当前用户权限管理，请确认插件来源可信。</small></span><em>{codexAccepted ? "已确认" : "勾选后可安装"}</em></label>
