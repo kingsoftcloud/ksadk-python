@@ -236,10 +236,12 @@ jobs:
 
       # Core invokes pnpm by name when mutating a profile, even when its
       # managed installation was bootstrapped through corepack.
+      # pnpm 11.7.0 can hang after removing the official Codex bundle.
+      # Match the verified profile CLI; managed bootstrap still uses its own pin.
       - name: Set up pnpm for DSH profile plugins
         uses: pnpm/action-setup@v4
         with:
-          version: "11.7.0"
+          version: "10.33.2"
 
       - name: Install KsADK with the pinned Codex SDK and binary
         run: uv sync --extra dev --extra codex

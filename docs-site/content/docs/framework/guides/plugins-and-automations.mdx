@@ -21,6 +21,8 @@ Codex 云端交付把插件字节与准入引用冻结为 Agent 版本关联的�
 
 通用 Python wheel 包含 Web 0.3.5 与编译后的 Studio 页面，不含 Python 依赖、Node/Codex/DSH 二进制、社区插件或凭证。基础安装声明共享框架依赖，额外能力按需安装 extra；完全断网安装还需准备依赖 wheelhouse 及原生工具链。既有云端 Agent 只有显式重新构建、更新部署后才变化。
 
+DSH 插件管理的已验证环境为 Node.js 22 与 PATH 中的 `pnpm@10.33.2`。受管工具链安装器通过 Corepack 使用自己的固定 pnpm 版本；DSH 的 Profile 增删包命令使用 PATH 中的 pnpm。暂不使用 pnpm 11.7.0 执行 Profile 操作：卸载官方 Codex Bundle 时可出现输出已完成但进程不退出的问题。
+
 ## 选择接入方式
 
 | 方式 | 所有者 | 当前用途 |
