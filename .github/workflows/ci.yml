@@ -140,8 +140,8 @@ jobs:
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
-      # Internal branches compile Studio from source. Public candidates omit
-      # editable Studio source and carry only reviewed compiled assets.
+      # Both internal and public branches compile Studio from source.
+      # Generated assets belong in packages, never in the Git tree.
       - name: Build frontend static assets
         run: make build-frontend
 

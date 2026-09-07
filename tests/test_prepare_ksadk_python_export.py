@@ -60,40 +60,23 @@ def test_export_plan_includes_public_preflight_contract_files():
         "tests/studio/test_style_system.py",
         "tests/test_config_env_registry.py",
         "tests/runners/test_adapter_contract.py",
-        "ksadk/server/static/index.html",
-        "ksadk/studio/static/index.html",
+        "ksadk/studio/react-ui/package.json",
+        "ksadk/studio/react-ui/package-lock.json",
     }
 
     assert required_paths <= set(plan.export_paths)
 
 
-def test_export_plan_excludes_editable_studio_source_but_keeps_compiled_assets():
+def test_export_plan_keeps_build_inputs_and_excludes_generated_assets():
     module = _load_module()
-
-    assert module.is_excluded("ksadk/studio/react-ui/src/App.tsx") is True
-    assert module.is_excluded("ksadk/studio/react-ui/package.json") is True
-    assert module.is_excluded("ksadk/studio/static/index.html") is False
-    assert module.is_excluded("ksadk/server/static/assets/app.js") is False
-
-
-def test_generated_static_files_reject_source_maps(tmp_path: Path):
-    module = _load_module()
-    for prefix in module.GENERATED_PUBLIC_STATIC_PREFIXES:
-        root = tmp_path / prefix
-        root.mkdir(parents=True)
-        (root / "index.html").write_text("<html></html>", encoding="utf-8")
-    leaked = tmp_path / "ksadk/studio/static/assets/app.js.map"
-    leaked.parent.mkdir(parents=True)
-    leaked.write_text("{}", encoding="utf-8")
-    violations: list[str] = []
-
-    paths = module.generated_static_files(tmp_path, violations)
-
-    assert "ksadk/studio/static/assets/app.js.map" not in paths
-    assert violations == [
-        "compiled public static directory contains source artifact: "
-        "ksadk/studio/static/assets/app.js.map"
-    ]
+    assert module.is_excluded("ksadk/studio/react-ui/src/App.tsx") is False
+    assert module.is_excluded("ksadk/studio/react-ui/package-lock.json") is False
+    for path in ("ksadk/studio/static/index.html", "ksadk/server/static/assets/app.js",
+                 "ksadk/studio/react-ui/node_modules/react/index.js"):
+        assert module.is_excluded(path) is True
+    plan = module.build_export_plan(Path(__file__).resolve().parents[1])
+    assert not any(p.startswith(("ksadk/server/static/", "ksadk/studio/static/"))
+                   for p in plan.export_paths)
 
 
 def test_export_manifest_attests_policy_without_exposing_internal_inventory(

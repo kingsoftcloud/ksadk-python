@@ -8,7 +8,8 @@
 
 公开 `main` 应包含：
 
-- 公开 SDK 源码：`ksadk/`、`ksadk_runtime_common/`。
+- 公开 SDK 源码：`ksadk/`、`ksadk_runtime_common/`，包括 `ksadk/studio/react-ui` 的源码与固定依赖锁。
+- `ksadk/server/static` 和 `ksadk/studio/static` 由构建流程生成，只进入 wheel/sdist，不提交 Git，也不从内部工作树复制到公开候选。
 - 公开构建与发布门禁：`Makefile`、`scripts/open_source_audit.py`、`scripts/check_*`、`.github/workflows/*`。
 - 公开文档站：`docs-site/`。
 - 公开 README、CHANGELOG、LICENSE、CONTRIBUTING、AGENTS、CLAUDE。
