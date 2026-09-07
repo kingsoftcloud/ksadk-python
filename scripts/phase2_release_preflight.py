@@ -302,29 +302,6 @@ def validate_generated_static_tracking_policy(
             return
         raise Phase2PreflightError("cannot verify generated static tracking without Git metadata")
     tracked = [line for line in completed.stdout.splitlines() if line.strip()]
-    if public_export:
-        tracked_set = set(tracked)
-        required_files = {
-            "ksadk/server/static/index.html",
-            "ksadk/studio/static/index.html",
-        }
-        missing_files = sorted(required_files - tracked_set)
-        missing_asset_trees = [
-            prefix
-            for prefix in ("ksadk/server/static/assets/", "ksadk/studio/static/assets/")
-            if not any(path.startswith(prefix) for path in tracked)
-        ]
-        leaked_sources = sorted(path for path in tracked if path.endswith((".map", ".ts", ".tsx")))
-        if missing_files or missing_asset_trees or leaked_sources:
-            details = []
-            if missing_files:
-                details.append("missing tracked static files: " + ", ".join(missing_files))
-            if missing_asset_trees:
-                details.append("missing tracked static trees: " + ", ".join(missing_asset_trees))
-            if leaked_sources:
-                details.append("tracked frontend source leaked: " + ", ".join(leaked_sources[:5]))
-            raise Phase2PreflightError("invalid public static export: " + "; ".join(details))
-        return
     if tracked:
         raise Phase2PreflightError(
             "generated frontend static files must remain untracked: " + ", ".join(tracked[:5])
@@ -332,16 +309,8 @@ def validate_generated_static_tracking_policy(
 
 
 def is_public_export(root: Path = ROOT) -> bool:
-    """Return whether *root* is a source-free public release checkout.
-
-    Public release branches deliberately track the compiled Studio/Hosted UI
-    payload while excluding editable frontend sources.  Internal development
-    checkouts do the inverse, so both the CLI gate and its regression tests
-    must derive the policy from the same repository shape.
-    """
-    return (root / "export-manifest.json").is_file() and not (
-        root / "ksadk/studio/react-ui/package.json"
-    ).is_file()
+    """Identify a clean-export checkout, which includes frontend build inputs."""
+    return (root / "export-manifest.json").is_file()
 
 
 def _run(

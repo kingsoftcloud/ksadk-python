@@ -287,7 +287,7 @@ def test_generated_static_payload_is_not_tracked() -> None:
     validate_generated_static_tracking_policy(public_export=is_public_export())
 
 
-def test_public_export_detection_requires_manifest_without_editable_frontend(
+def test_public_export_detection_accepts_frontend_build_inputs(
     tmp_path: Path,
 ) -> None:
     assert is_public_export(tmp_path) is False
@@ -296,10 +296,10 @@ def test_public_export_detection_requires_manifest_without_editable_frontend(
     frontend = tmp_path / "ksadk/studio/react-ui"
     frontend.mkdir(parents=True)
     (frontend / "package.json").write_text("{}", encoding="utf-8")
-    assert is_public_export(tmp_path) is False
+    assert is_public_export(tmp_path) is True
 
 
-def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_path: Path) -> None:
+def test_clean_public_export_rejects_tracked_compiled_static(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "export-manifest.json").write_text(
         json.dumps({"sourceCommit": SOURCE_COMMIT, "sourceTree": "clean"}),
         encoding="utf-8",
@@ -320,7 +320,8 @@ def test_clean_public_export_requires_tracked_compiled_static(monkeypatch, tmp_p
         ),
     )
 
-    validate_generated_static_tracking_policy(tmp_path, public_export=True)
+    with pytest.raises(Phase2PreflightError, match="must remain untracked"):
+        validate_generated_static_tracking_policy(tmp_path, public_export=True)
 
 
 def test_git_free_clean_export_uses_attested_source_identity(tmp_path: Path) -> None:
