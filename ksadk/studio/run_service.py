@@ -307,7 +307,12 @@ class StudioRunService:
                 metadata={
                     "invocation_id": run_id,
                     CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
-                    **self._native_session_metadata(spec.agent_id, session, runtime_type),
+                    **self._native_session_metadata(
+                        spec.agent_id,
+                        session,
+                        runtime_type,
+                        spec.build_id,
+                    ),
                 },
             )
             handle = await self.executor.start(spec.launch_context, request)
@@ -1482,16 +1487,30 @@ class StudioRunService:
         agent_id: str,
         session_id: str,
         runtime_type: str,
+        build_id: str,
     ) -> dict[str, str]:
         if runtime_type != "codex":
             return {}
-        for previous in reversed(self.event_store.list_runs(session_id=session_id)):
-            if previous.agent_id != agent_id:
-                continue
+        runs = self.event_store.list_runs(session_id=session_id, agent_id=agent_id)
+        thread_builds: dict[str, str] = {}
+        for previous in runs:
+            native_ref = previous.runtime_handle.get("native_ref") or {}
+            if isinstance(native_ref, dict) and native_ref.get("thread_id"):
+                # Older Studio versions also saved failed cross-build resumes.
+                # The first occurrence identifies the thread's actual home.
+                thread_builds.setdefault(str(native_ref["thread_id"]), previous.build_id)
+        for previous in reversed(runs):
+            # Each immutable build has its own CODEX_HOME and plugin snapshot.
+            # Starting a thread in that home applies the new capabilities; the
+            # transport-neutral history above preserves the Studio conversation.
+            if previous.build_id != build_id:
+                return {}
             native_ref = previous.runtime_handle.get("native_ref")
             native_ref = native_ref if isinstance(native_ref, dict) else {}
             thread_id = str(native_ref.get("thread_id") or "")
             if thread_id:
+                if thread_builds[thread_id] != build_id:
+                    return {}
                 return {"thread_id": thread_id}
         return {}
 

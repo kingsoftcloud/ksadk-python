@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -362,6 +363,54 @@ async def test_second_turn_receives_transport_neutral_session_history(
         {"role": "user", "content": "第二轮"},
     ]
     assert starts[1].metadata["thread_id"] == "thread-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale_resume", [False, True])
+async def test_codex_build_change_starts_fresh_native_thread_with_session_history(
+    tmp_path: Path,
+    stale_resume: bool,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: _RecordingAdapter(calls, "codex"))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    for build_id, prompt in [("before-plugin", "第一轮"), ("with-plugin", "使用 Figma")]:
+        if build_id == "with-plugin" and stale_resume:
+            # Old Studio versions persisted the old thread under a new build
+            # even when its rollout could not be resumed there.
+            old = service.event_store.list_runs(session_id="ses-plugin-update")[0]
+            failed = old.model_copy(
+                update={
+                    "id": "run_failed_migration",
+                    "build_id": build_id,
+                    "status": RunStatus.FAILED,
+                    "started_at": datetime.now(timezone.utc),
+                }
+            )
+            service.event_store.create(failed)
+        await service.run(
+            StudioRunSpec(
+                launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+                build_id=build_id,
+                agent_id="review-helper",
+            ),
+            prompt,
+            session_id="ses-plugin-update",
+        )
+
+    starts = [value for name, value in calls if name == "start"]
+    # Build homes contain distinct plugin snapshots and native rollout stores.
+    assert "thread_id" not in starts[1].metadata
+    conversation = starts[1].conversation_preprocessing()
+    assert conversation is not None
+    assert conversation.messages == [
+        {"role": "user", "content": "第一轮"},
+        {"role": "assistant", "content": "codex answer"},
+        {"role": "user", "content": "使用 Figma"},
+    ]
 
 
 @pytest.mark.asyncio
