@@ -8,7 +8,6 @@ import hmac
 import json
 import os
 import secrets
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -78,11 +77,8 @@ from ksadk.studio.api_helpers import (
     sse as _sse,
 )
 from ksadk.studio.api_memory_routes import register_memory_routes
-from ksadk.studio.api_plugin_routes import (
-    DSH_UI_SANDBOX_BUNDLE_PATH,
-    DSH_UI_SANDBOX_FRAME_PATH,
-    register_plugin_routes,
-)
+from ksadk.studio.api_plugin_routes import register_plugin_routes
+from ksadk.studio.cloud_shared_web import CloudSharedWebBridge, cloud_chat_target, is_cloud_agent_id
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentAppearance,
@@ -100,10 +96,6 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
     "/api/v1/system/health",
     "/api/v1/system/session",
-}
-_PUBLIC_DSH_SANDBOX_GET_PATHS = {
-    DSH_UI_SANDBOX_BUNDLE_PATH,
-    DSH_UI_SANDBOX_FRAME_PATH,
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -152,9 +144,7 @@ _CONTENT_WIRE_ALIASES = {
 def _normalize_cloud_runtime_event_wire(value: dict[str, Any]) -> dict[str, Any]:
     """Normalize only historic REST casing at the RuntimeEvent boundary."""
 
-    normalized = {
-        _RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()
-    }
+    normalized = {_RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()}
     source = normalized.get("source")
     if isinstance(source, dict):
         normalized["source"] = {
@@ -206,9 +196,7 @@ def _cloud_event_conversation_item(
     if raw_event is None:
         return None
     try:
-        runtime_event = parse_runtime_event_lenient(
-            _normalize_cloud_runtime_event_wire(raw_event)
-        )
+        runtime_event = parse_runtime_event_lenient(_normalize_cloud_runtime_event_wire(raw_event))
         item = project_conversation_item(
             runtime_event,  # type: ignore[arg-type]
             session_id=session_id,
@@ -254,6 +242,11 @@ def create_studio_app(
     app.state.studio_service = studio
     app.state.session_token = session_secret
     app.state.csrf_token = csrf_secret
+    from ksadk.studio.dsh_models import studio_model_projection
+
+    studio.dsh_capabilities.model_projection = lambda: studio_model_projection(
+        studio.catalog, studio.credentials
+    )
 
     def _stream_studio_run(
         build_id: str,
@@ -329,8 +322,8 @@ def create_studio_app(
         )
 
     static_root = Path(__file__).with_name("static")
-    _studio_startup_epoch = str(int(time.time()))
     shared_web = StudioSharedWebBridge(studio)
+    cloud_web = CloudSharedWebBridge(studio.cloud)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
 
@@ -350,13 +343,7 @@ def create_studio_app(
                 request,
             )
         origin = request.headers.get("Origin")
-        public_dsh_sandbox_get = (
-            request.method == "GET" and request.url.path in _PUBLIC_DSH_SANDBOX_GET_PATHS
-        )
-        null_origin_sandbox_request = public_dsh_sandbox_get and origin == "null"
-        if origin and not null_origin_sandbox_request and not is_local_origin(
-            origin, local_hosts=_LOCAL_HOSTS
-        ):
+        if origin and not is_local_origin(origin, local_hosts=_LOCAL_HOSTS):
             return _error_response(
                 StudioError(
                     "LOCAL_ORIGIN_FORBIDDEN",
@@ -387,11 +374,7 @@ def create_studio_app(
             "/v1/responses/"
         )
         if security_enabled and (
-            (
-                studio_api
-                and request.url.path not in _PUBLIC_API_PATHS
-                and not public_dsh_sandbox_get
-            )
+            (studio_api and request.url.path not in _PUBLIC_API_PATHS)
             or shared_web_api
             or responses_api
         ):
@@ -420,20 +403,13 @@ def create_studio_app(
                     )
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
-        if not (
-            request.method == "GET" and request.url.path == DSH_UI_SANDBOX_BUNDLE_PATH
-        ):
-            response.headers["Cache-Control"] = (
-                "no-store"
-                if request.url.path.startswith(("/api/", "/v1/"))
-                else response.headers.get("Cache-Control", "no-cache")
-            )
+        response.headers["Cache-Control"] = (
+            "no-store"
+            if request.url.path.startswith(("/api/", "/v1/"))
+            else response.headers.get("Cache-Control", "no-cache")
+        )
         response.headers["X-Content-Type-Options"] = "nosniff"
-        if request.method == "GET" and request.url.path == DSH_UI_SANDBOX_FRAME_PATH:
-            if "X-Frame-Options" in response.headers:
-                del response.headers["X-Frame-Options"]
-        else:
-            response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
@@ -492,21 +468,10 @@ def create_studio_app(
     async def index():
         path = static_root / "index.html"
         html = path.read_text(encoding="utf-8")
-        # Inject a startup-scoped version so a restarted Studio with a rebuilt
-        # bundle always wins over a stale browser tab.  The bundle filenames
-        # are already content-hashed; this only defeats cached index.html.
-        if "?v=" not in html:
-            import re
-
-            def _add_version(match: "re.Match[str]") -> str:
-                attr, path_part = match.group(1), match.group(2)
-                return f'{attr}="/static/assets/{path_part}?v={_studio_startup_epoch}"'
-
-            html = re.sub(
-                r'(src|href)="/static/assets/([^"]+)"',
-                _add_version,
-                html,
-            )
+        # Vite filenames are content hashed and index.html is no-store. Keep
+        # entry module URLs byte-for-byte identical to their internal imports:
+        # adding a query only to the HTML entry makes browsers evaluate that
+        # module again when a lazy chunk imports the unversioned URL.
         response = Response(content=html, media_type="text/html")
         response.headers["Cache-Control"] = "no-store"
         if security_enabled:
@@ -551,9 +516,31 @@ def create_studio_app(
     async def openai_responses(payload: dict[str, Any]):
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        agent_id = str(metadata.get("agent_id") or metadata.get("agentId") or "") or None
+        agentengine_metadata = metadata.get("agentengine")
+        agentengine_metadata = (
+            agentengine_metadata if isinstance(agentengine_metadata, dict) else {}
+        )
+        agent_id = (
+            str(
+                metadata.get("agent_id")
+                or metadata.get("agentId")
+                or agentengine_metadata.get("agent_id")
+                or agentengine_metadata.get("agentId")
+                or ""
+            )
+            or None
+        )
         requested_approval_mode = (
-            str(metadata.get("approval_mode") or metadata.get("approvalMode") or "").strip().lower()
+            str(
+                metadata.get("approval_mode")
+                or metadata.get("approvalMode")
+                or agentengine_metadata.get("tool_approval_mode")
+                or agentengine_metadata.get("approval_mode")
+                or agentengine_metadata.get("approvalMode")
+                or ""
+            )
+            .strip()
+            .lower()
         )
         if requested_approval_mode and requested_approval_mode not in {"ask", "risk", "full"}:
             raise StudioError(
@@ -563,7 +550,13 @@ def create_studio_app(
                 field="metadata.approval_mode",
             )
         collaboration_mode = (
-            str(metadata.get("collaboration_mode") or metadata.get("collaborationMode") or "")
+            str(
+                metadata.get("collaboration_mode")
+                or metadata.get("collaborationMode")
+                or agentengine_metadata.get("collaboration_mode")
+                or agentengine_metadata.get("collaborationMode")
+                or ""
+            )
             .strip()
             .lower()
         )
@@ -575,7 +568,11 @@ def create_studio_app(
                 field="metadata.collaboration_mode",
             )
         goal_objective = str(
-            metadata.get("goal_objective") or metadata.get("goalObjective") or ""
+            metadata.get("goal_objective")
+            or metadata.get("goalObjective")
+            or agentengine_metadata.get("goal_objective")
+            or agentengine_metadata.get("goalObjective")
+            or ""
         ).strip()
         reasoning = payload.get("reasoning")
         reasoning = reasoning if isinstance(reasoning, dict) else {}
@@ -643,6 +640,85 @@ def create_studio_app(
         try:
             cookie_agent_id = request.cookies.get("agentkit_studio_chat_agent")
             requested_agent_id = str(payload.get("AgentId") or cookie_agent_id or "")
+            cloud_mode = is_cloud_agent_id(requested_agent_id)
+            if cloud_mode:
+                # Cloud agents project onto the same shared-web action
+                # contract through the cloud-chat proxy, so the ksadk-web
+                # headless data layer drives them like hosted-ui does.
+                cloud_target = cloud_chat_target(requested_agent_id)
+                data = None
+                if action == "GetAgentUiBootstrap":
+                    data = await cloud_web.bootstrap(cloud_target)
+                elif action == "ListAgentModels":
+                    data = await cloud_web.list_models(cloud_target)
+                elif action == "ListSessions":
+                    data = await cloud_web.list_sessions(
+                        cloud_target,
+                        page=int(payload.get("Page") or 1),
+                        page_size=int(payload.get("PageSize") or 30),
+                    )
+                elif action == "CreateSession":
+                    data = await cloud_web.create_session(cloud_target)
+                elif action == "GetSession":
+                    data = await cloud_web.get_session(
+                        cloud_target, str(payload.get("SessionId") or "")
+                    )
+                elif action == "DeleteSession":
+                    data = await cloud_web.delete_session(
+                        cloud_target, str(payload.get("SessionId") or "")
+                    )
+                elif action == "ListSessionMessages":
+                    data = await cloud_web.list_messages(
+                        cloud_target,
+                        str(payload.get("SessionId") or ""),
+                        after_seq_id=_optional_int(payload.get("AfterSeqId")),
+                        before_seq_id=_optional_int(payload.get("BeforeSeqId")),
+                        limit=int(payload.get("Limit") or 50),
+                    )
+                elif action == "ListSessionEvents":
+                    data = await cloud_web.list_session_events(
+                        cloud_target,
+                        str(payload.get("SessionId") or ""),
+                        after_seq_id=_optional_int(payload.get("AfterSeqId")),
+                        offset=_optional_int(payload.get("Offset")),
+                        limit=int(payload.get("Limit") or 200),
+                    )
+                elif action == "SubmitInteraction":
+                    data = await cloud_web.submit_interaction(
+                        cloud_target, str(payload.get("SessionId") or ""), payload
+                    )
+                elif action == "RunAgent":
+                    # Open the upstream connection before StreamingResponse
+                    # commits status 200, so admission failures remain a
+                    # structured HTTP error instead of an empty SSE body.
+                    upstream_stream = await cloud_web.open_run_stream(cloud_target, payload)
+                    return StreamingResponse(
+                        cloud_web.stream_run(
+                            cloud_target,
+                            payload,
+                            upstream_stream=upstream_stream,
+                        ),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+                    )
+                elif action in {
+                    "GetResponseFeedback",
+                    "UpsertResponseFeedback",
+                    "DeleteResponseFeedback",
+                    "ListSessionCheckpoints",
+                    "ListToolReceipts",
+                }:
+                    data = {"Feedback": None} if action == "GetResponseFeedback" else {}
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "Code": 404,
+                            "Message": f"Studio 尚未实现云端共享 Web 动作：{action}",
+                            "Data": {},
+                        },
+                    )
+                return {"Code": 0, "Message": "OK", "Data": data}
             if action == "GetAgentUiBootstrap":
                 data = shared_web.bootstrap(shared_web.resolve_agent_id(requested_agent_id or None))
             elif action == "ListAgentModels":
@@ -650,19 +726,24 @@ def create_studio_app(
                     shared_web.resolve_agent_id(requested_agent_id or None)
                 )
             elif action == "ListSessions":
-                data = shared_web.list_sessions(
+                data = await shared_web.list_sessions(
                     shared_web.resolve_agent_id(requested_agent_id or None),
                     page=int(payload.get("Page") or 1),
                     page_size=int(payload.get("PageSize") or 30),
                 )
             elif action == "CreateSession":
-                data = shared_web.create_session(
+                data = await shared_web.create_session(
                     shared_web.resolve_agent_id(requested_agent_id or None)
                 )
             elif action == "GetSession":
-                data = shared_web.get_session(str(payload.get("SessionId") or ""))
+                data = await shared_web.get_session(str(payload.get("SessionId") or ""))
+            elif action == "CompactSession":
+                data = await shared_web.compact_session(
+                    shared_web.resolve_agent_id(requested_agent_id or None),
+                    str(payload.get("SessionId") or ""),
+                )
             elif action == "DeleteSession":
-                data = shared_web.delete_session(str(payload.get("SessionId") or ""))
+                data = await shared_web.delete_session(str(payload.get("SessionId") or ""))
             elif action == "ListSessionMessages":
                 data = await shared_web.list_messages(
                     str(payload.get("SessionId") or ""),
@@ -683,6 +764,33 @@ def create_studio_app(
                 )
             elif action == "CancelRun":
                 data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+            elif action == "SubmitInteraction":
+                run_id = str(payload.get("RunId") or "")
+                interaction_id = str(payload.get("InteractionId") or "")
+                resolved = await studio.run_service.submit_interaction(
+                    run_id,
+                    interaction_id,
+                    name=str(payload.get("Action") or "submit"),
+                    data=(
+                        dict(payload.get("Response"))
+                        if isinstance(payload.get("Response"), dict)
+                        else {}
+                    ),
+                    expected_revision=int(payload.get("ExpectedRevision") or 0),
+                    idempotency_key=str(payload.get("IdempotencyKey") or ""),
+                )
+                data = {
+                    "schema_version": 1,
+                    "command_id": str(
+                        resolved.get("eventId")
+                        or resolved.get("resolutionEventId")
+                        or f"interaction:{interaction_id}"
+                    ),
+                    "status": "accepted",
+                    "message_id": None,
+                    "run_id": run_id,
+                    "accepted_seq": int(resolved.get("eventId") or 0),
+                }
             elif action in {
                 "GetResponseFeedback",
                 "UpsertResponseFeedback",
@@ -714,12 +822,20 @@ def create_studio_app(
             )
 
     @app.get("/agentengine/api/v1/SubscribeRunEvents")
-    async def shared_chat_subscribe_run_events():
-        async def completed_stream():
-            yield "event: done\ndata: [DONE]\n\n"
-
+    async def shared_chat_subscribe_run_events(
+        session_id: str = Query(alias="SessionId"),
+        invocation_id: str = Query(alias="InvocationId"),
+        after_seq_id: int = Query(default=0, alias="AfterSeqId", ge=0),
+    ):
+        # Validate before StreamingResponse sends headers; invalid identities
+        # remain ordinary actionable HTTP errors.
+        shared_web.subscription_run_id(session_id, invocation_id)
         return StreamingResponse(
-            completed_stream(),
+            shared_web.subscribe_run_events(
+                session_id,
+                invocation_id,
+                after_seq_id=after_seq_id,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
@@ -1693,7 +1809,7 @@ def create_studio_app(
     async def list_deployments():
         """Read local deployment receipts without implicit cloud refreshes."""
 
-        return {"items": studio.cloud.list()}
+        return {"items": studio.cloud.list(), "currentIdentity": studio.cloud.cached_identity()}
 
     @app.get("/api/v1/cloud-agents")
     async def list_account_cloud_agents(
@@ -2061,5 +2177,11 @@ def create_studio_app(
     )
     register_memory_routes(app, studio)
     register_plugin_routes(app, studio)
+
+    from ksadk.studio.dsh_application import register_dsh_application
+
+    register_dsh_application(
+        app, studio, session_secret=session_secret, security_enabled=security_enabled
+    )
 
     return app

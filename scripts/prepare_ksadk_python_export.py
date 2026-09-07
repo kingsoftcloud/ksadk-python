@@ -71,21 +71,7 @@ EXPORT_PREFIXES = (
     "ksadk_runtime_common/",
 )
 
-# The public candidate carries reviewed compiled UI assets, not the editable
-# Studio React/TypeScript source tree. These directories are generated and
-# ignored in the internal repository, so export discovery must add them
-# explicitly after the internal build has completed.
-GENERATED_PUBLIC_STATIC_PREFIXES = (
-    "ksadk/server/static/",
-    "ksadk/studio/static/",
-)
-
-GENERATED_STATIC_SOURCE_SUFFIXES = (
-    ".map",
-    ".ts",
-    ".tsx",
-)
-
+# Public Git trees carry build inputs; static assets are generated for packages.
 REQUIRED_PUBLIC_FILES = {
     "AGENTS.md",
     "CLAUDE.md",
@@ -96,8 +82,8 @@ REQUIRED_PUBLIC_FILES = {
     ".gitleaks.toml",
     "docs-site/package.json",
     "docs-site/pnpm-lock.yaml",
-    "ksadk/server/static/index.html",
-    "ksadk/studio/static/index.html",
+    "ksadk/studio/react-ui/package.json",
+    "ksadk/studio/react-ui/package-lock.json",
     "pyproject.toml",
 }
 
@@ -164,6 +150,7 @@ PUBLIC_TEST_FILES = {
     "tests/plugins/test_dsh_node_provider_e2e.py",
     "tests/plugins/test_dsh_capability_host.py",
     "tests/plugins/test_dsh_capability_host_e2e.py",
+    "tests/plugins/test_dsh_upstream_plugin_e2e.py",
     "tests/plugins/test_dsh_source_policy.py",
     "tests/plugins/test_codex_provider_vertical.py",
     "tests/test_check_approval_record.py",
@@ -181,14 +168,10 @@ PUBLIC_TEST_FILES = {
     "tests/studio/test_dsh_capability_service.py",
     "tests/studio/test_dsh_agent_binding.py",
     "tests/studio/test_dsh_plugin_api.py",
-    "tests/studio/test_dsh_ui_sandbox.py",
     "tests/studio/test_native_plugin_binding.py",
     "tests/studio/runtime_adapter_fixtures.py",
     "tests/studio/e2e/conversation_items_browser_e2e.py",
     "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
-    "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
-    "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
-    "tests/studio/e2e/fixtures/dsh_ui_sandbox_client.js",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
@@ -222,7 +205,10 @@ EXCLUDED_PREFIXES = (
     "htmlcov/",
     "ksadk.egg-info/",
     "ksadk/server/web-ui/",
-    "ksadk/studio/react-ui/",
+    "ksadk/server/static/",
+    "ksadk/studio/static/",
+    "ksadk/studio/react-ui/node_modules/",
+    "ksadk/studio/react-ui/dist/",
     "site/",
 )
 
@@ -331,26 +317,6 @@ def discover_files(root: Path) -> list[str]:
     return filesystem_files(root)
 
 
-def generated_static_files(root: Path, violations: list[str]) -> list[str]:
-    paths: list[str] = []
-    for prefix in GENERATED_PUBLIC_STATIC_PREFIXES:
-        static_root = root / prefix.rstrip("/")
-        if not static_root.is_dir():
-            violations.append(f"missing compiled public static directory: {prefix}")
-            continue
-        for path in sorted(static_root.rglob("*")):
-            if not path.is_file():
-                continue
-            rel_path = normalize(path.relative_to(root))
-            if rel_path.endswith(GENERATED_STATIC_SOURCE_SUFFIXES):
-                violations.append(
-                    f"compiled public static directory contains source artifact: {rel_path}"
-                )
-                continue
-            paths.append(rel_path)
-    return paths
-
-
 def is_excluded(path: str) -> bool:
     normalized = normalize(path)
     if not is_included_by_policy(normalized):
@@ -398,9 +364,8 @@ def build_export_plan(repo_root: Path) -> ExportPlan:
             violations.append(f"failed to discover git files: {exc}")
             discovered = []
 
-    generated_paths = generated_static_files(repo_root, violations)
     export_paths = sorted(
-        set(path for path in discovered if not is_excluded(path)) | set(generated_paths)
+        set(path for path in discovered if not is_excluded(path))
     )
     excluded_paths = sorted(path for path in discovered if is_excluded(path))
 

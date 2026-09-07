@@ -312,9 +312,7 @@ def test_only_official_default_hook_path_is_discovered_when_fields_are_absent(
 
     snapshot = snapshot_installed_codex_plugin(
         root,
-        source=CodexPluginSourceCoordinate(
-            type="local", requested=str(root), resolved=str(root)
-        ),
+        source=CodexPluginSourceCoordinate(type="local", requested=str(root), resolved=str(root)),
     )
 
     assert [(item.kind, item.name, item.path) for item in snapshot.components] == [
@@ -337,9 +335,7 @@ def test_manifest_supports_multiple_declared_skill_paths(tmp_path: Path) -> None
 
     snapshot = snapshot_installed_codex_plugin(
         root,
-        source=CodexPluginSourceCoordinate(
-            type="local", requested=str(root), resolved=str(root)
-        ),
+        source=CodexPluginSourceCoordinate(type="local", requested=str(root), resolved=str(root)),
     )
 
     assert {item.name for item in snapshot.components if item.kind == "skill"} == {
@@ -357,27 +353,15 @@ def test_manifest_supports_multiple_declared_skill_paths(tmp_path: Path) -> None
             {
                 "description": "inline",
                 "hooks": {
-                    "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": "true"}]}
-                    ]
+                    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "true"}]}]
                 },
             },
             {"UserPromptSubmit"},
         ),
         (
             [
-                {
-                    "hooks": {
-                        "SessionStart": [
-                            {"hooks": [{"type": "command", "command": "true"}]}
-                        ]
-                    }
-                },
-                {
-                    "hooks": {
-                        "Stop": [{"hooks": [{"type": "command", "command": "true"}]}]
-                    }
-                },
+                {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}},
+                {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "true"}]}]}},
             ],
             {"SessionStart", "Stop"},
         ),
@@ -400,9 +384,7 @@ def test_manifest_accepts_all_official_hook_declaration_forms(
 
     snapshot = snapshot_installed_codex_plugin(
         root,
-        source=CodexPluginSourceCoordinate(
-            type="local", requested=str(root), resolved=str(root)
-        ),
+        source=CodexPluginSourceCoordinate(type="local", requested=str(root), resolved=str(root)),
     )
 
     assert {item.name for item in snapshot.components if item.kind == "hook"} == expected_events

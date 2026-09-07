@@ -143,6 +143,7 @@ async def test_readiness_stdout_parser_handles_large_utf8_lines(
         endpoint="http://127.0.0.1:43123/mcp",
         inventory_digest=inventory_digest,
         tools=(tool,),
+        web_route_count=2,
     )
     line = (
         "@@KSADK_DSH_CAPABILITY_READY@@"
@@ -177,9 +178,7 @@ async def test_inventory_digest_and_order_are_cross_language_stable(tmp_path: Pa
     schemas = [
         {
             "name": name,
-            "description": (
-                "x" * 1023 + "🙂" + "truncated" if name == "z_lower" else "stable"
-            ),
+            "description": ("x" * 1023 + "🙂" + "truncated" if name == "z_lower" else "stable"),
             "parameters": {
                 "type": "number",
                 "minimum": 1e-7,
@@ -252,12 +251,8 @@ async def test_profile_host_exposes_authenticated_standard_mcp_and_cancels(
             "Content-Type": "application/json",
         }
         async with (
-            httpx.AsyncClient(
-                headers=scoped_headers_a, timeout=3, trust_env=False
-            ) as scoped_a,
-            httpx.AsyncClient(
-                headers=scoped_headers_b, timeout=3, trust_env=False
-            ) as scoped_b,
+            httpx.AsyncClient(headers=scoped_headers_a, timeout=3, trust_env=False) as scoped_a,
+            httpx.AsyncClient(headers=scoped_headers_b, timeout=3, trust_env=False) as scoped_b,
         ):
             listed = await scoped_a.post(
                 lease.endpoint,
@@ -482,9 +477,7 @@ async def test_tool_that_ignores_abort_crashes_generation_and_recovers_capacity(
         first_pid = host.pid
         assert first_pid is not None
         headers = {**lease.headers(), "Content-Type": "application/json"}
-        async with httpx.AsyncClient(
-            headers=headers, timeout=3, trust_env=False
-        ) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=3, trust_env=False) as client:
             response = await client.post(
                 lease.endpoint,
                 json={
@@ -497,9 +490,7 @@ async def test_tool_that_ignores_abort_crashes_generation_and_recovers_capacity(
                     },
                 },
             )
-        assert response.json()["result"]["_meta"]["io.ksadk/dsh"]["code"] == (
-            "DEADLINE_EXCEEDED"
-        )
+        assert response.json()["result"]["_meta"]["io.ksadk/dsh"]["code"] == ("DEADLINE_EXCEEDED")
 
         for _ in range(60):
             if host.pid is None:
@@ -537,9 +528,7 @@ async def test_scoped_revoke_fences_a_request_with_a_slow_body(tmp_path: Path) -
     host = _host(tmp_path)
     try:
         lease = await host.start()
-        token = lease.bearer_token_for_runtime(
-            {"agent_fixture_echo": "fixture_echo"}
-        )
+        token = lease.bearer_token_for_runtime({"agent_fixture_echo": "fixture_echo"})
         endpoint = httpx.URL(lease.endpoint)
         body = json.dumps(
             {

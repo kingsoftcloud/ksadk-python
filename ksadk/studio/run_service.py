@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from jsonschema import Draft202012Validator
+
 from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.conversations.projector import (
     project_conversation_item,
@@ -68,6 +70,7 @@ from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.workspace import Workspace
 
 _CANCEL_TIMEOUT_SECONDS = 2.0
+_INTERACTION_SUBMIT_TIMEOUT_SECONDS = 10.0
 
 
 logger = logging.getLogger(__name__)
@@ -108,12 +111,14 @@ class StudioRunService:
         self.runtime_events = runtime_events or RuntimeEventStore(self.session_service)
         self.plugin_runtime = plugin_runtime
         self._active_handles: dict[str, Any] = {}
+        self._active_sessions: set[tuple[str, str]] = set()
         self._cancel_flags: dict[str, bool] = {}
         self._control_queues: dict[
             str,
             asyncio.Queue[tuple[str, ResumePayload | None, asyncio.Future[None] | None]],
         ] = {}
         self._waiting_modes: dict[str, str] = {}
+        self._submitted_interactions: dict[str, set[str]] = {}
         # Interaction resolution appends to one run-level event file.  Serialise
         # every decision for that run, not only identical interaction ids, so
         # two concurrently visible cards cannot overwrite each other's receipt.
@@ -142,6 +147,7 @@ class StudioRunService:
                 "run.interrupted",
                 {"reason": "local_studio_restarted", "recoverable": False},
             )
+            self._expire_unresolved_interactions(record)
 
     async def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
         """Read the durable Studio event timeline for API/SSE replay."""
@@ -155,6 +161,38 @@ class StudioRunService:
         runtime_input: Any = None,
         session_id: str | None = None,
         on_event: Callable[[RunEvent], None] | None = None,
+    ) -> RunRecord:
+        session = session_id or f"ses_{uuid4().hex}"
+        key = (spec.agent_id, session)
+        # Claim before the first await, including preparation and plugin runs.
+        # A second turn must never attach another adapter to the live thread.
+        if key in self._active_sessions:
+            raise StudioError(
+                "SESSION_RUN_ACTIVE",
+                "上一轮仍在运行或等待回答，请先完成回答或停止运行。",
+                status_code=409,
+                details={"sessionId": session},
+            )
+        self._active_sessions.add(key)
+        try:
+            return await self._run_owned(
+                spec,
+                user_input,
+                runtime_input=runtime_input,
+                session_id=session,
+                on_event=on_event,
+            )
+        finally:
+            self._active_sessions.discard(key)
+
+    async def _run_owned(
+        self,
+        spec: StudioRunSpec,
+        user_input: str,
+        *,
+        runtime_input: Any,
+        session_id: str,
+        on_event: Callable[[RunEvent], None] | None,
     ) -> RunRecord:
         run_id = f"run_{uuid4().hex}"
         session = session_id or f"ses_{uuid4().hex}"
@@ -269,7 +307,12 @@ class StudioRunService:
                 metadata={
                     "invocation_id": run_id,
                     CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
-                    **self._native_session_metadata(spec.agent_id, session, runtime_type),
+                    **self._native_session_metadata(
+                        spec.agent_id,
+                        session,
+                        runtime_type,
+                        spec.build_id,
+                    ),
                 },
             )
             handle = await self.executor.start(spec.launch_context, request)
@@ -280,6 +323,27 @@ class StudioRunService:
                 terminal_seen = False
                 should_resume = False
                 async for event in self.executor.stream(handle):
+                    if (
+                        isinstance(event, RunInterrupted)
+                        and event.interaction_id
+                        and record.status == RunStatus.WAITING_INPUT
+                        and event.source.framework == "codex"
+                    ):
+                        # Codex emits this companion event immediately after a
+                        # live JSON-RPC approval request. The native turn stays
+                        # attached and must be released through submit; trying
+                        # to resume it deadlocks that request and later breaks
+                        # the app-server pipe.
+                        self._waiting_modes[run_id] = "live"
+                        continue
+                    if isinstance(event, InteractionResolved) and event.source.framework == "codex":
+                        submitted = self._submitted_interactions.get(run_id, set())
+                        provider_call_id = str(getattr(event.response, "call_id", None) or "")
+                        if event.interaction_id in submitted or provider_call_id in submitted:
+                            # submit_interaction atomically persists the public
+                            # terminal fact and receipt. Ignore the provider's
+                            # echo so replay never shows the approval twice.
+                            continue
                     await persist(event)
                     if self._cancel_flags.get(run_id):
                         raise asyncio.CancelledError()
@@ -288,9 +352,7 @@ class StudioRunService:
                     elif (
                         isinstance(event, ItemUpdated)
                         and event.item_kind == "message"
-                        and item_phases.get(
-                            (event.scope_id, event.item_id), "final_answer"
-                        )
+                        and item_phases.get((event.scope_id, event.item_id), "final_answer")
                         == "final_answer"
                     ):
                         text = event.update.text if isinstance(event.update, TextContent) else ""
@@ -304,9 +366,7 @@ class StudioRunService:
                     elif (
                         isinstance(event, ItemCompleted)
                         and event.item_kind == "message"
-                        and item_phases.get(
-                            (event.scope_id, event.item_id), "final_answer"
-                        )
+                        and item_phases.get((event.scope_id, event.item_id), "final_answer")
                         == "final_answer"
                     ):
                         completed_text_by_item[(event.scope_id, event.item_id)] = "".join(
@@ -492,7 +552,9 @@ class StudioRunService:
             self._cancel_flags.pop(run_id, None)
             self._control_queues.pop(run_id, None)
             self._waiting_modes.pop(run_id, None)
+            self._submitted_interactions.pop(run_id, None)
             record.completed_at = datetime.now(timezone.utc)
+            self._expire_unresolved_interactions(record, on_event=on_event)
             if runtime_duration_ms is not None:
                 record.duration_ms = runtime_duration_ms
                 record.duration_source = "runtime"
@@ -672,9 +734,7 @@ class StudioRunService:
     ) -> list[RuntimeEvent]:
         item_id = f"{record.id}:assistant"
         part_id = f"{record.id}:text"
-        snapshot = ContentSnapshot(
-            parts=(TextContent(part_id=part_id, text=output_text),)
-        )
+        snapshot = ContentSnapshot(parts=(TextContent(part_id=part_id, text=output_text),))
         events: list[RuntimeEvent] = [
             RunStarted(
                 **_plugin_event_envelope(record, "run.started"),
@@ -725,10 +785,7 @@ class StudioRunService:
                 ),
             )
         )
-        return [
-            await self.runtime_events.append_one(record.session_id, event)
-            for event in events
-        ]
+        return [await self.runtime_events.append_one(record.session_id, event) for event in events]
 
     async def _kernel_run(
         self,
@@ -764,9 +821,7 @@ class StudioRunService:
                 session_id=record.session_id,
                 operations=("enqueue",),
             )
-            idempotency_key = str(
-                (spec.request_config or {}).get("idempotency_key") or record.id
-            )
+            idempotency_key = str((spec.request_config or {}).get("idempotency_key") or record.id)
             command = _kernel_ingress.map_studio_request(
                 session_id=record.session_id,
                 idempotency_key=idempotency_key,
@@ -774,9 +829,7 @@ class StudioRunService:
                 run_id=record.id,
                 trusted=trusted,
             )
-            receipt = await _kernel_ingress.submit_command(
-                command, permit=trusted.permit
-            )
+            receipt = await _kernel_ingress.submit_command(command, permit=trusted.permit)
             if receipt.status not in ("accepted", "duplicate"):
                 record.status = RunStatus.FAILED
                 record.error = {
@@ -859,17 +912,13 @@ class StudioRunService:
         if active_project != build_project:
             return None
         defaults = getattr(runtime.config, "start_request_defaults", {}) or {}
-        bound_agent_id = str(
-            defaults.get("agent_id") or runtime.config.agent_instance_id
-        ).strip()
+        bound_agent_id = str(defaults.get("agent_id") or runtime.config.agent_instance_id).strip()
         if bound_agent_id != spec.agent_id:
             return None
         declared_instance = str(
             (spec.launch_context.config or {}).get("agent_instance_id") or ""
         ).strip()
-        if declared_instance and declared_instance != str(
-            runtime.config.agent_instance_id
-        ):
+        if declared_instance and declared_instance != str(runtime.config.agent_instance_id):
             return None
         return runtime
 
@@ -1039,10 +1088,51 @@ class StudioRunService:
                 status_code=409,
             )
         kind = str(interaction.data.get("kind") or "form")
-        payload_data = {"decision": name, **data}
+        if kind != "approval" and name not in {"cancel", "skip"}:
+            schema = interaction.data.get("inputSchema") or {}
+            errors = list(Draft202012Validator(schema).iter_errors(data))
+            if errors:
+                raise StudioError(
+                    "INTERACTION_RESPONSE_INVALID",
+                    "请填写必填问题后再提交。",
+                    status_code=422,
+                )
+        provider_call_id = str(
+            interaction.data.get("callId") or interaction.data.get("call_id") or ""
+        )
+        if kind == "approval" and not provider_call_id:
+            approval_request = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event.type == "approval.requested"
+                    and str(event.data.get("approvalId") or event.data.get("interactionId") or "")
+                    == interaction_id
+                ),
+                None,
+            )
+            if approval_request is not None:
+                provider_call_id = str(
+                    approval_request.data.get("callId")
+                    or approval_request.data.get("call_id")
+                    or ""
+                )
+        provider_call_id = provider_call_id or interaction_id
+        submitted = self._submitted_interactions.setdefault(run_id, set())
+        submitted.update({interaction_id, provider_call_id})
+        decision = str(data.get("decision") or name)
+        if kind == "approval" and record.runtime_type == "codex":
+            # The shared Web action is named `reject`; Codex app-server calls
+            # the same decision `deny`/`decline`. Do not let a UI alias fall
+            # through as an unsupported native approval decision.
+            decision = {
+                "reject": "deny",
+                "rejected": "deny",
+            }.get(decision.lower(), decision)
+        payload_data = {**data, "decision": decision}
         payload = ResumePayload(
             kind="approval_decision" if kind == "approval" else "hitl_answer",
-            call_id=interaction_id,
+            call_id=provider_call_id,
             data=payload_data,
         )
         mode = self._waiting_modes.get(run_id)
@@ -1051,8 +1141,19 @@ class StudioRunService:
             if handle is None or not self.executor.is_attached(handle):
                 raise StudioError("INTERACTION_EXPIRED", "运行时交互已失效", status_code=409)
             try:
-                await self.executor.submit(handle, payload)
+                await asyncio.wait_for(
+                    self.executor.submit(handle, payload),
+                    timeout=_INTERACTION_SUBMIT_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                submitted.difference_update({interaction_id, provider_call_id})
+                raise StudioError(
+                    "INTERACTION_SUBMIT_FAILED",
+                    "运行时未及时确认交互提交，请重试",
+                    status_code=409,
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - provider errors are user-safe here
+                submitted.difference_update({interaction_id, provider_call_id})
                 raise StudioError(
                     "INTERACTION_SUBMIT_FAILED",
                     str(exc),
@@ -1065,22 +1166,51 @@ class StudioRunService:
             submit_ack = asyncio.get_running_loop().create_future()
             queue.put_nowait(("resume", payload, submit_ack))
             try:
-                await submit_ack
+                await asyncio.wait_for(
+                    submit_ack,
+                    timeout=_INTERACTION_SUBMIT_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                submitted.difference_update({interaction_id, provider_call_id})
+                raise StudioError(
+                    "INTERACTION_SUBMIT_FAILED",
+                    "运行时未及时确认交互提交，请重试",
+                    status_code=409,
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - provider errors are user-safe here
+                submitted.difference_update({interaction_id, provider_call_id})
                 raise StudioError(
                     "INTERACTION_SUBMIT_FAILED",
                     str(exc),
                     status_code=409,
                 ) from exc
         else:
+            submitted.difference_update({interaction_id, provider_call_id})
             raise StudioError("INTERACTION_EXPIRED", "运行时交互已失效", status_code=409)
 
         next_revision = revision + 1
+        normalized_action = name.lower()
+        if normalized_action in {"approve", "approved", "accept", "accepted"}:
+            outcome = "approved"
+            response_summary = "已同意"
+        elif normalized_action in {"reject", "rejected", "deny", "denied", "decline"}:
+            outcome = "rejected"
+            response_summary = "已拒绝"
+        elif normalized_action in {"cancel", "cancelled", "canceled"}:
+            outcome = "cancelled"
+            response_summary = "已反馈给 Agent" if data.get("feedback") else "已取消"
+        else:
+            outcome = "submitted"
+            response_summary = "已提交"
         resolved_data = {
             "runId": run_id,
             "interactionId": interaction_id,
-            "callId": interaction_id,
+            "callId": provider_call_id,
             "name": name,
+            "action": name,
+            "outcome": outcome,
+            "actor": "user",
+            "responseSummary": response_summary,
             "data": data,
             "revision": next_revision,
             "expectedRevision": expected_revision,
@@ -1092,6 +1222,7 @@ class StudioRunService:
                 interaction.data.get("surfaceId") or interaction.data.get("surface_id") or ""
             ),
             "interactionId": interaction_id,
+            "callId": provider_call_id,
             "actionId": f"action-{interaction_id}",
             "name": name,
             "data": data,
@@ -1110,6 +1241,65 @@ class StudioRunService:
         self.event_store.save(record)
         self._waiting_modes.pop(run_id, None)
         return receipt
+
+    def _expire_unresolved_interactions(
+        self,
+        record: RunRecord,
+        *,
+        on_event: Callable[[RunEvent], None] | None = None,
+    ) -> None:
+        """Close orphaned cards whenever their owning run is terminal."""
+
+        if record.status not in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.INTERRUPTED,
+            RunStatus.TIMED_OUT,
+        }:
+            return
+        events = self.event_store.events(record.id)
+        closed_ids = {
+            str(event.data.get("interactionId") or event.data.get("approvalId") or "")
+            for event in events
+            if event.type
+            in {
+                "a2ui.action",
+                "approval.resolved",
+                "interaction.resolved",
+                "interaction.cancelled",
+                "interaction.expired",
+            }
+        }
+        pending: dict[str, RunEvent] = {}
+        for event in events:
+            if event.type != "a2ui.interaction":
+                continue
+            interaction_id = str(
+                event.data.get("interactionId") or event.data.get("interaction_id") or ""
+            )
+            if interaction_id and interaction_id not in closed_ids:
+                pending[interaction_id] = event
+        for interaction_id, requested in pending.items():
+            data = requested.data
+            expired = self.event_store.append(
+                record.id,
+                "interaction.expired",
+                {
+                    "runId": record.id,
+                    "interactionId": interaction_id,
+                    "approvalId": interaction_id,
+                    "callId": str(data.get("callId") or data.get("call_id") or ""),
+                    "kind": str(data.get("kind") or "form"),
+                    "title": data.get("title"),
+                    "message": data.get("message"),
+                    "detail": data.get("detail"),
+                    "outcome": "expired",
+                    "revision": _interaction_revision(data) + 1,
+                },
+            )
+            if on_event is not None:
+                on_event(expired)
 
     async def _capture_pcm_evidence(
         self,
@@ -1255,7 +1445,11 @@ class StudioRunService:
                 "runId": record.id,
                 "surfaceId": surface_id,
                 "interactionId": approval_id,
+                "callId": event.request.call_id or approval_id,
                 "kind": "approval",
+                "title": "需要审批",
+                "message": "此次操作需要确认后才能继续。",
+                "detail": detail,
                 "revision": 1,
                 "inputSchema": {
                     "type": "object",
@@ -1293,16 +1487,30 @@ class StudioRunService:
         agent_id: str,
         session_id: str,
         runtime_type: str,
+        build_id: str,
     ) -> dict[str, str]:
         if runtime_type != "codex":
             return {}
-        for previous in self.event_store.list_runs(session_id=session_id):
-            if previous.agent_id != agent_id or previous.status != RunStatus.COMPLETED:
-                continue
+        runs = self.event_store.list_runs(session_id=session_id, agent_id=agent_id)
+        thread_builds: dict[str, str] = {}
+        for previous in runs:
+            native_ref = previous.runtime_handle.get("native_ref") or {}
+            if isinstance(native_ref, dict) and native_ref.get("thread_id"):
+                # Older Studio versions also saved failed cross-build resumes.
+                # The first occurrence identifies the thread's actual home.
+                thread_builds.setdefault(str(native_ref["thread_id"]), previous.build_id)
+        for previous in reversed(runs):
+            # Each immutable build has its own CODEX_HOME and plugin snapshot.
+            # Starting a thread in that home applies the new capabilities; the
+            # transport-neutral history above preserves the Studio conversation.
+            if previous.build_id != build_id:
+                return {}
             native_ref = previous.runtime_handle.get("native_ref")
             native_ref = native_ref if isinstance(native_ref, dict) else {}
             thread_id = str(native_ref.get("thread_id") or "")
             if thread_id:
+                if thread_builds[thread_id] != build_id:
+                    return {}
                 return {"thread_id": thread_id}
         return {}
 
@@ -1340,17 +1548,13 @@ def _normalized_plugin_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
 
     normalized = {
         "input_tokens": number("input_tokens", "inputTokens", "prompt_tokens"),
-        "output_tokens": number(
-            "output_tokens", "outputTokens", "completion_tokens"
-        ),
+        "output_tokens": number("output_tokens", "outputTokens", "completion_tokens"),
         "total_tokens": number("total_tokens", "totalTokens"),
         "cached_tokens": number("cached_tokens", "cachedTokens"),
         "reasoning_tokens": number("reasoning_tokens", "reasoningTokens"),
     }
     if not normalized["total_tokens"]:
-        normalized["total_tokens"] = (
-            normalized["input_tokens"] + normalized["output_tokens"]
-        )
+        normalized["total_tokens"] = normalized["input_tokens"] + normalized["output_tokens"]
     normalized["reported"] = bool(usage) and any(
         key in usage
         for key in (
@@ -1520,7 +1724,9 @@ def project_runtime_event(
             payload = {
                 "interactionId": event.interaction_id,
                 "kind": "form",
-                "inputSchema": {},
+                "inputSchema": event.request.schema_,
+                "message": event.request.prompt or "",
+                "callId": event.source.native_event_id or event.interaction_id,
             }
     elif isinstance(event, InteractionResolved):
         if event.interaction_kind == "approval":
@@ -1575,9 +1781,7 @@ def project_runtime_event(
     return projected, payload
 
 
-def _first_content(
-    snapshot: ContentSnapshot | None, content_type: type
-) -> Any | None:
+def _first_content(snapshot: ContentSnapshot | None, content_type: type) -> Any | None:
     if snapshot is None:
         return None
     for part in snapshot.parts:

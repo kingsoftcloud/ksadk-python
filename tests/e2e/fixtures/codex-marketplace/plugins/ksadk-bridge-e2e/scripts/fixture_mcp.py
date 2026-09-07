@@ -32,9 +32,7 @@ for line in sys.stdin:
         _result(
             request_id,
             {
-                "protocolVersion": request.get("params", {}).get(
-                    "protocolVersion", "2025-06-18"
-                ),
+                "protocolVersion": request.get("params", {}).get("protocolVersion", "2025-06-18"),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "ksadk-plugin-fixture", "version": "1.0.0"},
             },

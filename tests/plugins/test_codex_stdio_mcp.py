@@ -83,20 +83,26 @@ def test_bundle_stdio_mcp_resolves_credentials_as_parent_env_names() -> None:
 
 
 def test_only_http_or_sse_mcp_requests_codex_sandbox_network_access() -> None:
-    assert _manifest_has_network_mcp(
-        {
-            "mcp_servers": [
-                {"name": "local", "transport": "stdio", "command": "node", "args": []}
-            ]
-        }
-    ) is False
-    assert _manifest_has_network_mcp(
-        {
-            "mcp_servers": [
-                {"name": "remote", "transport": "http", "url": "https://mcp.invalid/rpc"}
-            ]
-        }
-    ) is True
+    assert (
+        _manifest_has_network_mcp(
+            {
+                "mcp_servers": [
+                    {"name": "local", "transport": "stdio", "command": "node", "args": []}
+                ]
+            }
+        )
+        is False
+    )
+    assert (
+        _manifest_has_network_mcp(
+            {
+                "mcp_servers": [
+                    {"name": "remote", "transport": "http", "url": "https://mcp.invalid/rpc"}
+                ]
+            }
+        )
+        is True
+    )
 
 
 @pytest.mark.parametrize(

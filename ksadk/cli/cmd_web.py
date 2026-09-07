@@ -40,7 +40,6 @@ _SESSION_ENV_NAMES = (
 _CHECKPOINT_ENV_NAMES = (
     "KSADK_CHECKPOINT_BACKEND",
     "KSADK_CHECKPOINT_PATH",
-    "KSADK_LANGGRAPH_CHECKPOINT_DSN",
 )
 _LOCAL_UI_ENV_NAMES = ("AGENTENGINE_UI_DIR",)
 
@@ -124,8 +123,6 @@ def _ensure_langgraph_sqlite_checkpoint_available() -> None:
             "或显式设置 KSADK_CHECKPOINT_BACKEND=memory/postgres。"
         )
         raise SystemExit(1)
-
-
 def _configure_langgraph_checkpoint_env(
     agent_path: Path,
     *,
@@ -138,11 +135,11 @@ def _configure_langgraph_checkpoint_env(
 
     if checkpoint_backend == "sqlite":
         _ensure_langgraph_sqlite_checkpoint_available()
+        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
         os.environ.setdefault(
             "KSADK_CHECKPOINT_PATH",
             str(agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"),
         )
-        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
         return
 
     if explicit_checkpoint_env_names.intersection(_CHECKPOINT_ENV_NAMES):
@@ -150,10 +147,10 @@ def _configure_langgraph_checkpoint_env(
 
     _ensure_langgraph_sqlite_checkpoint_available()
     os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
+    os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
     os.environ["KSADK_CHECKPOINT_PATH"] = str(
         agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"
     )
-    os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
 
 
 def _default_project_stm_if_unset(

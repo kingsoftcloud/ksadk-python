@@ -339,16 +339,33 @@ def _register_optional_command(cli: click.Group, module_path: str, *cmd_names: s
 
 
 def _register_commands():
+    # Runtime fast path: when the hosted entrypoint runs ``ksadk web`` the
+    # process only needs the web command. Importing the other commands here
+    # pulls in deploy/create/run deps (ks3, questionary, ...) that the hosted
+    # Python runtime image does not ship, so a full register crashes the
+    # runtime before the server starts. Only import what argv actually needs;
+    # ``--help`` and other exploratory invocations still register everything.
+    import sys as _sys
+
+    _argv = [a for a in _sys.argv[1:] if not a.startswith("-")]
+    _runtime_only = bool(_argv) and _argv[0] == "web"
+
+    from ksadk.cli.cmd_web import web
+
+    _add_command_once(cli, web)
+
+    if _runtime_only:
+        # Skip create/deploy/run/managed_runtime imports on the runtime path.
+        return
+
     from ksadk.cli.cmd_create import create
     from ksadk.cli.cmd_deploy import deploy
     from ksadk.cli.cmd_managed_runtime import managed_runtime
     from ksadk.cli.cmd_run import run
-    from ksadk.cli.cmd_web import web
 
     # 注册现有命令
     _add_command_once(cli, run)
     _add_command_once(cli, deploy)
-    _add_command_once(cli, web)
     _add_command_once(cli, managed_runtime)
 
     # init 作为主命令 (PRD 规范)
@@ -391,7 +408,7 @@ def _register_commands():
     _register_optional_command(cli, "ksadk.cli.cmd_hermes", "hermes")
 
 
-def main():
+def _main():
     # 全局加载 .env 文件
     try:
         from dotenv import find_dotenv, load_dotenv
@@ -474,6 +491,18 @@ def main():
             cli_error = e
         emit_cli_error(cli_error)
         raise SystemExit(cli_error.exit_code) from None
+
+
+def main():
+    """Run the CLI without exposing a traceback for an operator interrupt."""
+
+    try:
+        return _main()
+    except KeyboardInterrupt:
+        # Ctrl+C can arrive while optional commands are still importing, before
+        # Click or Uvicorn installs its own signal handling.  Treat it as the
+        # same clean operator stop and preserve the conventional exit status.
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

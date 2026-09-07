@@ -136,9 +136,7 @@ requires_openai_auth = false
                 "ksadk-bridge-e2e:bridge-check",
             }
             assert installed_detail.mcp_servers == ("ksadk-fixture",)
-            installed_skill_paths = tuple(
-                codex_home.glob("plugins/cache/*/*/*/skills/*/SKILL.md")
-            )
+            installed_skill_paths = tuple(codex_home.glob("plugins/cache/*/*/*/skills/*/SKILL.md"))
             assert len(installed_skill_paths) == 2
             installed_skills_by_name = {
                 path.parent.name: path.resolve() for path in installed_skill_paths

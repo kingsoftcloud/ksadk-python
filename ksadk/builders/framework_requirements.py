@@ -8,8 +8,9 @@ FASTAPI_REQUIREMENT = "fastapi>=0.136.0,<0.137.0"
 STARLETTE_REQUIREMENT = "starlette>=1.0,<1.4"
 
 ADK_REQUIREMENTS = (
-    # goal-00: 与 ksadk 自身 adk extra 对齐,允许 1.34.x 与 2.x
+    # 与 ksadk 自身 adk extra 对齐，支持 1.x 与 2.x。
     "google-adk>=1.34.0,<3.0.0",
+    "greenlet>=1.0.0",
     "litellm>=1.0.0",
 )
 

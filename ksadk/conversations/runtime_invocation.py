@@ -123,6 +123,7 @@ async def invoke_conversation_once(
     agent_system: str = "",
     agent_task: str = "",
     prompt_integration_mode: str = "",
+    resume_lifecycle_prepared: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
 
@@ -159,6 +160,7 @@ async def invoke_conversation_once(
             agent_system=agent_system,
             agent_task=agent_task,
             prompt_integration_mode=prompt_integration_mode,
+            resume_lifecycle_prepared=resume_lifecycle_prepared,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
