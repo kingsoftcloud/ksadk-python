@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CircleAlert, Code, Package } from "lucide-react";
+import { Check, CircleAlert, Package } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { apiFetch } from "../api";
@@ -544,6 +544,7 @@ export function AgentEditor({
     }
     setSaving(true);
     setSaveError("");
+    let updateSaved = false;
     try {
       const original = detail.draft.spec;
       const spec = JSON.parse(JSON.stringify(original));
@@ -647,6 +648,10 @@ export function AgentEditor({
         applyApiFieldErrors(saved, agentForm.setError);
         throw new Error(saved?.error?.message || `保存失败（${response.status}）`);
       }
+      updateSaved = true;
+      if (saved?.metadata) {
+        setDetail(current => current ? { ...current, draft: { metadata: saved.metadata, spec } } : current);
+      }
       const savedId = saved?.metadata?.id || agentId;
       showToast(
         "Agent 已更新",
@@ -688,8 +693,15 @@ export function AgentEditor({
       }
       onSaved(savedId, buildAfterSave);
     } catch (error: any) {
-      setSaveError(error.message || "保存失败");
-      showToast("保存失败", error.message || "保存失败", "error");
+      const disconnected = error instanceof TypeError && /fetch|network|load failed/i.test(error.message);
+      const reason = disconnected
+        ? "与 Studio 的连接中断，请确认本地服务仍在运行。当前填写的内容已保留。"
+        : error.message || "保存失败";
+      const message = updateSaved
+        ? `配置已保存，但后续构建未完成。${reason}`
+        : disconnected ? `尚未确认保存结果。${reason}` : reason;
+      setSaveError(message);
+      showToast(updateSaved ? "构建未完成" : "保存未完成", message, "error");
     } finally {
       setSaving(false);
     }
@@ -731,15 +743,9 @@ export function AgentEditor({
         })}
         noValidate
       >
-        <div className="quick-runtime-strip">
-          <span className="runtime-logo"><Code size={17} /></span>
-          <div><strong>{runtimeTitle(runtime)}</strong><span>一 Agent 一 YAML · 不可变 Bundle</span></div>
-          <span className="badge" data-state="ready">本地可运行</span>
-        </div>
         <div className="quick-create-heading">
-          <span className="eyebrow">YAML-first</span>
-          <h2 title={slug}>编辑 {name || detail.draft.metadata.name}</h2>
-          <p>保存会直接回写该 Agent 的 agentengine.yaml；旧构建会标记为过期。</p>
+          <h2 title={slug}>{name || detail.draft.metadata.name}</h2>
+          <p>{runtimeTitle(runtime)} · 修改基础信息、模型和运行设置</p>
         </div>
         <nav className="agent-edit-nav" aria-label="Agent 编辑分区">
           {[
@@ -756,14 +762,7 @@ export function AgentEditor({
             >{section.label}</button>
           ))}
         </nav>
-        <div className="callout compact agent-version-boundary">
-          <div>
-            <strong>{isManagedDeclaration ? "配置修订边界" : "部署版本边界"}</strong>
-            <p>{isManagedDeclaration
-              ? "本页保存本地 YAML 配置；已部署版本不会自动改变，执行云端更新后才会生效。"
-              : "本页保存 Prompt、模型与能力绑定。Runtime 类型不可直接切换；代码入口等修改会进入新 Revision，并按运行时能力生成新 Bundle。"}</p>
-          </div>
-        </div>
+        <p className="agent-version-note">保存修改后在本地生效；已部署到云端的版本需重新部署。</p>
         <section className="agent-edit-section" hidden={visibleSection !== 1} aria-label="基础与 Prompt">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">01</span>
@@ -978,7 +977,7 @@ export function AgentEditor({
             selectedIds={selectedModels}
             getId={item => item.resourceId}
             getLabel={item => item.displayName}
-            getDescription={item => `${modelName(item)} · ${item.status}`}
+            getDescription={item => modelName(item) !== item.displayName ? modelName(item) : ""}
             onChange={changeModels}
             searchPlaceholder="搜索绑定模型"
             emptyMessage="当前模型服务没有返回可绑定模型"
@@ -1199,17 +1198,18 @@ export function AgentEditor({
           </label>
           <button className="button accent" type="submit" disabled={saving}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
         </div>
-        {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>保存失败</strong><p>{saveError}</p></div></div>}
+        {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>操作未完成</strong><p>{saveError}</p></div></div>}
       </form>
       </FormProvider>
-      <aside className="manifest-preview">
+      <details className="manifest-preview">
+        <summary>查看配置源码</summary>
         <CodeViewer code={manifest} language="yaml" filename="agentkit.yaml" wrap />
         <div className="manifest-contract">
           <span><Check size={13} />唯一配置源</span>
           <span><Check size={13} />SHA-256 可追溯</span>
           <span><Check size={13} />RuntimeAdapter 执行</span>
         </div>
-      </aside>
+      </details>
     </div>
   );
 }

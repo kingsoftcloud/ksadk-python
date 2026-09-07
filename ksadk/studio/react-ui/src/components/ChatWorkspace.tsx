@@ -196,6 +196,13 @@ export function ChatWorkspace({
           <>
             <AgentConversationTimeline
               agentName={agentName}
+              emptyState={(
+                <div className="studio-conversation-welcome">
+                  <AgentAvatar name={agentName} appearance={agentAppearance} size="lg" />
+                  <h2>{agentName}</h2>
+                  <p>有什么可以帮你？</p>
+                </div>
+              )}
               isMobile={chat.isMobile}
               onDeleteFeedback={chat.deleteResponseFeedback}
               onSubmitFeedback={chat.submitResponseFeedback}

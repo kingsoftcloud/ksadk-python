@@ -865,7 +865,7 @@ svg {
   font-size: var(--font-size-meta);
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
 textarea,
 select {
   width: 100%;
@@ -876,7 +876,7 @@ select {
   transition: border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease);
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
 select {
   height: var(--control-height);
   padding: 0 12px;

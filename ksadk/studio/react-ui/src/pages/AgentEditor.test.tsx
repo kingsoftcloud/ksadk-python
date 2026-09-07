@@ -736,3 +736,32 @@ describe("AgentEditor form", () => {
     });
   });
 });
+
+it.each(["update", "build"])("preserves multiple model selections when %s loses its connection", async (stage) => {
+  mockedFetch.mockReset();
+  const draft = {
+    metadata: { id: "agentkit-save", name: "Save test", revision: 1 },
+    spec: {
+      runtime: { type: "codex" },
+      instructions: { system: "Answer with evidence." },
+      bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a", "model-b"] },
+    },
+  };
+  mockedFetch.mockImplementation(async (_input, init) => {
+    if (init?.method === "PUT") {
+      if (stage === "update") throw new TypeError("Failed to fetch");
+      return { ok: true, json: async () => ({ ...draft, metadata: { ...draft.metadata, revision: 2 } }) } as Response;
+    }
+    if (init?.method === "POST") throw new TypeError("Failed to fetch");
+    return { ok: true, json: async () => ({ draft }) } as Response;
+  });
+  const onSaved = vi.fn();
+  const catalog = ["a", "b"].map(id => ({ resourceId: `model-${id}`, kind: "model", name: `model-${id}`, displayName: `Model ${id}`, version: "1", status: "ready" }));
+  render(<AgentEditor agentId="agentkit-save" catalog={catalog} onSaved={onSaved} />);
+  fireEvent.click(await screen.findByRole("button", { name: "能力绑定" }));
+  fireEvent.submit(screen.getByRole("button", { name: "保存修改" }).closest("form")!);
+  expect(await screen.findByText(stage === "update" ? /尚未确认保存结果/ : /配置已保存，但后续构建未完成/)).toBeVisible();
+  expect(screen.getAllByTestId("studio-multi-select-selection")[0]).toHaveTextContent("Model b");
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(mockedFetch.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+});
