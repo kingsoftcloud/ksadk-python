@@ -523,7 +523,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= 0.3.5" in makefile
     assert (
-        "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
+        "PUBLIC_TEST_TARGETS ?= tests/studio/test_shared_web.py tests/test_public_release_positioning.py "
         "tests/test_docs_site_output_audit.py tests/test_config_env_registry.py "
         "tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
