@@ -241,8 +241,8 @@ jobs:
         with:
           version: "11.7.0"
 
-      - name: Install KsADK (dev extras)
-        run: uv sync --extra dev
+      - name: Install KsADK with the pinned Codex SDK and binary
+        run: uv sync --extra dev --extra codex
 
       - name: Install Playwright Chromium
         run: uv run playwright install chromium --with-deps
@@ -254,7 +254,7 @@ jobs:
             tests/plugins/test_dsh_upstream_plugin_e2e.py \
             -v
 
-      - name: Run Codex plugin E2E (stub + real if binary available)
+      - name: Run real Codex plugin E2E against the deterministic model
         env:
           KSADK_CODEX_PLUGIN_E2E_BIN: ${{ secrets.KSADK_CODEX_PLUGIN_E2E_BIN }}
         run: |
