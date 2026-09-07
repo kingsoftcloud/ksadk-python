@@ -144,9 +144,16 @@ class DshPluginSourceError(DshToolchainError):
 
 
 class DshPluginValidationError(DshToolchainError):
-    def __init__(self, stage: str, message: str = "DSH plugin validation failed") -> None:
+    def __init__(
+        self,
+        stage: str,
+        message: str = "DSH plugin validation failed",
+        *,
+        diagnostic: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.stage = stage
+        self.diagnostic = diagnostic
 
 
 class DshPluginPackError(DshToolchainError):
@@ -855,10 +862,23 @@ class DshPluginDeveloper:
                     )
             except DshToolchainError:
                 raise
+            except ValueError as error:
+                if stage == "install":
+                    raise DshPluginSourceError(str(error)) from error
+                raise DshPluginValidationError(
+                    stage,
+                    diagnostic=_redact_diagnostic(str(error)),
+                ) from error
             except DshBridgeError as error:
-                raise DshPluginValidationError(stage) from error
+                raise DshPluginValidationError(
+                    stage,
+                    diagnostic=_redact_diagnostic(str(error)),
+                ) from error
             except Exception as error:
-                raise DshPluginValidationError(stage) from error
+                raise DshPluginValidationError(
+                    stage,
+                    diagnostic=_redact_diagnostic(str(error)),
+                ) from error
 
     def pack(
         self,

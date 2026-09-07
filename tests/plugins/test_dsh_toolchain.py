@@ -434,6 +434,26 @@ def test_validate_accepts_a_standard_npm_tarball_source(tmp_path: Path) -> None:
     assert _LifecycleBridge.calls[-1] == "uninstall"
 
 
+class _RejectingSourceBridge(_LifecycleBridge):
+    def install_plugin(self, _source: str, *, accept_host_permissions: bool):
+        assert accept_host_permissions is True
+        raise ValueError(
+            "DSH registry source must be <package>@<exact-semver>; "
+            "Git URLs, tags, and ranges are not allowed"
+        )
+
+
+def test_validate_classifies_unpinned_registry_coordinate_as_source_error(tmp_path: Path) -> None:
+    executable = _fake_executable(tmp_path, "dsh")
+    developer = DshPluginDeveloper(
+        toolchain=_StaticToolchain(executable),  # type: ignore[arg-type]
+        bridge_factory=_RejectingSourceBridge,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(DshPluginSourceError, match="exact-semver"):
+        developer.validate("@xmanrui/dsh-im")
+
+
 def test_pack_delegates_to_exact_pnpm_argv_and_produces_standard_tgz(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

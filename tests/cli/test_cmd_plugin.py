@@ -29,6 +29,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginInventory,
     DshProfileProjection,
 )
+from ksadk.plugins.dsh_toolchain import DshPluginSourceError
 
 ensure_global_cli_options(plugin)
 
@@ -71,6 +72,37 @@ def test_plugin_help_exposes_only_dsh_default_and_codex_compatibility() -> None:
         assert retired_public_concept.casefold() not in lowered
     assert "dsh" in lowered
     assert "codex" in lowered
+
+
+def test_validate_reports_actionable_dsh_source_error(monkeypatch) -> None:
+    def reject_unpinned_source(self, source: str):
+        del self, source
+        raise DshPluginSourceError(
+            "DSH registry source must be <package>@<exact-semver>; "
+            "Git URLs, tags, and ranges are not allowed"
+        )
+
+    monkeypatch.setattr(
+        "ksadk.plugins.dsh_toolchain.DshPluginDeveloper.validate",
+        reject_unpinned_source,
+    )
+
+    result = CliRunner().invoke(
+        plugin,
+        ["--output", "json", "validate", "@xmanrui/dsh-im"],
+    )
+
+    assert result.exit_code == EXIT_CODE_VALIDATION
+    assert json.loads(result.output)["error"] == {
+        "code": "dsh_plugin_source_invalid",
+        "message": "DSH 插件源码不是有效的标准 Bundle",
+        "details": {
+            "reason": (
+                "DSH registry source must be <package>@<exact-semver>; "
+                "Git URLs, tags, and ranges are not allowed"
+            )
+        },
+    }
 
 
 def test_missing_dsh_host_is_a_typed_failure(tmp_path: Path) -> None:

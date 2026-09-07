@@ -211,6 +211,11 @@ def _call_dsh_developer(operation):
         stage = getattr(err, "stage", None)
         if isinstance(stage, str) and stage:
             details["stage"] = stage
+        diagnostic = getattr(err, "diagnostic", None)
+        if isinstance(err, DshPluginSourceError):
+            diagnostic = str(err)
+        if isinstance(diagnostic, str) and diagnostic:
+            details["reason"] = diagnostic
         abort_with_cli_error(
             CLIError(
                 code=code,
