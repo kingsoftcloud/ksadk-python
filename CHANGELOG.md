@@ -25,6 +25,15 @@
 - Hosted UI 与 Studio 固定到 `@kingsoftcloud/ksadk-web@0.3.3`。该版本新增可在 Node/SSR 环境安全导入的 headless conversation 入口、严格的 Conversation v1 解码、SSE 有界重连、按 item/event identity 归并、思考/工具/审批/产物/A2UI 的统一时间线，以及附件、模型、推理、审批、Goal/Plan 的统一输入合同；只有明确的 404 才回退旧 Responses/AG-UI，畸形响应与 5xx 继续 fail closed。
 - 修复基础安装把 `agentengine studio` 整体误降级为不可用的问题：Studio 所需的 `google-adk` 现在随基础包安装；LiteLLM 与 JSON 修复等仅在 `[adk]` 扩展中保留。
 
+### Skill Center MCP Server 与 Skill Runtime
+
+- 新增 `ksadk.skills.mcp_server` 包：Skill Center 的 MCP server 实现，向 OpenClaw / Hermes 等托管运行时注入 `execute_skills`、`list_skills` 等 MCP 工具，运行时通过 `SKILL_SPACE_ID` 环境变量绑定 Skill 空间，按 `KSADK_SKILL_SERVICE_REGION` 区分预发/线上。
+- 新增 `ksadk.skills.mcp_server.register.py`：MCP server 注册逻辑与凭证回退——当 `KSADK_SKILL_SERVICE_ACCESS_KEY/SECRET_KEY` 未设置但 `SKILL_SPACE_ID` 已配置时，自动回退到 `KSYUN_ACCESS_KEY/KSYUN_SECRET_KEY`，使部署时无需显式传入 Skill Service 凭证。
+- 新增 `ksadk.skills.manifest_cache.py`：Skill manifest 缓存层，减少 Skill Service `ListSkillsBySpaceId` 重复请求。
+- 改进 `ksadk.skills.runtime` 执行器、`local_process` backend 和 base 抽象，统一 `execute_skills` 编排和沙箱会话生命周期。
+- 改进 `ksadk.toolsets.skills` 工具集集成，使 ADK Runner 能自动注入 Skill Center 工具。
+- 修复 `ksadk_runtime_common.memory_backend.providers.lancedb` 的 `secrets_env` 解析，确保 `LANCEDB_API_KEY` 正确渲染到 embedding 配置。
+
 ### 兼容与尚未关闭的门禁
 
 - Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。

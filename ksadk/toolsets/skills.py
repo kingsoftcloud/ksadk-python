@@ -1,14 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from ksadk.skills.loader import load_local_skill
-from ksadk.skills.package_store import PackageStore, SkillPackageError
-from ksadk.skills.runtime import loader as runtime_loader
-from ksadk.skills.runtime.base import SkillRuntimeError
+from ksadk.skills.runtime.base import SkillRuntimeError, normalize_skill_names
 from ksadk.skills.runtime.factory import create_skill_runtime_backend
 from ksadk.skills.runtime.registry import match_skill_refs, select_public_skill_refs
 from ksadk.skills.service_client import SkillServiceClient
@@ -28,11 +25,13 @@ from ksadk.skills.tool_defs import (
 from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
 from ksadk.toolsets._langchain import as_tool
 
+_log = logging.getLogger("ksadk.skills.execute_skills")
+
 _SKILL_TOOL_POLICIES = {
     "list_skill_spaces": ToolPolicy(risk_level="low"),
     "list_skills": ToolPolicy(risk_level="low"),
     "search_skills": ToolPolicy(risk_level="low"),
-    "load_skill": ToolPolicy(risk_level="low", side_effects=("skill_cache_write",)),
+    "load_skill": ToolPolicy(risk_level="low"),
     "execute_skills": ToolPolicy(risk_level="high", side_effects=("isolated_runtime_execution",)),
 }
 
@@ -51,7 +50,7 @@ def list_skill_spaces() -> dict[str, Any]:
     """List visible Skill Spaces with id/name/description, so the model can pick one by intent.
 
     多 space 场景下,先调用本工具了解可选 space,再按用户意图用
-    ``search_skills(query, space_id=...)`` 或 ``load_skill(name, space_id=...)`` 定向查找。
+    ``list_skills(query, space_id=...)`` 定向查找,或 ``execute_skills`` 执行.
     """
 
     configured = resolve_skill_space_ids()
@@ -162,7 +161,7 @@ def list_skills(space_id: str | None = None) -> dict[str, Any]:
 
 
 def load_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
-    """Download and load a skill's SKILL.md instructions from configured Skill Spaces.
+    """Return manifest-level info for a skill without downloading the package.
 
     ``space_id`` 指定时只在该 space 内按名匹配,用于多 space 下精确定位、避免同名冲突;
     缺省按配置顺序(user space 优先于 public)取第一个匹配。
@@ -180,25 +179,23 @@ def load_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
             available.append(skill.name)
             if skill.name.strip().lower() != target:
                 continue
-            package = _get_or_download_package(client, skill)
-            local_skill = load_local_skill(package.root_dir)
             return {
                 "ok": True,
-                "execution_context": "outer_agent",
-                "name": local_skill.name,
-                "description": local_skill.description,
+                "execution_context": "manifest_preview",
+                "name": skill.name,
+                "description": skill.description,
                 "space_id": sid,
                 "skill_id": skill.skill_id,
                 "version_id": skill.version_id,
                 "version": skill.version,
-                "cache_hit": bool(getattr(package, "cache_hit", False)),
-                "root_dir": str(local_skill.root_dir),
-                "has_scripts_dir": (local_skill.root_dir / "scripts").is_dir(),
-                "script_files": _script_files(local_skill.root_dir),
-                "instructions": local_skill.body,
+                "cache_hit": False,
+                "has_scripts_dir": False,
+                "script_files": [],
+                "instructions": skill.description or "",
                 "usage": (
-                    "Read these instructions and complete the user's task in the outer "
-                    "agent unless the skill explicitly requires isolated execution."
+                    "Manifest-level preview. To execute, call execute_skills "
+                    "with the workflow_prompt and skill_names. Full SKILL.md "
+                    "instructions are loaded inside the sandbox during execution."
                 ),
             }
         return {
@@ -215,7 +212,7 @@ def search_skills(query: str, max_results: int = 10, space_id: str | None = None
     """Search skills by name, aliases, tags, description, and examples.
 
     ``space_id`` 指定时只在该 space 内搜索;缺省聚合全部已配置 space。结果带 ``space_id``,
-    便于后续 ``load_skill(name, space_id=...)`` 精确定位。
+    便于后续 ``execute_skills(skill_names=[name])`` 精确执行.
     """
 
     query_text = str(query or "").strip()
@@ -269,19 +266,34 @@ def execute_skills(
 def _execute_skills_impl(
     workflow_prompt: str, skill_names: list[str] | str | None = None
 ) -> dict[str, Any]:
+    normalized_names = normalize_skill_names(skill_names) if skill_names else []
+    _log.info(
+        "execute_skills invoked: skill_names=%s workflow_prompt_len=%d",
+        normalized_names,
+        len(workflow_prompt),
+    )
     try:
         backend = create_skill_runtime_backend()
         raw_tool = build_runtime_execute_skills_tool(backend=backend)
         result = raw_tool(workflow_prompt, skill_names)
         if not isinstance(result, dict):
+            _log.warning("execute_skills: invalid result type %s", type(result).__name__)
             return {
                 "ok": False,
                 "error_type": "invalid_skill_runtime_result",
                 "error_message": (f"skill runtime returned {type(result).__name__}, expected dict"),
             }
         result.setdefault("execution_context", f"skill-runtime/{_skill_execution_backend()}")
+        _log.info(
+            "execute_skills completed: exit_code=%s duration_ms=%s workflow_status=%s executed_skill=%s",
+            result.get("exit_code"),
+            result.get("duration_ms"),
+            result.get("workflow_status", ""),
+            result.get("executed_skill", ""),
+        )
         return dict(result)
     except SkillRuntimeError as exc:
+        _log.error("execute_skills: SkillRuntimeError: %s", exc)
         return {
             "ok": False,
             "error_type": "skill_runtime_disabled",
@@ -292,6 +304,7 @@ def _execute_skills_impl(
             ),
         }
     except Exception as exc:
+        _log.error("execute_skills: %s: %s", type(exc).__name__, exc)
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
 
@@ -352,27 +365,3 @@ def _iter_remote_skills(client: SkillServiceClient, space_id: str | None = None)
         yield from _iter_space_skills(client, "public")
 
 
-def _get_or_download_package(client: SkillServiceClient, skill):
-    cache_dir = Path(
-        os.environ.get("KSADK_SKILL_CACHE_DIR") or Path(tempfile.gettempdir()) / "ksadk-skill-cache"
-    )
-    store = PackageStore(cache_dir=cache_dir)
-    package = store.get_cached(skill)
-    if package is not None:
-        return package
-    archive = client.download_skill_archive(skill)
-    try:
-        return store.store_archive(skill, archive)
-    except SkillPackageError:
-        if not runtime_loader._allow_hash_mismatch():
-            raise
-        return runtime_loader._store_unverified_archive(store, skill, archive)
-
-
-def _script_files(root_dir: Path) -> list[str]:
-    scripts_dir = root_dir / "scripts"
-    if not scripts_dir.is_dir():
-        return []
-    return [
-        str(path.relative_to(root_dir)) for path in sorted(scripts_dir.rglob("*")) if path.is_file()
-    ][:20]
