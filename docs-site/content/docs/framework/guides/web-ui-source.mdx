@@ -73,13 +73,13 @@ sync 优先级：`KSADK_WEB_RELEASE_URL` 显式 tarball > `npm pack` > registry 
 
 每次 `ksadk-python` release note 应记录：
 
-- `ksadk-python` 版本（如 `0.8.3`）。
-- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.3` 对应 `@kingsoftcloud/ksadk-web@0.3.5`）。
+- `ksadk-python` 版本（如 `0.8.4`）。
+- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.4` 对应 `@kingsoftcloud/ksadk-web@0.3.5`）。
 - 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.5`）。
 - wheel / sdist 审计结果（`make public-build-check` / `twine check dist/*`）。
 
-<Callout type="info" title="0.8.3 候选记录示例">
-- `ksadk-python`: `0.8.3`
+<Callout type="info" title="0.8.4 候选记录示例">
+- `ksadk-python`: `0.8.4`
 - npm 包: `@kingsoftcloud/ksadk-web@0.3.5`
 - 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.5`
 - 审计: `make public-build-check` 通过，`twine check dist/*` 通过
