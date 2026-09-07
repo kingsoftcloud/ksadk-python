@@ -188,3 +188,22 @@ def test_framework_factory_requires_detection_without_injected_runner(
 
     with pytest.raises(ValueError, match="detection"):
         runtime_api.create_runtime_adapter(context)
+
+
+def test_declared_native_plugins_cannot_silently_disappear_on_hosted_launch(tmp_path: Path) -> None:
+    config = {"plugins": [{"pluginRef": "plugin://example.plugin@1.0.0", "enabled": True}]}
+    with pytest.raises(ValueError, match="交付快照"):
+        runtime_api.build_default_runtime_registry().create(
+            runtime_api.RuntimeLaunchContext(
+                runtime_type="codex",
+                project_dir=tmp_path,
+                config=config,
+                services=runtime_api.RuntimeServices(
+                    codex_client_factory=lambda: _FactoryCodexClient()
+                ),
+            )
+        )
+
+
+def test_disabled_native_plugins_do_not_require_bootstrap() -> None:
+    assert runtime_factory._codex_plugin_bootstrap({"plugins": [{"enabled": False}]}) is None

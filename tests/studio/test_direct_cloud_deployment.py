@@ -948,3 +948,34 @@ async def test_cloud_chat_rejects_receipts_without_an_agent_id() -> None:
         await gateway.list_deployment_chat_sessions(deployment)
 
     assert exc_info.value.status_code == 409
+
+@pytest.mark.asyncio
+async def test_yaml_deployment_rejects_native_plugin_bindings_without_deliverable_bytes(
+    tmp_path: Path,
+) -> None:
+    class Gateway:
+        called = False
+
+        async def create_managed_runtime_deployment(self, **kwargs):
+            self.called = True
+            raise AssertionError("must reject before creating a cloud Agent")
+
+    gateway = Gateway()
+    service = CloudDeploymentService(workspace=Workspace(tmp_path), gateway=gateway)
+    with pytest.raises(StudioError) as error:
+        await service.deploy_managed_runtime(
+            build_id="build_plugins",
+            agent_name="plugin-agent",
+            manifest=(
+                "name: plugin-agent\nplugins:\n"
+                "  - pluginRef: plugin://example.plugin@1.0.0\n    enabled: true\n"
+            ),
+            runtime_name="codex",
+            runtime_version="0.147.0",
+            manifest_digest="a" * 64,
+            request=DeploymentRequest(
+                target=DeploymentTarget(region="pre-online", environment="preproduction")
+            ),
+        )
+    assert error.value.code == "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE"
+    assert gateway.called is False

@@ -205,6 +205,12 @@ def _codex_plugin_bootstrap(config: Mapping[str, Any]) -> CodexPluginBootstrap |
 
     raw = config.get("codex_plugin_bootstrap")
     if raw is None:
+        declared = config.get("plugins") or []
+        if any(not isinstance(item, Mapping) or item.get("enabled", True) for item in declared):
+            raise ValueError(
+                "原生插件绑定缺少可验证的交付快照；当前启动只收到 plugins 声明，"
+                "无法恢复插件。请提供完整插件交付配置后再启动。"
+            )
         return None
     if not isinstance(raw, Mapping):
         raise ValueError("codex_plugin_bootstrap must be an object")

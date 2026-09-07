@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, cast
 from uuid import uuid4
 
+import yaml
 from pydantic import ValidationError
 
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
@@ -1514,6 +1515,22 @@ class CloudDeploymentService:
                 status_code=409,
                 details={"deploymentId": replacing.id},
             )
+        # This transport delivers a YAML declaration only. Local marketplace
+        # snapshots are not uploaded, so accepting native bindings here would
+        # create a cloud Agent with fewer capabilities than its verified build.
+        if runtime_name == "codex":
+            declaration = yaml.safe_load(manifest) or {}
+            bindings = declaration.get("plugins") or []
+            if any(
+                not isinstance(binding, dict) or binding.get("enabled", True)
+                for binding in bindings
+            ):
+                raise StudioError(
+                    "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE",
+                    "当前云端部署仅交付 YAML，尚不能上传原生插件快照；"
+                    "请先完成插件交付配置，避免部署后插件丢失。",
+                    status_code=409,
+                )
         if replacing is None:
             record = await self.gateway.create_managed_runtime_deployment(
                 build_id=build_id,
