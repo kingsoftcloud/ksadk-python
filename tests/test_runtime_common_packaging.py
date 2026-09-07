@@ -352,7 +352,8 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
         )
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
 
-    assert metadata["Version"] == "0.8.3"
+    from ksadk.version import VERSION
+    assert metadata["Version"] == VERSION
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
     assert all(
         requirement.name != "langchain-openai" or requirement.marker is not None
