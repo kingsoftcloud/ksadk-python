@@ -1,9 +1,11 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import requests
 
 from ksadk.resource_runtime.contracts import ResourceConfig
 from ksadk.studio.contracts import AgentBindings, AgentSpec
@@ -12,6 +14,7 @@ from ksadk.studio.model_client import CredentialResolver
 from ksadk.studio.resource_authority import (
     ResourceAuthorityPolicy,
     SignedKnowledgeResourceAuthority,
+    _HardenedSdkTransport,
 )
 from ksadk.studio.resource_connections import (
     ResourceConnectionDeclaration,
@@ -42,6 +45,8 @@ def authority_upstream():
         },
         "knowledge_status": 200,
         "knowledge": {"RequestId": "fixture-request", "Records": []},
+        "knowledge_raw": None,
+        "knowledge_content_length": True,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -71,10 +76,15 @@ def authority_upstream():
             else:
                 payload = {"Error": {"Code": "unexpected"}}
                 status = 404
-            content = json.dumps(payload).encode()
+            content = (
+                state["knowledge_raw"]
+                if path.path == "/aicp" and state["knowledge_raw"] is not None
+                else json.dumps(payload).encode()
+            )
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(content)))
+            if path.path != "/aicp" or state["knowledge_content_length"]:
+                self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
 
@@ -174,6 +184,18 @@ def test_real_signed_transport_proves_exact_subaccount_and_knowledge_read(
             value for key, value in headers.items() if key.lower() == "authorization"
         )
         assert "fixture-current-ak/" in authorization
+    iam_authorization = next(
+        value
+        for key, value in state["calls"][0][1].items()
+        if key.lower() == "authorization"
+    )
+    data_authorization = next(
+        value
+        for key, value in state["calls"][2][1].items()
+        if key.lower() == "authorization"
+    )
+    assert "/cn-beijing-6/iam/aws4_request" in iam_authorization
+    assert "/region-a/aicp/aws4_request" in data_authorization
 
 
 @pytest.mark.parametrize(
@@ -181,6 +203,18 @@ def test_real_signed_transport_proves_exact_subaccount_and_knowledge_read(
     [
         {},
         {"AccessKeyList": [], "AccessKeys": []},
+        {
+            "Code": 403,
+            "AccessKeyList": [
+                {"AccessKey": "fixture-current-ak", "UserName": "fixture-user"}
+            ],
+        },
+        {
+            "ResponseMetadata": {"Error": {"Code": "denied"}},
+            "AccessKeyList": [
+                {"AccessKey": "fixture-current-ak", "UserName": "fixture-user"}
+            ],
+        },
         {
             "AccessKeyList": [
                 {"AccessKey": "fixture-current-ak", "UserName": "fixture-user"}
@@ -243,6 +277,37 @@ def test_redirect_is_not_followed(tmp_path, authority_upstream):
     ]
 
 
+def test_oversized_stream_is_stopped_and_response_is_closed(
+    authority_upstream, monkeypatch
+):
+    origin, state = authority_upstream
+    state["knowledge_raw"] = b"{" + (b" " * (1024 * 1024)) + b"}"
+    state["knowledge_content_length"] = False
+    responses = []
+    original_request = requests.Session.request
+
+    def capture_response(session, *args, **kwargs):
+        response = original_request(session, *args, **kwargs)
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", capture_response)
+    request = SimpleNamespace(
+        method="POST",
+        uri="/",
+        uri_params="",
+        data=b"{}",
+        header={},
+        auth=None,
+    )
+
+    with pytest.raises(RuntimeError, match="RESOURCE_AUTHORITY_RESPONSE_TOO_LARGE"):
+        _HardenedSdkTransport(origin + "/aicp", timeout=2).send_request(request)
+
+    assert len(responses) == 1
+    assert responses[0].raw.closed
+
+
 def test_unapproved_target_is_rejected_before_secret_or_network(
     tmp_path, authority_upstream, monkeypatch
 ):
@@ -301,6 +366,54 @@ def test_non_loopback_authority_http_is_never_permitted():
             allowed_regions=("region-a",),
             allow_loopback_http_for_tests=True,
         )
+
+
+def test_internal_http_requires_explicit_host_policy_and_exact_ksyun_host():
+    with pytest.raises(ValueError, match="HTTPS"):
+        ResourceAuthorityPolicy(
+            iam_endpoint="http://iam.inner.api.ksyun.com",
+            allowed_data_endpoints=("http://aicp.inner.api.ksyun.com",),
+            allowed_regions=("region-a",),
+        )
+    with pytest.raises(ValueError, match="HTTPS"):
+        ResourceAuthorityPolicy(
+            iam_endpoint="http://iam.inner.api.ksyun.com.attacker.example",
+            allowed_data_endpoints=("http://aicp.inner.api.ksyun.com",),
+            allowed_regions=("region-a",),
+            allow_ksyun_internal_http=True,
+        )
+    with pytest.raises(ValueError, match="service root"):
+        ResourceAuthorityPolicy(
+            iam_endpoint="http://iam.inner.api.ksyun.com:8080",
+            allowed_data_endpoints=("http://aicp.inner.api.ksyun.com",),
+            allowed_regions=("region-a",),
+            allow_ksyun_internal_http=True,
+        )
+    with pytest.raises(ValueError, match="service root"):
+        ResourceAuthorityPolicy(
+            iam_endpoint="http://iam.inner.api.ksyun.com/alternate",
+            allowed_data_endpoints=("http://aicp.inner.api.ksyun.com",),
+            allowed_regions=("region-a",),
+            allow_ksyun_internal_http=True,
+        )
+
+    policy = ResourceAuthorityPolicy(
+        iam_endpoint="http://IAM.INNER.API.KSYUN.COM/",
+        allowed_data_endpoints=("http://AICP.INNER.API.KSYUN.COM/",),
+        allowed_regions=("region-a",),
+        allow_ksyun_internal_http=True,
+    )
+
+    assert policy.iam_endpoint == "http://iam.inner.api.ksyun.com"
+    assert policy.allowed_data_endpoints == ("http://aicp.inner.api.ksyun.com",)
+
+    secure_policy = ResourceAuthorityPolicy(
+        iam_endpoint="https://IAM.INNER.API.KSYUN.COM:443/",
+        allowed_data_endpoints=("https://AICP.INNER.API.KSYUN.COM:443/",),
+        allowed_regions=("region-a",),
+        allow_ksyun_internal_http=True,
+    )
+    assert secure_policy.iam_endpoint == "https://iam.inner.api.ksyun.com"
 
 
 def test_studio_validation_only_reports_verified_after_real_authority_calls(

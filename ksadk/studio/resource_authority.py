@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from pydantic import Field, model_validator
@@ -29,9 +29,22 @@ from ksadk.studio.resource_connections import (
 
 _IAM_KRN = re.compile(r"^krn:ksc:iam::([^:]+):user/([^/]+)$")
 _MAX_AUTHORITY_RESPONSE_BYTES = 1024 * 1024
+_KSYUN_INTERNAL_HTTP_HOSTS = frozenset(
+    {
+        "iam.inner.api.ksyun.com",
+        "iam.internal.api.ksyun.com",
+        "aicp.inner.api.ksyun.com",
+        "aicp.internal.api.ksyun.com",
+    }
+)
 
 
-def _canonical_endpoint(value: str, *, allow_loopback_http: bool) -> str:
+def _canonical_endpoint(
+    value: str,
+    *,
+    allow_loopback_http: bool,
+    allow_ksyun_internal_http: bool,
+) -> str:
     if any(char.isspace() for char in value) or "\\" in value:
         raise ValueError("Resource authority endpoint is invalid")
     parsed = urlsplit(value)
@@ -45,31 +58,53 @@ def _canonical_endpoint(value: str, *, allow_loopback_http: bool) -> str:
         or parsed.fragment
     ):
         raise ValueError("Resource authority endpoint must be an explicit HTTP service URL")
-    if parsed.scheme != "https" and not (
-        allow_loopback_http and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
-    ):
+    host = parsed.hostname.encode("idna").decode("ascii").lower()
+    if "%" in host:
+        raise ValueError("Resource authority endpoint hostname is invalid")
+    loopback_http = allow_loopback_http and host in {"127.0.0.1", "::1", "localhost"}
+    internal_http = (
+        parsed.scheme == "http"
+        and allow_ksyun_internal_http
+        and host in _KSYUN_INTERNAL_HTTP_HOSTS
+    )
+    if parsed.scheme != "https" and not (loopback_http or internal_http):
         raise ValueError("Resource authority endpoints require HTTPS")
-    return value.rstrip("/")
+    if internal_http and (parsed.port not in {None, 80} or parsed.path.rstrip("/")):
+        raise ValueError("Ksyun internal HTTP endpoints must use the service root")
+    if ":" in host:
+        host = f"[{host}]"
+    if parsed.port is not None and (parsed.scheme, parsed.port) not in {
+        ("http", 80),
+        ("https", 443),
+    }:
+        host += f":{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path.rstrip("/"), "", ""))
 
 
 class ResourceAuthorityPolicy(PluginContractModel):
     """Trusted host configuration; it is never populated from a Studio request."""
 
     iam_endpoint: str
+    iam_region: Identifier = "cn-beijing-6"
     allowed_data_endpoints: tuple[str, ...] = Field(min_length=1, max_length=16)
     allowed_regions: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
     timeout_seconds: float = Field(default=10.0, gt=0, le=30)
     grant_ttl_seconds: int = Field(default=60, strict=True, ge=5, le=600)
     allow_loopback_http_for_tests: bool = Field(default=False, strict=True)
+    allow_ksyun_internal_http: bool = Field(default=False, strict=True)
 
     @model_validator(mode="after")
     def trusted_targets(self) -> ResourceAuthorityPolicy:
         iam = _canonical_endpoint(
-            self.iam_endpoint, allow_loopback_http=self.allow_loopback_http_for_tests
+            self.iam_endpoint,
+            allow_loopback_http=self.allow_loopback_http_for_tests,
+            allow_ksyun_internal_http=self.allow_ksyun_internal_http,
         )
         data = tuple(
             _canonical_endpoint(
-                endpoint, allow_loopback_http=self.allow_loopback_http_for_tests
+                endpoint,
+                allow_loopback_http=self.allow_loopback_http_for_tests,
+                allow_ksyun_internal_http=self.allow_ksyun_internal_http,
             )
             for endpoint in self.allowed_data_endpoints
         )
@@ -93,6 +128,7 @@ class VerifiedResourceAuthority(PluginContractModel):
     resource: ResourceRef
     allowed_operations: tuple[Literal["search_knowledge_base"], ...] = Field(min_length=1)
     issuer_endpoint: str
+    issuer_region: Identifier
     data_endpoint: str
     observed_at: datetime
     expires_at: datetime
@@ -131,7 +167,7 @@ class _HardenedSdkTransport:
             url += "?" + request.uri_params
         with requests.Session() as session:
             session.trust_env = False
-            response = session.request(
+            with session.request(
                 method=request.method,
                 url=url,
                 data=request.data,
@@ -140,17 +176,26 @@ class _HardenedSdkTransport:
                 timeout=self.timeout,
                 verify=True,
                 allow_redirects=False,
-            )
-        if 300 <= response.status_code < 400:
-            raise RuntimeError("RESOURCE_AUTHORITY_REDIRECT_REFUSED")
-        content = response.content
-        if len(content) > _MAX_AUTHORITY_RESPONSE_BYTES:
-            raise RuntimeError("RESOURCE_AUTHORITY_RESPONSE_TOO_LARGE")
-        return ResponseInternal(
-            status=response.status_code,
-            header=dict(response.headers),
-            data=content.decode("utf-8", errors="strict"),
-        )
+                stream=True,
+            ) as response:
+                if 300 <= response.status_code < 400:
+                    raise RuntimeError("RESOURCE_AUTHORITY_REDIRECT_REFUSED")
+                declared_length = response.headers.get("Content-Length")
+                if declared_length and int(declared_length) > _MAX_AUTHORITY_RESPONSE_BYTES:
+                    raise RuntimeError("RESOURCE_AUTHORITY_RESPONSE_TOO_LARGE")
+                chunks = []
+                size = 0
+                for chunk in response.iter_content(chunk_size=65536):
+                    size += len(chunk)
+                    if size > _MAX_AUTHORITY_RESPONSE_BYTES:
+                        raise RuntimeError("RESOURCE_AUTHORITY_RESPONSE_TOO_LARGE")
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+                return ResponseInternal(
+                    status=response.status_code,
+                    header=dict(response.headers),
+                    data=content.decode("utf-8", errors="strict"),
+                )
 
 
 def _response_object(value: Any) -> dict[str, Any]:
@@ -158,8 +203,17 @@ def _response_object(value: Any) -> dict[str, Any]:
         if len(value.encode()) > _MAX_AUTHORITY_RESPONSE_BYTES:
             raise ValueError("oversized response")
         value = json.loads(value)
-    if not isinstance(value, dict) or value.get("Error"):
+    if not isinstance(value, dict):
         raise ValueError("invalid authority response")
+    metadata = value.get("ResponseMetadata", {})
+    if not isinstance(metadata, dict) or value.get("Error") or metadata.get("Error"):
+        raise ValueError("authority rejected the request")
+    code = value.get("Code")
+    if "Code" in value and not (
+        (type(code) is int and code in {0, 200})
+        or (type(code) is str and code in {"0", "200"})
+    ):
+        raise ValueError("authority rejected the request")
     return value
 
 
@@ -265,6 +319,7 @@ class SignedKnowledgeResourceAuthority:
             resource=resource,
             allowed_operations=("search_knowledge_base",),
             issuer_endpoint=self.policy.iam_endpoint,
+            issuer_region=self.policy.iam_region,
             data_endpoint=target.endpoint,
             observed_at=now,
             expires_at=now + timedelta(seconds=self.policy.grant_ttl_seconds),
@@ -298,7 +353,9 @@ class SignedKnowledgeResourceAuthority:
                 reqMethod="POST",
                 reqTimeout=self.policy.timeout_seconds,
             )
-            client = IamClient(Credential(access_key, secret_key), "cn-beijing-6", profile)
+            client = IamClient(
+                Credential(access_key, secret_key), self.policy.iam_region, profile
+            )
             client.request = _HardenedSdkTransport(
                 self.policy.iam_endpoint, timeout=self.policy.timeout_seconds
             )
@@ -319,7 +376,8 @@ class SignedKnowledgeResourceAuthority:
 
     @staticmethod
     def _identity_from_iam_listing(response: dict[str, Any], access_key: str) -> str:
-        if response.get("IsTruncated") is True or response.get("NextMarker"):
+        truncated = response.get("IsTruncated", False)
+        if type(truncated) is not bool or truncated or response.get("NextMarker"):
             raise ValueError("incomplete access-key listing")
         has_primary = "AccessKeyList" in response
         has_alias = "AccessKeys" in response
