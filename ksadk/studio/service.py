@@ -97,6 +97,8 @@ from ksadk.studio.contracts import (
     AgentTemplateComposition,
     BuildStatus,
     DeploymentRequest,
+    Diagnostic,
+    DiagnosticSeverity,
     Operation,
     OperationKind,
     RunEvent,
@@ -121,6 +123,10 @@ from ksadk.studio.operations import OperationManager
 from ksadk.studio.plugin_composition import StudioPluginCompositionCompiler
 from ksadk.studio.plugin_runtime import StudioPluginRuntime
 from ksadk.studio.repository import AgentDraftRepository, BuildRepository, load_yaml_file
+from ksadk.studio.resource_authority import (
+    ResourceAuthorityPolicy,
+    SignedKnowledgeResourceAuthority,
+)
 from ksadk.studio.resource_catalog import LocalResourceCatalog
 from ksadk.studio.resource_connections import ResourceConnectionRepository
 from ksadk.studio.run_service import StudioRunService, StudioRunSpec
@@ -173,6 +179,7 @@ class StudioService:
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_provider_registration_manager: StudioDshProviderRegistrationManager | None = None,
         dsh_capability_service: StudioDshCapabilityService | None = None,
+        resource_authority_policy: ResourceAuthorityPolicy | None = None,
     ) -> None:
         provider_manifests = dict(plugin_provider_manifests or {})
         provider_factories = dict(plugin_provider_factories or {})
@@ -210,6 +217,13 @@ class StudioService:
             or CredentialResolver(self.workspace)
         )
         self.resource_connections = ResourceConnectionRepository(self.workspace, self.credentials)
+        self.resource_authority = (
+            SignedKnowledgeResourceAuthority(
+                self.resource_connections, resource_authority_policy
+            )
+            if resource_authority_policy is not None
+            else None
+        )
         self.validator = AgentValidator()
         self.builder = AgentBundleBuilder(
             self.workspace,
@@ -1840,6 +1854,7 @@ class StudioService:
         return status
 
     def validate_resource_bindings(self, agent_id: str, *, expected_revision: int) -> dict:
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
         from ksadk.studio.resource_binding_validation import resource_binding_diagnostics
 
         draft = self.agent_detail(agent_id)["draft"]
@@ -1850,10 +1865,55 @@ class StudioService:
         diagnostics = resource_binding_diagnostics(
             draft.spec.bindings.plugins, draft.spec.memory, self.resource_connections,
         )
+        configs = [
+            (index, config)
+            for index, binding in enumerate(draft.spec.bindings.plugins)
+            if binding.enabled
+            for config in [
+                resource_plugin_config(
+                    binding.plugin_ref,
+                    binding.ecosystem,
+                    binding.config,
+                    enabled=True,
+                )
+            ]
+            if config is not None
+        ]
+        verified = []
+        if (
+            self.resource_authority is not None
+            and configs
+            and not any(item.severity == DiagnosticSeverity.ERROR for item in diagnostics)
+        ):
+            for index, config in configs:
+                try:
+                    verified.append(self.resource_authority.admit(config))
+                except StudioError as error:
+                    diagnostics.append(
+                        Diagnostic(
+                            severity=DiagnosticSeverity.ERROR,
+                            code=error.code,
+                            message=error.message,
+                            field=error.field
+                            or f"spec.bindings.plugins[{index}].config.binding",
+                        )
+                    )
+            current = self.agent_detail(agent_id)["draft"]
+            if current.metadata.revision != draft.metadata.revision:
+                raise StudioError(
+                    "AGENT_REVISION_CONFLICT",
+                    "资源校验期间 Agent 已变更，请刷新后重试",
+                    status_code=409,
+                )
+        authorization_verified = bool(configs) and len(verified) == len(configs)
+        if authorization_verified:
+            diagnostics = [
+                item for item in diagnostics if item.code != "RESOURCE_AUTHORITY_UNVERIFIED"
+            ]
         return {
             "revision": draft.metadata.revision,
             "valid": not any(item.severity == "error" for item in diagnostics),
-            "authorizationVerified": False,
+            "authorizationVerified": authorization_verified,
             "diagnostics": [item.model_dump(by_alias=True, mode="json") for item in diagnostics],
         }
 

@@ -1,0 +1,408 @@
+"""Host-owned platform resource admission for explicit signed connections.
+
+The first supported slice verifies a sub-account with IAM and proves read access
+to one exact knowledge-base binding. Browser declarations are comparisons only;
+they never become authority by being well formed or present in a catalogue.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
+import requests
+from pydantic import Field, model_validator
+
+from ksadk.knowledge_base.client import KnowledgeBaseClient
+from ksadk.plugins.contracts import PluginContractModel
+from ksadk.resource_runtime.contracts import Identifier, ResourceConfig, ResourceRef
+from ksadk.studio.errors import StudioError
+from ksadk.studio.resource_connections import (
+    ResolvedResourceCredentials,
+    ResourceConnectionRepository,
+)
+
+_IAM_KRN = re.compile(r"^krn:ksc:iam::([^:]+):user/([^/]+)$")
+_MAX_AUTHORITY_RESPONSE_BYTES = 1024 * 1024
+
+
+def _canonical_endpoint(value: str, *, allow_loopback_http: bool) -> str:
+    if any(char.isspace() for char in value) or "\\" in value:
+        raise ValueError("Resource authority endpoint is invalid")
+    parsed = urlsplit(value)
+    parsed.port
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Resource authority endpoint must be an explicit HTTP service URL")
+    if parsed.scheme != "https" and not (
+        allow_loopback_http and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    ):
+        raise ValueError("Resource authority endpoints require HTTPS")
+    return value.rstrip("/")
+
+
+class ResourceAuthorityPolicy(PluginContractModel):
+    """Trusted host configuration; it is never populated from a Studio request."""
+
+    iam_endpoint: str
+    allowed_data_endpoints: tuple[str, ...] = Field(min_length=1, max_length=16)
+    allowed_regions: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
+    timeout_seconds: float = Field(default=10.0, gt=0, le=30)
+    grant_ttl_seconds: int = Field(default=60, strict=True, ge=5, le=600)
+    allow_loopback_http_for_tests: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def trusted_targets(self) -> ResourceAuthorityPolicy:
+        iam = _canonical_endpoint(
+            self.iam_endpoint, allow_loopback_http=self.allow_loopback_http_for_tests
+        )
+        data = tuple(
+            _canonical_endpoint(
+                endpoint, allow_loopback_http=self.allow_loopback_http_for_tests
+            )
+            for endpoint in self.allowed_data_endpoints
+        )
+        if len(data) != len(set(data)) or len(self.allowed_regions) != len(
+            set(self.allowed_regions)
+        ):
+            raise ValueError("Resource authority targets must be unique")
+        object.__setattr__(self, "iam_endpoint", iam)
+        object.__setattr__(self, "allowed_data_endpoints", data)
+        return self
+
+
+class VerifiedResourceAuthority(PluginContractModel):
+    """Short-lived, credential-free evidence produced only by the trusted host."""
+
+    schema_version: Literal[1] = 1
+    connection_ref: Identifier
+    connection_revision: int = Field(strict=True, ge=1)
+    tenant_ref: Identifier
+    resource_principal_ref: Identifier
+    resource: ResourceRef
+    allowed_operations: tuple[Literal["search_knowledge_base"], ...] = Field(min_length=1)
+    issuer_endpoint: str
+    data_endpoint: str
+    observed_at: datetime
+    expires_at: datetime
+    request_id: str = Field(default="", max_length=256)
+
+    @property
+    def digest(self) -> str:
+        payload = self.model_dump(by_alias=True, mode="json")
+        raw = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+@dataclass(frozen=True)
+class _VerifiedIamIdentity:
+    tenant_ref: str
+    principal_ref: str
+
+
+class _HardenedSdkTransport:
+    """Use the SDK's request serialization/signing with a closed HTTP transport."""
+
+    def __init__(self, endpoint: str, *, timeout: float):
+        self.endpoint = endpoint
+        self.timeout = timeout
+
+    def send_request(self, request: Any):
+        from ksyun.common.http.request import ResponseInternal  # type: ignore[import-untyped]
+
+        url = self.endpoint
+        path = str(request.uri or "")
+        if path not in {"", "/"}:
+            url += "/" + path.lstrip("/")
+        if request.uri_params:
+            url += "?" + request.uri_params
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.request(
+                method=request.method,
+                url=url,
+                data=request.data,
+                headers=dict(request.header),
+                auth=request.auth,
+                timeout=self.timeout,
+                verify=True,
+                allow_redirects=False,
+            )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("RESOURCE_AUTHORITY_REDIRECT_REFUSED")
+        content = response.content
+        if len(content) > _MAX_AUTHORITY_RESPONSE_BYTES:
+            raise RuntimeError("RESOURCE_AUTHORITY_RESPONSE_TOO_LARGE")
+        return ResponseInternal(
+            status=response.status_code,
+            header=dict(response.headers),
+            data=content.decode("utf-8", errors="strict"),
+        )
+
+
+def _response_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        if len(value.encode()) > _MAX_AUTHORITY_RESPONSE_BYTES:
+            raise ValueError("oversized response")
+        value = json.loads(value)
+    if not isinstance(value, dict) or value.get("Error"):
+        raise ValueError("invalid authority response")
+    return value
+
+
+def _credential_values(credentials: ResolvedResourceCredentials) -> tuple[str, str, str, str]:
+    def reveal(value: Any) -> str:
+        return value.get_secret_value() if value is not None else ""
+
+    return (
+        reveal(credentials.access_key),
+        reveal(credentials.secret_key),
+        reveal(credentials.session_token),
+        reveal(credentials.token),
+    )
+
+
+class SignedKnowledgeResourceAuthority:
+    """Fail-closed admission for one signed sub-account and one KB read operation."""
+
+    def __init__(
+        self,
+        connections: ResourceConnectionRepository,
+        policy: ResourceAuthorityPolicy,
+    ) -> None:
+        self.connections = connections
+        self.policy = policy
+
+    def admit(
+        self,
+        config: ResourceConfig,
+        *,
+        expected_connection_revision: int | None = None,
+    ) -> VerifiedResourceAuthority:
+        resource = config.binding.resource
+        field = "spec.bindings.plugins.config.binding"
+        if resource.kind != "knowledge-base":
+            raise StudioError(
+                "RESOURCE_AUTHORITY_UNSUPPORTED",
+                "当前可信准入首片仅支持知识库只读检索",
+                status_code=422,
+                field=field,
+            )
+        before = self.connections.get(config.binding.connection_ref)
+        if (
+            expected_connection_revision is not None
+            and before.revision != expected_connection_revision
+        ):
+            raise StudioError(
+                "RESOURCE_CONNECTION_CHANGED", "资源连接已变更，请刷新后重试", status_code=409
+            )
+        target = before.target
+        if target.auth_mode != "signed":
+            raise StudioError(
+                "RESOURCE_AUTHORITY_UNSUPPORTED",
+                "当前可信准入首片仅支持签名子账号连接",
+                status_code=422,
+                field=field + ".connectionRef",
+            )
+        if target.endpoint not in self.policy.allowed_data_endpoints or (
+            resource.region not in self.policy.allowed_regions
+        ):
+            raise StudioError(
+                "RESOURCE_AUTHORITY_TARGET_FORBIDDEN",
+                "资源数据面地址或区域未被当前宿主批准",
+                status_code=403,
+                field=field + ".resource",
+            )
+
+        credentials = self.connections.resolve_credentials(target)
+        values = _credential_values(credentials)
+        if not values[0] or not values[1] or values[2] or values[3]:
+            raise StudioError(
+                "RESOURCE_AUTHORITY_UNSUPPORTED",
+                "当前可信准入首片需要独立的 AK/SK 签名凭证",
+                status_code=422,
+            )
+        identity = self._verify_identity(values[0], values[1])
+        if (
+            identity.tenant_ref != target.tenant_ref
+            or identity.principal_ref != target.principal_ref
+        ):
+            raise StudioError(
+                "RESOURCE_IDENTITY_MISMATCH",
+                "连接声明的租户或主体与当前签名凭证不一致",
+                status_code=403,
+                field=field + ".connectionRef",
+            )
+        request_id = self._prove_knowledge_read(
+            config, target.endpoint, values[0], values[1]
+        )
+
+        after = self.connections.get(config.binding.connection_ref)
+        after_values = _credential_values(self.connections.resolve_credentials(after.target))
+        if after != before or after_values != values:
+            raise StudioError(
+                "RESOURCE_CONNECTION_CHANGED", "资源连接或凭证在准入期间发生变更", status_code=409
+            )
+        now = datetime.now(timezone.utc)
+        return VerifiedResourceAuthority(
+            connection_ref=target.connection_ref,
+            connection_revision=before.revision,
+            tenant_ref=identity.tenant_ref,
+            resource_principal_ref=identity.principal_ref,
+            resource=resource,
+            allowed_operations=("search_knowledge_base",),
+            issuer_endpoint=self.policy.iam_endpoint,
+            data_endpoint=target.endpoint,
+            observed_at=now,
+            expires_at=now + timedelta(seconds=self.policy.grant_ttl_seconds),
+            request_id=request_id,
+        )
+
+    def _verify_identity(self, access_key: str, secret_key: str) -> _VerifiedIamIdentity:
+        try:
+            from ksyun.client.iam.v20151101.client import (  # type: ignore[import-untyped]
+                IamClient,
+            )
+            from ksyun.client.iam.v20151101.models import (  # type: ignore[import-untyped]
+                GetUserRequest,
+                ListAllUserAccessKeysRequest,
+            )
+            from ksyun.common.credential import Credential  # type: ignore[import-untyped]
+            from ksyun.common.profile.client_profile import (  # type: ignore[import-untyped]
+                ClientProfile,
+            )
+            from ksyun.common.profile.http_profile import (  # type: ignore[import-untyped]
+                HttpProfile,
+            )
+
+            endpoint = urlsplit(self.policy.iam_endpoint)
+            profile = ClientProfile()
+            profile.httpProfile = HttpProfile(
+                protocol=endpoint.scheme,
+                endpoint=endpoint.netloc,
+                # The hardened transport owns the configured base path.
+                path="/",
+                reqMethod="POST",
+                reqTimeout=self.policy.timeout_seconds,
+            )
+            client = IamClient(Credential(access_key, secret_key), "cn-beijing-6", profile)
+            client.request = _HardenedSdkTransport(
+                self.policy.iam_endpoint, timeout=self.policy.timeout_seconds
+            )
+            listed = _response_object(client.ListAllUserAccessKeys(ListAllUserAccessKeysRequest()))
+            identity = self._identity_from_iam_listing(listed, access_key)
+            request = GetUserRequest()
+            request.UserName = identity
+            user_response = _response_object(client.GetUser(request))
+            return self._identity_from_iam_user(user_response, identity)
+        except StudioError:
+            raise
+        except Exception as error:
+            raise StudioError(
+                "RESOURCE_IDENTITY_UNVERIFIED",
+                "无法使用当前签名凭证验证平台子账号身份",
+                status_code=403,
+            ) from error
+
+    @staticmethod
+    def _identity_from_iam_listing(response: dict[str, Any], access_key: str) -> str:
+        if response.get("IsTruncated") is True or response.get("NextMarker"):
+            raise ValueError("incomplete access-key listing")
+        has_primary = "AccessKeyList" in response
+        has_alias = "AccessKeys" in response
+        if has_primary == has_alias:
+            raise ValueError("ambiguous access-key listing")
+        entries = response["AccessKeyList" if has_primary else "AccessKeys"]
+        if not isinstance(entries, list):
+            raise ValueError("invalid access-key listing")
+        matches = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("invalid access-key entry")
+            has_key = "AccessKey" in entry
+            has_alias_key = "AccessKeyId" in entry
+            if has_key == has_alias_key:
+                raise ValueError("ambiguous access-key entry")
+            candidate = entry["AccessKey" if has_key else "AccessKeyId"]
+            user_name = entry.get("UserName")
+            if (
+                not isinstance(candidate, str)
+                or not candidate
+                or candidate != candidate.strip()
+                or not isinstance(user_name, str)
+                or not user_name
+                or user_name != user_name.strip()
+            ):
+                raise ValueError("invalid access-key identity")
+            if candidate == access_key:
+                matches.append(user_name)
+        if len(matches) != 1:
+            raise ValueError("signed access key has no unique sub-account")
+        return matches[0]
+
+    @staticmethod
+    def _identity_from_iam_user(
+        response: dict[str, Any], expected_user_name: str
+    ) -> _VerifiedIamIdentity:
+        result = response.get("GetUserResult")
+        user = result.get("User") if isinstance(result, dict) else None
+        if not isinstance(user, dict):
+            raise ValueError("invalid IAM user response")
+        user_id = user.get("UserId")
+        user_name = user.get("UserName", expected_user_name)
+        krn = user.get("Krn")
+        if not all(
+            isinstance(value, str) and value and value == value.strip()
+            for value in (user_id, user_name, krn)
+        ):
+            raise ValueError("incomplete IAM user identity")
+        match = _IAM_KRN.fullmatch(krn)
+        if not match or user_name != expected_user_name or match.group(2) != user_name:
+            raise ValueError("IAM user identity is inconsistent")
+        return _VerifiedIamIdentity(tenant_ref=match.group(1), principal_ref=user_id)
+
+    def _prove_knowledge_read(
+        self,
+        config: ResourceConfig,
+        data_endpoint: str,
+        access_key: str,
+        secret_key: str,
+    ) -> str:
+        endpoint = urlsplit(data_endpoint)
+        client = KnowledgeBaseClient(
+            dataset_id=config.binding.resource.id,
+            region=config.binding.resource.region,
+            endpoint=endpoint.netloc,
+            scheme=endpoint.scheme,
+            access_key=access_key,
+            secret_key=secret_key,
+            top_k=1,
+        )
+        try:
+            upstream = client._get_client()
+            upstream.request = _HardenedSdkTransport(
+                data_endpoint, timeout=self.policy.timeout_seconds
+            )
+            client.search("ksadk-resource-authority-probe", top_k=1)
+            if client.last_http_status != 200 or client.last_error:
+                raise ValueError("knowledge access was not proven")
+            return client.last_request_id
+        except Exception as error:
+            raise StudioError(
+                "RESOURCE_OPERATION_UNVERIFIED",
+                "当前签名主体未通过指定知识库的只读检索校验",
+                status_code=403,
+            ) from error
