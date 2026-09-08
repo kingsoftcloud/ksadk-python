@@ -177,3 +177,99 @@ def restore_plugin_artifact(
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def restore_materialized_plugin_artifact(
+    source: Path, receipt: PluginArtifactReceipt, target: Path
+) -> Path:
+    """Verify an init-container-extracted artifact before atomic installation.
+
+    The init container verifies the downloaded archive digest before extraction.
+    The runtime independently verifies the portable manifest and every extracted
+    file before the marketplace becomes visible to Codex.
+    """
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("Materialized plugin artifact must be a real directory")
+    if target.exists() or target.is_symlink():
+        raise ValueError("Plugin artifact target already exists")
+
+    manifest_path = source / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("Missing plugin artifact manifest")
+    if manifest_path.stat().st_size > MAX_BYTES:
+        raise ValueError("Plugin artifact manifest exceeds size limit")
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("Invalid plugin artifact manifest") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("Plugin artifact manifest must be an object")
+    for key in ("schema_version", "ecosystem", "runtime_version", "plugin_lock_digest"):
+        if manifest.get(key) != getattr(receipt, key):
+            raise ValueError("Plugin artifact manifest mismatch")
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files or len(files) > MAX_FILES:
+        raise ValueError("Missing or excessive plugin artifact file index")
+
+    indexed: list[tuple[dict, str]] = []
+    expected = {"manifest.json"}
+    for item in files:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid plugin artifact file index")
+        try:
+            name = _safe_path(item["path"])
+            size = int(item["size"])
+            mode = int(item["mode"])
+            digest = str(item["digest"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Invalid plugin artifact file index") from exc
+        if size < 0 or size > MAX_BYTES or (mode & ~0o111) != 0o644:
+            raise ValueError("Plugin artifact has invalid file size or mode")
+        if not digest.startswith("sha256:") or len(digest) != 71:
+            raise ValueError("Plugin artifact has invalid file digest")
+        relative = "payload/" + name
+        if relative in expected:
+            raise ValueError("Duplicate plugin artifact file index")
+        expected.add(relative)
+        indexed.append((item, relative))
+
+    actual: set[str] = set()
+    for path in source.rglob("*"):
+        relative = path.relative_to(source).as_posix()
+        if path.is_symlink():
+            raise ValueError("Plugin artifacts cannot contain symlinks")
+        if path.is_dir():
+            _safe_path(relative)
+            continue
+        if not path.is_file():
+            raise ValueError("Plugin artifacts require regular files")
+        actual.add(relative)
+    if actual != expected:
+        raise ValueError("Plugin artifact file index mismatch")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".plugin-restore-", dir=target.parent))
+    total = 0
+    try:
+        for item, relative in indexed:
+            source_file = source / relative
+            size = int(item["size"])
+            with source_file.open("rb") as stream:
+                raw = stream.read(size + 1)
+            total += len(raw)
+            if (
+                len(raw) != size
+                or total > MAX_BYTES
+                or _digest(raw) != item["digest"]
+            ):
+                raise ValueError("Plugin artifact file digest mismatch")
+            destination = staging / item["path"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(raw)
+            destination.chmod(int(item["mode"]))
+        os.replace(staging, target)
+        return target
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
