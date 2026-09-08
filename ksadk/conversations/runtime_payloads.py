@@ -91,6 +91,7 @@ class PreparedConversationTurn:
     memory_write_mode: str = "candidate"
     flush_before_compaction: bool = True
     provider_ref: str = "local-default"
+    session_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

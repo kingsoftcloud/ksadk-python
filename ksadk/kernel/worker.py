@@ -407,6 +407,11 @@ class AgentKernelWorker:
                 # durable run_id 优先传给 adapter；adapter 不认时以
                 # runtime_run_id 映射显式记录两个 ID 的对应关系。
                 metadata={
+                    **(
+                        {"session_context": command.payload["session_context"]}
+                        if "session_context" in command.payload
+                        else {}
+                    ),
                     "command_id": str(command.command_id),
                     "run_id": run_id,
                     **continuation_metadata,
@@ -812,7 +817,13 @@ class AgentKernelWorker:
                 kind=RESUME_TARGET_KINDS[target_dict["kind"]],
                 id=str(target_dict["id"]),
             )
-            resumed = await adapter.resume(handle, target, AdapterResumePayload(kind="free_text"))
+            resumed = await adapter.resume(
+                handle,
+                target,
+                AdapterResumePayload(
+                    kind="free_text", session_context=command.payload.get("session_context")
+                ),
+            )
             execution = self._replace_handle(execution, resumed)
             self._start_stream(
                 execution,
@@ -910,6 +921,7 @@ class AgentKernelWorker:
         context = InteractionResolveContext(
             adapter=execution.adapter,
             handle=execution.handle,
+            session_context=command.payload.get("session_context"),
             activation_id=activation.activation_id,
             fencing_token=fence,
         )

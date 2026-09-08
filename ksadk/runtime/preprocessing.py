@@ -19,6 +19,7 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.runtime_context import PlatformInvocationContext
+from ksadk.session_context import split_session_context
 
 
 @dataclass
@@ -58,17 +59,21 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
     outer_metadata = {
         key: value
         for key, value in request.metadata.items()
-        if key != CONVERSATION_PREPROCESSING_METADATA_KEY
+        if key not in {CONVERSATION_PREPROCESSING_METADATA_KEY, "session_context"}
     }
     request_metadata = {**outer_metadata, **conversation.request_metadata}
     messages = conversation.messages or _fallback_messages(request.input)
     raw_prepared = (conversation.model_extra or {}).get("prepared_turn")
     if isinstance(raw_prepared, Mapping):
         prepared = PreparedConversationTurn(**dict(raw_prepared))
-        prepared.request_metadata = {
+        merged_metadata = {
             **prepared.request_metadata,
             **request_metadata,
         }
+        snapshot, prepared.request_metadata = split_session_context(merged_metadata)
+        controls = merged_metadata.get("agentengine")
+        if isinstance(controls, Mapping) and "session_context" in controls:
+            prepared.session_context = snapshot.to_payload()
     else:
         prepared = await build_run_input(
             agent_id=str(request.agent_id or "agent"),
@@ -114,7 +119,10 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         ambient_contexts["memory_recall_events"] = list(prepared.memory_recall_events)
     else:
         prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
+    from ksadk.session_context import SessionContext
+
     runtime_context = PlatformInvocationContext(
+        session=SessionContext.from_payload(prepared.session_context),
         agent_id=str(request.agent_id or "agent"),
         user_id=request.user_id,
         account_id=str(conversation.account_id or ""),

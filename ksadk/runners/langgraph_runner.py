@@ -1092,7 +1092,10 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         history = payload.pop("history", [])
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
         config = self._get_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(

@@ -54,6 +54,9 @@ def command_digest(command: AgentControlCommand) -> str:
     canonical["source"] = source
 
     payload = dict(canonical.get("payload") or {})
+    # Admission derives this immutable snapshot from the current session. A
+    # retry after a tag update must still resolve to the first accepted command.
+    payload.pop("session_context", None)
     if command.command_type == "submit_interaction":
         payload.pop("token_ref", None)
     canonical["payload"] = payload
