@@ -7,7 +7,7 @@
 在保留社区贡献的基础上，接续平台资源插件实现，并把 Codex 的产品能力收敛到 Agent Provider 插件。Runtime 只保留必要的生命周期、协议与框架适配；身份、权限、密钥、审批和审计继续由可信宿主管理。插件化不能产生第二套会话、事件流或审批执行链。
 
 - 工作树：`codex/platform-resource-plugins-checkpoint`；不切换或覆盖其他会话的 checkout。
-- 起点：贡献者 fork 的 `89a59c48`；首次合入 main `ff505c58` 后提交 `15609732`。社区 #64/#42 合并后，再合 main `700a7f87`，提交 `dfb37769`。
+- 起点：贡献者 fork 的 `89a59c48`；首次合入 main `ff505c58` 后提交 `15609732`。其后持续用 merge commit 同步 GitHub main；最新一次 `60fd81f3` 已包含 main `145cc739`。
 - 保留社区原作者的提交及 Author 字段，维护者补修单独提交。优先 merge commit，避免重建或 squash 掉原贡献。
 - 不改公开版本号，不触发正式发布，不绕过 main 的保护检查；更新 main 后再回合到本分支。
 - 测试、真实本地工具链、浏览器、真实平台访问分别记录；mock 通过不能替代平台验收。
@@ -16,18 +16,18 @@
 
 | 编号 | 工作 | 状态 | 验收与依赖 |
 | --- | --- | --- | --- |
-| P01 | 定位 checkpoint、双轴评审、合入最新 main | 已完成首轮 | `15609732`，六处冲突保留双方有效改动；后续 main 更新仍需回合 |
+| P01 | 定位 checkpoint、双轴评审、合入最新 main | 持续完成 | `15609732` 完成首轮六处冲突处理；`dfb37769`、`a2a711d9`、`477bf0da`、`60fd81f3` 持续同步，当前包含 GitHub main `145cc739` |
 | P02 | 完成合并后针对性回归 | 已完成首轮及真实 Core | 资源相关 462 passed / 12 skipped；API 补测 25 passed / 1 skipped；Studio 构建及 Ruff 通过；`fe2ea692` 将真实资源启动测试接到官方完整 Core，2 项通过 |
 | C01 | 评审人工社区 PR #64 | 已合入 main | 合并 `a79fcfc7`；原提交 `1a719361` 保留，维护补修 `5d0592cb`、`d956a06e` 单独留痕。精确候选的 CI、完整 public-preflight、浏览器与制品安装均通过 |
-| C02 | 合并 Actions 更新 #42/#32/#30/#29 | #42/#29 已合，其余进行中 | #42 合并 `700a7f87`；#29 精确候选 `c99b8bee` 完整预检和 CI 通过，合并 `6dc87026`；#30 `005b8fd5` 完整预检通过、已推回等待 CI；#32 已准备候选 |
-| C03 | 修复 Actions #40 的冲突与版本硬编码测试 | 已补修并推回 PR | `447e85a8` 保留 main 的条件判断、补齐 Node v7、用步骤顺序替换固定 v4 断言；候选 `8ad10304` 完整预检/CI通过，合并前仍需更新 main |
-| C04 | 评审并处理依赖 PR #48/#49/#46/#47/#41 | #48 已补修并推回，其他已评审 | #48 `7f811eb5` 将 E2B 实际锁到2.45.1并同步提示，27项沙箱回归通过；`2ba70f87` 原基线完整预检/CI通过，待更新 main；OTel 联合解算、实际1.42.1的20项追踪和两次本地OTLP导出通过；websockets仍受ADK上界约束 |
+| C02 | 合并 Actions 更新 #42/#32/#30/#29 | 已合入 main | #42 `700a7f87`、#29 `6dc87026`、#30 `1e078059`、#32 `9bfdfaa1`；均按精确候选通过完整预检和 GitHub CI 后使用 merge commit 合入 |
+| C03 | 修复 Actions #40 的冲突与版本硬编码测试 | 已合入 main | 候选 `4c902acf` 保留原始 `92917b2a` 及维护提交，完整 public-preflight 和 13 项 CI 通过，合并 `145cc739` |
+| C04 | 评审并处理依赖 PR #48/#49/#46/#47/#41 | 已降级暂停 | 这些均为 Bot 依赖更新；应用户要求停止占用主线。#48 当前远端已关闭，未推送本地新候选；已做的兼容验证仅保留为后续证据 |
 | P03 | 修复 checkpoint 的可证实兼容性问题 | 已完成首项 | `869ac46e`：可在无 fcntl 环境导入并创建 Studio；资源锁不可用返回 501，不降级为无锁 I/O；10 项通过 |
 | D01 | Codex Runtime / Provider 职责与入口审查 | 已完成首轮 | 已有官方 Provider；直连路径和 Provider 必须共用原生工厂，避免默认 registry 递归；正式 Studio 迁移另列 D04 |
 | D02 | 实施首批 Codex Provider 能力迁移 | 已完成首批 | `0c9b2dde`：Provider 原生工厂与输入投影；Runtime 1080→842 行，通用 factory 484→172 行；保留兼容构造入口 |
 | D03 | Codex 回归与兼容验证 | 已完成首批 | 70 项通过；真实 Codex App Server + 本地 Responses/MCP stub 1 项通过（两轮工具调用和 native thread 续接） |
-| D04 | 正式 Studio Build / Run 进入 Provider | 本地接线已完成 | `61a70be2`：新 Build 冻结 Provider/Bundle，Run 经 PluginHost，禁用拒绝，历史 Build 显式 legacy；完整253项、最后收紧后71项通过。再合最新 main 后33项通过；真实 DSH 组合验证 `89f0c0fd` 通过；`7d8c2831` 补显式 Agent 权限 UI，17项后端/真实运行、29项Vitest及Vite构建通过，异步目录加载回归与浏览器仍在补充；云端迁移/多连接模型/附件清理另行推进 |
-| P04 | 接通平台资源的可信准入 | 待实现 | 显式凭证主体验证、目标与 region 校验、资源权限校验、失败关闭。现有连接声明不构成身份凭证 |
+| D04 | 正式 Studio Build / Run 进入 Provider | 本地接线已完成 | `61a70be2`：新 Build 冻结 Provider/Bundle，Run 经 PluginHost，禁用拒绝，历史 Build 显式 legacy；真实 DSH 组合验证 `89f0c0fd`；`7d8c2831`、`7e19c25b` 完成显式权限 UI、异步回显和真实浏览器阻断/持久化验证。云端迁移、多连接模型与附件清理仍需后续推进 |
+| P04 | 接通平台资源的可信准入 | 知识库首片已完成 | `04e7829a` 实现宿主签名子账号与指定知识库只读准入；`ebadee5f` 加固响应信封、流式上限、连接关闭和官方内网策略。76 项相关回归通过；真实内网 IAM 身份、账号匹配和指定知识库只读检索成功 |
 | P05 | 知识库插件接入正式 Build / Run | 待 P04、D02 | 冻结绑定、正式 Builder 产物、同一 DSH Core、Worker 调用、租约/连接变更隔离、模型可实际调用 |
 | P06 | Studio 平台资源选择与状态 | 待 P04 | 复用现有 React Studio 与 ComponentConfig，连接范围内选项代理、保存/刷新/错误状态；真实浏览器验证 |
 | P07 | Memory 与 Skill Center 分批接入 | 待 P05 | Memory 显式/自动语义分别验收；Skill 指令优先、固定版本字节、动态发现与执行审批分别验收 |
@@ -37,8 +37,8 @@
 ## 已发现的关键边界
 
 1. 现有 CodexProvider 已经存在。已把原生装配和输入投影收敛到 Provider，Runtime 从 1080 行减至 842 行；新 Studio 本地 Build 已进入 PluginHost。旧 Build 显式兼容、云端格式尚未迁移，不能宣称所有 Codex 运行已经受插件开关控制。
-2. Checkpoint 的资源底座适合作为开发起点，但尚未连接完整的正式 Builder/Run；`RESOURCE_AUTHORITY_UNVERIFIED` 当前是必要拒绝边界，不能删掉来伪装接通。
-3. 平台 `ListKnowledgeBases` 能提供目录，但不返回认证主体，目录可见也不等于检索有权限。现有 IAM 反查可研究复用于显式签名子账号，旧全局缓存、主账号返回空等行为不能直接作为准入证明。
+2. Checkpoint 已能在 Studio 校验阶段签发短期、无凭证的知识库只读准入证明，但正式 Builder/Run 还没有消费和冻结该证明；P05 完成前不能把“校验通过”表述为运行链路已接通。
+3. 平台 `ListKnowledgeBases` 只提供目录，不构成认证或授权。P04 使用当前 AK/SK 实时调用 IAM，唯一匹配子账号后再实际检索指定知识库；不采信旧全局缓存，也不把主账号空身份降级成成功。
 4. main 已恢复 React Studio 源码，并采用同一官方 DSH Core；不恢复旧的 sandbox relay/client bundle 或额外 iframe Runtime。
 5. PR #64 的首项审批投影是已有范围限制。本次补修解决并行中断定向恢复及不同 scope 下相同 call ID 的去重；完整批量审批 UI 不以此项测试通过代替。
 
@@ -53,6 +53,7 @@
 - #48 E2B：独立环境按更新后的锁文件安装 E2B 2.45.1；`/tmp/ksadk-pr48-sandbox-tests.log` 27 passed。测试来自内部既有 sandbox suite，复制在候选外并以候选代码运行；验证后端行为和新 SDK 接口，未创建真实远端沙箱。
 - 社区公开预检共同修复：首次官方 DSH bootstrap + Provider 初始化实测 7.28 秒，原浏览器 helper 的约5秒窗口提前报失败；`d956a06e` 改为 monotonic 30秒预算并在服务线程退出时立即失败，仍以真实 health HTTP200 为成功。没有禁用 DSH 或跳过浏览器断言。
 - 依赖评审：`/tmp/ksadk-community-deps-review-20260908.md`，包含十二组隔离解算和官方兼容性来源；还不代表最终业务回归或远端沙箱验收。
+- P04 可信准入：`04e7829a` + `ebadee5f`。最终 Standards 与 Spec 复评无 blocker；相关套件 76 passed。真实只读验证先确认公网 IAM 因内部账号被拒绝，再经宿主显式开启且限定官方精确域名的内网策略完成 IAM 子账号唯一匹配、主账号匹配、指定知识库检索；grant 不含 AK/SK 且仅有 `search_knowledge_base`。内网 HTTP 依赖宿主可信网络，不表述为等同 TLS。
 
 ## 更新规则
 
@@ -82,16 +83,16 @@ Skill 输入最终以 Bundle 冻结字节为准，本地 launch overlay 不得�
 | --- | --- | --- |
 | #64 | 已合并 `a79fcfc7` | 已回合开发分支 |
 | #42 | 已合并 `700a7f87` | 已回合开发分支 |
-| #29 | 已合并 `6dc87026`，完整预检及 CI 通过 | 待回合开发分支 |
-| #30 | 候选 `005b8fd5` 已含 main `6dc87026`，完整预检通过并推回；保留 pnpm 9/10.33.2 | 等精确提交 CI 后合并 |
-| #32 | 候选 `c7674158`，全部11处 checkout v7 | 按顺序更新 main、完整预检、推回及合并 |
-| #40 | 候选 `8ad10304` 已推回，原基线完整预检通过 | 更新 main、验证后合并 |
-| #48 | 候选 `2ba70f87` 已推回，原基线完整预检通过 | 更新 main、验证后合并；未验证真实远端沙箱 |
-| #49/#46/#47 | 候选 `65dd67c4` / `f6b2f97a` / `42b036f1`；独立 Python3.11 + ADK2.5 + OTel1.42.1 回归通过 | 按顺序更新 main、完整门禁及合并；最终另提联合锁文件更新，保留三项原始贡献 |
-| #41 | 候选 `e35e29ed` 已同步锁文件约束元数据，实际包仍15.0.1 | 更新 main、完整门禁及合并；不宣称16兼容 |
+| #29 | 已合并 `6dc87026`，完整预检及 CI 通过 | 已回合开发分支 |
+| #30 | 已合并 `1e078059` | 已回合开发分支 |
+| #32 | 已合并 `9bfdfaa1` | 已回合开发分支 |
+| #40 | 已合并 `145cc739` | 已回合开发分支 |
+| #48 | Bot PR，远端已关闭；本地候选未推送 | 暂停，不占用 checkpoint 主线 |
+| #49/#46/#47 | Bot PR；已有独立兼容性证据 | 暂停，不占用 checkpoint 主线 |
+| #41 | Bot PR；已有约束分析 | 暂停，不占用 checkpoint 主线 |
 
 ### 真实 Core 与正式 Codex Provider 组合补验
 
 `89f0c0fd` 用实际官方 Node DSH Core 安装 `ksadk-codex`，经真实 Python descriptor 注册桥接入 Studio，再创建正式 Provider Build 并调用真实 AppServer；上游模型为本地无认证 stub。测试覆盖未获 `process:host-user` 授权时拒绝、通过正式 Agent 更新显式授权后调用成功、禁用 Provider 后 Build/Run 拒绝与进程退出。这里的 descriptor 注册由 Python 宿主读取受管 profile 完成，不表述为 Core 直接提供 Provider RPC。
 
-`7d8c2831` 将官方 Provider 权限显示在原生 Codex 快速创建、对话创建和编辑表单，默认不勾选；插件安装同意不自动写成 Agent 授权。真实安装暴露的权限缺口已补齐，最终后端组合17项通过；相关Vitest29项和生产Vite构建通过。根评审追加发现 Provider 目录异步晚到时的授权回显问题，正在补回归；浏览器实测尚未计入通过结论。
+`7d8c2831` 将官方 Provider 权限显示在原生 Codex 快速创建、对话创建和编辑表单，默认不勾选；插件安装同意不自动写成 Agent 授权。`7e19c25b` 修复 Provider 目录异步晚到时的授权回显和精确 consent scope。真实浏览器已验证未勾选时阻止创建、编辑页持久化已选权限并能保存后重开；相关后端、Vitest 与生产 Vite 构建通过。
