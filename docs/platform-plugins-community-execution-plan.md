@@ -18,10 +18,10 @@
 | --- | --- | --- | --- |
 | P01 | 定位 checkpoint、双轴评审、合入最新 main | 已完成首轮 | `15609732`，六处冲突保留双方有效改动；后续 main 更新仍需回合 |
 | P02 | 完成合并后针对性回归 | 已完成首轮及真实 Core | 资源相关 462 passed / 12 skipped；API 补测 25 passed / 1 skipped；Studio 构建及 Ruff 通过；`fe2ea692` 将真实资源启动测试接到官方完整 Core，2 项通过 |
-| C01 | 评审人工社区 PR #64 | 已完成评审及本地补修 | 保留原提交 `1a719361`；合并基线 `58c5fbe0`；补修 `5d0592cb`；78 passed / 1 xpassed；待公开门禁和远端合并 |
-| C02 | 合并 Actions 更新 #42/#32/#30/#29 | 进行中 | 更新 base、审阅新 diff、public-preflight 与最新 CI；#42 已更新 base。新增 workflow 遗漏更新由维护者补齐 |
+| C01 | 评审人工社区 PR #64 | 已补修并推回原 PR | 原提交 `1a719361` 保留；`5d0592cb` 修复中断/去重；`d956a06e` 修复浏览器门禁启动预算。78 passed / 1 xpassed，另有4项启动测试和真实故障矩阵浏览器通过；等待最终公开门禁与合并 |
+| C02 | 合并 Actions 更新 #42/#32/#30/#29 | 进行中 | #42 补齐新增 E2E job 后 `e7214707`，带上公共浏览器门禁补修后 `d51e0128`；已推回原 PR，等待公开预检及最新 CI。其余三项已评审待顺序处理 |
 | C03 | 修复 Actions #40 的冲突与版本硬编码测试 | 待执行 | 只修改 action 引用和保留原测试目的的断言，完整工作流检查 |
-| C04 | 评审并处理依赖 PR #48/#49/#46/#47/#41 | 已评审，待维护 | OTel 联合解算与 ADK1/2 验证、E2B lock/接口测试、websockets 的实际版本限制写清；不能声称上界扩大即已验证新版本 |
+| C04 | 评审并处理依赖 PR #48/#49/#46/#47/#41 | #48 已补修并推回，其他已评审 | #48 `7f811eb5` 将 E2B 实际锁到2.45.1并同步提示，27项沙箱回归通过，带公共门禁修复后 `2ba70f87` 待CI/公开预检；OTel需联合解算与ADK1/2验证；websockets仍受ADK上界约束 |
 | P03 | 修复 checkpoint 的可证实兼容性问题 | 已完成首项 | `869ac46e`：可在无 fcntl 环境导入并创建 Studio；资源锁不可用返回 501，不降级为无锁 I/O；10 项通过 |
 | D01 | Codex Runtime / Provider 职责与入口审查 | 已完成首轮 | 已有官方 Provider；直连路径和 Provider 必须共用原生工厂，避免默认 registry 递归；正式 Studio 迁移另列 D04 |
 | D02 | 实施首批 Codex Provider 能力迁移 | 已完成首批 | `0c9b2dde`：Provider 原生工厂与输入投影；Runtime 1080→842 行，通用 factory 484→172 行；保留兼容构造入口 |
@@ -50,6 +50,8 @@
 - 社区 PR #64：`/tmp/ksadk-pr64-review.md`；新增十项回归在补修前七项失败，补修后十项通过。原作者提交保持祖先关系，维护补修已推回原 PR；最新远端 CI 全绿，公开预检尚在执行。
 - Codex 首批瘦身：`/tmp/ksadk-codex-provider-thinning-review.md`，实际 App Server 调用使用本地测试服务，不代表真实模型或生产验收。
 - 资源真实 Core：`/tmp/ksadk-checkpoint-resource-real-core.log`，DSH `0.1.2-rc.1` + pnpm `10.33.2`，2 passed / 73.87s。实际启动官方 Web/Core、安装四个资源插件、显式迁移 isolated 布局、冻结 Build、启动 Worker、经 MCP 调用所选 KB、关闭并清理 socket/进程；上游 KB 是本地测试服务。此前空白自定义 profile 缺少 Core Web/connection 服务而失败，现改用官方 profile，未新增第二个 Core 或放宽 admission。
+- #48 E2B：独立环境按更新后的锁文件安装 E2B 2.45.1；`/tmp/ksadk-pr48-sandbox-tests.log` 27 passed。测试来自内部既有 sandbox suite，复制在候选外并以候选代码运行；验证后端行为和新 SDK 接口，未创建真实远端沙箱。
+- 社区公开预检共同修复：首次官方 DSH bootstrap + Provider 初始化实测 7.28 秒，原浏览器 helper 的约5秒窗口提前报失败；`d956a06e` 改为 monotonic 30秒预算并在服务线程退出时立即失败，仍以真实 health HTTP200 为成功。没有禁用 DSH 或跳过浏览器断言。
 - 依赖评审：`/tmp/ksadk-community-deps-review-20260908.md`，包含十二组隔离解算和官方兼容性来源；还不代表最终业务回归或远端沙箱验收。
 
 ## 更新规则
