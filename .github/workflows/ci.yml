@@ -76,7 +76,7 @@ jobs:
     name: React Studio responsive browser gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -219,7 +219,7 @@ jobs:
       KSADK_DSH_UPSTREAM_E2E: "1"
       KSADK_CODEX_PLUGIN_E2E: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
