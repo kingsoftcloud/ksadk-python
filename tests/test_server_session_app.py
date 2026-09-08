@@ -6226,3 +6226,81 @@ async def test_list_session_checkpoints_without_session_id_returns_all_sessions(
     assert data["Total"] == 2
     assert {cp["SessionId"] for cp in data["Checkpoints"]} == {"sess-a", "sess-b"}
     assert {cp["CheckpointId"] for cp in data["Checkpoints"]} == {"ckpt-a", "ckpt-b"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("path", ["/v1/responses", "/agentengine/api/v1/RunAgent"])
+async def test_langgraph_timing_reaches_http_response(stream, path):
+    from typing import TypedDict
+
+    from langchain_core.messages import AIMessage
+    from langgraph.graph import END, START, StateGraph
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class State(TypedDict):
+        messages: list
+        answer: str
+        timing: dict
+
+    graph = StateGraph(State)
+    graph.add_node(
+        "answer",
+        lambda state: {
+            "answer": "TIMING_OK",
+            "messages": [
+                AIMessage(
+                    content="TIMING_OK",
+                    usage_metadata={"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+            ],
+            "timing": {
+                "agent_duration_ms": 999999,
+                "answer_duration_ms": 2.5,
+                "selection_duration_ms": None,
+                "phase_status": {"selection": "skipped"},
+            },
+        },
+    )
+    graph.add_edge(START, "answer")
+    graph.add_edge("answer", END)
+    runner = LangGraphRunner(
+        SimpleNamespace(
+            entry_point="agent.py", agent_variable="agent", type=SimpleNamespace(value="langgraph")
+        ),
+        ".",
+    )
+    runner._agent = graph.compile()
+    server = importlib.import_module("ksadk.server.app")
+    server.set_runner(runner, loaded=True)
+    request = (
+        {"input": "hello", "stream": stream}
+        if path == "/v1/responses"
+        else {
+            "AgentId": "agent-1",
+            "ApiFormat": "responses",
+            "ResponsesInput": "hello",
+            "Stream": stream,
+        }
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server.app), base_url="http://ksadk.local"
+    ) as client:
+        response = await client.post(path, json=request)
+    assert response.status_code == 200, response.text
+    if stream:
+        payload = next(
+            data for name, data in _sse_events(response.text) if name == "response.completed"
+        )
+    else:
+        payload = response.json()
+        payload = payload.get("Data", payload)
+    measured = payload["timing"]
+    assert 0 <= measured["agent_duration_ms"] < 999999
+    assert measured["answer_duration_ms"] == 2.5
+    assert measured["selection_duration_ms"] is None
+    assert measured["phase_status"]["selection"] == "skipped"
+    assert payload["usage"]["total_tokens"] == 8
+    assert payload["output_text"] == "TIMING_OK"
+    assert "timing" not in json.dumps(payload["output"])

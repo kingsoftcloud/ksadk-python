@@ -46,6 +46,7 @@ from ksadk.events.content import DataContent, TextContent, ToolCallContent, Tool
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime.adapter import RunHandle
 from ksadk.runtime.preprocessing import PreparedRuntimeStart
+from ksadk.runtime.timing import extract_timing
 from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
 from ksadk.tools.gateway import approval_interrupt_info_from_result
@@ -304,6 +305,8 @@ class _RunnerStreamMappingMixin:
                         if isinstance(chunk, dict):
                             chunk_type = str(chunk.get("type") or "")
                             if chunk_type == "final" and run is not None:
+                                if timing := extract_timing(chunk):
+                                    run.completion_metrics["timing"] = timing
                                 for source_key, target_key in (
                                     ("duration_ms", "duration_ms"),
                                     ("started_at", "started_at"),

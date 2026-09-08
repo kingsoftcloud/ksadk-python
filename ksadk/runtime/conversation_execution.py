@@ -47,6 +47,7 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.executor import RuntimeExecutor, RuntimeStartPreparation
 from ksadk.runtime.launch import RuntimeLaunchContext
+from ksadk.runtime.timing import normalize_timing
 from ksadk.sessions import resolve_session_service
 
 _TERMINAL_EVENTS = frozenset(
@@ -571,20 +572,29 @@ async def iter_runtime_conversation_semantic_events(
                 "session_id": execution_context.get("session_id", ""),
             }
         elif isinstance(event, RunFailed):
+            metrics = event.source.metadata.get("metrics")
+            timing = normalize_timing(metrics.get("timing")) if isinstance(metrics, Mapping) else {}
             yield {
                 "type": "error",
                 "message": event.error.message or "Agent 运行失败",
                 "session_id": execution_context.get("session_id", ""),
                 "usage": projection.usage.model_dump(),
+                **({"timing": timing} if timing else {}),
             }
         elif isinstance(event, RunCanceled):
+            metrics = event.source.metadata.get("metrics")
+            timing = normalize_timing(metrics.get("timing")) if isinstance(metrics, Mapping) else {}
             yield {
                 "type": "cancelled",
                 "session_id": execution_context.get("session_id", ""),
                 "usage": projection.usage.model_dump(),
+                **({"timing": timing} if timing else {}),
             }
         elif isinstance(event, RunCompleted):
             completion_metadata = dict(event.source.metadata)
+            metrics = completion_metadata.get("metrics")
+            metrics = metrics if isinstance(metrics, Mapping) else {}
+            timing = normalize_timing(metrics.get("timing"))
             request_metadata = kwargs.get("request_metadata")
             requested_agentengine = (
                 request_metadata.get("agentengine")
@@ -594,7 +604,10 @@ async def iter_runtime_conversation_semantic_events(
             if isinstance(requested_agentengine, Mapping):
                 completion_metadata["agentengine"] = dict(requested_agentengine)
             completion_metadata["runtime"] = {
-                "duration_ms": event.source.metadata.get("duration_ms"),
+                "duration_ms": timing.get(
+                    "agent_duration_ms",
+                    metrics.get("duration_ms", event.source.metadata.get("duration_ms")),
+                ),
                 "runtime_type": kwargs["launch_context"].runtime_type,
             }
             yield {
@@ -603,6 +616,7 @@ async def iter_runtime_conversation_semantic_events(
                 "session_id": execution_context.get("session_id", ""),
                 "usage": projection.usage.model_dump(),
                 "metadata": completion_metadata,
+                **({"timing": timing} if timing else {}),
             }
 
 
@@ -648,6 +662,7 @@ async def invoke_runtime_conversation_once(
     usage: dict[str, Any] = {}
     metadata: dict[str, Any] = {}
     completed = False
+    timing: dict[str, Any] = {}
     async for event in iter_runtime_conversation_semantic_events(**kwargs):
         event_type = event.get("type")
         if event_type == "started":
@@ -661,6 +676,7 @@ async def invoke_runtime_conversation_once(
             output_text = str(event.get("output_text") or output_text)
             usage = dict(event.get("usage") or {})
             metadata = dict(event.get("metadata") or {})
+            timing = normalize_timing(event.get("timing"))
         elif event_type == "error":
             raise RuntimeError(str(event.get("message") or "Agent 运行失败"))
         elif event_type == "cancelled":
@@ -673,6 +689,7 @@ async def invoke_runtime_conversation_once(
         "output_text": output_text,
         "usage": usage,
         "metadata": metadata,
+        **({"timing": timing} if timing else {}),
     }
 
 

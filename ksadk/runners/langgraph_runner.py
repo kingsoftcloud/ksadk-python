@@ -19,6 +19,7 @@ from ksadk.conversations.attachments import classify_attachment_kind, read_attac
 from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.utils import load_agent_module
+from ksadk.runtime.timing import extract_timing
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
@@ -763,6 +764,8 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             usage = final_chunk.get("usage")
             if isinstance(usage, Mapping) and usage:
                 result["usage"] = dict(usage)
+            if timing := extract_timing(final_chunk):
+                result["timing"] = timing
             if metadata:
                 result["metadata"] = metadata
             return result
@@ -853,6 +856,8 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                 )
 
             output = {"output": self._extract_output(result), "raw": result}
+            if timing := extract_timing(result):
+                output["timing"] = timing
             usage = self._extract_usage(result)
             if usage:
                 output["usage"] = usage

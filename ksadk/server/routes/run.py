@@ -287,6 +287,7 @@ async def run_agent_action(request: RunAgentActionRequest):
             response_id=responses_response_id,
             metadata=_run_agent_response_metadata(custom_metadata, result),
             usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
+            timing=result.get("timing") if isinstance(result.get("timing"), Mapping) else None,
         )
     return _action_response("RunAgent", payload)
 

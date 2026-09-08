@@ -15,6 +15,7 @@ from langgraph.types import Command
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 from ksadk.events.runtime_event import RuntimeEvent
 from ksadk.runners.usage_accumulator import accumulate_usage
+from ksadk.runtime.timing import extract_timing
 
 if TYPE_CHECKING:
     pass
@@ -82,6 +83,7 @@ class _LangGraphStreamMixin:
         inline_reasoning_parser = ReasoningMarkupParser()
         emitted_non_text_event = False
         final_output_text = ""
+        final_output_timing: dict[str, Any] = {}
         final_output_usage: dict[str, Any] = {}
         final_output_last_usage: dict[str, Any] = {}
         model_run_usages: dict[str, dict[str, Any]] = {}
@@ -165,6 +167,8 @@ class _LangGraphStreamMixin:
             last_usage = self._extract_last_usage(result)
             if last_usage:
                 final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+            if timing := extract_timing(result):
+                final_chunk["timing"] = timing
             yield final_chunk
             return
 
@@ -407,6 +411,8 @@ class _LangGraphStreamMixin:
 
                 elif event_kind == "on_chain_end":
                     output = event.get("data", {}).get("output", {})
+                    if not event.get("parent_ids"):
+                        final_output_timing = extract_timing(output)
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
                         yield {
@@ -479,6 +485,8 @@ class _LangGraphStreamMixin:
                     final_chunk["usage"] = usage
                 if last_usage:
                     final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+                if final_output_timing:
+                    final_chunk["timing"] = final_output_timing
                 yield final_chunk
             elif not emitted_non_text_event:
                 result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
@@ -492,6 +500,8 @@ class _LangGraphStreamMixin:
                 last_usage = self._extract_last_usage(result)
                 if last_usage:
                     fallback_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+                if timing := extract_timing(result):
+                    fallback_chunk["timing"] = timing
                 yield fallback_chunk
                 checkpoint_metadata = result.get("metadata") if isinstance(result, dict) else None
                 if isinstance(checkpoint_metadata, dict) and checkpoint_metadata.get("agentengine"):
@@ -516,6 +526,8 @@ class _LangGraphStreamMixin:
                     or usage
                 )
                 final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+            if final_output_timing:
+                final_chunk["timing"] = final_output_timing
             yield final_chunk
 
         metadata = await self._latest_checkpoint_metadata(config)

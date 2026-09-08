@@ -190,6 +190,7 @@ async def responses(request: ResponsesRequest):
         response_id=response_id,
         metadata=custom_metadata,
         usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
+        timing=result.get("timing") if isinstance(result.get("timing"), Mapping) else None,
     )
 
 
