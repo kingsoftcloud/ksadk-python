@@ -1,9 +1,9 @@
 ---
 title: "YAML Is the Agent: Codex"
-description: "New in 0.8: declare, debug, and deploy a Codex Managed Runtime from one agentengine.yaml."
+description: "Declare, debug, and deploy a Codex Managed Runtime from one agentengine.yaml."
 ---
 
-<Callout type="info" title="New in 0.8">
+<Callout type="info" title="Single configuration source">
 Codex is KsADK's first “YAML is the agent” pattern: `agentengine.yaml` is the
 single configuration source. There is no `agent.py`, no second `codex.yaml`, and
 no developer-machine binary enters the cloud deployment artifact.
@@ -111,5 +111,5 @@ to the Code artifact path and ManagedRuntime rejects them. Choose explicit
 - Before deployment, run `agentengine deploy . --target serverless --dry-run`
   and verify the returned Runtime version and image digest.
 
-See [Codex Managed Runtime](../../guides/managed-runtime) for the full runtime
+See [Codex Managed Runtime](../../guides/managed-runtime.mdx) for the full runtime
 contract, image boundary, and environment variables.

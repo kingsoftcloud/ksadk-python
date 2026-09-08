@@ -1,0 +1,3 @@
+- insert:
+    - id: ksadk-codex-provider
+      name: '@kingsoftcloud/ksadk-codex-provider'

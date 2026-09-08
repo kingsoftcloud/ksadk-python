@@ -41,15 +41,68 @@ body {
 }
 
 .app-shell .page-container[data-layout="document"] {
-  max-width: 1200px;
+  max-width: var(--studio-page-max);
 }
 
 .app-shell .page-container[data-layout="workbench"] {
-  max-width: var(--studio-workbench-max);
+  max-width: var(--studio-page-max);
 }
 
 .app-shell .page-container[data-layout="data"] {
-  max-width: 1760px;
+  max-width: var(--studio-page-max);
+}
+
+/* Resource and Agent catalogues are actionable first.  On a compact desktop
+ * keep name, current state and actions in view; secondary metadata remains in
+ * the detail drawer/page instead of forcing a horizontal scroll before the
+ * primary action can be reached. */
+.app-shell .resources-page .actions-column,
+.app-shell .agents-page .actions-column {
+  width: 108px;
+}
+
+@media (max-width: 1180px) {
+  .app-shell .resources-page .resource-source-column,
+  .app-shell .resources-page .resource-detail-column,
+  .app-shell .agents-page .agent-capabilities-column,
+  .app-shell .agents-page .agent-revision-column {
+    display: none;
+  }
+
+  .app-shell .resources-page .studio-data-table table,
+  .app-shell .agents-page .studio-data-table table {
+    width: 100%;
+    min-width: 0 !important;
+    table-layout: fixed;
+  }
+
+  .app-shell .resources-page .resource-name-column {
+    width: 31%;
+  }
+
+  .app-shell .resources-page .resource-capability-column {
+    width: 43%;
+  }
+
+  .app-shell .resources-page .resource-status-column {
+    width: 15%;
+  }
+
+  .app-shell .agents-page .agent-name-column {
+    width: 46%;
+  }
+
+  .app-shell .agents-page .agent-runtime-column,
+  .app-shell .agents-page .agent-build-column {
+    width: 20%;
+  }
+
+  .app-shell .resources-page .studio-data-table td,
+  .app-shell .resources-page .studio-data-table th,
+  .app-shell .agents-page .studio-data-table td,
+  .app-shell .agents-page .studio-data-table th {
+    padding-inline: 10px;
+  }
 }
 
 .app-shell .data-scroll-region {
@@ -199,7 +252,7 @@ body {
 .create-shell[data-scroll-mode="workbench"] .authoring-inspection-card > .button:last-child {
   position: sticky;
   bottom: 0;
-  box-shadow: 0 -8px 16px var(--surface);
+  box-shadow: 0 -8px 16px var(--studio-surface);
 }
 
 .create-shell[data-scroll-mode="document"] {
@@ -272,7 +325,7 @@ body {
   position: sticky;
   z-index: 4;
   top: 0;
-  box-shadow: inset 0 -1px var(--border);
+  box-shadow: inset 0 -1px var(--studio-border);
 }
 
 .app-shell .data-page-body .section-toolbar,
@@ -459,7 +512,7 @@ body {
 
   .app-shell .trace-workbench.detail-route .trace-detail-panel {
     min-height: 480px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--studio-border);
   }
 
   .skill-preview-layout {
@@ -469,7 +522,7 @@ body {
   .skill-preview-sidebar {
     max-height: 220px;
     border-right: 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--studio-border);
   }
 
   .markdown-preview-shell {

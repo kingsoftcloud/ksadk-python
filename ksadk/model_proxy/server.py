@@ -18,7 +18,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import _LOOPBACK_HOSTS, ProxyConfig
-from .transform import Streamer, UnsupportedToolsError, chat_to_response, responses_to_chat
+from .transform import (
+    Streamer,
+    UnsupportedToolsError,
+    chat_to_response,
+    clamp_reasoning_effort,
+    responses_to_chat,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +153,7 @@ def create_app(config: ProxyConfig) -> FastAPI:
         try:
             chat_req, restore_map = responses_to_chat(body)
         except UnsupportedToolsError:
-            logger.info("responses request uses unsupported tools")
+            logger.info("responses request uses unsupported tools", exc_info=True)
             return JSONResponse(
                 status_code=400,
                 content={
@@ -159,13 +165,26 @@ def create_app(config: ProxyConfig) -> FastAPI:
             )
         # codex 会对内建能力发内部伪模型名(如 auto_review guardian 用 codex-auto-review),
         # 单上游代理必须落回配置的真实模型,否则上游按未知模型 403。
-        if config.upstream_model and chat_req.get("model") != config.upstream_model:
+        # 真实模型名(codex 端已配置 model= 或 thread 级 model 覆盖)必须原样透传:
+        # RunAgent 的 Model 覆盖靠它生效,整体改写会把覆盖吞掉(终验 403 根因)。
+        requested_model = str(chat_req.get("model") or "")
+        if (
+            config.upstream_model
+            and requested_model.startswith("codex-")
+            and requested_model != config.upstream_model
+        ):
             logger.debug(
-                "responses model rewrite: %s -> %s",
-                chat_req.get("model"),
+                "responses pseudo model rewrite: %s -> %s",
+                requested_model,
                 config.upstream_model,
             )
             chat_req["model"] = config.upstream_model
+        # 上游模型族的 reasoning_effort 上限不同(qwen3.7 对 xhigh 400),
+        # 按改写后的真实上游模型钳位(codex 对自家模型默认发 xhigh)。
+        if chat_req.get("reasoning_effort"):
+            chat_req["reasoning_effort"] = clamp_reasoning_effort(
+                chat_req["model"], chat_req["reasoning_effort"]
+            )
         rid = "resp_" + uuid.uuid4().hex[:24]
         model = body.get("model")
         started = time.monotonic()
@@ -425,13 +444,18 @@ class ProxyServer:
             # 应用层取消信号:让活动 SSE 的 _stream_gen 主动 break
             self._app.state.cancel_event.set()
         if self._server is not None:
-            # should_exit 触发主循环进入 shutdown;force_exit 让 shutdown 跳过等待
-            # connections/tasks 完成(活动 SSE 下不再无限等)。两者缺一:只 should_exit
-            # 会被活动连接卡死,只 force_exit 主循环根本不进 shutdown。
+            # Enter Uvicorn's normal shutdown so its lifespan task receives a
+            # shutdown event.  Setting force_exit here skips that event and
+            # makes every completed Studio turn print a CancelledError.
             self._server.should_exit = True
-            self._server.force_exit = True
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=3)
+            if self._thread.is_alive() and self._server is not None:
+                # The application cancel signal normally drains active SSE
+                # generators.  Keep a bounded last resort for a broken client
+                # or upstream that ignores cancellation.
+                self._server.force_exit = True
+                self._thread.join(timeout=2)
         if self._sock is not None:
             try:
                 self._sock.close()

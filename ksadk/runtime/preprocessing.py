@@ -83,6 +83,22 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             request_metadata=request_metadata,
             custom_metadata=conversation.custom_metadata,
             invocation_id=str(request.metadata.get("invocation_id") or "") or None,
+            runner=runner,
+            runtime_type=_runner_type_name(runner),
+            # PR A：从 request.config 提取 agent_system/agent_task（Studio resolver 注入），
+            # 编译真实 CompiledPrompt 供 hash/trace。不改 Runner 输入。
+            agent_system=str(request.config.get("agent_system") or ""),
+            agent_task=str(request.config.get("agent_task") or ""),
+            # PR B：per-Build 接管标记（Studio resolver 据 prompt_ownership 注入）。
+            # 非空（ksadk_hosted）→ ksadk 编译并接管 instructions（仅 ksadk-owned LangGraph）。
+            prompt_integration_mode=str(request.config.get("prompt_integration_mode") or ""),
+            context_engine_rollout=str(request.config.get("context_engine_rollout") or "") or None,
+            memory_recall_enabled=request.config.get("memory_recall_enabled"),
+            memory_write_rollout=str(request.config.get("memory_write_rollout") or "") or None,
+            memory_enabled=request.config.get("memory_enabled"),
+            memory_write_mode=str(request.config.get("memory_write_mode") or "candidate"),
+            flush_before_compaction=bool(request.config.get("flush_before_compaction", True)),
+            provider_ref=str(request.config.get("provider_ref") or "local-default"),
         )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
@@ -90,6 +106,14 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         user_id=request.user_id,
         user_input=prepared.user_input,
     )
+    # Studio/平台控制面可以按 AgentVersion 的 providerRef 提前完成召回；它比仅依赖
+    # 长期记忆环境变量产生的 ambient 结果更具体，不能被后者的空结果覆盖。
+    if prepared.memory_context is not None:
+        ambient_contexts["memory_context"] = prepared.memory_context
+    if prepared.memory_recall_events:
+        ambient_contexts["memory_recall_events"] = list(prepared.memory_recall_events)
+    else:
+        prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=str(request.agent_id or "agent"),
         user_id=request.user_id,
@@ -110,9 +134,7 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
-        tool_approval_mode=str(
-            prepared.request_metadata.get("tool_approval_mode") or ""
-        ),
+        tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
     )
     canonical_payload = _build_runner_request_payload(
         prepared=prepared,

@@ -92,6 +92,7 @@ class _DetachedSSEStream:
 
     async def _consume(self) -> None:
         terminal_fallback_status: str | None = None
+        terminal_fallback_detail: str | None = None
         try:
             async for chunk in self._source:
                 self._backlog.append(chunk)
@@ -107,8 +108,9 @@ class _DetachedSSEStream:
         except asyncio.CancelledError:
             terminal_fallback_status = "cancelled"
             raise
-        except Exception:
+        except Exception as exc:
             terminal_fallback_status = "failed"
+            terminal_fallback_detail = f"{type(exc).__name__}: {exc}"[:2048]
             logger.exception("Detached SSE stream failed")
             raise
         finally:
@@ -128,7 +130,9 @@ class _DetachedSSEStream:
                             status=terminal_fallback_status,
                             invocation_id=self.invocation_id or "",
                             detail=(
-                                f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
+                                terminal_fallback_detail
+                                or f"background_{terminal_fallback_status}:"
+                                f"{self.invocation_id or ''}"
                             ),
                             session_service_provider=get_state().resolve_session_service,
                             run_mode=self._run_mode,
@@ -217,7 +221,11 @@ def _detached_resume_key_from_input(
     return normalized_session_id, run_id
 
 
-def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> None:
+def _reject_if_detached_resume_active(
+    resume_key: tuple[str, str] | None,
+    *,
+    pascal_case_detail: bool = False,
+) -> None:
     if resume_key is None:
         return
     active_resume_invocation_id = get_state().stream_registry.active_resume_invocation_by_key.get(
@@ -225,16 +233,45 @@ def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> Non
     )
     if not active_resume_invocation_id:
         return
+    detail = {
+        "code": "resume_already_running",
+        "message": "A checkpoint resume is already running for this session and run.",
+        "invocation_id": active_resume_invocation_id,
+        "session_id": resume_key[0],
+        "run_id": resume_key[1],
+    }
+    if pascal_case_detail:
+        detail = {
+            **detail,
+            "Code": detail["code"],
+            "Message": detail["message"],
+            "InvocationId": detail["invocation_id"],
+            "SessionId": detail["session_id"],
+            "RunId": detail["run_id"],
+        }
     raise HTTPException(
         status_code=409,
-        detail={
-            "code": "resume_already_running",
-            "message": "A checkpoint resume is already running for this session and run.",
-            "invocation_id": active_resume_invocation_id,
-            "session_id": resume_key[0],
-            "run_id": resume_key[1],
-        },
+        detail=detail,
     )
+
+
+async def _claim_detached_resume_key(
+    resume_key: tuple[str, str] | None,
+    invocation_id: str,
+    *,
+    pascal_case_detail: bool = False,
+) -> None:
+    """Atomically reject or reserve a detached checkpoint-resume key."""
+    if resume_key is None:
+        return
+    registry = get_state().stream_registry
+    async with registry.resume_key_lock:
+        _reject_if_detached_resume_active(
+            resume_key,
+            pascal_case_detail=pascal_case_detail,
+        )
+        registry.resume_keys_by_invocation[invocation_id] = resume_key
+        registry.active_resume_invocation_by_key[resume_key] = invocation_id
 
 
 def detached_streaming_response(

@@ -290,6 +290,8 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `SessionId` | string | 是 | 目标会话 id |
+| `CheckpointIds` | string[] | 否 | 精确匹配 `Metadata.checkpoint_id`；空数组表示不过滤 |
+| `EventTypes` | string[] | 否 | 精确匹配 `EventType`；空数组表示不过滤 |
 
 ```json title="request.json"
 { "SessionId": "local-demo-session" }
@@ -640,14 +642,16 @@ data: [DONE]
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `SessionId` | string | 是 | 目标会话 id |
+| `SessionId` | string | 是 | 单个非空会话 id；trim 后为空、缺省或数组均校验失败 |
+| `CheckpointIds` | string[] | 否 | 按事件 `Metadata.checkpoint_id` 精确过滤；trim、去空、去重，最多 1000 项，大小写敏感 |
+| `EventTypes` | string[] | 否 | 按事件 `EventType` 精确过滤；trim、去空、去重，最多 1000 项，大小写敏感 |
 | `Offset` | int | 否 | 0-based 偏移，缺省 `0` |
-| `Limit` | int | 否 | 每页大小，最小 `1` |
+| `Limit` | int | 否 | 每页大小，缺省 `10`，范围 `1..1000` |
 | `AfterSeqId` | int | 否 | 0.6.9+ 返回 `SeqId > AfterSeqId` 的事件，用于重连补齐 |
 | `BeforeSeqId` | int | 否 | 0.6.9+ 返回 `SeqId < BeforeSeqId` 的事件，用于向前翻页 |
 
 ```json title="request.json"
-{ "SessionId": "local-demo-session", "Offset": 0, "Limit": 50 }
+{ "SessionId": "local-demo-session", "EventTypes": ["run_checkpoint"], "CheckpointIds": ["cp-1"], "Offset": 0, "Limit": 50 }
 ```
 
 </Tab>
@@ -661,6 +665,9 @@ data: [DONE]
   "Action": "ListSessionEvents",
   "Data": {
     "Events": [ /* event payload，同 SubscribeRunEvents */ ],
+    "SessionId": "local-demo-session",
+    "EventTypes": ["run_checkpoint"],
+    "CheckpointIds": ["cp-1"],
     "Total": 128,
     "Offset": 0,
     "Limit": 50,
@@ -674,10 +681,14 @@ data: [DONE]
 
 | 字段 | 说明 |
 | --- | --- |
-| `Total` | 该 session 的事件总数 |
+| `Total` | 全部过滤条件生效后、应用 `Offset` / `Limit` 前的事件总数 |
 | `Offset` | 当前偏移（缺省回填 `0`） |
-| `Limit` | 当前页大小（未传时回填为实际返回数） |
+| `Limit` | 请求页大小（未传时为缺省值 `10`） |
 | `AfterSeqId` / `BeforeSeqId` | 请求中的 seq 游标原样回填；二者语义相反，不应混用 |
+
+过滤数组内部为 OR，两个过滤字段之间及与 seq 游标条件之间为 AND；空数组表示不启用对应过滤。
+响应回显规范化后的标量 `SessionId`、`CheckpointIds` 和 `EventTypes`。过滤和 `Total` 计算先于
+最新窗口分页，返回页仍按时间正序排列。
 
 </Tab>
 </Tabs>
@@ -1279,15 +1290,23 @@ workspace root 内的常规文件。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `AgentId` / `SessionId` | string | 是 | 会话定位 |
+| `AgentId` | string | 是 | Agent 定位 |
+| `SessionId` | string 或 string[] | 否 | 会话过滤；保留单值/数组兼容，缺省或空数组不过滤 |
+| `CheckpointId` | string 或 string[] | 否 | checkpoint ID 过滤；保留单值/数组兼容，缺省或空数组不过滤 |
 | `RunId` | string | 否 | 按 run 过滤 |
 | `Framework` | string | 否 | 按框架过滤 |
 | `OnlyResumable` | bool | 否 | 仅返回可恢复 checkpoint，缺省 `false` |
-| `Offset` / `Limit` | int | 否 | 分页，`Limit` 范围 `1..500` |
+| `ResumeStatus` | string[] | 否 | 按最终 `ResumeStatus` 过滤，值域开放以便向前兼容 |
+| `ResumeTypes` | string[] | 否 | 按最终 `Scope` 过滤：`invocation`、`shared`、`pod_local`、`process_local`、`unknown` |
+| `Offset` / `Limit` | int | 否 | 分页，`Limit` 缺省 `100`、范围 `1..1000` |
 
 返回 `Checkpoints` 数组，每个元素含 `RunId`、`CheckpointId`、`Framework`、
 `FrameworkRef`、`IsResumable`、`ResumeStatus`、`IsTerminal`、`CheckpointStatus`、
 `Backend`、`Scope`、`Durable`、`ResumeCount`、`ReplayAllowed`、`ExpiresAt` 等。
+
+`ResumeStatus` / `ResumeTypes` 会 trim、转小写并去重；前者值域开放，后者只接受表中五种值。
+恢复审计、过期与 latest-only 修正先于这两个过滤；随后计算 `ResumableTotal`，再应用
+`OnlyResumable`、计算 `Total` 并分页。响应回显规范化后的两个过滤数组。
 
 ### GetCheckpointResumePreview
 

@@ -68,12 +68,16 @@ ROOT_HELP_COMMANDS = {
     "dashboard",
     "deploy",
     "eval",
+    "evalset",
     "files",
     "init",
     "hermes",
     "launch",
+    "managed-runtime",
     "mcp",
+    "observe",
     "openclaw",
+    "plugin",
     "run",
     "studio",
     "version",
@@ -90,12 +94,16 @@ SHORT_HELP_MAP = {
     "dashboard": "打开云端 Agent Dashboard",
     "deploy": "部署到云端",
     "eval": "评测本地、A2A 或 Codex Agent",
+    "evalset": "预览或上传 EvalSet 云端快照",
     "files": "管理 workspace 文件",
     "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
     "launch": "一键构建+部署",
+    "managed-runtime": "启动平台托管的 YAML Agent",
     "mcp": "MCP 资源管理",
+    "observe": "导出本地 Agent 观测数据",
     "openclaw": "OpenClaw 资源管理",
+    "plugin": "插件验证、安装与启停管理",
     "run": "运行 Agent",
     "studio": "启动本地 Agent 构建控制台",
     "version": "Agent 版本管理",
@@ -179,12 +187,19 @@ class ColoredHelpGroup(click.Group):
         _write_colored_help_row(formatter, "agentengine web", "本地调试 Agent Invoke UI")
         _write_colored_help_row(formatter, "agentengine studio", "本地 Agent 构建控制台")
         _write_colored_help_row(formatter, "agentengine eval", "评测本地、A2A 或 Codex Agent")
+        _write_colored_help_row(formatter, "agentengine evalset", "预览或上传 EvalSet 云端快照")
+        _write_colored_help_row(formatter, "agentengine observe", "导出本地 Agent 观测数据")
 
         # 云端部署
         formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
         _write_colored_help_row(formatter, "agentengine build", "构建部署制品")
         _write_colored_help_row(formatter, "agentengine deploy", "部署到云端")
         _write_colored_help_row(formatter, "agentengine launch", "一键构建+部署")
+        _write_colored_help_row(
+            formatter,
+            "agentengine managed-runtime",
+            "启动平台托管的 YAML Agent",
+        )
         _write_colored_help_row(formatter, "agentengine agent", "Agent 资源管理")
         _write_colored_help_row(formatter, "agentengine version", "Agent 版本管理")
         _write_colored_help_row(formatter, "agentengine mcp", "MCP 资源管理")
@@ -197,6 +212,7 @@ class ColoredHelpGroup(click.Group):
         # 配置与工具
         formatter.write(click.style("  🧰  配置:\n\n", fg="yellow", bold=True))
         _write_colored_help_row(formatter, "agentengine config", "项目配置向导与模型配置")
+        _write_colored_help_row(formatter, "agentengine plugin", "插件验证、安装与启停管理")
         _write_colored_help_row(formatter, "agentengine completion", "Shell 补全管理")
 
         # 自定义 Options 格式化
@@ -323,15 +339,34 @@ def _register_optional_command(cli: click.Group, module_path: str, *cmd_names: s
 
 
 def _register_commands():
+    # Runtime fast path: when the hosted entrypoint runs ``ksadk web`` the
+    # process only needs the web command. Importing the other commands here
+    # pulls in deploy/create/run deps (ks3, questionary, ...) that the hosted
+    # Python runtime image does not ship, so a full register crashes the
+    # runtime before the server starts. Only import what argv actually needs;
+    # ``--help`` and other exploratory invocations still register everything.
+    import sys as _sys
+
+    _argv = [a for a in _sys.argv[1:] if not a.startswith("-")]
+    _runtime_only = bool(_argv) and _argv[0] == "web"
+
+    from ksadk.cli.cmd_web import web
+
+    _add_command_once(cli, web)
+
+    if _runtime_only:
+        # Skip create/deploy/run/managed_runtime imports on the runtime path.
+        return
+
     from ksadk.cli.cmd_create import create
     from ksadk.cli.cmd_deploy import deploy
+    from ksadk.cli.cmd_managed_runtime import managed_runtime
     from ksadk.cli.cmd_run import run
-    from ksadk.cli.cmd_web import web
 
     # 注册现有命令
     _add_command_once(cli, run)
     _add_command_once(cli, deploy)
-    _add_command_once(cli, web)
+    _add_command_once(cli, managed_runtime)
 
     # init 作为主命令 (PRD 规范)
     _add_command_once(cli, create, name="init")
@@ -344,6 +379,8 @@ def _register_commands():
     _register_optional_command(cli, "ksadk.cli.cmd_build", "build")
     _register_optional_command(cli, "ksadk.cli.cmd_studio", "studio")
     _register_optional_command(cli, "ksadk.cli.cmd_eval", "eval")
+    _register_optional_command(cli, "ksadk.cli.cmd_evalset", "evalset")
+    _register_optional_command(cli, "ksadk.cli.cmd_observe", "observe")
     _register_optional_command(cli, "ksadk.cli.cmd_launch", "launch")
     _register_optional_command(cli, "ksadk.cli.cmd_agent", "agent")
     _register_optional_command(cli, "ksadk.cli.cmd_status", "status")
@@ -354,6 +391,9 @@ def _register_commands():
 
     # MCP 命令组
     _register_optional_command(cli, "ksadk.cli.cmd_mcp", "mcp")
+
+    # Plugin 命令组
+    _register_optional_command(cli, "ksadk.cli.cmd_plugin", "plugin")
 
     # Completion 命令组
     _register_optional_command(cli, "ksadk.cli.cmd_completion", "completion")
@@ -368,7 +408,7 @@ def _register_commands():
     _register_optional_command(cli, "ksadk.cli.cmd_hermes", "hermes")
 
 
-def main():
+def _main():
     # 全局加载 .env 文件
     try:
         from dotenv import find_dotenv, load_dotenv
@@ -451,6 +491,18 @@ def main():
             cli_error = e
         emit_cli_error(cli_error)
         raise SystemExit(cli_error.exit_code) from None
+
+
+def main():
+    """Run the CLI without exposing a traceback for an operator interrupt."""
+
+    try:
+        return _main()
+    except KeyboardInterrupt:
+        # Ctrl+C can arrive while optional commands are still importing, before
+        # Click or Uvicorn installs its own signal handling.  Treat it as the
+        # same clean operator stop and preserve the conventional exit status.
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

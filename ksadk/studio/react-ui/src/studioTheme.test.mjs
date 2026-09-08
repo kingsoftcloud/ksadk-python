@@ -12,8 +12,8 @@ test("normalizes persisted Studio theme preferences", () => {
   assert.equal(theme.normalizeThemePreference("system"), "system");
   assert.equal(theme.normalizeThemePreference("light"), "light");
   assert.equal(theme.normalizeThemePreference("dark"), "dark");
-  assert.equal(theme.normalizeThemePreference("unknown"), "system");
-  assert.equal(theme.normalizeThemePreference(null), "system");
+  assert.equal(theme.normalizeThemePreference("unknown"), "light");
+  assert.equal(theme.normalizeThemePreference(null), "light");
 });
 
 test("resolves explicit and system Studio themes", () => {

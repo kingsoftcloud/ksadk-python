@@ -13,8 +13,8 @@ function NestedModalHarness() {
     <>
       <a className="skip-link" href="#mainContent">跳到内容</a>
       <aside className="sidebar">导航</aside>
+      <header className="global-header">Agent</header>
       <main id="mainContent">
-        <header className="page-header">Agent</header>
         <button type="button" onClick={() => setDrawerOpen(true)}>导入 Agent</button>
       </main>
       {drawerOpen ? (
@@ -61,7 +61,7 @@ describe("Studio modal primitives", () => {
     await user.click(importButton);
     expect(document.querySelector(".skip-link")).toHaveAttribute("inert");
     expect(document.querySelector(".sidebar")).toHaveAttribute("inert");
-    expect(document.querySelector(".page-header")).toHaveAttribute("inert");
+    expect(document.querySelector(".global-header")).toHaveAttribute("inert");
     const overwriteButton = screen.getByRole("button", { name: "覆盖现有 Agent" });
     await user.click(overwriteButton);
     expect(screen.getByRole("alertdialog", { name: "确认覆盖" })).toBeVisible();
@@ -76,6 +76,6 @@ describe("Studio modal primitives", () => {
     await waitFor(() => expect(importButton).toHaveFocus());
     expect(document.querySelector(".skip-link")).not.toHaveAttribute("inert");
     expect(document.querySelector(".sidebar")).not.toHaveAttribute("inert");
-    expect(document.querySelector(".page-header")).not.toHaveAttribute("inert");
+    expect(document.querySelector(".global-header")).not.toHaveAttribute("inert");
   });
 });

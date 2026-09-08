@@ -1,7 +1,8 @@
 # KsADK Public Release Approval Record
 
-This record approves the public `0.8.1` release from the reviewed clean-export
-candidate and release-gate fix below. It is the evidence consumed by the release
+> This is the historical 0.8.3 publication approval. It does not authorize PyPI publication of the 0.8.4 source/wheel candidate. A new approval record is required before publishing that package.
+
+This record approves the public `0.8.3` release candidate described below. It is the evidence consumed by the release
 gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
 deployment.
 
@@ -12,7 +13,7 @@ deployment.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.8.1 |
+| Python package version | 0.8.3 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -31,35 +32,43 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: reviewed public candidate commit `dd24de77bab0ddf3c12d20ac2a9f89bb141555f8`, prepared from clean-export candidate `f14d5faafdb6e76dd6616a951cabe28ba3708075` using the repository's public export policy and updated only with the reviewed release-gate fixes.
-- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.1`, source commit `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`, integrity `sha512-p+PzgC/0ZcQXoEpoI5VezAB4FQkddstXiW1OQtfH/bPYOBAv4xyGMwBylEegae1IBcGlq9inUNuQRFez/IRRgQ==`; approval is bound to reviewed Python public candidate commit `dd24de77bab0ddf3c12d20ac2a9f89bb141555f8`.
+- `ksadk-python`: Reviewed public release commit `64f3607640aefcd6dea72d704e34dc5237eb0e36` on `main` (0.8.3 release head: Phase 2 composer/session-switch fix, public-export gate alignment, and lightweight PyPI publish preflight); publication publishes this reviewed public main commit directly via Trusted Publishing.
+- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `64f3607640aefcd6dea72d704e34dc5237eb0e36`.
 
-Both approved source references include the reviewed public candidate SHA
-`dd24de77bab0ddf3c12d20ac2a9f89bb141555f8`. This prevents a stale approval
-record from passing after candidate changes.
+Both approved source references include the reviewed Python source commit SHA.
+This prevents a stale approval record from passing after candidate changes.
 
 ## Recorded Evidence for Approval
 
-- `@kingsoftcloud/ksadk-web@0.3.1` was resolved from the public npm registry;
-  the public preflight verified all 251 embedded static files with
-  SHA-256 `33534137fdd48c8a44ce65640457f294bc04fe254212fae13178a7e3c89e6ad4`.
-- `make public-preflight` passed for the candidate: release-version, secret,
-  public-source, docs, wheel, sdist, static-resource and package-metadata
-  audits passed; the public test set reported `80 passed` and the docs build
-  generated 197 static pages.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.1` passed;
-  neither public Python package already contains version `0.8.1`.
-- The protected GitHub `main` branch requires its configured `test`, `scan` and
-  `analyze` checks before merge; the release proceeds only after those checks
-  pass on the public pull request.
-- Release notes, `CHANGELOG.md`, public README and docs were included in the
-  clean export and covered by the public source and secret audits. PyPI
-  credentials remain outside the repository.
+- The published `@kingsoftcloud/ksadk-web@0.3.4` package passed source tests,
+  browser E2E and registry-backed consumer rebuild. Its registry tarball
+  SHA-256 is `0d88fb37506bae77ba863b3986b2fde4546cd74cbd3f3021eed1ecd05f15c596`.
+- The Phase 2 compatibility, Codex native host, DSH lifecycle, browser, clean
+  wheel install and clean sdist rebuild gates passed on the interim Python
+  candidate. Wheel/sdist path and content audits reported zero violations.
+- The docs static build rendered 205 routes. Public source export and secret
+  audits must pass again after the final registry-backed rebuild.
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.3` must pass
+  on the exported public candidate before external publication; neither public
+  Python package may already contain version `0.8.3` at approval time.
+- Branch protection and publish environment are configured according to
+  `.github/BRANCH_PROTECTION.md`.
+- Web 0.3.4 source tests, lint, build, npm pack, audit, Pages demo E2E and browser E2E are green;
+  npm publication, registry verification and the final registry-backed consumer
+  rebuild are complete.
+- Real browser E2E for 0.3.4 passed against a Studio-created Codex Agent and a
+  historical 0.8.2 Agent: multi-turn context, reasoning, refresh replay and
+  final-message de-duplication bind to Hosted UI image digest
+  `sha256:d629384e44a2e35f5dd5f7788ea16097cb49d79c582206d5fe453911fe20d66d`.
+- Release notes, `CHANGELOG.md`, public README and docs were reviewed for the
+  complete 0.8.3 summary, sensitive environment names, internal endpoints,
+  tokens, customer data and inaccurate claims.
+- PyPI/TestPyPI credentials stay outside the repository.
 
 ## Approval Sign-Off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | @AgentArcLab | Approved | 2026-08-13 |
-| Security reviewer | @AgentArcLab | Approved after public secret and package audits | 2026-08-13 |
-| Release owner | @AgentArcLab | Approved for Trusted Publishing after required GitHub checks | 2026-08-13 |
+| Maintainer | @AgentArcLab | Approved | 2026-09-01 |
+| Security reviewer | @AgentArcLab | Approved | 2026-09-01 |
+| Release owner | @AgentArcLab | Approved | 2026-09-01 |

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check, CircleAlert, Cpu, Database, Eye, Network, Plus, Search, Sparkles, Wrench, Zap,
 } from "lucide-react";
@@ -7,6 +7,8 @@ import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { Drawer, InlineAlert } from "../components/Drawer";
 import { SkillFileBrowser } from "../components/SkillFileBrowser";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { MoreActionsMenu } from "../components/MoreActionsMenu";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import { apiFetch } from "../api";
 import { FileDropzone } from "../components/ui/FileDropzone";
@@ -54,19 +56,19 @@ export interface ResItem {
 }
 
 const KIND_META: Record<ResourceKind, { title: string; description: string; addLabel: string; headings: [string, string, string]; icon: any }> = {
-  model: { title: "模型", description: "管理 Model Profile、Endpoint 和凭据引用。", addLabel: "配置模型", headings: ["发现来源", "上下文窗口", "输入模态"], icon: Cpu },
+  model: { title: "模型", description: "管理模型端点和凭据引用。", addLabel: "配置模型", headings: ["发现来源", "上下文窗口", "输入模态"], icon: Cpu },
   tool: { title: "Tool", description: "管理结构化 Tool Contract、权限和审批策略。", addLabel: "添加 Python Tool", headings: ["来源", "Tool 分组", "权限 / 边界"], icon: Wrench },
   mcp: { title: "MCP", description: "连接、探测并复用 MCP Server。", addLabel: "添加资源", headings: ["来源", "版本", "说明"], icon: Network },
   skill: { title: "Skill", description: "安装版本化 Skill，并在构建时锁定内容摘要。", addLabel: "发现 Skill", headings: ["来源", "版本", "说明"], icon: Sparkles },
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  provider: "模型服务 /v1/models",
+  provider: "模型服务",
   builtin: "ksadk 内置",
   local: "工作区自定义",
   market: "市场",
 };
-const RESOURCE_PAGE_SIZE = 40;
+const DEFAULT_RESOURCE_PAGE_SIZE = 20;
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const text = await res.text().catch(() => "");
@@ -87,10 +89,13 @@ function formatByteCount(value: number): string {
 }
 
 export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
-  void onKindChange;
   const [catalog, setCatalog] = useState<ResItem[]>([]);
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
   const [statusFilter, setStatusFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [sort, setSort] = useState("default");
+  const [pageSize, setPageSize] = useState(DEFAULT_RESOURCE_PAGE_SIZE);
   const [pageIndex, setPageIndex] = useState(0);
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -112,11 +117,12 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
     const seq = ++requestSeq.current;
     const params = new URLSearchParams({
       kind,
-      limit: String(RESOURCE_PAGE_SIZE),
-      sort: "default",
+      limit: String(pageSize),
+      sort,
     });
-    if (search.trim()) params.set("query", search.trim());
+    if (deferredSearch.trim()) params.set("query", deferredSearch.trim());
     if (statusFilter) params.set("status", statusFilter);
+    if (sourceFilter) params.set("source", sourceFilter);
     if (cursor) params.set("cursor", cursor);
     setLoading(true);
     setLoadError("");
@@ -137,7 +143,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
     } finally {
       if (requestSeq.current === seq) setLoading(false);
     }
-  }, [kind, search, statusFilter]);
+  }, [deferredSearch, kind, pageSize, sort, sourceFilter, statusFilter]);
 
   const resetAndLoad = useCallback(() => {
     setCursorStack([null]);
@@ -197,17 +203,17 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
 
   const meta = KIND_META[kind];
   const columns = useMemo<StudioDataColumn<ResItem>[]>(() => [
-    { id: "name", header: "名称", minWidth: 250, cell: item => <ResourceNameCell item={item} /> },
-    { id: "source", header: meta.headings[0], minWidth: 170, cell: item => SOURCE_LABELS[item.source] || item.source },
-    { id: "detail", header: meta.headings[1], minWidth: 150, cell: item => <ResourceDetailCell item={item} /> },
-    { id: "capability", header: meta.headings[2], minWidth: 240, className: "capability-cell", cell: item => <ResourceCapabilityCell item={item} /> },
-    { id: "status", header: "状态", minWidth: 135, cell: item => <ResourceStatusCell item={item} /> },
+    { id: "name", header: "名称", minWidth: 190, className: "resource-name-column", headerClassName: "resource-name-column", cell: item => <ResourceNameCell item={item} /> },
+    { id: "source", header: meta.headings[0], minWidth: 120, className: "resource-source-column", headerClassName: "resource-source-column", cell: item => SOURCE_LABELS[item.source] || item.source },
+    { id: "detail", header: meta.headings[1], minWidth: 110, className: "resource-detail-column", headerClassName: "resource-detail-column", cell: item => <ResourceDetailCell item={item} /> },
+    { id: "capability", header: meta.headings[2], minWidth: 180, className: "capability-cell resource-capability-column", headerClassName: "resource-capability-column", cell: item => <ResourceCapabilityCell item={item} /> },
+    { id: "status", header: "状态", minWidth: 92, className: "resource-status-column", headerClassName: "resource-status-column", cell: item => <ResourceStatusCell item={item} /> },
     {
       id: "actions",
       header: "操作",
-      minWidth: 290,
-      className: "actions-column",
-      headerClassName: "actions-column",
+      minWidth: 108,
+      className: "actions-column resource-actions-column",
+      headerClassName: "actions-column resource-actions-column",
       cell: item => (
         <ResourceActionsCell
           item={item}
@@ -240,14 +246,27 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
   }, [loadPage, nextCursor, pageIndex]);
 
   return (
-    <div className="page-container" data-layout="data" data-scroll-mode="data">
-      <header className="page-header">
-        <div><h1>{meta.title}</h1><p>{meta.description}</p></div>
+    <div className="page-container resources-page" data-layout="data" data-scroll-mode="data">
+      <PageHeaderActions>
         <button className="button accent" type="button" onClick={handleAdd}>
           <Plus size={15} /><span>{meta.addLabel}</span>
         </button>
-      </header>
+      </PageHeaderActions>
       <div className="data-page-body table-data-body">
+        <div className="page-tabs" role="tablist" aria-label="资源类型">
+          {(Object.keys(KIND_META) as ResourceKind[]).map(tabKind => (
+            <button
+              key={tabKind}
+              type="button"
+              role="tab"
+              aria-selected={kind === tabKind}
+              onClick={() => onKindChange(tabKind)}
+            >
+              {KIND_META[tabKind].title}
+              {kind === tabKind && <span className="n">{total}</span>}
+            </button>
+          ))}
+        </div>
         <div className="section-toolbar">
           <div className="search-field">
             <Search size={14} />
@@ -266,13 +285,48 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
             ]}
             onValueChange={value => setStatusFilter(value === "__all__" ? "" : value)}
           />
+          <StudioSelect
+            className="compact-select"
+            ariaLabel="筛选资源来源"
+            value={sourceFilter || "__all__"}
+            options={[
+              { value: "__all__", label: "全部来源" },
+              { value: "provider", label: "模型服务" },
+              { value: "builtin", label: "ksadk 内置" },
+              { value: "local", label: "工作区自定义" },
+              { value: "market", label: "市场" },
+            ]}
+            onValueChange={value => setSourceFilter(value === "__all__" ? "" : value)}
+          />
+          <StudioSelect
+            className="compact-select"
+            ariaLabel="资源排序"
+            value={sort}
+            options={[
+              { value: "default", label: "默认排序" },
+              { value: "displayName:asc", label: "名称升序" },
+              { value: "displayName:desc", label: "名称降序" },
+            ]}
+            onValueChange={setSort}
+          />
+          <StudioSelect
+            className="compact-select"
+            ariaLabel="每页显示数量"
+            value={String(pageSize)}
+            options={[
+              { value: "20", label: "每页 20 条" },
+              { value: "50", label: "每页 50 条" },
+              { value: "100", label: "每页 100 条" },
+            ]}
+            onValueChange={value => setPageSize(Number(value))}
+          />
         </div>
         <StudioDataTable
           columns={columns}
           data={catalog}
           getRowId={item => item.resourceId}
           caption={`${meta.title}资源列表`}
-          minWidth={1180}
+          minWidth={0}
           loading={loading}
           error={loadError}
           onRetry={reloadCurrent}
@@ -283,7 +337,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
           }}
           pagination={{
             pageIndex,
-            pageSize: RESOURCE_PAGE_SIZE,
+            pageSize,
             total,
             hasNextPage: Boolean(nextCursor),
             onPreviousPage: previousPage,
@@ -323,10 +377,11 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
 
 function ResourceNameCell({ item }: { item: ResItem }) {
   const Icon = KIND_META[item.kind]?.icon || Database;
+  const showName = item.name && item.name !== item.displayName;
   return (
     <div className="agent-cell">
       <span className="capability-icon"><Icon size={15} /></span>
-      <div className="agent-cell-copy"><strong>{item.displayName}</strong><span>{item.name}</span></div>
+      <div className="agent-cell-copy"><strong>{item.displayName}</strong>{showName && <span>{item.name}</span>}</div>
     </div>
   );
 }
@@ -339,10 +394,10 @@ function ResourceDetailCell({ item }: { item: ResItem }) {
     const value = tokens >= 1000000
       ? `${(tokens / 1000000).toFixed(tokens % 1000000 ? 1 : 0)}M`
       : tokens >= 1000 ? `${Math.round(tokens / 1000)}K` : `${tokens || "-"}`;
-    return <><strong>{value}</strong><span className="resource-origin">{origin}</span></>;
+    return <strong title={`上下文窗口来源：${origin}`}>{value}</strong>;
   }
   if (item.kind === "tool") {
-    return <span className="status-badge neutral">{item.contract?.group || item.category || "general"}</span>;
+    return <span className="tag">{item.contract?.group || item.category || "general"}</span>;
   }
   return <span className="mono">{item.version}</span>;
 }
@@ -355,7 +410,7 @@ function ResourceCapabilityCell({ item }: { item: ResItem }) {
     if (capabilities.multimodal_input_video) modalities.push("视频");
     if (capabilities.multimodal_input_file) modalities.push("文件");
     const origin = item.contract?.discovery?.inputModalities === "provider" ? "服务返回" : "ksadk 默认";
-    return <>{modalities.join(" + ")}<span className="resource-origin">{origin}</span></>;
+    return <span title={`输入模态来源：${origin}`}>{modalities.join(" + ")}</span>;
   }
   if (item.kind === "tool") {
     const approval = item.contract?.approval === "always" ? "需审批" : "无需审批";
@@ -369,9 +424,14 @@ function ResourceCapabilityCell({ item }: { item: ResItem }) {
 function ResourceStatusCell({ item }: { item: ResItem }) {
   if (item.kind === "model") {
     const configured = item.status === "ready";
-    return <span className={`status-badge ${configured ? "success" : "warning"}`}>{configured ? "凭证已配置" : "凭证未配置"}</span>;
+    return <span className="badge" data-state={configured ? "ready" : "pending"}>{configured ? "凭证已配置" : "凭证未配置"}</span>;
   }
-  return <span className={`status-badge ${item.status === "ready" ? "success" : "warning"}`}>{item.status}</span>;
+  const label = item.status === "ready" ? "可用"
+    : item.status === "failed" || item.status === "unhealthy" ? "异常"
+      : item.status === "unresolved" ? "未解析"
+        : item.status === "missing-secret" ? "缺少凭证"
+          : item.status;
+  return <span className="badge" data-state={item.status === "ready" ? "ready" : item.status === "failed" || item.status === "unhealthy" ? "failed" : "pending"}>{label}</span>;
 }
 
 function ResourceActionsCell({ item, onConfigure, onView, onProbe, onDelete }: {
@@ -381,31 +441,23 @@ function ResourceActionsCell({ item, onConfigure, onView, onProbe, onDelete }: {
   onProbe: () => void;
   onDelete: () => void;
 }) {
+  const menuItems = item.kind === "mcp"
+    ? [
+      { label: "重新探测", onSelect: onProbe, disabled: item.source !== "local" },
+      ...(item.source === "local" ? [{ label: "删除", danger: true, onSelect: onDelete }] : []),
+    ]
+    : [
+      { label: "查看详情", onSelect: onView },
+      ...(item.source === "local" ? [{ label: "删除", danger: true, onSelect: onDelete }] : []),
+    ];
+
   return (
-    <>
-        {item.kind === "model" && (
-          <>
-            <button className="button secondary small" type="button" onClick={onConfigure}>配置凭证</button>
-            {item.source === "local" && <button className="button tertiary small" type="button" onClick={onDelete}>删除</button>}
-          </>
-        )}
-        {item.kind === "mcp" && item.source === "local" && (
-          <>
-            <button className="button tertiary small" type="button" onClick={onView}>查看</button>
-            <button className="button secondary small" type="button" onClick={onProbe}>重新探测</button>
-            <button className="button tertiary small" type="button" onClick={onDelete}>删除</button>
-          </>
-        )}
-        {item.kind === "mcp" && item.source !== "local" && (
-          <button className="button tertiary small" type="button" onClick={onView}>查看</button>
-        )}
-        {(item.kind === "tool" || item.kind === "skill") && (
-          <>
-            <button className="button tertiary small" type="button" onClick={onView}>查看</button>
-            {item.source === "local" && <button className="button tertiary small" type="button" onClick={onDelete}>删除</button>}
-          </>
-        )}
-    </>
+    <div className="row-actions">
+      <button className="button secondary small" type="button" onClick={item.kind === "model" ? onConfigure : onView}>
+        {item.kind === "model" ? "配置凭证" : "查看"}
+      </button>
+      <MoreActionsMenu label={`${item.displayName} 的更多操作`} items={menuItems} />
+    </div>
   );
 }
 
@@ -674,14 +726,14 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       : a.status === "recognized" ? "可识别"
       : a.status === "unavailable" ? "不存在"
       : a.status === "unreachable" ? "不可达" : "错误"}`;
-  const attemptClass = (a: any) =>
-    a.status === "ok" ? "success" : a.status === "unavailable" || a.status === "unreachable" ? "neutral" : "warning";
+  const attemptState = (a: any) =>
+    a.status === "ok" ? "ready" : a.status === "unavailable" || a.status === "unreachable" ? "failed" : "pending";
 
   return (
     <FormProvider {...modelForm}>
     <Drawer
       title="添加模型"
-      subtitle="接入 OpenAI 兼容端点的自定义 Model Profile。"
+      subtitle="接入 OpenAI 兼容模型端点。"
       wide
       onClose={onClose}
       footer={
@@ -711,7 +763,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
 
       <FormField label="接口地址" requirement="required" htmlFor="amEndpoint" hint="支持主机、/v1、Chat Completions 或 Responses 地址；智能探测会自动归一化。" error={modelForm.formState.errors.endpointUrl?.message}>
         <div>
-        {wireApi && <span className="status-badge info">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
+        {wireApi && <span className="tag">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
         <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
           <div className="segmented-control">
             <button type="button" className={addressMode === "endpoint" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "endpoint")}>完整 endpointUrl</button>
@@ -725,7 +777,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
         {probeAttempts.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
             {probeAttempts.map((a, i) => (
-              <span key={i} className={`status-badge ${attemptClass(a)}`} title={a.endpointUrl}>{attemptLabel(a)}</span>
+              <span key={i} className="badge" data-state={attemptState(a)} title={a.endpointUrl}>{attemptLabel(a)}</span>
             ))}
           </div>
         )}
@@ -993,7 +1045,7 @@ function ResourceDetailDrawer({ item, onClose }: { item: ResItem; onClose: () =>
         {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{String(v)}</dd></div>)}
       </dl>
       <div className="inspector-title inspector-title-spaced">说明</div>
-      <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
+      <p style={{ margin: 0, color: "var(--studio-text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
         {item.description || contract.description || "未提供说明"}
       </p>
       {item.kind === "skill" && item.source === "local" && (
@@ -1229,7 +1281,7 @@ function SkillDiscoveryDrawer({
                 <small>{details}</small>
                 {importState && <small className={`skill-import-state ${result?.status || "pending"}`}>{importState}</small>}
               </span>
-              <span className={`status-badge ${candidate.status === "ready" ? "success" : "warning"}`}>
+              <span className="badge" data-state={candidate.status === "ready" ? "ready" : "pending"}>
                 {statusLabel}{risk.requiresReview ? " · 需复核" : ""}
               </span>
               {valid && (

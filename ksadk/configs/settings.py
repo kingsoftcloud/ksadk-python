@@ -628,3 +628,12 @@ def setup_environment(agent_path: Path | str):
         setup_proxy_redirect_if_enabled()
     except Exception:  # noqa: BLE001  代理可选,失败不影响主流程(默认关时本就不触发)
         pass
+
+    # 5. 沙箱控制面 URL 内网探测:在 Pod 内探测 198 公共服务网内网地址,
+    # 可达则覆盖 E2B_API_URL 为内网域名,private_only 节点也能访问沙箱控制面。
+    try:
+        from ksadk.sandbox import setup_sandbox_api_url_if_needed
+
+        setup_sandbox_api_url_if_needed()
+    except Exception:  # noqa: BLE001  沙箱可选,失败不影响主流程
+        pass
