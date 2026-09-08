@@ -129,6 +129,47 @@ def test_filled_approval_record_passes(tmp_path):
     assert all(check.ok for check in checks)
 
 
+def test_nonempty_pending_values_do_not_count_as_approval(tmp_path):
+    module = _load_module()
+    record = tmp_path / "approval-pending.md"
+    record.write_text(
+        _approved_record("Pending final reviewed source commit")
+        .replace(
+            "- `ksadk-web`: /tmp/ksadk-web-export-candidate",
+            "- `ksadk-web`: Pending Trusted Publishing",
+        )
+        .replace(
+            "| Maintainer | Alice | Approved | 2026-05-28 |",
+            "| Maintainer | Pending | Pending | Pending |",
+        ),
+        encoding="utf-8",
+    )
+
+    checks = module.validate_approval_record(record, version="0.7.0", expected_current_commit="")
+
+    failed = {check.name for check in checks if not check.ok}
+    assert "publication-strategy:ksadk-python-source" in failed
+    assert "publication-strategy:ksadk-web-source" in failed
+    assert "signoff:Maintainer" in failed
+
+
+def test_qualified_approved_decision_does_not_count_as_final_approval(tmp_path):
+    module = _load_module()
+    record = tmp_path / "approval-qualified.md"
+    record.write_text(
+        _approved_record().replace(
+            "| Maintainer | Alice | Approved | 2026-05-28 |",
+            "| Maintainer | Alice | Approved pending publication | 2026-05-28 |",
+        ),
+        encoding="utf-8",
+    )
+
+    checks = module.validate_approval_record(record, version="0.7.0", expected_current_commit="")
+
+    failed = {check.name for check in checks if not check.ok}
+    assert "signoff:Maintainer" in failed
+
+
 def test_filled_record_fails_when_source_references_do_not_match_current_commit(tmp_path):
     module = _load_module()
     record = tmp_path / "approval.md"

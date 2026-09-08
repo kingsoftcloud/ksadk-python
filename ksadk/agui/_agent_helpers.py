@@ -127,6 +127,10 @@ def a2ui_operations(
             if isinstance(event.update.data, Mapping):
                 return project_a2ui_operations("a2ui.surface.update", dict(event.update.data))
         return []
+    # A dynamic tool operation batch closes its canonical item for reducer
+    # conformance; that completion is not a request to delete the UI surface.
+    if event.source.metadata.get("operation_batch") is True:
+        return []
     # ItemCompleted (end): produce deleteSurface to preserve AG-UI wire
     if surface_id:
         return [{"version": "v0.9", "deleteSurface": {"surfaceId": surface_id}}]

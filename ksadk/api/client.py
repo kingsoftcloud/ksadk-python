@@ -1501,7 +1501,45 @@ class AgentEngineClient:
         }
         if manifest_sha256:
             payload["ManifestSHA256"] = manifest_sha256
+        if isinstance(declaration, dict) and declaration.get("plugin_artifacts"):
+            payload["PluginArtifacts"] = declaration["plugin_artifacts"]
         return payload
+
+    async def get_plugin_delivery_capabilities(self) -> Dict[str, Any]:
+        return await self._action_async("GetPluginDeliveryCapabilities", {})
+
+    async def upload_plugin_artifact(self, path: Path, receipt: Dict[str, Any]) -> Dict[str, Any]:
+        """Upload verified plugin bytes using the same signed Action transport."""
+
+        def upload() -> Dict[str, Any]:
+            if self.dry_run:
+                raise AgentEngineAPIError(409, "Plugin artifact upload is disabled in dry-run mode")
+            action = "UploadPluginArtifact"
+            _, headers, url = self._build_action_request_target(
+                "/agentengine/api/v1/" + action, action
+            )
+            headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+            with path.open("rb") as stream:
+                response = self._get_session().post(
+                    url,
+                    headers=headers,
+                    auth=self._auth.get_auth(),
+                    files={"file": ("plugin.zip", stream, "application/zip")},
+                    data={"Receipt": json.dumps(receipt)},
+                    timeout=max(self.timeout, 120),
+                    verify=self._ssl_verify_enabled(),
+                )
+            if response.status_code >= 400:
+                raise AgentEngineAPIError(response.status_code, "Plugin artifact upload failed")
+            result = response.json()
+            if result.get("Code", 0) != 0 or not isinstance(result.get("Data"), dict):
+                raise AgentEngineAPIError(
+                    result.get("Code") or 502, "Invalid plugin upload receipt"
+                )
+            return self._to_snake_case(result["Data"])
+
+        async with self._async_action_lock:
+            return await asyncio.to_thread(upload)
 
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Create an Agent through the established order workflow.
@@ -1609,9 +1647,7 @@ class AgentEngineClient:
         # the existing CreateAgent action to create its Agent/Runtime now.
         # Code and Container keep the established CreateAgentProduct flow.
         action = (
-            "CreateAgent"
-            if params["DeploymentType"] == "ManagedRuntime"
-            else "CreateAgentProduct"
+            "CreateAgent" if params["DeploymentType"] == "ManagedRuntime" else "CreateAgentProduct"
         )
         if action == "CreateAgent":
             # CreateAgent is also used as an order callback and therefore
@@ -2013,6 +2049,7 @@ class AgentEngineClient:
         agent_id: str,
         session_id: str,
         after_seq_id: int | None = None,
+        offset: int | None = None,
         limit: int = 100,
     ) -> Dict[str, Any]:
         """Read canonical cloud session events through the Server Action API."""
@@ -2024,6 +2061,8 @@ class AgentEngineClient:
         }
         if after_seq_id is not None:
             params["AfterSeqId"] = after_seq_id
+        if offset is not None:
+            params["Offset"] = offset
         return await self._action_async("ListSessionEvents", params)
 
     async def submit_interaction(
@@ -2619,9 +2658,7 @@ class AgentEngineClient:
                     )
                     message = (
                         str(
-                            details.get("remote_error_message")
-                            or details.get("message")
-                            or ""
+                            details.get("remote_error_message") or details.get("message") or ""
                         ).strip()
                         or "RunAgent stream did not return text/event-stream"
                     )
@@ -2647,11 +2684,7 @@ class AgentEngineClient:
                     details=details,
                 )
                 message = (
-                    str(
-                        details.get("remote_error_message")
-                        or details.get("message")
-                        or ""
-                    ).strip()
+                    str(details.get("remote_error_message") or details.get("message") or "").strip()
                     or resp_text
                 )
                 raise AgentEngineAPIError(

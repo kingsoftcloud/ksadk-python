@@ -370,6 +370,8 @@ def _project_item_completed(
     if text_projection or event.item_kind in {"message", "reasoning"}:
         return text_projection
     if event.item_kind == "data":
+        if event.source.metadata.get("operation_batch") is True:
+            return ()
         ref = _a2ui_surface_ref(event, context)
         if ref is None:
             return ()

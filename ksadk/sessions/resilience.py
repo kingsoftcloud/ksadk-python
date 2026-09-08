@@ -45,8 +45,16 @@ def is_session_backend_failure(exc: BaseException) -> bool:
             current,
             (SessionBackendUnavailable, TimeoutError, OSError, ConnectionError),
         ):
+            logger.warning(
+                "Session backend error; assuming backend failure: %s",
+                current
+            )
             return True
         module = type(current).__module__
         if module.startswith("asyncpg.") or module.startswith("sqlalchemy."):
+            logger.warning(
+                "SQLAlchemy error; assuming backend failure: %s",
+                current
+            )
             return True
     return False

@@ -1,0 +1,1830 @@
+{
+  "$defs": {
+    "BridgeCommitRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-commit/v1",
+          "default": "ksadk.bridge-commit/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "stageId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Stageid",
+          "type": "string"
+        },
+        "planId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Planid",
+          "type": "string"
+        },
+        "planDigest": {
+          "title": "Plandigest",
+          "type": "string"
+        },
+        "nativeStageRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativestageref",
+          "type": "string"
+        },
+        "nativeStageDigest": {
+          "title": "Nativestagedigest",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "maxLength": 256,
+          "minLength": 8,
+          "title": "Idempotencykey",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stageId",
+        "planId",
+        "planDigest",
+        "nativeStageRef",
+        "nativeStageDigest",
+        "idempotencyKey"
+      ],
+      "title": "BridgeCommitRequest",
+      "type": "object"
+    },
+    "BridgeCommitResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-commit-result/v1",
+          "default": "ksadk.bridge-commit-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "receipt": {
+          "$ref": "#/$defs/EcosystemInstallReceipt"
+        }
+      },
+      "required": [
+        "receipt"
+      ],
+      "title": "BridgeCommitResult",
+      "type": "object"
+    },
+    "BridgeDescribeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-describe/v1",
+          "default": "ksadk.bridge-describe/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ecosystem"
+      ],
+      "title": "BridgeDescribeRequest",
+      "type": "object"
+    },
+    "BridgeDescribeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-describe-result/v1",
+          "default": "ksadk.bridge-describe-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/BridgeDescriptor"
+        }
+      },
+      "required": [
+        "descriptor"
+      ],
+      "title": "BridgeDescribeResult",
+      "type": "object"
+    },
+    "BridgeDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "descriptorFormat": {
+          "const": "ksadk.plugin-ecosystem-bridge-descriptor/v1",
+          "default": "ksadk.plugin-ecosystem-bridge-descriptor/v1",
+          "title": "Descriptorformat",
+          "type": "string"
+        },
+        "bridgeId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Bridgeid",
+          "type": "string"
+        },
+        "bridgeVersion": {
+          "title": "Bridgeversion",
+          "type": "string"
+        },
+        "bridgeDigest": {
+          "title": "Bridgedigest",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "integrationMode": {
+          "enum": [
+            "bridged",
+            "linked"
+          ],
+          "title": "Integrationmode",
+          "type": "string"
+        },
+        "maturity": {
+          "enum": [
+            "detected",
+            "linked-ready",
+            "bridged-ready",
+            "unsupported",
+            "experimental"
+          ],
+          "title": "Maturity",
+          "type": "string"
+        },
+        "hostRequirement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeHostRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supportedActions": {
+          "items": {
+            "enum": [
+              "describe",
+              "probe",
+              "inspect",
+              "plan",
+              "stage",
+              "commit",
+              "reconcile",
+              "rollback",
+              "dispose"
+            ],
+            "type": "string"
+          },
+          "title": "Supportedactions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "bridgeId",
+        "bridgeVersion",
+        "bridgeDigest",
+        "ecosystem",
+        "integrationMode",
+        "maturity",
+        "hostRequirement",
+        "supportedActions"
+      ],
+      "title": "BridgeDescriptor",
+      "type": "object"
+    },
+    "BridgeDisposeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-dispose/v1",
+          "default": "ksadk.bridge-dispose/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "nativeReceiptRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativereceiptref",
+          "type": "string"
+        },
+        "nativeReceiptDigest": {
+          "title": "Nativereceiptdigest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "nativeReceiptRef",
+        "nativeReceiptDigest"
+      ],
+      "title": "BridgeDisposeRequest",
+      "type": "object"
+    },
+    "BridgeDisposeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-dispose-result/v1",
+          "default": "ksadk.bridge-dispose-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "state": {
+          "const": "disposed",
+          "title": "State",
+          "type": "string"
+        },
+        "nativeReceiptRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativereceiptref",
+          "type": "string"
+        },
+        "nativeReceiptDigest": {
+          "title": "Nativereceiptdigest",
+          "type": "string"
+        },
+        "disposedAt": {
+          "format": "date-time",
+          "title": "Disposedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "state",
+        "nativeReceiptRef",
+        "nativeReceiptDigest",
+        "disposedAt"
+      ],
+      "title": "BridgeDisposeResult",
+      "type": "object"
+    },
+    "BridgeHostObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "hostId": {
+          "maxLength": 128,
+          "minLength": 2,
+          "title": "Hostid",
+          "type": "string"
+        },
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 3,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protocol"
+        },
+        "protocolVersion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protocolversion"
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Digest"
+        }
+      },
+      "required": [
+        "hostId",
+        "available"
+      ],
+      "title": "BridgeHostObservation",
+      "type": "object"
+    },
+    "BridgeHostRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "hostId": {
+          "maxLength": 128,
+          "minLength": 2,
+          "title": "Hostid",
+          "type": "string"
+        },
+        "versionConstraint": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Versionconstraint",
+          "type": "string"
+        },
+        "protocol": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Protocol",
+          "type": "string"
+        },
+        "protocolConstraint": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Protocolconstraint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostId",
+        "versionConstraint",
+        "protocol",
+        "protocolConstraint"
+      ],
+      "title": "BridgeHostRequirement",
+      "type": "object"
+    },
+    "BridgeInspectExchange": {
+      "additionalProperties": false,
+      "properties": {
+        "fixtureKind": {
+          "const": "rejection",
+          "default": "rejection",
+          "title": "Fixturekind",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/BridgeInspectRequest"
+        },
+        "result": {
+          "$ref": "#/$defs/BridgeInspectResult"
+        }
+      },
+      "required": [
+        "request",
+        "result"
+      ],
+      "title": "BridgeInspectExchange",
+      "type": "object"
+    },
+    "BridgeInspectRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-inspect/v1",
+          "default": "ksadk.bridge-inspect/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "bridgeId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Bridgeid",
+          "type": "string"
+        },
+        "sourceRef": {
+          "maxLength": 4096,
+          "minLength": 4,
+          "title": "Sourceref",
+          "type": "string"
+        },
+        "sourceDigest": {
+          "title": "Sourcedigest",
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/PluginManifestCandidate"
+        }
+      },
+      "required": [
+        "bridgeId",
+        "sourceRef",
+        "sourceDigest",
+        "candidate"
+      ],
+      "title": "BridgeInspectRequest",
+      "type": "object"
+    },
+    "BridgeInspectResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-inspect-result/v1",
+          "default": "ksadk.bridge-inspect-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "descriptor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EcosystemPluginDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rejection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeRejection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "BridgeInspectResult",
+      "type": "object"
+    },
+    "BridgePlanRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-plan/v1",
+          "default": "ksadk.bridge-plan/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/EcosystemPluginDescriptor"
+        },
+        "operation": {
+          "enum": [
+            "install",
+            "update",
+            "enable",
+            "disable",
+            "uninstall"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "desiredState": {
+          "enum": [
+            "disabled",
+            "enabled"
+          ],
+          "title": "Desiredstate",
+          "type": "string"
+        },
+        "boundReferences": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Boundreferences",
+          "type": "array"
+        },
+        "authorizationRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Authorizationref",
+          "type": "string"
+        },
+        "acceptUndeclaredPermissions": {
+          "default": false,
+          "title": "Acceptundeclaredpermissions",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "descriptor",
+        "operation",
+        "desiredState",
+        "authorizationRef"
+      ],
+      "title": "BridgePlanRequest",
+      "type": "object"
+    },
+    "BridgePlanResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-plan-result/v1",
+          "default": "ksadk.bridge-plan-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/BridgeTransitionPlan"
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "title": "BridgePlanResult",
+      "type": "object"
+    },
+    "BridgeProbeExchange": {
+      "additionalProperties": false,
+      "properties": {
+        "fixtureKind": {
+          "const": "probe",
+          "default": "probe",
+          "title": "Fixturekind",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/BridgeProbeRequest"
+        },
+        "result": {
+          "$ref": "#/$defs/BridgeProbeResult"
+        }
+      },
+      "required": [
+        "request",
+        "result"
+      ],
+      "title": "BridgeProbeExchange",
+      "type": "object"
+    },
+    "BridgeProbeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-probe/v1",
+          "default": "ksadk.bridge-probe/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "sourceRef": {
+          "maxLength": 4096,
+          "minLength": 4,
+          "title": "Sourceref",
+          "type": "string"
+        },
+        "sourceDigest": {
+          "title": "Sourcedigest",
+          "type": "string"
+        },
+        "selectedManifestRef": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 4,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selectedmanifestref"
+        }
+      },
+      "required": [
+        "sourceRef",
+        "sourceDigest"
+      ],
+      "title": "BridgeProbeRequest",
+      "type": "object"
+    },
+    "BridgeProbeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-probe-result/v1",
+          "default": "ksadk.bridge-probe-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "candidates": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PluginManifestCandidate"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "selectionRequired": {
+          "title": "Selectionrequired",
+          "type": "boolean"
+        },
+        "selectedManifestRef": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 4,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selectedmanifestref"
+        },
+        "rejection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeRejection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "selectionRequired"
+      ],
+      "title": "BridgeProbeResult",
+      "type": "object"
+    },
+    "BridgeReconcileRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-reconcile/v1",
+          "default": "ksadk.bridge-reconcile/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "nativeReceiptRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativereceiptref",
+          "type": "string"
+        },
+        "nativeReceiptDigest": {
+          "title": "Nativereceiptdigest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "nativeReceiptRef",
+        "nativeReceiptDigest"
+      ],
+      "title": "BridgeReconcileRequest",
+      "type": "object"
+    },
+    "BridgeReconcileResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-reconcile-result/v1",
+          "default": "ksadk.bridge-reconcile-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "inventory": {
+          "$ref": "#/$defs/EcosystemPluginInventory"
+        }
+      },
+      "required": [
+        "inventory"
+      ],
+      "title": "BridgeReconcileResult",
+      "type": "object"
+    },
+    "BridgeRejection": {
+      "additionalProperties": false,
+      "properties": {
+        "rejectionFormat": {
+          "const": "ksadk.bridge-rejection/v1",
+          "default": "ksadk.bridge-rejection/v1",
+          "title": "Rejectionformat",
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "describe",
+            "probe",
+            "inspect",
+            "plan",
+            "stage",
+            "commit",
+            "reconcile",
+            "rollback",
+            "dispose"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "ambiguous_manifest",
+            "permissions_undeclared",
+            "host_unavailable",
+            "host_incompatible",
+            "digest_mismatch",
+            "unsupported"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeHostObservation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "action",
+        "code",
+        "retryable",
+        "message"
+      ],
+      "title": "BridgeRejection",
+      "type": "object"
+    },
+    "BridgeRollbackRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-rollback/v1",
+          "default": "ksadk.bridge-rollback/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "rollbackPointRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Rollbackpointref",
+          "type": "string"
+        },
+        "rollbackPointDigest": {
+          "title": "Rollbackpointdigest",
+          "type": "string"
+        },
+        "expectedNativeReceiptDigest": {
+          "title": "Expectednativereceiptdigest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "rollbackPointRef",
+        "rollbackPointDigest",
+        "expectedNativeReceiptDigest"
+      ],
+      "title": "BridgeRollbackRequest",
+      "type": "object"
+    },
+    "BridgeRollbackResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-rollback-result/v1",
+          "default": "ksadk.bridge-rollback-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "state": {
+          "const": "rolled-back",
+          "title": "State",
+          "type": "string"
+        },
+        "nativeReceiptRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativereceiptref",
+          "type": "string"
+        },
+        "nativeReceiptDigest": {
+          "title": "Nativereceiptdigest",
+          "type": "string"
+        },
+        "rolledBackAt": {
+          "format": "date-time",
+          "title": "Rolledbackat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "state",
+        "nativeReceiptRef",
+        "nativeReceiptDigest",
+        "rolledBackAt"
+      ],
+      "title": "BridgeRollbackResult",
+      "type": "object"
+    },
+    "BridgeStageRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {
+          "const": "ksadk.bridge-stage/v1",
+          "default": "ksadk.bridge-stage/v1",
+          "title": "Requestformat",
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/BridgeTransitionPlan"
+        },
+        "expectedPlanDigest": {
+          "title": "Expectedplandigest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan",
+        "expectedPlanDigest"
+      ],
+      "title": "BridgeStageRequest",
+      "type": "object"
+    },
+    "BridgeStageResult": {
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {
+          "const": "ksadk.bridge-stage-result/v1",
+          "default": "ksadk.bridge-stage-result/v1",
+          "title": "Resultformat",
+          "type": "string"
+        },
+        "stageId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Stageid",
+          "type": "string"
+        },
+        "planId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Planid",
+          "type": "string"
+        },
+        "planDigest": {
+          "title": "Plandigest",
+          "type": "string"
+        },
+        "bridgeVersion": {
+          "title": "Bridgeversion",
+          "type": "string"
+        },
+        "bridgeDigest": {
+          "title": "Bridgedigest",
+          "type": "string"
+        },
+        "host": {
+          "$ref": "#/$defs/BridgeHostObservation"
+        },
+        "artifactDigest": {
+          "title": "Artifactdigest",
+          "type": "string"
+        },
+        "manifestDigest": {
+          "title": "Manifestdigest",
+          "type": "string"
+        },
+        "nativeStageRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativestageref",
+          "type": "string"
+        },
+        "nativeStageDigest": {
+          "title": "Nativestagedigest",
+          "type": "string"
+        },
+        "stagedAt": {
+          "format": "date-time",
+          "title": "Stagedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stageId",
+        "planId",
+        "planDigest",
+        "bridgeVersion",
+        "bridgeDigest",
+        "host",
+        "artifactDigest",
+        "manifestDigest",
+        "nativeStageRef",
+        "nativeStageDigest",
+        "stagedAt"
+      ],
+      "title": "BridgeStageResult",
+      "type": "object"
+    },
+    "BridgeTransitionPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "planFormat": {
+          "const": "ksadk.bridge-transition-plan/v1",
+          "default": "ksadk.bridge-transition-plan/v1",
+          "title": "Planformat",
+          "type": "string"
+        },
+        "planId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Planid",
+          "type": "string"
+        },
+        "bridgeId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Bridgeid",
+          "type": "string"
+        },
+        "bridgeVersion": {
+          "title": "Bridgeversion",
+          "type": "string"
+        },
+        "bridgeDigest": {
+          "title": "Bridgedigest",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 2,
+          "title": "Pluginid",
+          "type": "string"
+        },
+        "pluginVersion": {
+          "title": "Pluginversion",
+          "type": "string"
+        },
+        "integrationMode": {
+          "enum": [
+            "bridged",
+            "linked"
+          ],
+          "title": "Integrationmode",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "install",
+            "update",
+            "enable",
+            "disable",
+            "uninstall"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "desiredState": {
+          "enum": [
+            "disabled",
+            "enabled"
+          ],
+          "title": "Desiredstate",
+          "type": "string"
+        },
+        "descriptorDigest": {
+          "title": "Descriptordigest",
+          "type": "string"
+        },
+        "artifactDigest": {
+          "title": "Artifactdigest",
+          "type": "string"
+        },
+        "manifestDigest": {
+          "title": "Manifestdigest",
+          "type": "string"
+        },
+        "installPermissions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Installpermissions",
+          "type": "array"
+        },
+        "runtimePermissions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Runtimepermissions",
+          "type": "array"
+        },
+        "authScopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Authscopes",
+          "type": "array"
+        },
+        "authorizationRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Authorizationref",
+          "type": "string"
+        },
+        "permissionsDeclared": {
+          "title": "Permissionsdeclared",
+          "type": "boolean"
+        },
+        "undeclaredPermissionsAccepted": {
+          "default": false,
+          "title": "Undeclaredpermissionsaccepted",
+          "type": "boolean"
+        },
+        "boundReferences": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Boundreferences",
+          "type": "array"
+        },
+        "hostRequirement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeHostRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rollbackPointRef": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 4,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollbackpointref"
+        },
+        "rollbackPointDigest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollbackpointdigest"
+        },
+        "planDigest": {
+          "title": "Plandigest",
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "planId",
+        "bridgeId",
+        "bridgeVersion",
+        "bridgeDigest",
+        "ecosystem",
+        "pluginId",
+        "pluginVersion",
+        "integrationMode",
+        "operation",
+        "desiredState",
+        "descriptorDigest",
+        "artifactDigest",
+        "manifestDigest",
+        "authorizationRef",
+        "permissionsDeclared",
+        "hostRequirement",
+        "planDigest",
+        "createdAt"
+      ],
+      "title": "BridgeTransitionPlan",
+      "type": "object"
+    },
+    "EcosystemInstallReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "receiptFormat": {
+          "const": "ksadk.ecosystem-install-receipt/v1",
+          "default": "ksadk.ecosystem-install-receipt/v1",
+          "title": "Receiptformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "planId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Planid",
+          "type": "string"
+        },
+        "planDigest": {
+          "title": "Plandigest",
+          "type": "string"
+        },
+        "stageId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Stageid",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 2,
+          "title": "Pluginid",
+          "type": "string"
+        },
+        "pluginVersion": {
+          "title": "Pluginversion",
+          "type": "string"
+        },
+        "integrationMode": {
+          "enum": [
+            "bridged",
+            "linked"
+          ],
+          "title": "Integrationmode",
+          "type": "string"
+        },
+        "desiredState": {
+          "enum": [
+            "disabled",
+            "enabled"
+          ],
+          "title": "Desiredstate",
+          "type": "string"
+        },
+        "bridgeId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Bridgeid",
+          "type": "string"
+        },
+        "bridgeVersion": {
+          "title": "Bridgeversion",
+          "type": "string"
+        },
+        "bridgeDigest": {
+          "title": "Bridgedigest",
+          "type": "string"
+        },
+        "host": {
+          "$ref": "#/$defs/BridgeHostObservation"
+        },
+        "artifactDigest": {
+          "title": "Artifactdigest",
+          "type": "string"
+        },
+        "manifestDigest": {
+          "title": "Manifestdigest",
+          "type": "string"
+        },
+        "nativeReceiptRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativereceiptref",
+          "type": "string"
+        },
+        "nativeReceiptDigest": {
+          "title": "Nativereceiptdigest",
+          "type": "string"
+        },
+        "boundReferences": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Boundreferences",
+          "type": "array"
+        },
+        "committedAt": {
+          "format": "date-time",
+          "title": "Committedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "planId",
+        "planDigest",
+        "stageId",
+        "ecosystem",
+        "pluginId",
+        "pluginVersion",
+        "integrationMode",
+        "desiredState",
+        "bridgeId",
+        "bridgeVersion",
+        "bridgeDigest",
+        "host",
+        "artifactDigest",
+        "manifestDigest",
+        "nativeReceiptRef",
+        "nativeReceiptDigest",
+        "committedAt"
+      ],
+      "title": "EcosystemInstallReceipt",
+      "type": "object"
+    },
+    "EcosystemPluginDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "descriptorFormat": {
+          "const": "ksadk.ecosystem-plugin-descriptor/v1",
+          "default": "ksadk.ecosystem-plugin-descriptor/v1",
+          "title": "Descriptorformat",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 2,
+          "title": "Pluginid",
+          "type": "string"
+        },
+        "pluginVersion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pluginversion"
+        },
+        "integrationMode": {
+          "enum": [
+            "bridged",
+            "linked"
+          ],
+          "title": "Integrationmode",
+          "type": "string"
+        },
+        "maturity": {
+          "enum": [
+            "detected",
+            "linked-ready",
+            "bridged-ready",
+            "unsupported",
+            "experimental"
+          ],
+          "title": "Maturity",
+          "type": "string"
+        },
+        "sourceRef": {
+          "maxLength": 4096,
+          "minLength": 4,
+          "title": "Sourceref",
+          "type": "string"
+        },
+        "artifactDigest": {
+          "title": "Artifactdigest",
+          "type": "string"
+        },
+        "manifestRef": {
+          "maxLength": 4096,
+          "minLength": 4,
+          "title": "Manifestref",
+          "type": "string"
+        },
+        "manifestDigest": {
+          "title": "Manifestdigest",
+          "type": "string"
+        },
+        "hostRequirement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeHostRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "permissionsDeclared": {
+          "title": "Permissionsdeclared",
+          "type": "boolean"
+        },
+        "installPermissions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Installpermissions",
+          "type": "array"
+        },
+        "runtimePermissions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Runtimepermissions",
+          "type": "array"
+        },
+        "authScopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Authscopes",
+          "type": "array"
+        },
+        "secretRefs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Secretrefs",
+          "type": "array"
+        },
+        "components": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Components",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "pluginId",
+        "integrationMode",
+        "maturity",
+        "sourceRef",
+        "artifactDigest",
+        "manifestRef",
+        "manifestDigest",
+        "hostRequirement",
+        "permissionsDeclared"
+      ],
+      "title": "EcosystemPluginDescriptor",
+      "type": "object"
+    },
+    "EcosystemPluginInventory": {
+      "additionalProperties": false,
+      "properties": {
+        "inventoryFormat": {
+          "const": "ksadk.ecosystem-inventory/v1",
+          "default": "ksadk.ecosystem-inventory/v1",
+          "title": "Inventoryformat",
+          "type": "string"
+        },
+        "receiptId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Receiptid",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 2,
+          "title": "Pluginid",
+          "type": "string"
+        },
+        "pluginVersion": {
+          "title": "Pluginversion",
+          "type": "string"
+        },
+        "integrationMode": {
+          "enum": [
+            "bridged",
+            "linked"
+          ],
+          "title": "Integrationmode",
+          "type": "string"
+        },
+        "desiredState": {
+          "enum": [
+            "disabled",
+            "enabled"
+          ],
+          "title": "Desiredstate",
+          "type": "string"
+        },
+        "observedState": {
+          "enum": [
+            "resolved",
+            "admitted",
+            "staged",
+            "starting",
+            "ready",
+            "degraded",
+            "failed",
+            "draining",
+            "stopped",
+            "disposed",
+            "rejected"
+          ],
+          "title": "Observedstate",
+          "type": "string"
+        },
+        "maturity": {
+          "enum": [
+            "detected",
+            "linked-ready",
+            "bridged-ready",
+            "unsupported",
+            "experimental"
+          ],
+          "title": "Maturity",
+          "type": "string"
+        },
+        "bridgeId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Bridgeid",
+          "type": "string"
+        },
+        "bridgeVersion": {
+          "title": "Bridgeversion",
+          "type": "string"
+        },
+        "bridgeDigest": {
+          "title": "Bridgedigest",
+          "type": "string"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BridgeHostObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifactDigest": {
+          "title": "Artifactdigest",
+          "type": "string"
+        },
+        "manifestDigest": {
+          "title": "Manifestdigest",
+          "type": "string"
+        },
+        "nativeReceiptRef": {
+          "maxLength": 2048,
+          "minLength": 4,
+          "title": "Nativereceiptref",
+          "type": "string"
+        },
+        "nativeReceiptDigest": {
+          "title": "Nativereceiptdigest",
+          "type": "string"
+        },
+        "boundReferences": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Boundreferences",
+          "type": "array"
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoncode"
+        },
+        "reconciledAt": {
+          "format": "date-time",
+          "title": "Reconciledat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId",
+        "ecosystem",
+        "pluginId",
+        "pluginVersion",
+        "integrationMode",
+        "desiredState",
+        "observedState",
+        "maturity",
+        "bridgeId",
+        "bridgeVersion",
+        "bridgeDigest",
+        "host",
+        "artifactDigest",
+        "manifestDigest",
+        "nativeReceiptRef",
+        "nativeReceiptDigest",
+        "reconciledAt"
+      ],
+      "title": "EcosystemPluginInventory",
+      "type": "object"
+    },
+    "PluginEcosystemBridgeTranscript": {
+      "additionalProperties": false,
+      "properties": {
+        "fixtureKind": {
+          "const": "lifecycle",
+          "default": "lifecycle",
+          "title": "Fixturekind",
+          "type": "string"
+        },
+        "contractFormat": {
+          "const": "ksadk.plugin-ecosystem-bridge/v1",
+          "default": "ksadk.plugin-ecosystem-bridge/v1",
+          "title": "Contractformat",
+          "type": "string"
+        },
+        "describeRequest": {
+          "$ref": "#/$defs/BridgeDescribeRequest"
+        },
+        "describeResult": {
+          "$ref": "#/$defs/BridgeDescribeResult"
+        },
+        "probe": {
+          "$ref": "#/$defs/BridgeProbeExchange"
+        },
+        "inspectRequest": {
+          "$ref": "#/$defs/BridgeInspectRequest"
+        },
+        "inspectResult": {
+          "$ref": "#/$defs/BridgeInspectResult"
+        },
+        "planRequest": {
+          "$ref": "#/$defs/BridgePlanRequest"
+        },
+        "planResult": {
+          "$ref": "#/$defs/BridgePlanResult"
+        },
+        "stageRequest": {
+          "$ref": "#/$defs/BridgeStageRequest"
+        },
+        "stageResult": {
+          "$ref": "#/$defs/BridgeStageResult"
+        },
+        "commitRequest": {
+          "$ref": "#/$defs/BridgeCommitRequest"
+        },
+        "commitResult": {
+          "$ref": "#/$defs/BridgeCommitResult"
+        },
+        "reconcileRequest": {
+          "$ref": "#/$defs/BridgeReconcileRequest"
+        },
+        "reconcileResult": {
+          "$ref": "#/$defs/BridgeReconcileResult"
+        },
+        "rollbackRequest": {
+          "$ref": "#/$defs/BridgeRollbackRequest"
+        },
+        "rollbackResult": {
+          "$ref": "#/$defs/BridgeRollbackResult"
+        },
+        "disposeRequest": {
+          "$ref": "#/$defs/BridgeDisposeRequest"
+        },
+        "disposeResult": {
+          "$ref": "#/$defs/BridgeDisposeResult"
+        }
+      },
+      "required": [
+        "describeRequest",
+        "describeResult",
+        "probe",
+        "inspectRequest",
+        "inspectResult",
+        "planRequest",
+        "planResult",
+        "stageRequest",
+        "stageResult",
+        "commitRequest",
+        "commitResult",
+        "reconcileRequest",
+        "reconcileResult",
+        "rollbackRequest",
+        "rollbackResult",
+        "disposeRequest",
+        "disposeResult"
+      ],
+      "title": "PluginEcosystemBridgeTranscript",
+      "type": "object"
+    },
+    "PluginManifestCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "enum": [
+            "codex",
+            "dsh"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "integrationMode": {
+          "enum": [
+            "bridged",
+            "linked"
+          ],
+          "title": "Integrationmode",
+          "type": "string"
+        },
+        "maturity": {
+          "enum": [
+            "detected",
+            "linked-ready",
+            "bridged-ready",
+            "unsupported",
+            "experimental"
+          ],
+          "title": "Maturity",
+          "type": "string"
+        },
+        "manifestKind": {
+          "enum": [
+            "codex-plugin",
+            "dsh-bundle"
+          ],
+          "title": "Manifestkind",
+          "type": "string"
+        },
+        "manifestRef": {
+          "maxLength": 4096,
+          "minLength": 4,
+          "title": "Manifestref",
+          "type": "string"
+        },
+        "manifestDigest": {
+          "title": "Manifestdigest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "integrationMode",
+        "maturity",
+        "manifestKind",
+        "manifestRef",
+        "manifestDigest"
+      ],
+      "title": "PluginManifestCandidate",
+      "type": "object"
+    }
+  },
+  "description": "Schema root shared by lifecycle, ambiguous-manifest and rejection goldens.",
+  "discriminator": {
+    "mapping": {
+      "lifecycle": "#/$defs/PluginEcosystemBridgeTranscript",
+      "probe": "#/$defs/BridgeProbeExchange",
+      "rejection": "#/$defs/BridgeInspectExchange"
+    },
+    "propertyName": "fixtureKind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PluginEcosystemBridgeTranscript"
+    },
+    {
+      "$ref": "#/$defs/BridgeProbeExchange"
+    },
+    {
+      "$ref": "#/$defs/BridgeInspectExchange"
+    }
+  ],
+  "title": "PluginEcosystemBridge/v1 conformance fixtures",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/plugin-ecosystem-bridge.schema.json"
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "command_id": "5c19f52c-0d3e-4f66-a180-3ed6f787c22a",
+  "idempotency_key": "studio:s1:message-steer",
+  "tenant_id": "tenant-1",
+  "agent_instance_id": "agent-instance-1",
+  "session_id": "session-1",
+  "command_type": "steer",
+  "payload": {
+    "content": {
+      "text": "focus on latency"
+    },
+    "run_id": "run-1"
+  },
+  "source": {
+    "kind": "studio",
+    "ref": "local-studio"
+  },
+  "authorization_ref": "permit-1",
+  "submitted_at": "2026-08-17T00:00:00Z"
+}

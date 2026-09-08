@@ -126,7 +126,8 @@ def test_shared_component_css_uses_semantic_typography_tokens() -> None:
         assert match is None, f"{name} must use a semantic token: {match.group(0)!r}"
 
     font_shorthands = re.findall(r"(?<!-)font\s*:\s*([^;]+);", component_css)
-    assert font_shorthands == ["inherit"]
+    assert font_shorthands
+    assert set(font_shorthands) == {"inherit"}
 
 
 def test_core_components_keep_shared_visual_contracts() -> None:
@@ -136,7 +137,7 @@ def test_core_components_keep_shared_visual_contracts() -> None:
         ".button,\n.icon-button": "--button-height",
         ".field label": "--font-size-control",
         ".status-badge": "--status-height",
-        "input,\nselect {": "--control-height",
+        'input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),\nselect {': "--control-height",
     }
 
     for selector, token in expected_contracts.items():
@@ -150,7 +151,7 @@ def test_trace_explorer_keeps_nested_scroll_and_waterfall_layouts() -> None:
         ".trace-list {": ["overflow-y: auto", "min-height: 0"],
         ".trace-span-tree {": ["overflow: auto", "min-width: 0"],
         ".trace-detail-body {": ["overflow: auto", "min-height: 0"],
-        ".trace-raw {": ["overflow: hidden", "background: var(--surface)"],
+        ".trace-raw {": ["overflow: hidden", "background: var(--studio-surface)"],
         ".trace-raw-tree {": ["overflow: auto", "min-height: 0"],
     }.items():
         block = _block(stylesheet, selector)
@@ -225,7 +226,7 @@ def test_react_chat_composer_has_one_focus_boundary() -> None:
     assert ".chat-composer:focus-within {" in stylesheet
 
 
-def test_react_chat_is_owned_by_studio_and_uses_asymmetric_messages() -> None:
+def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     stylesheet = REACT_STYLESHEET.read_text(encoding="utf-8")
     source = CHAT_SOURCE.read_text(encoding="utf-8")
     package = PACKAGE.read_text(encoding="utf-8")
@@ -239,8 +240,11 @@ def test_react_chat_is_owned_by_studio_and_uses_asymmetric_messages() -> None:
     assert "width: fit-content" in user_bubble
     assert "padding: 0" in assistant
     assert "ChatWorkspace" in source
-    assert 'apiFetch("/v1/responses"' in source
-    assert "@kingsoftcloud/ksadk-web" not in package
+    assert "AgentConversationTimeline" in source
+    assert "AgentConversationComposer" in source
+    assert "useAgentChat" in source
+    assert "ApiFacadeImpl" in source
+    assert '"@kingsoftcloud/ksadk-web": "0.3.5"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
     # 强制重定向到创建页。
@@ -259,8 +263,9 @@ def test_react_chat_keeps_compact_sessions_and_streaming_controls() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet
     assert "<time>" not in source
     assert "chat-composer-hint" not in source
-    assert 'aria-label="暂停生成"' in source
-    assert "<Pause" in source
+    assert "onStopGeneration={chat.stop}" in source
+    assert "stopGeneration={chat.stop}" in source
+    assert "onCancelRemote=" in source
 
 
 def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
@@ -277,9 +282,12 @@ def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
     assert "请求批准" in approval_source
     assert "帮我批准" in approval_source
     assert "完全访问权限" in approval_source
-    assert "approval_mode: approvalModeForTurn" in source
+    assert "approvalEnabled={Boolean(chat.uiCapabilities.Approval)}" in source
+    assert "approvalPolicy={chat.uiCapabilities.ApprovalPolicy}" in source
+    assert "pendingInteractions={chat.pendingInteractions}" in source
+    assert "onRespondInteraction=" in source
     assert "下一轮生效" in composer_source
-    assert "<ChatComposer" in source
+    assert "<AgentConversationComposer" in source
     assert ".chat-approval-trigger" in stylesheet
     assert ".chat-approval-menu" in stylesheet
 
@@ -388,7 +396,7 @@ def test_trace_detail_can_collapse_and_raw_otlp_uses_a_light_json_tree() -> None
     assert '<pre className="trace-raw"' not in source
     assert '"react-json-view-lite"' in package
     assert ".otlp-json {" in stylesheet
-    assert "background: var(--surface)" in _block(stylesheet, ".otlp-json {")
+    assert "background: var(--studio-surface)" in _block(stylesheet, ".otlp-json {")
     assert ".trace-detail-expand" not in responsive or "display: none" not in _block(
         responsive, ".trace-detail-expand"
     )

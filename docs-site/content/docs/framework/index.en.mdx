@@ -4,8 +4,10 @@ description: The user path from a first local Agent to a managed cloud Runtime.
 ---
 
 **Kingsoft Cloud Agent Development Kit** builds, debugs, deploys, and observes
-enterprise AI Agents. Start by choosing the shape of your project; every path
-then shares the local Web UI, OpenAI-compatible API, sessions, and observability.
+enterprise AI Agents. In 0.8.3, the trusted kernel closes concurrency, recovery,
+and state-consistency boundaries; the Harness owns the execution lifecycle; and
+pluggable Providers connect execution engines. Choose a project shape, then reuse
+the same Studio, API, session, and event capabilities.
 
 ```bash
 pip install -U "ksadk[all]"
@@ -15,26 +17,33 @@ pip install -U "ksadk[all]"
 
 <Cards>
   <Card title="Your first Python Agent" href="/en/docs/framework/getting-started/quickstart" description="Start from a LangGraph template: configure a model, run in the terminal, then open the local Web UI." />
-  <Card title="✨ YAML Is the Agent: Codex (New in 0.8)" href="/en/docs/framework/tutorials/best-practices/codex-yaml-agent" description="One agentengine.yaml; native debugging on macOS, Windows, and Linux, with no KS3 code package for managed deployment." />
+  <Card title="YAML Is the Agent: Codex" href="/en/docs/framework/tutorials/best-practices/codex-yaml-agent" description="One agentengine.yaml; native debugging on macOS, Windows, and Linux, with no KS3 code package for managed deployment." />
   <Card title="Bring an existing Agent" href="/en/docs/framework/tutorials/existing-agent" description="Wrap an existing Python Agent in an explicit, debuggable KsADK project." />
 </Cards>
 
-## Complete the local-development loop
+## Studio and local development
 
 <Cards>
   <Card title="Project configuration" href="/en/docs/framework/getting-started/configuration" description="Understand YAML, .env, and command-line precedence; distinguish Python projects from a Codex manifest." />
+  <Card title="AgentKit Local Studio" href="/en/docs/framework/guides/agentkit-local-studio" description="Create, debug, and replay Codex, ADK, LangGraph, and plugin Provider Agents in one workspace." />
   <Card title="Local Web UI" href="/en/docs/framework/guides/local-web-ui" description="Browser debugging, sessions, attachments, workspace files, and the local API." />
-  <Card title="Build and deploy" href="/en/docs/framework/guides/cloud-deployment" description="Choose Code, Container, or ManagedRuntime, and validate from dry-run onward." />
+  <Card title="Evaluation and observability" href="/en/docs/framework/guides/evaluation-observability" description="Validate responses, events, traces, and evaluation results in a reproducible local loop." />
 </Cards>
 
-## New in 0.8 and advanced topics
+## Harness and plugins
 
 <Cards>
-  <Card title="✨ AgentKit Local Studio (New in 0.8.1)" href="/en/docs/framework/guides/agentkit-local-studio" description="One local workspace to create, build, and test Codex, ADK, and LangGraph Agents." />
-  <Card title="Codex Managed Runtime" href="/en/docs/framework/guides/managed-runtime" description="Version locking, manifest bundles, server-side image resolution, and the local proxy boundary for the declarative Runtime." />
-  <Card title="A2A Runtime (Experimental)" href="/en/docs/framework/guides/a2a-runtime" description="Official A2A 1.0 Agent Cards, JSON-RPC/HTTP+JSON, and A2A Center / Space debugging." />
-  <Card title="HarnessApp (Experimental)" href="/en/docs/framework/guides/harness-app" description="Compose a minimal unified Runtime data plane from validated YAML for constrained declarative scenarios." />
-  <Card title="Hosted UI and event replay" href="/en/docs/framework/guides/hosted-ui-events" description="AG-UI/A2UI capability negotiation, RuntimeEvent, and read-only replay." />
+  <Card title="Runtime architecture" href="/en/docs/framework/guides/runtime-architecture" description="Understand the responsibility boundaries between the trusted kernel, Harness, Providers, and shared capabilities." />
+  <Card title="HarnessApp" href="/en/docs/framework/guides/harness-app" description="Compose a unified runtime data plane from validated YAML while Providers retain framework semantics." />
+  <Card title="Plugins and local automation" href="/en/docs/framework/guides/plugins-and-automations" description="Compose Providers, toolchains, and scheduled tasks; each Activation selects exactly one Provider." />
+</Cards>
+
+## Events, interoperability, and delivery
+
+<Cards>
+  <Card title="Unified events and replay" href="/en/docs/framework/guides/hosted-ui-events" description="Project native Provider events into RuntimeEvent v2 and then into APIs, Studio, and hosted surfaces." />
+  <Card title="A2A Runtime" href="/en/docs/framework/guides/a2a-runtime" description="Use A2A 1.0 Agent Cards, JSON-RPC/HTTP+JSON, and platform integration flows." />
+  <Card title="Build and deploy" href="/en/docs/framework/guides/cloud-deployment" description="Choose Code, Container, or ManagedRuntime, and validate from dry-run onward." />
 </Cards>
 
 ## Find the exact contract

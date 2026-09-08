@@ -1,0 +1,65 @@
+.plugin-store { max-width: 880px; margin: 0 auto; padding: 32px 40px 64px; }
+.plugin-store .plugins-intro { display: block; margin: 0 0 24px; }
+.plugin-store h2 { font-size: 24px; line-height: 1.35; margin: 0 0 8px; }
+.plugin-store h3 { font-size: 14px; font-weight: 600; margin: 0; }
+.plugin-store p { color: var(--studio-text-secondary); line-height: 1.65; }
+.plugin-store button { font: inherit; cursor: pointer; }
+.plugin-store button:disabled { cursor: default; opacity: .5; }
+.plugin-store-search { display: flex; align-items: center; gap: 10px; border: 1px solid var(--studio-border); border-radius: 24px; padding: 8px 14px; background: var(--studio-surface); color: var(--studio-text-secondary); }
+.plugin-store-search input { width: 100%; border: 0; border-radius: 0; background: transparent; padding: 0; box-shadow: none; outline: none; }
+.plugin-installed-strip { margin: 28px 0; }
+.plugin-installed-strip > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.plugin-installed-strip h3 small { font-size: 12px; font-weight: 400; color: var(--studio-text-secondary); margin-left: 6px; }
+.plugin-installed-strip > div { display: flex; flex-wrap: wrap; gap: 14px; }
+.plugin-installed-strip > div > button { background: none; border: 0; padding: 0; display: flex; align-items: center; gap: 8px; max-width: 190px; }
+.plugin-installed-strip > div > button > span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.plugin-store-icon { width: 40px; height: 40px; border: 1px solid var(--studio-border); border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; background: var(--studio-surface); flex: 0 0 auto; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; }
+.plugin-store-icon img { width: 80%; height: 80%; object-fit: contain; }
+.plugin-store-icon.large { width: 64px; height: 64px; border-radius: 16px; margin-bottom: 18px; }
+.plugin-text-button, .plugin-back { border: 0; background: none; color: var(--studio-text-secondary); padding: 6px 0; display: inline-flex; align-items: center; gap: 8px; }
+.plugin-store .plugin-marketplace-tabs { display: inline-flex; gap: 4px; padding: 0; margin: 0 0 24px; background: none; border: 0; }
+.plugin-store .plugin-marketplace-tabs button { border: 0; box-shadow: none; background: none; padding: 6px 12px; border-radius: 16px; color: var(--studio-text-secondary); }
+.plugin-store .plugin-marketplace-tabs button[aria-selected="true"] { background: var(--surface-subtle); color: var(--text); }
+.plugin-store .plugin-category { padding: 0; margin-bottom: 32px; border: 0; }
+.plugin-store .plugin-category h3 { border-bottom: 1px solid var(--studio-border); padding: 0 0 12px; margin: 0 0 8px; }
+.plugin-store .plugin-discovery-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 24px; }
+.plugin-discovery-item { display: flex; align-items: center; text-align: left; gap: 12px; padding: 12px 8px; min-width: 0; border: 0; border-radius: 10px; background: transparent; color: var(--text); }
+.plugin-discovery-item:hover { background: var(--surface-hover); }
+.plugin-discovery-item > span:nth-child(2) { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.plugin-discovery-item strong { font-weight: 500; font-size: 14px; }
+.plugin-discovery-item small { color: var(--studio-text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-discovery-item > svg { flex-shrink: 0; color: var(--studio-text-secondary); }
+.plugin-back { display: flex; margin-bottom: 32px; }
+.plugin-product > header { display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-bottom: 24px; }
+.plugin-product > header p { margin: 0; }
+.plugin-product-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.plugin-examples { display: grid; gap: 12px; padding: 28px; margin: 24px 0; background: var(--surface-subtle); border-radius: 16px; }
+.plugin-examples p { margin: 0; padding: 14px 16px; border-radius: 12px; background: var(--studio-surface); display: flex; align-items: center; gap: 20px; color: var(--text); font-size: 13px; }
+.plugin-examples p span { flex: 1; }
+.plugin-examples svg { flex-shrink: 0; color: var(--studio-text-secondary); }
+.plugin-long-description { white-space: pre-wrap; margin: 24px 0; }
+.plugin-product-info { margin-top: 32px; }
+.plugin-product-info h3 { padding-bottom: 12px; border-bottom: 1px solid var(--studio-border); }
+.plugin-product-info dl { display: grid; gap: 12px; padding: 16px 0; font-size: 13px; }
+.plugin-product-info dl > div { display: grid; grid-template-columns: 110px 1fr; gap: 16px; }
+.plugin-product-info dt { color: var(--studio-text-secondary); }
+.plugin-product-info dd { margin: 0; }
+.plugin-install-consent { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--studio-text-secondary); margin: 16px 0; }
+.plugin-install-consent input { width: auto; }
+.plugin-source-panel { padding: 24px 0; }
+.studio-plugin-settings { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 24px; padding: 24px; min-height: 65vh; background: var(--studio-surface); }
+.studio-plugin-settings nav { display: flex; flex-direction: column; gap: 4px; }
+.studio-plugin-settings nav button { border: 0; border-radius: 8px; padding: 10px 12px; text-align: left; background: none; color: var(--text); }
+.studio-plugin-settings nav button.active { background: var(--selected); }
+.studio-plugin-surface { min-width: 0; position: relative; }
+.studio-plugin-settings.choosing { display: block; }
+.studio-plugin-settings.choosing > p { color: var(--studio-text-secondary); margin-bottom: 16px; }
+.studio-plugin-settings.choosing nav { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 260px)); gap: 12px; }
+.studio-plugin-settings.choosing nav button { border: 1px solid var(--studio-border); padding: 18px; }
+.studio-plugin-settings nav button:hover { background: var(--surface-hover); }
+@media (max-width: 760px) {
+  .plugin-store { padding: 24px 16px; }
+  .plugin-store .plugin-discovery-grid { grid-template-columns: 1fr; }
+  .plugin-product > header { flex-direction: column; align-items: flex-start; }
+  .studio-plugin-settings { grid-template-columns: 1fr; padding: 16px; }
+}

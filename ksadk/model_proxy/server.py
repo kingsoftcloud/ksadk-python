@@ -444,13 +444,18 @@ class ProxyServer:
             # 应用层取消信号:让活动 SSE 的 _stream_gen 主动 break
             self._app.state.cancel_event.set()
         if self._server is not None:
-            # should_exit 触发主循环进入 shutdown;force_exit 让 shutdown 跳过等待
-            # connections/tasks 完成(活动 SSE 下不再无限等)。两者缺一:只 should_exit
-            # 会被活动连接卡死,只 force_exit 主循环根本不进 shutdown。
+            # Enter Uvicorn's normal shutdown so its lifespan task receives a
+            # shutdown event.  Setting force_exit here skips that event and
+            # makes every completed Studio turn print a CancelledError.
             self._server.should_exit = True
-            self._server.force_exit = True
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=3)
+            if self._thread.is_alive() and self._server is not None:
+                # The application cancel signal normally drains active SSE
+                # generators.  Keep a bounded last resort for a broken client
+                # or upstream that ignores cancellation.
+                self._server.force_exit = True
+                self._thread.join(timeout=2)
         if self._sock is not None:
             try:
                 self._sock.close()

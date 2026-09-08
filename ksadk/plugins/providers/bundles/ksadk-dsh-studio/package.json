@@ -1,0 +1,7 @@
+{
+  "name": "@kingsoftcloud/dsh-app-studio",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": { ".": "./index.mjs", "./client": "./client.js" },
+  "dsh": { "client": { "inject": ["@deepseek-ai/dsh-client-ui-renderer"], "platform": "web" } }
+}

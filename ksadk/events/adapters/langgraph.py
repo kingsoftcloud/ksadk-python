@@ -87,6 +87,7 @@ class LangGraphEventAdapter:
     def __init__(self) -> None:
         self._messages: dict[tuple[str, str], _MessageState] = {}
         self._tools: dict[tuple[str, str], _ToolState] = {}
+        self._tool_occurrences: dict[tuple[str, str], int] = {}
         self._lifecycles: dict[str, _LifecycleState] = {}
 
     async def stream_run(
@@ -331,7 +332,20 @@ class LangGraphEventAdapter:
                     f"LangGraph tool call {call_id!r} started twice",
                 )
             name = _required_string(payload.get("tool_name"), "tools tool_name")
-            item_id = stable_item_id("langgraph", frame.scope_id, "tool_result", call_id)
+            occurrence = self._tool_occurrences.get(state_key, 0)
+            self._tool_occurrences[state_key] = occurrence + 1
+            item_id = (
+                stable_item_id("langgraph", frame.scope_id, "tool_result", call_id)
+                if occurrence == 0
+                else stable_item_id(
+                    "langgraph",
+                    frame.scope_id,
+                    "tool_result",
+                    call_id,
+                    "occurrence",
+                    frame.occurrence_key,
+                )
+            )
             self._tools[state_key] = _ToolState(
                 scope_id=frame.scope_id,
                 parent_scope_id=frame.parent_scope_id,

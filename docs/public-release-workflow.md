@@ -8,7 +8,8 @@
 
 公开 `main` 应包含：
 
-- 公开 SDK 源码：`ksadk/`、`ksadk_runtime_common/`。
+- 公开 SDK 源码：`ksadk/`、`ksadk_runtime_common/`，包括 `ksadk/studio/react-ui` 的源码与固定依赖锁。
+- `ksadk/server/static` 和 `ksadk/studio/static` 由构建流程生成，只进入 wheel/sdist，不提交 Git，也不从内部工作树复制到公开候选。
 - 公开构建与发布门禁：`Makefile`、`scripts/open_source_audit.py`、`scripts/check_*`、`.github/workflows/*`。
 - 公开文档站：`docs-site/`。
 - 公开 README、CHANGELOG、LICENSE、CONTRIBUTING、AGENTS、CLAUDE。
@@ -31,6 +32,12 @@
 4. npm、PyPI、GitHub Pages 都必须由可信 GitHub workflow 发布；不使用本地 `npm publish`、本地 `twine upload` 或手工上传 Pages。
 5. GitHub Release、PyPI 包、Pages 文档必须能追溯到同一个已审核 GitHub `main` 提交。
 6. `.pypirc`、私有 registry 凭证、kubeconfig、真实 API key、临时 token 不得进入仓库。
+
+## 0.8.4 CI 与本地门禁分工
+
+PR 的 Release Check 负责源码清洁检查、前端构建、可追溯的 wheel/sdist、全新环境安装和制品内容审计。它使用 `--skip-tests` 避免在组合门禁里重复执行实时运行时 E2E；报告中的 source E2E 保持 `not_run`，不得把该报告当作完整发布证据。
+
+原因：#67 的组合门禁在兼容测试全部通过后出现长时间无输出，本地相同代码的完整门禁和 Python 3.11 对照均通过，尚未确定远端卡住的具体调用。独立 CI 的全量测试、原生运行时、浏览器页面及真实插件任务保留；本地 `make public-preflight` 仍必须通过。手动运行 Release Check 仍执行完整组合门禁，并启用详细测试输出及 90 秒线程栈诊断，整体任务限时 25 分钟。定位并修复卡点后再恢复 PR 中的组合 source E2E，不以修改断言或虚报通过代替验证。
 
 ## 准备 ksadk-web
 
@@ -65,6 +72,19 @@ git diff --check
 ```
 
 如果本次需要绑定新的 UI 版本，确认 `KSADK_WEB_VERSION` 默认值、README、docs-site、approval record 都引用同一个 npm 版本。
+
+Phase 2 发布还必须在最终内部 `master` 提交上重新生成本地制品证据，并在 npm 包发布、Hosted UI 以 digest 部署、发布候选环境浏览器矩阵完成后运行：
+
+```bash
+make phase2-release-candidate-gate \
+  PHASE2_FINAL_COMMIT=<final-internal-master-commit> \
+  PHASE2_LOCAL_EVIDENCE=<local-phase2-evidence.json> \
+  PHASE2_WEB_REGISTRY_EVIDENCE=<npm-registry-evidence.json> \
+  PHASE2_DEPLOYMENT_EVIDENCE=<hosted-ui-deployment-evidence.json> \
+  PHASE2_PREPROD_EVIDENCE=<release-environment-browser-e2e.json>
+```
+
+该门禁要求 npm integrity、Hosted UI 镜像 digest、Helm revision、wheel/sdist digest 和最终源码提交互相一致；Studio 新建 Agent 与历史 0.8.2 Agent 都必须通过 Studio/Hosted UI 两个入口的多轮流式验证。测试新建的 Agent 必须删除，历史 Agent 必须保留。缺少 registry 正式版本、使用可变镜像 tag、单轮响应或仅本地 mock 时，报告不会变绿。
 
 RuntimeEvent schema v2 发布的额外约束：当 Python 发布把运行事件主路径切到 canonical `schema_version=2`（能力描述 `RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`）时，配套的 `ksadk-web`、Studio react-ui 与 `agentengine-hosted-ui` 必须是与本次发布一致的 identity-aware 版本，才能按 run/scope/item/part identity 正确归并流式与回放输出。候选报告必须记录 Python 与三个 UI 仓库各自的 commit 和包版本，作为同一发布单元评审。
 

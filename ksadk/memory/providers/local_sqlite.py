@@ -141,6 +141,13 @@ class SqliteMemoryProvider:
         workspace_id: str = "local",
     ) -> None:
         self._db_path = str(db_path)
+        if self._db_path != ":memory:":
+            # A fresh local Studio has not created its session directory yet.
+            # SQLite creates the database file, but not missing parents.
+            Path(self._db_path).expanduser().resolve().parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
         self._tenant_id = tenant_id
         self._workspace_id = workspace_id
         self._lock = threading.Lock()

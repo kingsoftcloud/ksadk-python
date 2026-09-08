@@ -1,0 +1,32 @@
+[
+  {
+    "schema_version": 1,
+    "agent_instance_id": "agent-instance-1",
+    "activation_id": "activation-1",
+    "fencing_token": 3,
+    "lease_expires_at": "2026-08-17T00:01:00Z",
+    "bundle_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtime_type": "langgraph",
+    "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+    "schema_version": 1,
+    "agent_instance_id": "agent-instance-1",
+    "activation_id": "activation-1",
+    "fencing_token": 3,
+    "lease_expires_at": "2026-08-17T00:02:00Z",
+    "bundle_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtime_type": "langgraph",
+    "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+    "schema_version": 1,
+    "agent_instance_id": "agent-instance-1",
+    "activation_id": "activation-2",
+    "fencing_token": 4,
+    "lease_expires_at": "2026-08-17T00:03:00Z",
+    "bundle_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtime_type": "langgraph",
+    "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+]

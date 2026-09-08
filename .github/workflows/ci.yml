@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.2"
+      KSADK_WEB_VERSION: "0.3.5"
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +49,19 @@ jobs:
         run: make public-test
 
       - name: Audit public repository candidate
-        run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
+        run: |
+          if [ -f export-manifest.json ]; then
+            audit_root="$PWD"
+          else
+            audit_root="${RUNNER_TEMP}/ksadk-python-public-audit"
+            rm -rf "$audit_root"
+            uv run --extra dev python scripts/prepare_ksadk_python_export.py \
+              --output-dir "$audit_root" \
+              --summary
+          fi
+          uv run --extra dev python scripts/open_source_audit.py \
+            --root "$audit_root" \
+            --target public-repo
 
       - name: Build and audit public docs
         run: make docs-site-build
@@ -98,7 +110,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.2"
+      KSADK_WEB_VERSION: "0.3.5"
     strategy:
       fail-fast: false
       matrix:
@@ -128,8 +140,8 @@ jobs:
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
-      # Internal branches compile Studio from source. Public candidates omit
-      # editable Studio source and carry only reviewed compiled assets.
+      # Both internal and public branches compile Studio from source.
+      # Generated assets belong in packages, never in the Git tree.
       - name: Build frontend static assets
         run: make build-frontend
 
@@ -195,3 +207,59 @@ jobs:
 
       - name: Import platform package, resolve binary, and start local Web
         run: uv run --no-sync pytest tests/test_managed_runtime_native_smoke.py -q
+
+  # DSH/Codex plugin E2E: installs the pinned DSH toolchain and a real upstream
+  # Cordis plugin, then exercises the single full-Core Web UI + MCP host.
+  # Gated env vars enable tests that are skipped by default (see §8.6 T6).
+  test-plugin-e2e:
+    name: DSH/Codex plugin E2E (real toolchain + upstream plugin)
+    runs-on: ubuntu-latest
+    env:
+      KSADK_DSH_TOOLCHAIN_E2E: "1"
+      KSADK_DSH_UPSTREAM_E2E: "1"
+      KSADK_CODEX_PLUGIN_E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Core invokes pnpm by name when mutating a profile, even when its
+      # managed installation was bootstrapped through corepack.
+      # pnpm 11.7.0 can hang after removing the official Codex bundle.
+      # Match the verified profile CLI; managed bootstrap still uses its own pin.
+      - name: Set up pnpm for DSH profile plugins
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.2"
+
+      - name: Install KsADK with the pinned Codex SDK and binary
+        run: uv sync --extra dev --extra codex
+
+      - name: Install Playwright Chromium
+        run: uv run playwright install chromium --with-deps
+
+      - name: Run DSH capability + upstream plugin E2E
+        run: |
+          uv run --no-sync pytest \
+            tests/plugins/test_dsh_capability_host_e2e.py \
+            tests/plugins/test_dsh_upstream_plugin_e2e.py \
+            -v
+
+      - name: Run real Codex plugin E2E against the deterministic model
+        env:
+          KSADK_CODEX_PLUGIN_E2E_BIN: ${{ secrets.KSADK_CODEX_PLUGIN_E2E_BIN }}
+        run: |
+          uv run --no-sync pytest \
+            tests/e2e/test_codex_plugin_bridge_e2e.py \
+            -v

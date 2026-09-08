@@ -24,7 +24,20 @@ from ksadk.managed_runtime import (
     validate_installed_runtime,
     validate_runtime_binary,
 )
+from ksadk.plugins.artifacts import PluginArtifactReceipt
+from ksadk.plugins.contracts import (
+    LockedPluginComponent,
+    PluginLock,
+    PluginLockEntry,
+    plugin_lock_digest,
+)
 from ksadk.studio.codex_manifest import CodexManifestRepository
+from ksadk.studio.codex_plugin_store import (
+    CodexPinnedMarketplace,
+    CodexPluginSnapshotStore,
+    CodexWorkspacePluginSnapshot,
+    component_selector,
+)
 from ksadk.studio.contracts import ContractModel, ModelSpec
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.workspace import Workspace
@@ -51,6 +64,19 @@ class CodexBuildRecord(ContractModel):
     # New builds always persist a mapping (possibly empty), so run resolution
     # never consults mutable Catalog state after the build has been created.
     model_profiles: dict[str, dict[str, Any]] | None = None
+    # Resource ids and model names are different namespaces.  Keep the exact
+    # Studio bindings separately so currentness checks never compare a model
+    # name (``glm-5.2``) with a Catalog id (``model:provider:glm-5-2:live``).
+    # ``None`` only allows older local records to be read and rejected as
+    # stale with an actionable rebuild; Phase 2 has not shipped yet, so the
+    # deployment path does not carry a legacy identity-migration branch.
+    model_profile_ids: list[str] | None = None
+    # Omitted for builds without native plugins so existing on-disk receipts
+    # and their historical build ids remain byte-shape compatible.
+    plugin_lock: PluginLock | None = None
+    plugin_lock_digest: str | None = None
+    plugin_marketplace: CodexPinnedMarketplace | None = None
+    plugin_runtime_status: dict[str, dict[str, Any]] | None = None
     created_at: datetime
 
 
@@ -252,6 +278,7 @@ class CodexStudioBuilder:
         runtime_inspector: RuntimeInspector = _inspect_runtime,
         resource_catalog: Any = None,
         draft_repository: Any = None,
+        plugin_snapshot_store: CodexPluginSnapshotStore | None = None,
     ) -> None:
         self.workspace = workspace
         self.manifests = manifest_repository or CodexManifestRepository(workspace)
@@ -259,6 +286,7 @@ class CodexStudioBuilder:
         self.runtime_inspector = runtime_inspector
         self.catalog = resource_catalog
         self.drafts = draft_repository
+        self.plugin_snapshots = plugin_snapshot_store or CodexPluginSnapshotStore(workspace)
 
     def build(
         self,
@@ -272,7 +300,21 @@ class CodexStudioBuilder:
             allowed_models=snapshot.manifest.allowed_models,
             ignore_missing=True,
         )
-        build_id = self._build_id(snapshot.manifest_sha256, model_profiles)
+        model_profile_ids = self._bound_model_profile_ids(snapshot.manifest.name)
+        (
+            native_plugin_lock,
+            plugin_selections,
+            plugin_runtime_status,
+        ) = self._native_plugin_lock(snapshot.manifest.plugins or [])
+        native_plugin_lock_digest = (
+            plugin_lock_digest(native_plugin_lock) if native_plugin_lock.plugins else None
+        )
+        build_id = self._build_id(
+            snapshot.manifest_sha256,
+            model_profiles,
+            model_profile_ids=model_profile_ids,
+            plugin_lock_digest_value=native_plugin_lock_digest,
+        )
         try:
             existing = self.repository.get(build_id)
         except StudioError as exc:
@@ -324,6 +366,14 @@ class CodexStudioBuilder:
                 "构建产物与当前 agentengine.yaml 摘要不一致",
                 status_code=500,
             )
+        pinned_marketplace = (
+            self.plugin_snapshots.materialize_marketplace(
+                plugin_lock_digest=native_plugin_lock_digest,
+                selections=plugin_selections,
+            )
+            if native_plugin_lock_digest is not None
+            else None
+        )
         record = CodexBuildRecord(
             id=build_id,
             agent_name=snapshot.manifest.name,
@@ -337,39 +387,106 @@ class CodexStudioBuilder:
             proxy_mode=current_proxy_mode(),
             runtime_lock=lock,
             model_profiles=model_profiles,
+            model_profile_ids=model_profile_ids,
+            plugin_lock=native_plugin_lock if native_plugin_lock.plugins else None,
+            plugin_lock_digest=native_plugin_lock_digest,
+            plugin_marketplace=pinned_marketplace,
+            plugin_runtime_status=plugin_runtime_status or None,
             created_at=datetime.now(timezone.utc),
         )
         return self.repository.save(record)
+
+    def export_plugin_artifact(self, build_id: str) -> tuple[PluginArtifactReceipt, Path]:
+        """Export frozen plugin bytes without mutating the Build or installing.
+
+        This is the C1 content boundary. Deployment must still negotiate
+        control-plane support and validate the target dependency environment.
+        """
+        from ksadk.plugins.artifacts import export_plugin_artifact
+
+        build = self.repository.get(build_id)
+        pinned = build.plugin_marketplace
+        if pinned is None or build.plugin_lock is None:
+            raise StudioError("PLUGIN_ARTIFACT_EMPTY", "此 Build 未绑定原生插件", status_code=422)
+        if plugin_lock_digest(build.plugin_lock) != build.plugin_lock_digest:
+            raise StudioError("PLUGIN_LOCK_INVALID", "Build 插件锁摘要不匹配", status_code=422)
+        if pinned.plugin_lock_digest != build.plugin_lock_digest:
+            raise StudioError("PLUGIN_LOCK_INVALID", "插件快照与 Build 锁不匹配", status_code=422)
+        root = self.plugin_snapshots.verify_marketplace(pinned)
+        receipt, archive = export_plugin_artifact(
+            root,
+            self.workspace.resolve(".agentkit/plugin-artifacts"),
+            runtime_version=build.runtime_version,
+            plugin_lock_digest=build.plugin_lock_digest,
+        )
+        # Reject concurrent modifications; exported bytes must correspond to
+        # the frozen receipt, never a mutable workspace installation.
+        self.plugin_snapshots.verify_marketplace(pinned)
+        return receipt, archive
 
     def is_current(self, record: CodexBuildRecord) -> bool:
         snapshot = self.manifests.load(record.agent_name)
         if record.manifest_sha256 != snapshot.manifest_sha256:
             return False
+        current_plugin_lock, _selections, _status = self._native_plugin_lock(
+            snapshot.manifest.plugins or []
+        )
+        current_plugin_digest = (
+            plugin_lock_digest(current_plugin_lock) if current_plugin_lock.plugins else None
+        )
+        if record.plugin_lock_digest != current_plugin_digest:
+            return False
+        if record.plugin_lock is not None and record.plugin_lock != current_plugin_lock:
+            return False
+        if record.plugin_lock is None and current_plugin_lock.plugins:
+            return False
+        if record.plugin_marketplace is not None:
+            try:
+                self.plugin_snapshots.materialize_marketplace(
+                    plugin_lock_digest=record.plugin_marketplace.plugin_lock_digest,
+                    selections=_selections,
+                )
+            except (StudioError, ValueError):
+                return False
         if record.model_profiles is None:
             return True
-        try:
-            current_profiles = self._model_profile_snapshot(
-                snapshot.manifest.name,
-                allowed_models=snapshot.manifest.allowed_models,
-            )
-        except StudioError as exc:
-            if exc.code == "RESOURCE_NOT_FOUND":
-                # A completed Build owns its connection snapshot.  A later
-                # Catalog cleanup must not make that immutable Build
-                # undeployable; launch resolution reads the snapshot instead.
-                return True
-            raise
+        if record.model_profile_ids is None:
+            return False
+        draft = self.drafts.get(record.agent_name) if self.drafts is not None else None
+        if draft is None:
+            return not record.model_profiles
+
+        bound_ids = set(self._bound_model_profile_ids(record.agent_name))
+        if set(record.model_profile_ids) != bound_ids:
+            return False
+        current_profiles = self._model_profile_snapshot(
+            snapshot.manifest.name,
+            allowed_models=snapshot.manifest.allowed_models,
+            ignore_missing=True,
+        )
+        # Provider-discovered Catalog entries are process-local.  A restart may
+        # temporarily remove them, but the Build still owns an immutable,
+        # runnable connection snapshot and must remain deployable.
+        if bound_ids and not current_profiles:
+            return True
         return record.model_profiles == current_profiles
 
     @staticmethod
     def _build_id(
         manifest_sha256: str,
         model_profiles: dict[str, dict[str, Any]],
+        *,
+        model_profile_ids: list[str] | None = None,
+        plugin_lock_digest_value: str | None = None,
     ) -> str:
-        if not model_profiles:
+        if not model_profiles and not model_profile_ids and plugin_lock_digest_value is None:
             return f"build_{manifest_sha256[:20]}"
         fingerprint = json.dumps(
-            model_profiles,
+            {
+                "profiles": model_profiles,
+                "resourceIds": sorted(model_profile_ids or []),
+                "pluginLockDigest": plugin_lock_digest_value,
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -378,6 +495,89 @@ class CodexStudioBuilder:
 
         digest = hashlib.sha256(f"{manifest_sha256}\n{fingerprint}".encode()).hexdigest()
         return f"build_{digest[:20]}"
+
+    def _native_plugin_lock(
+        self,
+        bindings: list[Any] | tuple[Any, ...],
+    ) -> tuple[
+        PluginLock,
+        tuple[
+            tuple[CodexWorkspacePluginSnapshot, tuple[Any, ...]],
+            ...,
+        ],
+        dict[str, dict[str, Any]],
+    ]:
+        entries: list[PluginLockEntry] = []
+        selections: list[tuple[CodexWorkspacePluginSnapshot, tuple[Any, ...]]] = []
+        statuses: dict[str, dict[str, Any]] = {}
+        for binding in bindings:
+            if not binding.enabled:
+                continue
+            if binding.ecosystem != "codex":
+                raise StudioError(
+                    "CODEX_PLUGIN_ECOSYSTEM_UNSUPPORTED",
+                    "Codex Agent 目前只能运行 Codex 原生插件绑定",
+                    status_code=422,
+                    details={"pluginRef": binding.plugin_ref},
+                )
+            stored = self.plugin_snapshots.load(binding.snapshot_digest)
+            if stored.plugin_ref != binding.plugin_ref:
+                raise StudioError(
+                    "CODEX_PLUGIN_BINDING_MISMATCH",
+                    "Codex 插件绑定与不可变快照身份不一致",
+                    status_code=409,
+                    details={
+                        "pluginRef": binding.plugin_ref,
+                        "snapshotPluginRef": stored.plugin_ref,
+                        "snapshotDigest": binding.snapshot_digest,
+                    },
+                )
+            selected = stored.select_components(binding.components)
+            plugin_id, version = binding.plugin_ref.removeprefix("plugin://").rsplit("@", 1)
+            components = tuple(
+                LockedPluginComponent(
+                    id=component_selector(component),
+                    kind=component.kind,
+                    digest=component.content_digest,
+                    path=component.path,
+                )
+                for component in selected
+            )
+            entries.append(
+                PluginLockEntry(
+                    id=plugin_id,
+                    version=version,
+                    digest=stored.artifact_digest,
+                    source="local" if stored.source.type == "local" else "market",
+                    license=stored.manifest.license,
+                    upstream=stored.source.to_plugin_source_snapshot(),
+                    components=components,
+                )
+            )
+            hook_selectors = [
+                component_selector(component) for component in selected if component.kind == "hook"
+            ]
+            statuses[binding.plugin_ref] = (
+                {
+                    "runnable": False,
+                    "hookTrust": "unsupported",
+                    "reason": "official-trust-api-unavailable",
+                    "components": hook_selectors,
+                }
+                if hook_selectors
+                else {"runnable": True, "hookTrust": "not-required"}
+            )
+            selections.append((stored, selected))
+        try:
+            lock = PluginLock(plugins=entries)
+        except ValueError as exc:
+            raise StudioError(
+                "CODEX_PLUGIN_LOCK_INVALID",
+                "Codex 插件绑定无法编译为唯一、精确的 PluginLock",
+                status_code=422,
+                details={"reason": str(exc)},
+            ) from exc
+        return lock, tuple(selections), statuses
 
     def _model_profile_snapshot(
         self,
@@ -417,9 +617,23 @@ class CodexStudioBuilder:
                 by_alias=True,
                 exclude_defaults=True,
                 exclude_none=True,
+                exclude={"metadata", "discovery"},
                 mode="json",
             )
         return profiles
+
+    def _bound_model_profile_ids(self, agent_id: str) -> list[str]:
+        if self.drafts is None:
+            return []
+        draft = self.drafts.get(agent_id)
+        if draft is None:
+            return []
+        bindings = draft.spec.bindings
+        resource_ids = list(getattr(bindings, "model_profile_ids", []) or [])
+        default_id = getattr(bindings, "model_profile_id", None)
+        if not resource_ids and default_id:
+            resource_ids = [default_id]
+        return list(dict.fromkeys(resource_ids))
 
     @staticmethod
     def _runtime_lock(artifact_path: Path) -> dict:

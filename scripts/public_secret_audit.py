@@ -40,6 +40,7 @@ PUBLIC_DOC_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_DOC_PREFIXES = ("README", "CHANGELOG.md", "docs/", "docs-site/")
+NON_PUBLIC_DOC_PREFIXES = ("docs/archive/", "docs/internal/", "docs/superpowers/")
 
 
 def _source_files() -> list[str]:
@@ -65,6 +66,8 @@ def _source_files() -> list[str]:
 
 def _is_public_doc_path(relative: str) -> bool:
     normalized = relative.replace("\\", "/")
+    if any(normalized.startswith(prefix) for prefix in NON_PUBLIC_DOC_PREFIXES):
+        return False
     return any(
         normalized == prefix
         or normalized.startswith(prefix)

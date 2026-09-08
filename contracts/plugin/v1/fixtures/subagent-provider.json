@@ -1,0 +1,74 @@
+{
+  "contractFormat": "ksadk.subagent-provider/v1",
+  "request": {
+    "requestFormat": "ksadk.subagent-spawn/v1",
+    "providerRef": "plugin://io.example.codex-child@1.0.0",
+    "parentSessionId": "session-parent-01",
+    "parentRunId": "run-parent-01",
+    "task": "Review the repository without modifying it.",
+    "depth": 1,
+    "policy": {
+      "maxDepth": 2,
+      "timeoutSeconds": 120,
+      "maxSteps": 8,
+      "background": false,
+      "allowedTools": ["repo.read"],
+      "allowedPermissions": ["filesystem:workspace-read"]
+    },
+    "metadata": {
+      "traceId": "trace-fixture-01"
+    }
+  },
+  "handle": {
+    "handleFormat": "ksadk.child-handle/v1",
+    "handleId": "child-01",
+    "providerRef": "plugin://io.example.codex-child@1.0.0",
+    "parentSessionId": "session-parent-01",
+    "parentRunId": "run-parent-01",
+    "childSessionId": "session-child-01",
+    "childRunId": "run-child-01",
+    "depth": 1,
+    "capabilities": ["cancel", "streaming"],
+    "capabilityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "createdAt": "2026-08-27T00:00:00Z",
+    "resumable": false,
+    "resumeDescriptor": null
+  },
+  "status": {
+    "statusFormat": "ksadk.subagent-status/v1",
+    "handleId": "child-01",
+    "state": "succeeded",
+    "lastSeq": 2,
+    "updatedAt": "2026-08-27T00:00:02Z",
+    "reason": null
+  },
+  "events": [
+    {
+      "eventFormat": "ksadk.subagent-event/v1",
+      "handleId": "child-01",
+      "eventId": "child-event-01",
+      "seq": 1,
+      "kind": "progress",
+      "payload": {"message": "reviewing"},
+      "nativeRef": {"threadId": "thread-native-01", "turnId": "turn-native-01"}
+    },
+    {
+      "eventFormat": "ksadk.subagent-event/v1",
+      "handleId": "child-01",
+      "eventId": "child-event-02",
+      "seq": 2,
+      "kind": "terminal",
+      "payload": {"state": "succeeded"},
+      "nativeRef": {"threadId": "thread-native-01", "turnId": "turn-native-01"}
+    }
+  ],
+  "result": {
+    "resultFormat": "ksadk.subagent-result/v1",
+    "handleId": "child-01",
+    "state": "succeeded",
+    "output": {"summary": "No blocking findings."},
+    "outputRefs": ["artifact://review/report-01"],
+    "errorCode": null,
+    "errorMessage": null
+  }
+}

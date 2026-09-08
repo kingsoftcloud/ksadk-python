@@ -63,6 +63,24 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
     def __init__(self, runner: BaseRunner) -> None:
         super().__init__(runner, runtime_type="langgraph")
 
+    def capabilities(self):  # noqa: ANN201
+        """Advertise checkpoint interaction only when LangGraph can resume it.
+
+        ``RunnerRuntimeAdapter`` is intentionally conservative because a
+        generic checkpoint is not proof of original-interrupt delivery.  The
+        LangGraph adapter owns that mapping, so it is the only runner-family
+        adapter that may publish ``durable_resume``.
+        """
+
+        matrix = super().capabilities()
+        return matrix.model_copy(
+            update={
+                "interaction_mode": (
+                    "durable_resume" if matrix.resume.supported else "unavailable"
+                )
+            }
+        )
+
     async def _resume_native(
         self,
         handle: RunHandle,
@@ -101,6 +119,29 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
 
     def _checkpoint_capability(self) -> CheckpointCapability:
         capability = super()._checkpoint_capability()
+        if not capability.supported:
+            describe = getattr(self._runner, "describe_checkpoint_capability", None)
+            try:
+                raw = dict(describe()) if callable(describe) else {}
+            except Exception:  # noqa: BLE001
+                raw = {}
+            if (
+                str(raw.get("Scope") or "").strip().lower() == "process_local"
+                and str(raw.get("Backend") or "").strip().lower() in {"memory", "sqlite"}
+            ):
+                # The runner correctly refuses to advertise this checkpoint to
+                # hosted callers because it is not durable across a process
+                # restart. This adapter only resumes an attached in-process
+                # handle, for which LangGraph's memory saver is sufficient.
+                capability = capability.model_copy(
+                    update={
+                        "supported": True,
+                        "reason": (
+                            "Checkpoint resume is limited to the current process; "
+                            "it is not durable across restarts or pods"
+                        ),
+                    }
+                )
         if not capability.supported:
             return capability
         return capability.model_copy(

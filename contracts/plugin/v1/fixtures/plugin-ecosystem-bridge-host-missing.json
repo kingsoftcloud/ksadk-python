@@ -1,0 +1,37 @@
+{
+  "fixtureKind": "rejection",
+  "request": {
+    "requestFormat": "ksadk.bridge-inspect/v1",
+    "bridgeId": "io.ksadk.codex-bridge",
+    "sourceRef": "file://fixtures/codex-plugin",
+    "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "candidate": {
+      "ecosystem": "codex",
+      "integrationMode": "bridged",
+      "maturity": "bridged-ready",
+      "manifestKind": "codex-plugin",
+      "manifestRef": "file://fixtures/codex-plugin/.codex-plugin/plugin.json",
+      "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "result": {
+    "resultFormat": "ksadk.bridge-inspect-result/v1",
+    "status": "rejected",
+    "descriptor": null,
+    "rejection": {
+      "rejectionFormat": "ksadk.bridge-rejection/v1",
+      "action": "inspect",
+      "code": "host_unavailable",
+      "retryable": true,
+      "message": "Required native host is unavailable.",
+      "host": {
+        "hostId": "codex-app-server",
+        "available": false,
+        "version": null,
+        "protocol": null,
+        "protocolVersion": null,
+        "digest": null
+      }
+    }
+  }
+}

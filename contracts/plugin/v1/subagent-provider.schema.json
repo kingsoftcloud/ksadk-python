@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/subagent-provider.schema.json",
+  "title": "SubagentProvider/v1 conformance transcript",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "pluginReference": {
+      "type": "string",
+      "pattern": "^plugin://[a-z0-9]+(?:[._-][a-z0-9]+)*@\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxDepth": {"type": "integer", "minimum": 1, "maximum": 16},
+        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "maxSteps": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "background": {"type": "boolean"},
+        "allowedTools": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "allowedPermissions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "maxDepth",
+        "timeoutSeconds",
+        "maxSteps",
+        "background",
+        "allowedTools",
+        "allowedPermissions"
+      ]
+    },
+    "spawnRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestFormat": {"const": "ksadk.subagent-spawn/v1"},
+        "providerRef": {"$ref": "#/$defs/pluginReference"},
+        "parentSessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "parentRunId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "task": {"type": "string", "minLength": 1, "maxLength": 131072},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 16},
+        "policy": {"$ref": "#/$defs/policy"},
+        "metadata": {"type": "object"}
+      },
+      "required": [
+        "requestFormat",
+        "providerRef",
+        "parentSessionId",
+        "parentRunId",
+        "task",
+        "depth",
+        "policy",
+        "metadata"
+      ]
+    },
+    "childHandle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handleFormat": {"const": "ksadk.child-handle/v1"},
+        "handleId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "providerRef": {"$ref": "#/$defs/pluginReference"},
+        "parentSessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "parentRunId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "childSessionId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "childRunId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "depth": {"type": "integer", "minimum": 1, "maximum": 16},
+        "capabilities": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "capabilityDigest": {"$ref": "#/$defs/digest"},
+        "createdAt": {"$ref": "#/$defs/timestamp"},
+        "resumable": {"type": "boolean"},
+        "resumeDescriptor": {"type": ["object", "null"]}
+      },
+      "required": [
+        "handleFormat",
+        "handleId",
+        "providerRef",
+        "parentSessionId",
+        "parentRunId",
+        "childSessionId",
+        "childRunId",
+        "depth",
+        "capabilities",
+        "capabilityDigest",
+        "createdAt",
+        "resumable",
+        "resumeDescriptor"
+      ],
+      "allOf": [
+        {
+          "if": {"properties": {"resumable": {"const": true}}},
+          "then": {"properties": {"resumeDescriptor": {"type": "object", "minProperties": 1}}},
+          "else": {"properties": {"resumeDescriptor": {"type": "null"}}}
+        }
+      ]
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "statusFormat": {"const": "ksadk.subagent-status/v1"},
+        "handleId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "state": {
+          "enum": [
+            "accepted",
+            "running",
+            "waiting_input",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "disposed"
+          ]
+        },
+        "lastSeq": {"type": "integer", "minimum": 0},
+        "updatedAt": {"$ref": "#/$defs/timestamp"},
+        "reason": {"type": ["string", "null"], "maxLength": 2048}
+      },
+      "required": ["statusFormat", "handleId", "state", "lastSeq", "updatedAt", "reason"]
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eventFormat": {"const": "ksadk.subagent-event/v1"},
+        "handleId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "eventId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "seq": {"type": "integer", "minimum": 1},
+        "kind": {"enum": ["progress", "item", "interaction", "terminal"]},
+        "payload": {"type": "object"},
+        "nativeRef": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      },
+      "required": ["eventFormat", "handleId", "eventId", "seq", "kind", "payload", "nativeRef"]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resultFormat": {"const": "ksadk.subagent-result/v1"},
+        "handleId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "state": {"enum": ["succeeded", "failed", "cancelled", "interrupted"]},
+        "output": true,
+        "outputRefs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "errorCode": {"type": ["string", "null"], "maxLength": 256},
+        "errorMessage": {"type": ["string", "null"], "maxLength": 2048}
+      },
+      "required": [
+        "resultFormat",
+        "handleId",
+        "state",
+        "output",
+        "outputRefs",
+        "errorCode",
+        "errorMessage"
+      ],
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "failed"}}},
+          "then": {"properties": {"errorCode": {"type": "string", "minLength": 1}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "succeeded"}}},
+          "then": {
+            "properties": {
+              "errorCode": {"type": "null"},
+              "errorMessage": {"type": "null"}
+            }
+          }
+        }
+      ]
+    }
+  },
+  "properties": {
+    "contractFormat": {"const": "ksadk.subagent-provider/v1"},
+    "request": {"$ref": "#/$defs/spawnRequest"},
+    "handle": {"$ref": "#/$defs/childHandle"},
+    "status": {"$ref": "#/$defs/status"},
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/event"}
+    },
+    "result": {"$ref": "#/$defs/result"}
+  },
+  "required": ["contractFormat", "request", "handle", "status", "events", "result"]
+}

@@ -204,6 +204,7 @@ class CodexAgentService:
             )
         resolved = spec.model_copy(deep=True)
         resolved.runtime = current.spec.runtime
+        self._ensure_mcp_bindings_supported(resolved)
         # 早期 Studio 曾把 ksadk Tool 写进 Codex 草稿，尽管 Codex Runtime
         # 从未执行这些绑定。允许原样保存这类 dormant 历史数据，避免用户只改
         # Prompt/Model 时被迫丢绑定；新增、删除或修改仍按当前能力矩阵拒绝。
@@ -251,8 +252,7 @@ class CodexAgentService:
         self.drafts.save(updated)
         return self._project(snapshot, current=updated)
 
-    @staticmethod
-    def ensure_bindings_supported(spec: AgentSpec) -> None:
+    def ensure_bindings_supported(self, spec: AgentSpec) -> None:
         bindings = spec.bindings
         if bindings.tools or spec.capabilities.tools:
             raise StudioError(
@@ -263,6 +263,34 @@ class CodexAgentService:
                 details={"runtimeType": "codex"},
             )
         # codex 支持 streamable-http MCP（通过 config_overrides 注入 mcp_servers）。
+        self._ensure_mcp_bindings_supported(spec)
+
+    def _ensure_mcp_bindings_supported(self, spec: AgentSpec) -> None:
+        direct_dynamic = [
+            server.name
+            for server in spec.capabilities.mcp_servers
+            if server.enabled and server.materialization == "dsh-profile"
+        ]
+        if direct_dynamic:
+            raise StudioError(
+                "DSH_MCP_MANAGED_BINDING_REQUIRED",
+                "DSH Profile MCP 必须从当前 Catalog Resource 显式绑定，不能直接写入 AgentSpec",
+                status_code=422,
+                field="spec.capabilities.mcpServers",
+                details={"servers": sorted(direct_dynamic)},
+            )
+        for binding in spec.bindings.mcp_servers:
+            if not binding.enabled:
+                continue
+            descriptor = self.studio.catalog.get(binding.resource_id)
+            if descriptor.contract.get("materialization") == "dsh-profile":
+                raise StudioError(
+                    "DSH_MCP_RUNTIME_INCOMPATIBLE",
+                    "DSH Profile MCP 当前只支持 Harness Runtime",
+                    status_code=422,
+                    field="spec.runtime.type",
+                    details={"runtimeType": "codex"},
+                )
 
     def _skill_resource_ids(self, spec: AgentSpec) -> list[str]:
         bindings = spec.bindings
@@ -277,7 +305,7 @@ class CodexAgentService:
         return ordered
 
     def _mcp_server_configs(self, spec: AgentSpec) -> list[dict[str, Any]]:
-        """Resolve bound MCP resource ids to codex streamable-http MCP configs."""
+        """Resolve bound MCP resources to native Codex HTTP or stdio configs."""
         bindings = spec.bindings
         ids = [b.resource_id for b in bindings.mcp_servers]
         ids.extend(spec.capabilities.mcp_servers or [])
@@ -299,26 +327,51 @@ class CodexAgentService:
             if descriptor is None:
                 continue
             contract = descriptor.contract or {}
+            if contract.get("materialization") == "dsh-profile":
+                raise StudioError(
+                    "DSH_MCP_RUNTIME_INCOMPATIBLE",
+                    "DSH Profile MCP 不能物化为 Codex MCP 配置",
+                    status_code=422,
+                    field="spec.bindings.mcpServers",
+                    details={"runtimeType": "codex"},
+                )
             url = str(
                 contract.get("endpointUrl")
                 or contract.get("endpoint_url")
                 or contract.get("url")
                 or ""
             ).strip()
-            if not url:
+            transport = str(contract.get("transport") or ("http" if url else "")).lower()
+            command = str(contract.get("command") or "").strip()
+            if transport == "stdio" and command:
+                entry: dict[str, Any] = {
+                    "name": descriptor.name,
+                    "transport": "stdio",
+                    "command": command,
+                    "args": [str(argument) for argument in (contract.get("args") or [])],
+                }
+            elif transport in {"http", "sse"} and url:
+                entry = {
+                    "name": descriptor.name,
+                    "url": url,
+                }
+                if transport == "sse":
+                    entry["transport"] = transport
+            else:
                 continue
             env_refs = contract.get("envRefs") or {}
-            env_key = ""
-            for ref in env_refs.values():
-                if isinstance(ref, str) and ref.startswith("env://"):
-                    env_key = ref.removeprefix("env://")
-                    break
-            entry: dict[str, Any] = {
-                "name": descriptor.name,
-                "url": url,
-            }
-            if env_key:
-                entry["env_key"] = env_key
+            if transport == "stdio" and isinstance(env_refs, dict) and env_refs:
+                entry["env_refs"] = {
+                    str(env_name): str(reference) for env_name, reference in env_refs.items()
+                }
+            elif isinstance(env_refs, dict):
+                env_key = ""
+                for ref in env_refs.values():
+                    if isinstance(ref, str) and ref.startswith("env://"):
+                        env_key = ref.removeprefix("env://")
+                        break
+                if env_key:
+                    entry["env_key"] = env_key
             ordered.append(entry)
         return ordered
 
@@ -377,9 +430,17 @@ class CodexAgentService:
     def detail(self, agent_id: str | None = None) -> dict:
         snapshot = self.studio.codex_manifests.load(agent_id)
         _mcp_bindings, unresolved_mcp = self._mcp_bindings(snapshot.manifest)
+        builds_view: list[dict] = []
+        for item in self._builds(snapshot.manifest.name):
+            view = self.build_view(item)
+            try:
+                view["isCurrent"] = self.studio.codex_builder.is_current(item)
+            except Exception:
+                view["isCurrent"] = True
+            builds_view.append(view)
         return {
             "draft": self._project(snapshot),
-            "builds": [self.build_view(item) for item in self._builds(snapshot.manifest.name)],
+            "builds": builds_view,
             "validation": {"valid": True, "level": "build", "diagnostics": []},
             "manifestSha256": snapshot.manifest_sha256,
             "sourcePath": self.studio.workspace.relative(snapshot.source_path),
@@ -390,7 +451,7 @@ class CodexAgentService:
 
     @staticmethod
     def build_view(record: CodexBuildRecord) -> dict:
-        return {
+        payload = {
             "id": record.id,
             "agentId": record.agent_name,
             "sourceRevision": record.source_revision,
@@ -407,6 +468,24 @@ class CodexAgentService:
             "runtimeVersion": record.runtime_version,
             "proxyMode": record.proxy_mode,
         }
+        if record.plugin_lock is not None:
+            payload.update(
+                {
+                    "pluginLock": record.plugin_lock.model_dump(
+                        by_alias=True, exclude_none=True, mode="json"
+                    ),
+                    "pluginLockDigest": record.plugin_lock_digest,
+                    "pluginMarketplace": (
+                        record.plugin_marketplace.model_dump(
+                            by_alias=True, exclude_none=True, mode="json"
+                        )
+                        if record.plugin_marketplace is not None
+                        else None
+                    ),
+                    "pluginRuntimeStatus": record.plugin_runtime_status or {},
+                }
+            )
+        return payload
 
     def submit_build(
         self,
@@ -486,8 +565,7 @@ class CodexAgentService:
         bindings = self._model_bindings(manifest)
         mcp_bindings, _unresolved_mcp = self._mcp_bindings(manifest)
         skill_bindings = [
-            CapabilityBinding(resource_id=resource_id)
-            for resource_id in (manifest.skills or [])
+            CapabilityBinding(resource_id=resource_id) for resource_id in (manifest.skills or [])
         ]
         # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
         # Manifest 已在 model_validate 时严格校验；这里直接恢复
@@ -505,10 +583,12 @@ class CodexAgentService:
                 system=manifest.prompt,
                 task=manifest.task_prompt or "",
             )
+            draft.spec.soul = manifest.soul
             draft.spec.bindings.model_profile_id = bindings[0]
             draft.spec.bindings.model_profile_ids = bindings[1]
             draft.spec.bindings.skills = skill_bindings
             draft.spec.bindings.mcp_servers = mcp_bindings
+            draft.spec.bindings.plugins = list(manifest.plugins or [])
             draft.spec.context = context_spec
             draft.spec.memory = memory_spec
             draft.metadata.labels.update(self._labels(manifest))
@@ -527,11 +607,13 @@ class CodexAgentService:
                     system=manifest.prompt,
                     task=manifest.task_prompt or "",
                 ),
+                soul=manifest.soul,
                 bindings=AgentBindings(
                     model_profile_id=default_profile,
                     model_profile_ids=profiles,
                     skills=skill_bindings,
                     mcp_servers=mcp_bindings,
+                    plugins=list(manifest.plugins or []),
                 ),
                 context=context_spec,
                 memory=memory_spec,
@@ -576,8 +658,10 @@ class CodexAgentService:
             models=models if len(models) > 1 else None,
             prompt=prompt,
             task_prompt=task_prompt,
+            soul=spec.soul,
             skills=skill_ids or None,
             mcp_servers=mcp_servers or None,
+            plugins=list(spec.bindings.plugins) or None,
             sandbox=spec.execution.sandbox,
             approval_mode=spec.execution.approval_mode,
             context=context_payload,
@@ -657,22 +741,41 @@ class CodexAgentService:
                 or contract.get("url")
                 or ""
             ).strip()
-            if name and url:
-                resources.setdefault((name, url), descriptor.resource_id)
+            transport = str(contract.get("transport") or ("http" if url else "")).lower()
+            address = (
+                json.dumps(
+                    [str(contract.get("command") or ""), *(contract.get("args") or [])],
+                    separators=(",", ":"),
+                )
+                if transport == "stdio"
+                else url
+            )
+            if name and address:
+                resources.setdefault((name, address), descriptor.resource_id)
 
         bindings: builtins.list[CapabilityBinding] = []
         unresolved: builtins.list[dict[str, str]] = []
         for entry in manifest.mcp_servers or []:
             name = str(entry.get("name") or "").strip()
-            url = str(entry.get("url") or "").strip()
-            resource_id = resources.get((name, url))
+            transport = str(entry.get("transport") or ("http" if entry.get("url") else "")).lower()
+            address = (
+                json.dumps(
+                    [str(entry.get("command") or ""), *(entry.get("args") or [])],
+                    separators=(",", ":"),
+                )
+                if transport == "stdio"
+                else str(entry.get("url") or "").strip()
+            )
+            resource_id = resources.get((name, address))
             if resource_id:
                 bindings.append(CapabilityBinding(resource_id=resource_id))
             else:
-                unresolved.append({
-                    "name": name or "未命名 MCP",
-                    "reason": "not-in-resource-catalog",
-                })
+                unresolved.append(
+                    {
+                        "name": name or "未命名 MCP",
+                        "reason": "not-in-resource-catalog",
+                    }
+                )
         return bindings, unresolved
 
     @staticmethod

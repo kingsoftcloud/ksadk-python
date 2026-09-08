@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "event_id": "614e828c-fed7-5202-a07d-354cfa1942a0",
+  "session_id": "session-1",
+  "seq": 20,
+  "timestamp": "2026-08-17T00:00:01Z",
+  "family": "runtime",
+  "family_version": 2,
+  "event_type": "run.message.delta",
+  "payload": {
+    "text": "hello",
+    "delta_index": 0
+  },
+  "run_id": "run-1",
+  "causation_id": "cmd-4bf84e1b",
+  "correlation_id": "corr-1",
+  "actor_ref": "worker-1"
+}

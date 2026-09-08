@@ -13,6 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
+from ksadk.plugins.providers.legacy_catalog import CODEX_AGENT_PROVIDER_PLUGIN_ID
 from ksadk.studio.authoring import AgentAuthoringService, ConversationProposal
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
@@ -75,6 +76,16 @@ def _deduplicated_bindings(resource_ids: list[str]) -> list[CapabilityBinding]:
         seen.add(normalized)
         result.append(CapabilityBinding(resource_id=normalized))
     return result
+
+
+def _uses_codex_native_tools(runtime: RuntimeRef | None) -> bool:
+    if runtime is None:
+        return False
+    return runtime.type == "codex" or (
+        runtime.type == "plugin"
+        and bool(runtime.provider_ref)
+        and runtime.provider_ref.startswith(f"plugin://{CODEX_AGENT_PROVIDER_PLUGIN_ID}@")
+    )
 
 
 def _inject_managed_bindings(
@@ -218,9 +229,7 @@ class StudioAuthoringCoordinator:
             ),
             "请根据已确认的需求完成 Agent，并在部署前检查配置和权限。",
         )
-        previous_instructions = (
-            previous_proposal.spec.instructions if previous_proposal else None
-        )
+        previous_instructions = previous_proposal.spec.instructions if previous_proposal else None
         fallback_payload = {
             "name": previous_proposal.name if previous_proposal else "待确认 Agent",
             "slug": previous_proposal.slug if previous_proposal else "conversation-agent",
@@ -257,9 +266,7 @@ class StudioAuthoringCoordinator:
                 "active": True,
                 "reason": _LOCAL_FALLBACK_REASON.get(reason_code, "model-unavailable"),
             },
-            "usage": Usage(source="local-fallback").model_dump(
-                by_alias=True, mode="json"
-            ),
+            "usage": Usage(source="local-fallback").model_dump(by_alias=True, mode="json"),
         }
 
     def create(
@@ -278,7 +285,6 @@ class StudioAuthoringCoordinator:
             resolved = (spec or default_agent_spec(template, description=description)).model_copy(
                 deep=True
             )
-            canonical_runtime = self.backend.runtime_ref(agent_id, runtime_type)
             proposed_runtime = resolved.runtime
             if proposed_runtime is not None and proposed_runtime.type != runtime_type:
                 raise StudioError(
@@ -291,7 +297,18 @@ class StudioAuthoringCoordinator:
                         "specRuntimeType": proposed_runtime.type,
                     },
                 )
-            if proposed_runtime is not None:
+            if runtime_type == "plugin":
+                if proposed_runtime is None or proposed_runtime.provider_ref is None:
+                    raise StudioError(
+                        "AGENT_PROVIDER_REFERENCE_REQUIRED",
+                        "外部 AgentProvider 必须选择一个已安装的精确版本",
+                        status_code=422,
+                        field="spec.runtime.providerRef",
+                    )
+                canonical_runtime = proposed_runtime.model_copy(deep=True)
+            else:
+                canonical_runtime = self.backend.runtime_ref(agent_id, runtime_type)
+            if proposed_runtime is not None and runtime_type != "plugin":
                 if runtime_type == "codex" and proposed_runtime.version:
                     canonical_runtime.version = proposed_runtime.version
                 elif runtime_type in {"adk", "langgraph"}:
@@ -302,6 +319,9 @@ class StudioAuthoringCoordinator:
                     canonical_runtime.version = proposed_runtime.version
                     canonical_runtime.detection = proposed_runtime.detection
             resolved.runtime = canonical_runtime
+            if _uses_codex_native_tools(canonical_runtime):
+                resolved.bindings = resolved.bindings.model_copy(update={"tools": []})
+                resolved.capabilities = resolved.capabilities.model_copy(update={"tools": []})
             if description:
                 resolved.description = description
             draft = self.studio.create_studio_agent(
@@ -676,8 +696,7 @@ class StudioAuthoringCoordinator:
             if exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
                 raise
             LOGGER.warning(
-                "conversation authoring patch invalid; returning local fallback: "
-                "modelProfileId=%s",
+                "conversation authoring patch invalid; returning local fallback: modelProfileId=%s",
                 model_profile_id,
             )
             self._record_conversation_stage(request_id, "done")
@@ -701,9 +720,7 @@ class StudioAuthoringCoordinator:
                 proposal,
                 model_spec=model_spec,
                 bindings=bindings,
-            ).model_dump(
-                by_alias=True, mode="json"
-            ),
+            ).model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,
             "authoringMode": "chat",
             "usage": response.usage.model_dump(by_alias=True, mode="json"),
@@ -763,9 +780,7 @@ class StudioAuthoringCoordinator:
                 result.proposal,
                 model_spec=model_spec,
                 bindings=bindings,
-            ).model_dump(
-                by_alias=True, mode="json"
-            ),
+            ).model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,
             "authoringMode": "codex",
             "usage": result.usage.model_dump(by_alias=True, mode="json"),

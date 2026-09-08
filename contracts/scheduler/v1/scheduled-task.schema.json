@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/scheduler/v1/scheduled-task.schema.json",
+  "title": "ScheduledTask/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "tenantId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "agentInstanceId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "agentVersionRef": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "sessionId": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "authorizationRef": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "required": ["tenantId", "agentInstanceId", "authorizationRef"]
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["once", "interval", "cron"]},
+        "timezone": {"type": "string", "minLength": 1},
+        "at": {"$ref": "#/$defs/timestamp"},
+        "everySeconds": {"type": "integer", "minimum": 60, "maximum": 31536000},
+        "anchorAt": {"$ref": "#/$defs/timestamp"},
+        "expression": {"type": "string", "minLength": 9, "maxLength": 128},
+        "misfirePolicy": {"enum": ["skip", "run_once"]}
+      },
+      "required": ["kind"]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commandType": {"const": "enqueue"},
+        "payload": {"type": "object", "required": ["content"]}
+      },
+      "required": ["commandType", "payload"]
+    }
+  },
+  "properties": {
+    "apiVersion": {"const": "schedule.ksadk.io/v1"},
+    "kind": {"const": "ScheduledTask"},
+    "schemaVersion": {"const": 1},
+    "taskId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,62}$"},
+    "displayName": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "target": {"$ref": "#/$defs/target"},
+    "schedule": {"$ref": "#/$defs/schedule"},
+    "command": {"$ref": "#/$defs/command"},
+    "enabled": {"type": "boolean"},
+    "continuity": {"enum": ["new_session", "continue_session"]},
+    "concurrencyPolicy": {"const": "forbid"},
+    "nextRunAt": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "createdAt": {"$ref": "#/$defs/timestamp"},
+    "updatedAt": {"$ref": "#/$defs/timestamp"}
+  },
+  "required": ["apiVersion", "kind", "schemaVersion", "taskId", "target", "schedule", "command"]
+}

@@ -39,6 +39,7 @@ async def stream_conversation_turn(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> AsyncIterator[str]:
     """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
     events = _iter_conversation_turn_events(
@@ -60,6 +61,7 @@ async def stream_conversation_turn(
         invocation_id=invocation_id,
         session_service_provider=session_service_provider,
         run_mode=run_mode,
+        resume_lifecycle_prepared=resume_lifecycle_prepared,
     )
     async for chunk in _stream_conversation_semantic_events(
         events=events,
@@ -228,6 +230,7 @@ async def stream_responses_conversation_turn(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> AsyncIterator[str]:
     """OpenAI Responses-style SSE stream."""
     response_id = f"resp_{uuid.uuid4().hex}"

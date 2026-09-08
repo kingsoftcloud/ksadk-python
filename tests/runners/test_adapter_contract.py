@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from typing import Any, Optional
 
 import pytest
@@ -125,6 +126,31 @@ class _ContractRunner(BaseRunner):
         }
 
 
+class _ContextBoundRunner(_ContractRunner):
+    """Generator cleanup must run in the Context that created its token."""
+
+    def __init__(self, *, block: bool = False) -> None:
+        super().__init__(block=block, with_approval=False)
+        self._context = ContextVar("adk_stream_context", default="outside")
+        self.context_reset = False
+
+    async def stream(self, input_data: dict[str, Any]):
+        self.received_inputs.append(input_data)
+        token = self._context.set("inside")
+        try:
+            yield {"type": "text", "delta": "first"}
+            if self._block:
+                try:
+                    await self._release.wait()
+                except (asyncio.CancelledError, GeneratorExit):
+                    self.stream_interrupted = True
+                    raise
+            yield {"type": "final", "output": "first second"}
+        finally:
+            self._context.reset(token)
+            self.context_reset = True
+
+
 class _FakeCodexClient(CodexClient):
     """受控 codex 后端:与 _ContractRunner 同构——先发 approval,再阻塞等中断,最后 completed。"""
 
@@ -233,6 +259,38 @@ ADAPTERS = [
     (_make_codex, "codex", "thread_id"),
     (_make_miniflow, "miniflow", "checkpoint_id"),
 ]
+
+
+@pytest.mark.asyncio
+async def test_adk_stream_keeps_one_context_across_multiple_chunks():
+    runner = _ContextBoundRunner()
+    adapter = RunnerRuntimeAdapter(runner, runtime_type="adk")
+    handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
+
+    events = [event async for event in adapter.stream(handle)]
+
+    assert runner.context_reset is True
+    assert any(event.event_type == "run.completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_adk_cancel_closes_stream_in_its_origin_context():
+    runner = _ContextBoundRunner(block=True)
+    adapter = RunnerRuntimeAdapter(runner, runtime_type="adk")
+    handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
+    events: list[EventEnvelope] = []
+    consume = asyncio.create_task(_drain(adapter, handle, events))
+    for _ in range(100):
+        if runner.received_inputs:
+            break
+        await asyncio.sleep(0.01)
+
+    result = await adapter.cancel(handle)
+    await asyncio.wait_for(consume, timeout=2)
+
+    assert result is CancelResult.INTERRUPTED_ACTIVE_TURN
+    assert runner.stream_interrupted is True
+    assert runner.context_reset is True
 
 
 async def _drain(adapter, handle, events: list):

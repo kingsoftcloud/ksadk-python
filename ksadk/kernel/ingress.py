@@ -421,6 +421,26 @@ def map_studio_request(
     )
 
 
+def map_scheduler_request(
+    *,
+    session_id: str,
+    idempotency_key: str,
+    content: Any,
+    occurrence_id: str,
+    trusted: TrustedRuntimeContext,
+) -> AgentControlCommand:
+    """Scheduler occurrence -> enqueue with durable source and correlation IDs."""
+
+    return _command(
+        trusted=trusted,
+        command_type="enqueue",
+        session_id=session_id,
+        idempotency_key=idempotency_key,
+        payload={"content": content},
+        correlation_id=occurrence_id,
+    )
+
+
 def map_control_request(
     *,
     command_type: str,
@@ -1091,6 +1111,7 @@ __all__ = [
     "map_control_request",
     "map_responses_request",
     "map_run_request",
+    "map_scheduler_request",
     "map_studio_request",
     "receipt_error_payload",
     "receipt_http_status",

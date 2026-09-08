@@ -1,0 +1,30 @@
+{
+  "apiVersion": "composition.ksadk.io/v1",
+  "agentProvider": {
+    "ref": "plugin://io.ksadk.codex-provider@1.0.0",
+    "config": {
+      "approvalMode": "on-request"
+    }
+  },
+  "capabilities": [
+    {
+      "ref": "mcp://workspace/git@3",
+      "required": true
+    },
+    {
+      "ref": "skill://workspace/release-review@7",
+      "required": false
+    }
+  ],
+  "nativeExtensions": [
+    {
+      "runtime": "codex",
+      "ref": "codex-plugin://example/release-review@2"
+    }
+  ],
+  "policies": {
+    "tool": "policy://strict@4",
+    "network": "policy://restricted@2"
+  },
+  "uiContributions": []
+}

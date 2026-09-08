@@ -1,0 +1,15 @@
+{
+  "apiVersion": "conversation.ksadk.io/v1",
+  "kindVersion": 1,
+  "itemId": "assistant-1",
+  "sourceEventIds": ["evt-123"],
+  "sessionId": "session-example",
+  "runId": "run-example",
+  "kind": "assistant_text",
+  "operation": "append",
+  "lifecycle": "streaming",
+  "visibility": "public",
+  "payloadSchemaRef": "conversation.item.assistant_text/v1",
+  "payload": {"text": "你好"},
+  "nativeRef": {"framework": "codex", "itemId": "native-1"}
+}

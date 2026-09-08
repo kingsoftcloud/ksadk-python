@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import os
@@ -18,8 +19,18 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from ksadk.api.client import AgentEngineAPIError
+from ksadk.conversations.contracts import (
+    ConversationAttachmentPart,
+    ConversationTextPart,
+    validate_conversation_input,
+)
+from ksadk.conversations.projector import project_conversation_item
+from ksadk.events.canonical import parse_runtime_event_lenient
+from ksadk.scheduler.contracts import ScheduledTask
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
+    AgentScheduleRequest,
     AuthoringCommitRequest,
     BuildRequest,
     CloudAgentVersionRollbackRequest,
@@ -27,6 +38,7 @@ from ksadk.studio.api_contracts import (
     CloudChatMessageRequest,
     ContextPreviewRequest,
     ConversationAuthoringRequest,
+    ConversationTurnRequest,
     CreateAgentRequest,
     ImportRootRequest,
     InteractionSubmitRequest,
@@ -65,6 +77,8 @@ from ksadk.studio.api_helpers import (
     sse as _sse,
 )
 from ksadk.studio.api_memory_routes import register_memory_routes
+from ksadk.studio.api_plugin_routes import register_plugin_routes
+from ksadk.studio.cloud_shared_web import CloudSharedWebBridge, cloud_chat_target, is_cloud_agent_id
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentAppearance,
@@ -85,6 +99,113 @@ _PUBLIC_API_PATHS = {
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
+# RuntimeEvent/v2 itself is snake_case.  Some pre-existing cloud SessionEvent
+# projections, however, serialized the *envelope* with the REST camelCase
+# convention.  This is a narrow transport normalizer, not a provider payload
+# rewrite: only fields owned by the frozen RuntimeEvent envelope/content
+# contracts are translated before strict parsing.
+_RUNTIME_EVENT_WIRE_ALIASES = {
+    "schemaVersion": "schema_version",
+    "eventId": "event_id",
+    "runId": "run_id",
+    "runSeq": "run_seq",
+    "scopeId": "scope_id",
+    "parentScopeId": "parent_scope_id",
+    "eventType": "event_type",
+    "itemId": "item_id",
+    "itemKind": "item_kind",
+    "interactionId": "interaction_id",
+    "interactionKind": "interaction_kind",
+    "continuationId": "continuation_id",
+    "resumeAttemptId": "resume_attempt_id",
+    "outputRefs": "output_refs",
+    "inputTokens": "input_tokens",
+    "outputTokens": "output_tokens",
+    "totalTokens": "total_tokens",
+    "cachedTokens": "cached_tokens",
+    "reasoningTokens": "reasoning_tokens",
+}
+_SOURCE_WIRE_ALIASES = {
+    "nativeEventId": "native_event_id",
+    "nativeCursor": "native_cursor",
+    "nativeRunId": "native_run_id",
+    "nativeItemId": "native_item_id",
+}
+_CONTENT_WIRE_ALIASES = {
+    "contentType": "content_type",
+    "partId": "part_id",
+    "callId": "call_id",
+    "artifactId": "artifact_id",
+    "mimeType": "mime_type",
+    "isError": "is_error",
+}
+
+
+def _normalize_cloud_runtime_event_wire(value: dict[str, Any]) -> dict[str, Any]:
+    """Normalize only historic REST casing at the RuntimeEvent boundary."""
+
+    normalized = {_RUNTIME_EVENT_WIRE_ALIASES.get(key, key): item for key, item in value.items()}
+    source = normalized.get("source")
+    if isinstance(source, dict):
+        normalized["source"] = {
+            _SOURCE_WIRE_ALIASES.get(key, key): item for key, item in source.items()
+        }
+
+    def normalize_content(content: Any) -> Any:
+        if not isinstance(content, dict):
+            return content
+        return {_CONTENT_WIRE_ALIASES.get(key, key): item for key, item in content.items()}
+
+    normalized["update"] = normalize_content(normalized.get("update"))
+    for key in ("initial", "snapshot"):
+        snapshot = normalized.get(key)
+        if not isinstance(snapshot, dict):
+            continue
+        parts = snapshot.get("parts")
+        if isinstance(parts, list):
+            normalized[key] = {
+                **snapshot,
+                "parts": [normalize_content(part) for part in parts],
+            }
+    return normalized
+
+
+def _cloud_event_conversation_item(
+    event: dict[str, Any], *, session_id: str
+) -> dict[str, Any] | None:
+    """Project a complete cloud RuntimeEvent without inventing a browser item.
+
+    Cloud SessionEvent history has a compatibility envelope around the runtime
+    payload.  Keep the source event untouched, but add the same typed
+    ConversationItem that local Studio streams use whenever the nested event
+    validates against RuntimeEvent/v2.  A malformed or older envelope is still
+    observable to diagnostics, never guessed into an actionable chat card.
+    """
+
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else event
+    content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+    candidates = (
+        content.get("runtime_event"),
+        content.get("runtimeEvent"),
+        payload.get("runtime_event"),
+        payload.get("runtimeEvent"),
+        event.get("runtime_event"),
+        event.get("runtimeEvent"),
+    )
+    raw_event = next((candidate for candidate in candidates if isinstance(candidate, dict)), None)
+    if raw_event is None:
+        return None
+    try:
+        runtime_event = parse_runtime_event_lenient(_normalize_cloud_runtime_event_wire(raw_event))
+        item = project_conversation_item(
+            runtime_event,  # type: ignore[arg-type]
+            session_id=session_id,
+            run_id=runtime_event.run_id,
+        )
+    except (TypeError, ValueError):
+        return None
+    return item.model_dump(by_alias=True, exclude_none=True, mode="json")
+
 
 def create_studio_app(
     root: Path | str,
@@ -101,9 +222,13 @@ def create_studio_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
+            await studio.start()
             await studio.run_service.recover_interrupted()
+            await studio.scheduler.start_if_available()
             yield
         finally:
+            await studio.scheduler.stop()
+            await studio.aclose()
             studio.credentials.clear_session()
 
     app = FastAPI(
@@ -117,8 +242,88 @@ def create_studio_app(
     app.state.studio_service = studio
     app.state.session_token = session_secret
     app.state.csrf_token = csrf_secret
+    from ksadk.studio.dsh_models import studio_model_projection
+
+    studio.dsh_capabilities.model_projection = lambda: studio_model_projection(
+        studio.catalog, studio.credentials
+    )
+
+    def _stream_studio_run(
+        build_id: str,
+        *,
+        user_input: str,
+        session_id: str | None,
+        model: str | None,
+        sandbox: str | None,
+        reasoning_effort: str | None = None,
+        approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+        runtime_input: Any = None,
+        idempotency_key: str,
+    ) -> StreamingResponse:
+        """Create an observer-only SSE response for one durable Studio run."""
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def observe(event):
+            queue.put_nowait(event)
+
+        # The Operation owns the runtime task. The SSE response is only one
+        # observer, so refreshing or switching chats cannot cancel the Run.
+        operation = studio.submit_studio_run(
+            build_id,
+            user_input,
+            session_id=session_id,
+            model=model,
+            sandbox=sandbox,
+            reasoning_effort=reasoning_effort,
+            approval_mode=approval_mode,
+            collaboration_mode=collaboration_mode,
+            goal_objective=goal_objective,
+            runtime_input=runtime_input,
+            idempotency_key=idempotency_key,
+            on_event=observe,
+        )
+
+        async def render():
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                except TimeoutError:
+                    event = None
+                if event is not None:
+                    data = json.dumps(
+                        event.data,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    yield f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
+                current = studio.operations.get(operation.id)
+                if (
+                    current.status
+                    in {
+                        OperationStatus.SUCCEEDED,
+                        OperationStatus.FAILED,
+                        OperationStatus.CANCELLED,
+                        OperationStatus.INTERRUPTED,
+                    }
+                    and queue.empty()
+                ):
+                    if current.status == OperationStatus.FAILED:
+                        data = json.dumps(current.error or {}, ensure_ascii=False)
+                        yield f"event: run.failed\ndata: {data}\n\n"
+                    break
+
+        return StreamingResponse(
+            render(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
     static_root = Path(__file__).with_name("static")
     shared_web = StudioSharedWebBridge(studio)
+    cloud_web = CloudSharedWebBridge(studio.cloud)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
 
@@ -212,6 +417,39 @@ def create_studio_app(
     async def studio_error_handler(request: Request, exc: StudioError):
         return _error_response(exc, request)
 
+    @app.exception_handler(AgentEngineAPIError)
+    async def agentengine_api_error_handler(request: Request, exc: AgentEngineAPIError):
+        http_status = exc.details.get("http_status", 502)
+        status_code = (
+            http_status if isinstance(http_status, int) and 400 <= http_status < 600 else 502
+        )
+        return _error_response(
+            StudioError(
+                "CLOUD_API_ERROR",
+                exc.message or "云端服务返回错误",
+                status_code=status_code,
+                details={"api_code": exc.code, "raw_code": exc.raw_code},
+            ),
+            request,
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_error_handler(request: Request, exc: Exception):
+        # Catch-all for bare Exception raises from the API client (e.g. HTTP
+        # errors, JSON parse failures) so they surface as structured JSON
+        # instead of opaque 500s.  StudioError and AgentEngineAPIError are
+        # handled by their own dedicated handlers above.
+        if isinstance(exc, StudioError):
+            return _error_response(exc, request)
+        return _error_response(
+            StudioError(
+                "INTERNAL_ERROR",
+                "Studio 内部错误，请根据请求 ID 查看本地诊断日志。",
+                status_code=500,
+            ),
+            request,
+        )
+
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         first = exc.errors()[0] if exc.errors() else {}
@@ -229,7 +467,13 @@ def create_studio_app(
     @app.get("/")
     async def index():
         path = static_root / "index.html"
-        response = FileResponse(path, media_type="text/html")
+        html = path.read_text(encoding="utf-8")
+        # Vite filenames are content hashed and index.html is no-store. Keep
+        # entry module URLs byte-for-byte identical to their internal imports:
+        # adding a query only to the HTML entry makes browsers evaluate that
+        # module again when a lazy chunk imports the unversioned URL.
+        response = Response(content=html, media_type="text/html")
+        response.headers["Cache-Control"] = "no-store"
         if security_enabled:
             response.set_cookie(
                 "agentkit_studio_session",
@@ -272,9 +516,31 @@ def create_studio_app(
     async def openai_responses(payload: dict[str, Any]):
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        agent_id = str(metadata.get("agent_id") or metadata.get("agentId") or "") or None
+        agentengine_metadata = metadata.get("agentengine")
+        agentengine_metadata = (
+            agentengine_metadata if isinstance(agentengine_metadata, dict) else {}
+        )
+        agent_id = (
+            str(
+                metadata.get("agent_id")
+                or metadata.get("agentId")
+                or agentengine_metadata.get("agent_id")
+                or agentengine_metadata.get("agentId")
+                or ""
+            )
+            or None
+        )
         requested_approval_mode = (
-            str(metadata.get("approval_mode") or metadata.get("approvalMode") or "").strip().lower()
+            str(
+                metadata.get("approval_mode")
+                or metadata.get("approvalMode")
+                or agentengine_metadata.get("tool_approval_mode")
+                or agentengine_metadata.get("approval_mode")
+                or agentengine_metadata.get("approvalMode")
+                or ""
+            )
+            .strip()
+            .lower()
         )
         if requested_approval_mode and requested_approval_mode not in {"ask", "risk", "full"}:
             raise StudioError(
@@ -284,7 +550,13 @@ def create_studio_app(
                 field="metadata.approval_mode",
             )
         collaboration_mode = (
-            str(metadata.get("collaboration_mode") or metadata.get("collaborationMode") or "")
+            str(
+                metadata.get("collaboration_mode")
+                or metadata.get("collaborationMode")
+                or agentengine_metadata.get("collaboration_mode")
+                or agentengine_metadata.get("collaborationMode")
+                or ""
+            )
             .strip()
             .lower()
         )
@@ -296,7 +568,11 @@ def create_studio_app(
                 field="metadata.collaboration_mode",
             )
         goal_objective = str(
-            metadata.get("goal_objective") or metadata.get("goalObjective") or ""
+            metadata.get("goal_objective")
+            or metadata.get("goalObjective")
+            or agentengine_metadata.get("goal_objective")
+            or agentengine_metadata.get("goalObjective")
+            or ""
         ).strip()
         reasoning = payload.get("reasoning")
         reasoning = reasoning if isinstance(reasoning, dict) else {}
@@ -324,6 +600,7 @@ def create_studio_app(
             "CollaborationMode": collaboration_mode,
             "GoalObjective": goal_objective,
             "ReasoningEffort": reasoning_effort,
+            "ModelExplicit": bool(str(payload.get("model") or "").strip()),
         }
         bridge_payload["Model"] = shared_web.select_model(
             bridge_payload["AgentId"],
@@ -363,26 +640,113 @@ def create_studio_app(
         try:
             cookie_agent_id = request.cookies.get("agentkit_studio_chat_agent")
             requested_agent_id = str(payload.get("AgentId") or cookie_agent_id or "")
+            cloud_mode = is_cloud_agent_id(requested_agent_id)
+            if cloud_mode:
+                # Cloud agents project onto the same shared-web action
+                # contract through the cloud-chat proxy, so the ksadk-web
+                # headless data layer drives them like hosted-ui does.
+                cloud_target = cloud_chat_target(requested_agent_id)
+                data = None
+                if action == "GetAgentUiBootstrap":
+                    data = await cloud_web.bootstrap(cloud_target)
+                elif action == "ListAgentModels":
+                    data = await cloud_web.list_models(cloud_target)
+                elif action == "ListSessions":
+                    data = await cloud_web.list_sessions(
+                        cloud_target,
+                        page=int(payload.get("Page") or 1),
+                        page_size=int(payload.get("PageSize") or 30),
+                    )
+                elif action == "CreateSession":
+                    data = await cloud_web.create_session(cloud_target)
+                elif action == "GetSession":
+                    data = await cloud_web.get_session(
+                        cloud_target, str(payload.get("SessionId") or "")
+                    )
+                elif action == "DeleteSession":
+                    data = await cloud_web.delete_session(
+                        cloud_target, str(payload.get("SessionId") or "")
+                    )
+                elif action == "ListSessionMessages":
+                    data = await cloud_web.list_messages(
+                        cloud_target,
+                        str(payload.get("SessionId") or ""),
+                        after_seq_id=_optional_int(payload.get("AfterSeqId")),
+                        before_seq_id=_optional_int(payload.get("BeforeSeqId")),
+                        limit=int(payload.get("Limit") or 50),
+                    )
+                elif action == "ListSessionEvents":
+                    data = await cloud_web.list_session_events(
+                        cloud_target,
+                        str(payload.get("SessionId") or ""),
+                        after_seq_id=_optional_int(payload.get("AfterSeqId")),
+                        offset=_optional_int(payload.get("Offset")),
+                        limit=int(payload.get("Limit") or 200),
+                    )
+                elif action == "SubmitInteraction":
+                    data = await cloud_web.submit_interaction(
+                        cloud_target, str(payload.get("SessionId") or ""), payload
+                    )
+                elif action == "RunAgent":
+                    # Open the upstream connection before StreamingResponse
+                    # commits status 200, so admission failures remain a
+                    # structured HTTP error instead of an empty SSE body.
+                    upstream_stream = await cloud_web.open_run_stream(cloud_target, payload)
+                    return StreamingResponse(
+                        cloud_web.stream_run(
+                            cloud_target,
+                            payload,
+                            upstream_stream=upstream_stream,
+                        ),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+                    )
+                elif action in {
+                    "GetResponseFeedback",
+                    "UpsertResponseFeedback",
+                    "DeleteResponseFeedback",
+                    "ListSessionCheckpoints",
+                    "ListToolReceipts",
+                }:
+                    data = {"Feedback": None} if action == "GetResponseFeedback" else {}
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "Code": 404,
+                            "Message": f"Studio 尚未实现云端共享 Web 动作：{action}",
+                            "Data": {},
+                        },
+                    )
+                return {"Code": 0, "Message": "OK", "Data": data}
             if action == "GetAgentUiBootstrap":
                 data = shared_web.bootstrap(shared_web.resolve_agent_id(requested_agent_id or None))
             elif action == "ListAgentModels":
-                data = shared_web.list_models(
-                    shared_web.resolve_agent_id(requested_agent_id or None)
-                )
+                model_agent_id = shared_web.resolve_agent_id(requested_agent_id or None)
+                # A cold Studio process has no discovered provider descriptors.
+                # Resolve the same cached catalog as Resources before projecting
+                # model windows; visiting Resources must not be a prerequisite.
+                await runtime_model_catalog()
+                data = shared_web.list_models(model_agent_id)
             elif action == "ListSessions":
-                data = shared_web.list_sessions(
+                data = await shared_web.list_sessions(
                     shared_web.resolve_agent_id(requested_agent_id or None),
                     page=int(payload.get("Page") or 1),
                     page_size=int(payload.get("PageSize") or 30),
                 )
             elif action == "CreateSession":
-                data = shared_web.create_session(
+                data = await shared_web.create_session(
                     shared_web.resolve_agent_id(requested_agent_id or None)
                 )
             elif action == "GetSession":
-                data = shared_web.get_session(str(payload.get("SessionId") or ""))
+                data = await shared_web.get_session(str(payload.get("SessionId") or ""))
+            elif action == "CompactSession":
+                data = await shared_web.compact_session(
+                    shared_web.resolve_agent_id(requested_agent_id or None),
+                    str(payload.get("SessionId") or ""),
+                )
             elif action == "DeleteSession":
-                data = shared_web.delete_session(str(payload.get("SessionId") or ""))
+                data = await shared_web.delete_session(str(payload.get("SessionId") or ""))
             elif action == "ListSessionMessages":
                 data = await shared_web.list_messages(
                     str(payload.get("SessionId") or ""),
@@ -394,7 +758,7 @@ def create_studio_app(
                 data = await shared_web.list_session_events(str(payload.get("SessionId") or ""))
             elif action == "RunAgent":
                 return StreamingResponse(
-                    shared_web.stream_run(payload),
+                    shared_web.stream_run(payload, shared_ui=True),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-store",
@@ -403,6 +767,33 @@ def create_studio_app(
                 )
             elif action == "CancelRun":
                 data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+            elif action == "SubmitInteraction":
+                run_id = str(payload.get("RunId") or "")
+                interaction_id = str(payload.get("InteractionId") or "")
+                resolved = await studio.run_service.submit_interaction(
+                    run_id,
+                    interaction_id,
+                    name=str(payload.get("Action") or "submit"),
+                    data=(
+                        dict(payload.get("Response"))
+                        if isinstance(payload.get("Response"), dict)
+                        else {}
+                    ),
+                    expected_revision=int(payload.get("ExpectedRevision") or 0),
+                    idempotency_key=str(payload.get("IdempotencyKey") or ""),
+                )
+                data = {
+                    "schema_version": 1,
+                    "command_id": str(
+                        resolved.get("eventId")
+                        or resolved.get("resolutionEventId")
+                        or f"interaction:{interaction_id}"
+                    ),
+                    "status": "accepted",
+                    "message_id": None,
+                    "run_id": run_id,
+                    "accepted_seq": int(resolved.get("eventId") or 0),
+                }
             elif action in {
                 "GetResponseFeedback",
                 "UpsertResponseFeedback",
@@ -434,12 +825,20 @@ def create_studio_app(
             )
 
     @app.get("/agentengine/api/v1/SubscribeRunEvents")
-    async def shared_chat_subscribe_run_events():
-        async def completed_stream():
-            yield "event: done\ndata: [DONE]\n\n"
-
+    async def shared_chat_subscribe_run_events(
+        session_id: str = Query(alias="SessionId"),
+        invocation_id: str = Query(alias="InvocationId"),
+        after_seq_id: int = Query(default=0, alias="AfterSeqId", ge=0),
+    ):
+        # Validate before StreamingResponse sends headers; invalid identities
+        # remain ordinary actionable HTTP errors.
+        shared_web.subscription_run_id(session_id, invocation_id)
         return StreamingResponse(
-            completed_stream(),
+            shared_web.subscribe_run_events(
+                session_id,
+                invocation_id,
+                after_seq_id=after_seq_id,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
@@ -491,6 +890,7 @@ def create_studio_app(
                 "deployment": True,
                 "cloudRebuild": False,
                 "reactChat": True,
+                "scheduler": studio.scheduler.availability(),
             },
             "runtimes": studio.runtime_catalog(),
             "importableProject": studio.detect_importable_project(),
@@ -503,6 +903,111 @@ def create_studio_app(
     @app.put("/api/v1/system/settings")
     async def update_settings(payload: dict[str, Any]):
         return studio.update_settings(payload)
+
+    @app.get("/api/v1/schedules")
+    async def list_schedules():
+        return {
+            "items": studio.scheduler.list_tasks(),
+            "availability": studio.scheduler.availability(),
+        }
+
+    @app.post("/api/v1/schedules", status_code=201)
+    async def create_schedule(payload: ScheduledTask):
+        studio.validate_schedule_build(
+            payload.target.agent_version_ref,
+            agent_id=payload.target.agent_id,
+        )
+        return studio.scheduler.create_task(payload)
+
+    @app.get("/api/v1/schedules/{task_id}")
+    async def get_schedule(task_id: str):
+        return studio.scheduler.get_task(task_id)
+
+    @app.put("/api/v1/schedules/{task_id}")
+    async def update_schedule(task_id: str, payload: ScheduledTask):
+        studio.validate_schedule_build(
+            payload.target.agent_version_ref,
+            agent_id=payload.target.agent_id,
+        )
+        return studio.scheduler.update_task(task_id, payload)
+
+    @app.delete("/api/v1/schedules/{task_id}", status_code=204)
+    async def delete_schedule(task_id: str):
+        studio.scheduler.delete_task(task_id)
+        return Response(status_code=204)
+
+    @app.post("/api/v1/schedules/{task_id}:run", status_code=202)
+    async def run_schedule_now(task_id: str):
+        return await studio.scheduler.run_now(task_id)
+
+    @app.get("/api/v1/schedules/{task_id}/occurrences")
+    async def list_schedule_occurrences(task_id: str, limit: int = Query(default=50, ge=1, le=200)):
+        return {"items": studio.scheduler.list_occurrences(task_id, limit=limit)}
+
+    @app.get("/api/v1/schedule-occurrences")
+    async def list_all_schedule_occurrences(
+        limit: int = Query(default=200, ge=1, le=500),
+    ):
+        return {"items": studio.scheduler.list_all_occurrences(limit=limit)}
+
+    @app.get("/api/v1/agents/{agent_id}/schedules")
+    async def list_agent_schedules(agent_id: str):
+        return {
+            "items": studio.list_agent_schedules(agent_id),
+            "availability": studio.scheduler.availability(),
+        }
+
+    @app.post("/api/v1/agents/{agent_id}/schedules", status_code=201)
+    async def create_agent_schedule(agent_id: str, payload: AgentScheduleRequest):
+        return await studio.create_agent_schedule(
+            agent_id,
+            display_name=payload.display_name,
+            prompt=payload.prompt,
+            schedule=payload.schedule,
+            enabled=payload.enabled,
+            continuity=payload.continuity,
+            session_id=payload.session_id,
+        )
+
+    @app.get("/api/v1/agents/{agent_id}/schedules/{task_id}")
+    async def get_agent_schedule(agent_id: str, task_id: str):
+        return studio.get_agent_schedule(agent_id, task_id)
+
+    @app.put("/api/v1/agents/{agent_id}/schedules/{task_id}")
+    async def update_agent_schedule(
+        agent_id: str,
+        task_id: str,
+        payload: AgentScheduleRequest,
+    ):
+        return studio.update_agent_schedule(
+            agent_id,
+            task_id,
+            display_name=payload.display_name,
+            prompt=payload.prompt,
+            schedule=payload.schedule,
+            enabled=payload.enabled,
+            continuity=payload.continuity,
+            session_id=payload.session_id,
+        )
+
+    @app.delete("/api/v1/agents/{agent_id}/schedules/{task_id}", status_code=204)
+    async def delete_agent_schedule(agent_id: str, task_id: str):
+        studio.get_agent_schedule(agent_id, task_id)
+        studio.scheduler.delete_task(task_id)
+        return Response(status_code=204)
+
+    @app.post("/api/v1/agents/{agent_id}/schedules/{task_id}:run", status_code=202)
+    async def run_agent_schedule_now(agent_id: str, task_id: str):
+        return await studio.run_agent_schedule_now(agent_id, task_id)
+
+    @app.get("/api/v1/agents/{agent_id}/schedules/{task_id}/occurrences")
+    async def list_agent_schedule_occurrences(
+        agent_id: str,
+        task_id: str,
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        studio.get_agent_schedule(agent_id, task_id)
+        return {"items": studio.scheduler.list_occurrences(task_id, limit=limit)}
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
@@ -580,57 +1085,117 @@ def create_studio_app(
                 "Codex Studio 只支持只读本地运行",
                 status_code=422,
             )
-
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def observe(event):
-            queue.put_nowait(event)
-
-        # The Operation owns the runtime task.  The SSE response is only one
-        # observer, so refreshing or switching chats cannot cancel the Run.
-        operation = studio.submit_studio_run(
+        return _stream_studio_run(
             build_id,
-            payload.input.content,
+            user_input=payload.input.content,
             session_id=payload.session_id,
             model=payload.model,
             sandbox=payload.sandbox,
             idempotency_key=key,
-            on_event=observe,
         )
 
-        async def render():
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
-                except TimeoutError:
-                    event = None
-                if event is not None:
-                    data = json.dumps(
-                        event.data,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    yield f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
-                current = studio.operations.get(operation.id)
-                if (
-                    current.status
-                    in {
-                        OperationStatus.SUCCEEDED,
-                        OperationStatus.FAILED,
-                        OperationStatus.CANCELLED,
-                        OperationStatus.INTERRUPTED,
-                    }
-                    and queue.empty()
-                ):
-                    if current.status == OperationStatus.FAILED:
-                        data = json.dumps(current.error or {}, ensure_ascii=False)
-                        yield f"event: run.failed\ndata: {data}\n\n"
-                    break
+    @app.get("/api/v1/builds/{build_id}/conversation-surface")
+    async def get_conversation_surface(
+        build_id: str,
+        session_id: str = Query(alias="sessionId", min_length=1, max_length=256),
+    ):
+        return studio.conversation_surface(build_id, session_id=session_id)
 
-        return StreamingResponse(
-            render(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    @app.get("/api/v1/agents/{agent_id}/conversation-surface")
+    async def get_agent_conversation_surface(
+        agent_id: str,
+        session_id: str = Query(alias="sessionId", min_length=1, max_length=256),
+    ):
+        """Resolve the immutable Build and its composer contract atomically.
+
+        The browser selects an Agent, not a mutable Draft or a Build id.  This
+        route gives it the same current-Build decision used by chat and local
+        Scheduler authoring, so controls cannot be rendered from a stale or
+        unrelated Build.
+        """
+
+        build = await studio.ensure_current_build(agent_id)
+        return {
+            "buildId": build.id,
+            "surface": studio.conversation_surface(
+                build.id,
+                session_id=session_id,
+            ),
+        }
+
+    @app.post("/api/v1/builds/{build_id}/conversation:stream")
+    async def stream_conversation_turn(
+        build_id: str,
+        payload: ConversationTurnRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ):
+        key = _require_idempotency_key(idempotency_key)
+        conversation_input = payload.input
+        if conversation_input.idempotency_key != key:
+            raise StudioError(
+                "CONVERSATION_IDEMPOTENCY_MISMATCH",
+                "ConversationInput 的幂等键必须与请求头一致",
+                status_code=422,
+            )
+        surface = studio.conversation_surface(
+            build_id,
+            session_id=conversation_input.session_id,
+        )
+        try:
+            validate_conversation_input(surface, conversation_input)
+        except ValueError as exc:
+            raise StudioError(
+                "CONVERSATION_INPUT_UNSUPPORTED",
+                "当前 Agent 不支持此会话输入",
+                status_code=422,
+                details={"reason": str(exc), "surfaceId": surface.surface_id},
+            ) from exc
+        text_parts = [
+            part.text for part in conversation_input.parts if isinstance(part, ConversationTextPart)
+        ]
+        runtime_parts: list[dict[str, str]] = [
+            {"type": "text", "text": value} for value in text_parts
+        ]
+        attachment_names: list[str] = []
+        for part in conversation_input.parts:
+            if not isinstance(part, ConversationAttachmentPart):
+                continue
+            stored = studio.conversation_attachments.resolve(part.attachment_ref)
+            if part.media_type.lower() != stored.media_type.lower():
+                raise StudioError(
+                    "CONVERSATION_ATTACHMENT_METADATA_MISMATCH",
+                    "会话附件类型与已上传内容不一致",
+                    status_code=422,
+                    details={"attachmentRef": part.attachment_ref},
+                )
+            encoded = base64.b64encode(stored.path.read_bytes()).decode("ascii")
+            data_url = f"data:{stored.media_type};base64,{encoded}"
+            attachment_names.append(part.name or stored.name)
+            if stored.media_type.startswith("image/"):
+                runtime_parts.append({"type": "image", "url": data_url})
+            else:
+                runtime_parts.append(
+                    {
+                        "type": "input_file",
+                        "filename": part.name or stored.name,
+                        "file_data": data_url,
+                    }
+                )
+        display_input = "\n".join(text_parts).strip()
+        if not display_input:
+            display_input = "请处理本轮附件：" + "、".join(attachment_names)
+        return _stream_studio_run(
+            build_id,
+            user_input=display_input,
+            session_id=conversation_input.session_id,
+            model=conversation_input.model_ref,
+            sandbox=payload.sandbox,
+            reasoning_effort=conversation_input.reasoning,
+            approval_mode=conversation_input.approval_mode,
+            collaboration_mode=conversation_input.collaboration_mode,
+            goal_objective=conversation_input.goal_objective,
+            runtime_input=runtime_parts if attachment_names else None,
+            idempotency_key=key,
         )
 
     @app.post("/api/v1/agents", status_code=201)
@@ -642,6 +1207,15 @@ def create_studio_app(
             template=payload.template,
             spec=payload.spec,
             runtime=payload.runtime,
+        )
+
+    @app.post("/api/v1/conversation-attachments", status_code=201)
+    async def upload_conversation_attachment(file: UploadFile = File(...)):
+        content = await file.read(studio.conversation_attachments.MAX_BYTES + 1)
+        return studio.conversation_attachments.store(
+            content,
+            filename=file.filename or "attachment",
+            media_type=file.content_type or "application/octet-stream",
         )
 
     @app.post("/api/v1/assets/agent-avatars", status_code=201)
@@ -777,7 +1351,9 @@ def create_studio_app(
 
     @app.get("/api/v1/agents/{agent_id}/models")
     async def get_agent_models(agent_id: str):
-        return shared_web.list_models(shared_web.resolve_agent_id(agent_id))
+        model_agent_id = shared_web.resolve_agent_id(agent_id)
+        await runtime_model_catalog()
+        return shared_web.list_models(model_agent_id)
 
     @app.put("/api/v1/agents/{agent_id}")
     async def update_agent(
@@ -955,6 +1531,8 @@ def create_studio_app(
             interaction_id,
             name=payload.name,
             data=payload.data,
+            expected_revision=payload.expected_revision,
+            idempotency_key=payload.idempotency_key,
         )
 
     @app.get("/api/v1/runs/{run_id}/context")
@@ -1236,7 +1814,7 @@ def create_studio_app(
     async def list_deployments():
         """Read local deployment receipts without implicit cloud refreshes."""
 
-        return {"items": studio.cloud.list()}
+        return {"items": studio.cloud.list(), "currentIdentity": studio.cloud.cached_identity()}
 
     @app.get("/api/v1/cloud-agents")
     async def list_account_cloud_agents(
@@ -1312,9 +1890,7 @@ def create_studio_app(
     ):
         """List Server-owned sessions for this local deployment receipt only."""
 
-        return await studio.cloud.list_cloud_chat_sessions(
-            deployment_id, page=page, size=size
-        )
+        return await studio.cloud.list_cloud_chat_sessions(deployment_id, page=page, size=size)
 
     @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/models")
     async def list_cloud_chat_models(deployment_id: str):
@@ -1331,9 +1907,7 @@ def create_studio_app(
 
         return await studio.cloud.create_cloud_chat_session(deployment_id)
 
-    @app.get(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages"
-    )
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages")
     async def list_cloud_chat_messages(
         deployment_id: str,
         session_id: str,
@@ -1347,25 +1921,23 @@ def create_studio_app(
             limit=limit,
         )
 
-    @app.get(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events"
-    )
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events")
     async def list_cloud_chat_events(
         deployment_id: str,
         session_id: str,
         after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
+        offset: int | None = Query(default=None, ge=0),
         limit: int = Query(default=200, ge=1, le=1000),
     ):
         return await studio.cloud.list_cloud_chat_events(
             deployment_id,
             session_id=session_id,
             after_seq_id=after_seq_id,
+            offset=offset,
             limit=limit,
         )
 
-    @app.get(
-        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events/stream"
-    )
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events/stream")
     async def stream_cloud_chat_events(
         request: Request,
         deployment_id: str,
@@ -1399,9 +1971,7 @@ def create_studio_app(
                     if not isinstance(event, dict):
                         continue
                     event_payload = (
-                        event.get("payload")
-                        if isinstance(event.get("payload"), dict)
-                        else event
+                        event.get("payload") if isinstance(event.get("payload"), dict) else event
                     )
                     seq = int(
                         event_payload.get("seq")
@@ -1427,25 +1997,44 @@ def create_studio_app(
                         if isinstance(event_payload.get("content"), dict)
                         else {}
                     )
-                    status = str(
-                        event_payload.get("status") or content.get("status") or ""
-                    ).lower()
+                    status = str(event_payload.get("status") or content.get("status") or "").lower()
                     event_is_terminal = event_type in {
-                        "run.completed", "run.complete", "run.succeeded",
-                        "run.failed", "run.cancelled", "run.expired", "run.error",
+                        "run.completed",
+                        "run.complete",
+                        "run.succeeded",
+                        "run.failed",
+                        "run.cancelled",
+                        "run.expired",
+                        "run.error",
                     } or (
                         event_type in {"run_status", "run.status"}
-                        and status in {
-                            "completed", "complete", "succeeded", "success",
-                            "failed", "cancelled", "canceled", "expired", "error", "aborted",
+                        and status
+                        in {
+                            "completed",
+                            "complete",
+                            "succeeded",
+                            "success",
+                            "failed",
+                            "cancelled",
+                            "canceled",
+                            "expired",
+                            "error",
+                            "aborted",
                         }
                     )
                     terminal = terminal or event_is_terminal
                     emitted = True
+                    projected_event = dict(event)
+                    conversation_item = _cloud_event_conversation_item(
+                        event,
+                        session_id=session_id,
+                    )
+                    if conversation_item is not None:
+                        projected_event["conversationItem"] = conversation_item
                     yield (
                         (f"id: {seq}\n" if seq else "")
                         + "event: session.event\n"
-                        + f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        + f"data: {json.dumps(projected_event, ensure_ascii=False)}\n\n"
                     )
                 if terminal or payload.get("session_deleted"):
                     break
@@ -1465,9 +2054,7 @@ def create_studio_app(
         status_code=204,
     )
     async def delete_cloud_chat_session(deployment_id: str, session_id: str):
-        await studio.cloud.delete_cloud_chat_session(
-            deployment_id, session_id=session_id
-        )
+        await studio.cloud.delete_cloud_chat_session(deployment_id, session_id=session_id)
         return Response(status_code=204)
 
     @app.post(
@@ -1594,5 +2181,12 @@ def create_studio_app(
         runtime_model_catalog=runtime_model_catalog,
     )
     register_memory_routes(app, studio)
+    register_plugin_routes(app, studio)
+
+    from ksadk.studio.dsh_application import register_dsh_application
+
+    register_dsh_application(
+        app, studio, session_secret=session_secret, security_enabled=security_enabled
+    )
 
     return app

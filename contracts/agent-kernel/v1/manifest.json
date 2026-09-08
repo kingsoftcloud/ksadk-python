@@ -1,0 +1,123 @@
+{
+  "contract_set": "agent-kernel/v1",
+  "digest_algorithm": "sha256",
+  "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
+  "aggregate_digest": "b610a25aae957306b9f84a2cc2c948b30d1ce6218585cfd2a91f96736b92d102",
+  "files": [
+    {
+      "path": "activation-lease.schema.json",
+      "sha256": "84625716852be6d054b144b4b7d2e79eaff61da7fae6f05882c4dd88cce68fbe",
+      "bytes": 734
+    },
+    {
+      "path": "agent-control.schema.json",
+      "sha256": "9ac2e5e0d7258a0c926170b32172366c91f74a0ec0686ed88aebbe9fde893198",
+      "bytes": 8136
+    },
+    {
+      "path": "fixtures/activation-lease.json",
+      "sha256": "85d49ba61e8f09db53d7c71e587c88a03a2cc16408c212cdac6a12db83d58a67",
+      "bytes": 1087
+    },
+    {
+      "path": "fixtures/agent-control-enqueue.json",
+      "sha256": "5f38e44709ae26a01fb3c83e713c5b983e5a115ce8decd2424076690df4271f7",
+      "bytes": 407
+    },
+    {
+      "path": "fixtures/agent-control-inject.json",
+      "sha256": "42266f8d1905fafd47dc5432c4f79160d558d9485141b9bdeee012f46a19e384",
+      "bytes": 402
+    },
+    {
+      "path": "fixtures/agent-control-interrupt.json",
+      "sha256": "2efccab54c5c733c14aee72d68e0c3f6f65f992e33bdd38dde97f688dab85baa",
+      "bytes": 406
+    },
+    {
+      "path": "fixtures/agent-control-pause.json",
+      "sha256": "d2833d9f911cf4654c36b4d086809523ae7cfc8f3ded515f71f5916331460875",
+      "bytes": 398
+    },
+    {
+      "path": "fixtures/agent-control-permit.json",
+      "sha256": "ab52298d9d03dde66563b62b24d6576e4007e665b38cfd612d415d9d7362c981",
+      "bytes": 1503
+    },
+    {
+      "path": "fixtures/agent-control-receipts.json",
+      "sha256": "02ce480b675fb8e8f0a6653aa6bc3da08a9d60cf130f804524432996f9eff1e7",
+      "bytes": 1163
+    },
+    {
+      "path": "fixtures/agent-control-resume.json",
+      "sha256": "aee3b46f5bee27e211fd634ad746eb74415f1f5d4b0c05e5ddb08f29af45da2c",
+      "bytes": 430
+    },
+    {
+      "path": "fixtures/agent-control-steer.json",
+      "sha256": "8ea1808a0b3fb4b0ce62b089df9a3d99e9717f8b957a8eede8537d10192e6214",
+      "bytes": 410
+    },
+    {
+      "path": "fixtures/agent-control-submit_interaction.json",
+      "sha256": "0b7e22a7374798ab49ebb0658cc193e5f7d0c2736a6aeecabf8408168be6aad7",
+      "bytes": 492
+    },
+    {
+      "path": "fixtures/agent-control.json",
+      "sha256": "fae536523976b17ba082da29ffbfac31722f954a8978fa49929c76599765967b",
+      "bytes": 2953
+    },
+    {
+      "path": "fixtures/agent-status-snapshot.json",
+      "sha256": "ca1361c07de03f67b8fd2388afdde11eef156bfe2cb3f02e3cbc796186f581b2",
+      "bytes": 704
+    },
+    {
+      "path": "fixtures/interaction-requested.json",
+      "sha256": "2732a7f60712a1a70090a1258657a2ed9a49ffbaad1c4e18d209434d8d2cf4f5",
+      "bytes": 1147
+    },
+    {
+      "path": "fixtures/interaction-resolved.json",
+      "sha256": "dfadfac4befde3a28f4624f2a5794d4199223d39cf5be6dcc639de70323df044",
+      "bytes": 356
+    },
+    {
+      "path": "fixtures/interaction-submit.json",
+      "sha256": "3ad18235c0c6848e19bef87ad73c3ff0927429cdad1d93c55f783d9bf9c5bbfa",
+      "bytes": 178
+    },
+    {
+      "path": "fixtures/runtime-capability.json",
+      "sha256": "8af3e5fcb72807bbdd1db2cd1a733dcab99299ea23d8e9af0bde151103eecf6b",
+      "bytes": 1189
+    },
+    {
+      "path": "fixtures/session-event-control.json",
+      "sha256": "1dc42ed299ed61ec637a2c99835b62de39b5eb046663321011daee880fe5b2b3",
+      "bytes": 3866
+    },
+    {
+      "path": "fixtures/session-event-runtime.json",
+      "sha256": "bb583b30db1d3584593f39422b27a5fcec170707801aa29f54b96f546f427561",
+      "bytes": 349
+    },
+    {
+      "path": "interaction.schema.json",
+      "sha256": "ca827d010eb200fb017c25e86005670475f27d72439bc6496e70576c16f09bb2",
+      "bytes": 5557
+    },
+    {
+      "path": "runtime-capability.schema.json",
+      "sha256": "16d0b7a07dc8c6fb4965b6ec24750841863bb774f09a71b5ceb0944a444f7f7a",
+      "bytes": 1809
+    },
+    {
+      "path": "session-event.schema.json",
+      "sha256": "b2b343c91834ab366d57fe26cece83730fce25d183dda34b00479c8bb898e1ab",
+      "bytes": 1359
+    }
+  ]
+}

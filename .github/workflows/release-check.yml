@@ -9,13 +9,26 @@ on:
       - "Makefile"
       - "ksadk/**"
       - "ksadk_runtime_common/**"
+      - "tests/compat/**"
+      - "tests/e2e/test_codex_plugin_bridge_e2e.py"
+      - "tests/e2e/test_codex_provider_app_server_e2e.py"
+      - "tests/e2e/test_dsh_managed_toolchain_e2e.py"
+      - "tests/plugins/test_dsh_node_provider_e2e.py"
+      - "tests/fixtures/dsh-node-agent-provider/**"
+      - "tests/packaging/test_phase2_release_preflight.py"
+      - "tests/studio/e2e/**"
       - "scripts/open_source_audit.py"
+      - "scripts/audit_release_artifacts.py"
+      - "scripts/phase2_release_preflight.py"
       - "scripts/verify_ksadk_web_static.py"
+      - "scripts/write_build_provenance.py"
+      - "docs/phase2-plugin-compatibility.md"
       - ".github/workflows/release-check.yml"
 
 jobs:
   artifacts:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -32,19 +45,48 @@ jobs:
         with:
           node-version: "22"
 
+      # pnpm 11.7.0 can hang after removing the official Codex bundle.
+      # Match the verified profile CLI; managed bootstrap still uses its own pin.
+      - name: Set up pnpm for DSH profile plugins
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.2"
+
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra all
+
+      - name: Install Chromium for Phase 2 browser gates
+        run: uv run playwright install --with-deps chromium
 
       - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.2"
+          KSADK_WEB_VERSION: "0.3.5"
         run: make build-frontend
 
-      - name: Build artifacts
-        run: uv build
+      - name: Verify clean release source
+        run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
 
-      - name: Check package metadata
-        run: uv run --extra dev python -m twine check dist/*
+      - name: Build one provenance-bound artifact pair
+        run: |
+          rm -rf dist
+          uv run python scripts/write_build_provenance.py
+          uv build --out-dir dist
 
-      - name: Audit wheel and sdist file lists
-        run: make open-source-audit-dist
+      # PR checks keep artifact validation independent from native runtime E2E.
+      # On #67, the combined source gate stopped emitting output after the
+      # compatibility group passed; the same full gate passed locally. CI's
+      # separate test, browser and real plugin jobs remain required checks.
+      # A source-only skip deliberately records incomplete release evidence.
+      - name: Run package preflight (PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist --skip-tests
+          echo 'Package checks passed. Full release verification still requires local public-preflight; this CI report is incomplete release evidence.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run full Phase 2 release preflight (manual)
+        if: github.event_name != 'pull_request'
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTEST_ADDOPTS: "-vv -o faulthandler_timeout=90"
+        run: uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Optional, TypeAlias
@@ -183,6 +185,38 @@ class SessionEvent:
         if self.event_type:
             payload["eventType"] = self.event_type
         return payload
+
+
+@dataclass(frozen=True)
+class SessionEventQuery:
+    """Bounded, storage-pushdown event query used by runtime list/resume paths."""
+
+    session_ids: list[str] | None = None
+    agent_id: str | None = None
+    offset: int = 0
+    limit: int = 1000
+    after_seq_id: int | None = None
+    before_seq_id: int | None = None
+    event_types: list[str] | None = None
+    invocation_id: str | None = None
+    run_id: str | None = None
+    checkpoint_id: str | None = None
+    checkpoint_ids: list[str] | None = None
+    from_start: bool = False
+    order_by_seq: bool = False
+
+
+@dataclass(frozen=True)
+class CheckpointEventQuery:
+    """Bounded, ascending checkpoint scan with storage-level filters."""
+
+    session_ids: list[str] | None = None
+    agent_id: str | None = None
+    checkpoint_ids: list[str] | None = None
+    run_id: str | None = None
+    framework: str | None = None
+    offset: int = 0
+    limit: int = 50
 
 
 @dataclass
@@ -409,6 +443,148 @@ class BaseSessionService(abc.ABC):
         before_seq_id: Optional[int] = None,
     ) -> int:
         raise NotImplementedError
+
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        sessions = await asyncio.gather(
+            *(self.get_session_metadata(session_id) for session_id in session_ids)
+        )
+        return [session for session in sessions if session is not None]
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        raise NotImplementedError("Backend must implement list_session_metadata for batch queries")
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        if (
+            query.session_ids is not None
+            and len(query.session_ids) == 1
+            and not query.event_types
+            and query.invocation_id is None
+            and query.run_id is None
+            and query.checkpoint_id is None
+            and not query.checkpoint_ids
+            and not query.from_start
+        ):
+            return await self.get_events(
+                query.session_ids[0],
+                offset=query.offset,
+                limit=query.limit,
+                after_seq_id=query.after_seq_id,
+                before_seq_id=query.before_seq_id,
+            )
+        raise NotImplementedError("Backend does not support batch event queries")
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        if (
+            query.session_ids is not None
+            and len(query.session_ids) == 1
+            and not query.event_types
+            and query.invocation_id is None
+            and query.run_id is None
+            and query.checkpoint_id is None
+            and not query.checkpoint_ids
+        ):
+            return await self.count_events(
+                query.session_ids[0],
+                after_seq_id=query.after_seq_id,
+                before_seq_id=query.before_seq_id,
+            )
+        raise NotImplementedError("Backend does not support batch event counts")
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, Any]:
+        raise NotImplementedError("Backend must implement checkpoint lookup stats")
+
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        if query.checkpoint_ids or query.framework is not None:
+            raise NotImplementedError(
+                "Backend must push down checkpoint id and framework filters"
+            )
+        if query.session_ids is not None and len(query.session_ids) == 1:
+            return await self.query_events(
+                SessionEventQuery(
+                    session_ids=query.session_ids,
+                    agent_id=query.agent_id,
+                    offset=query.offset,
+                    limit=query.limit,
+                    event_types=["run_checkpoint"],
+                    run_id=query.run_id,
+                    from_start=True,
+                )
+            )
+        raise NotImplementedError("Backend does not support checkpoint scans")
+
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        offset = query.offset
+        while True:
+            batch = await self.scan_checkpoint_events(
+                CheckpointEventQuery(**{**query.__dict__, "offset": offset})
+            )
+            if not batch:
+                break
+            yield batch
+            offset += len(batch)
+            if len(batch) < query.limit:
+                break
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        raise NotImplementedError("Backend does not support checkpoint stats batches")
+
+    async def get_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        offset: int = 0,
+        limit: int = 1000,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+        from_start: bool = False,
+    ) -> list[SessionEvent]:
+        return await self.query_events(
+            SessionEventQuery(
+                session_ids=session_ids,
+                agent_id=agent_id,
+                offset=offset,
+                limit=limit,
+                after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id,
+                event_types=event_types,
+                from_start=from_start,
+            )
+        )
+
+    async def count_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+    ) -> int:
+        return await self.count_event_query(
+            SessionEventQuery(
+                session_ids=session_ids,
+                agent_id=agent_id,
+                after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id,
+                event_types=event_types,
+            )
+        )
 
     @abc.abstractmethod
     async def get_events_for_agent(

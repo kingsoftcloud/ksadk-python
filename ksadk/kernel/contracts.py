@@ -309,6 +309,14 @@ class RuntimeCapabilityMatrix(WireModel):
     inject: RuntimeCapability
     checkpoint: RuntimeCapability
     durable_restore: RuntimeCapability
+    # Interaction delivery is deliberately separate from the verb matrix:
+    # ``submit_interaction`` alone does not tell a caller whether the reply
+    # reaches a live process, resumes a checkpoint, or has no native route.
+    # It remains optional so a v1 consumer can read records emitted before
+    # this additive declaration without inventing support.
+    interaction_mode: Literal[
+        "live_submit", "durable_resume", "unavailable"
+    ] | None = None
     # Runtime v2 execution controls are additive optional capabilities. Older
     # runtimes omit them; a runtime must never infer support from UI presence.
     # ``loop`` specifically means an externally bounded, eval-driven

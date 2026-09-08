@@ -193,18 +193,29 @@ Request fields:
 
 | Field | Default | Constraint | Meaning |
 | --- | --- | --- | --- |
-| `SessionId` | — | required | target session id |
+| `SessionId` | — | required, one non-empty string | target session id; arrays, missing values, and blank-after-trim values fail |
+| `CheckpointIds` | `[]` | string[], max 1000 | exact, case-sensitive match on `Metadata.checkpoint_id` |
+| `EventTypes` | `[]` | string[], max 1000 | exact, case-sensitive match on `EventType` |
 | `Offset` | `0` | `>=0` | event offset |
-| `Limit` | unset | `>=1` | max number of events returned; when unset, all events are returned |
+| `Limit` | `10` | `1..1000` | max number of events returned |
+| `AfterSeqId` | — | `>=0` | only events with a greater `SeqId` |
+| `BeforeSeqId` | — | `>=1` | only events with a lower `SeqId` |
 
 Response `Data` fields:
 
 | Field | Meaning |
 | --- | --- |
 | `Events` | event list on the current page |
-| `Total` | total number of events in the session |
+| `SessionId` | normalized scalar session id |
+| `CheckpointIds` / `EventTypes` | normalized filter arrays |
+| `Total` | total after all filters and cursor conditions, before pagination |
 | `Offset` | current offset |
 | `Limit` | the limit value in effect |
+
+Both arrays are trimmed, stripped of empty values, and stably deduplicated. Values within each
+array are ORed; the filter fields and cursor conditions are ANDed. An empty array disables that
+filter. Filtering and `Total` calculation happen before `Offset` / `Limit`; the latest window is
+selected first and the returned page remains in ascending chronological order.
 
 ```bash
 curl -sS -X POST https://<public-endpoint>/agentengine/api/v1/ListSessionEvents \
@@ -340,7 +351,7 @@ with a JSON body, and the response is a uniform
 
 | Action | Path | Purpose |
 | --- | --- | --- |
-| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | list checkpoints under a session for resume selection |
+| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | list checkpoints in an optional session scope for resume selection |
 | `GetCheckpointResumePreview` | `POST /agentengine/api/v1/GetCheckpointResumePreview` | preview the content and impact of resuming from a checkpoint |
 | `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | resume run execution from a checkpoint |
 | `CancelRun` | `POST /agentengine/api/v1/CancelRun` | cancel an in-progress run (keyed by `InvocationId`) |
@@ -432,8 +443,8 @@ event fields, it carries the following resume descriptor fields
 
 ### ListSessionCheckpoints
 
-List checkpoints under a session, optionally filtered by `RunId` or `Framework`,
-with pagination.
+List checkpoints, optionally filtered by session, checkpoint ID, `RunId`, `Framework`, final
+resume status, or Scope, with pagination.
 
 <Tabs>
 <Tab value="Request">
@@ -441,12 +452,15 @@ with pagination.
 | Field | Default | Constraint | Meaning |
 | --- | --- | --- | --- |
 | `AgentId` | — | required | target agent id; must match the session's `agent_id` |
-| `SessionId` | — | required | target session id |
+| `SessionId` | `[]` | string or string[], max 1000 | target session filter; missing or empty means no filter |
+| `CheckpointId` | `[]` | string or string[], max 1000 | checkpoint ID filter; missing or empty means no filter |
 | `RunId` | — | optional | only return checkpoints for this run |
 | `Framework` | — | optional | only return checkpoints for this framework, e.g. `langgraph` |
 | `OnlyResumable` | `false` | optional | only return checkpoints with `IsResumable=true` |
+| `ResumeStatus` | `[]` | string[] | filter final `ResumeStatus`; the value domain is open |
+| `ResumeTypes` | `[]` | string[] | filter final `Scope`: `invocation`, `shared`, `pod_local`, `process_local`, or `unknown` |
 | `Offset` | `0` | `>=0` | pagination offset |
-| `Limit` | unset | `1..500` | page size, capped at 500 |
+| `Limit` | `100` | `1..1000` | page size, capped at 1000 |
 
 ```bash title="list_checkpoints.sh"
 curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckpoints" \
@@ -455,6 +469,8 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
   -d '{
     "AgentId": "my-agent",
     "SessionId": "<sid>",
+    "ResumeStatus": ["resumable"],
+    "ResumeTypes": ["shared", "pod_local"],
     "OnlyResumable": true,
     "Limit": 50
   }'
@@ -484,7 +500,7 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
         "ResumeDisabledReason": "",
         "NextNode": "research_summarize",
         "Backend": "langgraph_store",
-        "Scope": "session",
+        "Scope": "shared",
         "Durable": true,
         "LastResumedAt": null,
         "ResumeCount": 0,
@@ -493,6 +509,10 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
         "CheckpointStatus": "active"
       }
     ],
+    "ResumeStatus": ["resumable"],
+    "ResumeTypes": ["shared", "pod_local"],
+    "ResumableTotal": 1,
+    "HasResumableCheckpoint": true,
     "Total": 1,
     "Offset": 0,
     "Limit": 50
@@ -509,6 +529,11 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
 
 </Tab>
 </Tabs>
+
+Both new filter arrays are trimmed, lowercased, and deduplicated. The runtime completes payload
+conversion, resume audit, expiry, and latest-only correction before applying `ResumeStatus` and
+`ResumeTypes`. It then calculates `ResumableTotal`, applies `OnlyResumable`, calculates `Total`, and
+paginates.
 
 ### GetCheckpointResumePreview
 

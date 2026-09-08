@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 _HOSTED_CODE_COMMAND = (
     "ksadk",
     "web",
-    "/app/code/runtime",
+    "/app/code",
     "--port",
     "8080",
     "--host",

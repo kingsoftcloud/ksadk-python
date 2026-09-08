@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from contextlib import suppress
 from dataclasses import dataclass
@@ -75,6 +76,7 @@ class RuntimeExecutor:
         self._registry = registry
         self._kernel_store = kernel_store
         self._runs: dict[_HandleKey, _OwnedRun] = {}
+        self._capability_adapters: dict[int, tuple[RuntimeLaunchContext, RuntimeAdapter]] = {}
 
     def create_adapter(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
         """从本 executor 的 registry 创建一个 adapter。
@@ -225,6 +227,18 @@ class RuntimeExecutor:
                     first_error = exc
             finally:
                 self._runs.pop(key, None)
+        for key, (_context, adapter) in list(self._capability_adapters.items()):
+            runner = getattr(adapter, "_runner", None)
+            close_runner = getattr(runner, "close", None)
+            if callable(close_runner):
+                try:
+                    result = close_runner()
+                    if inspect.isawaitable(result):
+                        await result
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+            self._capability_adapters.pop(key, None)
         if first_error is not None:
             raise first_error
 
@@ -295,7 +309,7 @@ class RuntimeExecutor:
     def native_capabilities(self, context: RuntimeLaunchContext) -> dict[str, object]:
         """Read the capability declaration from the registered Runtime implementation."""
 
-        adapter = self._registry.create(context)
+        adapter = self.capability_adapter(context)
         return dict(adapter.runtime.native_capabilities())
 
     def capability_matrix(self, context: RuntimeLaunchContext) -> dict[str, object]:
@@ -306,8 +320,24 @@ class RuntimeExecutor:
         modes can be exposed only when the selected runtime declares support.
         """
 
-        adapter = self._registry.create(context)
+        adapter = self.capability_adapter(context)
         return adapter.capabilities().model_dump(mode="json")
+
+    def capability_adapter(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
+        """Return one stable, non-executing adapter for capability discovery."""
+
+        key = id(context)
+        cached = self._capability_adapters.get(key)
+        if cached is None or cached[0] is not context:
+            adapter = self._registry.create(context)
+            self._capability_adapters[key] = (context, adapter)
+            return adapter
+        return cached[1]
+
+    def capability_subject(self, context: RuntimeLaunchContext) -> object | None:
+        """Expose the runner whose async capability hooks feed persistence gating."""
+
+        return getattr(self.capability_adapter(context), "_runner", None)
 
     def registered_runtime_types(self) -> list[str]:
         """Expose Registry membership without leaking or duplicating the Registry."""
@@ -375,6 +405,51 @@ def _normalize_runtime_type(runtime_type: str) -> str:
     return runtime_type.strip().lower()
 
 
+def project_legacy_runtime_capabilities(
+    native: dict[str, object],
+    matrix: dict[str, object],
+) -> dict[str, object]:
+    """Fill the legacy PascalCase UI contract from the typed v1 matrix."""
+
+    projected = dict(native)
+
+    def capability(name: str) -> dict[str, object]:
+        value = matrix.get(name)
+        return dict(value) if isinstance(value, dict) else {}
+
+    cancel = capability("cancel")
+    checkpoint = capability("checkpoint")
+    resume = capability("resume")
+    projected.setdefault(
+        "CancelRun",
+        {
+            "Supported": cancel.get("supported") is True,
+            "Reason": str(cancel.get("reason") or ""),
+        },
+    )
+    projected.setdefault(
+        "Checkpoint",
+        {
+            "Supported": checkpoint.get("supported") is True,
+            "Backend": "native" if checkpoint.get("supported") is True else "none",
+            "Scope": "runtime",
+            "Durable": capability("durable_restore").get("supported") is True,
+            "SharedAcrossPods": False,
+            "ResumeMode": str(resume.get("mode") or "none"),
+            "Reason": str(checkpoint.get("reason") or ""),
+        },
+    )
+    projected.setdefault(
+        "ResumeRun",
+        {
+            "Supported": resume.get("supported") is True,
+            "ResumeMode": str(resume.get("mode") or "none"),
+            "Reason": str(resume.get("reason") or ""),
+        },
+    )
+    return projected
+
+
 def _handle_key(handle: RunHandle) -> _HandleKey:
     return (
         _normalize_runtime_type(handle.runtime_type),
@@ -389,4 +464,5 @@ __all__ = [
     "DurableRun",
     "RunNotFoundError",
     "handle_digest",
+    "project_legacy_runtime_capabilities",
 ]

@@ -119,14 +119,16 @@ def _current_commit() -> str:
 
 def _source_ref_is_filled(value: str) -> bool:
     normalized = value.strip().lower()
-    return bool(normalized) and normalized not in {
+    if not normalized or normalized in {
         "tbd",
         "todo",
         "no",
         "none",
         "n/a",
         "<reviewed source reference>",
-    }
+    }:
+        return False
+    return not any(marker in normalized for marker in ("tbd", "todo", "pending", "awaiting"))
 
 
 def validate_approval_record(
@@ -202,12 +204,20 @@ def validate_approval_record(
     signoffs = _signoff_rows(text)
     for role in REQUIRED_SIGNOFF_ROLES:
         cells = signoffs.get(role, [])
-        filled = len(cells) >= 4 and all(cell.strip() for cell in cells[1:4])
+        name = cells[1].strip() if len(cells) >= 2 else ""
+        decision = cells[2].strip() if len(cells) >= 3 else ""
+        date = cells[3].strip() if len(cells) >= 4 else ""
+        filled = bool(
+            name
+            and name.lower() not in {"pending", "tbd", "todo"}
+            and decision.lower() == "approved"
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
+        )
         checks.append(
             ApprovalCheck(
                 name=f"signoff:{role}",
                 ok=filled,
-                detail="name, decision, and date must be filled",
+                detail="name, the exact decision Approved, and an ISO date are required",
             )
         )
 

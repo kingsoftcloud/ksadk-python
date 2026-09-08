@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/composition-profile.schema.json",
+  "title": "CompositionProfile/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "pluginReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {"type": "string", "pattern": "^plugin://.+@\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+        "config": {"type": "object"}
+      },
+      "required": ["ref"]
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {"type": "string", "pattern": "^(plugin|mcp|skill)://.+@.+$"},
+        "required": {"type": "boolean"},
+        "config": {"type": "object"}
+      },
+      "required": ["ref"]
+    },
+    "nativeExtension": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {"type": "string", "minLength": 1},
+        "ref": {"type": "string", "minLength": 8}
+      },
+      "required": ["runtime", "ref"]
+    }
+  },
+  "properties": {
+    "apiVersion": {"const": "composition.ksadk.io/v1"},
+    "agentProvider": {"$ref": "#/$defs/pluginReference"},
+    "capabilities": {"type": "array", "items": {"$ref": "#/$defs/capability"}},
+    "nativeExtensions": {"type": "array", "items": {"$ref": "#/$defs/nativeExtension"}},
+    "policies": {"type": "object", "additionalProperties": {"type": "string"}},
+    "uiContributions": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["apiVersion", "agentProvider"]
+}

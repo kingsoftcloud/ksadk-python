@@ -1,0 +1,68 @@
+[
+  {
+    "schema_version": 1,
+    "permit_id": "permit-1",
+    "subject_ref": "user-1",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "allowed_operations": [
+      "enqueue",
+      "steer",
+      "interrupt",
+      "get_status",
+      "subscribe_events"
+    ],
+    "issued_at": "2026-08-17T00:00:00Z",
+    "expires_at": "2026-08-17T00:04:00Z",
+    "nonce": "nonce-1",
+    "key_id": "wk-2026-08",
+    "alg": "Ed25519",
+    "claims_digest": "6b1f0c2c9e3a0a5b8b6e2c1f9e0a4d73b1c5e8f2a0d9c3b6e1f4a7d0c8b5e2f1",
+    "signature": "c2lnbmF0dXJlLXBsYWNlaG9sZGVyLTE"
+  },
+  {
+    "schema_version": 1,
+    "permit_id": "permit-2-expired",
+    "subject_ref": "user-1",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-1",
+    "allowed_operations": [
+      "enqueue",
+      "steer",
+      "interrupt",
+      "get_status",
+      "subscribe_events"
+    ],
+    "issued_at": "2026-08-16T23:56:00Z",
+    "expires_at": "2026-08-17T00:00:00Z",
+    "nonce": "nonce-2",
+    "key_id": "wk-2026-08",
+    "alg": "Ed25519",
+    "claims_digest": "6b1f0c2c9e3a0a5b8b6e2c1f9e0a4d73b1c5e8f2a0d9c3b6e1f4a7d0c8b5e2f1",
+    "signature": "c2lnbmF0dXJlLXBsYWNlaG9sZGVyLTE"
+  },
+  {
+    "schema_version": 1,
+    "permit_id": "permit-3-tampered",
+    "subject_ref": "user-1",
+    "tenant_id": "tenant-1",
+    "agent_instance_id": "agent-instance-1",
+    "session_id": "session-2",
+    "allowed_operations": [
+      "enqueue",
+      "steer",
+      "interrupt",
+      "get_status",
+      "subscribe_events"
+    ],
+    "issued_at": "2026-08-17T00:00:00Z",
+    "expires_at": "2026-08-17T00:04:00Z",
+    "nonce": "nonce-3",
+    "key_id": "wk-2026-08",
+    "alg": "Ed25519",
+    "claims_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "signature": "c2lnbmF0dXJlLXBsYWNlaG9sZGVyLTI"
+  }
+]

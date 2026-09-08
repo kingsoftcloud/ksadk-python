@@ -1,14 +1,13 @@
 ---
 title: "Hosted UI 与事件回放"
-status: "new"
 ---
 
-`0.8.0` 候选将 Hosted UI 的 transport、交互展示和运行时审计分开：OpenAI Responses
+KsADK 0.8.3 将 Hosted UI 的 transport、交互展示和运行时审计分开：OpenAI Responses
 保持兼容基线，AG-UI 是可选 transport，A2UI 是结构化 activity 表示，`RuntimeEvent`
 则是唯一持久化和回放边界。这样前端能力演进不会改变模型调用的原始协议。
 
-<Callout type="warning" title="候选状态">
-本文说明的是评审分支中的接口与边界，不代表已发布的 npm/PyPI 版本。真实 hosted 环境仍应验证自身的网关、鉴权、runner、数据库和 provider 凭证。
+<Callout type="warning" title="发布边界">
+本文说明 0.8.3 源码中的接口与边界，不代表 npm/PyPI 已完成正式发布。真实 hosted 环境仍应验证自身的网关、鉴权、runner、数据库和 provider 凭证。
 </Callout>
 
 ## 协议选择
@@ -18,7 +17,7 @@ status: "new"
 | OpenAI Responses | 既有 `/v1/responses`、`/v1/chat/completions` 请求/响应语义 | 始终可作为兼容基线 |
 | AG-UI | Hosted UI 与 runtime 的可选流式 transport | capability 未协商时回退到 Responses |
 | A2UI | activity/组件和用户 action 的结构化表示 | 不替换模型、工具或审批 policy |
-| RuntimeEvent v1 | session 内事件、状态、审计和回放的 canonical 记录 | 不接受未知事件类型绕过校验 |
+| RuntimeEvent v2 | session 内事件、状态、审计和回放的 canonical 记录 | 不接受未知事件类型绕过校验 |
 
 AG-UI/A2UI 不是第二套模型 API。客户端只有在 Hosted bootstrap 表明支持时才选择它；已有
 Responses 客户端可以维持原样。
@@ -59,4 +58,4 @@ agentengine replay <session-id> --after-seq-id 120 --before-seq-id 260 --format 
 3. 针对刷新、断线或重复审批，使用 `ksadk replay` 定位 event cursor 与 terminal 状态。
 4. 对 LangGraph/ADK 的 interrupt 或 resume，再验证框架原生 checkpoint 配置；新接入不要依赖旧 LangChain 连续性路径。
 
-更多本地浏览器调试信息见[本地 Web UI](local-web-ui)，会话与 checkpoint 语义见[会话、运行时与文件](../../references/runtime-sessions-files)。
+更多本地浏览器调试信息见[本地 Web UI](./local-web-ui.mdx)，会话与 checkpoint 语义见[会话、运行时与文件](../../references/runtime-sessions-files.mdx)。

@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/agent-kernel/v1/interaction.schema.json",
+  "title": "Interaction/v1",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/interactionRequest"},
+    {"$ref": "#/$defs/submitInteractionRequest"},
+    {"$ref": "#/$defs/interactionCommand"},
+    {"$ref": "#/$defs/interactionReceipt"},
+    {"$ref": "#/$defs/interactionEvent"}
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "interactionKind": {
+      "enum": ["approval", "structured_input", "plan_review", "custom"]
+    },
+    "interactionStatus": {
+      "enum": ["pending", "resolving", "resolved", "cancelled", "expired"]
+    },
+    "interactionAction": {
+      "enum": ["approve", "reject", "submit", "cancel"]
+    },
+    "runtimeInteractionMode": {
+      "enum": ["live_submit", "durable_resume", "unavailable"]
+    },
+    "a2uiPresentation": {
+      "type": "object",
+      "properties": {
+        "wire_version": {"const": "0.9.1"},
+        "catalog_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "object"}
+        }
+      },
+      "required": ["wire_version", "catalog_digest", "messages"],
+      "additionalProperties": false
+    },
+    "presentation": {
+      "type": "object",
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "a2ui": {"$ref": "#/$defs/a2uiPresentation"}
+      },
+      "additionalProperties": false
+    },
+    "interactionRequest": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "interaction_id": {"$ref": "#/$defs/identifier"},
+        "tenant_id": {"$ref": "#/$defs/identifier"},
+        "agent_instance_id": {"$ref": "#/$defs/identifier"},
+        "session_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "kind": {"$ref": "#/$defs/interactionKind"},
+        "request_schema": {"type": "object"},
+        "revision": {"type": "integer", "minimum": 1},
+        "created_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "presentation": {"$ref": "#/$defs/presentation"}
+      },
+      "required": [
+        "schema_version", "interaction_id", "tenant_id", "agent_instance_id",
+        "session_id", "run_id", "kind", "request_schema", "revision", "created_at"
+      ],
+      "additionalProperties": false
+    },
+    "submitInteractionRequest": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "interaction_id": {"$ref": "#/$defs/identifier"},
+        "expected_revision": {"type": "integer", "minimum": 1},
+        "action": {"$ref": "#/$defs/interactionAction"},
+        "response": true,
+        "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256}
+      },
+      "required": [
+        "schema_version", "interaction_id", "expected_revision", "action", "response",
+        "idempotency_key"
+      ],
+      "additionalProperties": false
+    },
+    "actor": {
+      "type": "object",
+      "properties": {
+        "subject_ref": {"$ref": "#/$defs/identifier"},
+        "kind": {"enum": ["user", "service", "system"]}
+      },
+      "required": ["subject_ref", "kind"],
+      "additionalProperties": false
+    },
+    "interactionCommand": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "command_id": {"type": "string", "format": "uuid"},
+        "tenant_id": {"$ref": "#/$defs/identifier"},
+        "agent_instance_id": {"$ref": "#/$defs/identifier"},
+        "session_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "interaction_id": {"$ref": "#/$defs/identifier"},
+        "expected_revision": {"type": "integer", "minimum": 1},
+        "action": {"$ref": "#/$defs/interactionAction"},
+        "response": true,
+        "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "actor": {"$ref": "#/$defs/actor"},
+        "authorization_ref": {"type": "string", "minLength": 1}
+      },
+      "required": [
+        "schema_version", "command_id", "tenant_id", "agent_instance_id", "session_id",
+        "run_id", "interaction_id", "expected_revision", "action", "response",
+        "idempotency_key", "actor", "authorization_ref"
+      ],
+      "additionalProperties": false
+    },
+    "interactionReceipt": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "interaction_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"type": "integer", "minimum": 1},
+        "status": {"$ref": "#/$defs/interactionStatus"},
+        "outcome": {"enum": ["approved", "rejected", "submitted", "cancelled", "expired"]},
+        "event_id": {"type": "string", "format": "uuid"},
+        "accepted_seq": {"type": "integer", "minimum": 0}
+      },
+      "required": ["schema_version", "interaction_id", "revision", "status"],
+      "additionalProperties": false
+    },
+    "eventRequest": {
+      "type": "object",
+      "properties": {
+        "kind": {"$ref": "#/$defs/interactionKind"},
+        "request_schema": {"type": "object"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "presentation": {"$ref": "#/$defs/presentation"}
+      },
+      "required": ["kind", "request_schema"],
+      "additionalProperties": false
+    },
+    "interactionEvent": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "event_type": {
+          "enum": [
+            "interaction.requested", "interaction.resolved", "interaction.cancelled", "interaction.expired"
+          ]
+        },
+        "interaction_id": {"$ref": "#/$defs/identifier"},
+        "tenant_id": {"$ref": "#/$defs/identifier"},
+        "agent_instance_id": {"$ref": "#/$defs/identifier"},
+        "session_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "kind": {"$ref": "#/$defs/interactionKind"},
+        "revision": {"type": "integer", "minimum": 1},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "request": {"$ref": "#/$defs/eventRequest"},
+        "outcome": {"enum": ["approved", "rejected", "submitted"]},
+        "response": true,
+        "actor_ref": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "required": [
+        "schema_version", "event_type", "interaction_id", "tenant_id", "agent_instance_id",
+        "session_id", "run_id", "kind", "revision", "timestamp"
+      ],
+      "allOf": [
+        {
+          "if": {"properties": {"event_type": {"const": "interaction.requested"}}},
+          "then": {"required": ["request"]}
+        },
+        {
+          "if": {"properties": {"event_type": {"const": "interaction.resolved"}}},
+          "then": {"required": ["outcome", "response", "actor_ref"]}
+        },
+        {
+          "if": {"properties": {"event_type": {"enum": ["interaction.cancelled", "interaction.expired"]}}},
+          "then": {"required": ["reason"]}
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

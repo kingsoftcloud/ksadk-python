@@ -1,0 +1,3 @@
+- insert:
+    - id: ksadk-dsh-capability-host
+      name: '@kingsoftcloud/ksadk-dsh-capability-host'

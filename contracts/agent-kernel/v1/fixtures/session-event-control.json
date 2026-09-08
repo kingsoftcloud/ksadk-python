@@ -1,0 +1,179 @@
+[
+  {
+    "schema_version": 1,
+    "event_id": "5182d503-5c72-59f5-9e93-14c09ae7bb62",
+    "session_id": "session-1",
+    "seq": 10,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.command_accepted",
+    "payload": {
+      "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+      "message_id": "11111111-2222-3333-4444-555555555555"
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "fa6005d5-b3d5-5365-8fbf-d4d859306673",
+    "session_id": "session-1",
+    "seq": 11,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.command_rejected",
+    "payload": {
+      "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+      "code": "invalid_command"
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "b27d1189-6d5d-5c2e-899b-76fccd0d6349",
+    "session_id": "session-1",
+    "seq": 12,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.command_claimed",
+    "payload": {
+      "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+      "fencing_token": 3
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "efe9f437-2727-52cf-9287-b53017fe40ef",
+    "session_id": "session-1",
+    "seq": 13,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.command_completed",
+    "payload": {
+      "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119"
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "592fb5a8-684f-50e8-8a20-c467fdcc3907",
+    "session_id": "session-1",
+    "seq": 14,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.command_discarded",
+    "payload": {
+      "command_id": "4bf84e1b-f4cd-4c55-907f-2dc5e676b119",
+      "reason": "superseded"
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "bb84c222-dcba-53c1-8764-23065b220f7b",
+    "session_id": "session-1",
+    "seq": 15,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.activation_acquired",
+    "payload": {
+      "activation_id": "activation-1",
+      "fencing_token": 3
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "3111c8c2-4d8a-5268-aab1-298f539c5214",
+    "session_id": "session-1",
+    "seq": 16,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.activation_renewed",
+    "payload": {
+      "activation_id": "activation-1",
+      "fencing_token": 3
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "62f27c7b-dba5-5c4b-9a89-b84e15e79496",
+    "session_id": "session-1",
+    "seq": 17,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.activation_taken_over",
+    "payload": {
+      "activation_id": "activation-2",
+      "fencing_token": 4
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "a49219c0-51f9-5618-a9d4-337c92472e8d",
+    "session_id": "session-1",
+    "seq": 18,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.activation_released",
+    "payload": {
+      "activation_id": "activation-2"
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  },
+  {
+    "schema_version": 1,
+    "event_id": "57a16ff9-4777-5b00-8ca7-8b482638655b",
+    "session_id": "session-1",
+    "seq": 19,
+    "timestamp": "2026-08-17T00:00:01Z",
+    "family": "control",
+    "family_version": 1,
+    "event_type": "control.recovery_decided",
+    "payload": {
+      "decision": "resume_from_checkpoint"
+    },
+    "run_id": "run-1",
+    "causation_id": "cmd-4bf84e1b",
+    "correlation_id": "corr-1",
+    "actor_ref": "worker-1"
+  }
+]

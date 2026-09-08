@@ -58,6 +58,7 @@ class ADKRunner(BaseRunner):
         self._default_session_id: Optional[str] = None
         # Memory integration
         self._short_term_memory: Any = None
+        self._checkpoint_storage_source = "none"
         self._long_term_memory: Any = None
         # Knowledge base integration
         self._knowledge_base: Any = None
@@ -66,6 +67,7 @@ class ADKRunner(BaseRunner):
         # ADK resumability state
         self._resumable: bool = False
         self._resume_disabled_reason: Optional[str] = None
+        self._resume_disabled_reason_code: Optional[str] = None
         # P1.1 sub-issue: guard invocation_map read-modify-write so concurrent
         # invocations on the same session don't lose each other's mappings.
         self._invocation_map_lock = asyncio.Lock()
@@ -75,7 +77,21 @@ class ADKRunner(BaseRunner):
         ).strip()
 
     async def close(self) -> None:
-        """Close runtime toolsets owned by this runner."""
+        """Close database sessions and runtime toolsets owned by this runner."""
+        session_service = self._session_service
+        self._session_service = None
+        if session_service is not None:
+            close_session = getattr(session_service, "aclose", None) or getattr(
+                session_service, "close", None
+            )
+            if callable(close_session):
+                try:
+                    result = close_session()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.warning("Failed to close ADK session service: %s", exc)
+
         toolsets = list(self._runtime_toolsets)
         self._runtime_toolsets.clear()
         for toolset in toolsets:
@@ -252,14 +268,23 @@ class ADKRunner(BaseRunner):
             "KSADK_STM_DB_URL",
             "KSADK_SESSION_BACKEND",
             "KSADK_SESSION_DSN",
+            "KSADK_CHECKPOINT_DSN",
         )
         if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
             return None
 
         try:
             from ksadk.memory.adk import ShortTermMemory
+            from ksadk.sessions import resolve_persistence_topology
 
-            stm = ShortTermMemory.from_env()
+            topology = resolve_persistence_topology(framework="adk")
+            self._checkpoint_storage_source = topology.checkpoint.source
+            if topology.checkpoint.backend == "postgres" and topology.checkpoint.dsn:
+                stm = ShortTermMemory.from_persistence_target(topology.checkpoint)
+            else:
+                # Preserve legacy SQLite ADK/STM path handling when no remote
+                # checkpoint target has been selected.
+                stm = ShortTermMemory.from_env()
             logger.info(
                 "ShortTermMemory initialized: backend=%s path=%s",
                 stm.backend,
@@ -273,6 +298,71 @@ class ADKRunner(BaseRunner):
     def get_session_adapter(self):
         return ADKSessionAdapter()
 
+    async def prepare_runtime_capabilities(self) -> None:
+        """Prepare persistence-backed capability state without importing user code."""
+
+        if self._short_term_memory is None:
+            self._short_term_memory = self._init_short_term_memory()
+        if self._short_term_memory is not None and self._session_service is None:
+            self._session_service = getattr(
+                self._short_term_memory, "session_service", None
+            )
+        resumable = self._resolve_resumability()
+        self._resume_disabled_reason = None
+        self._resume_disabled_reason_code = None
+        if resumable.enabled:
+            compatible, reason = self._check_adk_resume_compatibility()
+            if not compatible:
+                self._resumable = False
+                self._resume_disabled_reason = reason
+                self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
+                return
+        self._resumable = resumable.enabled
+
+    async def refresh_runtime_capabilities(self) -> None:
+        await super().refresh_runtime_capabilities()
+        session_service = (
+            getattr(self._short_term_memory, "session_service", None)
+            if self._short_term_memory
+            else None
+        )
+        refresh = getattr(session_service, "refresh_persistence_capability", None)
+        if callable(refresh):
+            result = refresh()
+            if inspect.isawaitable(result):
+                await result
+
+    async def attach_runtime_handle(self, handle: Any) -> bool:
+        """Validate that a persisted ADK invocation can be resumed here.
+
+        Invocation existence is resolved by ADK when ``run_async`` receives the
+        invocation id.  This seam proves the deployment-side prerequisites
+        before Runtime v2 accepts a handle restored from session metadata.
+        """
+
+        if str(getattr(handle, "runtime_type", "") or "").strip().lower() != "adk":
+            return False
+        native_ref = getattr(handle, "native_ref", None)
+        if not isinstance(native_ref, Mapping):
+            return False
+        framework_ref = native_ref.get("framework_ref")
+        adk_ref = framework_ref.get("adk") if isinstance(framework_ref, Mapping) else None
+        invocation_id = str(
+            native_ref.get("invocation_id")
+            or (adk_ref.get("invocation_id") if isinstance(adk_ref, Mapping) else "")
+            or ""
+        ).strip()
+        if not invocation_id:
+            return False
+
+        await self.prepare_runtime_capabilities()
+        capability = self.describe_checkpoint_capability()
+        return bool(
+            capability.get("Supported")
+            and capability.get("Durable")
+            and capability.get("SharedAcrossPods")
+        )
+
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         resumable = getattr(self, "_resumable", False)
         stm_backend = (
@@ -285,8 +375,16 @@ class ADKRunner(BaseRunner):
             elif stm_backend == "database":
                 backend = "adk_invocation+postgres"
             shared_across_pods = stm_backend == "database"
-            return {
-                "Supported": shared_across_pods,
+            session_service = (
+                getattr(self._short_term_memory, "session_service", None)
+                if self._short_term_memory
+                else None
+            )
+            persistence_degraded = bool(
+                shared_across_pods and getattr(session_service, "degraded", False)
+            )
+            capability = {
+                "Supported": shared_across_pods and not persistence_degraded,
                 "Backend": backend,
                 "Scope": "invocation",
                 "Durable": stm_backend is not None and stm_backend != "local",
@@ -296,12 +394,19 @@ class ADKRunner(BaseRunner):
                 "Reason": (
                     "ADK ResumabilityConfig and shared database session backend enabled; "
                     "resume via invocation_id"
-                    if shared_across_pods
+                    if shared_across_pods and not persistence_degraded
+                    else "ADK database session persistence is temporarily degraded"
+                    if persistence_degraded
                     else "ADK ResumabilityConfig enabled, but the session backend is "
                     "process-local or SQLite and cannot support cross-pod recovery"
                 ),
             }
-        return {
+            if persistence_degraded:
+                capability["ReasonCode"] = "CHECKPOINT_STORE_DEGRADED"
+            elif not shared_across_pods:
+                capability["ReasonCode"] = "CHECKPOINTER_NOT_DURABLE"
+            return capability
+        capability = {
             "Supported": False,
             "Backend": "none",
             "Scope": "unknown",
@@ -314,6 +419,9 @@ class ADKRunner(BaseRunner):
                 "KSADK_ADK_RESUMABLE=1 or configure App with resumability_config"
             ),
         }
+        if self._resume_disabled_reason_code:
+            capability["ReasonCode"] = self._resume_disabled_reason_code
+        return capability
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
@@ -365,6 +473,9 @@ class ADKRunner(BaseRunner):
                 ),
             }
         capabilities["ResumeRun"]["Reason"] = capabilities["Checkpoint"]["Reason"]
+        reason_code = str(capabilities["Checkpoint"].get("ReasonCode") or "")
+        if reason_code:
+            capabilities["ResumeRun"]["ReasonCode"] = reason_code
         return capabilities
 
     @dataclass
@@ -445,6 +556,8 @@ class ADKRunner(BaseRunner):
 
         resumable = self._resolve_resumability()
         resumability_enabled = resumable.enabled
+        self._resume_disabled_reason = None
+        self._resume_disabled_reason_code = None
 
         # 版本兼容性检查：低于最低版本时强制关闭恢复
         resume_compatible, resume_reason = self._check_adk_resume_compatibility()
@@ -453,6 +566,7 @@ class ADKRunner(BaseRunner):
             resumable = self._ResolvabilityResult(enabled=False, source="version_check", app=None)
             resumability_enabled = False
             self._resume_disabled_reason = resume_reason
+            self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
 
         if resumable.app is not None:
             runner_kwargs = dict(
@@ -474,7 +588,7 @@ class ADKRunner(BaseRunner):
                 )
             except ImportError:
                 logger.warning(
-                    "ADK ResumabilityConfig not available (requires google-adk >= 1.14.0); "
+                    "ADK ResumabilityConfig not available (requires google-adk >= 1.16.0); "
                     "falling back to non-resumable Runner"
                 )
                 runner_kwargs = dict(
@@ -484,6 +598,7 @@ class ADKRunner(BaseRunner):
                 )
                 resumability_enabled = False
                 self._resume_disabled_reason = "ADK ResumabilityConfig is unavailable"
+                self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
         else:
             runner_kwargs = dict(
                 agent=self._agent,
@@ -938,7 +1053,8 @@ class ADKRunner(BaseRunner):
             raise TypeError("加载的对象不是有效的 ADK Agent")
 
         # 初始化记忆体 (从环境变量读取配置)
-        self._short_term_memory = self._init_short_term_memory()
+        if self._short_term_memory is None:
+            self._short_term_memory = self._init_short_term_memory()
         self._long_term_memory = self._init_long_term_memory()
 
         # 初始化知识库 (从环境变量读取配置)
@@ -1669,17 +1785,35 @@ class ADKRunner(BaseRunner):
             getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
         )
         shared_across_pods = stm_backend == "database"
-        platform_resumable = self._resumable and shared_across_pods
+        session_service = (
+            getattr(self._short_term_memory, "session_service", None)
+            if self._short_term_memory
+            else None
+        )
+        persistence_degraded = bool(
+            shared_across_pods and getattr(session_service, "degraded", False)
+        )
+        platform_resumable = (
+            self._resumable and shared_across_pods and not persistence_degraded
+        )
         metadata["is_resumable"] = platform_resumable
         metadata["resume_status"] = "resumable" if platform_resumable else "disabled"
         metadata["backend"] = stm_backend or "in_memory"
         metadata["scope"] = "invocation"
-        metadata["durable"] = stm_backend is not None and stm_backend != "local"
-        metadata["shared_across_pods"] = shared_across_pods
+        metadata["durable"] = (
+            stm_backend is not None and stm_backend != "local" and not persistence_degraded
+        )
+        metadata["shared_across_pods"] = shared_across_pods and not persistence_degraded
+        metadata["source"] = self._checkpoint_storage_source
         if not platform_resumable:
             metadata["resume_disabled_reason"] = (
                 self._resume_disabled_reason
                 if not self._resumable and self._resume_disabled_reason
+                else (
+                    "ADK database session persistence was degraded when this checkpoint "
+                    "was written"
+                )
+                if persistence_degraded
                 else "ADK checkpoint uses an in-memory or local-only session backend; "
                 "cross-pod resume is unavailable"
             )
@@ -2132,6 +2266,7 @@ class ADKRunner(BaseRunner):
                                 fc_args = {}
                         yield {
                             "type": "tool_call",
+                            "tool_call_id": str(fc_id),
                             "tool_name": getattr(fc, "name", "unknown"),
                             "tool_args": fc_args,
                         }
@@ -2146,6 +2281,7 @@ class ADKRunner(BaseRunner):
                             emitted_tool_call_ids.add(tc_id)
                             yield {
                                 "type": "tool_call",
+                                "tool_call_id": str(tc_id),
                                 "tool_name": tc_name,
                                 "tool_args": getattr(tool_call, "input", {}),
                             }
@@ -2174,6 +2310,7 @@ class ADKRunner(BaseRunner):
                         fr = getattr(part, "function_response", None)
                         if fr is not None:
                             fr_name = getattr(fr, "name", "unknown")
+                            fr_id = getattr(fr, "id", "") or fr_name
                             fr_output = getattr(fr, "response", None) or {}
                             if not isinstance(fr_output, dict):
                                 try:
@@ -2187,6 +2324,7 @@ class ADKRunner(BaseRunner):
                                     fr_output = {"raw": str(fr_output)}
                             yield {
                                 "type": "tool_result",
+                                "tool_call_id": str(fr_id),
                                 "tool_name": fr_name,
                                 "tool_output": fr_output,
                             }

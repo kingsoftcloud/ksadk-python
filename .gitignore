@@ -4,6 +4,14 @@
 !.dockerignore
 !.worktree
 !.github/
+# Real Codex marketplace fixtures intentionally exercise official hidden
+# manifest locations.  Keep the exception narrowly scoped to this fixture.
+!tests/e2e/fixtures/codex-marketplace/.agents/
+!tests/e2e/fixtures/codex-marketplace/.agents/plugins/
+!tests/e2e/fixtures/codex-marketplace/.agents/plugins/marketplace.json
+!tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/
+!tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/plugin.json
+!tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.mcp.json
 
 # Local publish credentials. Never commit PyPI/TestPyPI tokens.
 .pypirc
@@ -91,12 +99,17 @@ webui
 ksadk/server/static/**
 # Generated from the tracked React Studio source during release/build.
 ksadk/studio/static/**
+# Generated immediately before packaging and embedded in wheel/sdist.  Release
+# gates verify it against the checked-out source commit; it is never source.
+ksadk/_build_provenance.json
 ksadk/studio/web/node_modules/
 ksadk/studio/web/dist/
 site/
 
 # Legacy local UI source is owned by kingsoftcloud/ksadk-web.
 ksadk/server/web-ui/
+examples
 e2e-codex-agent/
 ksadk/studio/react-ui/node_modules/
 .agentkit/secrets.env
+agentkit.yaml

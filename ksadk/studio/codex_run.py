@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import os
 import zipfile
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import yaml  # type: ignore[import-untyped]
 
 from ksadk.configs import ModelConfig
+from ksadk.plugins.contracts import plugin_lock_digest
 from ksadk.runtime import RuntimeLaunchContext
 from ksadk.studio.codex_builder import CodexBuildRepository
+from ksadk.studio.codex_credentials import restore_mcp_oauth_credentials
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
-from ksadk.studio.contracts import ModelSpec
+from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
+from ksadk.studio.contracts import Instructions, ModelSpec
 from ksadk.studio.errors import StudioError
 from ksadk.studio.run_service import StudioRunSpec
+from ksadk.studio.soul import compose_system_instruction
 from ksadk.studio.workspace import Workspace
 from ksadk.tools.gateway import normalize_tool_approval_mode
 
@@ -31,6 +37,7 @@ class CodexRunSpecResolver:
         credential_resolver: Any = None,
         resource_catalog: Any = None,
         draft_repository: Any = None,
+        plugin_snapshot_store: CodexPluginSnapshotStore | None = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository or CodexBuildRepository(workspace)
@@ -38,6 +45,7 @@ class CodexRunSpecResolver:
         self.credentials = credential_resolver
         self.catalog = resource_catalog
         self.drafts = draft_repository
+        self.plugin_snapshots = plugin_snapshot_store or CodexPluginSnapshotStore(workspace)
 
     def resolve(
         self,
@@ -60,6 +68,13 @@ class CodexRunSpecResolver:
                 },
             )
         manifest = self._load_build_manifest(build.artifact_path)
+        restore_mcp_oauth_credentials(
+            self.workspace.root,
+            build,
+            self.builds.list(),
+            manifest.mcp_servers or [],
+        )
+        plugin_bootstrap = self._plugin_bootstrap(build, manifest)
         selected_model = self._select_model(manifest, model)
         project_dir = self.workspace.root.resolve()
         skills = self._skill_inputs(manifest)
@@ -71,15 +86,18 @@ class CodexRunSpecResolver:
             approval_mode=approval_profile or None,
         )
         if sandbox == "workspace-write":
-            # workspace-write 默认断网；MCP/搜索类工具需要显式放行网络
+            # workspace-write 默认断网；原生搜索和 MCP 都需要显式放行网络。
             codex_overrides = [*codex_overrides, "sandbox_workspace_write.network_access=true"]
         launch_config: dict[str, Any] = {
             "sandbox_read_only": sandbox == "read-only",
             "sandbox": sandbox,
             "approval_mode": approval,
+            "codex_home_key": build.id,
         }
         if codex_overrides:
             launch_config["codex_overrides"] = codex_overrides
+        if plugin_bootstrap is not None:
+            launch_config["codex_plugin_bootstrap"] = plugin_bootstrap
         runtime_env = {
             **self._resolve_model_env(build, manifest, selected_model),
             **self._resolve_mcp_env(manifest),
@@ -87,18 +105,22 @@ class CodexRunSpecResolver:
         if runtime_env:
             launch_config["env"] = runtime_env
         agent_task = str(manifest.task_prompt or "").strip()
+        agent_system = compose_system_instruction(
+            Instructions(system=manifest.prompt),
+            manifest.soul,
+        ).system
         # PCM 策略从不可变 Manifest 读取（方案 §5.1：Build 锁定后 sidecar 修改不影响旧 Build）
         # manifest.context/memory 由 _manifest() 从 AgentSpec 写入，随 Build 进入 Artifact
         resolved_context = manifest.context
         resolved_memory = manifest.memory
-        base_instructions = manifest.prompt
+        base_instructions = agent_system
         if agent_task:
-            base_instructions = f"{manifest.prompt}\n\n{agent_task}"
+            base_instructions = f"{agent_system}\n\n{agent_task}"
         request_config: dict[str, Any] = {
             # Codex 原生只接收 base_instructions，因此运行前合并；PCM 证据仍使用下面
             # 两个独立来源生成 agent_identity / agent_policy 的分段 hash。
             "base_instructions": base_instructions,
-            "agent_system": manifest.prompt,
+            "agent_system": agent_system,
             "agent_task": agent_task,
             "cwd": str(project_dir),
             "skills": skills,
@@ -136,6 +158,13 @@ class CodexRunSpecResolver:
         }
         if approval_profile:
             request_config["tool_approval_mode"] = approval_profile
+        if manifest.soul is not None:
+            request_config.update(
+                {
+                    "soul_source": manifest.soul_source,
+                    "soul_digest": manifest.soul_digest,
+                }
+            )
         return StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type="codex",
@@ -148,6 +177,75 @@ class CodexRunSpecResolver:
             request_config=request_config,
             manifest_sha256=build.manifest_sha256,
         )
+
+    def _plugin_bootstrap(
+        self,
+        build: Any,
+        manifest: CodexAgentManifest,
+    ) -> dict[str, Any] | None:
+        bindings = [item for item in (manifest.plugins or []) if item.enabled]
+        lock = getattr(build, "plugin_lock", None)
+        lock_digest = getattr(build, "plugin_lock_digest", None)
+        marketplace = getattr(build, "plugin_marketplace", None)
+        statuses = getattr(build, "plugin_runtime_status", None) or {}
+        if not bindings:
+            if lock is not None or lock_digest is not None or marketplace is not None:
+                raise StudioError(
+                    "CODEX_PLUGIN_BUILD_INVALID",
+                    "Codex Build 含有未绑定的插件锁信息",
+                    status_code=409,
+                    details={"buildId": build.id},
+                )
+            return None
+        if lock is None or lock_digest is None or marketplace is None:
+            raise StudioError(
+                "CODEX_PLUGIN_REBUILD_REQUIRED",
+                "Codex Build 缺少原生插件不可变快照，请重新构建",
+                status_code=409,
+                details={"buildId": build.id},
+            )
+        actual_lock_digest = plugin_lock_digest(lock)
+        if actual_lock_digest != lock_digest or marketplace.plugin_lock_digest != lock_digest:
+            raise StudioError(
+                "CODEX_PLUGIN_LOCK_DIGEST_MISMATCH",
+                "Codex Build 的 PluginLock 摘要不一致",
+                status_code=409,
+                details={
+                    "buildId": build.id,
+                    "expected": lock_digest,
+                    "actual": actual_lock_digest,
+                },
+            )
+        for binding in bindings:
+            stored = self.plugin_snapshots.load(binding.snapshot_digest)
+            if stored.plugin_ref != binding.plugin_ref:
+                raise StudioError(
+                    "CODEX_PLUGIN_BINDING_MISMATCH",
+                    "Codex 插件绑定与不可变快照身份不一致",
+                    status_code=409,
+                    details={"pluginRef": binding.plugin_ref},
+                )
+            stored.select_components(binding.components)
+            status = statuses.get(binding.plugin_ref) or {}
+            if status.get("runnable") is False or any(
+                selector.startswith("hook:") for selector in binding.components
+            ):
+                raise StudioError(
+                    "CODEX_PLUGIN_HOOK_TRUST_UNAVAILABLE",
+                    "Codex App Server 尚无可验证的 hook trust API；该绑定已安全阻断",
+                    status_code=409,
+                    details={
+                        "pluginRef": binding.plugin_ref,
+                        "hookTrust": status.get("hookTrust", "unsupported"),
+                    },
+                )
+        root = self.plugin_snapshots.verify_marketplace(marketplace)
+        return {
+            "marketplace_path": str(root),
+            "marketplace_name": marketplace.marketplace_name,
+            "plugin_names": list(marketplace.plugin_names),
+            "snapshot_digest": marketplace.marketplace_digest,
+        }
 
     def _resolve_model_env(
         self,
@@ -172,12 +270,23 @@ class CodexRunSpecResolver:
             if profile is not None
             else ModelConfig().api_base.rstrip("/")
         )
-        return {
+        env = {
             "OPENAI_API_KEY": credential,
             "OPENAI_BASE_URL": base_url,
             "OPENAI_API_BASE": base_url,
             "OPENAI_MODEL_NAME": selected_model,
         }
+        # A chat-only profile necessarily needs the Responses-to-Chat bridge.
+        # KSPMAS build snapshots created before wireApi was persisted have the
+        # same requirement. Route those known profiles directly so every fresh
+        # Studio process does not spend several seconds probing /models and two
+        # /responses payload dialects before the user's first turn.
+        if "KSADK_CODEX_USE_PROXY" not in os.environ and (
+            (profile is not None and profile.wire_api == "chat")
+            or self._is_known_chat_model_gateway(base_url)
+        ):
+            env["KSADK_CODEX_USE_PROXY"] = "1"
+        return env
 
     def _resolve_model_profile(
         self,
@@ -237,18 +346,40 @@ class CodexRunSpecResolver:
         return raw
 
     @staticmethod
+    def _is_known_chat_model_gateway(base_url: str) -> bool:
+        host = (urlparse(base_url).hostname or "").lower()
+        return host == "kspmas.ksyun.com" or host.startswith("kspmas-internal.")
+
+    @staticmethod
     def _mcp_overrides(manifest: CodexAgentManifest) -> list[str]:
         """Translate bound MCP servers into codex --config overrides."""
         overrides: list[str] = []
         for server in manifest.mcp_servers or []:
             name = str(server.get("name") or "").strip()
+            transport = str(
+                server.get("transport") or ("http" if server.get("url") else "")
+            ).lower()
             url = str(server.get("url") or "").strip()
-            if not name or not url:
+            if not name:
                 continue
-            overrides.append(f"mcp_servers.{name}.url={url}")
-            env_key = str(server.get("env_key") or "").strip()
-            if env_key:
-                overrides.append(f"mcp_servers.{name}.bearer_token_env_var={env_key}")
+            if transport == "stdio":
+                command = str(server.get("command") or "").strip()
+                if not command:
+                    continue
+                args = [str(argument) for argument in (server.get("args") or [])]
+                overrides.append(f"mcp_servers.{name}.command={json.dumps(command)}")
+                overrides.append(f"mcp_servers.{name}.args={json.dumps(args)}")
+                env_refs = server.get("env_refs") or {}
+                if isinstance(env_refs, dict) and env_refs:
+                    overrides.append(
+                        f"mcp_servers.{name}.env_vars="
+                        f"{json.dumps(sorted(str(key) for key in env_refs))}"
+                    )
+            elif transport in {"http", "sse"} and url:
+                overrides.append(f"mcp_servers.{name}.url={url}")
+                env_key = str(server.get("env_key") or "").strip()
+                if env_key:
+                    overrides.append(f"mcp_servers.{name}.bearer_token_env_var={env_key}")
         return overrides
 
     def _resolve_mcp_env(self, manifest: CodexAgentManifest) -> dict[str, str]:
@@ -260,10 +391,20 @@ class CodexRunSpecResolver:
         """
         env: dict[str, str] = {}
         for server in manifest.mcp_servers or []:
+            references: dict[str, str] = {}
             env_key = str(server.get("env_key") or "").strip()
-            if not env_key:
-                continue
-            if env_key in env:
+            if env_key:
+                references[env_key] = f"env://{env_key}"
+            raw_references = server.get("env_refs") or {}
+            if isinstance(raw_references, dict):
+                references.update(
+                    {
+                        str(name).strip(): str(reference).strip()
+                        for name, reference in raw_references.items()
+                        if str(name).strip() and str(reference).strip()
+                    }
+                )
+            if not references:
                 continue
             resolver = self.credentials
             if resolver is None:
@@ -271,19 +412,22 @@ class CodexRunSpecResolver:
 
                 resolver = CredentialResolver(self.workspace)
                 self.credentials = resolver
-            try:
-                env[env_key] = resolver.resolve(f"env://{env_key}")
-            except Exception as exc:
-                raise StudioError(
-                    "MCP_CREDENTIAL_MISSING",
-                    f"MCP Server「{server.get('name')}」需要凭证 {env_key}，"
-                    "请先在 MCP 页连接时保存该环境变量的值",
-                    status_code=422,
-                    details={
-                        "server": str(server.get("name") or ""),
-                        "reference": f"env://{env_key}",
-                    },
-                ) from exc
+            for name, reference in references.items():
+                if name in env:
+                    continue
+                try:
+                    env[name] = resolver.resolve(reference)
+                except Exception as exc:
+                    raise StudioError(
+                        "MCP_CREDENTIAL_MISSING",
+                        f"MCP Server「{server.get('name')}」需要凭证 {name}，"
+                        "请先保存对应 Secret 引用",
+                        status_code=422,
+                        details={
+                            "server": str(server.get("name") or ""),
+                            "reference": reference,
+                        },
+                    ) from exc
         return env
 
     @staticmethod
@@ -314,11 +458,16 @@ class CodexRunSpecResolver:
         if approval_mode:
             return approval_presets[normalize_tool_approval_mode(approval_mode)]
         raw = (
-            (override or os.environ.get("KSADK_CODEX_SANDBOX") or manifest.sandbox or "read_only")
+            (
+                override
+                or os.environ.get("KSADK_CODEX_SANDBOX")
+                or manifest.sandbox
+                or "workspace_write_auto"
+            )
             .strip()
             .lower()
         )
-        return presets.get(raw, ("read-only", "deny_all"))
+        return presets.get(raw, ("workspace-write", "auto_review"))
 
     def _skill_inputs(self, manifest: CodexAgentManifest) -> list[dict[str, str]]:
         """Resolve bound skill resource ids to codex SkillInput wire dicts."""

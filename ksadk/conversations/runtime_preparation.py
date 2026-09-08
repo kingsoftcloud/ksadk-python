@@ -110,6 +110,7 @@ async def build_run_input(
     deployment_mode: str = "local",
     agent_max_input_tokens: int | None = None,
     agent_reserve_output_tokens: int | None = None,
+    resume_lifecycle_prepared: bool = False,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -170,35 +171,32 @@ async def build_run_input(
     if resume_input is not None:
         if not session_id:
             raise ValueError("Responses resume input requires session_id")
-        existing_events = await service.get_events(resolved_session_id)
         normalized_resume_input = dict(resume_input)
         if _is_checkpoint_resume_input(normalized_resume_input):
             normalized_resume_input = _normalize_checkpoint_resume_input(normalized_resume_input)
-            await append_run_resume_event(
-                session_id=resolved_session_id,
-                author=agent_id,
-                run_id=str(normalized_resume_input["run_id"]),
-                checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
-                resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
-                framework=str(normalized_resume_input["framework"]),
-                framework_ref=normalized_resume_input["framework_ref"],
-                invocation_id=resolved_invocation_id,
-                session_service_provider=provider,
-            )
-            # 补写 run_status(resuming)：让 ActiveRunStatus 在 resume 期间正确反映"恢复中"。
-            # append_run_resume_event 写的是 run_resume 事件（status=resuming），而
-            # _latest_session_run_status 只扫 run_status 事件 → 不补写则
-            # resuming 不进 ActiveRunStatus。
-            await append_run_status_event(
-                session_id=resolved_session_id,
-                author=agent_id,
-                status="resuming",
-                invocation_id=resolved_invocation_id,
-                detail="checkpoint_resume",
-                session_service_provider=provider,
-                run_mode=caller_run_mode,
-                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-            )
+            if not resume_lifecycle_prepared:
+                await append_run_resume_event(
+                    session_id=resolved_session_id,
+                    author=agent_id,
+                    run_id=str(normalized_resume_input["run_id"]),
+                    checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
+                    resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
+                    framework=str(normalized_resume_input["framework"]),
+                    framework_ref=normalized_resume_input["framework_ref"],
+                    invocation_id=resolved_invocation_id,
+                    session_service_provider=provider,
+                )
+                # run_resume 与 ActiveRunStatus 分属不同事件类型，因此补写 resuming。
+                await append_run_status_event(
+                    session_id=resolved_session_id,
+                    author=agent_id,
+                    status="resuming",
+                    invocation_id=resolved_invocation_id,
+                    detail="checkpoint_resume",
+                    session_service_provider=provider,
+                    run_mode=caller_run_mode,
+                    run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+                )
             event_history = await service.get_events(resolved_session_id)
             history = build_history_from_events(event_history)
             responses_history = project_responses_history(event_history)
@@ -239,6 +237,7 @@ async def build_run_input(
                 provider_ref=provider_ref,
             )
 
+        existing_events = await service.get_events(resolved_session_id)
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
         existing_tool_receipt_event = None
         if is_approval_resume and not _has_pending_approval(existing_events):

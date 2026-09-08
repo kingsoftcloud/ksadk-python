@@ -41,7 +41,7 @@ uvicorn app:app --host 127.0.0.1 --port 8080
 ```
 
 `runtime: yaml` 使用 Harness 的 YAML runner；`runtime: codex` 使用本机 Codex runner，
-因此还需要安装 `ksadk[codex]` 并配置与 [Codex Managed Runtime](./managed-runtime)
+因此还需要安装 `ksadk[codex]` 并配置与 [Codex Managed Runtime](./managed-runtime.mdx)
 相同的本地 provider 环境。
 
 ## 支持的 YAML 范围
@@ -63,4 +63,4 @@ uvicorn app:app --host 127.0.0.1 --port 8080
 HarnessApp 的公开数据面兼容 `/v1/responses`、`/v1/chat/completions` 和 session 路由。
 它不等同于 `agentengine web` 项目，也不自动产生云端部署包；需要标准框架项目时继续使用
 `agentengine init`，需要 YAML 驱动的 Codex 托管交付时使用
-[Codex Managed Runtime](./managed-runtime)。
+[Codex Managed Runtime](./managed-runtime.mdx)。

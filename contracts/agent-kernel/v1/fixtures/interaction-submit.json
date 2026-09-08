@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "interaction_id": "int-1",
+  "expected_revision": 1,
+  "action": "submit",
+  "response": {"approved": true, "comment": "ok"},
+  "idempotency_key": "interaction:int-1:revision-1"
+}

@@ -9,12 +9,10 @@ description: "在不削弱入站和出站安全边界的前提下使用平台托
 
 ## 协议兼容性与 Agent Card
 
-`0.8.0` 仍是候选版本，因此 A2A 以
-[`a2aproject/A2A` 的 `main/docs/specification.md`](https://github.com/a2aproject/A2A/blob/main/docs/specification.md)
-为目标契约；该文档明确以同仓的 `specification/a2a.proto` 作为规范性数据模型来源。KsADK
-固定 `a2a-sdk==1.1.0`，其 `AgentCard`、`AgentInterface`、`AgentCapabilities` 和
-`SecurityRequirement` protobuf 字段已与当前 main 的这些定义对齐。发布前若上游 main 再变更，
-必须先升级 SDK 或适配实现并更新契约测试，不能只改文档。
+KsADK 0.8.3 的 A2A wire 合同固定为 A2A 1.0，并精确锁定 `a2a-sdk==1.1.0`。
+`AgentCard`、`AgentInterface`、`AgentCapabilities` 和 `SecurityRequirement` 均使用该 SDK
+提供的 protobuf 类型；兼容性以锁定依赖和仓内契约测试为准，不跟随上游 `main` 浮动。
+升级协议时必须同时升级 SDK、实现和契约测试，不能只改文档。
 
 这不是 KsADK 自定义 JSON 方言：`supportedInterfaces[]` 中的每一项都使用 `url`、
 `protocolBinding`、`protocolVersion`，发现地址是 `/.well-known/agent-card.json`。不输出旧
@@ -61,9 +59,9 @@ major.minor 协议版本（不包含 patch）。官方完整示例中出现的 `
 }
 ```
 
-当前 main 要求的 Card 核心字段及 KsADK 的对应关系如下：
+当前锁定的 `a2a-sdk==1.1.0` Card 核心字段及 KsADK 的对应关系如下：
 
-| main schema 字段 | KsADK 行为 |
+| A2A 1.0 字段 | KsADK 行为 |
 | --- | --- |
 | `name`、`description`、`version` | 从 `a2a card` 参数或项目检测结果生成 |
 | `supportedInterfaces` | 按偏好顺序声明 JSON-RPC 与 HTTP+JSON，且每项标明 `1.0` |
@@ -72,7 +70,7 @@ major.minor 协议版本（不包含 patch）。官方完整示例中出现的 `
 | `skills` | 由 `--skill` 生成；未传时生成 `general`，不会输出空列表 |
 | `securityRequirements` 等可选字段 | 由托管 Gateway/身份层有真实契约时再生成；本地最小 Card 不杜撰认证声明 |
 
-仓库测试会将生成结果重新解析为 pinned SDK 的 protobuf，并断言它不包含 main 之前版本的
+仓库测试会将生成结果重新解析为锁定 SDK 的 protobuf，并断言它不包含 A2A 1.0 之前版本的
 Card 字段。这是发布候选的 schema 门禁；它不把某个演示 Card 的可选 provider 或认证值误当成
 所有 Agent 都必须携带的字段。
 

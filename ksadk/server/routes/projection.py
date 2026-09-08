@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
@@ -49,6 +50,7 @@ async def _require_action_session(
         or (agent_id is not None and session.agent_id != agent_id)
         or (user_id is not None and session.user_id != user_id)
     ):
+        logger.warning("Session %s not found, userId %s", session_id, user_id)
         raise HTTPException(status_code=404, detail="Session not found")
     return cast(Session, session)
 
@@ -149,6 +151,171 @@ def _runtime_continuity_payload() -> dict[str, Any]:
     }
 
 
+def _first_text_part(parts: list[Any] | None) -> str:
+    """Return the text of the first part with content_type == 'text'."""
+    if not isinstance(parts, list):
+        return ""
+    for part in parts:
+        if isinstance(part, Mapping) and part.get("content_type") == "text":
+            return str(part.get("text") or "")
+    return ""
+
+
+def _first_tool_name(parts: list[Any] | None) -> str:
+    """Return the name from the first tool_call part."""
+    if not isinstance(parts, list) or not parts:
+        return ""
+    part = parts[0]
+    if isinstance(part, Mapping):
+        return str(part.get("name") or "")
+    return ""
+
+
+def _first_tool_result(parts: list[Any] | None) -> str:
+    """Return the result of the first tool_result part as a string."""
+    if not isinstance(parts, list) or not parts:
+        return ""
+    part = parts[0]
+    if not isinstance(part, Mapping):
+        return ""
+    result = part.get("result")
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _derive_display_text(content: Mapping[str, Any]) -> str:
+    """Derive a display string for Content.parts[0].text from a canonical runtime event.
+
+    For canonical runtime events (family=runtime/v2) the Content dict carries a
+    ``runtime_event`` payload but no top-level ``parts``.  This helper extracts a
+    short human-readable string so that frontends reading ``Content.parts[0].text``
+    continue to display meaningful text without changes.
+    """
+    runtime_event = content.get("runtime_event")
+    if not isinstance(runtime_event, Mapping):
+        return str(content.get("text") or "")
+
+    event_type = str(runtime_event.get("event_type") or "")
+    item_kind = str(runtime_event.get("item_kind") or "")
+
+    if event_type == "item.updated":
+        update = runtime_event.get("update")
+        if not isinstance(update, Mapping):
+            return ""
+        if item_kind in ("message", "reasoning"):
+            return str(update.get("text") or "")
+        if item_kind == "tool_call":
+            name = str(update.get("name") or "")
+            return f"调用工具：{name}" if name else ""
+        return ""
+
+    if event_type == "item.started":
+        initial = runtime_event.get("initial")
+        parts = initial.get("parts") if isinstance(initial, Mapping) else None
+        if item_kind == "tool_call":
+            name = _first_tool_name(parts)
+            return f"调用工具：{name}" if name else ""
+        if item_kind in ("message", "reasoning"):
+            return _first_text_part(parts)
+        return ""
+
+    if event_type == "item.completed":
+        snapshot = runtime_event.get("snapshot")
+        parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
+        if item_kind == "message":
+            return _first_text_part(parts)
+        if item_kind == "tool_result":
+            result = _first_tool_result(parts)
+            return _truncate_session_text(result) if result else ""
+        if item_kind == "tool_call":
+            name = _first_tool_name(parts)
+            return f"工具调用完成：{name}" if name else ""
+        return ""
+
+    if event_type == "item.snapshot_replaced":
+        snapshot = runtime_event.get("snapshot")
+        parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
+        if item_kind in ("message", "reasoning"):
+            return _first_text_part(parts)
+        return ""
+
+    if event_type == "item.failed":
+        error = runtime_event.get("error")
+        if isinstance(error, Mapping):
+            return str(error.get("message") or "执行失败")
+        return "执行失败"
+
+    if event_type == "run.started":
+        return "运行开始"
+    if event_type == "run.progress":
+        return str(runtime_event.get("message") or "")
+    if event_type == "run.completed":
+        return "运行完成"
+    if event_type == "run.failed":
+        error = runtime_event.get("error")
+        if isinstance(error, Mapping):
+            return str(error.get("message") or "运行失败")
+        return "运行失败"
+    if event_type == "run.interrupted":
+        return str(runtime_event.get("reason") or "运行已中断")
+    if event_type == "run.canceled":
+        return str(runtime_event.get("reason") or "运行已取消")
+
+    if event_type == "interaction.requested":
+        request = runtime_event.get("request")
+        if isinstance(request, Mapping):
+            kind = str(request.get("kind") or "approval")
+            return f"请求审批：{kind}"
+        return "请求审批"
+
+    if event_type == "interaction.resolved":
+        response = runtime_event.get("response")
+        if isinstance(response, Mapping):
+            return str(response.get("decision") or "")
+        return ""
+
+    if event_type == "continuation.created":
+        return f"创建恢复点：{runtime_event.get('continuation_kind') or ''}"
+    if event_type == "continuation.resumed":
+        return f"恢复执行：{runtime_event.get('continuation_kind') or ''}"
+
+    if event_type == "context.compaction.started":
+        return "上下文压缩开始"
+    if event_type == "context.compaction.completed":
+        return "上下文压缩完成"
+
+    if event_type == "usage.reported":
+        total = runtime_event.get("total_tokens")
+        if total is not None:
+            return f"用量上报：{total} tokens"
+        return "用量上报"
+
+    return ""
+
+
+def _derive_checkpoint_id(event: SessionEvent, content: Mapping[str, Any]) -> str:
+    """Surface checkpoint_id to Content top level for checkpoint-bearing events.
+
+    ``run_checkpoint`` events already carry ``checkpoint_id`` at Content top
+    level.  ``continuation.created`` events with ``continuation_kind=
+    graph_checkpoint`` store it deeper as ``Content.runtime_event.
+    continuation_id``; this helper extracts it so frontends reading
+    ``Content.checkpoint_id`` work uniformly across both event shapes.
+    Returns an empty string for non-checkpoint events.
+    """
+    if content.get("checkpoint_id") is not None:
+        return str(content.get("checkpoint_id") or "")
+    if event.event_type == "continuation.created":
+        runtime_event = content.get("runtime_event")
+        if isinstance(runtime_event, Mapping):
+            if str(runtime_event.get("continuation_kind") or "") == "graph_checkpoint":
+                return str(runtime_event.get("continuation_id") or "")
+    return ""
+
+
 def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     """Serialize a stored SessionEvent for the REST action wire.
 
@@ -156,13 +323,29 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     ``EventId``/``SessionId``/``Author``/``EventType``/``Content``/``Timestamp``/
     ``SeqId``（有值时附 ``InvocationId``）。这是存储事件形态本身的透传，
     ``Content``/``Metadata`` 的内部结构不在承诺范围。
+
+    对于 canonical runtime 事件（family=runtime/v2），``Content`` 没有
+    顶层 ``parts``。此处根据事件类型从 ``runtime_event`` payload 提取一段
+    人类可读文本注入 ``Content.parts[0].text``，兼容前端读取旧路径。
+    同理，``continuation.created`` (graph_checkpoint) 的 checkpoint id 存在
+    ``Content.runtime_event.continuation_id`` 深处；此处将其提升到
+    ``Content.checkpoint_id``，与 ``run_checkpoint`` 事件的外层结构对齐，
+    内层 ``runtime_event`` 原始结构保持不动。
     """
+    content = dict(event.content or {})
+    if not isinstance(content.get("parts"), list):
+        display_text = _derive_display_text(content)
+        if display_text:
+            content["parts"] = [{"text": display_text}]
+    checkpoint_id = _derive_checkpoint_id(event, content)
+    if checkpoint_id and "checkpoint_id" not in content:
+        content["checkpoint_id"] = checkpoint_id
     payload = {
         "EventId": event.id,
         "SessionId": event.session_id,
         "Author": event.author,
         "EventType": event.event_type,
-        "Content": event.content,
+        "Content": content,
         "Timestamp": event.timestamp,
         "SeqId": event.seq_id,
         "Metadata": event.metadata,
@@ -258,9 +441,33 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         if canonical.continuation_kind != "graph_checkpoint":
             return None
         framework = canonical.source.framework
+        source_metadata = canonical.source.metadata
         framework_ref = {framework: dict(canonical.ref)}
-        capability = canonical.source.metadata.get("capability")
+        capability = source_metadata.get("capability")
         capability = capability if isinstance(capability, Mapping) else {}
+        # Fallback: when the canonical event lacks capability fields, try
+        # the raw event metadata (legacy run_checkpoint stored backend/scope
+        # directly in metadata, and some adapters may not enrich source).
+        event_meta = event.metadata or {}
+        def _capability_str(key: str, default: str = "unknown") -> str:
+            value = capability.get(key)
+            if value is not None:
+                return str(value)
+            value = event_meta.get(key)
+            if value is not None:
+                return str(value)
+            value = source_metadata.get(key)
+            if value is not None:
+                return str(value)
+            return default
+        durable_raw = capability.get("durable")
+        if durable_raw is None:
+            durable_raw = event_meta.get("durable", False)
+        def _cap_val(key: str, default: Any = None) -> Any:
+            value = capability.get(key)
+            if value is not None:
+                return value
+            return event_meta.get(key, default)
         metadata = {
             **dict(event.metadata or {}),
             **dict(canonical.source.metadata),
@@ -269,10 +476,29 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             "checkpoint_id": canonical.continuation_id,
             "framework": framework,
             "framework_ref": dict(framework_ref),
-            "backend": str(capability.get("backend") or "unknown"),
-            "scope": str(capability.get("scope") or "unknown"),
-            "durable": bool(capability.get("durable", False)),
+            "backend": _capability_str("backend"),
+            "scope": _capability_str("scope"),
+            "durable": bool(durable_raw),
             "is_resumable": canonical.resumable,
+            "is_terminal": bool(
+                capability.get("is_terminal", event_meta.get("is_terminal", False))
+            ),
+            "next_node": _capability_str("next_node", ""),
+            "resume_status": _capability_str("resume_status", ""),
+            "resume_disabled_reason": _capability_str("resume_disabled_reason", ""),
+            "phase": _capability_str("phase", ""),
+            "stage": _capability_str("stage", ""),
+            "stage_name": _capability_str("stage_name", ""),
+            "stage_key": _capability_str("stage_key", ""),
+            "summary": _capability_str("summary", ""),
+            "next_action": _capability_str("next_action", ""),
+            "status": _capability_str("status", ""),
+            "tool_name": _capability_str("tool_name", ""),
+            "receipt_key": _capability_str("receipt_key", ""),
+            "artifact_path": _capability_str("artifact_path", ""),
+            "stage_index": _cap_val("stage_index"),
+            "total_stages": _cap_val("total_stages"),
+            "artifact_preview": _cap_val("artifact_preview", {}),
         }
     run_id = str(metadata.get("run_id") or "").strip()
     checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
@@ -282,9 +508,17 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         return None
     next_node = str(metadata.get("next_node") or "").strip()
     if not next_node:
-        langgraph_ref = framework_ref.get("langgraph")
+        langgraph_ref = framework_ref.get(framework)
         if isinstance(langgraph_ref, Mapping):
             next_node = str(langgraph_ref.get("next_node") or "").strip()
+            # Fallback: stream_mapping wraps framework_ref one level deeper;
+            # try ref[framework].framework_ref[framework].next_node.
+            if not next_node:
+                inner_ref = langgraph_ref.get("framework_ref")
+                if isinstance(inner_ref, Mapping):
+                    inner_framework_ref = inner_ref.get(framework)
+                    if isinstance(inner_framework_ref, Mapping):
+                        next_node = str(inner_framework_ref.get("next_node") or "").strip()
     is_terminal = bool(metadata.get("is_terminal", False))
     is_resumable_raw = metadata.get("is_resumable")
     is_resumable = is_resumable_raw if isinstance(is_resumable_raw, bool) else None
@@ -398,14 +632,14 @@ def _resume_audit_by_checkpoint(
 
 def _apply_checkpoint_resume_audit(
     checkpoint: dict[str, Any],
-    audit_by_checkpoint: Mapping[tuple[str, str], Mapping[str, Any]],
+    audit_by_checkpoint: Mapping[tuple[str, ...], Mapping[str, Any]],
 ) -> dict[str, Any]:
+    session_id = str(checkpoint.get("SessionId") or "")
+    run_id = str(checkpoint.get("RunId") or "")
+    checkpoint_id = str(checkpoint.get("CheckpointId") or "")
     audit = audit_by_checkpoint.get(
-        (
-            str(checkpoint.get("RunId") or ""),
-            str(checkpoint.get("CheckpointId") or ""),
-        ),
-        {},
+        (session_id, run_id, checkpoint_id),
+        audit_by_checkpoint.get((run_id, checkpoint_id), {}),
     )
     metadata = dict(checkpoint.get("Metadata") or {})
     resume_count = int(audit.get("resume_count") or checkpoint.get("ResumeCount") or 0)
@@ -595,11 +829,17 @@ def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[st
         str(checkpoint.get("ResumeDisabledReason") or "").strip() or "Checkpoint is not resumable"
     )
     return {
+        "Code": "checkpoint_not_resumable",
         "code": "checkpoint_not_resumable",
+        "Reason": reason,
         "reason": reason,
+        "CheckpointId": str(checkpoint.get("CheckpointId") or ""),
         "checkpoint_id": str(checkpoint.get("CheckpointId") or ""),
+        "RunId": str(checkpoint.get("RunId") or ""),
         "run_id": str(checkpoint.get("RunId") or ""),
+        "ResumeStatus": str(checkpoint.get("ResumeStatus") or "disabled"),
         "resume_status": str(checkpoint.get("ResumeStatus") or "disabled"),
+        "IsTerminal": bool(checkpoint.get("IsTerminal")),
         "is_terminal": bool(checkpoint.get("IsTerminal")),
     }
 
