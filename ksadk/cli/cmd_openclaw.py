@@ -41,6 +41,7 @@ from ksadk.builders.container_builder import (
 )
 from ksadk.cli.agent_ref import resolve_openclaw_ref
 from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
+from ksadk.cli.env_options import env_options, parse_env_pairs
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
@@ -77,9 +78,10 @@ from ksadk.cli.ui import (
 from ksadk.cli.ui import (
     output_option as cli_output_option,
 )
+from ksadk.configs.env_registry import is_sensitive_env_var
 from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.deployment.agent_access import get_latest_agent_access
-from ksadk.model_policy import build_runtime_model_policy_env
+from ksadk.cli.openclaw_env import _build_openclaw_env_vars, _normalize_openclaw_gateway_auth_env
 from ksadk.openclaw_gateway import (
     OpenClawGatewayClient,
     OpenClawGatewayError,
@@ -95,19 +97,9 @@ DEFAULT_OPENCLAW_REPO = "openclaw"
 DEFAULT_OPENCLAW_VERSION = "2026.6.1"
 DEFAULT_OPENCLAW_REGISTRY = "ghcr.io/kingsoftcloud"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
-DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
-DEFAULT_TRUSTED_PROXY_CIDRS = [
-    "127.0.0.1",
-    "::1",
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "35.0.0.0/8",
-]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
 OPENCLAW_CHANNELS = ("weixin", "feishu", "wps-xiezuo")
-OPENCLAW_ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 WEIXIN_PLUGIN_ID = "openclaw-weixin"
 FEISHU_PLUGIN_ID = "openclaw-lark"
 FEISHU_CHANNEL_KEY = "feishu"
@@ -385,33 +377,6 @@ def _openclaw_registry_env() -> dict[str, str]:
     return env
 
 
-def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
-    """解析模型 Base URL，缺失时回退到 settings.model.api_base（KSPMAS 自动探测）。"""
-    if cli_value and str(cli_value).strip():
-        return str(cli_value).strip()
-
-    from_env = _resolve_env(
-        "OPENCLAW_MODEL_BASE_URL",
-        "OPENAI_BASE_URL",
-        "OPENAI_API_BASE",
-        "LLM_API_BASE",
-        "MODEL_API_BASE",
-    )
-    if from_env:
-        return from_env
-
-    try:
-        from ksadk.configs.settings import settings
-
-        api_base = settings.model.api_base
-        if api_base and str(api_base).strip():
-            return str(api_base).strip()
-    except Exception:
-        pass
-
-    return None
-
-
 def _summarize_openclaw_account(agents: list[Dict[str, Any]]) -> str:
     """汇总列表所属账号，优先使用响应字段，缺失时回退当前 CLI 上下文。"""
     accounts = sorted(
@@ -452,88 +417,6 @@ def _print_openclaw_list_summary(table: RichTable, summary_text: str) -> None:
         console.print(summary_grid)
         return
     console.print(f"[muted]{summary_text}[/]")
-
-
-def _normalize_ui_locale(raw: Optional[str]) -> str:
-    """标准化 UI 语言代码，默认 zh-CN。"""
-    text = str(raw or "").strip()
-    if not text:
-        return "zh-CN"
-
-    base = text.split(".", 1)[0].replace("_", "-").strip()
-    low = base.lower()
-
-    if low in {"c", "c-utf-8", "c.utf-8", "posix"}:
-        return "zh-CN"
-    if (
-        low.startswith("zh-tw")
-        or low.startswith("zh-hk")
-        or low.startswith("zh-mo")
-        or low.startswith("zh-hant")
-    ):
-        return "zh-TW"
-    if low.startswith("zh"):
-        return "zh-CN"
-    if low.startswith("pt"):
-        return "pt-BR"
-    if low.startswith("de"):
-        return "de"
-    if low.startswith("en"):
-        return "en"
-
-    return "zh-CN"
-
-
-def _is_truthy(raw: Optional[str]) -> bool:
-    text = str(raw or "").strip().lower()
-    return text in {"1", "true", "yes", "on"}
-
-
-def _resolve_exec_profile_overrides(security_profile: Optional[str]) -> Dict[str, str]:
-    """根据 CLI 安全预设返回 OpenClaw 运行时环境变量覆盖项。"""
-    profile = str(security_profile or "").strip().lower()
-    if not profile:
-        return {}
-
-    common = {
-        "OPENCLAW_EXEC_HOST": "gateway",
-        "OPENCLAW_EXEC_AUTO_ALLOW_SKILLS": "false",
-        "OPENCLAW_ELEVATED_ENABLED": "false",
-    }
-    if profile == "relaxed":
-        return {
-            **common,
-            "OPENCLAW_EXEC_STRICT_MODE": "false",
-            "OPENCLAW_EXEC_UNSAFE_MODE": "true",
-            "OPENCLAW_EXEC_SECURITY": "full",
-            "OPENCLAW_EXEC_ASK": "off",
-            "OPENCLAW_EXEC_ASK_FALLBACK": "full",
-            "OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED": "false",
-            "OPENCLAW_FS_WORKSPACE_ONLY": "false",
-        }
-    if profile == "strict":
-        return {
-            **common,
-            "OPENCLAW_EXEC_STRICT_MODE": "true",
-            "OPENCLAW_EXEC_UNSAFE_MODE": "false",
-            "OPENCLAW_EXEC_SECURITY": "allowlist",
-            "OPENCLAW_EXEC_ASK": "off",
-            "OPENCLAW_EXEC_ASK_FALLBACK": "allowlist",
-            "OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED": "true",
-            "OPENCLAW_FS_WORKSPACE_ONLY": "false",
-        }
-    if profile == "strictest":
-        return {
-            **common,
-            "OPENCLAW_EXEC_STRICT_MODE": "true",
-            "OPENCLAW_EXEC_UNSAFE_MODE": "false",
-            "OPENCLAW_EXEC_SECURITY": "deny",
-            "OPENCLAW_EXEC_ASK": "off",
-            "OPENCLAW_EXEC_ASK_FALLBACK": "deny",
-            "OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED": "false",
-            "OPENCLAW_FS_WORKSPACE_ONLY": "true",
-        }
-    raise ValueError(f"unsupported OpenClaw security profile: {security_profile}")
 
 
 def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
@@ -738,339 +621,14 @@ def _filter_openclaw_provider_catalog(
     return selected
 
 
-def _build_openclaw_env_vars(
-    *,
-    model_base_url: Optional[str] = None,
-    model_api_key: Optional[str] = None,
-    default_model: Optional[str] = None,
-    model_provider_id: Optional[str] = None,
-    gateway_port: Optional[str] = None,
-    public_port: Optional[str] = None,
-    security_profile: Optional[str] = None,
-) -> dict:
-    """构建 OpenClaw 所需的环境变量，自动复用 OPENAI_* 环境变量"""
-    env = {}
-    default_provider_id = "ksyun"
-    default_model_api = "openai-completions"
-    default_model_base_url = "https://kspmas.ksyun.com/v1"
-    exec_profile_overrides = _resolve_exec_profile_overrides(security_profile)
-
-    # 模型配置：客户端只透传用户显式配置和可选的 API Key；
-    # 其余默认值交给镜像 bootstrap 兜底，避免创建请求把服务端默认行为短路掉。
-    openclaw_explicit_model = default_model or _resolve_env("OPENCLAW_DEFAULT_MODEL")
-    generic_model_preference = _resolve_env("OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
-    model_preference = openclaw_explicit_model or generic_model_preference
-    explicit_base_url = model_base_url or _resolve_env(
-        "OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"
-    )
-    base_url = _resolve_model_base_url(explicit_base_url)
-    api_key = model_api_key or _resolve_env(
-        "OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY"
-    )
-    model = model_preference or "glm-5.2"
-    explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
-    inferred_provider_id = explicit_provider_id
-    if not inferred_provider_id and model and "/" in model:
-        inferred_provider_id = model.split("/", 1)[0].strip()
-    provider_id = inferred_provider_id or default_provider_id
-    resolved_gateway_port = gateway_port or _resolve_env("OPENCLAW_GATEWAY_PORT", "PORT") or "8080"
-    resolved_public_port = public_port or _resolve_env("OPENCLAW_PUBLIC_PORT") or "80"
-    explicit_model_api = _resolve_env("OPENCLAW_MODEL_API")
-    model_api = explicit_model_api or default_model_api
-    trusted_proxy_user_header = (
-        (
-            _resolve_env(
-                "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
-                "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER",
-            )
-            or DEFAULT_TRUSTED_PROXY_USER_HEADER
-        )
-        .strip()
-        .lower()
-    )
-    internal_trusted_proxy_user = (
-        _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER") or "openclaw-backend"
-    )
-    internal_trusted_proxy_user_header = (
-        (
-            _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER")
-            or trusted_proxy_user_header
-            or DEFAULT_TRUSTED_PROXY_USER_HEADER
-        )
-        .strip()
-        .lower()
-    )
-    trusted_proxies = _normalize_csv_list(
-        _resolve_env("OPENCLAW_TRUSTED_PROXIES") or "",
-        default_items=DEFAULT_TRUSTED_PROXY_CIDRS,
-    )
-    browser_enabled = _resolve_env("OPENCLAW_BROWSER_ENABLED")
-    browser_no_sandbox = _resolve_env("OPENCLAW_BROWSER_NO_SANDBOX") or "true"
-    browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
-    browser_executable = _resolve_env(
-        "OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE"
-    )
-    ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
-    exec_strict_mode_raw = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_STRICT_MODE")
-        or _resolve_env("OPENCLAW_EXEC_STRICT_MODE", "OPENCLAW_EXEC_SAFE_MODE")
-        or "false"
-    )
-    exec_strict_mode = _is_truthy(exec_strict_mode_raw)
-
-    exec_host = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_HOST")
-        or _resolve_env("OPENCLAW_EXEC_HOST")
-        or "gateway"
-    )
-    exec_security = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_SECURITY")
-        or _resolve_env("OPENCLAW_EXEC_SECURITY")
-        or ("allowlist" if exec_strict_mode else "full")
-    )
-    exec_ask = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_ASK")
-        or _resolve_env("OPENCLAW_EXEC_ASK")
-        or "off"
-    )
-    exec_ask_fallback = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_ASK_FALLBACK")
-        or _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK")
-        or ("allowlist" if exec_strict_mode else "full")
-    )
-    exec_auto_allow_skills = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS")
-        or _resolve_env("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS")
-        or "false"
-    )
-    elevated_enabled = (
-        exec_profile_overrides.get("OPENCLAW_ELEVATED_ENABLED")
-        or _resolve_env("OPENCLAW_ELEVATED_ENABLED")
-        or "false"
-    )
-    exec_default_allowlist_enabled = (
-        exec_profile_overrides.get("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED")
-        or _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED")
-        or ("true" if exec_strict_mode else "false")
-    )
-    exec_allowlist = _resolve_env("OPENCLAW_EXEC_ALLOWLIST")
-    fs_workspace_only = (
-        exec_profile_overrides.get("OPENCLAW_FS_WORKSPACE_ONLY")
-        or _resolve_env("OPENCLAW_FS_WORKSPACE_ONLY")
-        or "false"
-    )
-    model_api_key_secret_source = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_SOURCE") or "file"
-    model_api_key_secret_file_path = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH")
-    gateway_auth_mode = _resolve_env("OPENCLAW_GATEWAY_AUTH_MODE")
-    gateway_token = _resolve_env("OPENCLAW_GATEWAY_TOKEN")
-    gateway_password = _resolve_env("OPENCLAW_GATEWAY_PASSWORD")
-
-    env["OPENCLAW_GATEWAY_BIND"] = "lan"
-    if gateway_auth_mode:
-        env["OPENCLAW_GATEWAY_AUTH_MODE"] = gateway_auth_mode
-    env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] = (
-        trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
-    )
-    env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER"] = internal_trusted_proxy_user
-    env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER"] = (
-        internal_trusted_proxy_user_header
-        or trusted_proxy_user_header
-        or DEFAULT_TRUSTED_PROXY_USER_HEADER
-    )
-    env["OPENCLAW_TRUSTED_PROXIES"] = trusted_proxies
-    env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
-    env["OPENCLAW_PUBLIC_PORT"] = str(resolved_public_port)
-    if browser_enabled:
-        env["OPENCLAW_BROWSER_ENABLED"] = browser_enabled
-    env["OPENCLAW_BROWSER_NO_SANDBOX"] = browser_no_sandbox
-    env["OPENCLAW_BROWSER_HEADLESS"] = browser_headless
-    if browser_executable:
-        env["OPENCLAW_BROWSER_EXECUTABLE_PATH"] = browser_executable
-    env["OPENCLAW_UI_LOCALE"] = ui_locale
-    env["OPENCLAW_EXEC_HOST"] = exec_host
-    env["OPENCLAW_EXEC_STRICT_MODE"] = "true" if exec_strict_mode else "false"
-    env["OPENCLAW_EXEC_UNSAFE_MODE"] = "false" if exec_strict_mode else "true"
-    env["OPENCLAW_EXEC_SECURITY"] = exec_security
-    env["OPENCLAW_EXEC_ASK"] = exec_ask
-    env["OPENCLAW_EXEC_ASK_FALLBACK"] = exec_ask_fallback
-    env["OPENCLAW_EXEC_AUTO_ALLOW_SKILLS"] = exec_auto_allow_skills
-    env["OPENCLAW_ELEVATED_ENABLED"] = elevated_enabled
-    env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] = exec_default_allowlist_enabled
-    env["OPENCLAW_FS_WORKSPACE_ONLY"] = fs_workspace_only
-    env["OPENCLAW_MODEL_API_KEY_SECRET_SOURCE"] = model_api_key_secret_source
-    if exec_allowlist:
-        env["OPENCLAW_EXEC_ALLOWLIST"] = exec_allowlist
-    if model_api_key_secret_file_path:
-        env["OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH"] = model_api_key_secret_file_path
-
-    if explicit_provider_id and provider_id != default_provider_id:
-        env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
-    elif not explicit_provider_id and provider_id and provider_id != default_provider_id:
-        env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
-    if explicit_model_api and model_api != default_model_api:
-        env["OPENCLAW_MODEL_API"] = model_api
-    if explicit_base_url and base_url and base_url != default_model_base_url:
-        env["OPENCLAW_MODEL_BASE_URL"] = base_url
-    if api_key:
-        env["OPENCLAW_MODEL_API_KEY"] = api_key
-    normalized_model = model.strip() if model else None
-    catalog_model_id = None
-    resolved_model = None
-    if normalized_model:
-        if "/" in normalized_model:
-            _, catalog_model_id = normalized_model.split("/", 1)
-            resolved_model = normalized_model
-        else:
-            resolved_model = (
-                f"{provider_id}/{normalized_model}" if provider_id else normalized_model
-            )
-        if openclaw_explicit_model:
-            env["OPENCLAW_DEFAULT_MODEL"] = resolved_model
-        elif generic_model_preference:
-            env["OPENAI_MODEL_NAME"] = resolved_model
-
-    # 额外的可选配置
-    catalog = _resolve_env("OPENCLAW_MODEL_CATALOG_JSON")
-    if catalog:
-        env["OPENCLAW_MODEL_CATALOG_JSON"] = catalog
-    openclaw_model_allowlist = _resolve_env("OPENCLAW_MODEL_ALLOWLIST")
-    agentengine_model_allowlist = _resolve_env("AGENTENGINE_MODEL_ALLOWLIST")
-    if openclaw_model_allowlist:
-        env["OPENCLAW_MODEL_ALLOWLIST"] = openclaw_model_allowlist
-    elif agentengine_model_allowlist:
-        env["AGENTENGINE_MODEL_ALLOWLIST"] = agentengine_model_allowlist
-    origins = _resolve_env("OPENCLAW_ALLOWED_ORIGINS")
-    if origins:
-        env["OPENCLAW_ALLOWED_ORIGINS"] = _normalize_allowed_origins(origins)
-    else:
-        # 统一输出 JSON 数组字符串，兼容旧版 bootstrap（仅支持 JSON.parse）。
-        env["OPENCLAW_ALLOWED_ORIGINS"] = json.dumps(["*"])
-    allow_insecure_auth = _resolve_env("OPENCLAW_ALLOW_INSECURE_AUTH")
-    env["OPENCLAW_ALLOW_INSECURE_AUTH"] = allow_insecure_auth if allow_insecure_auth else "true"
-    disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
-    env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
-    if gateway_token:
-        env["OPENCLAW_GATEWAY_TOKEN"] = gateway_token
-    if gateway_password:
-        env["OPENCLAW_GATEWAY_PASSWORD"] = gateway_password
-    for passthrough_key in [
-        "OPENCLAW_CHANNEL_BOOTSTRAP_JSON",
-        "OPENCLAW_BROWSER_SSRF_POLICY_JSON",
-        "OPENCLAW_WEB_FETCH_ENABLED",
-        "OPENCLAW_WEB_SEARCH_PROVIDER",
-        "OPENCLAW_WEB_SEARCH_BASE_URL",
-        "OPENCLAW_WEB_SEARCH_MODEL",
-        "OPENCLAW_WEB_SEARCH_API_KEY",
-        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE",
-        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER",
-        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID",
-    ]:
-        passthrough_value = _resolve_env(passthrough_key)
-        if passthrough_value:
-            env[passthrough_key] = passthrough_value
-
-    env = _normalize_openclaw_gateway_auth_env(env)
-    return build_runtime_model_policy_env(env, runtime="openclaw")
-
-
-def _normalize_allowed_origins(raw: str) -> str:
-    """标准化 OPENCLAW_ALLOWED_ORIGINS，统一输出 JSON 数组字符串。"""
-    text = (raw or "").strip()
-    if not text:
-        return ""
-
-    origins = []
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            origins = [str(x).strip() for x in parsed if str(x).strip()]
-    except Exception:
-        # Backward compatible: 支持逗号/分号/空白分隔字符串。
-        parts = [p.strip() for p in text.replace(";", ",").replace(" ", ",").split(",")]
-        origins = [p.strip() for p in parts if p.strip()]
-
-    if not origins:
-        origins = [text]
-
-    deduped = list(dict.fromkeys(origins))
-    return json.dumps(deduped, ensure_ascii=False)
-
-
-def _normalize_csv_list(raw: str, *, default_items: Optional[list[str]] = None) -> str:
-    """标准化字符串列表为逗号分隔格式。"""
-    text = (raw or "").strip()
-    items: list[str] = []
-    if text:
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                items = [str(x).strip() for x in parsed if str(x).strip()]
-        except Exception:
-            parts = [p.strip() for p in text.replace(";", ",").replace(" ", ",").split(",")]
-            items = [p for p in parts if p]
-
-    if not items:
-        items = [str(x).strip() for x in (default_items or []) if str(x).strip()]
-
-    return ",".join(list(dict.fromkeys(items)))
-
-
-def _normalize_openclaw_gateway_auth_env(env: dict[str, str]) -> dict[str, str]:
-    """标准化 OpenClaw gateway 鉴权模式与共享密钥配置。"""
-    normalized_env = dict(env or {})
-    raw_mode = str(normalized_env.get("OPENCLAW_GATEWAY_AUTH_MODE") or "").strip().lower()
-    raw_token = str(normalized_env.get("OPENCLAW_GATEWAY_TOKEN") or "").strip()
-    raw_password = str(normalized_env.get("OPENCLAW_GATEWAY_PASSWORD") or "").strip()
-
-    if raw_mode and raw_mode not in {"trusted-proxy", "token", "none"}:
-        raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
-
-    auth_mode = raw_mode or ("token" if raw_token or raw_password else "trusted-proxy")
-    if auth_mode == "token":
-        if raw_token and raw_password and raw_token != raw_password:
-            raise ValueError(
-                "OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致"
-            )
-        shared_secret = raw_token or raw_password
-        if not shared_secret:
-            raise ValueError(
-                "OPENCLAW_GATEWAY_AUTH_MODE=token 时必须提供 "
-                "OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
-            )
-        normalized_env["OPENCLAW_GATEWAY_AUTH_MODE"] = "token"
-        normalized_env["OPENCLAW_GATEWAY_TOKEN"] = shared_secret
-        normalized_env["OPENCLAW_GATEWAY_PASSWORD"] = shared_secret
-        return normalized_env
-
-    if raw_token or raw_password:
-        raise ValueError(
-            "仅在 OPENCLAW_GATEWAY_AUTH_MODE=token 时支持 "
-            "OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
-        )
-
-    normalized_env["OPENCLAW_GATEWAY_AUTH_MODE"] = auth_mode
-    normalized_env.pop("OPENCLAW_GATEWAY_TOKEN", None)
-    normalized_env.pop("OPENCLAW_GATEWAY_PASSWORD", None)
-    return normalized_env
-
-
 def _parse_extra_openclaw_env_pairs(items: tuple[str, ...] | list[str] | None) -> dict[str, str]:
-    """解析 deploy --env 传入的自定义环境变量。"""
-    parsed: dict[str, str] = {}
-    for raw_item in items or ():
-        item = str(raw_item or "").strip()
-        if not item or "=" not in item:
-            raise ValueError(f"自定义环境变量格式错误: {raw_item!r}，应为 KEY=VALUE")
-        key, value = item.split("=", 1)
-        key = key.strip()
-        if not OPENCLAW_ENV_KEY_PATTERN.fullmatch(key):
-            raise ValueError(f"自定义环境变量名不合法: {key!r}，请使用合法的环境变量名")
-        if key == "OPENCLAW_GATEWAY_AUTH_MODE":
-            normalized = value.strip().lower()
-            if normalized not in {"trusted-proxy", "token", "none"}:
-                raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
-            value = normalized
-        parsed[key] = value
+    """解析 deploy --env 传入的自定义环境变量，并对 gateway 鉴权模式做早期归一化。"""
+    parsed = parse_env_pairs(items)
+    if "OPENCLAW_GATEWAY_AUTH_MODE" in parsed:
+        normalized = parsed["OPENCLAW_GATEWAY_AUTH_MODE"].strip().lower()
+        if normalized not in {"trusted-proxy", "token", "none"}:
+            raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
+        parsed["OPENCLAW_GATEWAY_AUTH_MODE"] = normalized
     return parsed
 
 
@@ -3388,17 +2946,21 @@ def channel_doctor(
 @click.option("--mem0-instance-id", default=None, help="mem0 实例 ID")
 @click.option("--mem0-instance-name", default=None, help="mem0 实例名称（可选）")
 @click.option("--mem0-region", default=None, help="mem0 实例区域（可选）")
-@click.option(
-    "--env",
-    "extra_env",
-    multiple=True,
-    help="额外透传自定义环境变量，格式 KEY=VALUE，可重复传入",
-)
+@env_options
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option(
     "--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）"
 )
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@click.option(
+    "--agent-id",
+    "agent_id_opt",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
 @network_options
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
@@ -3414,9 +2976,11 @@ def deploy(
     mem0_instance_name: Optional[str],
     mem0_region: Optional[str],
     extra_env: tuple[str, ...],
+    env_file: Optional[str],
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    agent_id_opt: Optional[str],
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -3456,6 +3020,7 @@ def deploy(
             _option_was_explicit(ctx, "model_api_key"),
             _option_was_explicit(ctx, "default_model"),
             bool(extra_env),
+            _option_was_explicit(ctx, "env_file"),
         )
     )
     include_storage_on_update = any(
@@ -3486,9 +3051,11 @@ def deploy(
                 mem0_instance_name=mem0_instance_name,
                 mem0_region=mem0_region,
                 extra_env=extra_env,
+                env_file=env_file,
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
+                agent_id_opt=agent_id_opt,
                 include_env_on_update=include_env_on_update,
                 include_storage_on_update=include_storage_on_update,
                 **network_cli_kwargs(
@@ -3521,9 +3088,11 @@ async def _deploy_openclaw(
     mem0_instance_name: Optional[str],
     mem0_region: Optional[str],
     extra_env: tuple[str, ...] = (),
+    env_file: Optional[str] = None,
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
     no_storage: bool = False,
+    agent_id_opt: Optional[str] = None,
     include_env_on_update: bool = False,
     include_storage_on_update: bool = False,
     enable_public_access: Optional[bool] = None,
@@ -3535,27 +3104,26 @@ async def _deploy_openclaw(
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
-    from dotenv import dotenv_values
-
     from ksadk.api import AgentEngineClient
+    from ksadk.cli.env_options import (
+        apply_explicit_env_with_shell_priority,
+        inject_env_to_environ,
+        resolve_runtime_env_overrides,
+    )
     from ksadk.deployment.state import clear_state, load_state, save_state
 
-    # 自动加载当前目录 .env（仅补充未导出的变量，不覆盖已导出的 shell 环境）
+    # 自动加载当前目录 .env 或 --env-file 指定文件（优先级: --env > --env-file > shell > .env）
     project_dir = Path(".").resolve()
-    env_file = project_dir / ".env"
-    if env_file.exists():
-        try:
-            loaded = 0
-            for k, v in dotenv_values(env_file).items():
-                if not k or v is None:
-                    continue
-                if os.getenv(k) is None:
-                    os.environ[k] = str(v)
-                    loaded += 1
-            if loaded:
-                print_info(f"已从 .env 注入环境变量: {loaded} 项")
-        except Exception as e:
-            print_warn(f"读取 .env 失败，将继续使用当前 shell 环境: {e}")
+    cli_env, auto_dotenv, shell_keys, env_source = resolve_runtime_env_overrides(
+        env_file=env_file,
+        extra_env=extra_env,
+        base_dir=project_dir,
+    )
+    loaded = inject_env_to_environ(cli_env, auto_dotenv, shell_keys)
+    if loaded:
+        print_info(f"已从 {env_source or '--env'} 注入环境变量: {loaded} 项")
+    if cli_env or auto_dotenv:
+        include_env_on_update = True
 
     # 读取本地状态 (判断创建 vs 更新)
     state = load_state(project_dir)
@@ -3565,6 +3133,14 @@ async def _deploy_openclaw(
     if state_kind == "openclaw":
         existing_agent_id = state.get("agent_id")
         state_name = str(state.get("name") or "").strip() or None
+    explicit_agent_id = (agent_id_opt or "").strip() or None
+    if explicit_agent_id:
+        if existing_agent_id and existing_agent_id != explicit_agent_id:
+            print_info(
+                f"--agent-id ({explicit_agent_id}) 与本地状态 "
+                f"({existing_agent_id}) 不一致，以 --agent-id 为准"
+            )
+        existing_agent_id = explicit_agent_id
 
     if name:
         openclaw_name = name
@@ -3592,9 +3168,8 @@ async def _deploy_openclaw(
         default_model=default_model,
         security_profile=security_profile,
     )
-    custom_env_vars = _parse_extra_openclaw_env_pairs(extra_env)
-    if custom_env_vars:
-        env_vars.update(custom_env_vars)
+    if cli_env or auto_dotenv:
+        apply_explicit_env_with_shell_priority(env_vars, cli_env, auto_dotenv, shell_keys)
     env_vars = _normalize_openclaw_gateway_auth_env(env_vars)
     if not str(env_vars.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
         catalog_api_base = model_base_url or _resolve_env(
@@ -3636,7 +3211,7 @@ async def _deploy_openclaw(
 
     # 构建环境变量列表
     env_list = [
-        {"Key": k, "Value": v, "IsSensitive": "KEY" in k or "TOKEN" in k or "SECRET" in k}
+        {"Key": k, "Value": v, "IsSensitive": is_sensitive_env_var(k)}
         for k, v in env_vars.items()
     ]
     # 资源规格（支持通过环境变量覆盖）
@@ -3744,6 +3319,37 @@ async def _deploy_openclaw(
         latest_status = None
         updated_existing_agent = False
         async with AgentEngineClient(region=region) as client:
+            if explicit_agent_id:
+                try:
+                    detail = await client.get_agent(
+                        explicit_agent_id, include_api_key=True
+                    )
+                except Exception as e:
+                    raise click.ClickException(
+                        f"指定的 Agent ID '{explicit_agent_id}' 不存在，或当前凭证无权限访问。\n"
+                        f"   详情: {e}\n"
+                        "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号有该 Agent 的权限。"
+                    ) from e
+                qa = detail.get("quick_access", {}) or {}
+                basic = detail.get("basic", {}) or {}
+                recovered_state = state.copy()
+                recovered_state.update(
+                    {
+                        "agent_id": explicit_agent_id,
+                        "name": basic.get("name") or openclaw_name,
+                        "type": "openclaw",
+                        "region": region,
+                        "endpoint": qa.get("public_endpoint"),
+                    }
+                )
+                if qa.get("api_key"):
+                    recovered_state["api_key"] = qa["api_key"]
+                recovered_state = {
+                    k: v for k, v in recovered_state.items() if v is not None
+                }
+                save_state(project_dir, recovered_state)
+                state = recovered_state
+                print_info(f"已通过 --agent-id 关联已有 Agent: {explicit_agent_id}")
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
                 try:

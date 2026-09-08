@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.0"
+      KSADK_WEB_VERSION: "0.3.5"
     steps:
       - uses: actions/checkout@v7
 
@@ -20,7 +20,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -32,15 +32,15 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: docs-site/pnpm-lock.yaml
 
       - name: Install dependencies
         run: uv sync --extra all
 
-      - name: Sync KsADK Web static assets
-        run: make public-sync-ksadk-web-static
+      - name: Build frontend static assets
+        run: make build-frontend
 
       - name: Build package artifacts
         run: uv build
@@ -49,7 +49,19 @@ jobs:
         run: make public-test
 
       - name: Audit public repository candidate
-        run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
+        run: |
+          if [ -f export-manifest.json ]; then
+            audit_root="$PWD"
+          else
+            audit_root="${RUNNER_TEMP}/ksadk-python-public-audit"
+            rm -rf "$audit_root"
+            uv run --extra dev python scripts/prepare_ksadk_python_export.py \
+              --output-dir "$audit_root" \
+              --summary
+          fi
+          uv run --extra dev python scripts/open_source_audit.py \
+            --root "$audit_root" \
+            --target public-repo
 
       - name: Build and audit public docs
         run: make docs-site-build
@@ -60,6 +72,37 @@ jobs:
       - name: Audit wheel and sdist file lists
         run: make open-source-audit-dist
 
+  test-studio-react:
+    name: React Studio responsive browser gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        if: ${{ hashFiles('ksadk/studio/react-ui/package-lock.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ksadk/studio/react-ui/package-lock.json
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run React Studio browser gate
+        run: make studio-react-test
+
   # goal-00: google-adk 多版本 matrix。依赖窗口 >=1.34.0,<3.0,
   # 对最低锚点 1.34.x 与最新 2.x(2.5.x)各跑一遍全量测试,防止任何一端回归。
   # 版本差异统一由 ksadk/compat/adk_compat.py 收口(见 docs/adk-multi-version-compat.md)。
@@ -67,7 +110,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.0"
+      KSADK_WEB_VERSION: "0.3.5"
     strategy:
       fail-fast: false
       matrix:
@@ -79,9 +122,14 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Install dependencies
         run: uv sync --extra all
@@ -92,10 +140,10 @@ jobs:
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
-      # Static web assets are deliberately not tracked in the Python source
-      # tree; fetch and verify the released npm payload before wheel build.
-      - name: Sync KsADK Web static assets
-        run: make public-sync-ksadk-web-static
+      # Both internal and public branches compile Studio from source.
+      # Generated assets belong in packages, never in the Git tree.
+      - name: Build frontend static assets
+        run: make build-frontend
 
       # Packaging tests inspect the wheel itself; build it in each isolated ADK
       # environment rather than depending on an artifact from another job.
@@ -123,7 +171,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -150,7 +198,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -159,3 +207,59 @@ jobs:
 
       - name: Import platform package, resolve binary, and start local Web
         run: uv run --no-sync pytest tests/test_managed_runtime_native_smoke.py -q
+
+  # DSH/Codex plugin E2E: installs the pinned DSH toolchain and a real upstream
+  # Cordis plugin, then exercises the single full-Core Web UI + MCP host.
+  # Gated env vars enable tests that are skipped by default (see §8.6 T6).
+  test-plugin-e2e:
+    name: DSH/Codex plugin E2E (real toolchain + upstream plugin)
+    runs-on: ubuntu-latest
+    env:
+      KSADK_DSH_TOOLCHAIN_E2E: "1"
+      KSADK_DSH_UPSTREAM_E2E: "1"
+      KSADK_CODEX_PLUGIN_E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Core invokes pnpm by name when mutating a profile, even when its
+      # managed installation was bootstrapped through corepack.
+      # pnpm 11.7.0 can hang after removing the official Codex bundle.
+      # Match the verified profile CLI; managed bootstrap still uses its own pin.
+      - name: Set up pnpm for DSH profile plugins
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.2"
+
+      - name: Install KsADK with the pinned Codex SDK and binary
+        run: uv sync --extra dev --extra codex
+
+      - name: Install Playwright Chromium
+        run: uv run playwright install chromium --with-deps
+
+      - name: Run DSH capability + upstream plugin E2E
+        run: |
+          uv run --no-sync pytest \
+            tests/plugins/test_dsh_capability_host_e2e.py \
+            tests/plugins/test_dsh_upstream_plugin_e2e.py \
+            -v
+
+      - name: Run real Codex plugin E2E against the deterministic model
+        env:
+          KSADK_CODEX_PLUGIN_E2E_BIN: ${{ secrets.KSADK_CODEX_PLUGIN_E2E_BIN }}
+        run: |
+          uv run --no-sync pytest \
+            tests/e2e/test_codex_plugin_bridge_e2e.py \
+            -v

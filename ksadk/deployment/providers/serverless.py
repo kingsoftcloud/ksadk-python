@@ -6,6 +6,7 @@ Serverless Provider - 金山云 Serverless 计算引擎 (AgentEngine 托管)
 - Deploy 阶段: 客户端调用 AgentEngine Server API 发起部署
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import click
 import yaml
 
 from ksadk.api import AgentEngineClient, DryRunExit
+from ksadk.builders.base import BaseBuilder
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.container_builder import (
     ContainerBuilder,
@@ -24,7 +26,6 @@ from ksadk.builders.container_builder import (
     resolve_registry_credentials,
 )
 from ksadk.builders.ks3_uploader import KS3Uploader
-from ksadk.configs.env_registry import ENV_VAR_REGISTRY
 from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.configs.settings import DEFAULT_RUNTIME_TIMEZONE
 from ksadk.deployment.agent_access import get_latest_agent_access
@@ -35,55 +36,46 @@ from ksadk.deployment.base import (
     DeployTarget,
     PackageInfo,
 )
+from ksadk.deployment.env_forward import should_forward_process_env
 from ksadk.deployment.registry import DeployProviderRegistry
 from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fields
 
 logger = logging.getLogger(__name__)
 
+# CodeBuilder archives put the runnable application below ``runtime/``.  The
+# command and checksum travel together: sending the command for an arbitrary
+# legacy ``--ks3-path`` archive could change its launch semantics, while a
+# fresh locally built archive can be attested and safely admitted as v1.
+_HOSTED_CODE_COMMAND = (
+    "ksadk",
+    "web",
+    "/app/code",
+    "--port",
+    "8080",
+    "--host",
+    "0.0.0.0",
+    "--no-open",
+)
 
-_DEPLOY_PROCESS_ENV_ALLOWLIST = frozenset(
+
+# 转发规则已迁移至 ksadk.deployment.env_forward（hermes/openclaw deploy 共用）；
+# 保留私有别名以兼容既有调用与测试。
+_should_forward_process_env = should_forward_process_env
+
+# These values authenticate or configure the local deploy/build control plane.
+# They must never enter an Agent runtime merely because they exist in global
+# config, the caller's shell, or a project .env file. A caller can still opt in
+# deliberately through explicit ``--env`` / ``--env-file`` values.
+_CONTROL_PLANE_ONLY_ENV_KEYS = frozenset(
     {
-        spec.name
-        for spec in ENV_VAR_REGISTRY
-        if spec.module
-        not in {
-            "builders",
-            "cli",
-            "configs",
-            "web",
-        }
-    }
-) | frozenset(
-    {
-        "E2B_API_KEY",
-        "E2B_API_URL",
-        "OPENAI_API_BASE",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL_NAME",
-        "SKILL_SPACE_ID",
+        "KCR_PASSWORD",
+        "KCR_REGISTRY",
+        "KCR_USERNAME",
         "KSYUN_ACCESS_KEY",
         "KSYUN_ACCOUNT_ID",
-        "KSYUN_REGION",
         "KSYUN_SECRET_KEY",
     }
 )
-_DEPLOY_PROCESS_ENV_PREFIXES = ("KSADK_", "OPENAI_", "KSYUN_", "E2B_")
-_DEPLOY_PROCESS_ENV_DENYLIST = frozenset(
-    {spec.name for spec in ENV_VAR_REGISTRY if spec.module in {"builders", "cli", "configs", "web"}}
-) | frozenset(
-    {
-        "KSADK_GLOBAL_CONFIG_ENV_KEYS",
-        "KSADK_UPDATED_AT",
-        "KSADK_VERSION",
-    }
-)
-
-
-def _should_forward_process_env(name: str) -> bool:
-    if name in _DEPLOY_PROCESS_ENV_DENYLIST:
-        return False
-    return name in _DEPLOY_PROCESS_ENV_ALLOWLIST or name.startswith(_DEPLOY_PROCESS_ENV_PREFIXES)
 
 
 @DeployProviderRegistry.register("serverless")
@@ -193,22 +185,62 @@ class ServerlessProvider(BaseDeployProvider):
     ) -> tuple[Dict[str, str], bool, int]:
         """读取部署时注入到托管运行时的环境变量。
 
-        全局配置作为兜底，项目 .env 作为项目级覆盖；真实 .env 文件不会随
-        Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
+        优先级: --env/--env-file (explicit) > shell env (转发白名单前缀) > 项目 .env > 全局配置。
+        真实 .env 文件不会随 Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
         """
+        shell_keys = set(os.environ)
         env_vars: Dict[str, str] = dict(get_env_from_global_config())
         env_file = Path(project_dir) / ".env"
         project_env_count = 0
-        for key, value in sorted(os.environ.items()):
-            if value and _should_forward_process_env(key):
-                env_vars.setdefault(key, value)
         if env_file.exists():
             project_env = cls._load_project_env_vars(env_file)
             project_env_count = len(project_env)
-            env_vars.update(project_env)
-        env_vars.update(explicit_env_vars or {})
+            # auto .env 覆盖 global_config，但不覆盖 shell (shell 优先于 auto .env)
+            for key, value in project_env.items():
+                if key not in shell_keys:
+                    env_vars[key] = value
+        # shell 转发 (仅 KSADK_/OPENAI_/KSYUN_/E2B_ 前缀 + 白名单)；shell 覆盖 auto .env 与全局配置
+        for key, value in sorted(os.environ.items()):
+            if value and _should_forward_process_env(key):
+                env_vars[key] = value
+        explicit = dict(explicit_env_vars or {})
+        for key in _CONTROL_PLANE_ONLY_ENV_KEYS:
+            if key not in explicit:
+                env_vars.pop(key, None)
+        # explicit --env/--env-file (显式 CLI 意图最高，可选择性注入运行时凭证)
+        env_vars.update(explicit)
         env_vars.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
+        env_vars.setdefault("KSADK_DEPLOYMENT_MODE", "ksadk_managed_cloud")
         return env_vars, env_file.exists(), project_env_count
+
+    @staticmethod
+    def _bind_managed_runtime_contract_env(
+        env_vars: Dict[str, str],
+        runtime_config: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """Keep the deployed provider model aligned with the admitted manifest.
+
+        Credential env files are reusable across projects and commonly contain
+        ``OPENAI_MODEL_NAME``. For a ManagedRuntime declaration, however, the
+        manifest's ``model`` is the admitted source of truth. Letting a generic
+        credential file override it makes capability probing and the actual
+        provider request select different upstream protocols.
+        """
+
+        if not runtime_config:
+            return env_vars
+        try:
+            manifest = yaml.safe_load(str(runtime_config.get("manifest") or ""))
+        except yaml.YAMLError:
+            return env_vars
+        if not isinstance(manifest, dict):
+            return env_vars
+        model = str(manifest.get("model") or "").strip()
+        if not model:
+            return env_vars
+        bound = dict(env_vars)
+        bound["OPENAI_MODEL_NAME"] = model
+        return bound
 
     @staticmethod
     def _inject_ui_runtime_env(
@@ -256,6 +288,18 @@ class ServerlessProvider(BaseDeployProvider):
 
         with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _is_sha256_digest(value: str) -> bool:
+        return len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
 
     @staticmethod
     def _serialize_network_config(
@@ -387,23 +431,9 @@ class ServerlessProvider(BaseDeployProvider):
         artifact_type = target.extra.get("artifact_type", "Code")
 
         if artifact_type == "ManagedRuntime":
-            # Declarative runtimes are delivered by Server -> Runtime Service as
-            # an inline manifest.  Keep a local bundle only for inspection; do
-            # not acquire credentials or upload it to KS3.
-            from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+            from ksadk.deployment.managed_runtime import build_managed_runtime_package
 
-            builder = ManagedRuntimeBuilder(
-                Path(package_info.project_dir),
-                config=target.extra.copy(),
-                runtime_version=str(target.extra.get("runtime_version") or ""),
-            )
-            build_result = builder.build()
-            if not build_result.success:
-                raise Exception(f"构建失败: {build_result.error_message}")
-            package_info.metadata.update(build_result.metadata)
-            if build_result.artifact_path is not None:
-                package_info.metadata["managed_manifest_path"] = str(build_result.artifact_path)
-            return package_info
+            return build_managed_runtime_package(package_info, target)
 
         if artifact_type == "Code":
             # 1. 检查是否已有 KS3 路径
@@ -419,9 +449,20 @@ class ServerlessProvider(BaseDeployProvider):
                 return package_info
 
             # 如果没有 no_cache 且有缓存，才使用缓存
-            if not no_cache and not repackage and cached_ks3_path:
+            cached_checksum = str(package_info.metadata.get("code_checksum") or "").strip()
+            if (
+                not no_cache
+                and not repackage
+                and cached_ks3_path
+                and self._is_sha256_digest(cached_checksum)
+            ):
                 logger.info(f"Using cached bundle: {cached_ks3_path}")
                 return package_info
+            if cached_ks3_path and not no_cache and not repackage:
+                # Older metadata had only a KS3 URI.  Re-upload instead of
+                # silently creating a legacy agent that cannot be admitted to
+                # the hosted Kernel path.
+                click.echo("   缓存代码包缺少 SHA-256，重新打包并上传以启用 Kernel 准入")
 
             # 2. 构建 ZIP 包
 
@@ -430,20 +471,24 @@ class ServerlessProvider(BaseDeployProvider):
             builder_config["no_cache"] = no_cache
             builder_config["repackage"] = repackage
 
+            artifact_builder: BaseBuilder
             if artifact_type == "ManagedRuntime":
                 from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
 
-                builder = ManagedRuntimeBuilder(
+                artifact_builder = ManagedRuntimeBuilder(
                     Path(package_info.project_dir),
                     config=builder_config,
                     runtime_version=str(target.extra.get("runtime_version") or ""),
                 )
             else:
                 # CodeBuilder 直接操作原始 project_dir。
-                builder = CodeBuilder(Path(package_info.project_dir), config=builder_config)
+                artifact_builder = CodeBuilder(
+                    Path(package_info.project_dir),
+                    config=builder_config,
+                )
 
             # 执行构建
-            build_result = builder.build()
+            build_result = artifact_builder.build()
 
             if not build_result.success:
                 raise Exception(f"构建失败: {build_result.error_message}")
@@ -452,6 +497,7 @@ class ServerlessProvider(BaseDeployProvider):
             if zip_path is None:
                 raise RuntimeError("代码构建成功但未生成 artifact_path")
             package_info.metadata.update(build_result.metadata)
+            package_info.metadata["code_checksum"] = self._sha256_file(zip_path)
             if build_result.metadata.get("manifest_sha256"):
                 target.extra["manifest_sha256"] = build_result.metadata["manifest_sha256"]
             # click.echo(f"   ✅ ZIP 已生成: {zip_path}")
@@ -692,6 +738,10 @@ class ServerlessProvider(BaseDeployProvider):
             runtime_config = {
                 "name": str(target.extra.get("runtime_name") or "").strip(),
                 "version": str(target.extra.get("runtime_version") or "").strip(),
+                "manifest_sha256": str(target.extra.get("manifest_sha256") or "").strip(),
+                "manifest": str(
+                    package_info.metadata.get("managed_runtime_manifest") or ""
+                ),
             }
             missing = [key for key, value in runtime_config.items() if not value]
             if missing:
@@ -700,6 +750,11 @@ class ServerlessProvider(BaseDeployProvider):
                     + ", ".join(f"runtime_config.{key}" for key in missing)
                 )
 
+        code_checksum = str(package_info.metadata.get("code_checksum") or "").strip()
+        if not self._is_sha256_digest(code_checksum):
+            code_checksum = ""
+        code_command = list(_HOSTED_CODE_COMMAND) if code_backed and code_checksum else None
+
         try:
             # 获取 dry_run 标识
             is_dry_run = target.extra.get("dry_run", False)
@@ -707,34 +762,101 @@ class ServerlessProvider(BaseDeployProvider):
             async with AgentEngineClient(region=target.region, dry_run=is_dry_run) as client:
                 agent_exists = False
 
-                if existing_agent_id:
-                    # 有本地状态 → 先检查服务器上是否存在
-                    click.echo(f"   检测到本地状态: {existing_agent_id}")
+                # 显式 --agent-id：优先于本地 state，用于状态丢失后重新关联已有 Agent。
+                explicit_agent_id = (target.extra.get("agent_id") or "").strip() or None
+                if explicit_agent_id:
+                    if existing_agent_id and existing_agent_id != explicit_agent_id:
+                        click.secho(
+                            f"   ⚠️  --agent-id ({explicit_agent_id}) 与本地状态 "
+                            f"({existing_agent_id}) 不一致，以 --agent-id 为准",
+                            fg="yellow",
+                        )
+                    if is_dry_run:
+                        # DryRun 无法真实校验，假设存在并走更新路径
+                        existing_agent_id = explicit_agent_id
+                        agent_exists = True
+                        click.secho(
+                            f"   [Dry Run] 假设 Agent {explicit_agent_id} 存在", fg="cyan"
+                        )
+                    else:
+                        try:
+                            detail = await client.get_agent(
+                                explicit_agent_id, include_api_key=True
+                            )
+                        except Exception as e:
+                            return DeployResult(
+                                status=DeployStatus.FAILED,
+                                agent_id=explicit_agent_id,
+                                message=(
+                                    f"❌ 指定的 Agent ID '{explicit_agent_id}' 不存在，"
+                                    f"或当前凭证无权限访问。\n"
+                                    f"   详情: {e}\n"
+                                    "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号"
+                                    "有该 Agent 的权限。"
+                                ),
+                            )
 
-                    try:
-                        # 尝试获取 agent，确认是否存在
-                        existing_agent = await client.get_agent(existing_agent_id)
-                        if existing_agent:
-                            agent_exists = True
-                    except Exception as e:
-                        # Agent 不存在或查询失败
-                        err_msg = str(e).lower()
-                        if "not found" in err_msg or "404" in err_msg or "不存在" in err_msg:
-                            click.secho(
-                                f"   ⚠️  服务器上未找到 Agent {existing_agent_id}，将创建新 Agent",
-                                fg="yellow",
-                            )
-                            agent_exists = False
-                        # DryRun 异常表示真实请求被拦截，无法确认 Agent 是否存在。
-                        # 为安全起见，DryRun 假设它存在并走更新路径。
-                        elif "Dry Run" in str(e):
-                            click.secho(
-                                f"   [Dry Run] 假设 Agent {existing_agent_id} 存在", fg="cyan"
-                            )
-                            agent_exists = True
-                        else:
-                            # 其他错误，重新抛出
-                            raise
+                        # 校验通过 → 关联并回填 state，走热更新
+                        qa = detail.get("quick_access", {}) or {}
+                        basic = detail.get("basic", {}) or {}
+                        recovered_state = local_state.copy()
+                        recovered_state.update(
+                            {
+                                "agent_id": explicit_agent_id,
+                                "name": basic.get("name") or package_info.name,
+                                "region": target.region,
+                                "endpoint": qa.get("public_endpoint"),
+                                "updated_at": self._now_iso(),
+                            }
+                        )
+                        if qa.get("api_key"):
+                            recovered_state["api_key"] = qa["api_key"]
+                        # 去掉 None 值，避免覆盖掉旧的有效字段
+                        recovered_state = {
+                            k: v for k, v in recovered_state.items() if v is not None
+                        }
+                        self._save_state(state_file, recovered_state)
+                        local_state = recovered_state
+
+                        existing_agent_id = explicit_agent_id
+                        agent_exists = True
+                        click.secho(
+                            f"   🔗 已通过 --agent-id 关联 Agent: {explicit_agent_id} "
+                            f"(已回填 .agentengine.state)",
+                            fg="green",
+                        )
+
+                # ``agent_exists`` means the target has already been resolved
+                # (including an explicit ``--agent-id``). Both that path and
+                # the normal state-file lookup must enter the same hot-update
+                # branch. The explicit path must not need a second GetAgent
+                # request merely to enter that branch.
+                if existing_agent_id:
+                    if not agent_exists:
+                        # 有本地状态 → 先检查服务器上是否存在
+                        click.echo(f"   检测到本地状态: {existing_agent_id}")
+                        try:
+                            existing_agent = await client.get_agent(existing_agent_id)
+                            if existing_agent:
+                                agent_exists = True
+                        except Exception as e:
+                            err_msg = str(e).lower()
+                            if "not found" in err_msg or "404" in err_msg or "不存在" in err_msg:
+                                click.secho(
+                                    "   ⚠️  服务器上未找到 Agent "
+                                    f"{existing_agent_id}，将创建新 Agent",
+                                    fg="yellow",
+                                )
+                                agent_exists = False
+                            # DryRun 异常表示真实请求被拦截，无法确认 Agent 是否存在。
+                            # 为安全起见，DryRun 假设它存在并走更新路径。
+                            elif "Dry Run" in str(e):
+                                click.secho(
+                                    f"   [Dry Run] 假设 Agent {existing_agent_id} 存在", fg="cyan"
+                                )
+                                agent_exists = True
+                            else:
+                                raise
 
                     if agent_exists:
                         # Agent 存在 → 执行更新
@@ -766,6 +888,9 @@ class ServerlessProvider(BaseDeployProvider):
 
                         if ks3_config:
                             update_data["ks3"] = ks3_config
+                        if code_checksum:
+                            update_data["code_checksum"] = code_checksum
+                            update_data["code_command"] = code_command
                         elif artifact_type == "Container":
                             image_credential = self._image_credential_from_env(artifact_path)
                             if image_credential:
@@ -780,6 +905,10 @@ class ServerlessProvider(BaseDeployProvider):
                         env_vars, env_file_exists, project_env_count = self._load_deploy_env_vars(
                             project_dir,
                             target.extra.get("env_vars") or {},
+                        )
+                        env_vars = self._bind_managed_runtime_contract_env(
+                            env_vars,
+                            runtime_config,
                         )
                         env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                         if env_vars:
@@ -889,6 +1018,9 @@ class ServerlessProvider(BaseDeployProvider):
 
                     if ks3_config:
                         request_data["ks3"] = ks3_config
+                    if code_checksum:
+                        request_data["code_checksum"] = code_checksum
+                        request_data["code_command"] = code_command
 
                     # Container 模式: 传递镜像凭证
                     if artifact_type == "Container":
@@ -904,6 +1036,10 @@ class ServerlessProvider(BaseDeployProvider):
                     env_vars, env_file_exists, project_env_count = self._load_deploy_env_vars(
                         project_dir,
                         target.extra.get("env_vars") or {},
+                    )
+                    env_vars = self._bind_managed_runtime_contract_env(
+                        env_vars,
+                        runtime_config,
                     )
                     env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                     if env_vars:

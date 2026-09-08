@@ -16,12 +16,10 @@ from fastapi.responses import FileResponse, Response
 
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.model_context import normalize_model_metadata
-from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime_state import load_state as load_runtime_state
 from ksadk.server.factory import (
     RuntimeAppState,
     bind_runtime_state,
-    get_runner,
     get_state,
 )
 from ksadk.server.terminal_sessions import (
@@ -102,11 +100,8 @@ _NATIVE_TUI_FRAMEWORKS = {"hermes", "openclaw"}
 
 
 def _current_framework() -> str:
-    runner = get_state().runner
-    if not runner:
-        return ""
-    detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
-    return str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+    context = get_state().launch_context
+    return str(context.runtime_type if context is not None else "").strip().lower()
 
 
 def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
@@ -145,32 +140,6 @@ def _register_integrated_routers(app: FastAPI, state: RuntimeAppState) -> None:
     )
 
 
-def set_runner(r: BaseRunner, *, loaded: bool = False):
-    """Bind a runner and record whether its agent has already been loaded."""
-    state = get_state()
-    state.runner = r
-    state.runner_loaded = loaded
-    from ksadk.server.factory import wire_default_agui_for_runner
-
-    wire_default_agui_for_runner(state, r)
-
-
-def _ensure_runner_loaded() -> BaseRunner:
-    return get_runner()
-
-
-def _resolve_active_runner() -> BaseRunner:
-    return get_runner()
-
-
-def _prepare_runner_for_model(active_runner: BaseRunner, model: Optional[str]) -> None:
-    try:
-        active_runner.prepare_for_request(model)
-    except Exception as exc:
-        logger.warning("Runner 模型切换失败: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc) or "Runner 模型切换失败") from exc
-
-
 def _resolve_current_model() -> tuple[Optional[str], Optional[str]]:
     candidates = (
         ("OPENAI_MODEL_NAME", os.getenv("OPENAI_MODEL_NAME")),
@@ -194,11 +163,11 @@ def _build_bootstrap_model_payload() -> Optional[dict[str, Any]]:
     return payload
 
 
-def _runner_project_dir() -> Path:
-    runner = get_state().runner
-    if runner and getattr(runner, "project_dir", None):
+def _runtime_project_dir() -> Path:
+    context = get_state().launch_context
+    if context is not None:
         try:
-            return Path(str(runner.project_dir)).resolve()
+            return Path(str(context.project_dir)).resolve()
         except Exception:
             pass
     return Path(".").resolve()
@@ -223,7 +192,7 @@ def _ui_state_with_env_fallback(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_agent_ui_spec() -> dict[str, Any]:
-    project_dir = _runner_project_dir()
+    project_dir = _runtime_project_dir()
     state = _ui_state_with_env_fallback(load_runtime_state(project_dir))
     framework = _current_framework()
     auto_custom_bundle_dir = _default_custom_ui_bundle_dir(project_dir)
@@ -696,18 +665,18 @@ async def _workspace_runtime_request(
 
 @health_meta_router.get("/health")
 async def health_check():
-    runner = get_state().runner
-    framework = "unknown"
-    agent_name = "unknown"
-    if runner and hasattr(runner, "detection_result"):
-        framework = runner.detection_result.type.value  # langgraph, langchain, adk
-        agent_name = runner.detection_result.name
+    context = get_state().launch_context
+    framework = context.runtime_type if context is not None else "unknown"
+    detection = context.detection if context is not None else None
+    agent_name = str(getattr(detection, "name", "") or "unknown")
     return {"status": "ok", "framework": framework, "agent": agent_name}
 
 
 @health_meta_router.get("/list-apps")
 async def list_apps(relative_path: str = "./"):
     """Return available apps. For KsADK single-agent mode, returns the current agent."""
-    runner = get_state().runner
-    name = runner.detection_result.name if runner else "default_agent"
+    del relative_path
+    context = get_state().launch_context
+    detection = context.detection if context is not None else None
+    name = str(getattr(detection, "name", "") or "default_agent")
     return [name]

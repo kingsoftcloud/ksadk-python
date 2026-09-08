@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +19,53 @@ _MANIFEST_KEYS = (
     "artifact_type",
     "runtime",
     "model",
+    "models",
     "prompt",
+    "task_prompt",
+    "soul",
+    "soul_source",
+    "soul_digest",
+    "skills",
+    "mcp_servers",
+    "plugins",
+    "sandbox",
+    "approval_mode",
+    "context",
+    "memory",
 )
+
+
+def managed_runtime_lock_path(manifest_path: Path) -> Path:
+    """Return the immutable lock that accompanies a YAML-only declaration.
+
+    ``ManagedRuntime`` is not a user-code artifact.  Keeping its two small
+    declaration files next to one another makes that visible in both the
+    workspace and the build receipt, while still preserving a historical
+    manifest for rollback.
+    """
+
+    return manifest_path.with_suffix(".lock.json")
+
+
+def serialize_managed_runtime_manifest(manifest: dict[str, Any]) -> bytes:
+    """Serialize the Server-canonical ManagedRuntime declaration.
+
+    The Server validates ``ManifestSHA256`` after parsing and re-dumping YAML
+    with sorted keys.  Clients must hash those exact canonical bytes instead
+    of the editable source formatting, otherwise a valid Studio/CLI build is
+    rejected during ``CreateAgent``/``UpdateAgent`` admission.
+    """
+
+    canonical = yaml.safe_dump(
+        manifest,
+        allow_unicode=True,
+        sort_keys=True,
+        default_flow_style=False,
+        width=10_000,
+    )
+    if not canonical.endswith("\n"):
+        canonical += "\n"
+    return canonical.encode("utf-8")
 
 
 class ManagedRuntimeBuilder(BaseBuilder):
@@ -44,7 +88,10 @@ class ManagedRuntimeBuilder(BaseBuilder):
         self.build_dir = self.project_dir / ".agentengine" / "managed_runtime"
 
     def build(self) -> BuildResult:
-        config = self._load_config()
+        # An explicitly supplied snapshot is authoritative.  Studio can keep
+        # more than one Agent manifest in a workspace, so falling back to the
+        # root agentengine.yaml here would silently build the wrong Agent.
+        config = dict(self.config) if self.config else self._load_config()
         error = self._validate_config(config)
         if error:
             return BuildResult(success=False, error_message=error)
@@ -63,36 +110,35 @@ class ManagedRuntimeBuilder(BaseBuilder):
         runtime_name = str(runtime.get("name") or config.get("framework") or "").strip().lower()
         runtime = {"name": runtime_name, "version": version}
         manifest = self._normalized_manifest(config, runtime)
-        manifest_bytes = yaml.safe_dump(
-            manifest,
-            allow_unicode=True,
-            sort_keys=False,
-        ).encode("utf-8")
+        manifest_bytes = serialize_managed_runtime_manifest(manifest)
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         lock = {
             "schema_version": RUNTIME_MANIFEST_SCHEMA,
             "runtime": runtime,
             "manifest_sha256": manifest_sha256,
         }
-        lock_bytes = (
-            json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        lock_bytes = (json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
 
         self.build_dir.mkdir(parents=True, exist_ok=True)
         name = str(config.get("name") or self.project_dir.name).strip() or self.project_dir.name
         project_version = str(config.get("version") or "1.0.0").strip() or "1.0.0"
-        artifact_path = self.build_dir / f"{name}-{project_version}-runtime.zip"
-        self._write_bundle(
-            artifact_path,
-            {
-                "agentengine.yaml": manifest_bytes,
-                "runtime-lock.json": lock_bytes,
-            },
+        # This local declaration receipt is retained for Studio rollback.
+        # It is deliberately *not* a ZIP: YAML agents have no user code, no
+        # KS3 artifact and no code-downloader path.  Version alone is mutable
+        # in an editable Agent, so retain the exact canonical YAML plus its
+        # lock under the content digest.
+        artifact_path = self.build_dir / (
+            f"{name}-{project_version}-{manifest_sha256[:16]}-runtime.yaml"
         )
+        lock_path = managed_runtime_lock_path(artifact_path)
+        artifact_path.write_bytes(manifest_bytes)
+        lock_path.write_bytes(lock_bytes)
         return BuildResult(
             success=True,
             artifact_path=artifact_path,
-            artifact_size=artifact_path.stat().st_size,
+            artifact_size=artifact_path.stat().st_size + lock_path.stat().st_size,
             metadata={
                 "agent_name": name,
                 "framework": str(config.get("framework") or ""),
@@ -133,13 +179,3 @@ class ManagedRuntimeBuilder(BaseBuilder):
             elif key in config:
                 normalized[key] = config[key]
         return normalized
-
-    @staticmethod
-    def _write_bundle(path: Path, files: dict[str, bytes]) -> None:
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name in sorted(files):
-                info = zipfile.ZipInfo(name)
-                info.date_time = (1980, 1, 1, 0, 0, 0)
-                info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = 0o100644 << 16
-                archive.writestr(info, files[name])

@@ -1,11 +1,31 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional, TypeAlias
+
+SessionEventSeqBinding: TypeAlias = Literal["runtime_event.seq", "session_event.seq"]
+
+
+@dataclass(frozen=True)
+class SessionServiceStorageCapabilities:
+    """Typed storage guarantees required by canonical event persistence."""
+
+    atomic_seq_bindings: frozenset[SessionEventSeqBinding] = frozenset()
+    indexed_event_lookup: bool = False
+    indexed_invocation_lookup: bool = False
+
+
+CANONICAL_EVENT_STORAGE_CAPABILITIES = SessionServiceStorageCapabilities(
+    atomic_seq_bindings=frozenset({"runtime_event.seq", "session_event.seq"}),
+    indexed_event_lookup=True,
+    indexed_invocation_lookup=True,
+)
 
 
 def generate_id() -> str:
@@ -47,6 +67,47 @@ class SessionEvent:
     seq_id: int = 0
     invocation_id: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    seq_binding: SessionEventSeqBinding | None = None
+
+    def bind_seq_id(self, seq_id: int) -> None:
+        """Bind a store-assigned cursor into an explicitly declared content field.
+
+        Most session events only need the physical ``seq_id`` column.  A typed
+        event envelope may additionally declare ``runtime_event.seq`` through
+        the transient ``seq_binding`` capability so the JSON fact and carrier
+        are written atomically with the same cursor.  The binding is consumed
+        before persistence and never appears in public metadata or content.
+        """
+
+        self.seq_id = int(seq_id)
+        binding = self.seq_binding
+        self.seq_binding = None
+        if binding is None:
+            return
+        if binding == "session_event.seq":
+            envelope = self.content.get("session_event")
+            if not isinstance(envelope, dict):
+                raise ValueError("session_event.seq binding requires session_event content")
+            envelope = dict(envelope)
+            envelope["seq"] = self.seq_id
+            self.content = {**self.content, "session_event": envelope}
+            return
+        if binding != "runtime_event.seq":
+            raise ValueError(f"unsupported SessionEvent seq binding {binding!r}")
+        runtime_event = self.content.get("runtime_event")
+        if not isinstance(runtime_event, dict):
+            raise ValueError("runtime_event.seq binding requires runtime_event content")
+        runtime_event = dict(runtime_event)
+        runtime_event["seq"] = self.seq_id
+        content = {**self.content, "runtime_event": runtime_event}
+        # Keep the embedded generic envelope dump consistent with the same
+        # cursor when both carriers are present.
+        envelope = content.get("session_event")
+        if isinstance(envelope, dict):
+            envelope = dict(envelope)
+            envelope["seq"] = self.seq_id
+            content["session_event"] = envelope
+        self.content = content
 
     @classmethod
     def from_dict(
@@ -124,6 +185,38 @@ class SessionEvent:
         if self.event_type:
             payload["eventType"] = self.event_type
         return payload
+
+
+@dataclass(frozen=True)
+class SessionEventQuery:
+    """Bounded, storage-pushdown event query used by runtime list/resume paths."""
+
+    session_ids: list[str] | None = None
+    agent_id: str | None = None
+    offset: int = 0
+    limit: int = 1000
+    after_seq_id: int | None = None
+    before_seq_id: int | None = None
+    event_types: list[str] | None = None
+    invocation_id: str | None = None
+    run_id: str | None = None
+    checkpoint_id: str | None = None
+    checkpoint_ids: list[str] | None = None
+    from_start: bool = False
+    order_by_seq: bool = False
+
+
+@dataclass(frozen=True)
+class CheckpointEventQuery:
+    """Bounded, ascending checkpoint scan with storage-level filters."""
+
+    session_ids: list[str] | None = None
+    agent_id: str | None = None
+    checkpoint_ids: list[str] | None = None
+    run_id: str | None = None
+    framework: str | None = None
+    offset: int = 0
+    limit: int = 50
 
 
 @dataclass
@@ -251,6 +344,8 @@ def _infer_event_type(payload: dict[str, Any]) -> str:
 
 
 class BaseSessionService(abc.ABC):
+    storage_capabilities = SessionServiceStorageCapabilities()
+
     @abc.abstractmethod
     async def create_session(
         self,
@@ -309,7 +404,25 @@ class BaseSessionService(abc.ABC):
 
     @abc.abstractmethod
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
+        """Append an event with a backend-unique ID and session-unique cursor."""
         raise NotImplementedError
+
+    async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        """Indexed physical-id lookup for idempotent event insertion."""
+
+        raise NotImplementedError("session backend does not support indexed event lookup")
+
+    async def get_events_by_invocation_id(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        """Indexed invocation read used by canonical run replay/recovery."""
+
+        raise NotImplementedError("session backend does not support indexed invocation lookup")
 
     @abc.abstractmethod
     async def get_events(
@@ -330,6 +443,148 @@ class BaseSessionService(abc.ABC):
         before_seq_id: Optional[int] = None,
     ) -> int:
         raise NotImplementedError
+
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        sessions = await asyncio.gather(
+            *(self.get_session_metadata(session_id) for session_id in session_ids)
+        )
+        return [session for session in sessions if session is not None]
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        raise NotImplementedError("Backend must implement list_session_metadata for batch queries")
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        if (
+            query.session_ids is not None
+            and len(query.session_ids) == 1
+            and not query.event_types
+            and query.invocation_id is None
+            and query.run_id is None
+            and query.checkpoint_id is None
+            and not query.checkpoint_ids
+            and not query.from_start
+        ):
+            return await self.get_events(
+                query.session_ids[0],
+                offset=query.offset,
+                limit=query.limit,
+                after_seq_id=query.after_seq_id,
+                before_seq_id=query.before_seq_id,
+            )
+        raise NotImplementedError("Backend does not support batch event queries")
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        if (
+            query.session_ids is not None
+            and len(query.session_ids) == 1
+            and not query.event_types
+            and query.invocation_id is None
+            and query.run_id is None
+            and query.checkpoint_id is None
+            and not query.checkpoint_ids
+        ):
+            return await self.count_events(
+                query.session_ids[0],
+                after_seq_id=query.after_seq_id,
+                before_seq_id=query.before_seq_id,
+            )
+        raise NotImplementedError("Backend does not support batch event counts")
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, Any]:
+        raise NotImplementedError("Backend must implement checkpoint lookup stats")
+
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        if query.checkpoint_ids or query.framework is not None:
+            raise NotImplementedError(
+                "Backend must push down checkpoint id and framework filters"
+            )
+        if query.session_ids is not None and len(query.session_ids) == 1:
+            return await self.query_events(
+                SessionEventQuery(
+                    session_ids=query.session_ids,
+                    agent_id=query.agent_id,
+                    offset=query.offset,
+                    limit=query.limit,
+                    event_types=["run_checkpoint"],
+                    run_id=query.run_id,
+                    from_start=True,
+                )
+            )
+        raise NotImplementedError("Backend does not support checkpoint scans")
+
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        offset = query.offset
+        while True:
+            batch = await self.scan_checkpoint_events(
+                CheckpointEventQuery(**{**query.__dict__, "offset": offset})
+            )
+            if not batch:
+                break
+            yield batch
+            offset += len(batch)
+            if len(batch) < query.limit:
+                break
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        raise NotImplementedError("Backend does not support checkpoint stats batches")
+
+    async def get_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        offset: int = 0,
+        limit: int = 1000,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+        from_start: bool = False,
+    ) -> list[SessionEvent]:
+        return await self.query_events(
+            SessionEventQuery(
+                session_ids=session_ids,
+                agent_id=agent_id,
+                offset=offset,
+                limit=limit,
+                after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id,
+                event_types=event_types,
+                from_start=from_start,
+            )
+        )
+
+    async def count_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+    ) -> int:
+        return await self.count_event_query(
+            SessionEventQuery(
+                session_ids=session_ids,
+                agent_id=agent_id,
+                after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id,
+                event_types=event_types,
+            )
+        )
 
     @abc.abstractmethod
     async def get_events_for_agent(

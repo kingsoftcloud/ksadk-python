@@ -81,6 +81,14 @@ console = get_console()
 )
 @click.option("--name", "-n", help="部署名称")
 @click.option(
+    "--agent-id",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
+@click.option(
     "--region",
     "-r",
     default="cn-beijing-6",
@@ -136,6 +144,7 @@ def deploy(
     agent_dir: str,
     target: str,
     name: str,
+    agent_id: str | None,
     region: str,
     account_id: str,
     artifact_type: str,
@@ -240,6 +249,7 @@ def deploy(
             env_file=env_file,
             repackage=repackage,
             dry_run_context=dry_run_context,
+            agent_id=agent_id,
         ),
         dry_run=dry_run,
         on_dry_run=render_deploy_dry_run,
@@ -315,9 +325,10 @@ async def _deploy_async(
     dry_run_context: dict[str, object] | None = None,
     *,
     repackage: bool = False,
+    agent_id: str | None = None,
 ):
     """异步部署流程"""
-    from ksadk.deployment import DeploymentManager, DeployTarget
+    from ksadk.deployment import DeploymentManager, DeployStatus, DeployTarget
     from ksadk.detection import FrameworkDetector
 
     agent_path = Path(agent_dir).resolve()
@@ -431,6 +442,7 @@ async def _deploy_async(
             "env_vars": explicit_env_vars,
             "runtime_name": resolved_runtime.name if resolved_runtime else "",
             "runtime_version": resolved_runtime.version if resolved_runtime else "",
+            "agent_id": agent_id,
         },
     )
 
@@ -543,7 +555,12 @@ async def _deploy_async(
             print_info("Dry Run: 仅生成本地构建计划，不执行真实构建/上传")
 
     if resolved_artifact_plan.will_build:
-        print_rule(f"Step 2/{total_steps} 构建与上传")
+        build_step = (
+            "构建运行时声明"
+            if effective_artifact_type == "ManagedRuntime"
+            else "构建与上传"
+        )
+        print_rule(f"Step 2/{total_steps} {build_step}")
         try:
             with capture_standard_output():
                 package_info = await provider.build(package_info, deploy_target)
@@ -589,7 +606,15 @@ async def _deploy_async(
             result = await provider.deploy(package_info, deploy_target)
 
         if result.is_success():
-            print_success("部署成功")
+            # ``DEPLOYING`` only acknowledges that the control plane accepted
+            # the request.  Runtime creation and the asynchronous
+            # CreateAgent callback may still be pending, so presenting it as a
+            # completed deployment is misleading (and hides a broken
+            # callback/data-plane handoff).
+            if result.status == DeployStatus.RUNNING:
+                print_success("部署成功")
+            else:
+                print_info("部署请求已提交，等待实例就绪")
             print_rule()
             print_kv("名称", result.agent_name or deploy_name)
             if result.agent_id:

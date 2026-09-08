@@ -7,11 +7,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ksadk.conversations.run_kinds import RUN_MODE_UNKNOWN, RUN_TRIGGER_UNKNOWN
 from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
-from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime.launch import RuntimeLaunchContext
 from ksadk.sessions import SessionEvent
 
 _RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
@@ -58,7 +58,7 @@ class ListSessionsActionRequest(BaseModel):
     AgentId: str
     UserId: Optional[str] = None
     Page: int = Field(1, ge=1)
-    PageSize: int = Field(20, ge=1, le=200)
+    PageSize: int = Field(20, ge=1, le=1000)
 
 
 class SessionIdRequest(BaseModel):
@@ -71,10 +71,29 @@ class ListSessionEventsActionRequest(BaseModel):
     AgentId: Optional[str] = None
     SessionId: Optional[str] = None
     UserId: Optional[str] = None
+    CheckpointIds: list[str] = Field(default_factory=list)
+    EventTypes: list[str] = Field(default_factory=list)
     Offset: Optional[int] = Field(None, ge=0)
     Limit: int = Field(200, ge=1, le=2000)
     AfterSeqId: Optional[int] = Field(None, ge=0)
     BeforeSeqId: Optional[int] = Field(None, ge=1)
+
+    @field_validator("CheckpointIds", "EventTypes", mode="before")
+    @classmethod
+    def normalize_event_filters(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        values = value if isinstance(value, list) else [value]
+        normalized = [str(item).strip() for item in values if str(item).strip()]
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_cursor_scope(self):
+        if self.SessionId is None and (
+            self.AfterSeqId is not None or self.BeforeSeqId is not None
+        ):
+            raise ValueError("Seq cursors require SessionId")
+        return self
 
 
 class ListSessionMessagesActionRequest(BaseModel):
@@ -91,13 +110,36 @@ class ListSessionMessagesActionRequest(BaseModel):
 
 class ListSessionCheckpointsActionRequest(BaseModel):
     AgentId: str
-    SessionId: Optional[str] = None
+    SessionId: list[str] | str | None = None
     UserId: Optional[str] = None
+    CheckpointId: list[str] | str | None = None
     RunId: Optional[str] = None
     OnlyResumable: bool = False
     Framework: Optional[str] = None
+    ResumeStatus: list[str] = Field(default_factory=list)
+    ResumeTypes: list[str] = Field(default_factory=list)
     Offset: Optional[int] = Field(None, ge=0)
-    Limit: int = Field(100, ge=1, le=500)
+    Limit: int = Field(100, ge=1, le=1000)
+
+    @field_validator("SessionId", "CheckpointId", mode="before")
+    @classmethod
+    def normalize_id_filters(cls, value: Any) -> list[str] | str | None:
+        if value is None:
+            return None
+        values = value if isinstance(value, list) else [value]
+        normalized = [str(item).strip() for item in values if str(item).strip()]
+        if not normalized:
+            return None
+        return normalized if isinstance(value, list) else normalized[0]
+
+    @field_validator("ResumeStatus", "ResumeTypes", mode="before")
+    @classmethod
+    def normalize_resume_filters(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        values = value if isinstance(value, list) else [value]
+        normalized = [str(item).strip().lower() for item in values if str(item).strip()]
+        return list(dict.fromkeys(normalized))
 
 
 class ListToolReceiptsActionRequest(BaseModel):
@@ -119,6 +161,7 @@ class ResumeRunActionRequest(BaseModel):
     ResumeAttemptId: Optional[str] = None
     InvocationId: Optional[str] = None
     Stream: bool = False
+    Background: bool = False
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
     ModelOptions: Optional[Dict[str, Any]] = None
@@ -258,11 +301,11 @@ def _resolve_responses_session_and_user(request: ResponsesRequest) -> tuple[str 
     return resolved_session_id, resolved_user_id
 
 
-def _runtime_agent_id(active_runner: BaseRunner) -> str:
+def _runtime_agent_id(launch_context: RuntimeLaunchContext) -> str:
     runtime_id = _clean_optional_string(os.getenv("AGENT_RUNTIME_ID"))
     if runtime_id:
         return runtime_id
-    return str(getattr(active_runner.detection_result, "name", "") or "agent")
+    return str(getattr(launch_context.detection, "name", "") or "agent")
 
 
 def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
@@ -425,9 +468,17 @@ def _latest_session_run_metadata(
             if not _is_run_lifecycle_event(event) or _event_run_id(event) != invocation_id:
                 continue
             metadata = event.metadata or {}
-            run_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
-            run_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
-            break
+            candidate_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
+            candidate_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
+            # Canonical RuntimeEvents and their legacy ``run_status`` projection
+            # coexist in the session log. RuntimeEvents intentionally carry only
+            # the transport-neutral marker, while the projection owns run kind
+            # metadata. Keep scanning past an unclassified RuntimeEvent so the UI
+            # does not downgrade a known background/foreground run to ``unknown``.
+            if candidate_mode != RUN_MODE_UNKNOWN or candidate_trigger != RUN_TRIGGER_UNKNOWN:
+                run_mode = candidate_mode
+                run_trigger = candidate_trigger
+                break
     return invocation_id, status, run_mode, run_trigger
 
 

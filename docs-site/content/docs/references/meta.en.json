@@ -1,0 +1,20 @@
+{
+  "title": "Reference",
+  "icon": "BookMarked",
+  "root": true,
+  "pages": [
+    "index",
+    "---[Settings]Configuration and APIs---",
+    "project-config",
+    "environment-variables",
+    "openai-compatible-api",
+    "---[Activity]Runtime Contracts---",
+    "remote-runtime-api",
+    "runtime-sessions-files",
+    "---[ShieldCheck]Operations and Security---",
+    "security-boundaries",
+    "troubleshooting",
+    "---[GitPullRequest]Contributing---",
+    "contributing"
+  ]
+}

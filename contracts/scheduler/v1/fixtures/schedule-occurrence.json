@@ -1,0 +1,26 @@
+{
+  "apiVersion": "schedule.ksadk.io/v1",
+  "kind": "ScheduleOccurrence",
+  "schemaVersion": 1,
+  "occurrenceId": "occ_28c3c25c58816431",
+  "taskId": "daily-report",
+  "target": {
+    "agentId": "sales-report-agent",
+    "tenantId": "local",
+    "agentInstanceId": "agent-local",
+    "agentVersionRef": "build_123",
+    "authorizationRef": "credential://scheduler-local"
+  },
+  "scheduledFor": "2026-08-28T01:00:00Z",
+  "sessionId": "sched-occ_28c3c25c58816431",
+  "trigger": "schedule",
+  "state": "accepted",
+  "attempt": 1,
+  "commandId": "d2b1ad80-7ba8-45e1-91c0-aa94f87b309f",
+  "claimedAt": "2026-08-28T01:00:00Z",
+  "acceptedAt": "2026-08-28T01:00:01Z",
+  "transitions": [
+    {"state": "claimed", "at": "2026-08-28T01:00:00Z"},
+    {"state": "accepted", "at": "2026-08-28T01:00:01Z"}
+  ]
+}

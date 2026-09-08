@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "sourceTag": "v0.8.2",
+  "sourceCommit": "c8c9be629f4cb054ec4d8818cf0596ef42377671",
+  "builderPath": "ksadk/studio/builder.py",
+  "builderSha256": "7b8f31e51991c1408eee4207fde3f35617261303dea11c115a86621acbe3e937",
+  "contractsPath": "ksadk/studio/contracts.py",
+  "contractsSha256": "c348abd3d252972024196b7e0be9fcb6d0ef8d547edf59d7f6cc0fe53fb3698d",
+  "archiveSha256": "2c54768787899d4cde31e85f1ea71c00956d1654a0bf244b85d5a89c18387eae",
+  "generation": "git archive v0.8.2, import AgentBundleBuilder from that tree, build the declared LangGraph Agent below",
+  "sourceAgent": {
+    "id": "release-082-code-agent",
+    "runtimeType": "langgraph",
+    "entryPoint": "agent.py",
+    "agentVariable": "graph",
+    "model": {
+      "model": "model-example",
+      "endpointUrl": "https://model.example.com/v1/chat/completions",
+      "credentialRef": "env://MODEL_API_KEY"
+    },
+    "allowedHosts": ["model.example.com"],
+    "system": "Preserve the 0.8.2 role.",
+    "task": "Answer without plugins.",
+    "sourceFiles": {
+      "agent.py": "from langgraph.graph import END, START, StateGraph\n\ndef answer(_state):\n    return {'output': 'hello from release 0.8.2'}\n\nbuilder = StateGraph(dict)\nbuilder.add_node('answer', answer)\nbuilder.add_edge(START, 'answer')\nbuilder.add_edge('answer', END)\ngraph = builder.compile()\n"
+    }
+  },
+  "buildRecord": {
+    "id": "build_9e5a9657774d1ad84afc",
+    "agentId": "release-082-code-agent",
+    "sourceRevision": 1,
+    "status": "SUCCEEDED",
+    "resolvedDigest": "sha256:9e5a9657774d1ad84afc92a22dad94f2f73bd2b8eecddde1521f28e3954a5d2e",
+    "runtimeType": "langgraph",
+    "sourceDigest": "sha256:3835cfd1db2023d5b82ce0caff91786864fa9ff947edd511c30b36799a002ab8",
+    "runtimeLock": {
+      "type": "langgraph",
+      "projectPath": "agents/release-082-code-agent/source",
+      "entryPoint": "agent.py",
+      "agentVariable": "graph",
+      "detection": "declared",
+      "sourceDigest": "sha256:3835cfd1db2023d5b82ce0caff91786864fa9ff947edd511c30b36799a002ab8",
+      "definitionDigest": "sha256:d0af206350f95daf4497f76b5e57f14fc2a76c3e9e8d215b505352f993602835",
+      "model": "model-example",
+      "models": ["model-example"]
+    },
+    "bundleDigest": "sha256:72124cf95c60f873407afd7eaf91dc8dea3d486f17839de19112b30f1d23e6b6",
+    "artifactPath": "dist/release-082-code-agent/build_9e5a9657774d1ad84afc/agent-bundle.zip"
+  }
+}

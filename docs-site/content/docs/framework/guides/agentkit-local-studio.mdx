@@ -1,0 +1,100 @@
+---
+title: AgentKit Local Studio
+description: 本地创作、构建、对话与云端生命周期工作区。
+---
+
+<Callout type="info" title="0.8.3 当前能力">
+  AgentKit Local Studio 在浏览器中创建、构建并测试 Agent，并通过平台既有接口管理云端生命周期。0.8.3 同时提供受控插件入口、统一会话表面和本地 Scheduler Lite；这些能力仍遵守 Provider、权限和本地运行边界。
+</Callout>
+
+`agentengine studio` 是 KsADK 的本地优先工作区。它把 Agent 定义、构建记录、会话、资源、Trace 与任务编排放在同一个浏览器界面中；模型调用和构建仍由本机 KsADK 运行时执行。
+
+它不是 `agentengine web` 的替代品：后者用于调试一个已经存在的项目；Studio 用于从需求开始创建和维护多个本地 Agent。
+
+## 启动工作区
+
+安装 KsADK 后，在一个准备存放本地 Agent 的目录启动 Studio：
+
+```bash title="shell"
+pip install -U "ksadk[all]"
+mkdir my-agent-workspace
+agentengine studio ./my-agent-workspace
+```
+
+默认监听 `127.0.0.1:8080`，命令会打印带本地 session 的访问地址并自动打开浏览器。这个地址只适合本机使用；不要把其中的 `#session=...` 片段分享给其他人。
+
+```bash title="shell"
+# 不自动打开浏览器，并改用其他端口
+agentengine studio ./my-agent-workspace --port 8081 --no-open
+
+# 为本次启动提供模型配置文件
+agentengine studio ./my-agent-workspace --env-file ./model.env
+```
+
+`--env-file` 只读取 `OPENAI_API_BASE`、`OPENAI_API_KEY` 和 `OPENAI_MODEL_NAME`。已有的进程环境变量优先，不会被该文件覆盖。Codex 项目需要 Responses-to-Chat 兼容转换时，可使用 `--codex-proxy auto`；完整选项见[命令行参考](/cn/docs/cli#agentengine-studio)。
+
+<Callout type="warning" title="本地控制端，不是多人 SaaS">
+  Studio 的界面和凭证代理仍运行在本机。它支持云端生命周期管理，但不提供多人共享工作区；浏览器不会接触 AK/SK，所有云端请求由本地服务签名后发送给 AgentEngine Server。
+</Callout>
+
+## 创建、构建并对话
+
+在 Studio 的 **创建 Agent** 向导中选择运行时、模板和模型配置，填写 Agent 名称与任务说明。当前可创建并在本机运行的运行时包括：
+
+- **Codex**：声明式 YAML Agent；适合使用本机 Codex Runtime 调试。
+- **ADK**：导出 `root_agent` 的 Python Agent。
+- **LangGraph**：导出编译图的 Python Agent。
+
+向导会生成可编辑的 Agent 定义；可选择在创建后立即构建。构建完成后，从该 Agent 的会话页发送消息，即可在同一工作区检查回复、运行记录和 Trace。模型凭据只从本机环境或显式配置文件读取，不会写进 Agent 定义。
+
+如果你已有 KsADK 项目，也可以继续使用 CLI 模板创建后再用本地 Web UI 调试：
+
+```bash title="shell"
+ksadk init --framework langgraph my-langgraph-agent
+cd my-langgraph-agent
+agentengine web .
+```
+
+有关模板生成的文件、各运行时的入口约定和部署方式，请分别参阅[创建项目](../getting-started/quickstart.mdx)、[Codex Managed Runtime](./managed-runtime.mdx)和[云端部署](./cloud-deployment.mdx)。
+
+## 云端部署与生命周期
+
+构建成功后可直接进入部署流程。Studio 复用 AgentEngine 已有的 `CreateAgent`、`UpdateAgent`、状态查询和删除接口，不额外发明一套部署 API：
+
+1. 在 **构建** 页选择成功的 build，点击部署；或在 **部署** 页发起新部署。
+2. 等待进度完成后，在详情页查看 Endpoint、运行状态、当前 build 与版本历史。
+3. 默认点击 **会话** 会在 Studio 内连接云端 Agent；Hosted UI 或第三方 Runtime Dashboard 是附加入口。
+4. 更新 Agent 定义并重新构建后，可用 `UpdateAgent` 发布新版本；选择旧版本并二次确认即可回滚。
+5. 删除操作调用云端生命周期接口，并同步清理 Studio 的本地 receipt。
+
+云端目标列表同时包含 Studio 部署记录和账号已有 Agent。后者包括通过 CLI 部署的高代码 Agent；目标身份使用完整 `agent_id`，不会因来源不同创建重复会话。Hermes 或 OpenClaw 若不声明 Studio 会话所需能力，Studio 会明确提示并提供其官方 Dashboard，而不是伪装为兼容。
+
+普通聊天使用前台流式请求，不要求 Background 模式。断开页面后仍需继续的长任务才使用 Background session。当前会话支持增量正文、思考、工具、审批、附件、模型选择、三档审批以及 Goal / Plan；不单独展示一个“Loop”模式。
+
+## 0.8.3 插件与本地自动化
+
+Studio 的插件页只展示两个明确的宿主边界：DSH Bundle/Profile 由受管理的 DSH 工具链接管生命周期；Codex 官方插件继续由 Codex App Server 管理。KsADK 不复制插件实现，也不把任意本地目录伪装成已安装能力。
+
+**自动化**页和 Agent 详情页的自动化 Tab 使用 Scheduler Lite，支持 once、interval、cron、IANA 时区、立即运行和 occurrence 历史。调度器属于当前 Studio 进程：关闭 Studio 后不会继续提供 24×7 唤醒，也不宣称跨 Pod 高可用。完整边界见[插件与自动化](./plugins-and-automations.mdx)。
+
+## Studio 与本地 Web UI 的分工
+
+| 场景 | 使用的命令 | 适合做什么 |
+| --- | --- | --- |
+| 从零创建或维护多个本地 Agent | `agentengine studio <workspace>` | 创作、构建、资源管理、会话、Trace 与编排 |
+| 调试一个已有的 KsADK 项目 | `agentengine web <project>` | 发送消息、检查本地会话、附件和 OpenAI 兼容 API |
+| 在终端快速验证一个项目 | `agentengine run <project> -i` | 交互式运行与问题隔离 |
+
+Studio 与 `agentengine web` 都只绑定 loopback；它们不会把浏览器直接连到模型 provider。浏览器写操作由本地 session 和 CSRF token 校验，本机运行时再调用配置的框架 Runner。
+
+## 本地状态与重置
+
+Studio 的工作区数据和会话是本地开发状态，不是需要提交的源代码。若只是想清理一次本地实验，可停止 Studio 后删除该工作区中的 `.agentengine/`，再重新启动。
+
+不要删除你的 Agent 源码或 `agentengine.yaml` 来重置会话；它们是项目定义，应正常纳入版本控制。
+
+## UI 包与源码
+
+安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含经过审计的生产静态资源。公开仓保存 Studio 的 React / TypeScript 源码与依赖锁；构建门禁编译并审计静态资源。sdist 与 wheel 携带这些页面资源，生成文件不提交 Git。
+
+详见[构建与打包](./build-and-package.mdx)和[Web UI 源码与发布契约](./web-ui-source.mdx)。

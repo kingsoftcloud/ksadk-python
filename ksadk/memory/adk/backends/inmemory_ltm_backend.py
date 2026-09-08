@@ -2,15 +2,35 @@
 
 使用简单的内存字典存储和文本匹配检索。
 数据在进程退出后丢失，仅适用于开发和测试场景。
+
+扩展协议（技术改造方案 §7.3）：内存实现结构化检索与 update/delete，
+用于本地开发和 fake 场景下的契约验证；不声明 flush/session_status 能力
+（没有后台提取过程，写入即"可见"）。
+
+兼容设计：_storage 保存原始事件字符串不改写，search_memory 返回原始
+字符串列表（保留旧契约，§7.5）；结构化能力通过平行 ID 索引提供。
 """
 
+import json
 import logging
+import uuid
 from collections import defaultdict
-from typing import List
+from typing import List, Set
 
 from pydantic import PrivateAttr
 
-from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
+from ksadk.memory.adk.backends.base_ltm_backend import (
+    CAP_ADD,
+    CAP_DELETE,
+    CAP_SEARCH,
+    CAP_STRUCTURED_SEARCH,
+    CAP_UPDATE,
+    BaseLongTermMemoryBackend,
+)
+from ksadk.memory.models import (
+    LongTermMemoryRecord,
+    MemoryMutationResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +50,12 @@ class InMemoryLTMBackend(BaseLongTermMemoryBackend):
     """
 
     _storage: defaultdict[str, list[str]] = PrivateAttr(default_factory=lambda: defaultdict(list))
+    # memory_id -> 原始事件字符串（不改写 _storage，保留旧 search_memory 契约）。
+    _entry_ids: dict[str, str] = PrivateAttr(default_factory=dict)
+    # (user_id) -> {memory_id -> 原始事件字符串}，用于快速定位与更新/删除。
+    _user_entry_index: defaultdict[str, dict[str, str]] = PrivateAttr(
+        default_factory=lambda: defaultdict(dict)
+    )
 
     def model_post_init(self, __context) -> None:
         # {user_id: [event_string, ...]}
@@ -40,7 +66,11 @@ class InMemoryLTMBackend(BaseLongTermMemoryBackend):
         if not event_strings:
             return True
 
-        self._storage[user_id].extend(event_strings)
+        for entry in event_strings:
+            memory_id = f"mem-{uuid.uuid4().hex[:12]}"
+            self._entry_ids[memory_id] = entry
+            self._user_entry_index[user_id][memory_id] = entry
+            self._storage[user_id].append(entry)
         logger.debug(
             f"Saved {len(event_strings)} events for user={user_id}, "
             f"total={len(self._storage[user_id])}"
@@ -88,3 +118,106 @@ class InMemoryLTMBackend(BaseLongTermMemoryBackend):
             f"found {len(results)} results from {len(user_memories)} total"
         )
         return results
+
+    # ---- 扩展协议实现（§7.3） ----
+
+    def capabilities(self) -> Set[str]:
+        return {
+            CAP_SEARCH,
+            CAP_ADD,
+            CAP_STRUCTURED_SEARCH,
+            CAP_UPDATE,
+            CAP_DELETE,
+        }
+
+    def search_records(
+        self, user_id: str, query: str, top_k: int = 5, **kwargs
+    ) -> List[LongTermMemoryRecord]:
+        """结构化检索：复用关键词匹配，返回稳定生成的本地 ID。"""
+        entries = self.search_memory(user_id, query, top_k=top_k)
+        records: List[LongTermMemoryRecord] = []
+        for entry in entries:
+            memory_id = self._find_entry_id(user_id, entry)
+            if memory_id is None:
+                continue
+            records.append(
+                LongTermMemoryRecord(
+                    memory_id=memory_id,
+                    content=self._entry_text(entry),
+                    score=None,
+                    user_id=user_id,
+                )
+            )
+        return records
+
+    def update_memory(
+        self,
+        *,
+        user_id: str,
+        memory_id: str,
+        content: str,
+        **kwargs,
+    ) -> MemoryMutationResult:
+        user_index = self._user_entry_index.get(user_id, {})
+        old_entry = user_index.get(memory_id)
+        if old_entry is None:
+            return MemoryMutationResult(ok=False, memory_id=memory_id, status="not_found")
+        new_entry = json.dumps(
+            {"role": "user", "parts": [{"text": content}]}, ensure_ascii=False
+        )
+        memories = self._storage[user_id]
+        for i, entry in enumerate(memories):
+            if entry is old_entry:
+                memories[i] = new_entry
+                break
+        self._entry_ids[memory_id] = new_entry
+        user_index[memory_id] = new_entry
+        return MemoryMutationResult(
+            ok=True,
+            memory_id=memory_id,
+            new_memory_id=memory_id,
+            status="updated",
+        )
+
+    def delete_memory(
+        self,
+        *,
+        user_id: str,
+        memory_id: str,
+        **kwargs,
+    ) -> MemoryMutationResult:
+        user_index = self._user_entry_index.get(user_id, {})
+        entry = user_index.pop(memory_id, None)
+        if entry is None:
+            return MemoryMutationResult(
+                ok=True, memory_id=memory_id, status="already_absent", message="目标记忆已不存在"
+            )
+        self._entry_ids.pop(memory_id, None)
+        memories = self._storage.get(user_id, [])
+        try:
+            memories.remove(entry)
+        except ValueError:
+            pass
+        return MemoryMutationResult(ok=True, memory_id=memory_id, status="deleted")
+
+    def _find_entry_id(self, user_id: str, entry: str) -> str | None:
+        """根据原始条目定位 memory_id（反向查表）。"""
+        for memory_id, stored in self._user_entry_index.get(user_id, {}).items():
+            if stored is entry or stored == entry:
+                return memory_id
+        return None
+
+    # ---- 内部工具 ----
+
+    @staticmethod
+    def _entry_text(entry: str) -> str:
+        """提取事件字符串里的正文（兼容 JSON 事件与纯文本）。"""
+        try:
+            payload = json.loads(entry)
+        except (json.JSONDecodeError, TypeError):
+            return entry
+        if isinstance(payload, dict):
+            parts = payload.get("parts")
+            if isinstance(parts, list) and parts and isinstance(parts[0], dict):
+                return str(parts[0].get("text", entry))
+        return entry

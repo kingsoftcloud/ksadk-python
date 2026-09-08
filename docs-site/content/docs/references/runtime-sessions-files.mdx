@@ -24,7 +24,7 @@ workspace 路由和运行时 payload 获取上下文。
 ## 本地存储
 
 `agentengine web .` 默认使用项目目录下的 `.agentengine/ui/sessions.sqlite`。
-相关变量见 [环境变量](environment-variables)。
+相关变量见 [环境变量](./environment-variables.mdx)。
 
 ```bash
 KSADK_STM_BACKEND=sqlite
@@ -149,7 +149,7 @@ action 走 `POST /agentengine/api/v1/<Action>`,请求体为 JSON,响应统一为
 
 | Action | 路径 | 用途 |
 | --- | --- | --- |
-| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | 列出某 session 下的 checkpoint,供 resume 选择 |
+| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | 按可选 session 范围列出 checkpoint，供 resume 选择 |
 | `GetCheckpointResumePreview` | `POST /agentengine/api/v1/GetCheckpointResumePreview` | 预览从某 checkpoint resume 的内容与影响面 |
 | `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | 从 checkpoint 恢复 run 执行 |
 | `CancelRun` | `POST /agentengine/api/v1/CancelRun` | 取消正在进行的 run(以 `InvocationId` 为主键) |
@@ -236,7 +236,7 @@ stateDiagram-v2
 
 ### ListSessionCheckpoints
 
-列出某 session 下的 checkpoint,支持按 `RunId`、`Framework` 过滤与分页。
+列出 checkpoint，支持按 session、checkpoint ID、`RunId`、`Framework`、最终恢复状态和 Scope 过滤。
 
 <Tabs>
 <Tab value="Request">
@@ -244,12 +244,15 @@ stateDiagram-v2
 | 字段 | 默认 | 约束 | 含义 |
 | --- | --- | --- | --- |
 | `AgentId` | — | 必填 | 目标 Agent id,必须与 session 的 `agent_id` 一致 |
-| `SessionId` | — | 必填 | 目标 session id |
+| `SessionId` | `[]` | string 或 string[]，最多 1000 项 | 目标 session；缺省或空数组不过滤 |
+| `CheckpointId` | `[]` | string 或 string[]，最多 1000 项 | checkpoint ID；缺省或空数组不过滤 |
 | `RunId` | — | 可选 | 仅返回该 run 的 checkpoint |
 | `Framework` | — | 可选 | 仅返回该框架的 checkpoint,如 `langgraph` |
 | `OnlyResumable` | `false` | 可选 | 仅返回 `IsResumable=true` 的 checkpoint |
+| `ResumeStatus` | `[]` | string[] | 按最终 `ResumeStatus` 过滤；值域开放 |
+| `ResumeTypes` | `[]` | string[] | 按最终 `Scope` 过滤：`invocation`、`shared`、`pod_local`、`process_local`、`unknown` |
 | `Offset` | `0` | `>=0` | 分页偏移 |
-| `Limit` | 不限 | `1..500` | 每页上限 500 |
+| `Limit` | `100` | `1..1000` | 每页上限 1000 |
 
 ```bash title="list_checkpoints.sh"
 curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckpoints" \
@@ -258,6 +261,8 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
   -d '{
     "AgentId": "my-agent",
     "SessionId": "<sid>",
+    "ResumeStatus": ["resumable"],
+    "ResumeTypes": ["shared", "pod_local"],
     "OnlyResumable": true,
     "Limit": 50
   }'
@@ -287,7 +292,7 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
         "ResumeDisabledReason": "",
         "NextNode": "research_summarize",
         "Backend": "langgraph_store",
-        "Scope": "session",
+        "Scope": "shared",
         "Durable": true,
         "LastResumedAt": null,
         "ResumeCount": 0,
@@ -296,6 +301,10 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
         "CheckpointStatus": "active"
       }
     ],
+    "ResumeStatus": ["resumable"],
+    "ResumeTypes": ["shared", "pod_local"],
+    "ResumableTotal": 1,
+    "HasResumableCheckpoint": true,
     "Total": 1,
     "Offset": 0,
     "Limit": 50
@@ -312,6 +321,10 @@ curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckp
 
 </Tab>
 </Tabs>
+
+两个新增过滤数组会 trim、转小写并去重。runtime 先完成 payload 转换、resume audit、过期和
+latest-only 修正，再应用 `ResumeStatus` / `ResumeTypes`；随后计算 `ResumableTotal`，再应用
+`OnlyResumable`、计算 `Total` 和分页。
 
 ### GetCheckpointResumePreview
 
@@ -799,18 +812,28 @@ curl -sS -X POST https://<public-endpoint>/agentengine/api/v1/ListSessions \
 
 | 字段 | 默认 | 约束 | 含义 |
 | --- | --- | --- | --- |
-| `SessionId` | — | 必填 | 目标 session id |
+| `SessionId` | — | 必填、单个非空字符串 | 目标 session id；数组、缺省和 trim 后空字符串均失败 |
+| `CheckpointIds` | `[]` | string[]，最多 1000 项 | 按 `Metadata.checkpoint_id` 精确过滤，大小写敏感 |
+| `EventTypes` | `[]` | string[]，最多 1000 项 | 按 `EventType` 精确过滤，大小写敏感 |
 | `Offset` | `0` | `>=0` | 事件偏移量 |
-| `Limit` | 不限制 | `>=1` | 返回条数上限；缺省时返回全部事件 |
+| `Limit` | `10` | `1..1000` | 返回条数上限 |
+| `AfterSeqId` | — | `>=0` | 只保留 `SeqId` 大于该值的事件 |
+| `BeforeSeqId` | — | `>=1` | 只保留 `SeqId` 小于该值的事件 |
 
 响应 `Data` 字段：
 
 | 字段 | 含义 |
 | --- | --- |
 | `Events` | 当前页事件列表 |
-| `Total` | session 下事件总数 |
+| `SessionId` | 规范化后的标量 session id |
+| `CheckpointIds` / `EventTypes` | 规范化后的过滤数组 |
+| `Total` | 全部过滤与游标条件生效后、分页前的事件总数 |
 | `Offset` | 当前偏移量 |
 | `Limit` | 实际生效的 limit |
+
+两个数组均会 trim、去空并稳定去重；数组内部为 OR，字段之间以及与游标条件之间为 AND，
+空数组表示不启用该过滤。过滤和 `Total` 计算先于 `Offset` / `Limit`；接口选择最新窗口后，
+仍按时间正序返回当前页。
 
 ```bash
 curl -sS -X POST https://<public-endpoint>/agentengine/api/v1/ListSessionEvents \

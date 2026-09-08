@@ -1,0 +1,28 @@
+{
+  "contract_set": "scheduler/v1",
+  "digest_algorithm": "sha256",
+  "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
+  "aggregate_digest": "c2f0bd1f3618d46b736770f51c735dbea18191c53745d96b8ad7de39845acaa7",
+  "files": [
+    {
+      "path": "fixtures/schedule-occurrence.json",
+      "sha256": "d3154a883e3f36e2e04a390c905b48719e2482078979b900bcda4de210de100e",
+      "bytes": 684
+    },
+    {
+      "path": "fixtures/scheduled-task.json",
+      "sha256": "49aa0861f15b8ed05c1a874d74ddcbad78477999da32bcc39f1a2f41cf09d2a1",
+      "bytes": 682
+    },
+    {
+      "path": "schedule-occurrence.schema.json",
+      "sha256": "c7e0c9771bdcee29c7d113f6accbe9c0ec39cbe3d8df2ecbe017cac8299f1ec0",
+      "bytes": 2536
+    },
+    {
+      "path": "scheduled-task.schema.json",
+      "sha256": "8395d4d9519831b278ca0c7181c9c64bc923fac98d00a58a4d55843a47e696b9",
+      "bytes": 2153
+    }
+  ]
+}

@@ -12,7 +12,6 @@
 <p align="center">
   <a href="https://kingsoftcloud.github.io/ksadk-python/"><img alt="Docs" src="https://img.shields.io/badge/Docs-ksadk--python-2f6fdf?style=flat" /></a>
   <a href="https://pypi.org/project/ksadk/"><img alt="PyPI" src="https://img.shields.io/pypi/v/ksadk?style=flat&color=2f6fdf" /></a>
-  <a href="https://zread.ai/kingsoftcloud/ksadk-python"><img alt="Ask Zread" src="https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
 </p>
 
@@ -37,21 +36,26 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
+## 0.8.4 运行时架构
+
+KsADK 0.8.4 把“框架适配”收敛为稳定的运行时分层，同时保留各框架的原生执行语义：
+
+- **可信内核**：统一并发、取消、恢复、状态一致性和运行时安全边界。
+- **Harness 执行层**：负责装配、Activation、生命周期和共用能力注入；一次 Activation 只选择一个 Provider。
+- **可插拔 Provider**：Codex、KsADK Harness、DSH/Cordis 与 Subagent 在同一 Harness 契约下运行，Provider 保留原生线程、checkpoint 与事件语义。
+- **统一事件**：`RuntimeEvent(schema_version=2)` 是存储、回放、API、Studio 与托管界面的事件事实来源；v1 仅作为只读兼容投影。
+- **受控插件化**：DSH Bundle/Profile 使用固定工具链、不可变来源摘要和失败回滚；Codex 官方插件仍由 Codex App Server 管理。
+- **本地开发闭环**：Studio 覆盖创建、构建、调试、评测与本地 Scheduler Lite；配套 Web UI 固定为 `@kingsoftcloud/ksadk-web@0.3.5`。
+
+从 [0.8.4 运行时架构](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/runtime-architecture/)、[AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/) 和[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)开始阅读。版本演进与发行状态见 [CHANGELOG](CHANGELOG.md) 和 PyPI 徽章。
+
+### RuntimeEvent schema v2 契约
+
+运行事件主路径固定为 canonical `RuntimeEvent(schema_version=2)`；能力描述为 `RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`。v1 仅作只读兼容投影。
+
 <p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png"><img alt="KsADK 真实 Web UI 调试截图" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></a></p>
 
 <p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif"><img alt="KsADK 真实本地 Web UI 演示" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></a></p>
-
-## 0.8.0 评审候选
-
-`0.8.0` 是正在评审的候选分支，不是已发布的 PyPI/npm 版本。它把 RuntimeEvent、AG-UI/A2UI、A2A、Harness 和 CodexRuntime 统一到同一运行时边界，同时保持 `/v1/responses` 和 `/v1/chat/completions` 兼容入口可用。
-
-- **Hosted UI**：AG-UI/A2UI 通过能力协商启用；不能协商时继续使用既有 Responses transport。
-- **事件诊断**：`ksadk replay <session-id>` 只读回放新 RuntimeEvent 历史，可用事件序号（`seq_id`）窗口缩小排查范围，不会再次执行模型、工具或审批副作用。
-- **托管 A2A（实验性）**：AgentEngine 通过 Gateway 装配可信入站和 Space-scoped 出站 client。首期 external Agent 仅支持 `external_public`；它受 `Network.EnablePublicAccess` 控制并使用受限 NAT transport，`external_vpc` 尚不可用。
-- **Codex Managed Runtime（新增）**：使用无 `agent.py` 的 `agentengine.yaml` 在 macOS、Windows 和 Linux 原生调试 Codex；直接部署发送内联 manifest，不上传 KS3 代码包，云端选择锁定的 Linux Runtime 镜像。
-- **框架迁移**：新接入优先使用 LangGraph、Google ADK 或 `RuntimeAdapter`。旧 LangChain 连续性 / HITL 路径不属于 `0.8` 兼容性承诺。
-
-详见[Codex Managed Runtime 指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/managed-runtime/)、[Hosted UI 与事件回放指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/hosted-ui-events/)、[托管 A2A Runtime 指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/)、[HarnessApp 指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/harness-app/)和 [0.8.0 更新日志](CHANGELOG.md)。
 
 ## 为什么需要 KsADK
 
@@ -65,7 +69,9 @@ agentengine web . --no-open
 
 ## 架构
 
-<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png"><img alt="KsADK 智能体运行时平台架构" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></a></p>
+<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png"><img alt="KsADK 总体技术架构" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></a></p>
+
+Agent Kernel 收口可信控制，Harness 管理装配与生命周期，可插拔 Provider 保留框架原生执行语义；RuntimeEvent v2 为 API、Studio 与托管界面提供统一事件事实链。
 
 ## 文档与样例
 
@@ -77,13 +83,13 @@ agentengine web . --no-open
 - 可观测：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/>
 - 云端部署：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/cloud-deployment/>
 - Hosted UI 与事件回放：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/hosted-ui-events/>
+- 环境变量：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/environment-variables/>
 - 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
 
 ## 相关项目
 
 - KsADK 仓库：<https://github.com/kingsoftcloud/ksadk-python>
 - Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>
-- Wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
 - PyPI：<https://pypi.org/project/ksadk/>
 
 ## 参与贡献

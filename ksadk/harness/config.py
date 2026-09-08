@@ -41,8 +41,8 @@ class McpToolSpec:
     """MCP 工具条目(最小子集)。"""
 
     name: str
-    url: str
-    api_key: Optional[str] = None
+    url: str = field(repr=False)
+    api_key: Optional[str] = field(default=None, repr=False)
     tool_filter: tuple[str, ...] = ()
     tool_name_prefix: Optional[str] = None
 
@@ -63,7 +63,7 @@ class HarnessConfig:
     mcp_tools: tuple[McpToolSpec, ...] = ()
     sandbox: SandboxPolicy = field(default_factory=SandboxPolicy)
     runtime: str = "yaml"
-    """runtime 后端:``yaml``(YamlAgentRunner+LiteLLM)| ``codex``(CodexRunner+codex CLI)。"""
+    """runtime 后端:``yaml``(HarnessRuntimeAdapter)| ``codex``(CodexRuntimeAdapter)。"""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, source: str = "yaml") -> "HarnessConfig":

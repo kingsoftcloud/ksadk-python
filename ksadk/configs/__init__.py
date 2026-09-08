@@ -8,7 +8,7 @@ AgentEngine 统一配置管理
 
 环境变量优先级 (举例):
     Model:    OPENAI_API_KEY > LLM_API_KEY > MODEL_API_KEY
-    Langfuse: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
+    Tracing:  OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS
     Agent:    AGENT_ID > AGENT_RUNTIME_ID
 
 默认值:
@@ -24,7 +24,6 @@ from ksadk.configs.settings import (
     AgentConfig,
     CodeModeConfig,
     KingsoftCloudConfig,
-    LangfuseConfig,
     # 各配置类
     ModelConfig,
     OTelConfig,
@@ -44,7 +43,6 @@ __all__ = [
     "Settings",
     # 配置类
     "ModelConfig",
-    "LangfuseConfig",
     "AgentConfig",
     "KingsoftCloudConfig",
     "CodeModeConfig",

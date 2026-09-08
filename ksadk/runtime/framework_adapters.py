@@ -6,7 +6,7 @@
 - ADK:**forward-only**,resume 经 ``invocation_id``;不支持 time-travel/fork。
 - LangGraph:**time-travel**,resume 经 ``checkpoint_id``;可按 turn 回滚/fork。
 
-并用 :func:`build_default_registry` 注册进 G0.3 ``RuntimeRegistry``。
+默认注册由 :mod:`ksadk.runtime.factory` 统一负责。
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from ksadk.runtime.adapter import (
     ResumePayload,
     ResumeTarget,
     RunHandle,
-    RuntimeRegistry,
 )
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 
@@ -64,6 +63,24 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
     def __init__(self, runner: BaseRunner) -> None:
         super().__init__(runner, runtime_type="langgraph")
 
+    def capabilities(self):  # noqa: ANN201
+        """Advertise checkpoint interaction only when LangGraph can resume it.
+
+        ``RunnerRuntimeAdapter`` is intentionally conservative because a
+        generic checkpoint is not proof of original-interrupt delivery.  The
+        LangGraph adapter owns that mapping, so it is the only runner-family
+        adapter that may publish ``durable_resume``.
+        """
+
+        matrix = super().capabilities()
+        return matrix.model_copy(
+            update={
+                "interaction_mode": (
+                    "durable_resume" if matrix.resume.supported else "unavailable"
+                )
+            }
+        )
+
     async def _resume_native(
         self,
         handle: RunHandle,
@@ -88,16 +105,43 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         # ``checkpoint_resume`` + ``framework_ref.langgraph.{checkpoint_id,thread_id}``。
         return {
             "checkpoint_resume": True,
+            "run_id": handle.run_id,
             "resume_payload_provided": payload is not None,
             "resume_interrupt_id": payload.call_id if payload else None,
             "framework_ref": {
-                "langgraph": {"checkpoint_id": target.id, "thread_id": handle.session_id}
+                "langgraph": {
+                    "checkpoint_id": target.id,
+                    "thread_id": str(handle.native_ref.get("thread_id") or handle.session_id),
+                }
             },
             "input": payload.data if payload else None,
         }
 
     def _checkpoint_capability(self) -> CheckpointCapability:
         capability = super()._checkpoint_capability()
+        if not capability.supported:
+            describe = getattr(self._runner, "describe_checkpoint_capability", None)
+            try:
+                raw = dict(describe()) if callable(describe) else {}
+            except Exception:  # noqa: BLE001
+                raw = {}
+            if (
+                str(raw.get("Scope") or "").strip().lower() == "process_local"
+                and str(raw.get("Backend") or "").strip().lower() in {"memory", "sqlite"}
+            ):
+                # The runner correctly refuses to advertise this checkpoint to
+                # hosted callers because it is not durable across a process
+                # restart. This adapter only resumes an attached in-process
+                # handle, for which LangGraph's memory saver is sufficient.
+                capability = capability.model_copy(
+                    update={
+                        "supported": True,
+                        "reason": (
+                            "Checkpoint resume is limited to the current process; "
+                            "it is not durable across restarts or pods"
+                        ),
+                    }
+                )
         if not capability.supported:
             return capability
         return capability.model_copy(
@@ -109,16 +153,7 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         )
 
 
-def build_default_registry() -> RuntimeRegistry:
-    """构造默认 RuntimeRegistry 并注册 ADK/LangGraph adapter 类型。"""
-    registry = RuntimeRegistry()
-    registry.register("adk", ADKRuntimeAdapter)
-    registry.register("langgraph", LangGraphRuntimeAdapter)
-    return registry
-
-
 __all__ = [
     "ADKRuntimeAdapter",
     "LangGraphRuntimeAdapter",
-    "build_default_registry",
 ]
