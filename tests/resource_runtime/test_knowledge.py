@@ -75,6 +75,11 @@ def test_binding_limits_and_sources_are_preserved():
     "response",
     [
         "not-json",
+        {},
+        {"RequestId": "request-no-records"},
+        {"Code": 200},
+        {"Records": [], "Code": False},
+        {"Records": [], "Code": 200.0},
         "[]",
         {"Code": 403},
         {"ResponseMetadata": {"Error": {"Code": "denied"}}},

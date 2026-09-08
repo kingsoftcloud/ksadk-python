@@ -213,15 +213,23 @@ class KnowledgeBaseClient(BaseModel):
         self.last_request_id = (
             request_id if isinstance(request_id, str) and len(request_id) <= 256 else ""
         )
-        if (
-            data.get("Error")
-            or metadata.get("Error")
-            or data.get("Code") not in (None, 0, 200, "0", "200")
-        ):
+        code = data.get("Code")
+        if "Code" in data:
+            valid_code = (
+                (type(code) is int and code in {0, 200})
+                or (type(code) is str and code in {"0", "200"})
+            )
+            if not valid_code:
+                self.last_error = "Knowledge service rejected the request"
+                return []
+        if data.get("Error") or metadata.get("Error"):
             self.last_error = "Knowledge service rejected the request"
             return []
 
-        records = data.get("Records", [])
+        if "Records" not in data:
+            self.last_error = "Knowledge response omitted records"
+            return []
+        records = data["Records"]
         if not isinstance(records, list):
             self.last_error = "Invalid knowledge records"
             return []
