@@ -14,6 +14,7 @@ interface ChatWorkspaceProps {
   agentAppearance?: AgentAppearance;
   active?: boolean;
   refreshTick?: number;
+  requestedSessionId?: string;
   onRunChanged?: () => void;
   onConfigureAgent?: () => void;
   onOpenSettings?: () => void;
@@ -48,9 +49,23 @@ export function ChatWorkspace({
   agentAppearance,
   active = true,
   refreshTick = 0,
+  requestedSessionId = "",
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
+  const openedRequest = useRef("");
+  const currentRequest = useRef("");
+  currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
+  useEffect(() => {
+    if (!requestedSessionId) { openedRequest.current = ""; return; }
+    const request = `${agentId}:${requestedSessionId}`;
+    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || chat.isLoadingSessions || openedRequest.current === request) return;
+    openedRequest.current = request;
+    void (async () => {
+      await chat.refresh();
+      if (currentRequest.current === request) chat.selectSession(requestedSessionId);
+    })();
+  }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const [deleteSessionId, setDeleteSessionId] = useState("");

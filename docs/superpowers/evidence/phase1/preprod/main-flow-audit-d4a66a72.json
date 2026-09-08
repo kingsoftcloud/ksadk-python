@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "environment": "preproduction",
+  "scenario": "shared_main_flow_server_admission_audit",
+  "observed_at": "2026-08-23T15:44:12Z",
+  "checks": {
+    "audit": {
+      "status": "pass",
+      "detail": {
+        "command_id": "02bdbd0b-9faf-441d-b4be-0db7f9f34020",
+        "audit_id": "audit-4cf27d4e511049f4a10264c1",
+        "command_type": "enqueue",
+        "receipt_status": "accepted",
+        "accepted_seq": 1,
+        "message_id": "8ea5f9c6-34e8-4b8e-a867-5881f5d46cde",
+        "session_id": "sess-4acca9817da243db",
+        "principal_ref": "user:No1qNME1QqKQhMmANC4xcQ",
+        "agent_instance_id": "ai-1a6a130e01af4104abc1",
+        "agent_id": "ar-20260823075542-cce1df89",
+        "runtime_id": "ar-20260823075542-cce1df89",
+        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "bundle_digest": "33d4708608c00b9d0dd3cde3df1d5c64543e72517ddaa575cef5a62a68e7adc5",
+        "server_image": "hub.kce.ksyun.com/bigdata-ai/agentengine-server@sha256:d609f934b76f25752d7036d8cc51d7ac758a5212b8bcf96d51d2150321aeb5a7",
+        "server_pod_uid": "0805e864-1d9d-46e8-9a04-f0af6cc5db96",
+        "path": "Studio cloud chat -> Gateway -> Server admission -> AgentInstance directory -> managed runtime",
+        "persistence": "agent_control_audits row and matching AgentInstance row read back from the shared preproduction Server database",
+        "redaction": "No request body, signature, credential, connection string, or model content is recorded."
+      }
+    }
+  },
+  "status": "pass"
+}

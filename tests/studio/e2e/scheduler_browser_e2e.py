@@ -176,20 +176,23 @@ def _assert_scheduler_lifecycle(
     # Create and edit from the global Scheduler product surface first. This is
     # intentionally a browser route, not repository setup hidden in the test.
     page.goto(f"{base_url}/#/automations", wait_until="domcontentloaded")
-    expect(page.get_by_role("heading", name="自动化 / 定时任务")).to_be_visible()
+    expect(page.get_by_role("heading", name="让重复的工作，按时完成")).to_be_visible()
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
 
     page.get_by_role("button", name="新建定时任务", exact=True).click()
-    form = page.locator(".automation-form")
+    form = page.get_by_role("dialog")
     expect(form).to_be_visible()
-    form.locator("label", has_text="Agent").locator("select").select_option(AGENT_ID)
-    form.get_by_placeholder("例如：工作日销售日报").fill(TASK_NAME)
-    form.get_by_placeholder("例如：生成昨日销售摘要并列出异常").fill(TASK_PROMPT)
-    form.locator("label", has_text="触发方式").locator("select").select_option("interval")
-    form.locator("label", has_text="间隔（秒）").locator("input").fill("3600")
+    if form.get_by_label("交给谁").is_enabled():
+        form.get_by_label("交给谁").select_option(AGENT_ID)
+    form.get_by_label("任务名称", exact=True).fill(TASK_NAME)
+    form.get_by_label("任务说明", exact=True).fill(TASK_PROMPT)
+    form.get_by_role("button", name="固定间隔", exact=True).click()
+    form.get_by_role("spinbutton", name="每隔").fill("60")
     form.get_by_role("button", name="创建任务", exact=True).click()
+    page.locator(".automation-detail").wait_for()
+    page.get_by_role("dialog").get_by_role("button", name="关闭", exact=True).click()
 
-    row = page.get_by_role("row", name=f"查看定时任务 {TASK_NAME} 的详情")
+    row = page.get_by_role("button", name=f"查看定时任务 {TASK_NAME} 的详情")
     expect(row).to_be_visible()
     task_payload = _json(base_url, "/api/v1/schedules")
     assert len(task_payload["items"]) == 1
@@ -202,10 +205,12 @@ def _assert_scheduler_lifecycle(
     # The global detail owns real edit, not a disabled or decorative action.
     row.click()
     page.locator(".automation-detail").get_by_role("button", name="编辑", exact=True).click()
-    form.get_by_placeholder("例如：工作日销售日报").fill(TASK_NAME_EDITED)
-    form.get_by_placeholder("例如：生成昨日销售摘要并列出异常").fill(TASK_PROMPT_EDITED)
+    form.get_by_label("任务名称", exact=True).fill(TASK_NAME_EDITED)
+    form.get_by_label("任务说明", exact=True).fill(TASK_PROMPT_EDITED)
     form.get_by_role("button", name="保存变更", exact=True).click()
-    row = page.get_by_role("row", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
+    page.locator(".automation-detail").wait_for()
+    page.get_by_role("dialog").get_by_role("button", name="关闭", exact=True).click()
+    row = page.get_by_role("button", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
     expect(row).to_be_visible()
     edited = _json(base_url, "/api/v1/schedules")["items"][0]
     assert edited["displayName"] == TASK_NAME_EDITED
@@ -214,7 +219,7 @@ def _assert_scheduler_lifecycle(
     # A browser refresh reconstructs the global route and durable SQLite task
     # rather than depending on React component state.
     page.reload(wait_until="domcontentloaded")
-    row = page.get_by_role("row", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
+    row = page.get_by_role("button", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
     expect(row).to_be_visible()
 
     # The same durable task is managed in place from the Agent detail tab.
@@ -222,26 +227,24 @@ def _assert_scheduler_lifecycle(
     expect(page.get_by_role("banner", name="当前页面")).to_contain_text(AGENT_NAME)
     page.get_by_role("tab", name="自动化", exact=True).click()
     expect(page.get_by_role("heading", name="该 Agent 的自动化")).to_be_visible()
-    row = page.get_by_role("row", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
+    row = page.get_by_role("button", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
     expect(row).to_be_visible()
 
     # Activating the real table row opens task details and occurrence history.
     row.click()
-    expect(
-        page.locator(".automation-detail").get_by_role("heading", name=TASK_NAME_EDITED)
-    ).to_be_visible()
-    expect(page.locator(".automation-detail")).to_contain_text("目标 Build")
+    expect(page.get_by_role("dialog").get_by_role("heading", name=TASK_NAME_EDITED)).to_be_visible()
+    expect(page.locator(".automation-detail")).to_contain_text("构建版本")
     expect(page.get_by_text("还没有执行记录。", exact=True)).to_be_visible()
 
     # Enabled state is durable and both transitions use the agent-scoped PUT.
-    page.get_by_role("button", name="停用", exact=True).click()
+    page.get_by_role("button", name="暂停", exact=True).click()
     expect(
         page.locator(".automation-detail").get_by_role("button", name="启用", exact=True)
     ).to_be_visible()
     assert _json(base_url, "/api/v1/schedules")["items"][0]["enabled"] is False
     page.locator(".automation-detail").get_by_role("button", name="启用", exact=True).click()
     expect(
-        page.locator(".automation-detail").get_by_role("button", name="停用", exact=True)
+        page.locator(".automation-detail").get_by_role("button", name="暂停", exact=True)
     ).to_be_visible()
     assert _json(base_url, "/api/v1/schedules")["items"][0]["enabled"] is True
 
@@ -249,7 +252,7 @@ def _assert_scheduler_lifecycle(
     # worker and Codex RuntimeAdapter emit the correlated canonical terminal;
     # accepted alone is never treated as success.
     page.get_by_role("button", name="立即运行", exact=True).click()
-    expect(page.get_by_text("已提交到本地 Agent Kernel", exact=True)).to_be_visible()
+    expect(page.get_by_text("任务已提交", exact=True)).to_be_visible()
 
     terminal = None
     for _ in range(100):
@@ -271,7 +274,7 @@ def _assert_scheduler_lifecycle(
     # reloaded from HTTP, not retained in the component tree.
     page.reload(wait_until="domcontentloaded")
     page.get_by_role("tab", name="自动化", exact=True).click()
-    row = page.get_by_role("row", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
+    row = page.get_by_role("button", name=f"查看定时任务 {TASK_NAME_EDITED} 的详情")
     row.click()
     occurrence_list = page.locator(".automation-occurrences")
     expect(occurrence_list).to_be_visible()
@@ -287,11 +290,11 @@ def _assert_scheduler_lifecycle(
     assert occurrences[0]["trigger"] == "manual"
     assert occurrences[0]["runId"], occurrences[0]
 
-    page.get_by_role("button", name="删除", exact=True).click()
+    page.get_by_role("button", name="删除任务", exact=True).click()
     dialog = page.get_by_role("alertdialog", name=f"删除定时任务「{TASK_NAME_EDITED}」？")
     expect(dialog).to_be_visible()
     dialog.get_by_role("button", name="删除任务", exact=True).click()
-    expect(page.get_by_text("该 Agent 还没有定时任务", exact=True)).to_be_visible()
+    expect(page.get_by_text("新建任务，安排下一次执行", exact=True)).to_be_visible()
     assert _json(base_url, "/api/v1/schedules")["items"] == []
     # Deleting a definition does not erase its audit history.
     retained = _json(base_url, f"/api/v1/schedules/{task_id}/occurrences")["items"]
@@ -299,18 +302,21 @@ def _assert_scheduler_lifecycle(
 
     # Codex follow-up is also a browser path. The second occurrence must resume
     # the native thread and its terminal must cross the real SessionEvent SSE.
-    page.get_by_role("button", name="新建任务", exact=True).click()
-    form = page.locator(".automation-form")
+    page.get_by_role("button", name="新建定时任务", exact=True).click()
+    form = page.get_by_role("dialog")
     expect(form).to_be_visible()
-    form.locator("label", has_text="Agent").locator("select").select_option(AGENT_ID)
-    form.get_by_placeholder("例如：工作日销售日报").fill(CONTINUE_TASK_NAME)
-    form.get_by_placeholder("例如：生成昨日销售摘要并列出异常").fill("继续生成销售跟进摘要")
-    form.locator("label", has_text="触发方式").locator("select").select_option("interval")
-    form.locator("label", has_text="间隔（秒）").locator("input").fill("3600")
-    form.locator("label", has_text="会话").locator("select").select_option("continue_session")
-    form.get_by_placeholder("选择或粘贴可恢复的本地 Session").fill(CONTINUE_SESSION_ID)
+    if form.get_by_label("交给谁").is_enabled():
+        form.get_by_label("交给谁").select_option(AGENT_ID)
+    form.get_by_label("任务名称", exact=True).fill(CONTINUE_TASK_NAME)
+    form.get_by_label("任务说明", exact=True).fill("继续生成销售跟进摘要")
+    form.get_by_role("button", name="固定间隔", exact=True).click()
+    form.get_by_role("spinbutton", name="每隔").fill("60")
+    form.get_by_role("combobox", name="对话方式").select_option("continue_session")
+    form.get_by_role("combobox", name="选择会话").select_option(CONTINUE_SESSION_ID)
     form.get_by_role("button", name="创建任务", exact=True).click()
-    continue_row = page.get_by_role("row", name=f"查看定时任务 {CONTINUE_TASK_NAME} 的详情")
+    page.locator(".automation-detail").wait_for()
+    page.get_by_role("dialog").get_by_role("button", name="关闭", exact=True).click()
+    continue_row = page.get_by_role("button", name=f"查看定时任务 {CONTINUE_TASK_NAME} 的详情")
     expect(continue_row).to_be_visible()
     continue_task = _json(base_url, "/api/v1/schedules")["items"][0]
     continue_task_id = continue_task["taskId"]
@@ -342,7 +348,7 @@ def _assert_scheduler_lifecycle(
     after_seq = replay["page"]["latestSeqId"]
     page.reload(wait_until="domcontentloaded")
     page.get_by_role("tab", name="自动化", exact=True).click()
-    page.get_by_role("row", name=f"查看定时任务 {CONTINUE_TASK_NAME} 的详情").click()
+    page.get_by_role("button", name=f"查看定时任务 {CONTINUE_TASK_NAME} 的详情").click()
     _start_browser_sse(page, CONTINUE_SESSION_ID, after_seq)
     page.locator(".automation-detail").get_by_role("button", name="立即运行", exact=True).click()
 
@@ -396,6 +402,9 @@ def main() -> None:
                 runtime_executor=RuntimeExecutor(registry),
             )
             build_id = _prepare_agent(service)
+            asyncio.run(
+                service.session_service.create_session(AGENT_ID, "local-user", CONTINUE_SESSION_ID)
+            )
 
             with (
                 studio_server(workspace, service=service) as base_url,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentEngine CLI Ops"
+  short_description: "Route Hermes and OpenClaw CLI workflows"
+  default_prompt: "Use $agentengine-cli-ops to plan and run AgentEngine CLI work for Hermes or OpenClaw."

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "interaction_v1_delivery": {
+    "ksadk_python": "bfd24805915d",
+    "agentengine_server": "7afc70aa6647",
+    "agentengine_gateway": "7840b093c498",
+    "agent_runtime_service": "59178fdc362d",
+    "agent_platform_operator": "26948cff87fd",
+    "ksadk_web_phase1": "f05f03983b66",
+    "ksadk_web_release_base": "b4e9f93",
+    "ksadk_web_target": "0.3.2"
+  },
+  "repositories": [
+    {
+      "repo": "agent-platform-operator",
+      "remote": "ssh://ezone.ksyun.com:23/ezone/cbd-serverless/agent-platform-operator.git",
+      "branch_base": "feat/agent-kernel-phase1",
+      "commit_sha": "160d648058557dbdaa729ff802ce1c88fdef9dc3",
+      "dirty": false
+    },
+    {
+      "repo": "agent-runtime-service",
+      "remote": "ssh://ezone.ksyun.com:23/ezone/cbd-serverless/agent-runtime-service.git",
+      "branch_base": "feat/agent-kernel-phase1",
+      "commit_sha": "c43eae03edadb7be5c3aa9efafe6a3716ba17b02",
+      "dirty": false
+    },
+    {
+      "repo": "agentengine-gateway",
+      "remote": "ssh://ezone.ksyun.com:23/ezone/bigdata-platform/agentengine-gateway.git",
+      "branch_base": "feat/agent-kernel-phase1",
+      "commit_sha": "091a1a4ffcd395efcbed7d27846483ef2bf2f4db",
+      "dirty": false
+    },
+    {
+      "repo": "agentengine-server",
+      "remote": "ssh://ezone.ksyun.com:23/ezone/bigdata-platform/agentengine-server.git",
+      "branch_base": "feat/agent-kernel-phase1",
+      "commit_sha": "ba72c7b2e699cfc3ace299287604664278061dc8",
+      "dirty": false
+    },
+    {
+      "repo": "ksadk-python",
+      "remote": "ssh://ezone.ksyun.com:23/ezone/bigdata-platform/ksadk-python.git",
+      "branch_base": "feat/agent-kernel-phase1",
+      "commit_sha": "ffb1fe4209989bca4f05a713360439f25e23e20b",
+      "dirty": false
+    },
+    {
+      "repo": "ksadk-web",
+      "remote": "https://github.com/kingsoftcloud/ksadk-web.git",
+      "branch_base": "feat/agent-kernel-phase1",
+      "commit_sha": "e07d38986d4bd593b7d31f96a1f6529398adacd1",
+      "dirty": false
+    }
+  ],
+  "phase0": {
+    "accepted": false,
+    "status": "phase0_manifest_missing",
+    "manifest_path": "docs/superpowers/evidence/phase0/manifest.json",
+    "manifest_digest": null
+  },
+  "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+  "captured_at": "2026-08-17T15:31:00+00:00"
+}

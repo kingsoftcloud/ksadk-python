@@ -666,7 +666,11 @@ def _extract_agentengine_metadata(result: Mapping[str, Any] | None) -> dict[str,
     agentengine = metadata.get("agentengine")
     if not isinstance(agentengine, Mapping):
         return {}
-    return {"agentengine": dict(agentengine)}
+    return {
+        "agentengine": {
+            key: value for key, value in agentengine.items() if key != "session_context"
+        }
+    }
 
 
 def _checkpoint_event_args_from_agentengine_metadata(
@@ -724,7 +728,9 @@ def _merge_agentengine_metadata(
         agentengine = metadata.get("agentengine")
         if not isinstance(agentengine, Mapping):
             continue
-        next_agentengine = dict(agentengine)
+        next_agentengine = {
+            key: value for key, value in agentengine.items() if key != "session_context"
+        }
         merged.update(next_agentengine)
         framework_ref = agentengine.get("framework_ref")
         if isinstance(framework_ref, Mapping):

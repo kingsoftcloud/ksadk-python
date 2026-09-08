@@ -833,7 +833,7 @@ def create_studio_app(
     ):
         # Validate before StreamingResponse sends headers; invalid identities
         # remain ordinary actionable HTTP errors.
-        shared_web.subscription_run_id(session_id, invocation_id)
+        await shared_web.subscription_run_id(session_id, invocation_id)
         return StreamingResponse(
             shared_web.subscribe_run_events(
                 session_id,
@@ -909,6 +909,7 @@ def create_studio_app(
     async def list_schedules():
         return {
             "items": studio.scheduler.list_tasks(),
+            "taskOccurrences": studio.scheduler.task_occurrence_summaries(),
             "availability": studio.scheduler.availability(),
         }
 
@@ -980,6 +981,10 @@ def create_studio_app(
         task_id: str,
         payload: AgentScheduleRequest,
     ):
+        existing = studio.get_agent_schedule(agent_id, task_id)
+        await studio.validate_schedule_session(
+            agent_id, payload.continuity, payload.session_id, existing.target.agent_version_ref
+        )
         return studio.update_agent_schedule(
             agent_id,
             task_id,

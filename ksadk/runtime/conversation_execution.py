@@ -668,7 +668,11 @@ async def iter_runtime_conversation_semantic_events(
                 else None
             )
             if isinstance(requested_agentengine, Mapping):
-                completion_metadata["agentengine"] = dict(requested_agentengine)
+                completion_metadata["agentengine"] = {
+                    key: value
+                    for key, value in requested_agentengine.items()
+                    if key != "session_context"
+                }
             completion_metadata["runtime"] = {
                 "duration_ms": event.source.metadata.get("duration_ms"),
                 "runtime_type": kwargs["launch_context"].runtime_type,

@@ -1,163 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarClock, Clock3, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CalendarClock, Clock3, Pencil, Play, Plus, Trash2, LayoutGrid, List, Search, RefreshCw, ArrowUpRight } from "lucide-react";
 import { apiFetch } from "../api";
+import { AutomationEditor } from "./AutomationEditor";
+import { Drawer } from "../components/Drawer";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import { StudioDataTable, type StudioDataColumn } from "../components/ui/StudioDataTable";
 
-interface AgentSummary {
-  metadata: { id: string; name: string };
-}
-
-interface ScheduleSpec {
-  kind: "once" | "interval" | "cron";
-  timezone: string;
-  at?: string | null;
-  everySeconds?: number | null;
-  expression?: string | null;
-  misfirePolicy?: "skip" | "run_once";
-}
-
-interface ScheduledTask {
-  taskId: string;
-  displayName?: string | null;
-  target: { agentId?: string | null; agentVersionRef?: string | null; sessionId?: string | null };
-  schedule: ScheduleSpec;
-  command: { payload: { content?: string } };
-  enabled: boolean;
-  continuity: "new_session" | "continue_session";
-  nextRunAt?: string | null;
-}
-
-interface ScheduleOccurrence {
-  occurrenceId: string;
-  taskId: string;
-  target?: { agentId?: string | null; agentVersionRef?: string | null } | null;
-  scheduledFor: string;
-  trigger: "schedule" | "manual";
-  state: string;
-  attempt: number;
-  commandId?: string | null;
-  sessionId: string;
-  runId?: string | null;
-  claimedAt?: string | null;
-  acceptedAt?: string | null;
-  startedAt?: string | null;
-  detail?: string | null;
-  errorCode?: string | null;
-  completedAt?: string | null;
-  transitions?: Array<{ state: string; at: string; detail?: string | null; errorCode?: string | null }>;
-}
-
-interface SchedulerAvailability {
-  available?: boolean;
-  triggerActive?: boolean;
-  running?: boolean;
-  ownerId?: string;
-  store?: string;
-  nextScanAt?: string | null;
-  lastScanAt?: string | null;
-  lastScanResult?: string | null;
-  lastScanDetail?: string | null;
-  reason?: string | null;
-}
-
-interface ScheduleForm {
-  agentId: string;
-  displayName: string;
-  prompt: string;
-  kind: ScheduleSpec["kind"];
-  timezone: string;
-  at: string;
-  everySeconds: string;
-  expression: string;
-  misfirePolicy: "skip" | "run_once";
-  enabled: boolean;
-  continuity: "new_session" | "continue_session";
-  sessionId: string;
-}
-
-function formatTime(value?: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  }).format(date);
-}
-
-function taskLabel(task: ScheduledTask) {
-  return task.displayName || task.command.payload.content?.slice(0, 28) || task.taskId;
-}
-
-function triggerLabel(schedule: ScheduleSpec) {
-  if (schedule.kind === "once") return `单次 · ${formatTime(schedule.at)}`;
-  if (schedule.kind === "interval") return `每 ${schedule.everySeconds || 60} 秒`;
-  return schedule.expression || "Cron";
-}
-
-function emptyForm(agentId = ""): ScheduleForm {
-  return {
-    agentId,
-    displayName: "",
-    prompt: "",
-    kind: "cron",
-    timezone: "Asia/Shanghai",
-    at: "",
-    everySeconds: "3600",
-    expression: "0 9 * * 1-5",
-    misfirePolicy: "run_once",
-    enabled: true,
-    continuity: "new_session",
-    sessionId: "",
-  };
-}
-
-function formFromTask(task: ScheduledTask): ScheduleForm {
-  return {
-    ...emptyForm(task.target.agentId || ""),
-    agentId: task.target.agentId || "",
-    displayName: task.displayName || "",
-    prompt: task.command.payload.content || "",
-    kind: task.schedule.kind,
-    timezone: task.schedule.timezone || "Asia/Shanghai",
-    at: task.schedule.at ? task.schedule.at.slice(0, 16) : "",
-    everySeconds: String(task.schedule.everySeconds || 3600),
-    expression: task.schedule.expression || "0 9 * * 1-5",
-    misfirePolicy: task.schedule.misfirePolicy || "skip",
-    enabled: task.enabled,
-    continuity: task.continuity,
-    sessionId: task.target.sessionId || "",
-  };
-}
-
-function payloadFromForm(form: ScheduleForm) {
-  const schedule: ScheduleSpec = {
-    kind: form.kind,
-    timezone: form.timezone.trim() || "Asia/Shanghai",
-    misfirePolicy: form.misfirePolicy,
-  };
-  if (form.kind === "once") {
-    if (!form.at) throw new Error("请填写单次任务的执行时间");
-    schedule.at = new Date(form.at).toISOString();
-  } else if (form.kind === "interval") {
-    const seconds = Number(form.everySeconds);
-    if (!Number.isInteger(seconds) || seconds < 60) throw new Error("间隔至少为 60 秒");
-    schedule.everySeconds = seconds;
-  } else {
-    if (!form.expression.trim()) throw new Error("请填写 Cron 表达式");
-    schedule.expression = form.expression.trim();
-  }
-  return {
-    displayName: form.displayName.trim() || form.prompt.trim().slice(0, 32),
-    prompt: form.prompt.trim(),
-    schedule,
-    enabled: form.enabled,
-    continuity: form.continuity,
-    sessionId: form.continuity === "continue_session" ? form.sessionId.trim() || null : null,
-  };
-}
+import { type AgentSummary, type ScheduledTask, type ScheduleOccurrence, type SchedulerAvailability, formatTime, taskLabel, triggerLabel, emptyForm, formFromTask, payloadFromForm } from "./automationModel";
 
 function occurrenceState(state: string) {
   if (state === "succeeded") return "成功";
@@ -230,14 +81,15 @@ function OccurrenceHistory({ items, taskNames, agentNames }: {
               <span>{item.trigger === "manual" ? "手动触发" : "计划触发"}</span>
               <time>{formatTime(item.scheduledFor)}</time>
             </div>
-            <dl className="automation-occurrence-facts">
+            {agentId && item.runId && <a className="button secondary small" href={`#/conversations?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(item.sessionId)}`}><ArrowUpRight size={14} />查看会话与结果</a>}
+            <details className="automation-advanced"><summary>执行详情</summary><dl className="automation-occurrence-facts">
               <div><dt>Occurrence</dt><dd>{item.occurrenceId}</dd></div>
               <div><dt>Agent</dt><dd>{agentNames.get(agentId) || agentId || "目标已删除"}</dd></div>
               <div><dt>Attempt</dt><dd>{item.attempt || 1}</dd></div>
               <div><dt>Command</dt><dd>{item.commandId || "尚未接收"}</dd></div>
               <div><dt>Session</dt><dd>{item.sessionId}</dd></div>
               <div><dt>Run</dt><dd>{item.runId || "尚未绑定"}</dd></div>
-            </dl>
+            </dl></details>
             {transitions.length > 0 && (
               <ol className="automation-timeline" aria-label={`${item.occurrenceId} 状态时间线`}>
                 {transitions.map((transition, index) => (
@@ -257,7 +109,7 @@ function OccurrenceHistory({ items, taskNames, agentNames }: {
   );
 }
 
-export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedAgentId = "", embedded = false, onTaskCountChanged }: {
+export function AutomationsPage({ currentAgentId, agents, scopedAgentId = "", embedded = false, onTaskCountChanged }: {
   currentAgentId: string;
   agents: AgentSummary[];
   onSelectAgent: (agentId: string) => void;
@@ -267,6 +119,7 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
 }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [allOccurrences, setAllOccurrences] = useState<ScheduleOccurrence[]>([]);
+  const [taskOccurrences, setTaskOccurrences] = useState<ScheduleOccurrence[]>([]);
   const [availability, setAvailability] = useState<SchedulerAvailability | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -278,11 +131,16 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
   const [submitting, setSubmitting] = useState(false);
   const [deleteTask, setDeleteTask] = useState<ScheduledTask | null>(null);
   const [section, setSection] = useState<"tasks" | "history">("tasks");
+  const [viewMode, setViewMode] = useState<"board" | "list">("board");
+  const [query, setQuery] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const occurrenceRequest = useRef(0);
+  const taskRequest = useRef(0);
   const [agentFilter, setAgentFilter] = useState(scopedAgentId);
 
-  const loadTasks = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadTasks = useCallback(async (quiet = false) => {
+    const requestId = ++taskRequest.current;
+    if (!quiet) setLoading(true);
     try {
       const [response, historyResponse] = await Promise.all([
         apiFetch("/api/v1/schedules"),
@@ -290,10 +148,13 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
       ]);
       if (!response.ok) throw new Error(`定时任务加载失败（${response.status}）`);
       const payload = await response.json();
-      const historyPayload = historyResponse.ok ? await historyResponse.json() : { items: [] };
+      if (!historyResponse.ok) throw new Error("执行记录加载失败，请刷新重试");
+      const historyPayload = await historyResponse.json();
+      if (requestId !== taskRequest.current) return;
       const items = (payload.items || []) as ScheduledTask[];
       setTasks(items);
       setAllOccurrences(historyPayload.items || []);
+      setTaskOccurrences(payload.taskOccurrences || historyPayload.items || []);
       setAvailability(payload.availability || null);
       setSelected(previous => items.find(item => item.taskId === previous?.taskId) || null);
       if (onTaskCountChanged) {
@@ -302,40 +163,34 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
           : items.length);
       }
     } catch (loadError: any) {
-      setError(loadError?.message || "定时任务加载失败");
+      if (requestId === taskRequest.current) setError(loadError?.message || "定时任务加载失败");
     } finally {
-      setLoading(false);
+      if (requestId === taskRequest.current) setLoading(false);
     }
   }, [onTaskCountChanged, scopedAgentId]);
 
   const loadOccurrences = useCallback(async (task: ScheduledTask, clear = true) => {
-    setSelected(task);
-    if (clear) setOccurrences([]);
-    const agentId = task.target.agentId || "";
-    if (!agentId) return [];
-    const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/schedules/${encodeURIComponent(task.taskId)}/occurrences`);
-    if (!response.ok) return [];
-    const payload = await response.json();
-    const items = (payload.items || []) as ScheduleOccurrence[];
-    setOccurrences(items);
-    return items;
+    const requestId = ++occurrenceRequest.current;
+    if (clear) { setSelected(task); setOccurrences([]); }
+    try {
+      const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(task.target.agentId || "")}/schedules/${encodeURIComponent(task.taskId)}/occurrences`);
+      if (!response.ok) throw new Error("运行记录加载失败，请重新打开任务。");
+      const payload = await response.json();
+      if (requestId === occurrenceRequest.current) setOccurrences(payload.items || []);
+    } catch (error) { if (requestId === occurrenceRequest.current) setError((error as Error).message); }
   }, []);
 
-  useEffect(() => { void loadTasks(); }, [loadTasks]);
-  useEffect(() => { setAgentFilter(scopedAgentId); }, [scopedAgentId]);
   useEffect(() => {
-    if (!editingTaskId) setForm(emptyForm(currentAgentId));
-  }, [currentAgentId, editingTaskId]);
-  const occurrenceActive = occurrences.some(occurrenceIsActive);
+    void loadTasks();
+    const timer = window.setInterval(() => { if (!document.hidden) void loadTasks(true); }, 5000);
+    return () => { window.clearInterval(timer); taskRequest.current++; occurrenceRequest.current++; };
+  }, [loadTasks]);
+  useEffect(() => { setAgentFilter(scopedAgentId); setSelected(null); occurrenceRequest.current++; }, [scopedAgentId]);
   useEffect(() => {
-    if (!selected || !occurrenceActive) return undefined;
-    const timer = window.setInterval(() => {
-      void loadOccurrences(selected, false).then(items => {
-        if (!items.some(occurrenceIsActive)) void loadTasks();
-      });
-    }, 750);
+    if (!selected) return;
+    const timer = window.setInterval(() => { if (!document.hidden) void loadOccurrences(selected, false); }, 2000);
     return () => window.clearInterval(timer);
-  }, [loadOccurrences, loadTasks, occurrenceActive, selected]);
+  }, [loadOccurrences, selected?.taskId]);
 
   const agentName = useMemo(
     () => new Map(agents.map(agent => [agent.metadata.id, agent.metadata.name])),
@@ -346,8 +201,8 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
     [tasks],
   );
   const filteredTasks = useMemo(
-    () => agentFilter ? tasks.filter(task => task.target.agentId === agentFilter) : tasks,
-    [agentFilter, tasks],
+    () => tasks.filter(task => (!agentFilter || task.target.agentId === agentFilter) && `${taskLabel(task)} ${task.command.payload.content || ""}`.toLowerCase().includes(query.toLowerCase())),
+    [agentFilter, tasks, query],
   );
   const filteredOccurrences = useMemo(
     () => agentFilter ? allOccurrences.filter(item => item.target?.agentId === agentFilter) : allOccurrences,
@@ -355,9 +210,9 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
   );
   const latestByTask = useMemo(() => {
     const latest = new Map<string, ScheduleOccurrence>();
-    for (const item of allOccurrences) if (!latest.has(item.taskId)) latest.set(item.taskId, item);
+    for (const item of taskOccurrences) if (!latest.has(item.taskId)) latest.set(item.taskId, item);
     return latest;
-  }, [allOccurrences]);
+  }, [taskOccurrences]);
 
   const columns: StudioDataColumn<ScheduledTask>[] = [
     {
@@ -365,7 +220,7 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
       cell: task => <div className="automation-task-cell"><strong>{taskLabel(task)}</strong><span>{agentName.get(task.target.agentId || "") || task.target.agentId || "历史任务"}</span></div>,
     },
     { id: "trigger", header: "触发规则", minWidth: 150, cell: task => triggerLabel(task.schedule) },
-    { id: "next", header: "下次执行", minWidth: 120, cell: task => formatTime(task.nextRunAt) },
+    { id: "next", header: "下次执行", minWidth: 120, cell: task => task.enabled ? formatTime(task.nextRunAt) : "—" },
     { id: "mode", header: "会话", minWidth: 100, cell: task => task.continuity === "continue_session" ? "继续会话" : "新会话" },
     { id: "recent", header: "最近终态", minWidth: 110, cell: task => latestByTask.has(task.taskId) ? occurrenceState(latestByTask.get(task.taskId)!.state) : "—" },
     { id: "state", header: "状态", width: 110, cell: task => {
@@ -406,7 +261,7 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
       setForm(emptyForm(form.agentId));
       showToast(isEditing ? "定时任务已更新" : "定时任务已创建", payload?.displayName || "本地自动化");
       await loadTasks();
-      if (isEditing && payload) await loadOccurrences(payload as ScheduledTask);
+      if (payload) await loadOccurrences(payload as ScheduledTask);
     } catch (saveError: any) {
       setError(saveError?.message || "保存定时任务失败");
     } finally {
@@ -420,7 +275,7 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
     const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/schedules/${encodeURIComponent(task.taskId)}:run`, { method: "POST" });
     const payload = await response.json().catch(() => null);
     if (!response.ok) { setError(payload?.error?.message || `立即运行失败（${response.status}）`); return; }
-    showToast("已提交到本地 Agent Kernel", "等待终态对账，不以 accepted 当作成功。");
+    showToast("任务已提交", "可在执行记录中查看进度和结果。");
     await loadOccurrences(task);
     await loadTasks();
   }
@@ -428,12 +283,9 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
   async function toggle(task: ScheduledTask) {
     const agentId = task.target.agentId;
     if (!agentId) return;
-    const update = {
-      ...formFromTask(task),
-      enabled: !task.enabled,
-    };
+    const update = { displayName: taskLabel(task), prompt: task.command.payload.content, schedule: task.schedule, enabled: !task.enabled, continuity: task.continuity, sessionId: task.target.sessionId || null };
     const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/schedules/${encodeURIComponent(task.taskId)}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payloadFromForm(update)),
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(update),
     });
     if (!response.ok) { setError("更新任务状态失败"); return; }
     await loadTasks();
@@ -449,80 +301,93 @@ export function AutomationsPage({ currentAgentId, agents, onSelectAgent, scopedA
     await loadTasks();
   }
 
+  function startCreate(template?: "daily" | "interval" | "weekly") {
+    setError("");
+    setSelected(null);
+    setEditingTaskId("");
+    const draft = emptyForm(scopedAgentId || agentFilter || currentAgentId || agents[0]?.metadata.id || "");
+    if (template === "daily") { draft.displayName = "每日工作简报"; draft.prompt = "整理昨日工作进展，列出今日待办和需要关注的风险。"; }
+    if (template === "interval") { draft.displayName = "定期巡检"; draft.prompt = "检查当前服务状态，汇总异常和建议处理的事项。"; draft.kind = "interval"; }
+    if (template === "weekly") { draft.displayName = "每周总结"; draft.prompt = "总结本周完成的工作、未完成事项和下周计划。"; draft.preset = "weekly"; draft.weekday = "5"; draft.time = "17:00"; }
+    setForm(draft); setEditorOpen(true);
+  }
+  async function perform(action: () => Promise<void>) {
+    if (actionBusy) return;
+    setActionBusy(true); setError("");
+    try { await action(); } catch (error) { setError((error as Error).message || "操作失败，请重试"); }
+    finally { setActionBusy(false); }
+  }
+  function status(task: ScheduledTask) {
+    const latest = latestByTask.get(task.taskId);
+    if (latest && occurrenceIsActive(latest)) return "running";
+    if (!task.enabled) return "paused";
+    if (latest?.state === "failed") return "attention";
+    return "scheduled";
+  }
+  const groups = [{ id: "scheduled", label: "待执行" }, { id: "running", label: "执行中" }, { id: "attention", label: "需关注" }, { id: "paused", label: "已暂停 / 已结束" }];
+  const createButton = <button className="button accent" type="button" onClick={() => startCreate()}><Plus size={15} />新建定时任务</button>;
+  const closeDetail = () => { occurrenceRequest.current++; setSelected(null); setOccurrences([]); };
+
   return (
     <div className={`${embedded ? "automation-page-embedded" : "page-container"} automation-page`} data-layout={embedded ? "embedded" : "document"}>
-      {!embedded && <PageHeaderActions>
-        <button className="button accent" type="button" onClick={() => { setEditingTaskId(""); setForm(emptyForm(currentAgentId)); setEditorOpen(true); }}>
-          <Plus size={15} />新建定时任务
-        </button>
-      </PageHeaderActions>}
+      {!embedded && <PageHeaderActions>{createButton}</PageHeaderActions>}
       <div className="automation-intro">
-        <div><h2>{embedded ? "该 Agent 的自动化" : "自动化 / 定时任务"}</h2><p>在已精确绑定的 Agent Kernel 上运行。选择一条任务查看详情，只有新建或编辑时才打开表单。</p></div>
-        <span className="automation-availability" data-state={availability?.triggerActive ? "ready" : "idle"}>
-          {availability?.triggerActive ? "本地调度运行中" : availability?.running ? "监视中 · 等待 Runtime" : "本地调度未启动"}
-        </span>
+        <div><h2>{embedded ? "该 Agent 的自动化" : "让重复的工作，按时完成"}</h2><p>安排任务、跟进进度，在每次执行后查看结果。</p></div>
+        {embedded && createButton}
       </div>
-      {error && <div className="form-error">{error}</div>}
-      <div className="automation-runtime-boundary" role="status">
-        <div><span>执行环境</span><strong>本地 Agent Kernel</strong></div>
-        <div><span>调度状态</span><strong>{availability?.triggerActive ? "运行中" : availability?.running ? "等待 Runtime" : "未启动"}</strong></div>
-        <div><span>下次扫描</span><strong>{formatTime(availability?.nextScanAt)}</strong></div>
+      {error && !editorOpen && !selected && <div className="form-error" role="alert">{error}</div>}
+      <div className="automation-summary-strip">
+        <span className="automation-availability" data-state={availability?.triggerActive ? "ready" : "idle"}>{availability?.triggerActive ? "本地调度运行中" : "本地调度未就绪"}</span>
+        <span>保持 Studio 运行，任务才会自动执行。</span>
+        <button type="button" className="button secondary small" aria-label="刷新任务" onClick={() => { setError(""); void loadTasks(); }}><RefreshCw size={14} /></button>
       </div>
+      <div className="automation-templates"><span>从常用任务开始</span><button onClick={() => startCreate("daily")}><CalendarClock size={15} />每日简报<small>每天 10:00</small></button><button onClick={() => startCreate("interval")}><Clock3 size={15} />定期巡检<small>每 30 分钟</small></button><button onClick={() => startCreate("weekly")}><CalendarClock size={15} />每周总结<small>周五 17:00</small></button></div>
       <div className="automation-toolbar">
         <div className="automation-tabs" role="tablist" aria-label="自动化视图">
-          <button type="button" role="tab" aria-selected={section === "tasks"} className={section === "tasks" ? "active" : ""} onClick={() => setSection("tasks")}>全部任务</button>
-          <button type="button" role="tab" aria-selected={section === "history"} className={section === "history" ? "active" : ""} onClick={() => setSection("history")}>执行记录</button>
+          <button role="tab" aria-selected={section === "tasks"} className={section === "tasks" ? "active" : ""} onClick={() => setSection("tasks")}>全部任务 <small>{filteredTasks.length}</small></button>
+          <button role="tab" aria-selected={section === "history"} className={section === "history" ? "active" : ""} onClick={() => setSection("history")}>执行记录</button>
         </div>
-        {!embedded && <label>Agent 筛选
-          <select aria-label="筛选 Agent" value={agentFilter} onChange={event => setAgentFilter(event.target.value)}>
-            <option value="">全部 Agent</option>
-            {agents.map(agent => <option key={agent.metadata.id} value={agent.metadata.id}>{agent.metadata.name}</option>)}
-          </select>
-        </label>}
+        <div className="automation-filters">
+          {section === "tasks" && <label className="automation-search"><Search size={15} /><input aria-label="搜索任务" placeholder="搜索任务" value={query} onChange={event => setQuery(event.target.value)} /></label>}
+          {!embedded && <select aria-label="筛选 Agent" value={agentFilter} onChange={event => setAgentFilter(event.target.value)}><option value="">全部智能体</option>{agents.map(agent => <option key={agent.metadata.id} value={agent.metadata.id}>{agent.metadata.name}</option>)}</select>}
+          {section === "tasks" && <div className="automation-view-toggle" role="group" aria-label="任务布局"><button aria-label="看板视图" aria-pressed={viewMode === "board"} onClick={() => setViewMode("board")}><LayoutGrid size={16} /></button><button aria-label="列表视图" aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}><List size={16} /></button></div>}
+        </div>
       </div>
-      {section === "tasks" && <div className="automation-layout">
-        <section className="automation-list block">
-          <StudioDataTable
-            columns={columns}
-            data={filteredTasks}
-            getRowId={task => task.taskId}
-            caption="定时任务列表"
-            loading={loading}
-            error={error && !tasks.length ? error : ""}
-            onRetry={() => void loadTasks()}
-            onRowActivate={task => { setEditorOpen(false); void loadOccurrences(task); }}
-            rowAriaLabel={task => `查看定时任务 ${taskLabel(task)} 的详情`}
-            empty={{ icon: <CalendarClock size={22} />, title: agentFilter ? "该 Agent 还没有定时任务" : "还没有定时任务", description: "创建一个本地任务，在 Agent Kernel 保持运行时自动触发。" }}
-          />
-        </section>
-        <aside className={`automation-inspector block${editorOpen ? " is-editor automation-form" : ""}`}>
-          {editorOpen ? <>
-          <div className="section-heading"><div className="section-heading-copy"><h2>{editingTaskId ? "编辑定时任务" : "新建定时任务"}</h2><p>目标实例和版本由 Studio 解析，不由浏览器填写。</p></div></div>
-          <label>Agent<select value={form.agentId} disabled={Boolean(editingTaskId)} onChange={event => { setForm(previous => ({ ...previous, agentId: event.target.value })); onSelectAgent(event.target.value); }}><option value="">选择 Agent</option>{agents.map(agent => <option key={agent.metadata.id} value={agent.metadata.id}>{agent.metadata.name}</option>)}</select></label>
-          <label>任务名称<input value={form.displayName} onChange={event => setForm(previous => ({ ...previous, displayName: event.target.value }))} placeholder="例如：工作日销售日报" /></label>
-          <label>到期提示词<textarea value={form.prompt} onChange={event => setForm(previous => ({ ...previous, prompt: event.target.value }))} placeholder="例如：生成昨日销售摘要并列出异常" /></label>
-          <div className="form-grid two-columns">
-            <label>触发方式<select value={form.kind} onChange={event => setForm(previous => ({ ...previous, kind: event.target.value as ScheduleSpec["kind"] }))}><option value="cron">Cron</option><option value="interval">固定间隔</option><option value="once">单次</option></select></label>
-            <label>时区<input value={form.timezone} onChange={event => setForm(previous => ({ ...previous, timezone: event.target.value }))} /></label>
-          </div>
-          {form.kind === "cron" && <label>Cron 表达式<input value={form.expression} onChange={event => setForm(previous => ({ ...previous, expression: event.target.value }))} /></label>}
-          {form.kind === "interval" && <label>间隔（秒）<input type="number" min="60" value={form.everySeconds} onChange={event => setForm(previous => ({ ...previous, everySeconds: event.target.value }))} /></label>}
-          {form.kind === "once" && <label>执行时间<input type="datetime-local" value={form.at} onChange={event => setForm(previous => ({ ...previous, at: event.target.value }))} /></label>}
-          <div className="form-grid two-columns"><label>错过时<select value={form.misfirePolicy} onChange={event => setForm(previous => ({ ...previous, misfirePolicy: event.target.value as ScheduleForm["misfirePolicy"] }))}><option value="run_once">补跑一次</option><option value="skip">跳过</option></select></label><label>会话<select value={form.continuity} onChange={event => setForm(previous => ({ ...previous, continuity: event.target.value as ScheduleForm["continuity"] }))}><option value="new_session">新会话</option><option value="continue_session">继续会话</option></select></label></div>
-          {form.continuity === "continue_session" && <label>Session ID<input value={form.sessionId} onChange={event => setForm(previous => ({ ...previous, sessionId: event.target.value }))} placeholder="选择或粘贴可恢复的本地 Session" /></label>}
-          <label className="automation-checkbox"><input type="checkbox" checked={form.enabled} onChange={event => setForm(previous => ({ ...previous, enabled: event.target.checked }))} />创建后立即启用</label>
-          <div className="automation-form-actions"><button className="button secondary" type="button" onClick={() => { setEditingTaskId(""); setForm(emptyForm(currentAgentId)); setEditorOpen(false); }}>取消</button><button className="button accent" type="button" disabled={submitting} onClick={() => void save()}>{submitting ? "保存中…" : editingTaskId ? "保存变更" : "创建任务"}</button></div>
-          </> : selected ? <div className="automation-detail">
-            <div className="automation-detail-heading"><div><h2>{taskLabel(selected)}</h2><p>下次执行 {formatTime(selected.nextRunAt)}</p></div><span className="automation-state" data-state={selected.enabled && availability?.triggerActive ? "ready" : "idle"}>{selected.enabled ? "已启用" : "已停用"}</span></div>
-            <div className="automation-detail-actions"><button className="button secondary small" type="button" onClick={() => startEdit(selected)}><Pencil size={14} />编辑</button><button className="button secondary small" type="button" disabled={!availability?.available} onClick={() => void runNow(selected)}><Play size={14} />立即运行</button><button className="button secondary small" type="button" onClick={() => void toggle(selected)}>{selected.enabled ? "停用" : "启用"}</button></div>
-            <div className="automation-detail-grid"><div><span>到期提示词</span><p>{selected.command.payload.content || "—"}</p></div><div><span>触发规则</span><p>{triggerLabel(selected.schedule)}</p></div><div><span>会话</span><p>{selected.continuity === "continue_session" ? "继续已有会话" : "每次新建会话"}</p></div><div><span>目标 Build</span><p>{selected.target.agentVersionRef || "—"}</p></div><div><span>最近一次</span><p>{occurrences[0] ? `${occurrenceState(occurrences[0].state)} · ${formatTime(occurrences[0].completedAt || occurrences[0].scheduledFor)}` : "暂无记录"}</p></div></div>
-            <div className="automation-inspector-history"><h3><Clock3 size={16} />最近执行</h3><OccurrenceHistory items={occurrences.slice(0, 3)} taskNames={taskName} agentNames={agentName} /></div>
-            <button className="automation-delete-link" type="button" onClick={() => setDeleteTask(selected)}><Trash2 size={14} />删除</button>
-          </div> : <div className="automation-inspector-empty"><CalendarClock size={22}/><strong>选择一个定时任务</strong><p>查看运行记录、立即执行或修改计划。</p><button className="button secondary small" type="button" onClick={() => { setEditingTaskId(""); setForm(emptyForm(currentAgentId)); setEditorOpen(true); }}><Plus size={14}/>新建任务</button></div>}
-        </aside>
-      </div>}
-      {section === "history" && <section className="automation-history block"><div className="section-heading"><div className="section-heading-copy"><h2>执行记录</h2><p>持久化的 Occurrence 事实；“已接收”不代表执行成功。</p></div></div><OccurrenceHistory items={filteredOccurrences} taskNames={taskName} agentNames={agentName} /></section>}
-      {deleteTask && <ConfirmDialog title={`删除定时任务「${taskLabel(deleteTask)}」？`} description="任务定义将被删除；已写入的执行历史仍可用于审计。" confirmText="删除任务" busy={false} onConfirm={() => void confirmDelete()} onCancel={() => setDeleteTask(null)} />}
+      {section === "tasks" && (viewMode === "list" ? <StudioDataTable columns={columns} data={filteredTasks} getRowId={task => task.taskId} caption="定时任务列表" loading={loading} error={error && !tasks.length ? error : ""} onRetry={() => void loadTasks()} onRowActivate={task => void loadOccurrences(task)} rowAriaLabel={task => `查看定时任务 ${taskLabel(task)} 的详情`} empty={{ icon: <CalendarClock size={22} />, title: "还没有定时任务", description: "新建任务，或在对话中说：每天10点帮我生成日报。" }} /> :
+        <div className="automation-board" aria-label="任务看板" aria-busy={loading}>
+          {groups.map(group => {
+            const items = filteredTasks.filter(task => status(task) === group.id);
+            return <section key={group.id} className="automation-board-column" data-status={group.id} aria-label={group.label}>
+              <header><span className="automation-column-dot" /><h3>{group.label}</h3><span>{items.length}</span></header>
+              {items.map(task => {
+                const latest = latestByTask.get(task.taskId);
+                return <button key={task.taskId} className="automation-board-card" aria-label={`查看定时任务 ${taskLabel(task)} 的详情`} onClick={() => void loadOccurrences(task)}>
+                  <span className="automation-card-agent">{agentName.get(task.target.agentId || "") || "智能体"}</span>
+                  <strong>{taskLabel(task)}</strong><p>{task.command.payload.content}</p>
+                  <span className="automation-card-rule"><CalendarClock size={14} />{triggerLabel(task.schedule)}</span>
+                  <footer><span>{task.enabled ? `下次 ${formatTime(task.nextRunAt)}` : task.schedule.kind === "once" && latest ? "已结束" : "已暂停"}</span>{latest && <span data-state={latest.state}>{occurrenceState(latest.state)}</span>}</footer>
+                </button>;
+              })}
+              {!items.length && <p className="automation-column-empty">{loading ? "正在加载…" : query ? "没有匹配的任务" : group.id === "scheduled" ? "新建任务，安排下一次执行" : "暂无任务"}</p>}
+              {group.id === "scheduled" && <button className="automation-column-add" onClick={() => startCreate()}><Plus size={14} />添加任务</button>}
+            </section>;
+          })}
+        </div>)}
+      {section === "history" && <section className="automation-history block"><div className="section-heading"><div className="section-heading-copy"><h2>执行记录</h2><p>查看每次任务的状态，打开会话阅读结果。</p></div></div><OccurrenceHistory items={filteredOccurrences} taskNames={taskName} agentNames={agentName} /></section>}
+      <p className="automation-conversation-tip">也可以在智能体对话中直接说：<strong>“每天 10 点帮我生成日报”</strong>，或 <strong>“每 30 分钟检查一次服务状态”</strong>。</p>
+      {editorOpen && <AutomationEditor form={form} agents={agents} editing={Boolean(editingTaskId)} scoped={Boolean(scopedAgentId)} busy={submitting} error={error} onChange={setForm} onSave={() => void save()} onClose={() => { setEditorOpen(false); setEditingTaskId(""); setError(""); }} />}
+      {selected && !editorOpen && <Drawer title={taskLabel(selected)} subtitle={`${agentName.get(selected.target.agentId || "") || "智能体"} · ${triggerLabel(selected.schedule)}`} onClose={closeDetail}>
+        <div className="automation-detail">
+          {error && <div className="form-error" role="alert">{error}</div>}
+          <div className="automation-detail-heading"><span className="automation-state" data-state={selected.enabled ? "ready" : "idle"}>{selected.enabled ? "已启用" : "已暂停"}</span><span>下次执行 {selected.enabled ? formatTime(selected.nextRunAt) : "—"}</span></div>
+          <div className="automation-detail-actions"><button className="button secondary small" disabled={actionBusy} onClick={() => startEdit(selected)}><Pencil size={14} />编辑</button><button className="button secondary small" disabled={actionBusy || !availability?.available || !selected.enabled || occurrences.some(occurrenceIsActive)} onClick={() => void perform(() => runNow(selected))}><Play size={14} />立即运行</button><button className="button secondary small" disabled={actionBusy} onClick={() => void perform(() => toggle(selected))}>{selected.enabled ? "暂停" : "启用"}</button></div>
+          <div className="automation-detail-grid"><div><span>任务说明</span><p>{selected.command.payload.content}</p></div><div><span>执行计划</span><p>{triggerLabel(selected.schedule)} · {selected.schedule.timezone}</p></div><div><span>对话方式</span><p>{selected.continuity === "continue_session" ? "继续已有会话" : "每次新建会话"}</p></div><div><span>错过时</span><p>{selected.schedule.misfirePolicy === "run_once" ? "补跑一次" : "等待下一次"}</p></div></div>
+          <div className="automation-inspector-history"><h3><Clock3 size={16} />最近执行</h3><OccurrenceHistory items={occurrences} taskNames={taskName} agentNames={agentName} /></div>
+          <details className="automation-advanced"><summary>技术详情</summary><p>任务：{selected.taskId}</p><p>构建版本：{selected.target.agentVersionRef}</p></details>
+          <button className="automation-delete-link" disabled={actionBusy} onClick={() => setDeleteTask(selected)}><Trash2 size={14} />删除任务</button>
+        </div>
+      </Drawer>}
+      {deleteTask && <ConfirmDialog title={`删除定时任务「${taskLabel(deleteTask)}」？`} description="删除后不再自动执行，已有执行记录会保留。" confirmText="删除任务" busy={actionBusy} onConfirm={() => void perform(confirmDelete)} onCancel={() => setDeleteTask(null)} />}
     </div>
   );
 }

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/plugin/v1/plugin-inventory.schema.json",
+  "title": "PluginInventory/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+        "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "state": {"enum": ["resolved", "admitted", "staged", "starting", "ready", "degraded", "failed", "draining", "stopped", "disposed", "rejected"]},
+        "health": {"enum": ["unknown", "healthy", "unhealthy"]},
+        "reason": {"type": ["string", "null"], "maxLength": 1024}
+      },
+      "required": ["id", "version", "digest", "state"]
+    }
+  },
+  "properties": {
+    "apiVersion": {"const": "plugin.ksadk.io/v1"},
+    "kind": {"const": "PluginInventory"},
+    "profileDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "pluginLockDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "plugins": {"type": "array", "items": {"$ref": "#/$defs/item"}}
+  },
+  "required": ["apiVersion", "kind", "profileDigest", "pluginLockDigest", "plugins"]
+}

@@ -198,6 +198,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
     user_id = session.user_id or "user"
     custom_metadata, _metadata_runtime_controls = _split_custom_metadata(request.Metadata)
     resume_request_metadata = {
+        **_metadata_runtime_controls,
         "responses_conversation": True,
     }
 

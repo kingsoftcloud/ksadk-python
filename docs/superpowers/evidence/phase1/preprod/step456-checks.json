@@ -1,0 +1,39 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "source_file": "step456-e2e.json",
+  "checks": {
+    "contract_digest": {
+      "status": "pass",
+      "source": "step456-e2e.json#contract_precheck",
+      "recorded_at": "2026-08-17T21:33:42.336992+00:00"
+    },
+    "reconnect": {
+      "status": "pass",
+      "source": "step456-e2e.json#reconnect",
+      "recorded_at": "2026-08-17T21:34:22.317898+00:00"
+    },
+    "idempotency": {
+      "status": "pass",
+      "source": "step456-e2e.json#idempotency",
+      "recorded_at": "2026-08-17T21:34:22.707110+00:00"
+    },
+    "queue_full": {
+      "status": "pass",
+      "source": "step456-e2e.json#queue_full",
+      "recorded_at": "2026-08-17T21:34:29.467060+00:00"
+    },
+    "fifo": {
+      "status": "pass",
+      "source": "step456-e2e.json#fifo_100",
+      "recorded_at": "2026-08-17T21:36:07.471600+00:00"
+    },
+    "audit": {
+      "status": "missing",
+      "detail": "\u65e0\u5bf9\u5e94\u9884\u53d1 evidence\uff1bcanary app \u672a\u5b9e\u73b0\u5ba1\u8ba1\u4e8b\u4ef6/\u5ba1\u8ba1\u8868\uff08Phase 1 canary \u8303\u56f4\u5916\uff09\uff0c\u5982\u5b9e\u6807\u8bb0"
+    },
+    "cross_repo_versions": {
+      "status": "missing",
+      "detail": "\u65e0\u8de8\u4ed3\u7248\u672c evidence \u6587\u4ef6\uff1b\u672c\u6b21 canary \u6f14\u7ec3\u4ec5\u8986\u76d6 agent-kernel-canary \u5355\u90e8\u7f72\uff08\u955c\u50cf tag phase1-canary-e2e-051820\uff0ccontract digest \u4e00\u81f4\uff09\uff0cgateway/server \u955c\u50cf\u672a\u7eb3\u5165\uff0c\u5982\u5b9e\u6807\u8bb0"
+    }
+  }
+}

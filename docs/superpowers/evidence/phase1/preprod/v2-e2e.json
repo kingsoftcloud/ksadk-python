@@ -1,0 +1,439 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "executed_at": "2026-08-18T06:08:00Z",
+  "checks": {
+    "contract_digest": {
+      "status": "pass",
+      "detail": {
+        "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+        "legs": {
+          "gateway": {
+            "method": "in-pod read of effective AGENT_KERNEL_CONTRACT_DIGEST in deployed router (env unset -> code default at agentengine-gateway c042791 app/lifecycle.py)",
+            "value": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+            "env_override_present": false,
+            "forwarded_header": "X-Agent-Kernel-Contract-Digest (apply_trusted_headers on every gateway control forward)",
+            "enforcement": "gateway directory gate rejects with 502 contract_mismatch when server directory digest != pinned digest; every successful gateway SubmitAgentControl in this drill passed the gate"
+          },
+          "server_internal_directory": {
+            "method": "GET /agentengine/internal/agent-kernel/instances/phase1-canary-agent (X-AgentEngine-Internal-Token auth)",
+            "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+            "ready": true,
+            "agent_instance_id": "phase1-canary-1"
+          },
+          "runtime_meta": {
+            "method": "GET /v1/meta/contract-digest on canary runtime (phase1-v2-60b61cdd8)",
+            "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+            "instance": "phase1-canary-1",
+            "recheck_after_fix": "canary redeployed at agent-kernel-canary:phase1-v3-91d0fb8 with AGENT_KERNEL_CONTRACT_DIGEST env set; /agent-kernel/v1/health now reports 69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8 (was empty)"
+          }
+        },
+        "all_three_match": true,
+        "note": "previous gap closed 2026-08-18: AGENT_KERNEL_CONTRACT_DIGEST env set on canary deployment (phase1-v3-91d0fb8); canonical ingress /agent-kernel/v1/health now reports the pinned digest"
+      }
+    },
+    "happy_path": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-hp-754f9fd4",
+        "receipts": [
+          {
+            "http": 202,
+            "status": "accepted",
+            "command_id": "6dcc86c4-9290-4a14-ab2a-0dc5f9f05d23",
+            "message_id": "83d60f31-a85d-4964-984b-ad7216518e3c",
+            "accepted_seq": 1
+          },
+          {
+            "http": 202,
+            "status": "accepted",
+            "command_id": "374361d0-e5b9-41f8-910d-ed5cfaca7b14",
+            "message_id": "29bef8b1-98ce-4a24-968e-7c77ed12f176",
+            "accepted_seq": 2
+          },
+          {
+            "http": 202,
+            "status": "accepted",
+            "command_id": "f01b9414-41e1-47e6-b961-e35a6841809a",
+            "message_id": "3789c08c-49af-4e04-8fc9-9a6499912eb4",
+            "accepted_seq": 3
+          }
+        ],
+        "all_accepted": true,
+        "accepted_seqs": [
+          1,
+          2,
+          3
+        ],
+        "duration_seconds": 3.081,
+        "message_completed_events": 3,
+        "control_v1_events": 18,
+        "runtime_v2_events": 6,
+        "shared_seq_space_single_stream": true,
+        "seq_monotonic": true,
+        "event_types": {
+          "control/v1:control.command_accepted": 3,
+          "control/v1:control.message_claimed": 3,
+          "control/v1:control.run_transition": 9,
+          "runtime/v2:run.started": 3,
+          "runtime/v2:run.progress": 3,
+          "control/v1:control.message_completed": 3
+        },
+        "sample_runtime_event_ids": [
+          {
+            "seq": 7,
+            "event_id": "run-fe3b84c9-started",
+            "event_type": "run.started",
+            "run_id": "610309d2-b3b2-408a-86ee-e56e85a3373f"
+          },
+          {
+            "seq": 8,
+            "event_id": "run-fe3b84c9-progress",
+            "event_type": "run.progress",
+            "run_id": "610309d2-b3b2-408a-86ee-e56e85a3373f"
+          },
+          {
+            "seq": 14,
+            "event_id": "run-dd591c36-started",
+            "event_type": "run.started",
+            "run_id": "db4fb3c8-5571-4f76-824a-0c44874c6850"
+          },
+          {
+            "seq": 15,
+            "event_id": "run-dd591c36-progress",
+            "event_type": "run.progress",
+            "run_id": "db4fb3c8-5571-4f76-824a-0c44874c6850"
+          }
+        ],
+        "sample_control_events": [
+          {
+            "seq": 1,
+            "event_type": "control.command_accepted",
+            "command_id": "6dcc86c4-9290-4a14-ab2a-0dc5f9f05d23"
+          },
+          {
+            "seq": 2,
+            "event_type": "control.command_accepted",
+            "command_id": "374361d0-e5b9-41f8-910d-ed5cfaca7b14"
+          },
+          {
+            "seq": 3,
+            "event_type": "control.command_accepted",
+            "command_id": "f01b9414-41e1-47e6-b961-e35a6841809a"
+          },
+          {
+            "seq": 4,
+            "event_type": "control.message_claimed",
+            "command_id": null
+          }
+        ]
+      }
+    },
+    "runtime_events": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-hp-754f9fd4",
+        "runtime_v2_event_types": [
+          "run.progress",
+          "run.started"
+        ],
+        "runtime_event_ids": [
+          "run-fe3b84c9-started",
+          "run-fe3b84c9-progress",
+          "run-dd591c36-started",
+          "run-dd591c36-progress",
+          "run-d169c223-started",
+          "run-d169c223-progress"
+        ],
+        "run_ids": [
+          "610309d2-b3b2-408a-86ee-e56e85a3373f",
+          "ac0307b9-24fe-4b04-b0fc-f5d74c01c735",
+          "db4fb3c8-5571-4f76-824a-0c44874c6850"
+        ],
+        "same_seq_space_as_control": true
+      }
+    },
+    "reconnect": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-rc-834a4294",
+        "disconnect_after_seq": 8,
+        "first_read_seqs": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "resumed_seqs": [
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "starts_at_n_plus_1": true,
+        "contiguous_after_reconnect": true,
+        "no_duplicates": true,
+        "union_covers_full_log": true,
+        "reconnect_seconds": 6.023,
+        "total_replay_seconds": 6.038,
+        "http_status_first": 200,
+        "http_status_second": 200
+      }
+    },
+    "idempotency": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-idem-1ce13d65",
+        "idempotency_key": "key-a43366a455",
+        "first": {
+          "http": 202,
+          "status": "accepted",
+          "command_id": "59f339a7-3d2b-4205-bbb6-58edd7a1f68c",
+          "message_id": "afa6867c-b3ae-41c9-9378-b45366850012",
+          "accepted_seq": 1
+        },
+        "retry_same_command_and_permit": {
+          "http": 200,
+          "status": "duplicate",
+          "command_id": "59f339a7-3d2b-4205-bbb6-58edd7a1f68c",
+          "message_id": "afa6867c-b3ae-41c9-9378-b45366850012",
+          "accepted_seq": 1
+        },
+        "different_command_same_key": {
+          "http": 400,
+          "status": "rejected",
+          "command_id": "5a58459b-aa0e-43d3-9467-89a507bc4dc7",
+          "error_code": "idempotency_conflict"
+        },
+        "duplicate_same_message_id": true,
+        "conflict_code": "idempotency_conflict",
+        "rejected_event_command_ids": [
+          "5a58459b-aa0e-43d3-9467-89a507bc4dc7"
+        ],
+        "inbox_depth_after": 0
+      }
+    },
+    "queue_full": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-qf-a4c7d313",
+        "accepted_count": 100,
+        "queue_full_receipt": {
+          "http": 429,
+          "status": "queue_full",
+          "command_id": "bc0ea961-7988-4539-bd71-3a6fac4a4b83",
+          "error": {
+            "code": "queue_full",
+            "message": "inbox reached queue_limit=100",
+            "retryable": true,
+            "details": {}
+          }
+        },
+        "queue_full_http": 429,
+        "queue_full_error_code": "queue_full",
+        "inbox_depth_at_full": 100,
+        "old_messages_intact": true,
+        "accepted_seq_range": [
+          1,
+          100
+        ]
+      }
+    },
+    "queue_full_recovery": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-qf-a4c7d313",
+        "inbox_depth_after_reenable": 0,
+        "instance_state": "degraded"
+      }
+    },
+    "capability": {
+      "status": "pass",
+      "detail": {
+        "session_steer": "v2-cap-7f016d34",
+        "session_pause": "v2-cap2-d68c1273",
+        "steer_gateway": {
+          "http": 409,
+          "status": "unsupported",
+          "command_id": "fcff1d64-b928-48ec-b058-37f1d869ea62",
+          "error_code": "runtime_no_native_steer",
+          "verified_after_fix": "gateway 7840b09 streamed-409 aread fix; re-verified 2026-08-18T06:05Z via port-forwarded gateway router (SubmitAgentControl -> typed 409 receipt, no longer 500)"
+        },
+        "steer_runtime_direct": {
+          "http": 409,
+          "status": "unsupported",
+          "command_id": "fdaff2a3-ad05-4b9e-a12a-9849fcaaa1c1",
+          "error_code": "runtime_no_native_steer"
+        },
+        "pause_gateway": {
+          "http": 409,
+          "status": "unsupported",
+          "command_id": "f50ada6a-50cc-4600-8b9b-38a2cec94f63",
+          "error_code": "not_implemented",
+          "verified_after_fix": "same gateway fix; re-verified 2026-08-18T06:08Z via gateway full chain"
+        },
+        "pause_runtime_direct": {
+          "http": 409,
+          "status": "unsupported",
+          "command_id": "3b63f01e-3b05-48e4-ba71-a783dbb5c5b1",
+          "error_code": "not_implemented"
+        },
+        "typed_unsupported_codes": {
+          "steer": "runtime_no_native_steer",
+          "pause": "not_implemented"
+        },
+        "steer_rejected_events": [
+          {
+            "seq": 1,
+            "command_id": "fdaff2a3-ad05-4b9e-a12a-9849fcaaa1c1",
+            "reason": "runtime_no_native_steer"
+          },
+          {
+            "seq": 2,
+            "command_id": "fdaff2a3-ad05-4b9e-a12a-9849fcaaa1c1",
+            "reason": "runtime_no_native_steer"
+          }
+        ],
+        "pause_rejected_events": [
+          {
+            "seq": 1,
+            "command_id": "3b63f01e-3b05-48e4-ba71-a783dbb5c5b1",
+            "reason": "not_implemented"
+          },
+          {
+            "seq": 2,
+            "command_id": "3b63f01e-3b05-48e4-ba71-a783dbb5c5b1",
+            "reason": "not_implemented"
+          }
+        ],
+        "no_enqueue_execution": true,
+        "gateway_path_pass": true
+      }
+    },
+    "permit_negative": {
+      "status": "pass",
+      "detail": {
+        "forged_ref": {
+          "session": "v2-neg-ref-01f7af6c",
+          "http": 400,
+          "status": "rejected",
+          "command_id": "439073e8-9aba-489d-ac4f-884ac9e414e6",
+          "error": {
+            "code": "invalid_permit",
+            "message": "authorization_ref_mismatch",
+            "retryable": false,
+            "details": {}
+          },
+          "runtime_rejected_event": {
+            "seq": 1,
+            "command_id": "439073e8-9aba-489d-ac4f-884ac9e414e6",
+            "reason": "invalid_permit"
+          },
+          "rejected_on_runtime": true
+        },
+        "expired_permit": {
+          "session": "v2-neg-exp-53f0251a",
+          "http": 400,
+          "status": "rejected",
+          "command_id": "a3cc954e-f3ab-4c30-89df-9b72cf4dcd87",
+          "error": {
+            "code": "invalid_permit",
+            "message": "permit_expired",
+            "retryable": false,
+            "details": {}
+          },
+          "runtime_rejected_event": {
+            "seq": 1,
+            "command_id": "a3cc954e-f3ab-4c30-89df-9b72cf4dcd87",
+            "reason": "invalid_permit"
+          },
+          "rejected_on_runtime": true
+        },
+        "cross_session": {
+          "session": "v2-neg-y-34420448",
+          "permit_bound_to": "v2-neg-x-27e3f210",
+          "http": 400,
+          "status": "rejected",
+          "command_id": "85dde39d-3c51-4a0d-8b66-7d8304b1194d",
+          "error": {
+            "code": "invalid_permit",
+            "message": "resource_binding_mismatch",
+            "retryable": false,
+            "details": {}
+          },
+          "runtime_rejected_event": {
+            "seq": 1,
+            "command_id": "85dde39d-3c51-4a0d-8b66-7d8304b1194d",
+            "reason": "invalid_permit"
+          },
+          "rejected_on_runtime": true
+        }
+      }
+    },
+    "fifo": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-fifo-a4cdf83b",
+        "enqueued": 100,
+        "accepted_seqs_contiguous_1_to_100": true,
+        "first_seq": 1,
+        "last_seq": 100,
+        "worker_completed_events": 100,
+        "completed_order_strictly_increasing": true,
+        "completed_order_first_last": [
+          1,
+          100
+        ],
+        "inbox_depth_final": 0,
+        "duration_seconds": 7.749,
+        "sse_total_events": 800,
+        "seq_unique": true,
+        "seq_contiguous": true,
+        "sample_event_ids": [
+          {
+            "seq": 14,
+            "event_id": "run-3a980e1a-started",
+            "event_type": "run.started",
+            "run_id": "cd4e33e4-cb8b-4f5a-b992-5bf049dd0c76"
+          },
+          {
+            "seq": 15,
+            "event_id": "run-3a980e1a-progress",
+            "event_type": "run.progress",
+            "run_id": "cd4e33e4-cb8b-4f5a-b992-5bf049dd0c76"
+          }
+        ],
+        "runtime_v2_events": 200
+      }
+    },
+    "status_via_gateway": {
+      "status": "pass",
+      "detail": {
+        "session_backlog": "fix-sb-df5824c7",
+        "http": 200,
+        "instance_state_worker_paused": "degraded",
+        "inbox_depth_backlog": 1,
+        "instance_state_ready": "ready",
+        "inbox_depth_after_drain": 0,
+        "activation_id": "canary-worker-phase1-canary-1",
+        "command_id": "fa5d9728-e742-406a-bc35-512d82182cab",
+        "note": "修复前 canonical GetAgentStatus 恒 fail-closed 为 instance_state=unavailable（ingress 本地 permit 与 caller 自报 authorization_ref 绑定不匹配）；修复后经 gateway 返回真实状态：worker 暂停时 depth=1/degraded，消费完成后 ready/depth=0。复验走 gateway 全链（port-forward router svc），运行时镜像 phase1-v3-91d0fb8，gateway phase1-7840b09。"
+      }
+    }
+  }
+}

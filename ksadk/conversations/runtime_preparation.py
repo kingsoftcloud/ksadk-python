@@ -49,6 +49,7 @@ from ksadk.conversations.runtime_metadata import (
 )
 from ksadk.conversations.runtime_observability import _latest_deferred_tool_names
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
+from ksadk.session_context import split_session_context
 from ksadk.conversations.runtime_persistence import (
     append_conversation_event,
     append_run_resume_event,
@@ -139,7 +140,7 @@ async def build_run_input(
         model,
         model_metadata=model_metadata,
     )
-    normalized_request_metadata = dict(request_metadata or {})
+    session_context, normalized_request_metadata = split_session_context(request_metadata)
     normalized_custom_metadata = dict(custom_metadata or {})
     policy_model = model or os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
     normalized_model_options = {
@@ -201,6 +202,7 @@ async def build_run_input(
             history = build_history_from_events(event_history)
             responses_history = project_responses_history(event_history)
             return PreparedConversationTurn(
+                session_context=session_context.to_payload(),
                 session_id=resolved_session_id,
                 invocation_id=resolved_invocation_id,
                 user_input="",
@@ -318,6 +320,7 @@ async def build_run_input(
         history = build_history_from_events(event_history)
         responses_history = project_responses_history(event_history)
         return PreparedConversationTurn(
+            session_context=session_context.to_payload(),
             session_id=resolved_session_id,
             invocation_id=resolved_invocation_id,
             user_input=resume_text,
@@ -477,6 +480,7 @@ async def build_run_input(
         working_state = _latest_checkpoint_working_state(event_history)
 
     prepared = PreparedConversationTurn(
+        session_context=session_context.to_payload(),
         session_id=resolved_session_id,
         invocation_id=resolved_invocation_id,
         user_id=resolved_user_id,

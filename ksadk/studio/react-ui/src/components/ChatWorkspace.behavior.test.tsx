@@ -5,6 +5,7 @@ import { ChatWorkspace } from "./ChatWorkspace";
 
 const mocks = vi.hoisted(() => {
   const chat = {
+    agentId: "local-1",
     bootstrapStatus: "ready",
     bootstrapErrorMessage: "",
     sessions: [
@@ -84,6 +85,7 @@ vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => <div data-testid="confi
 describe("ChatWorkspace shared conversation composition", () => {
   beforeEach(() => {
     mocks.chat.bootstrapStatus = "ready";
+    mocks.chat.isLoadingSessions = false;
     mocks.chat.isStreaming = false;
     mocks.chat.currentSessionId = "session-1";
     mocks.useAgentChat.mockClear();
@@ -93,6 +95,22 @@ describe("ChatWorkspace shared conversation composition", () => {
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
+  });
+
+  it("opens a scheduled result only after bootstrap and session loading settle", async () => {
+    mocks.chat.bootstrapStatus = "loading";
+    const view = <ChatWorkspace agentId="local-1" agentName="Agent" requestedSessionId="scheduled-session" />;
+    const { rerender } = render(view);
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
+    mocks.chat.bootstrapStatus = "ready";
+    mocks.chat.isLoadingSessions = true;
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" requestedSessionId="scheduled-session" />);
+    expect(mocks.chat.selectSession).not.toHaveBeenCalled();
+    mocks.chat.isLoadingSessions = false;
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" requestedSessionId="scheduled-session" />);
+    await waitFor(() => expect(mocks.chat.selectSession).toHaveBeenCalledExactlyOnceWith("scheduled-session"));
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" requestedSessionId="scheduled-session" refreshTick={1} />);
+    expect(mocks.chat.selectSession).toHaveBeenCalledTimes(1);
   });
 
   it("reconciles the same session when the transport ends without duplicating a run", () => {

@@ -1,0 +1,26 @@
+schemaVersion: ksadk.eval/v1
+name: phase1-smoke
+cases:
+  - id: exact-token
+    input: "请只回复：KSADK_SMOKE_OK"
+    assertions:
+      - type: response.contains
+        value: KSADK_SMOKE_OK
+      - type: runtime.maxLatencyMs
+        value: 30000
+
+  - id: no-error-message
+    input: "请用一句话说明什么是 Agent 评测。"
+    assertions:
+      - type: response.contains
+        value: 评测
+      - type: response.notContains
+        value: ERROR
+
+  - id: multi-turn-memory
+    turns:
+      - input: "请记住测试码 CLOUD-42，并回复已记住。"
+      - input: "刚才的测试码是什么？只回复测试码。"
+    assertions:
+      - type: response.contains
+        value: CLOUD-42

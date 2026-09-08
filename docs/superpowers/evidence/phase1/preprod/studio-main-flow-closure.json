@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "scenario": "studio_managed_runtime_main_flow",
+  "environment": "preproduction",
+  "observed_at": "2026-08-23T15:50:24Z",
+  "status": "pass_with_release_gate_gap",
+  "agent": {
+    "agent_id": "ar-20260823075542-cce1df89",
+    "name": "studio-agentkit-6ea6bb79",
+    "studio_build_id": "build_33d4708608c00b9d0dd3",
+    "studio_deployment_id": "dep_ed95a67f0644406c83930550f354cc51",
+    "deployment_status": "READY",
+    "server_status": "RUNNING",
+    "replicas": {
+      "ready": 1,
+      "total": 1
+    },
+    "store_driver": "memory",
+    "ha_evidence": false
+  },
+  "runtime": {
+    "image": "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/agent-runtime-codex@sha256:fd5ae845e48962da671d27e64c77ff43a52d943eb729354c7bcef8165d859b95",
+    "ksadk_version": "0.8.1",
+    "ksadk_commit": "7bbb491d79fba87460eff10d9dfebb834cc5a78c",
+    "ksadk_wheel_sha256": "525340bcd957bbb41df2876f5a900c0a1f6018698e448a760a319705f8b75525",
+    "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+    "operator_conditions": {
+      "AgentKernelRuntimeIdentityReady": {
+        "status": "True",
+        "reason": "IdentityObserved"
+      },
+      "AgentKernelReady": {
+        "status": "True",
+        "reason": "RuntimeHealthy"
+      }
+    }
+  },
+  "main_flow_deployment": {
+    "server": {
+      "source_commit": "a6eedbe",
+      "image": "hub.kce.ksyun.com/bigdata-ai/agentengine-server:phase1-main-release-29f00ea",
+      "helm_revision": 602
+    },
+    "gateway": {
+      "source_commit": "79fc4feab26619605237f8ed5378a04700220392",
+      "image": "hub.kce.ksyun.com/bigdata-ai/agentengine-gateway:phase1-main-79fc4fe",
+      "image_digest": "sha256:dad1e84244e03399c772fd199c34f576accd6804796f9a4dac47478e9ec6274a",
+      "helm_revision": 82
+    },
+    "runtime_service": {
+      "source_commit": "09f9569a8fcfee1886ea925ae9f546a989fbc870",
+      "image": "hub.kce.ksyun.com/agentengine/agent-runtime-service:phase1-main-runtime-09f9569"
+    },
+    "operator": {
+      "source_commit": "60b6925307a0791afba4d15d022c61407b8d969a",
+      "image": "hub.kce.ksyun.com/agentengine/agent-platform-operator:phase1-main-60b6925"
+    },
+    "hosted_ui": {
+      "web_source_commit": "12ada9592cf5cab178a4ddd7add44cde24ef9ac1",
+      "image": "hub.kce.ksyun.com/bigdata-ai/agentengine-hosted-ui:phase1-main-web032-12ada95"
+    }
+  },
+  "behavior": {
+    "studio_local_two_turn": {
+      "status": "pass",
+      "same_session": true,
+      "context_recalled": true,
+      "session_deleted": true
+    },
+    "studio_cloud_two_turn_after_runtime_update": {
+      "status": "pass",
+      "same_session": true,
+      "context_recalled": true,
+      "session_deleted": true
+    },
+    "studio_cloud_after_gateway_rollout": {
+      "status": "pass",
+      "accepted_seq": 1,
+      "assistant_response_observed": true,
+      "session_deleted": true
+    },
+    "hosted_ui": {
+      "status": "pass",
+      "single_session": true,
+      "multi_turn": true,
+      "delete_via_ui": true
+    },
+    "evaluation": {
+      "status": "pass",
+      "report_id": "eval_27777442775c4b8699a407d1994c6f94",
+      "cases_passed": 1,
+      "cases_total": 1
+    },
+    "remaining_cloud_sessions": 0
+  },
+  "cleanup": {
+    "canary_namespace": "agent-kernel-phase1",
+    "canary_namespace_deleted": true,
+    "test_agents_deleted": 11,
+    "test_sessions_remaining": 0
+  },
+  "release_gate": {
+    "status": "fail",
+    "report": "/tmp/phase1-current-main-flow-gate.json",
+    "reason": "raw durable and fencing evidence is bound to the pre-Interaction aggregate digest 69771d8d; the checked-out frozen aggregate digest is d4a66a72",
+    "required_follow_up": "rerun the PostgreSQL durability, FIFO, reconnect, recovery, fencing, audit and rollback matrix against images that report d4a66a72; do not reuse the historical aggregate report as input"
+  },
+  "notes": [
+    "This file proves the current Studio and Hosted UI main-flow lifecycle and behavior closure only.",
+    "The selected memory store is an explicit single-replica non-HA profile and is not PostgreSQL conformance evidence.",
+    "No credential, model request body or deployment Secret is stored in this evidence."
+  ]
+}

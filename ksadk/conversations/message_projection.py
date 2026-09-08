@@ -471,7 +471,8 @@ def _project_approval_events(
         if event_type not in {"approval_request", "interaction.requested"}:
             continue
         metadata = _event_metadata(request)
-        # 归一化路径：interrupt_info 在 metadata；canonical 路径：在 Content.runtime_event.request.detail。
+        # 归一化路径：interrupt_info 在 metadata；canonical 路径在
+        # Content.runtime_event.request.detail。
         interrupt_info = metadata.get("interrupt_info")
         if not isinstance(interrupt_info, Mapping):
             # 尝试从 canonical event 的 Content.runtime_event 提取
@@ -492,14 +493,24 @@ def _project_approval_events(
                         )
                         if not isinstance(first_action, Mapping):
                             first_action = {}
+                        interaction_id = runtime_event.get("interaction_id") or req.get(
+                            "call_id"
+                        )
                         interrupt_info = {
-                            "approval_request_id": runtime_event.get("interaction_id") or req.get("call_id"),
-                            "id": runtime_event.get("interaction_id") or req.get("call_id"),
-                            "tool_name": detail.get("tool_name") or first_action.get("name") or req.get("kind"),
-                            "arguments": detail.get("arguments") or detail.get("args") or first_action.get("args") or first_action.get("arguments"),
-                            "description": detail.get("description") or first_action.get("description"),
+                            "approval_request_id": interaction_id,
+                            "id": interaction_id,
+                            "tool_name": detail.get("tool_name")
+                            or first_action.get("name")
+                            or req.get("kind"),
+                            "arguments": detail.get("arguments")
+                            or detail.get("args")
+                            or first_action.get("args")
+                            or first_action.get("arguments"),
+                            "description": detail.get("description")
+                            or first_action.get("description"),
                             "review_configs": detail.get("review_configs"),
-                            "approval_message": detail.get("message") or first_action.get("description"),
+                            "approval_message": detail.get("message")
+                            or first_action.get("description"),
                         }
         if not isinstance(interrupt_info, Mapping):
             interrupt_info = {}

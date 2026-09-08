@@ -1,0 +1,91 @@
+{
+  "scenario": "Phase1 P0-2 real interaction closure (live approve -> provider live_submit -> run.completed)",
+  "executed_at": "2026-08-19T21:03:00+08:00",
+  "environment": {
+    "cluster": "pre-online manage cluster, namespace agent-kernel-phase1",
+    "gateway_chain": "gateway router :8082 /agentengine/api/v1/{RunAgent,SubmitInteraction} -> agentengine-kernel server (server-signed permit) -> runtime /agent-kernel/v1 (kernel inbox/worker)",
+    "path_taken": "fake codex app-server bypass (sanctioned fallback #1): the real openai-codex==0.147.0 SDK transport spawns a scripted JSON-RPC app-server that issues a REAL item/commandExecution/requestApproval server request; every hop above it (kernel, ledger, gateway, server admission) is the real production path. runtime=codex with fake app-server (no model); glm-5.3 real-model attempts recorded under attempts_real_model",
+    "image": {
+      "base": "hub.kce.ksyun.com/agentengine/agent-runtime-codex@sha256:c7e94f7a19ce73d60ef6cac820f02f8357cb237b10e107387e64f14d40cf4d31",
+      "derivative_tag": "0.147.0-kernel-phase1-fake-approval",
+      "derivative_digest": "sha256:995f057f63186c8975dd1d75278b30531a17d1fd0a0fdaaa01e5ec0b4e2d3a21",
+      "contents": "base image + force-reinstalled ksadk-0.8.1 wheel built from feat/agent-kernel-phase1 worktree (contains the approval-bridge fix) + fake_approval_app_server.py at /opt/fake + codex binary shim (answers --version with 0.147.0, execs the fake app-server otherwise)"
+    },
+    "deployment": {
+      "runtime": "agent-runtime-codex-fake (instance codex-fake-1, agent phase1-codex-fake-agent, runtime_id agent-runtime-codex-fake, node 10.0.2.11)",
+      "reporter": "agent-runtime-codex-fake-reporter (redis agent_status:agent-runtime-codex-fake)",
+      "db_rows": "agents/phase1-codex-fake-agent (clone of phase1-codex-kernel-agent), agent_instances/codex-fake-1, api_keys/ak-codex-fake (hash-only, no secret recorded)"
+    },
+    "prerequisite_fix": "ksadk/codex/client.py approval bridge previously queued a synthetic 'item/approval/requested' chunk that the canonical mapper rejects fail-closed (unsupported_method) - the whole run failed before any interaction could surface. The bridge now (1) queues the native JSON-RPC requestApproval message (id=approval_id) and (2) queues the JSON-RPC response (same id) after resolve_approval, so the mapper produces interaction.requested -> run.interrupted(blocked) -> approve -> interaction.resolved -> run.completed. Regression: tests/interaction/test_codex_transport_approval_loop.py (real SDK transport + fake app-server through AgentKernelWorker)."
+  },
+  "checks": {
+    "a_interaction_requested": {
+      "status": "pass",
+      "session": "codex-fake-appr-1787144587",
+      "run_id": "0dfb37dc-c6d0-491f-807a-5bbd3bcb14fc",
+      "command_id_enqueue": "3177bc3b-bd4a-4af8-bd10-54719865c1b7",
+      "message_id_enqueue": "c57c1174-e30d-451c-8e5a-f70225f68590",
+      "gateway_request_id": "req-20260819210307-dyvuhu",
+      "event": {
+        "seq": 6,
+        "event_type": "interaction.requested",
+        "event_id": "cev_58120957ec7c1f5d98a8d1541c132261d70be2ac"
+      },
+      "ledger_record": {
+        "interaction_id": "item_b40b0dcc3087afa422d9e987",
+        "kind": "approval",
+        "provider_id": "codex",
+        "native_target": {
+          "call_id": "tool_cmd_1",
+          "thread_id": "019f0000-0000-7000-8000-0000000000aa"
+        },
+        "status_after_request": "pending"
+      },
+      "run_state_after_request": "waiting (seq 7 control.run_transition), run.interrupted seq 8 - inbox not blocked for control commands"
+    },
+    "b_submit_interaction_approve": {
+      "status": "pass",
+      "gateway_request_id": "req-20260819210332-iftmsa",
+      "command_id": "046739e6-526d-450d-8044-269da66129ea",
+      "message_id": "6eb10ff3-5b78-4e6f-81fe-e243c4761eb1",
+      "accepted_seq": 2,
+      "idempotency_key": "interaction:item_b40b0dcc3087afa422d9e987:revision-1",
+      "action": "approve",
+      "note": "SubmitInteraction admission accepted through the same gateway->server permit chain as the enqueue; no manual ledger row was involved"
+    },
+    "c_live_submit_via_original_call_id_and_closure": {
+      "status": "pass",
+      "event": {
+        "seq": 16,
+        "event_type": "interaction.resolved",
+        "event_id": "cev_237b37bcbdcd55bb506621c9a004c318a61479ed"
+      },
+      "run_completed": {
+        "seq": 22,
+        "event_type": "run.completed",
+        "event_id": "cev_24ff798ea20007581032ae573314df86b29c732a"
+      },
+      "evidence_chain": [
+        "seq 15 run.progress: provider accepted the approve and delivered the JSON-RPC response to the app-server child over the ORIGINAL request id (fake server unblocks its turn only after receiving that response)",
+        "seq 16 interaction.resolved + kernel_interactions.status=resolved",
+        "seq 17-21 remaining turn items persisted after resume (commandExecution output, final agentMessage)",
+        "seq 22 run.completed + kernel_runs.state=completed",
+        "both inbox messages (enqueue + submit_interaction) reached status=completed"
+      ]
+    },
+    "attempts_real_model": {
+      "status": "not_achieved_recorded_for_honesty",
+      "detail": "2 prompts against the existing codex-kernel-1 deployment (glm-5.3 via kspmas + model_proxy responses->chat conversion, KSADK_CODEX_USE_PROXY=1) did not produce any commandCall item: the model's own reasoning said 'call shell' and it replied 'I will run that now', but no tool call materialized (sessions codex-appr-1787141299, codex-appr2-1787143*; runs completed text-only). A direct in-pod chat-completions probe with an explicit shell function tool DID return tool_calls, so the gap is in the codex->proxy tool surface, out of this task's scope. Per the fallback plan the fake app-server path above was used and is labeled truthfully."
+    }
+  },
+  "repo_commits": {
+    "ksadk-python (feat/agent-kernel-phase1)": "see git log: fix(kernel): settle interrupted recovery decisions and codex provider wiring + this evidence commit",
+    "agentengine-images": "no repo change; derivative image built locally from the phase1 digest base and pushed to agentengine/ namespace"
+  },
+  "no_credentials": "no api keys, DSNs, tokens or prompt-origin secrets recorded; api_keys row stores sha256 hash only",
+  "known_followups": [
+    "glm-5.3 via model_proxy chat conversion never surfaces codex tools to the model (tools missing or dropped in codex->proxy request); needs its own investigation before real-model approval can be demoed",
+    "drill resources left running in ns agent-kernel-phase1 for review: deploy/agent-runtime-codex-fake(+reporter), svc, agents/agent_instances/api_keys rows; delete after review",
+    "readiness flap (known issue #2) still requires pod restarts between drills"
+  ]
+}

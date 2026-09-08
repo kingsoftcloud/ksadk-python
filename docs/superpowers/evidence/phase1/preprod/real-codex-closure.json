@@ -1,0 +1,99 @@
+{
+  "scenario": "Phase1 real Codex backend closure (AgentKernel + CodexRuntimeAdapter on managed-runtime image)",
+  "executed_at": "2026-08-19T11:30:00Z",
+  "environment": {
+    "cluster": "pre-online manage cluster, namespace agent-kernel-phase1",
+    "gateway_chain": "gateway router svc :8082 -> /agentengine/api/v1/{RunAgent,SubmitInteraction,GetAgentStatus,SubscribeSessionEvents} -> server (agentengine-kernel, server-signed permit) -> runtime /agent-kernel/v1/*",
+    "image": {
+      "tag": "hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-805bcc5",
+      "digest": "sha256:c7e94f7a19ce73d60ef6cac820f02f8357cb237b10e107387e64f14d40cf4d31",
+      "ksadk_wheel": "ksadk==0.8.1.dev1 (local phase1 wheel, openai-codex==0.147.0)",
+      "smoke": "make codex-runtime-smoke passed (fake upstream stream)"
+    },
+    "deployment": {
+      "name": "agent-runtime-codex-kernel",
+      "instance_id": "codex-kernel-1",
+      "agent_id": "phase1-codex-kernel-agent",
+      "node": "pinned to 10.0.2.11 (kubernetes.io/hostname) because default phase1 node 10.0.2.227 has no egress to the model gateway",
+      "model": "glm-5.3 via https://kspmas-internal.sdns.ksyun.com/v1 (kspmas responses endpoint NOT supported; KSADK_CODEX_USE_PROXY=1 -> ksadk model_proxy responses->chat conversion, probe verdict recorded here)",
+      "note_secrets": "model credentials in Secret codex-model-creds; api key row ak-phase1-codex; no values recorded here"
+    }
+  },
+  "checks": {
+    "a_real_model_run": {
+      "status": "pass",
+      "session": "codex-18645263a872",
+      "run_id": "351187a3-a0ea-4702-ac3d-cbe5e9ae9a5f",
+      "command_id": "98d47131-0c8b-454b-a51a-7ddbc4ea6c94",
+      "message_id": "aac68922-e06e-40cb-964e-55793daabde9",
+      "event_sample": [
+        {"seq": 1, "event_type": "control.command_accepted", "accepted_seq": 1},
+        {"seq": 4, "event_type": "control.run_transition", "state": "running"},
+        {"seq": 6, "event_type": "run.started", "native_method": "turn/started", "thread_id": "01a019af-bc08-7370-869a-28e68a0d3676"},
+        {"seq": 12, "event_type": "item.updated", "native_method": "item/reasoning/summaryTextDelta"},
+        {"seq": 53, "event_type": "item.updated", "native_method": "item/agentMessage/delta", "phase": "final_answer"},
+        {"seq": 71, "event_type": "run.completed", "native_method": "turn/completed"},
+        {"seq": 72, "event_type": "control.run_transition", "state": "completed"}
+      ],
+      "final_state": "kernel_runs.state=completed after 71 runtime/v2 events (real token deltas incl. Chinese final answer)",
+      "note_sse": "gateway SSE stream closes early (before terminal) while events keep persisting; verified completion via DB seq space"
+    },
+    "b_interaction_approve": {
+      "status": "partial",
+      "detail": {
+        "real_model_initiated_approval": "not achieved - glm-5.3 (via proxy chat conversion) answered directly without invoking the shell tool despite sandbox_mode=read-only + approval_policy=on-request overrides and an explicit execute-command prompt; no requestApproval item materialized",
+        "manual_ledger_path": {
+          "interaction_id": "it-phase1-manual-1",
+          "kind": "approval",
+          "provider_id": "codex",
+          "native_target": {"call_id": "call-phase1-manual"},
+          "submit": "SubmitInteraction approve accepted (receipt accepted, message_id d2465868-dfaa-4ca7-96f7-079cf5f730c2)",
+          "outcome": "worker submit_interaction handler rejected with typed control.command_rejected reason=unsupported (seq 46) because the target run had already completed - no live codex approval existed to answer; ledger row left pending/cancelled manually"
+        },
+        "wiring_proven": "public SubmitInteraction -> server admission -> durable inbox -> kernel worker submit_interaction handler (typed rejection), i.e. the full control chain is wired; live approve->resume continuation not demonstrated end-to-end"
+      }
+    },
+    "c_pod_kill_durability": {
+      "status": "pass_with_gap",
+      "session": "codex-kill-1787138279",
+      "detail": {
+        "kill": "pod deleted <1s after RunAgent receipt accepted (message_id 94436bde-9e4b-4ca9-822c-21716c8dc92c)",
+        "no_loss": "old pod persisted seq 1-9 (accept/claim/run_transition x2/message_completed/run.started/continuation/items) before dying - message claimed, nothing lost",
+        "gap": "orphaned open run a1342633 wedged the session: takeover did NOT deterministically close it (RecoveryCoordinator failures are swallowed; codex attach seam is unavailable and ephemeral threads cannot resume), so the next accepted message (seq 10) sat unconsumed for minutes",
+        "recovery_after_ops": "after manually marking the orphan run interrupted, the worker immediately claimed the follow-up (seq 11-14) and completed a real model run 6cfc99b5 (run.progress deltas through completed)"
+      }
+    },
+    "d_get_agent_status": {
+      "status": "pass",
+      "detail": {
+        "path": "gateway /agentengine/api/v1/GetAgentStatus (api-key auth)",
+        "sample": {
+          "agent_instance_id": "codex-kernel-1",
+          "instance_state": "ready",
+          "inbox_depth": 0,
+          "capability": {
+            "cancel": {"supported": true, "mode": "native"},
+            "pause": {"supported": true, "mode": "native"},
+            "resume": {"supported": true, "mode": "native"},
+            "submit_interaction": {"supported": true, "mode": "native"},
+            "attach": {"supported": false, "mode": "unavailable", "reason": "codex_process_local_thread_table"},
+            "steer": {"supported": false, "reason": "runtime_no_native_steer"},
+            "checkpoint": {"supported": true, "mode": "native"}
+          }
+        }
+      }
+    }
+  },
+  "repo_commits": {
+    "ksadk-python (feat/agent-kernel-phase1)": ["ece72dd7", "0ff54e9a"],
+    "agentengine-images (master)": ["fe7d42f"],
+    "agentengine-server": "no code change; DB rows only (agents/phase1-codex-kernel-agent, agent_instances/codex-kernel-1, api_keys/ak-phase1-codex) + redis status reporter deployment"
+  },
+  "known_issues_found": [
+    "readiness flap: sessions with completed runs stay in LeaseHeartbeat heartbeat_sessions without lease renewal; after lease TTL the /agent-kernel/v1/health lease_healthy flips false and server admission rejects with runtime_not_ready until pod restart",
+    "takeover recovery swallows exceptions and leaves orphaned running runs wedging the session (see check c)",
+    "gateway SubscribeSessionEvents closes the SSE stream before the terminal event while runtime events continue persisting",
+    "codex direct (non-proxy) mode with a custom OPENAI_API_BASE never configures a custom model_provider: probe=supported path sends turns to the default ChatGPT/OpenAI provider (model shows gpt-5.6-sol) - KSADK_CODEX_USE_PROXY=1 is required for custom upstreams",
+    "uv build reused stale build/ directory: wheel did not contain composition.py fix until build/ was removed; same-tag IfNotPresent node cache required digest pinning on redeploy"
+  ]
+}

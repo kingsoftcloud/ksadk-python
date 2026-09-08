@@ -1,0 +1,58 @@
+{
+  "checks": {
+    "cross_repo_versions": {
+      "status": "pass",
+      "detail": {
+        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "branch": "feat/agent-kernel-phase1",
+        "repos": {
+          "ksadk-python": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "de865a68b17bcb3e6f654e5269d1c4d637859508"
+          },
+          "agentengine-server": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "b72947b6fa4b6714d49c159a41fcff82748ccdf2"
+          },
+          "agent-runtime-service": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "dfb4f563823de2d28c92c923b6b781aee925b17d"
+          },
+          "agent-platform-operator": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "260b3532dda1df12e56533c5ef796f35b27d0125"
+          },
+          "agentengine-gateway": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "1f3b020b03cc730bc65d27663c6623ceb649b876"
+          },
+          "ksadk-web": {
+            "branch": "feat/interaction-v1-web-0.3.2",
+            "commit": "7c523f02f86f7e5c4ee311e5abaaa4f794f57e00"
+          },
+          "agentengine-hosted-ui": {
+            "branch": "feat/hosted-ui-0.3.2-beta",
+            "commit": "1f5434adb65456661e110767e410b437bff1d07c"
+          }
+        },
+        "fixture_manifest_digests": {
+          "ksadk-python:contracts/agent-kernel/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "agentengine-server:tests/contracts/agent-kernel/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "agentengine-gateway:tests/contracts/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631"
+        },
+        "images": {
+          "agentengine-hosted-ui": "hub.kce.ksyun.com/bigdata-ai/agentengine-hosted-ui:v0.3.2-beta.1-7c523f0 (digest sha256:ffe7eb5b9a5a804170e07cf64ed1af102ed515860828580b06e79452d129b737; ksadk-web 0.3.2-beta.1 local tarball overlay)",
+          "agent-runtime-codex-fake": "hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-fake-approval-v4 (digest sha256:959015bae2649cb37361c33eacf09cc9cacad9a5a3f704f265abe9bbade980a7; ksadk wheel from de865a68)"
+        },
+        "note": "六仓 + hosted-ui/web 同分支 commit；三端 manifest 文件 sha 一致且 aggregate_digest=d4a66a72…与预发 runtime env AGENT_KERNEL_CONTRACT_DIGEST 一致"
+      }
+    },
+    "audit": {
+      "status": "fail",
+      "detail": {
+        "reason": "canary app 未实现审计事件/审计表面；Server 侧 agent_control_audits 已实现并有单测（tests/test_agent_control_service.py 审计脱敏用例），但预发 canary 未串联 Server admission 链路",
+        "followup": "Server canary 部署接入 AgentControlService 并产生真实 audit row 后补 evidence"
+      }
+    }
+  }
+}

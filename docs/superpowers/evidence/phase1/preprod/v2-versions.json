@@ -1,0 +1,44 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "executed_at": "2026-08-18T06:08:00Z",
+  "checks": {
+    "cross_repo_versions": {
+      "status": "pass",
+      "detail": {
+        "branch": "feat/agent-kernel-phase1",
+        "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+        "repos": {
+          "ksadk-python": {
+            "commit": "91d0fb89985cfa04f418928d34a8cf6176dfd347"
+          },
+          "agentengine-server": {
+            "commit": "7afc70aa664755d14b6c478d70ed92b2c65cf671"
+          },
+          "agent-runtime-service": {
+            "commit": "59178fdc362d3e098153e4be07b69ae0f69b6ff7"
+          },
+          "agent-platform-operator": {
+            "commit": "26948cff87fdfdb150650183dc380046d3ed2620"
+          },
+          "agentengine-gateway": {
+            "commit": "7840b093c4983d3a9ef72420d3b20fa5ee552166"
+          },
+          "ksadk-web": {
+            "commit": "f05f03983b66204bbca49b68ee5afd00d1a7978a"
+          }
+        },
+        "images": {
+          "agentengine-server": "phase1-7afc70a (matches branch tip 7afc70a)",
+          "agentengine-gateway": "phase1-7840b09 (tip 7840b09 = b8e30b9 streamed-409 stale-fence fix + 7840b09 readme build fix; deployed via helm upgrade --reuse-values, router env patch preserved)",
+          "agent-kernel-canary": "phase1-v3-91d0fb8 (ingress status permit-binding fix 91d0fb89; AGENT_KERNEL_CONTRACT_DIGEST env added)"
+        },
+        "three_leg_digest_match": {
+          "gateway": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "server_internal_directory": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "runtime_meta": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+        },
+        "note": "six repos on feat/agent-kernel-phase1; ksadk tip 91d0fb89 (status permit binding fix) and gateway tip 7840b09 (streamed 409 body read fix b8e30b9 + readme build fix) deployed and re-verified via gateway full chain on 2026-08-18; every gateway SubmitAgentControl re-verification passed the pinned-digest directory gate"
+      }
+    }
+  }
+}

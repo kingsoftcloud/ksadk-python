@@ -322,6 +322,9 @@ class StudioService:
             self.workspace,
             runtime_registry=self.scheduler_runtimes,
         )
+        from ksadk.studio.scheduler_assistant import StudioScheduleAssistant
+
+        self.run_service.schedule_assistant = StudioScheduleAssistant(self)
         self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
         self._cloud_gateway_override = cloud_gateway
         self.cloud = CloudDeploymentService(
@@ -940,6 +943,7 @@ class StudioService:
                 field="sessionId",
             )
         if continuity == "continue_session":
+            await self._require_schedule_session_owner(agent_id, session_id)
             self._require_schedule_continuation(runtime, spec.launch_context.runtime_type)
         task = ScheduledTask(
             task_id=f"sched-{uuid4().hex[:20]}",
@@ -961,6 +965,29 @@ class StudioService:
             continuity=continuity,
         )
         return self.scheduler.create_task(task)
+
+    async def _require_schedule_session_owner(self, agent_id: str, session_id: str | None) -> None:
+        session = (
+            await self.session_service.get_session_metadata(session_id) if session_id else None
+        )
+        if session is None or session.agent_id != agent_id:
+            raise StudioError(
+                "SCHEDULE_SESSION_INVALID",
+                "请选择该智能体已有的会话。",
+                status_code=422,
+                field="sessionId",
+            )
+
+    async def validate_schedule_session(
+        self, agent_id: str, continuity: str, session_id: str | None, build_id: str | None
+    ) -> None:
+        if continuity != "continue_session":
+            return
+        await self._require_schedule_session_owner(agent_id, session_id)
+        await self.scheduler_runtimes.ensure_build(build_id, expected_agent_id=agent_id)
+        runtime = self.scheduler_runtimes.runtime_for_build(build_id)
+        spec = self.resolve_run_spec(build_id)
+        self._require_schedule_continuation(runtime, spec.launch_context.runtime_type)
 
     @staticmethod
     def _require_schedule_continuation(runtime: Any, runtime_type: str) -> None:
