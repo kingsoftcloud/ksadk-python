@@ -46,7 +46,7 @@ uvicorn app:app --host 127.0.0.1 --port 8080
 
 `runtime: yaml` uses the Harness YAML runner. `runtime: codex` uses the native
 Codex runner, so it also needs `ksadk[codex]` and the same local provider setup
-as [Codex Managed Runtime](./managed-runtime).
+as [Codex Managed Runtime](./managed-runtime.mdx).
 
 ## Supported YAML surface
 
@@ -69,4 +69,4 @@ The public HarnessApp data plane supports `/v1/responses`,
 `/v1/chat/completions`, and session routes. It is not an `agentengine web`
 project and does not automatically produce a cloud deployment artifact. Use
 `agentengine init` for a standard framework project, or
-[Codex Managed Runtime](./managed-runtime) for YAML-driven managed Codex delivery.
+[Codex Managed Runtime](./managed-runtime.mdx) for YAML-driven managed Codex delivery.

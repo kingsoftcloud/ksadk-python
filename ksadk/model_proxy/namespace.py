@@ -23,6 +23,7 @@ chat completions 只认顶层 ``function`` 工具(chat 嵌套)和 ``function.nam
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 CHAT_TOOL_NAME_MAX_LEN = 64
@@ -64,19 +65,37 @@ def build_restore_map(tools: list[Any] | None) -> dict[str, dict[str, str]]:
     if not tools:
         return restore
     for tool in tools:
-        if not isinstance(tool, dict) or tool.get("type") != "namespace":
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "custom":
+            # custom 工具（如 apply_patch freeform）拍平为普通 function 转发，
+            # 响应侧据此把 function_call 还原成 custom_tool_call
+            custom_name = (tool.get("name") or "").strip()
+            if custom_name:
+                restore.setdefault(
+                    custom_name,
+                    {"custom": "true", "namespace": "", "name": custom_name},
+                )
+            continue
+        if tool.get("type") != "namespace":
             continue
         namespace = (tool.get("name") or "").strip()
         if not namespace:
             continue
         for child in _namespace_children(tool):
-            if not isinstance(child, dict) or child.get("type") != "function":
+            if not isinstance(child, dict) or child.get("type") not in {
+                "function",
+                "custom",
+            }:
                 continue
             name = (child.get("name") or "").strip()
             if not name:
                 continue
             flat = flatten_namespace_tool_name(namespace, name)
-            restore.setdefault(flat, {"namespace": namespace, "name": name})
+            entry = {"namespace": namespace, "name": name}
+            if child.get("type") == "custom":
+                entry["custom"] = "true"
+            restore.setdefault(flat, entry)
     return restore
 
 
@@ -91,7 +110,7 @@ def _rewrite_qualified_calls(value: Any, owners: dict[str, dict[str, str]]) -> b
         for item in value:
             changed |= _rewrite_qualified_calls(item, owners)
     elif isinstance(value, dict):
-        if value.get("type") == "function_call":
+        if value.get("type") in {"function_call", "custom_tool_call"}:
             namespace = (value.get("namespace") or "").strip()
             name = (value.get("name") or "").strip()
             if namespace and name:
@@ -129,24 +148,39 @@ def flatten_request_namespaces(body: dict) -> dict[str, dict[str, str]]:
         if tool.get("type") == "namespace":
             namespace = (tool.get("name") or "").strip()
             for child in _namespace_children(tool):
-                if not isinstance(child, dict) or child.get("type") != "function":
+                if not isinstance(child, dict) or child.get("type") not in {
+                    "function",
+                    "custom",
+                }:
                     continue
                 name = (child.get("name") or "").strip()
                 if not name or not namespace:
                     continue
                 flat = flatten_namespace_tool_name(namespace, name)
                 if flat in seen_flat:
-                    raise ValueError(
-                        f"namespace 拍平撞名:{flat} 来自不同 child,上游无法消歧"
-                    )
+                    raise ValueError(f"namespace 拍平撞名:{flat} 来自不同 child,上游无法消歧")
                 seen_flat.add(flat)
-                flat_tools.append({
-                    "type": "function",
-                    "name": flat,
-                    "description": child.get("description", ""),
-                    "parameters": child.get("parameters", {"type": "object", "properties": {}}),
-                    **({"strict": child["strict"]} if "strict" in child else {}),
-                })
+                if child.get("type") == "custom":
+                    flat_tools.append(
+                        {
+                            "type": "custom",
+                            "name": flat,
+                            "description": child.get("description", ""),
+                            **({"format": child["format"]} if "format" in child else {}),
+                        }
+                    )
+                else:
+                    flat_tools.append(
+                        {
+                            "type": "function",
+                            "name": flat,
+                            "description": child.get("description", ""),
+                            "parameters": child.get(
+                                "parameters", {"type": "object", "properties": {}}
+                            ),
+                            **({"strict": child["strict"]} if "strict" in child else {}),
+                        }
+                    )
         else:
             flat_tools.append(tool)
     body["tools"] = flat_tools
@@ -168,6 +202,24 @@ def restore_function_call(item: dict, restore_map: dict[str, dict[str, str]]) ->
     flat = item.get("name")
     entry = restore_map.get(flat) if isinstance(flat, str) else None
     if entry:
+        if entry.get("custom") == "true":
+            # function_call(JSON arguments) -> custom_tool_call(原始文本 input)
+            raw_args = item.pop("arguments", "") or ""
+            try:
+                payload = json.loads(raw_args)
+                text_input = (
+                    payload.get("input", raw_args) if isinstance(payload, dict) else raw_args
+                )
+            except Exception:
+                text_input = raw_args
+            item["type"] = "custom_tool_call"
+            item["name"] = entry["name"]
+            item["input"] = text_input
+            if entry.get("namespace"):
+                item["namespace"] = entry["namespace"]
+            else:
+                item.pop("namespace", None)
+            return item
         item["name"] = entry["name"]
         item["namespace"] = entry["namespace"]
     return item

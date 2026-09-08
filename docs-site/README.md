@@ -1,47 +1,53 @@
-# veadk-docs-scaffold
+# KsADK documentation site
 
-This is a Next.js application generated with
-[Create Fumadocs](https://github.com/fuma-nama/fumadocs).
+This directory contains the public KsADK documentation built with Fumadocs and Next.js static export.
 
-It is a Next.js app with [Static Export](https://nextjs.org/docs/app/guides/static-exports) configured.
+## Local development
 
-Run development server:
+Requirements: Node.js 22 and pnpm 9.
 
 ```bash
-npm run dev
-# or
+pnpm install --frozen-lockfile
 pnpm dev
-# or
-yarn dev
 ```
 
-Open http://localhost:3000 with your browser to see the result.
+Build the same static site used by repository checks:
 
-## Explore
+```bash
+NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static
+```
 
-In the project, you can see:
+From the repository root, `make docs-site-build` installs dependencies and runs the static build.
 
-- `lib/source.ts`: Code for content source adapter, [`loader()`](https://fumadocs.dev/docs/headless/source-api) provides the interface to access your content.
-- `lib/layout.shared.tsx`: Shared options for layouts, optional but preferred to keep.
+## Content and i18n
 
-| Route                     | Description                                            |
-| ------------------------- | ------------------------------------------------------ |
-| `app/(home)`              | The route group for your landing page and other pages. |
-| `app/docs`                | The documentation layout and pages.                    |
-| `app/api/search/route.ts` | The Route Handler for search.                          |
+Documentation lives under `content/docs/`.
 
-### Fumadocs MDX
+| Language | File convention | Route prefix |
+| --- | --- | --- |
+| Chinese | `page.mdx` | `/cn/` |
+| English | `page.en.mdx` | `/en/` |
 
-A `source.config.ts` config file has been included, you can customise different options like frontmatter schema.
+Every public page must have both files with aligned headings, tables, examples, links, and asset coverage. Navigation is defined by `meta.json` and `meta.en.json` in each content directory.
 
-Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
+## Architecture assets
 
-## Learn More
+Source SVG files and their PNG fallbacks live in `public/assets/`. Localized diagrams use the same base name with an `.en` suffix for English.
 
-To learn more about Next.js and Fumadocs, take a look at the following
-resources:
+The main runtime architecture assets are:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js
-  features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [Fumadocs](https://fumadocs.dev) - learn about Fumadocs
+- `ksadk-runtime-architecture.svg` and `.png`
+- `ksadk-runtime-architecture.en.svg` and `.en.png`
+
+Keep SVG text inside its boxes, preserve readable connectors, remove branch-specific metadata, and regenerate both PNG files whenever an SVG changes.
+
+## Verification
+
+Before committing documentation changes:
+
+```bash
+make docs-site-build
+git diff --check
+```
+
+Architecture changes should also validate SVG syntax and visually inspect both language variants.

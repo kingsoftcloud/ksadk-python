@@ -78,6 +78,10 @@ def save_memory(content: str) -> dict:
                 "agent_id": context.agent_id,
                 "session_id": context.session_id,
                 "runner_type": context.runner_type,
+                # Explicit user saves must become searchable promptly. The
+                # SDK backend maps this to CreateMemorySdk.Flush; background
+                # turn persistence keeps the service's batched default.
+                "flush": True,
             },
         )
         if ok:

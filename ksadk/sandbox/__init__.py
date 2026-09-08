@@ -12,7 +12,7 @@ from ksadk.sandbox.base import (
     SandboxSpec,
     SandboxType,
 )
-from ksadk.sandbox.factory import create_sandbox_backend, sandbox_spec_from_env
+from ksadk.sandbox.factory import create_sandbox_backend, sandbox_spec_from_env, setup_sandbox_api_url_if_needed
 
 __all__ = [
     "E2BSandboxBackend",
@@ -28,4 +28,5 @@ __all__ = [
     "SandboxType",
     "create_sandbox_backend",
     "sandbox_spec_from_env",
+    "setup_sandbox_api_url_if_needed",
 ]

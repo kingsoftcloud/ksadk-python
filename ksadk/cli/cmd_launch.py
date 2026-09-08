@@ -72,6 +72,14 @@ def _dict_or_none(value: object) -> dict[str, Any] | None:
 )
 @click.option("--name", "-n", help="部署名称")
 @click.option(
+    "--agent-id",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
+@click.option(
     "--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (serverless)"
 )
 @click.option(
@@ -142,6 +150,7 @@ def launch(
     no_version: bool,
     auto_rollback: bool,
     output_mode: str | None,
+    agent_id: str | None,
 ):
     """一键完成构建和部署 (Build + Deploy)
 
@@ -199,6 +208,7 @@ def launch(
             extra_env=extra_env,
             env_file=env_file,
             dry_run_context=dry_run_context,
+            agent_id=agent_id,
         ),
         dry_run=dry_run,
         on_dry_run=(
@@ -246,6 +256,7 @@ async def _launch_async(
     extra_env: tuple[str, ...] = (),
     env_file: str | None = None,
     dry_run_context: dict[str, object] | None = None,
+    agent_id: str | None = None,
 ):
     from ksadk.deployment import DeploymentManager, DeployTarget
     from ksadk.detection import FrameworkDetector
@@ -322,6 +333,7 @@ async def _launch_async(
             "ui_url": resolved_ui_url,
             "dry_run": dry_run,
             "env_vars": explicit_env_vars,
+            "agent_id": agent_id,
         },
     )
 

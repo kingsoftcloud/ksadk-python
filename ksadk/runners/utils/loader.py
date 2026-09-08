@@ -43,13 +43,29 @@ def load_agent_module(
     # 确定模块名
     if entry_point.endswith(".py"):
         module_name = entry_point[:-3]
+        entry_file = (project_path / entry_point).resolve()
     else:
         module_name = entry_point
+        entry_file = None
 
     # 路径转换为模块路径
     module_name = module_name.replace("/", ".").replace("\\", ".")
 
     try:
+        # Studio 会在同一 Python 进程内运行多个不可变 Bundle。它们通常都以
+        # ``agent.py`` 为入口；仅靠 ``import_module("agent")`` 会复用上一个
+        # Bundle 的 sys.modules 缓存，进而加载错误的 agentVariable。只复用与
+        # 当前 entry 文件一致的缓存，其余情况让 import 从当前 project_path 重载。
+        cached = sys.modules.get(module_name)
+        cached_file = getattr(cached, "__file__", None)
+        cached_matches_entry = bool(
+            cached_file is not None
+            and entry_file is not None
+            and Path(str(cached_file)).resolve() == entry_file
+        )
+        if cached is not None and not cached_matches_entry:
+            sys.modules.pop(module_name, None)
+            importlib.invalidate_caches()
         if force_reload and module_name in sys.modules:
             module = importlib.reload(sys.modules[module_name])
         else:

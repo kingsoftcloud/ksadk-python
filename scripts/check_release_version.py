@@ -91,15 +91,25 @@ def check_project(project: str, local_version: str, allow_offline: bool) -> int:
         if allow_offline:
             print(f"⚠️  {project}: PyPI 不可达,跳过(--allow-offline),本地版本 {local_version}")
             return 0
-        print(f"❌ {project}: PyPI 不可达,无法确认是否降版;如确认网络隔离可传 --allow-offline 跳过", file=sys.stderr)
+        print(
+            f"❌ {project}: PyPI 不可达,无法确认是否降版;如确认网络隔离可传 --allow-offline 跳过",
+            file=sys.stderr,
+        )
         return 2
 
     cmp = compare(local_version, published)
     if cmp < 0:
-        print(f"❌ {project}: 本地版本 {local_version} < PyPI 已发版本 {published},降版被禁止", file=sys.stderr)
+        print(
+            f"❌ {project}: 本地版本 {local_version} < PyPI 已发版本 {published},降版被禁止",
+            file=sys.stderr,
+        )
         return 1
     if cmp == 0:
-        print(f"❌ {project}: 本地版本 {local_version} == PyPI 已发版本 {published},重复发版被禁止(bump 版本号后再发)", file=sys.stderr)
+        print(
+            f"❌ {project}: 本地版本 {local_version} == PyPI 已发版本 {published},"
+            "重复发版被禁止(bump 版本号后再发)",
+            file=sys.stderr,
+        )
         return 1
     print(f"✅ {project}: 本地版本 {local_version} > PyPI 已发版本 {published}")
     return 0
@@ -107,10 +117,18 @@ def check_project(project: str, local_version: str, allow_offline: bool) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="发版版本号门禁")
-    ap.add_argument("--project", default=DEFAULT_PROJECT, help=f"主 PyPI 项目名(默认 {DEFAULT_PROJECT})")
-    ap.add_argument("--alias-project", default=DEFAULT_ALIAS_PROJECT, help=f"别名包项目名(默认 {DEFAULT_ALIAS_PROJECT})")
+    ap.add_argument(
+        "--project", default=DEFAULT_PROJECT, help=f"主 PyPI 项目名(默认 {DEFAULT_PROJECT})"
+    )
+    ap.add_argument(
+        "--alias-project",
+        default=DEFAULT_ALIAS_PROJECT,
+        help=f"别名包项目名(默认 {DEFAULT_ALIAS_PROJECT})",
+    )
     ap.add_argument("--skip-alias", action="store_true", help="跳过别名包检查")
-    ap.add_argument("--allow-offline", action="store_true", help="PyPI 不可达时跳过而非失败(用于网络隔离环境)")
+    ap.add_argument(
+        "--allow-offline", action="store_true", help="PyPI 不可达时跳过而非失败(用于网络隔离环境)"
+    )
     ap.add_argument("--repo-root", default=".", help="仓库根目录(默认当前目录)")
     args = ap.parse_args()
 

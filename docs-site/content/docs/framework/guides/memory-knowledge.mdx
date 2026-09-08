@@ -76,7 +76,19 @@ def load_user_memory(query: str) -> str:
 
 <Callout type="info">
 推荐保存短事实，例如「发布说明先写结论，再写风险和验证方式」。
+SDK 记忆后端中，用户显式调用 `save_memory` 会强制当前数据抽取，以便后续检索；自动轮次保存仍保留后端默认的批处理语义。
 </Callout>
+
+## Hermes 托管接入
+
+Hermes 镜像通过 KsADK memory provider 和知识库工具消费同一套平台绑定，不要求修改 Hermes 上游源码：
+
+- 长期记忆只使用平台下发的稳定 user/session/agent 标识；缺少稳定标识或服务绑定时 fail closed，不从模型文本猜测用户身份。
+- session 切换时预取相关记忆并写入隔离缓存，prompt 注入只读取当前 session 的缓存；并发切换不会把旧 session 的结果发布到新 session。
+- 显式保存等待当前服务完成 `save_event_strings`/抽取后再返回；服务重建或 session 切换期间，已开始的操作继续绑定原始 user/session。
+- 知识库工具通过当前平台绑定执行检索并格式化结果；检索、格式化或服务异常返回通用诊断，不向模型或日志暴露凭证、内部 endpoint 和原始异常。
+
+这些能力是可选增强。未绑定知识库或长期记忆时，Hermes Agent 仍可正常对话和使用其他工具。
 
 ## 环境变量
 
@@ -88,7 +100,7 @@ def load_user_memory(query: str) -> str:
 - `KSADK_KB_DATASET_ID`
 - `KSADK_KB_TOP_K`
 
-完整列表见 [环境变量](../../references/environment-variables)。
+完整列表见 [环境变量](../../references/environment-variables.mdx)。
 
 ## OpenClaw memory backend(可选)
 
@@ -126,4 +138,4 @@ config:
 上述 manifest 与 secret 均由托管平台注入；公开文档不暴露内部 endpoint、account 或 token，示例值使用占位符（如 `example.com` / `sk-test` / `cm-appkey-placeholder`）。
 </Callout>
 
-完整变量列表见 [ksadk 环境变量参考](../../references/environment-variables)。
+完整变量列表见 [ksadk 环境变量参考](../../references/environment-variables.mdx)。
