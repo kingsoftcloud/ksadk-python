@@ -123,3 +123,43 @@ def test_memory_write_and_status_are_exposed_when_policy_is_enabled(monkeypatch)
 
     names = {tool.name for tool in create_server()._tool_manager.list_tools()}
     assert {"load_memory", "save_memory", "memory_status"} <= names
+
+
+def test_memory_status_serializes_dataclass_result(monkeypatch) -> None:
+    from ksadk.memory.models import MemoryExtractionStatus
+    from ksadk.memory.service import LongTermMemoryService
+
+    projection = project_managed_platform_resources(_manifest())
+    for key, value in projection["env"].items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(
+        LongTermMemoryService,
+        "from_env",
+        classmethod(
+            lambda cls: type(
+                "MemoryService",
+                (),
+                {
+                    "get_extraction_status": lambda self, **kwargs: MemoryExtractionStatus(
+                        session_id=kwargs["session_id"],
+                        state=100,
+                        status="extracted",
+                        searchable=True,
+                    )
+                },
+            )()
+        ),
+    )
+    from ksadk.resource_runtime.mcp_server import create_server
+
+    tool = create_server()._tool_manager.get_tool("memory_status")
+    assert tool is not None
+    assert tool.fn("mcp-session", "remember me") == {
+        "ok": True,
+        "session_id": "mcp-session",
+        "state": 100,
+        "status": "extracted",
+        "searchable": True,
+        "message": "",
+        "error_code": "",
+    }

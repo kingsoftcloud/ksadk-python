@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import asdict
 from uuid import uuid4
 
 from mcp.server.fastmcp import FastMCP
@@ -100,7 +101,7 @@ def create_server() -> FastMCP:
                     confirm_searchable=bool(expected_content.strip()),
                     expected_content=expected_content,
                 )
-                return {"ok": not status.error_code, **status.model_dump()}
+                return {"ok": not status.error_code, **asdict(status)}
 
     if _enabled("knowledge-base"):
         from ksadk.knowledge_base.service import KnowledgeBaseService
