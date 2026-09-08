@@ -1233,9 +1233,9 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                             interrupt_id = str(getattr(intr, "id", "") or "")
                             if interrupt_id:
                                 info.setdefault("approval_request_id", interrupt_id)
-                            # HumanInTheLoopMiddleware 的 interrupt value 把 tool_name/arguments
-                            # 嵌在 action_requests[0] 里，下游 runtime_streaming/message_projection
-                            # 期望顶层有 tool_name/arguments，这里提取到顶层（保留 action_requests 原样）。
+                            # HumanInTheLoopMiddleware 的 interrupt value 把
+                            # tool_name/arguments 嵌在 action_requests[0] 里；
+                            # 下游期望顶层字段，这里提取并保留原 action_requests。
                             action_requests = info.get("action_requests")
                             if isinstance(action_requests, list) and action_requests:
                                 first = action_requests[0]
@@ -1245,7 +1245,9 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                                     if raw_args is not None:
                                         info.setdefault("arguments", raw_args)
                                     if first.get("description") is not None:
-                                        info.setdefault("description", str(first.get("description")))
+                                        info.setdefault(
+                                            "description", str(first.get("description"))
+                                        )
                             return info
         return {}
 
