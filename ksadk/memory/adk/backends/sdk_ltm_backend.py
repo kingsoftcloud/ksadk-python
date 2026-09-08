@@ -292,18 +292,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             self.last_create_response = self._parse_json_response(response) or {}
             if kwargs.get("strict", False):
                 data = self.last_create_response
-                metadata = data.get("ResponseMetadata", {}) if isinstance(data, dict) else {}
-                if (
-                    not isinstance(data, dict)
-                    or not isinstance(metadata, dict)
-                    or data.get("Error")
-                    or metadata.get("Error")
-                    or ("Success" in data and data["Success"] is not True)
-                    or type(data.get("Code")) is bool
-                    or data.get("Code") not in (None, 0, "0")
-                    or not isinstance(data.get("RequestId", metadata.get("RequestId")), str)
-                    or not data.get("RequestId", metadata.get("RequestId"))
-                ):
+                if not self._confirmed_mutation_response(data):
                     self.last_error = "MEMORY_WRITE_RESPONSE_UNKNOWN"
                     return False
             self.last_session_status = {
@@ -587,7 +576,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             isinstance(data, dict) and isinstance(metadata, dict)
             and not data.get("Error") and not metadata.get("Error")
             and ("Success" not in data or data["Success"] is True)
-            and type(data.get("Code")) is not bool and data.get("Code") in (None, 0, "0")
+            and type(data.get("Code")) is not bool
+            and data.get("Code") in (None, 0, "0", 200, "200")
             and isinstance(data.get("RequestId", metadata.get("RequestId")), str)
             and data.get("RequestId", metadata.get("RequestId"))
         )
@@ -694,7 +684,9 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             logger.error("QueryMemorySdk records: unexpected payload type")
             return []
         items = data.get("Data")
-        if strict and (data.get("Error") or data.get("Code") not in (None, 0, "0")):
+        if strict and (
+            data.get("Error") or data.get("Code") not in (None, 0, "0", 200, "200")
+        ):
             raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID")
         if not isinstance(items, list):
             if strict:
@@ -824,7 +816,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                     not isinstance(data, dict) or data.get("Error")
                     or not isinstance(metadata, dict) or metadata.get("Error")
                     or type(data.get("Code")) is bool
-                    or data.get("Code") not in (None, 0, "0")
+                    or data.get("Code") not in (None, 0, "0", 200, "200")
                 ):
                     return None, "MEMORY_STATUS_QUERY_FAILED"
                 payload = data.get("Data")
@@ -834,7 +826,22 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                     or not item["SessionId"] for item in items
                 ):
                     return None, "MEMORY_STATUS_RESPONSE_INVALID"
-                total = payload.get("TotalCount")
+                total_count = payload.get("TotalCount")
+                total_alias = payload.get("Total")
+                if total_count is not None and total_alias is not None:
+                    normalized_count = (
+                        int(total_count)
+                        if isinstance(total_count, str) and total_count.isdigit()
+                        else total_count
+                    )
+                    normalized_alias = (
+                        int(total_alias)
+                        if isinstance(total_alias, str) and total_alias.isdigit()
+                        else total_alias
+                    )
+                    if normalized_count != normalized_alias:
+                        return None, "MEMORY_STATUS_RESPONSE_INVALID"
+                total = total_count if total_count is not None else total_alias
                 if isinstance(total, str) and total.isdigit():
                     total = int(total)
                 if total is not None and (type(total) is not int or total < 0):

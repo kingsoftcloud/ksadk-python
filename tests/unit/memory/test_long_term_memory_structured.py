@@ -124,6 +124,17 @@ class TestFlushSemantics:
 
 
 class TestStructuredQueryParse:
+    def test_strict_query_accepts_service_success_code_200(self):
+        backend = _make_backend()
+
+        records = backend._parse_query_records_response(
+            json.dumps({"Code": 200, "Data": [{"Memories": []}]}),
+            user_id="u1",
+            strict=True,
+        )
+
+        assert records == []
+
     def test_structured_query_parses_fields(self):
         """§11.1.3：解析 MemoryId/正文/score/时间。"""
         backend = _make_backend()

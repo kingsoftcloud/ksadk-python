@@ -34,6 +34,7 @@ def test_unconfirmed_submission_is_not_accepted(response):
     [
         {"RequestId": "ack"},
         {"ResponseMetadata": {"RequestId": "ack"}},
+        {"Code": 200, "Message": "success", "Data": {"TaskId": "task"}, "RequestId": "ack"},
     ],
 )
 def test_acknowledgment_is_accepted_without_claiming_searchability(response):

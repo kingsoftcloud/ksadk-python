@@ -15,13 +15,25 @@ def backend(handler):
     return value
 
 
-def page(start, count, *, total=None):
+def page(start, count, *, total=None, total_field="TotalCount", code=None):
     payload = {
         "Items": [{"SessionId": f"session-{i}", "State": 100} for i in range(start, start + count)]
     }
     if total is not None:
-        payload["TotalCount"] = total
-    return {"Data": payload}
+        payload[total_field] = total
+    response = {"Data": payload}
+    if code is not None:
+        response["Code"] = code
+    return response
+
+
+def test_memory_status_accepts_real_service_success_envelope():
+    response = page(0, 1, total=1, total_field="Total", code=200)
+    result = backend(lambda *args, **kwargs: response).get_extraction_status(
+        user_id="user-a", session_id="session-0"
+    )
+    assert result.status == "extracted"
+    assert result.error_code == ""
 
 
 def test_memory_status_can_find_session_21_without_claiming_searchable():

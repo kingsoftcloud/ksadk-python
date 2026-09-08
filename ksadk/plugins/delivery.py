@@ -24,6 +24,7 @@ from ksadk.plugins.artifacts import (
     restore_materialized_plugin_artifact,
     restore_plugin_artifact,
 )
+from ksadk.resource_runtime.managed_projection import native_codex_plugin_bindings
 
 
 class PluginDelivery(BaseModel):
@@ -47,7 +48,7 @@ class PluginDelivery(BaseModel):
         runtime = manifest.get("runtime") or {}
         if runtime.get("name") != "codex" or runtime.get("version") != self.receipt.runtime_version:
             raise ValueError("Plugin delivery runtime does not match the manifest")
-        bindings = [b for b in manifest.get("plugins", []) if b.get("enabled", True)]
+        bindings = native_codex_plugin_bindings(manifest)
         if self.bindings != bindings:
             raise ValueError("Plugin delivery does not match the selected components")
 
@@ -124,7 +125,7 @@ def restore_materialized_delivery(
 
 def prepare_cloud_plugins(manifest: dict[str, Any], work_dir: Path) -> dict[str, Any]:
     """Verify and activate the init-container-materialized plugin artifact."""
-    bindings = [b for b in manifest.get("plugins", []) if b.get("enabled", True)]
+    bindings = native_codex_plugin_bindings(manifest)
     if not bindings:
         return {}
     raw = os.environ.get("AGENTENGINE_PLUGIN_DELIVERY", "")

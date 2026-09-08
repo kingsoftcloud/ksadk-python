@@ -39,7 +39,14 @@ def frozen(tmp_path):
         "framework": "codex",
         "artifact_type": "ManagedRuntime",
         "runtime": {"name": "codex", "version": "0.147.0"},
-        "plugins": [{"plugin_ref": "demo@1.0.0", "enabled": True, "components": ["skills"]}],
+        "plugins": [
+            {
+                "plugin_ref": "demo@1.0.0",
+                "ecosystem": "codex",
+                "enabled": True,
+                "components": ["skills"],
+            }
+        ],
     }
     receipt, archive = export_plugin_artifact(
         root,
@@ -160,6 +167,36 @@ def test_native_binding_without_reference_fails_before_serving(frozen, tmp_path,
     assert result.exit_code != 0
     assert "admitted cloud delivery reference" in result.output
     assert not calls
+
+
+def test_resource_only_manifest_does_not_require_native_artifact(tmp_path, monkeypatch):
+    manifest = {
+        "name": "resource-agent",
+        "runtime": {"name": "codex", "version": "0.147.0"},
+        "plugins": [
+            {
+                "plugin_ref": "plugin://kingsoftcloud.dsh-knowledge@0.1.0",
+                "ecosystem": "dsh",
+                "enabled": True,
+                "config": {
+                    "schemaVersion": 1,
+                    "binding": {
+                        "id": "kb",
+                        "connectionRef": "ksyun-platform-default",
+                        "required": True,
+                        "resource": {
+                            "kind": "knowledge-base",
+                            "id": "dataset-1",
+                            "region": "cn-beijing-6",
+                        },
+                    },
+                    "retrieval": {"mode": "tool", "topK": 5, "maxChars": 16000},
+                },
+            }
+        ],
+    }
+    monkeypatch.delenv("AGENTENGINE_PLUGIN_DELIVERY", raising=False)
+    assert prepare_cloud_plugins(manifest, tmp_path) == {}
 
 
 def test_concurrent_workers_restore_the_same_frozen_artifact(frozen, tmp_path, monkeypatch):
