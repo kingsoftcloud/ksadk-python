@@ -48,7 +48,7 @@ jobs:
       # pnpm 11.7.0 can hang after removing the official Codex bundle.
       # Match the verified profile CLI; managed bootstrap still uses its own pin.
       - name: Set up pnpm for DSH profile plugins
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: "10.33.2"
 
