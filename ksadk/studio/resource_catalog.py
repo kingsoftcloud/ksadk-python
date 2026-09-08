@@ -863,9 +863,7 @@ class LocalResourceCatalog:
             descriptor = self._ready_binding(binding, expected_kind="mcp")
             raw_filter = binding.config.get("toolFilter")
             tool_filter = (
-                {str(item).strip() for item in raw_filter}
-                if isinstance(raw_filter, list)
-                else None
+                {str(item).strip() for item in raw_filter} if isinstance(raw_filter, list) else None
             )
             raw_prefix = binding.config.get("toolNamePrefix")
             prefix = raw_prefix.strip() if isinstance(raw_prefix, str) else ""

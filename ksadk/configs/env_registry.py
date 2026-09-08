@@ -370,6 +370,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
+        "KSADK_CHECKPOINT_DSN",
+        "sessions",
+        "Framework-agnostic PostgreSQL checkpoint DSN.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
         "sessions",
         "LangGraph PostgreSQL checkpoint DSN.",
@@ -383,6 +389,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
             "managed PostgreSQL saver."
         ),
         "false",
+    ),
+    EnvVarSpec(
+        "KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS",
+        "builders",
+        "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
     ),
     EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
@@ -460,6 +471,18 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_MODEL_PROXY_MODELS",
         "model_proxy",
         "Comma-separated model allowlist for the experimental model proxy.",
+    ),
+    EnvVarSpec(
+        "KSADK_PERSISTENCE_PROBE_CACHE_TTL",
+        "sessions",
+        "PostgreSQL persistence readiness cache TTL seconds.",
+        "30",
+    ),
+    EnvVarSpec(
+        "KSADK_PERSISTENCE_PROBE_TIMEOUT",
+        "sessions",
+        "PostgreSQL persistence readiness timeout seconds.",
+        "2",
     ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
     EnvVarSpec(
@@ -838,7 +861,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.4",
+        "0.3.5",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

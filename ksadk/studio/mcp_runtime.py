@@ -142,9 +142,11 @@ class MCPRuntimeAdapter:
                 yield read_stream, write_stream
         elif transport in {"http", "streamable-http", "streamable_http"}:
             headers = self._http_headers(server)
-            async with streamablehttp_client(
-                server.endpoint_url or "", headers=headers
-            ) as (read_stream, write_stream, _):
+            async with streamablehttp_client(server.endpoint_url or "", headers=headers) as (
+                read_stream,
+                write_stream,
+                _,
+            ):
                 yield read_stream, write_stream
         elif transport == "sse":
             headers = self._http_headers(server)

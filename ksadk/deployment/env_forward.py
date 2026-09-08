@@ -1,7 +1,7 @@
 """部署时的 shell 进程环境变量转发规则。
 
 通用 deploy (serverless/kcf/kce) 与 hermes/openclaw deploy 共用同一套规则：
-按前缀 (KSADK_/OPENAI_/KSYUN_/E2B_) + 显式 allowlist 转发 shell 环境变量，
+按前缀 (KSADK_/OPENAI_/KSYUN_/E2B_/AGENTENGINE_/AGENTKIT_) + 显式 allowlist 转发 shell 环境变量，
 denylist 中的 CLI/builders/configs/web 模块本地键不转发。
 """
 
@@ -37,7 +37,7 @@ DEPLOY_PROCESS_ENV_ALLOWLIST = frozenset(
         "KSYUN_SECRET_KEY",
     }
 )
-DEPLOY_PROCESS_ENV_PREFIXES = ("KSADK_", "OPENAI_", "KSYUN_", "E2B_")
+DEPLOY_PROCESS_ENV_PREFIXES = ("KSADK_", "OPENAI_", "KSYUN_", "E2B_", "AGENTENGINE_", "AGENTKIT_")
 DEPLOY_PROCESS_ENV_DENYLIST = frozenset(
     {spec.name for spec in ENV_VAR_REGISTRY if spec.module in {"builders", "cli", "configs", "web"}}
 ) | frozenset(

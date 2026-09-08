@@ -102,7 +102,7 @@ requires_openai_auth = false
         )
         client = AsyncCodexClient(
             CodexConfig(
-                codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN"),
+                codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN") or None,
                 cwd=str(workspace),
                 env={
                     "CODEX_HOME": str(codex_home),
@@ -136,9 +136,7 @@ requires_openai_auth = false
                 "ksadk-bridge-e2e:bridge-check",
             }
             assert installed_detail.mcp_servers == ("ksadk-fixture",)
-            installed_skill_paths = tuple(
-                codex_home.glob("plugins/cache/*/*/*/skills/*/SKILL.md")
-            )
+            installed_skill_paths = tuple(codex_home.glob("plugins/cache/*/*/*/skills/*/SKILL.md"))
             assert len(installed_skill_paths) == 2
             installed_skills_by_name = {
                 path.parent.name: path.resolve() for path in installed_skill_paths
@@ -280,7 +278,7 @@ async def test_real_app_server_failed_install_restores_previous_inventory(
     workspace.mkdir()
     client = AsyncCodexClient(
         CodexConfig(
-            codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN"),
+            codex_bin=os.getenv("KSADK_CODEX_PLUGIN_E2E_BIN") or None,
             cwd=str(workspace),
             env={
                 "CODEX_HOME": str(codex_home),

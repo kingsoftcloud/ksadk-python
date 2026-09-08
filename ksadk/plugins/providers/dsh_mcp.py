@@ -32,6 +32,7 @@ DSH_PROFILE_TOOL_PERMISSION = DSH_HOST_USER_PERMISSION
 _PLUGIN_REF = f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@{DSH_PROFILE_MCP_PLUGIN_VERSION}"
 _MODEL_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
+
 def dsh_harness_tool_alias(name: str, prefix: str | None = None) -> str:
     """Return a deterministic OpenAI-compatible alias for one DSH tool."""
 
@@ -230,9 +231,7 @@ class DshProfileMCPRuntime:
         if first_error is not None:
             raise first_error
 
-    async def harness_mcp_specs(
-        self, bundle: ResolvedPluginBundle
-    ) -> tuple[McpToolSpec, ...]:
+    async def harness_mcp_specs(self, bundle: ResolvedPluginBundle) -> tuple[McpToolSpec, ...]:
         if not self._ready or self._disposed:
             raise PluginHostError("dsh_mcp_unavailable", "DSH Profile MCP is not ready")
         # A supervised DSH sidecar may have restarted since this PluginHost
@@ -243,9 +242,7 @@ class DshProfileMCPRuntime:
             raise PluginHostError("dsh_mcp_unavailable", "DSH Profile MCP is not ready")
         resolved = self._resolved_resource(bundle)
         self._validate_resolved_resource(resolved)
-        materializer = _mapping(
-            self._entry.get("materializer"), code="dsh_mcp_config_invalid"
-        )
+        materializer = _mapping(self._entry.get("materializer"), code="dsh_mcp_config_invalid")
         tool_filter = _string_list(
             materializer.get("toolFilter"), code="dsh_mcp_tool_filter_invalid"
         )
@@ -260,9 +257,7 @@ class DshProfileMCPRuntime:
             materializer.get("toolNamePrefix"),
             code="dsh_mcp_config_invalid",
         )
-        aliases = {
-            dsh_harness_tool_alias(name, prefix): name for name in tool_filter
-        }
+        aliases = {dsh_harness_tool_alias(name, prefix): name for name in tool_filter}
         if len(aliases) != len(tool_filter):
             raise PluginHostError(
                 "dsh_mcp_tool_alias_collision",
@@ -336,9 +331,7 @@ class DshProfileMCPRuntime:
         descriptor: DshProfileCapabilityDescriptor,
         lease: DshMcpConnectorLease,
     ) -> None:
-        materializer = _mapping(
-            self._entry.get("materializer"), code="dsh_mcp_config_invalid"
-        )
+        materializer = _mapping(self._entry.get("materializer"), code="dsh_mcp_config_invalid")
         expected = {
             "profile": descriptor.profile,
             "profileDigest": descriptor.profile_digest,

@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from ksadk.plugins.bridges.dsh import DshProfilePluginBridge
-from ksadk.plugins.dsh_toolchain import DshToolchainManager
+from ksadk.plugins.dsh_toolchain import DSH_VERSION, DshToolchainManager
 from ksadk.resource_runtime.langgraph import create_bound_resource_tools
 from ksadk.resource_runtime.snapshots import ResourceSnapshot
 from ksadk.resource_runtime.worker import WorkerInitialization
@@ -26,7 +26,7 @@ async def test_studio_starts_real_core_before_admitting_resource_worker(
 ):
     root = Path(os.environ["KSADK_TEST_RESOURCE_CLI_ROOT"]).resolve()
     pnpm = root / "pnpm/node_modules/.bin/pnpm"
-    dsh = root / "toolchains/dsh/0.1.1-rc.2/node_modules/.bin/dsh"
+    dsh = root / "toolchains/dsh" / DSH_VERSION / "node_modules/.bin/dsh"
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -105,7 +105,7 @@ async def test_studio_starts_real_core_before_admitting_resource_worker(
 
 def test_explicit_toolchain_does_not_require_default_managed_directory(tmp_path):
     executable = tmp_path / "dsh"
-    executable.write_text("#!/bin/sh\nprintf '0.1.1-rc.2\\n'\n")
+    executable.write_text(f"#!/bin/sh\nprintf '{DSH_VERSION}\\n'\n")
     executable.chmod(0o700)
     manager = DshToolchainManager(base_dir=tmp_path / "absent-managed")
     assert manager.require_command(executable) == (str(executable),)

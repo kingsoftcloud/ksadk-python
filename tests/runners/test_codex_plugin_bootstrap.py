@@ -148,7 +148,7 @@ async def test_factory_passes_closed_bootstrap_contract_to_adapter(tmp_path: Pat
                 "marketplace_name": bootstrap.marketplace_name,
                 "plugin_names": list(bootstrap.plugin_names),
                 "snapshot_digest": bootstrap.snapshot_digest,
-            }
+            },
         },
         services=RuntimeServices(codex_client_factory=lambda config=None: client),
     )

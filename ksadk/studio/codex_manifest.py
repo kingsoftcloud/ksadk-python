@@ -105,8 +105,10 @@ class CodexAgentManifest(BaseModel):
                     raise ValueError("mcp_servers 每项必须有 name")
                 if transport == "stdio":
                     args = server.get("args") or []
-                    if not command or not isinstance(args, list) or any(
-                        not isinstance(argument, str) for argument in args
+                    if (
+                        not command
+                        or not isinstance(args, list)
+                        or any(not isinstance(argument, str) for argument in args)
                     ):
                         raise ValueError("stdio mcp_servers 必须有 command 与字符串 args")
                     if url:

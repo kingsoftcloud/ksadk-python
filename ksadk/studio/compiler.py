@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from ksadk.plugins.providers.legacy_catalog import CODEX_AGENT_PROVIDER_PLUGIN_ID
 from ksadk.studio.capabilities import (
     CapabilityResolver,
     LocalCapabilityResolver,
@@ -82,10 +83,7 @@ class AgentCompiler:
             for ref in materialized.spec.capabilities.mcp_servers
             if ref.enabled
         ]
-        tools = [
-            self.resolver.resolve_tool(tool)
-            for tool in materialized.spec.capabilities.tools
-        ]
+        tools = [self.resolver.resolve_tool(tool) for tool in materialized.spec.capabilities.tools]
         skills.sort(key=lambda item: (item["name"], item["version"], item["digest"]))
         mcp_servers.sort(key=lambda item: (item["name"], item["version"], item["digest"]))
         tools.sort(key=lambda item: (item.name, item.version, item.digest or ""))
@@ -131,16 +129,32 @@ class AgentCompiler:
             "skills": skills,
             "mcpServers": mcp_servers,
             "tools": [
-                tool.model_dump(by_alias=True, exclude_none=True, mode="json")
-                for tool in tools
+                tool.model_dump(by_alias=True, exclude_none=True, mode="json") for tool in tools
             ],
         }
         return CompileResult(resolved=resolved, dependency_lock=dependency_lock)
 
     def _materialize_bindings(self, draft: AgentDraft) -> AgentDraft:
+        runtime = draft.spec.runtime
+        uses_codex_native_tools = bool(
+            runtime
+            and (
+                runtime.type == "codex"
+                or (
+                    runtime.type == "plugin"
+                    and runtime.provider_ref
+                    and runtime.provider_ref.startswith(
+                        f"plugin://{CODEX_AGENT_PROVIDER_PLUGIN_ID}@"
+                    )
+                )
+            )
+        )
         bindings = draft.spec.bindings
+        if uses_codex_native_tools and bindings.tools:
+            bindings = bindings.model_copy(update={"tools": []})
         if (
-            not bindings.model_profile_id
+            not uses_codex_native_tools
+            and not bindings.model_profile_id
             and not bindings.tools
             and not bindings.mcp_servers
             and not bindings.skills
@@ -183,9 +197,13 @@ class AgentCompiler:
                 *self.catalog.resolve_mcp_servers(bindings),
             ],
             tools=[
-                *materialized.spec.capabilities.tools,
+                *([] if uses_codex_native_tools else materialized.spec.capabilities.tools),
                 *bound_tools,
-                *bound_mcp_tools,
+                # Non-Codex runtimes consume the probed MCP contracts through
+                # the generic Tool execution path. Codex connects to the MCP
+                # server natively, so expanding those contracts here turns a
+                # valid MCP binding into unsupported third-party tools.
+                *([] if uses_codex_native_tools else bound_mcp_tools),
             ],
         )
         self._require_unique(
@@ -205,11 +223,7 @@ class AgentCompiler:
         materialized.spec.security.allowed_permissions = sorted(
             set(materialized.spec.security.allowed_permissions)
             | set(permissions)
-            | {
-                permission
-                for tool in bound_mcp_tools
-                for permission in tool.permissions
-            }
+            | {permission for tool in bound_mcp_tools for permission in tool.permissions}
         )
         endpoint = model.endpoint_url or model.base_url or ""
         hostname = (urlparse(endpoint).hostname or "").lower().rstrip(".")

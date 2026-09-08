@@ -128,9 +128,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         async with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("Harness runtime adapter is closed")
-            run_id = str(
-                request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}"
-            )
+            run_id = str(request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}")
             if run_id in self._runs:
                 raise ValueError(f"duplicate Harness invocation: {run_id}")
             self._runs[run_id] = _HarnessRun(request=request)
@@ -313,9 +311,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
 
     def _effective(self, request: StartRequest) -> tuple[str, str]:
         metadata = request.metadata or {}
-        model = str(
-            metadata.get("model_override") or request.model or self._config.model
-        ).strip()
+        model = str(metadata.get("model_override") or request.model or self._config.model).strip()
         prompt = str(
             metadata.get("prompt_override")
             or request.config.get("base_instructions")
@@ -352,9 +348,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 },
             )
 
-        def env_kwargs(
-            item_id: str, event_type: str, part_id: str
-        ) -> dict[str, Any]:
+        def env_kwargs(item_id: str, event_type: str, part_id: str) -> dict[str, Any]:
             n = next_seq()
             return {
                 "schema_version": 2,
@@ -453,9 +447,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 **env_kwargs(message_item_id, "item.completed", "text-0"),
                 item_id=message_item_id,
                 item_kind="message",
-                snapshot=ContentSnapshot(
-                    parts=(TextContent(part_id="text-0", text=text),)
-                ),
+                snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text=text),)),
             )
             run.done = True
             yield RunCompleted(

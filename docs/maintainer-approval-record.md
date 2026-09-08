@@ -1,5 +1,7 @@
 # KsADK Public Release Approval Record
 
+> This is the historical 0.8.3 publication approval. It does not authorize PyPI publication of the 0.8.4 source/wheel candidate. A new approval record is required before publishing that package.
+
 This record approves the public `0.8.3` release candidate described below. It is the evidence consumed by the release
 gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
 deployment.

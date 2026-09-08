@@ -64,9 +64,7 @@ def _manifest(
                     "domain": "ksadk-platform",
                     "runtime": "python",
                     "entrypoint": "ksadk.plugins.builtins:builtin_capability_factories",
-                    "provides": [
-                        {"definition": definition, "slot": slot, "mode": mode}
-                    ],
+                    "provides": [{"definition": definition, "slot": slot, "mode": mode}],
                     "secretFields": list(secret_fields),
                     "permissions": list(permissions),
                     "isolation": "in-process",
@@ -127,6 +125,28 @@ def builtin_capability_manifests() -> tuple[PluginManifest, ...]:
             mode="multiple",
         ),
     )
+
+
+def builtin_capability_permissions(
+    profile: CompositionProfile,
+) -> frozenset[str]:
+    """Return host-owned permissions for built-ins selected by one Profile.
+
+    Studio's built-in session store, context, renderer, MCP and Skill adapters
+    are part of the trusted PluginHost distribution. Their narrow permissions
+    are granted by that host rather than copied into every user-authored Agent
+    revision. Only exact built-in capability references present in the resolved
+    Profile contribute permissions; AgentProvider permissions remain subject to
+    the Agent's explicit security policy.
+    """
+
+    selected_refs = {capability.ref for capability in profile.capabilities}
+    permissions: set[str] = set()
+    for manifest in builtin_capability_manifests():
+        reference = f"plugin://{manifest.metadata.id}@{manifest.metadata.version}"
+        if reference in selected_refs:
+            permissions.update(manifest.spec.permissions)
+    return frozenset(permissions)
 
 
 class _BuiltinRuntime:
@@ -242,9 +262,7 @@ class WorkspaceMCPRuntime(_BuiltinRuntime):
             )
         return tuple(inventory)
 
-    def harness_mcp_specs(
-        self, bundle: ResolvedPluginBundle
-    ) -> tuple[McpToolSpec, ...]:
+    def harness_mcp_specs(self, bundle: ResolvedPluginBundle) -> tuple[McpToolSpec, ...]:
         specs: list[McpToolSpec] = []
         for materializer, resolved in self._resources(bundle):
             transport = _required_string(resolved, "transport", code="builtin_mcp_invalid")
@@ -287,9 +305,7 @@ class WorkspaceMCPRuntime(_BuiltinRuntime):
                     url=endpoint,
                     api_key=api_key,
                     tool_filter=tuple(_string_list(materializer.get("toolFilter"))),
-                    tool_name_prefix=_optional_string(
-                        materializer.get("toolNamePrefix")
-                    ),
+                    tool_name_prefix=_optional_string(materializer.get("toolNamePrefix")),
                 )
             )
         return tuple(specs)
@@ -318,13 +334,9 @@ class WorkspaceSkillRuntime(_BuiltinRuntime):
         resolved = _resolved_resources(bundle, "skills")
         contributions: list[HarnessSkillContribution] = []
         for entry in declared:
-            item = _match_resource(
-                entry, resolved, code="builtin_skill_resource_mismatch"
-            )
+            item = _match_resource(entry, resolved, code="builtin_skill_resource_mismatch")
             name = _required_string(item, "name", code="builtin_skill_invalid")
-            bundle_path = _required_string(
-                item, "bundlePath", code="builtin_skill_path_invalid"
-            )
+            bundle_path = _required_string(item, "bundlePath", code="builtin_skill_path_invalid")
             directory = _safe_bundle_path(
                 bundle,
                 bundle_path,
@@ -335,9 +347,7 @@ class WorkspaceSkillRuntime(_BuiltinRuntime):
                 raise PluginHostError(
                     "builtin_skill_path_invalid", f"Skill {name!r} is not a Bundle directory"
                 )
-            expected_digest = _required_string(
-                item, "digest", code="builtin_skill_invalid"
-            )
+            expected_digest = _required_string(item, "digest", code="builtin_skill_invalid")
             if _directory_digest(directory) != expected_digest:
                 raise PluginHostError(
                     "builtin_skill_digest_mismatch",
@@ -346,9 +356,7 @@ class WorkspaceSkillRuntime(_BuiltinRuntime):
             instructions = _required_string(
                 item, "instructions", code="builtin_skill_instructions_missing"
             )
-            contributions.append(
-                HarnessSkillContribution(name=name, instructions=instructions)
-            )
+            contributions.append(HarnessSkillContribution(name=name, instructions=instructions))
         if not contributions:
             raise PluginHostError(
                 "builtin_skill_resource_missing", "workspace Skill has no locked resource"
@@ -525,9 +533,7 @@ def builtin_capability_factories(
     return {
         SQLITE_SESSION_STORE_PLUGIN_ID: SQLiteSessionStoreFactory(state_root),
         WORKSPACE_MCP_PLUGIN_ID: _WorkspaceMCPFactory(secret_resolver),
-        WORKSPACE_SKILL_PLUGIN_ID: _SimpleFactory(
-            WORKSPACE_SKILL_PLUGIN_ID, WorkspaceSkillRuntime
-        ),
+        WORKSPACE_SKILL_PLUGIN_ID: _SimpleFactory(WORKSPACE_SKILL_PLUGIN_ID, WorkspaceSkillRuntime),
         READ_ONLY_CONTEXT_PLUGIN_ID: _SimpleFactory(
             READ_ONLY_CONTEXT_PLUGIN_ID, ReadOnlyBundleContextRuntime
         ),
@@ -538,10 +544,7 @@ def builtin_capability_factories(
 
 
 def _require_manifest(manifest: PluginManifest, plugin_id: str) -> None:
-    if (
-        manifest.metadata.id != plugin_id
-        or manifest.metadata.version != BUILTIN_PLUGIN_VERSION
-    ):
+    if manifest.metadata.id != plugin_id or manifest.metadata.version != BUILTIN_PLUGIN_VERSION:
         raise PluginHostError(
             "builtin_manifest_mismatch",
             f"factory cannot stage {manifest.metadata.id}@{manifest.metadata.version}",
@@ -570,8 +573,7 @@ def _bound_capability_config(
             f"resolved Bundle does not bind built-in capability {plugin_id}@{version}",
         )
     if not any(
-        item.id == plugin_id and item.version == version
-        for item in composition.plugin_lock.plugins
+        item.id == plugin_id and item.version == version for item in composition.plugin_lock.plugins
     ):
         raise PluginHostError(
             "builtin_capability_lock_missing",
@@ -602,9 +604,7 @@ def _resource_entries(
     return tuple(entries)
 
 
-def _resolved_resources(
-    bundle: ResolvedPluginBundle, field: str
-) -> tuple[Mapping[str, Any], ...]:
+def _resolved_resources(bundle: ResolvedPluginBundle, field: str) -> tuple[Mapping[str, Any], ...]:
     capabilities = _mapping(
         bundle.resolved_agent_spec.get("capabilities"),
         code="builtin_bundle_capabilities_missing",
@@ -614,9 +614,7 @@ def _resolved_resources(
         raise PluginHostError(
             "builtin_bundle_capabilities_missing", f"Bundle capabilities.{field} is missing"
         )
-    return tuple(
-        _mapping(item, code="builtin_bundle_capabilities_invalid") for item in raw
-    )
+    return tuple(_mapping(item, code="builtin_bundle_capabilities_invalid") for item in raw)
 
 
 def _match_resource(
@@ -744,4 +742,5 @@ __all__ = [
     "WorkspaceSkillRuntime",
     "builtin_capability_factories",
     "builtin_capability_manifests",
+    "builtin_capability_permissions",
 ]

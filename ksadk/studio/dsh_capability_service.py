@@ -10,7 +10,6 @@ sidecar.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -61,13 +60,6 @@ _JSON_RPC_ENVELOPE_BYTES = 16 * 1024
 
 BridgeFactory = Callable[..., DshProfilePluginBridge]
 HostFactory = Callable[..., DshProfileCapabilityHost]
-
-
-def dsh_ui_mcp_call_id(session_id: str, call_id: str) -> str:
-    """Derive a bounded sidecar call id without exposing either UI identifier."""
-
-    material = f"{session_id}\0{call_id}".encode("utf-8")
-    return f"ui-{hashlib.sha256(material).hexdigest()}"
 
 
 @dataclass(frozen=True)
@@ -132,7 +124,7 @@ class StudioDshCapabilityService:
         workspace: Path,
         *,
         dsh_home: Path,
-        profile: str = "studio",
+        profile: str = "web",
         dsh_command: Sequence[str] | None = None,
         bridge_factory: BridgeFactory = DshProfilePluginBridge,
         host_factory: HostFactory = DshProfileCapabilityHost,
@@ -171,6 +163,7 @@ class StudioDshCapabilityService:
         self._resource_generation_snapshot: DshProfileBuildSnapshot | None = None
         self._active_calls: dict[str, _ActiveCall] = {}
         self._closed = False
+        self.model_projection = None
 
     @classmethod
     def discover_or_create_workspace_default(cls, workspace: Path) -> "StudioDshCapabilityService":
@@ -181,7 +174,7 @@ class StudioDshCapabilityService:
             if configured_home
             else root / ".agentkit" / "dsh-home"
         )
-        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "studio"
+        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
         return cls(
@@ -194,6 +187,16 @@ class StudioDshCapabilityService:
     @property
     def profile(self) -> str:
         return self._profile
+
+    async def application_lease(self) -> DshMcpConnectorLease:
+        """Reuse the live generation for browser assets and long-lived streams.
+
+        Management mutations dispose the generation explicitly. Avoid running
+        Profile projection and health checks for every CSS/JS/RPC request.
+        """
+        if self._lease is not None and self._host is not None and self._host.pid is not None:
+            return self._lease
+        return await self.connector_lease()
 
     async def has_enabled_profile_plugins(self) -> bool:
         """Inspect Profile metadata without starting the capability sidecar."""
@@ -513,6 +516,8 @@ class StudioDshCapabilityService:
                 projection=projection,
                 dsh_home=self._dsh_home,
                 cwd=self._workspace,
+                studio_index=Path(__file__).with_name("static") / "index.html",
+                studio_models=self.model_projection() if self.model_projection else None,
                 max_argument_bytes=self._max_argument_bytes,
                 max_result_bytes=self._max_result_bytes,
                 max_request_bytes=self._max_argument_bytes + 16 * 1024,
@@ -1015,5 +1020,4 @@ __all__ = [
     "DshCapabilityRuntimeSnapshot",
     "DshCapabilitySnapshot",
     "StudioDshCapabilityService",
-    "dsh_ui_mcp_call_id",
 ]

@@ -114,7 +114,7 @@ async def load_mcp_tools(spec: McpToolSpec) -> tuple[Any, list[HarnessTool]]:
         if not isinstance(error, Exception):
             raise
         raise RuntimeError(
-            f"Harness MCP server {spec.name!r} failed to start"
+            f"Harness MCP server {spec.name!r} at {spec.url} failed to start"
         ) from None
 
     available_names = {str(tool.name) for tool in native_tools}
@@ -126,14 +126,11 @@ async def load_mcp_tools(spec: McpToolSpec) -> tuple[Any, list[HarnessTool]]:
     if missing_names:
         await toolset.close()
         raise RuntimeError(
-            f"Harness MCP server {spec.name!r} did not expose configured "
-            f"tool(s): {missing_names}"
+            f"Harness MCP server {spec.name!r} did not expose configured tool(s): {missing_names}"
         )
     if not native_tools:
         await toolset.close()
-        raise RuntimeError(
-            f"Harness MCP server {spec.name!r} exposed no callable tools"
-        )
+        raise RuntimeError(f"Harness MCP server {spec.name!r} exposed no callable tools")
 
     tools: list[HarnessTool] = []
     for native_tool in native_tools:

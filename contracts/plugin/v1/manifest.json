@@ -2,7 +2,7 @@
   "contract_set": "plugin/v1",
   "digest_algorithm": "sha256",
   "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
-  "aggregate_digest": "fe7503f8d188e93359cb50042b9c988101988eaec6d3b7cc5da1a70201544985",
+  "aggregate_digest": "42021419e8dce3d3843a2dbfae5d61138b6aef9b558360aedf513650970ef0ce",
   "files": [
     {
       "path": "agent-bundle-manifest-v2.schema.json",
@@ -31,8 +31,8 @@
     },
     {
       "path": "dsh-profile-capability-host.schema.json",
-      "sha256": "acd6de38b0fdcb122aed791258be272be9d270d307c9eb70d4ab174aab6d8c39",
-      "bytes": 3199
+      "sha256": "987a8811cb18ce4ca5f4c589d671078f38db9b7fb0cbafae8f622d3d4ede6198",
+      "bytes": 3356
     },
     {
       "path": "fixtures/agent-bundle-manifest-v2.json",
@@ -61,8 +61,8 @@
     },
     {
       "path": "fixtures/dsh-profile-capability-host.json",
-      "sha256": "def5b90affd18c0a67db868c93c6c309eff73829c1d01465a2622b84f1d56225",
-      "bytes": 1408
+      "sha256": "9d7fddbc6d3681e72dcfd4abc7380fda5bcd64d734a4e3b5032c38af8e760bae",
+      "bytes": 1426
     },
     {
       "path": "fixtures/plugin-ecosystem-bridge-codex.json",

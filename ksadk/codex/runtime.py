@@ -176,9 +176,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     projected_skills.append(
                         {
                             **item,
-                            "path": self._bound_skill_paths.get(
-                                name, str(item.get("path") or "")
-                            ),
+                            "path": self._bound_skill_paths.get(name, str(item.get("path") or "")),
                         }
                     )
                 request = request.model_copy(
@@ -316,7 +314,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         elif payload.kind == "hitl_answer":
             resolved = await self._client.resolve_interaction(
                 payload.call_id,
-                {key: value for key, value in raw.items() if key != "decision"},
+                raw,
             )
         else:
             raise ValueError("Codex live submit requires approval_decision or hitl_answer")
@@ -396,6 +394,12 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self._do_not_persist.add(handle.run_id)
         await self.close_all()
 
+    async def compact_session(self, thread_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        """Compact an existing native session using this build's client."""
+        await self._bootstrap_plugins_once()
+        await self._client.resume_thread(thread_id, config)
+        return await self._client.compact_thread(thread_id)
+
     async def close_all(self) -> None:
         """Dispose every thread and the activation-owned App Server process.
 
@@ -409,9 +413,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             return
         self._closed = True
         threads = tuple(self._threads.values())
-        active_threads = tuple(
-            thread for thread in threads if thread.streaming and not thread.done
-        )
+        active_threads = tuple(thread for thread in threads if thread.streaming and not thread.done)
         for thread in active_threads:
             thread.interrupt_event.set()
         try:
@@ -498,9 +500,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     ) -> AsyncIterator[RuntimeEvent]:
         request = thread.__dict__.get("_start_request") or thread.__dict__.get("_request_config")
         adapter = CodexEventAdapter(
-            known_thread_ids=(thread.thread_id,)
-            if thread.continuation_preexisting
-            else (),
+            known_thread_ids=(thread.thread_id,) if thread.continuation_preexisting else (),
         )
         context = CodexAdapterContext(run_id=self._event_run_id(handle))
         run_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
@@ -572,8 +572,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     # finish promptly, close the transport *before* awaiting
                     # the waiter so MessageRouter.fail_all can release it.
                     drain_deadline = (
-                        asyncio.get_running_loop().time()
-                        + _INTERRUPT_DRAIN_TIMEOUT_SECONDS
+                        asyncio.get_running_loop().time() + _INTERRUPT_DRAIN_TIMEOUT_SECONDS
                     )
                     while True:
                         drain_remaining = max(
@@ -617,9 +616,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 # autoApprovalReview 不产生 canonical 事件(adapter 静默),但
                 # cancel 级联丢弃审批的契约依赖 runtime 的 pending 跟踪。
                 chunk_method = (
-                    str((chunk or {}).get("method") or "")
-                    if isinstance(chunk, dict)
-                    else ""
+                    str((chunk or {}).get("method") or "") if isinstance(chunk, dict) else ""
                 )
                 if chunk_method in {
                     "item/autoApprovalReview/started",
@@ -627,9 +624,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 }:
                     review_params = chunk.get("params") or {}
                     review_id = str(
-                        review_params.get("reviewId")
-                        or review_params.get("review_id")
-                        or ""
+                        review_params.get("reviewId") or review_params.get("review_id") or ""
                     )
                     if review_id:
                         if chunk_method.endswith("started"):
@@ -703,9 +698,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             framework="codex",
             native_run_id=handle.run_id,
             metadata={
-                "agent_id": (
-                    str(request.agent_id or "codex") if request is not None else "codex"
-                ),
+                "agent_id": (str(request.agent_id or "codex") if request is not None else "codex"),
                 "user_id": (
                     request.user_id
                     if request is not None
@@ -730,8 +723,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             "user_id": str(getattr(request, "user_id", "") or "user"),
             "session_id": str(getattr(request, "session_id", "") or ""),
             "invocation_id": str(
-                (getattr(request, "metadata", None) or {}).get("invocation_id")
-                or ""
+                (getattr(request, "metadata", None) or {}).get("invocation_id") or ""
             ),
         }
         merged = {**caller_scope, **dict(event.source.metadata or {})}
@@ -766,9 +758,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             "source": self._make_source(handle),
         }
 
-    def _make_run_canceled(
-        self, handle: RunHandle, *, reason: str | None = None
-    ) -> RunCanceled:
+    def _make_run_canceled(self, handle: RunHandle, *, reason: str | None = None) -> RunCanceled:
         framework = "codex"
         run_id = self._event_run_id(handle)
         scope_id = stable_scope_id(framework, run_id)
@@ -804,9 +794,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             reason=reason,
         )
 
-    def _make_run_failed(
-        self, handle: RunHandle, error_message: str
-    ) -> RunFailed:
+    def _make_run_failed(self, handle: RunHandle, error_message: str) -> RunFailed:
         framework = "codex"
         run_id = self._event_run_id(handle)
         scope_id = stable_scope_id(framework, run_id)
@@ -938,8 +926,7 @@ def _request_prompt(request: StartRequest) -> Any:
 
 def _is_structured_turn_input(value: Any) -> bool:
     return isinstance(value, list) and any(
-        isinstance(item, dict) and isinstance(item.get("type"), str)
-        for item in value
+        isinstance(item, dict) and isinstance(item.get("type"), str) for item in value
     )
 
 
@@ -981,17 +968,12 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
                 text_replaced = True
                 if text:
                     native_items.append(TextInput(text=text))
-            elif kind in {"image", "input_image"} and (
-                item.get("url") or item.get("image_url")
-            ):
-                native_items.append(
-                    ImageInput(url=str(item.get("url") or item.get("image_url")))
-                )
+            elif kind in {"image", "input_image"} and (item.get("url") or item.get("image_url")):
+                native_items.append(ImageInput(url=str(item.get("url") or item.get("image_url"))))
             elif kind == "localImage" and item.get("path"):
                 native_items.append(LocalImageInput(path=str(item["path"])))
             elif kind == "input_file" and (
-                item.get("file_data")
-                or str(item.get("file_url") or "").startswith("data:")
+                item.get("file_data") or str(item.get("file_url") or "").startswith("data:")
             ):
                 file_path = _materialize_inline_file(
                     str(item.get("file_data") or item.get("file_url")),
@@ -1004,12 +986,8 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
                     # attachment context as well.  Small textual files are
                     # inlined deterministically; binary/large files expose a
                     # sandbox-readable path that Codex can inspect with tools.
-                    native_items.append(
-                        TextInput(text=_attachment_context_text(file_path, item))
-                    )
-                    native_items.append(
-                        MentionInput(name=file_path.name, path=str(file_path))
-                    )
+                    native_items.append(TextInput(text=_attachment_context_text(file_path, item)))
+                    native_items.append(MentionInput(name=file_path.name, path=str(file_path)))
             elif kind == "mention" and item.get("path"):
                 native_items.append(
                     MentionInput(

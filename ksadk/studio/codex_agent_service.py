@@ -353,16 +353,16 @@ class CodexAgentService:
             elif transport in {"http", "sse"} and url:
                 entry = {
                     "name": descriptor.name,
-                    "transport": transport,
                     "url": url,
                 }
+                if transport == "sse":
+                    entry["transport"] = transport
             else:
                 continue
             env_refs = contract.get("envRefs") or {}
             if transport == "stdio" and isinstance(env_refs, dict) and env_refs:
                 entry["env_refs"] = {
-                    str(env_name): str(reference)
-                    for env_name, reference in env_refs.items()
+                    str(env_name): str(reference) for env_name, reference in env_refs.items()
                 }
             elif isinstance(env_refs, dict):
                 env_key = ""
@@ -565,8 +565,7 @@ class CodexAgentService:
         bindings = self._model_bindings(manifest)
         mcp_bindings, _unresolved_mcp = self._mcp_bindings(manifest)
         skill_bindings = [
-            CapabilityBinding(resource_id=resource_id)
-            for resource_id in (manifest.skills or [])
+            CapabilityBinding(resource_id=resource_id) for resource_id in (manifest.skills or [])
         ]
         # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
         # Manifest 已在 model_validate 时严格校验；这里直接恢复
@@ -758,9 +757,7 @@ class CodexAgentService:
         unresolved: builtins.list[dict[str, str]] = []
         for entry in manifest.mcp_servers or []:
             name = str(entry.get("name") or "").strip()
-            transport = str(
-                entry.get("transport") or ("http" if entry.get("url") else "")
-            ).lower()
+            transport = str(entry.get("transport") or ("http" if entry.get("url") else "")).lower()
             address = (
                 json.dumps(
                     [str(entry.get("command") or ""), *(entry.get("args") or [])],
@@ -773,10 +770,12 @@ class CodexAgentService:
             if resource_id:
                 bindings.append(CapabilityBinding(resource_id=resource_id))
             else:
-                unresolved.append({
-                    "name": name or "未命名 MCP",
-                    "reason": "not-in-resource-catalog",
-                })
+                unresolved.append(
+                    {
+                        "name": name or "未命名 MCP",
+                        "reason": "not-in-resource-catalog",
+                    }
+                )
         return bindings, unresolved
 
     @staticmethod

@@ -55,7 +55,7 @@ def _dsh_command() -> tuple[str, ...] | None:
 
 
 def _dsh_profile() -> str:
-    return os.environ.get(DSH_PROFILE_ENV, "").strip() or "ksadk"
+    return os.environ.get(DSH_PROFILE_ENV, "").strip() or "web"
 
 
 def _codex_inventory_payload(value: Any) -> dict[str, Any]:
@@ -211,6 +211,11 @@ def _call_dsh_developer(operation):
         stage = getattr(err, "stage", None)
         if isinstance(stage, str) and stage:
             details["stage"] = stage
+        diagnostic = getattr(err, "diagnostic", None)
+        if isinstance(err, DshPluginSourceError):
+            diagnostic = str(err)
+        if isinstance(diagnostic, str) and diagnostic:
+            details["reason"] = diagnostic
         abort_with_cli_error(
             CLIError(
                 code=code,

@@ -6,6 +6,7 @@ delegates every turn to ``HarnessRuntimeAdapter`` through
 history therefore stay on the existing conversation pipeline; this module does
 not create another event stream or transcript store.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -61,23 +62,15 @@ class HarnessTurnRequest:
         if isinstance(value, cls):
             return value
         if not isinstance(value, Mapping):
-            raise PluginHostError(
-                "harness_input_invalid", "Harness input must be an object"
-            )
+            raise PluginHostError("harness_input_invalid", "Harness input must be an object")
         user_id = str(value.get("user_id") or value.get("userId") or "").strip()
         if not user_id:
-            raise PluginHostError(
-                "harness_input_invalid", "Harness input requires user_id"
-            )
+            raise PluginHostError("harness_input_invalid", "Harness input requires user_id")
         raw_messages = value.get("messages")
         if raw_messages is None and value.get("input") is not None:
             raw_messages = [{"role": "user", "content": value.get("input")}]
-        if not isinstance(raw_messages, Sequence) or isinstance(
-            raw_messages, (str, bytes)
-        ):
-            raise PluginHostError(
-                "harness_input_invalid", "Harness input requires messages"
-            )
+        if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, (str, bytes)):
+            raise PluginHostError("harness_input_invalid", "Harness input requires messages")
         messages: list[Mapping[str, Any]] = []
         for index, message in enumerate(raw_messages):
             if not isinstance(message, Mapping):
@@ -96,24 +89,18 @@ class HarnessTurnRequest:
             raise PluginHostError(
                 "harness_input_invalid", "Harness turn must end with a user message"
             )
-        session_id = str(
-            value.get("session_id") or value.get("sessionId") or ""
-        ).strip()
+        session_id = str(value.get("session_id") or value.get("sessionId") or "").strip()
         model = str(value.get("model") or "").strip()
         metadata = value.get("request_metadata") or value.get("requestMetadata")
         if metadata is not None and not isinstance(metadata, Mapping):
-            raise PluginHostError(
-                "harness_input_invalid", "request_metadata must be an object"
-            )
+            raise PluginHostError("harness_input_invalid", "request_metadata must be an object")
         return cls(
             user_id=user_id,
             session_id=session_id or None,
             messages=tuple(messages),
             model=model or None,
             request_metadata=dict(metadata) if metadata is not None else None,
-            invocation_id=str(
-                value.get("invocation_id") or value.get("invocationId") or ""
-            ).strip()
+            invocation_id=str(value.get("invocation_id") or value.get("invocationId") or "").strip()
             or None,
         )
 
@@ -141,9 +128,7 @@ class HarnessMCPActivationSource(Protocol):
 
 @runtime_checkable
 class HarnessSkillSource(Protocol):
-    def harness_skill(
-        self, bundle: ResolvedPluginBundle
-    ) -> HarnessSkillContribution: ...
+    def harness_skill(self, bundle: ResolvedPluginBundle) -> HarnessSkillContribution: ...
 
 
 @runtime_checkable
@@ -276,9 +261,7 @@ class KsADKHarnessProviderRuntime:
         capabilities: PluginExecutionContext,
     ) -> "KsADKHarnessActivation":
         if not self._ready or self._disposed:
-            raise PluginHostError(
-                "harness_provider_unavailable", "Harness provider is not ready"
-            )
+            raise PluginHostError("harness_provider_unavailable", "Harness provider is not ready")
 
         async with AsyncExitStack() as mcp_cleanup:
             mcp_specs: list[McpToolSpec] = []
@@ -634,9 +617,7 @@ def _chat_history(history: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if role not in {"user", "assistant", "tool"}:
             continue
         content = item.get("content")
-        if isinstance(content, Sequence) and not isinstance(
-            content, (str, bytes, bytearray)
-        ):
+        if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
             segments = [
                 str(part.get("text") or "")
                 for part in content

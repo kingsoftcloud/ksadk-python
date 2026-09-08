@@ -4,6 +4,7 @@ The host has no knowledge of AgentControl, SessionEvent sequencing, or cloud
 deployment.  It only stages a fully resolved profile, atomically swaps it once
 healthy, and disposes owned effects in reverse dependency order.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -89,8 +90,7 @@ class PluginExecutionContext:
         return tuple(
             binding
             for binding in self.bindings
-            if binding.definition == definition
-            and (slot is None or binding.slot == slot)
+            if binding.definition == definition and (slot is None or binding.slot == slot)
         )
 
     def require(
@@ -407,11 +407,7 @@ class PluginHost:
         """Drain and dispose active plus retired graphs; there is no implicit restart."""
 
         async with self._transaction_lock:
-            graphs = [
-                graph
-                for graph in [self._active, *self._retired]
-                if graph is not None
-            ]
+            graphs = [graph for graph in [self._active, *self._retired] if graph is not None]
             self._active = None
             self._retired = []
             if graphs:
@@ -492,9 +488,7 @@ class PluginHost:
     def _require_bundle_graph(self, bundle: ResolvedPluginBundle) -> _ActiveGraph:
         graph = self._active
         if graph is None:
-            raise PluginHostError(
-                "plugin_profile_inactive", "no plugin profile is active"
-            )
+            raise PluginHostError("plugin_profile_inactive", "no plugin profile is active")
         if not self._bundle_matches_graph(bundle, graph):
             raise PluginHostError(
                 "plugin_bundle_profile_mismatch",
@@ -515,9 +509,7 @@ class PluginHost:
         bundle: ResolvedPluginBundle,
     ) -> PreparedAgent:
         capabilities = self._execution_context(graph)
-        provider_binding = capabilities.require(
-            "agent.provider/v1", slot="agent.execution"
-        )
+        provider_binding = capabilities.require("agent.provider/v1", slot="agent.execution")
         provider = provider_binding.runtime
         if not isinstance(provider, ExecutableAgentProvider):
             raise PluginHostError(
@@ -542,15 +534,11 @@ class PluginHost:
             try:
                 await activation.start()
             except Exception as error:  # noqa: BLE001 - activation boundary
-                raise PluginHostError(
-                    "agent_activation_start_failed", str(error)
-                ) from error
+                raise PluginHostError("agent_activation_start_failed", str(error)) from error
             try:
                 healthy = await activation.health()
             except Exception as error:  # noqa: BLE001 - activation boundary
-                raise PluginHostError(
-                    "agent_activation_health_failed", str(error)
-                ) from error
+                raise PluginHostError("agent_activation_health_failed", str(error)) from error
             if not healthy:
                 raise PluginHostError(
                     "agent_activation_health_failed",

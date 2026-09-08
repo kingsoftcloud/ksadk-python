@@ -60,10 +60,10 @@ CREDENTIAL_FREE_NATIVE_TESTS = (
 MANAGED_DSH_TOOLCHAIN_TESTS = (
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
     "tests/plugins/test_dsh_node_provider_e2e.py",
+    "tests/plugins/test_dsh_capability_host_e2e.py",
+    "tests/plugins/test_dsh_upstream_plugin_e2e.py",
 )
 BROWSER_GATES = (
-    "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
-    "tests/studio/e2e/dsh_ui_sandbox_browser_e2e.py",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
@@ -263,11 +263,7 @@ def validate_distribution_archives(
             for prefix in REQUIRED_STATIC_PREFIXES
             if not any(name.startswith(prefix) for name in names)
         ]
-        leaked = sorted(
-            name
-            for name in names
-            if _is_forbidden_release_member(name)
-        )
+        leaked = sorted(name for name in names if _is_forbidden_release_member(name))
         if missing_files or missing_prefixes or leaked:
             details = []
             if missing_files:
@@ -304,37 +300,8 @@ def validate_generated_static_tracking_policy(
     except subprocess.CalledProcessError:
         if (root / "export-manifest.json").is_file():
             return
-        raise Phase2PreflightError(
-            "cannot verify generated static tracking without Git metadata"
-        )
+        raise Phase2PreflightError("cannot verify generated static tracking without Git metadata")
     tracked = [line for line in completed.stdout.splitlines() if line.strip()]
-    if public_export:
-        tracked_set = set(tracked)
-        required_files = {
-            "ksadk/server/static/index.html",
-            "ksadk/studio/static/index.html",
-        }
-        missing_files = sorted(required_files - tracked_set)
-        missing_asset_trees = [
-            prefix
-            for prefix in ("ksadk/server/static/assets/", "ksadk/studio/static/assets/")
-            if not any(path.startswith(prefix) for path in tracked)
-        ]
-        leaked_sources = sorted(
-            path
-            for path in tracked
-            if path.endswith((".map", ".ts", ".tsx"))
-        )
-        if missing_files or missing_asset_trees or leaked_sources:
-            details = []
-            if missing_files:
-                details.append("missing tracked static files: " + ", ".join(missing_files))
-            if missing_asset_trees:
-                details.append("missing tracked static trees: " + ", ".join(missing_asset_trees))
-            if leaked_sources:
-                details.append("tracked frontend source leaked: " + ", ".join(leaked_sources[:5]))
-            raise Phase2PreflightError("invalid public static export: " + "; ".join(details))
-        return
     if tracked:
         raise Phase2PreflightError(
             "generated frontend static files must remain untracked: " + ", ".join(tracked[:5])
@@ -342,17 +309,8 @@ def validate_generated_static_tracking_policy(
 
 
 def is_public_export(root: Path = ROOT) -> bool:
-    """Return whether *root* is a source-free public release checkout.
-
-    Public release branches deliberately track the compiled Studio/Hosted UI
-    payload while excluding editable frontend sources.  Internal development
-    checkouts do the inverse, so both the CLI gate and its regression tests
-    must derive the policy from the same repository shape.
-    """
-    return (
-        (root / "export-manifest.json").is_file()
-        and not (root / "ksadk/studio/react-ui/package.json").is_file()
-    )
+    """Identify a clean-export checkout, which includes frontend build inputs."""
+    return (root / "export-manifest.json").is_file()
 
 
 def _run(
@@ -719,28 +677,22 @@ def run_release_test_gates() -> dict[str, str]:
         },
     )
     # The managed DSH toolchain E2E suite drives the real ``dsh`` CLI via a
-    # pinned npm toolchain.  Its three cases fail on the headless ubuntu CI
-    # runner with ``dsh`` exit 127 (the pinned toolchain install does not land
-    # a usable binary there), while they pass on developer machines with a
-    # working ``dsh``.  Keep the suite in preflight as advisory for 0.8.3 so a
-    # CI-only toolchain gap does not block release; track and re-enable as a
-    # blocking gate once the CI toolchain install is reliable.
-    try:
-        _run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-q",
-                *MANAGED_DSH_TOOLCHAIN_TESTS,
-            ],
-            environment={"KSADK_DSH_TOOLCHAIN_E2E": "1"},
-        )
-    except (Phase2PreflightError, subprocess.CalledProcessError):
-        print(
-            "advisory: managed DSH toolchain E2E failed; non-blocking for 0.8.3",
-            file=sys.stderr,
-        )
+    # pinned npm toolchain, including a real upstream Cordis plugin (T5) and
+    # the single full-Core Web UI and MCP process. These are blocking release gates
+    # for the plugin ecosystem work; a failure here must stop the release.
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            *MANAGED_DSH_TOOLCHAIN_TESTS,
+        ],
+        environment={
+            "KSADK_DSH_TOOLCHAIN_E2E": "1",
+            "KSADK_DSH_UPSTREAM_E2E": "1",
+        },
+    )
     for browser_gate in BROWSER_GATES:
         python_path = os.pathsep.join(
             value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value

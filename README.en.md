@@ -36,18 +36,18 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
-## 0.8.3 Runtime Architecture
+## 0.8.4 Runtime Architecture
 
-KsADK 0.8.3 converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:
+KsADK 0.8.4 converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:
 
 - **Trusted kernel**: owns concurrency, cancellation, recovery, state consistency, and runtime safety boundaries.
 - **Harness execution layer**: owns composition, Activation, lifecycle, and shared-capability injection; each Activation selects exactly one Provider.
 - **Pluggable Providers**: Codex, KsADK Harness, DSH/Cordis, and Subagent run behind one Harness contract while retaining native thread, checkpoint, and event semantics.
 - **Unified events**: `RuntimeEvent(schema_version=2)` is the event source of truth for storage, replay, APIs, Studio, and hosted surfaces; v1 is read-only compatibility projection only.
 - **Controlled plugins**: DSH Bundle/Profile uses a pinned toolchain, immutable source digests, and rollback on failed upgrades; official Codex plugins remain owned by Codex App Server.
-- **Local development loop**: Studio covers authoring, builds, debugging, evaluation, and Scheduler Lite; the bundled UI is pinned to `@kingsoftcloud/ksadk-web@0.3.4`.
+- **Local development loop**: Studio covers authoring, builds, debugging, evaluation, and Scheduler Lite; the bundled UI is pinned to `@kingsoftcloud/ksadk-web@0.3.5`.
 
-Start with the [0.8.3 runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See the [changelog](CHANGELOG.md) and PyPI badge for version history and publication status.
+Start with the [0.8.4 runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See the [changelog](CHANGELOG.md) and PyPI badge for version history and publication status.
 
 ### RuntimeEvent Schema v2 Contract
 

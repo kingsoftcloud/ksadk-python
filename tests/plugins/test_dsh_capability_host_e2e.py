@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from ksadk.plugins.bridges.dsh import DshProfilePluginBridge
+from ksadk.plugins.bridges.dsh import DshProfilePluginBridge, dsh_subprocess_environment
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.providers.dsh_capabilities import DshProfileCapabilityHost
 
@@ -35,10 +37,20 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
     dsh_home = tmp_path / "dsh-home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    command = toolchain.require_command()
+    subprocess.run(
+        [*command, "--profile", "web", "--dump-config"],
+        cwd=workspace,
+        env=dsh_subprocess_environment(dsh_home=dsh_home),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     bridge = DshProfilePluginBridge(
         dsh_home=dsh_home,
-        profile="ksadk-tool-capability-e2e",
-        dsh_command=toolchain.require_command(),
+        profile="web",
+        dsh_command=command,
         cwd=workspace,
     )
     host: DshProfileCapabilityHost | None = None
@@ -56,7 +68,7 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
         installed_manifest = (
             dsh_home
             / "profiles"
-            / "ksadk-tool-capability-e2e"
+            / "web"
             / "node_modules"
             / "@ksadk-test"
             / "dsh-node-tool-plugin"
@@ -72,7 +84,21 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
             cwd=workspace,
         )
         lease = await host.start()
+        # An independently running DSH (or another Studio workspace) may own
+        # the default port. The supervised Core must use an OS-assigned port.
+        assert urlsplit(lease.endpoint).port != 3080
+        assert lease.web_route_count == 2
         assert any(tool.name == "fixture_echo" for tool in host.descriptor.tools)
+        async with httpx.AsyncClient(
+            follow_redirects=False, timeout=10, trust_env=False
+        ) as browser:
+            handoff = await browser.get(lease.browser_url())
+            assert handoff.status_code == 303
+            assert handoff.headers["location"] == "/"
+            assert "HttpOnly" in handoff.headers["set-cookie"]
+            core = await browser.get(f"http://127.0.0.1:{handoff.url.port}/")
+            assert core.status_code == 200
+            assert "<!doctype html" in core.text.lower()
         async with httpx.AsyncClient(
             headers=lease.headers(), timeout=10, trust_env=False
         ) as mcp_client:

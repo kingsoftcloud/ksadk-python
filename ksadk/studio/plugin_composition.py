@@ -160,9 +160,7 @@ class StudioPluginCompositionCompiler:
                     "context.contributor/v1",
                     "context.bundle",
                     config={
-                        "paths": ["instructions/soul.md"]
-                        if draft.spec.soul is not None
-                        else [],
+                        "paths": ["instructions/soul.md"] if draft.spec.soul is not None else [],
                         "maxChars": draft.spec.context.max_input_tokens * 4,
                     },
                 )
@@ -238,10 +236,7 @@ class StudioPluginCompositionCompiler:
                 status_code=422,
                 field="spec.runtime.providerRef",
             )
-        if (
-            manifest.metadata.id != plugin_id
-            or manifest.metadata.version != version
-        ):
+        if manifest.metadata.id != plugin_id or manifest.metadata.version != version:
             raise StudioError(
                 "AGENT_PROVIDER_REGISTRATION_MISMATCH",
                 "DSH AgentProvider 注册信息与精确引用不一致",
@@ -249,15 +244,9 @@ class StudioPluginCompositionCompiler:
                 field="spec.runtime.providerRef",
             )
         offers = [
-            offer
-            for offer in manifest.spec.provides
-            if offer.definition == _PROVIDER_DEFINITION
+            offer for offer in manifest.spec.provides if offer.definition == _PROVIDER_DEFINITION
         ]
-        if (
-            len(offers) != 1
-            or offers[0].slot != _PROVIDER_SLOT
-            or offers[0].mode != "unique"
-        ):
+        if len(offers) != 1 or offers[0].slot != _PROVIDER_SLOT or offers[0].mode != "unique":
             raise StudioError(
                 "AGENT_PROVIDER_MANIFEST_INVALID",
                 "插件必须唯一提供 agent.provider/v1 的 agent.execution 槽位",
@@ -272,8 +261,7 @@ class StudioPluginCompositionCompiler:
                 field="spec.runtime.providerRef",
             )
         missing_permissions = sorted(
-            set(manifest.spec.permissions)
-            - set(draft.spec.security.allowed_permissions)
+            set(manifest.spec.permissions) - set(draft.spec.security.allowed_permissions)
         )
         if missing_permissions:
             raise StudioError(
@@ -332,8 +320,7 @@ class StudioPluginCompositionCompiler:
                         not isinstance(tool_filter, list)
                         or not tool_filter
                         or any(
-                            not isinstance(item, str) or not item.strip()
-                            for item in tool_filter
+                            not isinstance(item, str) or not item.strip() for item in tool_filter
                         )
                         or len(tool_filter) != len(set(tool_filter))
                         or len(tool_filter) > 32
@@ -361,26 +348,20 @@ class StudioPluginCompositionCompiler:
                             field="spec.bindings.mcpServers",
                             details={"unknownTools": unknown_tools},
                         )
-                    if (
-                        DSH_PROFILE_TOOL_PERMISSION
-                        not in draft.spec.security.allowed_permissions
-                    ):
+                    if DSH_PROFILE_TOOL_PERMISSION not in draft.spec.security.allowed_permissions:
                         raise StudioError(
                             "DSH_MCP_HOST_PERMISSION_REQUIRED",
                             "DSH Profile 工具在宿主用户权限下运行，必须显式授权",
                             status_code=422,
                             field="spec.security.allowedPermissions",
-                            details={
-                                "missingPermissions": [DSH_PROFILE_TOOL_PERMISSION]
-                            },
+                            details={"missingPermissions": [DSH_PROFILE_TOOL_PERMISSION]},
                         )
                     prefix = config.get("toolNamePrefix")
                     if prefix is not None and (
                         not isinstance(prefix, str)
                         or not prefix.strip()
                         or len(prefix.strip()) > 16
-                        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,15}", prefix.strip())
-                        is None
+                        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,15}", prefix.strip()) is None
                     ):
                         raise StudioError(
                             "DSH_MCP_BINDING_CONFIG_INVALID",
@@ -397,9 +378,7 @@ class StudioPluginCompositionCompiler:
                             status_code=422,
                             field="spec.bindings.mcpServers",
                         )
-                    reserved_aliases = sorted(
-                        set(aliases) & HARNESS_SANDBOX_TOOL_NAMES
-                    )
+                    reserved_aliases = sorted(set(aliases) & HARNESS_SANDBOX_TOOL_NAMES)
                     if reserved_aliases:
                         raise StudioError(
                             "DSH_MCP_TOOL_ALIAS_RESERVED",
@@ -421,9 +400,7 @@ class StudioPluginCompositionCompiler:
                     )
                 else:
                     plugin_id = (
-                        WORKSPACE_MCP_PLUGIN_ID
-                        if kind == "mcp"
-                        else WORKSPACE_SKILL_PLUGIN_ID
+                        WORKSPACE_MCP_PLUGIN_ID if kind == "mcp" else WORKSPACE_SKILL_PLUGIN_ID
                     )
                     plugin_version = BUILTIN_PLUGIN_VERSION
                 materializations[binding.resource_id] = ResourcePluginMaterialization(
@@ -432,5 +409,6 @@ class StudioPluginCompositionCompiler:
                     config=config,
                 )
         return materializations
+
 
 __all__ = ["StudioPluginCompositionCompiler"]

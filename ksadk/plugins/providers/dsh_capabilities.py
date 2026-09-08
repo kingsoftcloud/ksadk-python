@@ -85,6 +85,7 @@ _NODE_MEMORY_LIMIT_MB = 512
 _PROCESS_GROUP_ISOLATION_AVAILABLE = os.name == "posix"
 _READY_PREFIX = "@@KSADK_DSH_CAPABILITY_READY@@"
 _TOKEN_PREFIX = "@@KSADK_DSH_CAPABILITY_TOKEN@@"
+_CORE_TOKEN_PREFIX = "@@KSADK_DSH_CORE_TOKEN@@"
 _SCOPED_TOKEN_LIFETIME_SECONDS = 10 * 60
 
 
@@ -204,6 +205,7 @@ class DshProfileCapabilityReady(PluginContractModel):
     endpoint: str
     inventory_digest: str
     tools: tuple[DshCapabilityTool, ...] = Field(max_length=2048)
+    web_route_count: int = Field(ge=2)
 
     @field_validator("host_version", "dsh_version")
     @classmethod
@@ -322,6 +324,8 @@ class DshMcpConnectorLease:
     profile_digest: str
     descriptor_digest: str
     _bearer_token: str = field(repr=False)
+    _browser_token: str = field(repr=False, default="")
+    web_route_count: int = 0
     definition: Literal["mcp.connector/v1"] = "mcp.connector/v1"
     transport: Literal["streamable-http"] = "streamable-http"
     protocol_version: Literal["2025-06-18"] = "2025-06-18"
@@ -407,6 +411,17 @@ class DshMcpConnectorLease:
         if len(token) > 12 * 1024:
             raise ValueError("Resource scope exceeds header size limit")
         return token
+
+    def browser_url(self) -> str:
+        """Return the one-time full Core DSH browser handoff URL."""
+
+        if self.web_route_count < 1 or not self._browser_token:
+            raise PluginHostError(
+                "dsh_core_web_unavailable",
+                "The selected DSH Profile does not expose the Core Web application",
+            )
+        parsed = urlsplit(self.endpoint)
+        return f"http://127.0.0.1:{parsed.port}/?token={self._browser_token}"
 
     def bearer_token_for_runtime(self, tool_aliases: Mapping[str, str]) -> str:
         """Mint a generation-bound token limited to explicit tool names."""
@@ -549,6 +564,8 @@ class DshProfileCapabilityHost:
         cwd: Path | None = None,
         environment: Mapping[str, str] | None = None,
         node_command: str | Path | None = None,
+        studio_index: Path | None = None,
+        studio_models: Any = None,
         startup_timeout: float = 15.0,
         shutdown_timeout: float = 5.0,
         health_timeout: float = 2.0,
@@ -557,6 +574,7 @@ class DshProfileCapabilityHost:
         max_result_bytes: int = 1024 * 1024,
         max_request_bytes: int = 1024 * 1024,
         max_in_flight: int = 64,
+        inventory_quiet: float = 2.0,
         circuit_failure_threshold: int = 3,
         circuit_recovery_timeout: float = 5.0,
     ) -> None:
@@ -594,7 +612,12 @@ class DshProfileCapabilityHost:
             max_request_bytes, "max_request_bytes", 8 * 1024 * 1024
         )
         self._max_in_flight = self._positive_int(max_in_flight, "max_in_flight", 1024)
+        self._inventory_quiet_ms = self._milliseconds(
+            inventory_quiet, "inventory_quiet", 5_000
+        )
         self._bundle = load_dsh_capability_bundle()
+        self._studio_index = studio_index
+        self._studio_models = studio_models
         self._circuit = DshCircuitBreaker(
             failure_threshold=circuit_failure_threshold,
             recovery_timeout=circuit_recovery_timeout,
@@ -606,6 +629,7 @@ class DshProfileCapabilityHost:
         self._monitor_task: asyncio.Task[None] | None = None
         self._ready_future: asyncio.Future[DshProfileCapabilityReady] | None = None
         self._token_future: asyncio.Future[str] | None = None
+        self._core_token_future: asyncio.Future[str] | None = None
         self._runtime_dir: Path | None = None
         self._resource_socket_path: Path | None = None
         self._lease: DshMcpConnectorLease | None = None
@@ -662,6 +686,8 @@ class DshProfileCapabilityHost:
             self._process_failure_recorded = False
             try:
                 environment = self._base_environment()
+                if self._studio_models is not None:
+                    environment.update(self._studio_models.environment)
                 await self._require_node_version(environment)
                 await self._verify_projection(environment)
                 runtime_dir = Path(tempfile.mkdtemp(prefix="ksadk-dsh-capability-"))
@@ -685,6 +711,11 @@ class DshProfileCapabilityHost:
                     self._projection.profile,
                     "--patch",
                     str(overlay),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "0",
+                    "--no-open",
                     cwd=str(self._cwd),
                     env=environment,
                     stdin=asyncio.subprocess.DEVNULL,
@@ -695,23 +726,27 @@ class DshProfileCapabilityHost:
                 self._process = process
                 ready_future = asyncio.get_running_loop().create_future()
                 token_future = asyncio.get_running_loop().create_future()
+                core_token_future = asyncio.get_running_loop().create_future()
                 self._ready_future = ready_future
                 self._token_future = token_future
+                self._core_token_future = core_token_future
                 self._stdout_task = asyncio.create_task(
                     self._capture_stream(
                         process.stdout,
                         self._stdout_tail,
                         ready_future=ready_future,
                         token_future=token_future,
+                        core_token_future=core_token_future,
                     )
                 )
                 self._stderr_task = asyncio.create_task(
                     self._capture_stream(process.stderr, self._stderr_tail)
                 )
                 self._monitor_task = asyncio.create_task(self._monitor_process(process))
-                ready, token = await self._wait_ready(
+                ready, token, core_token = await self._wait_ready(
                     ready_future,
                     token_future,
+                    core_token_future,
                     process,
                 )
                 self._validate_ready_fences(ready)
@@ -728,6 +763,8 @@ class DshProfileCapabilityHost:
                     profile_digest=ready.profile_digest,
                     descriptor_digest=descriptor.descriptor_digest,
                     _bearer_token=token,
+                    _browser_token=core_token,
+                    web_route_count=ready.web_route_count,
                 )
                 self._descriptor = descriptor
                 self._lease = lease
@@ -831,12 +868,37 @@ class DshProfileCapabilityHost:
             f"        maxResultBytes: {self._max_result_bytes}\n"
             f"        maxRequestBytes: {self._max_request_bytes}\n"
             f"        maxInFlight: {self._max_in_flight}\n"
+            f"        inventoryQuietMs: {self._inventory_quiet_ms}\n"
         )
         if self._resource_socket_path is not None:
             overlay += (
                 "- id: dsh-platform-resources\n"
                 "  config:\n"
                 f"    socketPath: {json.dumps(str(self._resource_socket_path))}\n"
+            )
+        if self._studio_index is not None:
+            app = self._bundle.root.parent / "ksadk-dsh-studio" / "index.mjs"
+            overlay += (
+                # Studio owns the settings outlet. The stock settings shell
+                # declares the same child slot and must not compete for it.
+                # Core's settings service, settingsScope and RPC stay enabled.
+                "- id: ui-settings-general\n"
+                "  disabled: true\n"
+                "- insert:\n"
+                "    - id: ksadk-studio-app\n"
+                f"      name: {json.dumps(app.as_uri())}\n"
+                "      config:\n"
+                f"        indexPath: {json.dumps(str(self._studio_index))}\n"
+            )
+        if self._studio_models is not None and self._studio_models.providers:
+            overlay += (
+                "- id: llm-pi-ai\n"
+                "  config:\n"
+                f"    providers: {json.dumps(self._studio_models.providers)}\n"
+                "- id: agent-default-model\n"
+                "  config:\n"
+                f"    provider: {json.dumps(self._studio_models.default_provider)}\n"
+                f"    model: {json.dumps(self._studio_models.default_model)}\n"
             )
         return overlay
 
@@ -951,12 +1013,17 @@ class DshProfileCapabilityHost:
         self,
         ready_future: asyncio.Future[DshProfileCapabilityReady],
         token_future: asyncio.Future[str],
+        core_token_future: asyncio.Future[str],
         process: asyncio.subprocess.Process,
-    ) -> tuple[DshProfileCapabilityReady, str]:
+    ) -> tuple[DshProfileCapabilityReady, str, str]:
         deadline = asyncio.get_running_loop().time() + self._startup_timeout
         while asyncio.get_running_loop().time() < deadline:
-            if ready_future.done() and token_future.done():
-                return ready_future.result(), token_future.result()
+            if ready_future.done() and token_future.done() and core_token_future.done():
+                return (
+                    ready_future.result(),
+                    token_future.result(),
+                    core_token_future.result(),
+                )
             if process.returncode is not None:
                 raise PluginHostError(
                     "dsh_capability_host_exited", "DSH capability host exited before readiness"
@@ -1015,11 +1082,13 @@ class DshProfileCapabilityHost:
         *,
         ready_future: asyncio.Future[DshProfileCapabilityReady] | None = None,
         token_future: asyncio.Future[str] | None = None,
+        core_token_future: asyncio.Future[str] | None = None,
     ) -> None:
         if stream is None:
             return
         ready_prefix = _READY_PREFIX.encode("ascii")
         token_prefix = _TOKEN_PREFIX.encode("ascii")
+        core_token_prefix = _CORE_TOKEN_PREFIX.encode("ascii")
         remainder = bytearray()
         discard_oversized_ready = False
         while True:
@@ -1043,6 +1112,10 @@ class DshProfileCapabilityHost:
                     self._capture_ready(line, ready_future)
                 elif line.startswith(token_prefix):
                     self._capture_token(line, token_future)
+                elif line.startswith(core_token_prefix):
+                    self._capture_token(
+                        line, core_token_future, prefix=_CORE_TOKEN_PREFIX
+                    )
                 else:
                     self._append_diagnostic(line, target)
             if remainder.startswith(ready_prefix):
@@ -1059,6 +1132,8 @@ class DshProfileCapabilityHost:
                 self._capture_ready(line, ready_future)
             elif line.startswith(token_prefix):
                 self._capture_token(line, token_future)
+            elif line.startswith(core_token_prefix):
+                self._capture_token(line, core_token_future, prefix=_CORE_TOKEN_PREFIX)
             else:
                 self._append_diagnostic(line, target)
 
@@ -1086,11 +1161,16 @@ class DshProfileCapabilityHost:
         future.set_result(ready)
 
     @staticmethod
-    def _capture_token(line: bytes, future: asyncio.Future[str] | None) -> None:
+    def _capture_token(
+        line: bytes,
+        future: asyncio.Future[str] | None,
+        *,
+        prefix: str = _TOKEN_PREFIX,
+    ) -> None:
         if future is None or future.done():
             return
         try:
-            token = line[len(_TOKEN_PREFIX.encode("ascii")) :].decode("ascii", errors="strict")
+            token = line[len(prefix.encode("ascii")) :].decode("ascii", errors="strict")
             if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None:
                 raise ValueError("invalid runtime token")
         except (UnicodeError, ValueError):
@@ -1120,7 +1200,14 @@ class DshProfileCapabilityHost:
         try:
             if process is not None:
                 await self._terminate_process_tree(process)
-            tasks = [self._stdout_task, self._stderr_task, self._monitor_task]
+            monitor = self._monitor_task
+            if monitor is not None and monitor is not asyncio.current_task() and not monitor.done():
+                # Lifecycle methods hold _lifecycle_lock. A monitor that has
+                # observed process exit may be waiting for that same lock, so
+                # waiting for it here would deadlock until the shutdown timeout.
+                monitor.cancel()
+                await asyncio.gather(monitor, return_exceptions=True)
+            tasks = [self._stdout_task, self._stderr_task]
             for task in tasks:
                 if task is None or task is asyncio.current_task():
                     continue
@@ -1142,6 +1229,10 @@ class DshProfileCapabilityHost:
             self._token_future = None
             if token_future is not None and not token_future.done():
                 token_future.cancel()
+            core_token_future = self._core_token_future
+            self._core_token_future = None
+            if core_token_future is not None and not core_token_future.done():
+                core_token_future.cancel()
             self._lease = None
             self._descriptor = None
             runtime_dir = self._runtime_dir
