@@ -7,6 +7,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
+import yaml
 from packaging.requirements import Requirement
 
 if sys.version_info >= (3, 11):
@@ -220,13 +221,17 @@ def test_ci_installs_node_before_building_generated_studio_static_assets():
         encoding="utf-8"
     )
 
-    adk_matrix_job = ci_workflow.split("  test-adk-matrix:\n", 1)[1].split(
-        "  test-", 1
-    )[0]
-    assert "actions/setup-node@v4" in adk_matrix_job
-    assert "make build-frontend" in adk_matrix_job
-    assert "actions/setup-node@v4" in release_workflow
-    assert "make build-frontend" in release_workflow
+    for workflow, job in [(ci_workflow, "test-adk-matrix"), (release_workflow, "artifacts")]:
+        steps = yaml.safe_load(workflow)["jobs"][job]["steps"]
+        setup = next(
+            index for index, step in enumerate(steps)
+            if step.get("uses", "").startswith("actions/setup-node@")
+        )
+        build = next(
+            index for index, step in enumerate(steps)
+            if "make build-frontend" in step.get("run", "")
+        )
+        assert setup < build, f"{job} must install Node before building Studio"
 
 
 def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
