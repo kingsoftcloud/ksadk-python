@@ -210,7 +210,11 @@ class AicpMemoryProvider:
             or any(char not in "0123456789abcdef" for char in operation_id)
         ):
             raise ValueError("MEMORY_WRITE_ARGUMENTS_INVALID")
-        session_id = "resource-" + operation_id
+        # AICP limits SessionId to 64 characters.  The broker operation ID is
+        # already a 64-character lowercase hex digest, so use it directly.
+        # Prefixing it made every real submission 73 characters long and the
+        # service rejected the write before extraction could start.
+        session_id = operation_id
         event = json.dumps({"role": "user", "parts": [{"text": request.content}]})
         with self._backend_call():
             try:
@@ -231,7 +235,7 @@ class AicpMemoryProvider:
         with self._backend_call():
             result = self._backend.get_extraction_status(
                 user_id=self.partition,
-                session_id="resource-" + query.operation_id,
+                session_id=query.operation_id,
             )
         return {
             "operationId": query.operation_id,

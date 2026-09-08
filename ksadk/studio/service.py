@@ -127,6 +127,7 @@ from ksadk.studio.repository import AgentDraftRepository, BuildRepository, load_
 from ksadk.studio.resource_authority import (
     ResourceAuthorityPolicy,
     SignedKnowledgeResourceAuthority,
+    resource_authority_policy_from_environment,
 )
 from ksadk.studio.resource_build_admission import (
     admit_resource_build,
@@ -207,6 +208,22 @@ class StudioService:
             dsh_capability_service
             or StudioDshCapabilityService.discover_or_create_workspace_default(self.workspace.root)
         )
+        if dsh_capability_service is not None or os.environ.get(
+            "KSADK_DSH_HOME", ""
+        ).strip() or os.environ.get("KSADK_DSH_PROFILE", "").strip():
+            self._resource_dsh_provider_registration_manager = None
+            self.resource_dsh_capabilities = self.dsh_capabilities
+        else:
+            self._resource_dsh_provider_registration_manager = (
+                StudioDshProviderRegistrationManager.create_workspace_resource_default(
+                    self.workspace.root
+                )
+            )
+            self.resource_dsh_capabilities = (
+                StudioDshCapabilityService.create_workspace_resource_default(
+                    self.workspace.root
+                )
+            )
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -222,11 +239,16 @@ class StudioService:
             or CredentialResolver(self.workspace)
         )
         self.resource_connections = ResourceConnectionRepository(self.workspace, self.credentials)
+        effective_resource_policy = (
+            resource_authority_policy
+            if resource_authority_policy is not None
+            else resource_authority_policy_from_environment()
+        )
         self.resource_authority = (
             SignedKnowledgeResourceAuthority(
-                self.resource_connections, resource_authority_policy
+                self.resource_connections, effective_resource_policy
             )
-            if resource_authority_policy is not None
+            if effective_resource_policy is not None
             else None
         )
         self.validator = AgentValidator()
@@ -307,6 +329,7 @@ class StudioService:
             provider_factories=provider_factories,
             legacy_harness_sources=legacy_harness_sources,
             dsh_capability_service=self.dsh_capabilities,
+            resource_dsh_capability_service=self.resource_dsh_capabilities,
             resource_authority=self.resource_authority,
             resource_connections=self.resource_connections,
             resource_actor_ref="local-user",
@@ -502,9 +525,36 @@ class StudioService:
             logging.getLogger(__name__).warning(
                 "official DSH provider bootstrap skipped: %s", error
             )
+        else:
+            if result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official Codex DSH provider bootstrap: %s", result
+                )
+        try:
+            resource_result = await manager.bootstrap_official_resource_plugins()
+        except Exception as error:  # optional DSH must fail closed to legacy paths
+            logging.getLogger(__name__).warning(
+                "official DSH resource bootstrap skipped: %s", error
+            )
+        else:
+            if resource_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official platform resource DSH bootstrap: %s", resource_result
+                )
+        resource_manager = self._resource_dsh_provider_registration_manager
+        if resource_manager is None:
             return
-        if result in {"installed", "already_enabled"}:
-            logging.getLogger(__name__).info("official Codex DSH provider bootstrap: %s", result)
+        try:
+            resource_result = await resource_manager.bootstrap_official_resource_plugins()
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "official resource execution Profile bootstrap skipped: %s", error
+            )
+        else:
+            if resource_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official resource execution Profile bootstrap: %s", resource_result
+                )
 
     async def _provider_snapshot(
         self, *, refresh: bool
@@ -623,19 +673,29 @@ class StudioService:
         """Resolve one immutable Build through its only compatible resolver."""
 
         try:
+            self.codex_builds.get(build_id)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+        else:
+            # The record exists in the Codex repository. Any later resolution
+            # error belongs to that Build and must remain actionable; a nested
+            # 404 (for example a missing plugin snapshot) is not evidence that
+            # this is a framework Build.
             return self.codex_runs.resolve(
                 build_id,
                 model=model,
                 sandbox=sandbox,
                 approval_mode=approval_mode,
             )
-        except Exception as exc:
-            if getattr(exc, "status_code", None) != 404:
-                raise
         framework_build = self.builds.get(build_id)
         runtime_type = framework_build.runtime_type.strip().lower()
         if runtime_type in {"harness", "plugin"}:
-            return self.plugin_runs.resolve(build_id, model=model)
+            return self.plugin_runs.resolve(
+                build_id,
+                model=model,
+                approval_mode=approval_mode,
+            )
         return self.framework_runs.resolve(
             build_id,
             model=model,
@@ -812,7 +872,7 @@ class StudioService:
         composition = self.plugin_compositions.compile_if_required(draft)
         resource_build = None
         if resource_build_required(draft):
-            dsh_profile = self.dsh_capabilities.capture_resource_build_snapshot()
+            dsh_profile = self.resource_dsh_capabilities.capture_resource_build_snapshot()
             resource_build = admit_resource_build(
                 draft,
                 authority=self.resource_authority,
@@ -1192,8 +1252,12 @@ class StudioService:
     async def _close_owned_plugin_services(self) -> None:
         first_error: BaseException | None = None
         owned = [self.plugin_runs.aclose, self.dsh_capabilities.aclose]
+        if self.resource_dsh_capabilities is not self.dsh_capabilities:
+            owned.append(self.resource_dsh_capabilities.aclose)
         if self._dsh_provider_registration_manager is not None:
             owned.append(self._dsh_provider_registration_manager.aclose)
+        if self._resource_dsh_provider_registration_manager is not None:
+            owned.append(self._resource_dsh_provider_registration_manager.aclose)
         for close in owned:
             try:
                 await close()
@@ -2864,6 +2928,12 @@ class StudioService:
                 runner=managed_runtime_runner,
             )
 
+        # Do not turn a stale URL or a deleted Agent's Build into an accepted
+        # operation that can only fail later in the worker.  The Codex lookup
+        # above intentionally falls back to framework builds, so establish
+        # that the fallback record exists before returning HTTP 202.
+        self.builds.get(build_id)
+
         async def runner(_operation_id: str):
             return await self.cloud.deploy(build_id, request)
 
@@ -3147,24 +3217,34 @@ class StudioService:
         secret_key = (
             os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
         ).strip()
-        region = os.environ.get("AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "")).strip()
-        if not all((access_key, secret_key, region)):
+        configured_region = os.environ.get(
+            "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "")
+        ).strip()
+        environment_region = os.environ.get("KSYUN_REGION", "").strip()
+        logical_region = (
+            "pre-online"
+            if environment_region.lower() == "pre-online"
+            else configured_region
+        )
+        if not all((access_key, secret_key, logical_region)):
             return UnavailableCloudGateway()
         control_client = AgentEngineClient(
-            region=region,
+            region=logical_region,
             access_key=access_key,
             secret_key=secret_key,
         )
+        is_preonline = logical_region.lower() == "pre-online"
         stream_base_url = os.environ.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
-        if not stream_base_url and region.lower() == "pre-online":
+        if not stream_base_url and is_preonline:
             # The pre-online KOP response path currently buffers SSE until
-            # EOF.  Its internal Server ingress validates the same V4
-            # signature and preserves the RunAgent streaming response.
+            # EOF, and KOP may not yet publish newly deployed native Action
+            # names.  Its internal Server ingress validates the same V4
+            # signature for RunAgent, ManagedRuntime, and plugin delivery.
             stream_base_url = "http://agent-api-pre.kspmas-internal.ksyun.com"
         stream_client = (
             AgentEngineClient(
                 base_url=stream_base_url,
-                region=region,
+                region=logical_region,
                 access_key=access_key,
                 secret_key=secret_key,
             )
@@ -3172,9 +3252,10 @@ class StudioService:
             else control_client
         )
         return DirectAgentEngineCloudDeploymentGateway(
-            region=region,
+            region=logical_region,
             client=control_client,
             stream_client=stream_client,
+            managed_runtime_client=stream_client if is_preonline else None,
             bucket=os.environ.get("KS3_BUCKET", "").strip() or None,
             ks3_credentials={
                 "access_key": access_key,

@@ -30,6 +30,8 @@ from ksadk.studio.contracts import (
     AgentSpec,
     BundleManifest,
     Instructions,
+    MemorySpec,
+    MemoryWriteSpec,
     ModelSpec,
     NetworkPolicy,
     RuntimeRef,
@@ -53,13 +55,18 @@ class _Authority:
     def admit(self, config, *, expected_connection_revision=None):
         self.calls.append((config.binding.id, expected_connection_revision))
         now = datetime.now(timezone.utc)
+        operations = (
+            ("load_memory", "save_memory", "memory_status")
+            if config.binding.resource.kind == "memory-instance"
+            else ("search_knowledge_base",)
+        )
         return VerifiedResourceAuthority(
             connection_ref="connection-a",
             connection_revision=expected_connection_revision,
             tenant_ref="tenant-a",
             resource_principal_ref="principal-a",
             resource=config.binding.resource,
-            allowed_operations=("search_knowledge_base",),
+            allowed_operations=operations,
             issuer_endpoint="https://iam.example.test",
             issuer_region="region-a",
             data_endpoint="https://knowledge.example.test",
@@ -91,6 +98,7 @@ def _profile(*, installation: str = "c") -> DshProfileBuildSnapshot:
                     "@deepseek-ai/dsh-base",
                     "@kingsoftcloud/dsh-platform-resources",
                     "@kingsoftcloud/dsh-knowledge",
+                    "@kingsoftcloud/dsh-memory",
                 ],
                 "configDigest": "sha256:" + "a" * 64,
                 "configBytes": 128,
@@ -128,6 +136,7 @@ def _studio(tmp_path: Path) -> tuple[StudioService, _Authority]:
     authority = _Authority(studio.resource_connections)
     studio.resource_authority = authority
     studio.dsh_capabilities.capture_resource_build_snapshot = _profile
+    studio.resource_dsh_capabilities.capture_resource_build_snapshot = _profile
     return studio, authority
 
 
@@ -149,6 +158,37 @@ def _draft(studio: StudioService):
             ),
             instructions=Instructions(system="Search the bound knowledge base."),
             bindings=AgentBindings(plugins=[binding()]),
+            security=SecuritySpec(network=NetworkPolicy(mode="open")),
+        ),
+    )
+
+
+def _memory_draft(studio: StudioService):
+    return studio.create_studio_agent(
+        agent_id="memory-agent",
+        name="Memory Agent",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="langgraph",
+                project_path="agents/memory-agent/source",
+                entry_point="agent.py",
+                agent_variable="graph",
+            ),
+            model=ModelSpec(
+                model="fixture-model",
+                endpoint_url="https://model.example.test/v1/chat/completions",
+                credential_ref="env://MODEL_API_KEY",
+            ),
+            instructions=Instructions(system="Use the bound memory."),
+            bindings=AgentBindings(plugins=[binding("memory-instance")]),
+            memory=MemorySpec(
+                enabled=True,
+                provider_ref="binding://binding-a",
+                scopes=["user"],
+                recall={"minScore": 0},
+                write=MemoryWriteSpec(mode="explicit_only"),
+            ),
+            context={"rollout": {"memoryWrite": "enabled"}},
             security=SecuritySpec(network=NetworkPolicy(mode="open")),
         ),
     )
@@ -194,7 +234,7 @@ def test_resource_snapshot_changes_build_identity(tmp_path: Path) -> None:
     studio, _ = _studio(tmp_path)
     draft = _draft(studio)
     first = studio._build_agent_bundle(draft)
-    studio.dsh_capabilities.capture_resource_build_snapshot = lambda: _profile(
+    studio.resource_dsh_capabilities.capture_resource_build_snapshot = lambda: _profile(
         installation="d"
     )
 
@@ -254,6 +294,7 @@ def test_connection_revision_drift_publishes_no_build(tmp_path: Path) -> None:
 class _DshRuntime:
     def __init__(self) -> None:
         self.initialization = None
+        self.write_authorizer = None
         self.deactivated: list[str] = []
         self.connector = DshMcpConnectorLease(
             endpoint="http://127.0.0.1:43210/mcp",
@@ -267,9 +308,10 @@ class _DshRuntime:
         assert expected == _profile()
         return SimpleNamespace(profile_digest=self.connector.profile_digest), "generation-a"
 
-    async def activate_resources(self, initialization, *, expected):
+    async def activate_resources(self, initialization, *, expected, write_authorizer=None):
         assert expected == _profile()
         self.initialization = initialization
+        self.write_authorizer = write_authorizer
         leases = tuple(
             ResourceLease(f"opaque-{index}", scope, time.monotonic() + 600)
             for index, scope in enumerate(initialization.scopes)
@@ -352,6 +394,63 @@ async def test_runtime_reauthorizes_worker_and_releases_scoped_mcp(tmp_path: Pat
     await runtime.dispose()
 
 
+@pytest.mark.asyncio
+async def test_runtime_exposes_memory_write_only_with_policy_and_host_authorizer(
+    tmp_path: Path,
+) -> None:
+    from ksadk.resource_runtime.policy_authorization import FullAccessResourceWriteAuthorizer
+
+    studio, authority = _studio(tmp_path)
+    build = studio._build_agent_bundle(_memory_draft(studio))
+    bundle = _runtime_bundle(studio, build)
+    dsh = _DshRuntime()
+    runtime = PlatformResourceMCPRuntime(
+        profile=bundle.composition.profile,
+        authority=authority,
+        connections=studio.resource_connections,
+        dsh_service=dsh,
+        actor_ref="local-user",
+        state_root=tmp_path / "runtime-state",
+        write_authorizer_factory=lambda activation_key, _bundle: (
+            FullAccessResourceWriteAuthorizer(activation_key=activation_key)
+        ),
+    )
+    await runtime.start()
+
+    specs = await runtime.activation_mcp_specs(bundle, activation_key="session-a")
+
+    assert specs[0].tool_filter == ("load_memory", "save_memory", "memory_status")
+    assert dsh.initialization.scopes[0].allowed_operations == specs[0].tool_filter
+    assert isinstance(dsh.write_authorizer, FullAccessResourceWriteAuthorizer)
+    await runtime.release_activation_mcp_specs("session-a", specs)
+    await runtime.dispose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_memory_read_only_without_run_authorization(tmp_path: Path) -> None:
+    studio, authority = _studio(tmp_path)
+    build = studio._build_agent_bundle(_memory_draft(studio))
+    bundle = _runtime_bundle(studio, build)
+    dsh = _DshRuntime()
+    runtime = PlatformResourceMCPRuntime(
+        profile=bundle.composition.profile,
+        authority=authority,
+        connections=studio.resource_connections,
+        dsh_service=dsh,
+        actor_ref="local-user",
+        state_root=tmp_path / "runtime-state",
+    )
+    await runtime.start()
+
+    specs = await runtime.activation_mcp_specs(bundle, activation_key="session-a")
+
+    assert specs[0].tool_filter == ("load_memory",)
+    assert dsh.initialization.scopes[0].allowed_operations == ("load_memory",)
+    assert dsh.write_authorizer is None
+    await runtime.release_activation_mcp_specs("session-a", specs)
+    await runtime.dispose()
+
+
 def test_composed_resource_build_selects_platform_mcp_capability(tmp_path: Path) -> None:
     studio, _authority = _studio(tmp_path)
     source = _draft(studio)
@@ -372,3 +471,42 @@ def test_composed_resource_build_selects_platform_mcp_capability(tmp_path: Path)
         capability.ref == PLATFORM_RESOURCE_MCP_REF
         for capability in composition.profile.capabilities
     )
+
+
+def test_composed_memory_resource_materializes_its_memory_provider_owner(tmp_path: Path) -> None:
+    studio, _authority = _studio(tmp_path)
+    source = _draft(studio)
+    memory_binding = binding("memory-instance")
+    draft = source.model_copy(
+        update={
+            "spec": source.spec.model_copy(
+                update={
+                    "runtime": RuntimeRef(type="harness"),
+                    "bindings": AgentBindings(plugins=[memory_binding]),
+                    "memory": MemorySpec(
+                        enabled=True,
+                        provider_ref="binding://binding-a",
+                        scopes=["user"],
+                        write={"mode": "off"},
+                    ),
+                }
+            )
+        }
+    )
+    manifest = legacy_harness_agent_provider_manifest()
+    reference = f"plugin://{manifest.metadata.id}@{manifest.metadata.version}"
+    studio.plugin_compositions.replace_provider_registrations({reference: manifest})
+
+    composition = studio.plugin_compositions.compile(draft)
+
+    selected = [
+        capability
+        for capability in composition.profile.capabilities
+        if capability.ref == PLATFORM_RESOURCE_MCP_REF
+    ]
+    assert len(selected) == 1
+    assert selected[0].config == {
+        "artifactPath": "platform-resources",
+        "providerRef": "binding://binding-a",
+        "scopes": ["user"],
+    }

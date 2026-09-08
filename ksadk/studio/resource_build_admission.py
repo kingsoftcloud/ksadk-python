@@ -10,11 +10,18 @@ from typing import Protocol
 from ksadk.plugins.bridges.dsh import DshProfileBuildSnapshot
 from ksadk.resource_runtime.contracts import ResourceConfig
 from ksadk.resource_runtime.plugin_config import resource_plugin_config
-from ksadk.resource_runtime.snapshots import FrozenResourceBinding, ResourceSnapshot
+from ksadk.resource_runtime.snapshots import (
+    FrozenResourceBinding,
+    MemoryRecallPolicy,
+    ResourceSnapshot,
+)
 from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.contracts import AgentDraft, MemorySpec, NativePluginBinding
 from ksadk.studio.errors import StudioError
-from ksadk.studio.resource_authority import VerifiedResourceAuthority
+from ksadk.studio.resource_authority import (
+    VerifiedResourceAuthority,
+    resource_allowed_operations,
+)
 from ksadk.studio.resource_build_materializer import materialize_resource_build
 from ksadk.studio.resource_connections import ResourceConnectionRepository
 
@@ -124,7 +131,7 @@ def admit_resource_build(
             or grant.resource != config.binding.resource
             or grant.data_endpoint != record.target.endpoint
             or grant.expires_at <= datetime.now(timezone.utc)
-            or tuple(grant.allowed_operations) != ("search_knowledge_base",)
+            or tuple(grant.allowed_operations) != resource_allowed_operations(config)
         ):
             raise StudioError(
                 "RESOURCE_AUTHORITY_INVALID",
@@ -137,6 +144,14 @@ def admit_resource_build(
                 config=config,
                 connection=record.target,
                 connection_revision=record.revision,
+                memory_recall=(
+                    MemoryRecallPolicy.model_validate(
+                        draft.spec.memory.recall.model_dump(exclude={"enabled"})
+                    )
+                    if config.binding.resource.kind == "memory-instance"
+                    and draft.spec.memory.enabled
+                    else None
+                ),
             )
         )
 

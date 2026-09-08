@@ -386,6 +386,66 @@ def test_hook_binding_is_fail_closed_before_runtime_bootstrap(tmp_path: Path) ->
     assert statuses[snapshot.plugin_ref]["hookTrust"] == "unsupported"
 
 
+def test_codex_bootstrap_ignores_dsh_provider_bindings(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    store = CodexPluginSnapshotStore(workspace)
+    snapshot = store.commit(_observed(_plugin_root(tmp_path / "host")))
+    codex_binding = NativePluginBinding(
+        ecosystem="codex",
+        plugin_ref=snapshot.plugin_ref,
+        snapshot_digest=snapshot.snapshot_digest,
+        components=["skill:alpha"],
+    )
+    dsh_binding = NativePluginBinding(
+        ecosystem="dsh",
+        plugin_ref="plugin://kingsoftcloud.dsh-memory@0.1.0",
+        snapshot_digest="sha256:" + "d" * 64,
+        components=["dsh-memory"],
+        config={
+            "schemaVersion": 1,
+            "binding": {
+                "id": "memory-binding",
+                "connectionRef": "connection-a",
+                "resource": {
+                    "kind": "memory-instance",
+                    "id": "memory-a",
+                    "region": "region-a",
+                },
+            },
+        },
+    )
+    lock, selections, statuses = CodexStudioBuilder(
+        workspace, plugin_snapshot_store=store
+    )._native_plugin_lock([codex_binding, dsh_binding])
+    digest = plugin_lock_digest(lock)
+    marketplace = store.materialize_marketplace(
+        plugin_lock_digest=digest,
+        selections=selections,
+    )
+    manifest = CodexAgentManifest(
+        name="fixture-agent",
+        version="1.0.0",
+        runtime={"version": "0.1.0"},
+        model="fixture-model",
+        prompt="fixture",
+        plugins=[codex_binding, dsh_binding],
+    )
+    build = SimpleNamespace(
+        id="build_0123456789abcdef0123",
+        plugin_lock=lock,
+        plugin_lock_digest=digest,
+        plugin_marketplace=marketplace,
+        plugin_runtime_status=statuses,
+    )
+
+    bootstrap = CodexRunSpecResolver(
+        workspace, plugin_snapshot_store=store
+    )._plugin_bootstrap(build, manifest)
+
+    assert bootstrap is not None
+    assert bootstrap["plugin_names"] == ["fixture-plugin"]
+
+
 def _inventory(
     *,
     source: dict[str, Any],

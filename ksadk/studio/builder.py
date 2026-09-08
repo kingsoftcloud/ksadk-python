@@ -155,6 +155,13 @@ class AgentBundleBuilder:
                 entry_point=runtime_lock.get("entryPoint"),
                 agent_variable=runtime_lock.get("agentVariable"),
                 launch_config=launch_config.read_bytes() if launch_config.is_file() else None,
+                composition_profile_digest=composition_profile_digest_value,
+                plugin_lock_digest=plugin_lock_digest_value,
+                provider_ref=(
+                    composition_profile.agent_provider.ref
+                    if composition_profile is not None
+                    else None
+                ),
             )
             hosted_kernel_requirement_digest_value = hosted_kernel_requirement_digest(
                 hosted_kernel_requirement

@@ -18,6 +18,10 @@ from ksadk.plugins.providers.codex_dsh import (
 )
 from ksadk.studio.contracts import ContractModel, RuntimeRef
 from ksadk.studio.errors import StudioError
+from ksadk.studio.resource_build_admission import (
+    admit_resource_build,
+    resource_build_required,
+)
 
 CODEX_PROVIDER_REF = f"plugin://{SHIPPED_CODEX_PROVIDER_ID}@{SHIPPED_CODEX_PROVIDER_VERSION}"
 
@@ -108,10 +112,15 @@ class CodexProviderBuildManager:
                 ),
             },
         )
-        # This Bundle describes the Python AgentProvider, not the native Codex
-        # marketplace. The unmodified manifest digest above binds those separate
-        # native selections, which CodexStudioBuilder retains and verifies.
-        draft.spec.bindings.plugins = []
+        # This Bundle describes the Python AgentProvider. Codex-native marketplace
+        # selections stay in the manifest lock, while official DSH platform
+        # resources remain in this projected Draft and pass the same trusted
+        # resource admission used by framework runtimes.
+        draft.spec.bindings.plugins = [
+            binding
+            for binding in draft.spec.bindings.plugins
+            if binding.ecosystem == "dsh"
+        ]
         manifest = self.studio._active_provider_manifests[CODEX_PROVIDER_REF]
         missing_permissions = sorted(
             set(manifest.spec.permissions) - set(draft.spec.security.allowed_permissions)
@@ -126,7 +135,21 @@ class CodexProviderBuildManager:
                 details={"missingPermissions": missing_permissions},
             )
         composition = self.studio.plugin_compositions.compile(draft)
-        built = self.studio.builder.build(draft, composition=composition)
+        resource_build = None
+        if resource_build_required(draft):
+            resource_build = admit_resource_build(
+                draft,
+                authority=self.studio.resource_authority,
+                connections=self.studio.resource_connections,
+                dsh_profile=(
+                    self.studio.resource_dsh_capabilities.capture_resource_build_snapshot()
+                ),
+            )
+        built = self.studio.builder.build(
+            draft,
+            composition=composition,
+            resource_build=resource_build,
+        )
         # Refuse a registration change during staging, before saving success.
         if self._registration_digest() != registration_digest:
             raise StudioError(

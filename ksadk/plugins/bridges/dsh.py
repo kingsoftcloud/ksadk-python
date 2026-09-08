@@ -32,7 +32,10 @@ except ImportError:  # pragma: no cover - DSH production hosts are Unix
 import yaml
 from pydantic import BaseModel, ConfigDict
 
-from ksadk.plugins.dsh_installation_digest import installation_digest
+from ksadk.plugins.dsh_installation_digest import (
+    DshInstallationDigestError,
+    installation_digest,
+)
 
 _COMMAND_TIMEOUT_SECONDS = 120
 
@@ -69,6 +72,8 @@ class DshPluginInventory(_DshModel):
     requested_spec: str
     source_digest: str | None = None
     source_kind: Literal["directory", "tgz"] | None = None
+    client_extension: bool = False
+    settings_integration: bool = False
     installed: Literal[True] = True
     enabled: bool
     permissions_declared: Literal[False] = False
@@ -315,6 +320,14 @@ class DshProfilePluginBridge:
             package = self._read_package(name)
             if package is None or self._bundle_patch(package) is None:
                 continue
+            dsh = package.get("dsh")
+            client = dsh.get("client") if isinstance(dsh, dict) else None
+            inject = client.get("inject") if isinstance(client, dict) else None
+            client_inject = (
+                tuple(item for item in inject if isinstance(item, str))
+                if isinstance(inject, list)
+                else ()
+            )
             receipt = state["sources"].get(name)
             items.append(
                 DshPluginInventory(
@@ -328,6 +341,11 @@ class DshProfilePluginBridge:
                     requested_spec=requested_spec,
                     source_digest=receipt["digest"] if receipt is not None else None,
                     source_kind=receipt["kind"] if receipt is not None else None,
+                    client_extension=isinstance(client, dict),
+                    settings_integration=any(
+                        "client-ui-settings" in item or "client-ui-slots" in item
+                        for item in client_inject
+                    ),
                     enabled=name in active and name not in set(state["disabled"]),
                 )
             )
@@ -531,11 +549,18 @@ class DshProfilePluginBridge:
                 host_version=self.host.version,
             )
 
-    def migrate_to_isolated_layout(self, *, accept_host_permissions: bool = False) -> None:
+    def migrate_to_isolated_layout(
+        self,
+        *,
+        accept_host_permissions: bool = False,
+        recover_external_dependency_links: bool = False,
+    ) -> None:
         """Migrate a stopped profile; the caller owns Core/admission suspension.
 
         Keep an independent byte copy for rollback: a frozen reinstall of the
-        old hoisted layout can itself hit the pinned pnpm shutdown defect.
+        old layout can itself hit the pinned pnpm shutdown defect. Studio-owned
+        profiles may also repair an isolated tree polluted by a legacy Core
+        module-fallback cache.
         """
         if not accept_host_permissions:
             raise DshPluginApprovalRequired("Profile migration may run package install scripts")
@@ -547,24 +572,50 @@ class DshProfilePluginBridge:
             settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
             if not isinstance(settings, dict):
                 raise DshPluginMutationError("Invalid package-manager settings")
-            if settings.get("nodeLinker") == "isolated":
-                self._preflight()
-                return
-            if settings.get("nodeLinker") != "hoisted":
-                raise DshPluginMutationError("Only hoisted profiles can use this migration")
+            node_linker = settings.get("nodeLinker")
+            if node_linker not in {"hoisted", "isolated"}:
+                raise DshPluginMutationError(
+                    "Only hoisted or isolated profiles can use this migration"
+                )
             modules = self._profile_root / "node_modules"
             if modules.is_symlink() or not modules.is_dir():
                 raise DshPluginMutationError("Profile installation is not a real directory")
-            # Reject external links before copying, and retain a byte-exact rollback.
-            original_digest = installation_digest(modules)
+            # A normal migration only accepts a closed tree. Studio may repair
+            # its own legacy hoisted Profile when pnpm linked a dependency to
+            # an ambient store: move that tree atomically instead of reading or
+            # following the external target, then reinstall from the frozen lock.
+            moved_unsafe_tree = False
+            try:
+                original_digest = installation_digest(modules)
+            except DshInstallationDigestError as error:
+                if (
+                    not recover_external_dependency_links
+                    or str(error) != "DSH dependency link escapes the installed tree"
+                ):
+                    raise
+                original_digest = None
+                moved_unsafe_tree = True
+            if node_linker == "isolated" and not moved_unsafe_tree:
+                self._preflight()
+                return
+            fallback = self._profile_root / ".dsh-module-fallback"
+            if fallback.exists() and (fallback.is_symlink() or not fallback.is_dir()):
+                raise DshPluginMutationError("DSH module fallback is not a real directory")
             snapshot = self._snapshot()
             root = tempfile.mkdtemp(prefix=".layout-backup-", dir=self._profile_root)
             preserve_backup = False
             try:
                 backup = Path(root) / "node_modules"
-                shutil.copytree(modules, backup, symlinks=True)
-                if installation_digest(backup) != original_digest:
-                    raise DshPluginMutationError("Profile installation backup did not verify")
+                fallback_backup = Path(root) / "module-fallback"
+                if moved_unsafe_tree:
+                    os.replace(modules, backup)
+                else:
+                    shutil.copytree(modules, backup, symlinks=True)
+                    if installation_digest(backup) != original_digest:
+                        raise DshPluginMutationError("Profile installation backup did not verify")
+                fallback_moved = fallback.is_dir()
+                if fallback_moved:
+                    os.replace(fallback, fallback_backup)
                 original_files = Path(root) / "profile-files"
                 original_files.mkdir(mode=0o700)
                 for name, content in snapshot.files.items():
@@ -573,7 +624,8 @@ class DshProfilePluginBridge:
                         original_path.write_bytes(content)
                         original_path.chmod(0o600)
                 try:
-                    shutil.rmtree(modules)
+                    if not moved_unsafe_tree:
+                        shutil.rmtree(modules)
                     settings["nodeLinker"] = "isolated"
                     settings_path.write_text(yaml.safe_dump(settings), encoding="utf-8")
                     settings_path.chmod(0o600)
@@ -599,6 +651,12 @@ class DshProfilePluginBridge:
                         elif modules.exists():
                             shutil.rmtree(modules)
                         os.replace(backup, modules)
+                        if fallback.is_symlink():
+                            fallback.unlink()
+                        elif fallback.exists():
+                            shutil.rmtree(fallback)
+                        if fallback_moved:
+                            os.replace(fallback_backup, fallback)
                         self._rollback(snapshot, error, reinstall=False)
                     except BaseException as recovery_error:
                         preserve_backup = True

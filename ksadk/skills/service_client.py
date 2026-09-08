@@ -333,6 +333,7 @@ class SkillServiceClient:
             headers=headers,
             auth=self._auth.get_auth(),
             timeout=self.timeout,
+            allow_redirects=False,
         )
         requests_response.raise_for_status()
         data = requests_response.json()

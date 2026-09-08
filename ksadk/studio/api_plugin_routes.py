@@ -480,6 +480,8 @@ def _public_dsh_inventory(
         "distributionName": inventory.name,
         "displayName": inventory.display_name,
         "description": inventory.description,
+        "clientExtension": inventory.client_extension,
+        "settingsIntegration": inventory.settings_integration,
         "profile": inventory.profile,
         "source": source,
         "installed": True,

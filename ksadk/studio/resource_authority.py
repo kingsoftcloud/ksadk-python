@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -19,8 +20,11 @@ import requests
 from pydantic import Field, model_validator
 
 from ksadk.knowledge_base.client import KnowledgeBaseClient
+from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
 from ksadk.plugins.contracts import PluginContractModel
 from ksadk.resource_runtime.contracts import Identifier, ResourceConfig, ResourceRef
+from ksadk.resource_runtime.ipc import ResourceOperation
+from ksadk.skills.service_client import SkillServiceClient
 from ksadk.studio.errors import StudioError
 from ksadk.studio.resource_connections import (
     ResolvedResourceCredentials,
@@ -126,7 +130,7 @@ class VerifiedResourceAuthority(PluginContractModel):
     tenant_ref: Identifier
     resource_principal_ref: Identifier
     resource: ResourceRef
-    allowed_operations: tuple[Literal["search_knowledge_base"], ...] = Field(min_length=1)
+    allowed_operations: tuple[ResourceOperation, ...] = Field(min_length=1)
     issuer_endpoint: str
     issuer_region: Identifier
     data_endpoint: str
@@ -238,7 +242,7 @@ def _credential_values(credentials: ResolvedResourceCredentials) -> tuple[str, s
 
 
 class SignedKnowledgeResourceAuthority:
-    """Fail-closed admission for one signed sub-account and one KB read operation."""
+    """Fail-closed admission for signed, read-oriented platform resources."""
 
     def __init__(
         self,
@@ -259,6 +263,12 @@ class SignedKnowledgeResourceAuthority:
             expected_connection_revision=expected_connection_revision,
         ).authority
 
+    def resolve_signed_identity(self, access_key: str, secret_key: str) -> tuple[str, str]:
+        """Resolve the host credential owner for an explicit connection declaration."""
+
+        identity = self._verify_identity(access_key, secret_key)
+        return identity.tenant_ref, identity.principal_ref
+
     def admit_runtime(
         self,
         config: ResourceConfig,
@@ -269,13 +279,6 @@ class SignedKnowledgeResourceAuthority:
 
         resource = config.binding.resource
         field = "spec.bindings.plugins.config.binding"
-        if resource.kind != "knowledge-base":
-            raise StudioError(
-                "RESOURCE_AUTHORITY_UNSUPPORTED",
-                "当前可信准入首片仅支持知识库只读检索",
-                status_code=422,
-                field=field,
-            )
         before = self.connections.get(config.binding.connection_ref)
         if (
             expected_connection_revision is not None
@@ -321,9 +324,18 @@ class SignedKnowledgeResourceAuthority:
                 status_code=403,
                 field=field + ".connectionRef",
             )
-        request_id = self._prove_knowledge_read(
-            config, target.endpoint, values[0], values[1]
-        )
+        if resource.kind == "knowledge-base":
+            request_id = self._prove_knowledge_read(
+                config, target.endpoint, values[0], values[1]
+            )
+        elif resource.kind == "memory-instance":
+            request_id = self._prove_memory_read(
+                config, target.endpoint, values[0], values[1]
+            )
+        else:
+            request_id = self._prove_skill_read(
+                config, target.endpoint, values[0], values[1]
+            )
 
         after = self.connections.get(config.binding.connection_ref)
         after_values = _credential_values(self.connections.resolve_credentials(after.target))
@@ -339,7 +351,7 @@ class SignedKnowledgeResourceAuthority:
                 tenant_ref=identity.tenant_ref,
                 resource_principal_ref=identity.principal_ref,
                 resource=resource,
-                allowed_operations=("search_knowledge_base",),
+                allowed_operations=resource_allowed_operations(config),
                 issuer_endpoint=self.policy.iam_endpoint,
                 issuer_region=self.policy.iam_region,
                 data_endpoint=target.endpoint,
@@ -349,7 +361,6 @@ class SignedKnowledgeResourceAuthority:
             ),
             credentials=credentials,
         )
-
     def _verify_identity(self, access_key: str, secret_key: str) -> _VerifiedIamIdentity:
         try:
             from ksyun.client.iam.v20151101.client import (  # type: ignore[import-untyped]
@@ -488,3 +499,122 @@ class SignedKnowledgeResourceAuthority:
                 "当前签名主体未通过指定知识库的只读检索校验",
                 status_code=403,
             ) from error
+
+    def _prove_memory_read(
+        self,
+        config: ResourceConfig,
+        data_endpoint: str,
+        access_key: str,
+        secret_key: str,
+    ) -> str:
+        endpoint = urlsplit(data_endpoint)
+        backend = SdkLTMBackend(
+            index="resource-authority",
+            memory_collection_id=config.binding.resource.id,
+            namespace=config.binding.resource.id,
+            agent_id="resource-authority",
+            region=config.binding.resource.region,
+            endpoint=endpoint.netloc,
+            scheme=endpoint.scheme,
+            access_key=access_key,
+            secret_key=secret_key,
+        )
+        try:
+            upstream = backend._get_client()
+            upstream.request = _HardenedSdkTransport(
+                data_endpoint, timeout=self.policy.timeout_seconds
+            )
+            backend.search_memory(
+                "ksadk-resource-authority",
+                "ksadk-resource-authority-probe",
+                top_k=1,
+            )
+            if backend.last_http_status != 200 or backend.last_error:
+                raise ValueError("memory access was not proven")
+            return "memory-read-proven"
+        except Exception as error:
+            raise StudioError(
+                "RESOURCE_OPERATION_UNVERIFIED",
+                "当前签名主体未通过指定记忆库的只读召回校验",
+                status_code=403,
+            ) from error
+
+    def _prove_skill_read(
+        self,
+        config: ResourceConfig,
+        data_endpoint: str,
+        access_key: str,
+        secret_key: str,
+    ) -> str:
+        client = SkillServiceClient(
+            base_url=data_endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            region=config.binding.resource.region,
+            allow_env_fallback=False,
+            timeout=self.policy.timeout_seconds,
+        )
+        try:
+            listing = client.list_skills_by_space_id(
+                config.binding.resource.id, max_pages=1
+            )
+            if listing.space_id != config.binding.resource.id:
+                raise ValueError("skill space access was not proven")
+            return "skill-space-read-proven"
+        except Exception as error:
+            raise StudioError(
+                "RESOURCE_OPERATION_UNVERIFIED",
+                "当前签名主体未通过指定 Skill Space 的只读目录校验",
+                status_code=403,
+            ) from error
+        finally:
+            client.close()
+
+
+def resource_allowed_operations(config: ResourceConfig) -> tuple[ResourceOperation, ...]:
+    """Return the maximum host capability set for one admitted resource kind.
+
+    Activation policy narrows this set before issuing leases. Memory writes are
+    still fail-closed unless that activation also owns a write authorizer.
+    """
+
+    kind = config.binding.resource.kind
+    if kind == "knowledge-base":
+        return ("search_knowledge_base",)
+    if kind == "memory-instance":
+        return ("load_memory", "save_memory", "memory_status")
+    return ("list_skills", "search_skills", "load_skill", "read_skill_resource")
+
+
+def resource_authority_policy_from_environment() -> ResourceAuthorityPolicy | None:
+    """Build a trusted policy from operator-owned local Studio environment."""
+
+    access_key = os.environ.get("KSYUN_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("KSYUN_SECRET_KEY", "").strip()
+    endpoint = os.environ.get("AGENTENGINE_SERVER_URL", "").strip()
+    if not access_key or not secret_key or not endpoint:
+        return None
+    logical_region = (
+        os.environ.get("AGENTENGINE_REGION")
+        or os.environ.get("KSYUN_REGION")
+        or "cn-beijing-6"
+    ).strip()
+    region = (
+        os.environ.get("AGENTENGINE_PRE_CONTROL_REGION", "cn-beijing-6").strip()
+        if logical_region.lower() == "pre-online"
+        else logical_region
+    )
+    iam_endpoint = os.environ.get("KSADK_RESOURCE_IAM_ENDPOINT", "").strip()
+    if not iam_endpoint:
+        iam_endpoint = (
+            "http://iam.inner.api.ksyun.com"
+            if ".inner.api.ksyun.com" in endpoint
+            else "https://iam.api.ksyun.com"
+        )
+    return ResourceAuthorityPolicy(
+        iam_endpoint=iam_endpoint,
+        iam_region=region,
+        allowed_data_endpoints=(endpoint,),
+        allowed_regions=(region,),
+        allow_ksyun_internal_http=True,
+    )

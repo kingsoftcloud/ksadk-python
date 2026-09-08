@@ -241,7 +241,8 @@ async def test_approved_memory_write_reaches_sdk_once(memory_upstream, tmp_path,
         assert second["result"]["replayed"] is False
         assert len(calls) == 1
         body = calls[0][1]
-        assert body["SessionId"] == "resource-" + result["result"]["operationId"]
+        assert body["SessionId"] == result["result"]["operationId"]
+        assert len(body["SessionId"]) == 64
         assert body["MemoryCollectionId"] == "memory-selected"
         assert body["Flush"] is True
         assert (

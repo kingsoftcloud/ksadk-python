@@ -50,6 +50,7 @@ from ksadk.plugins.providers.platform_resources import (
     platform_resource_mcp_manifest,
 )
 from ksadk.plugins.resolver import PluginRegistry, ResolvedComposition
+from ksadk.resource_runtime.plugin_config import resource_plugin_config
 from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.contracts import AgentDraft, CapabilityBinding
 from ksadk.studio.errors import StudioError
@@ -162,6 +163,7 @@ class StudioPluginCompositionCompiler:
                 "session.events",
             ),
             resource_materializations=self._resource_materializations(draft),
+            memory_providers=self._memory_providers(draft),
             host_capabilities=(
                 PluginCapabilitySelection(
                     ref=PLATFORM_RESOURCE_MCP_REF,
@@ -427,6 +429,40 @@ class StudioPluginCompositionCompiler:
                     config=config,
                 )
         return materializations
+
+    @staticmethod
+    def _memory_providers(
+        draft: AgentDraft,
+    ) -> dict[str, PluginCapabilitySelection]:
+        """Materialize a bound platform memory through its official DSH owner."""
+
+        memory = draft.spec.memory
+        if not memory.enabled or not memory.provider_ref.startswith("binding://"):
+            return {}
+        binding_id = memory.provider_ref.removeprefix("binding://")
+        for binding in draft.spec.bindings.plugins:
+            if not binding.enabled:
+                continue
+            config = resource_plugin_config(
+                binding.plugin_ref,
+                binding.ecosystem,
+                binding.config,
+                enabled=True,
+            )
+            if (
+                config is not None
+                and config.binding.id == binding_id
+                and config.binding.resource.kind == "memory-instance"
+            ):
+                return {
+                    memory.provider_ref: PluginCapabilitySelection(
+                        ref=PLATFORM_RESOURCE_MCP_REF,
+                        definition="memory.provider/v1",
+                        slot="memory.primary",
+                        config={"artifactPath": "platform-resources"},
+                    )
+                }
+        return {}
 
 
 __all__ = ["StudioPluginCompositionCompiler"]

@@ -259,6 +259,79 @@ def test_official_default_marker_is_scoped_to_the_owned_profile(tmp_path: Path) 
     assert manager._read_default_marker(manager._default_marker_path) == {}  # noqa: SLF001
 
 
+def test_owned_default_profile_repairs_legacy_hoisted_layout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KSADK_DSH_HOME", raising=False)
+    monkeypatch.delenv("KSADK_DSH_PROFILE", raising=False)
+    workspace = tmp_path / "workspace"
+    profile = workspace / ".agentkit/dsh-home/profiles/web"
+    profile.mkdir(parents=True)
+    (profile / "pnpm-workspace.yaml").write_text("nodeLinker: hoisted\n")
+    calls = []
+
+    class Bridge:
+        def migrate_to_isolated_layout(self, **kwargs) -> None:  # noqa: ANN003
+            calls.append(kwargs)
+
+    manager = StudioDshProviderRegistrationManager(
+        workspace,
+        dsh_home=workspace / ".agentkit/dsh-home",
+        profile="web",
+        dsh_command=("dsh",),
+    )
+
+    manager._repair_owned_profile_layout(Bridge())  # type: ignore[arg-type]  # noqa: SLF001
+
+    assert calls == [{
+        "accept_host_permissions": True,
+        "recover_external_dependency_links": True,
+    }]
+
+
+def test_resource_profile_adds_official_transport_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KSADK_DSH_HOME", raising=False)
+    monkeypatch.delenv("KSADK_DSH_PROFILE", raising=False)
+    workspace = tmp_path / "workspace"
+    profile = workspace / ".agentkit/dsh-home/profiles/agentkit-resources"
+    profile.mkdir(parents=True)
+    manifest = profile / "package.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "dsh-profile-agentkit-resources",
+                "private": True,
+                "dependencies": {},
+                "dsh": {
+                    "profile": {
+                        "bundles": [
+                            "@deepseek-ai/dsh-base",
+                            "@kingsoftcloud/dsh-platform-resources",
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = StudioDshProviderRegistrationManager(
+        workspace,
+        dsh_home=workspace / ".agentkit/dsh-home",
+        profile="agentkit-resources",
+        dsh_command=("dsh",),
+    )
+
+    manager._ensure_resource_runtime_bundle()  # noqa: SLF001
+    manager._ensure_resource_runtime_bundle()  # noqa: SLF001 - idempotence
+
+    bundles = json.loads(manifest.read_text(encoding="utf-8"))["dsh"]["profile"][
+        "bundles"
+    ]
+    assert bundles == [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@kingsoftcloud/dsh-platform-resources",
+    ]
+
+
 class _OfficialCoreProfileBridge:
     def __init__(self, **_kwargs) -> None:  # noqa: ANN003
         pass

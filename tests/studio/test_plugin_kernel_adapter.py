@@ -136,6 +136,9 @@ async def test_plugin_kernel_adapter_forwards_the_full_declared_control_surface(
         StartRequest(input="hello", user_id="user", session_id="session")
     )
 
+    assert handle.runtime_type == "plugin"
+    assert handle.native_ref["_ksadk_plugin_provider_runtime_type"] == "plugin-fixture"
+
     checkpoint = await adapter.checkpoint(handle)
     await adapter.steer(handle, SteerPayload(content="adjust"))
     await adapter.inject(handle, InjectPayload(context={"key": "value"}))

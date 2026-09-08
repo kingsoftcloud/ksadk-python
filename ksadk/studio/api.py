@@ -758,6 +758,10 @@ def create_studio_app(
             elif action == "ListSessionEvents":
                 data = await shared_web.list_session_events(str(payload.get("SessionId") or ""))
             elif action == "RunAgent":
+                # A cold process has not discovered provider model descriptors
+                # yet. Run admission may need to materialize a current Build,
+                # so chat must not depend on visiting the Models page first.
+                await runtime_model_catalog()
                 return StreamingResponse(
                     shared_web.stream_run(payload, shared_ui=True),
                     media_type="text/event-stream",
@@ -827,10 +831,27 @@ def create_studio_app(
 
     @app.get("/agentengine/api/v1/SubscribeRunEvents")
     async def shared_chat_subscribe_run_events(
+        request: Request,
         session_id: str = Query(alias="SessionId"),
         invocation_id: str = Query(alias="InvocationId"),
         after_seq_id: int = Query(default=0, alias="AfterSeqId", ge=0),
+        agent_id: str | None = Query(default=None, alias="AgentId"),
     ):
+        requested_agent_id = str(
+            agent_id or request.cookies.get("agentkit_studio_chat_agent") or ""
+        )
+        if is_cloud_agent_id(requested_agent_id):
+            cloud_target = cloud_chat_target(requested_agent_id)
+            return StreamingResponse(
+                cloud_web.subscribe_run_events(
+                    cloud_target,
+                    session_id,
+                    invocation_id,
+                    after_seq_id=after_seq_id,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+            )
         # Validate before StreamingResponse sends headers; invalid identities
         # remain ordinary actionable HTTP errors.
         await shared_web.subscription_run_id(session_id, invocation_id)
@@ -1120,6 +1141,7 @@ def create_studio_app(
         unrelated Build.
         """
 
+        await runtime_model_catalog()
         build = await studio.ensure_current_build(agent_id)
         return {
             "buildId": build.id,
@@ -1460,6 +1482,7 @@ def create_studio_app(
         payload: BuildRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ):
+        await runtime_model_catalog()
         return studio.submit_studio_build(
             agent_id,
             revision=payload.revision,

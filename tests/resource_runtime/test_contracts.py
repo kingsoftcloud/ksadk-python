@@ -90,6 +90,9 @@ def test_partition_is_stable_across_sessions_and_isolates_users_accounts_and_age
     )
     resource = ResourceRef(kind="memory-instance", id="memory-a", region="region-a")
     original = identity.memory_partition(resource)
+    assert len(original) == 64
+    assert original.startswith("mp1-")
+    assert original[4:].isalnum()
     assert (
         identity.model_copy(update={"session_ref": "session-b"}).memory_partition(resource)
         == original

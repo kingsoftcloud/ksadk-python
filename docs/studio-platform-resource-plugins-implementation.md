@@ -144,8 +144,10 @@ DSH bridge 新增 `snapshot_for_build` / `verify_build_snapshot`，在 profile �
 
 安装快照检查现已接到 Studio 资源生命周期服务：`prepare_resource_generation`
 在冷启动前后验证实际安装快照，并返回可信 generation。相同快照可共享已验证
-generation；已有未验证/不兼容 Core 返回 `RESOURCE_PROFILE_IN_USE`，不隐式替换
-其他运行。`activate_resources` 必须提供 expected 快照，并在启动 Worker 前重验。
+generation；同 Profile 中仅由 Studio 界面插件提前启动、尚未承载资源 Build 的 Core
+会先受控停止，再在两次快照校验之间重启并锁定当前 Build。已有其他资源 Build 或
+不兼容 Profile 的 generation 返回 `RESOURCE_PROFILE_IN_USE`，不隐式替换其他运行。
+`activate_resources` 必须提供 expected 快照，并在启动 Worker 前重验。
 安装变化会撤销对应 generation；Core 重启和关闭清除验证记录，旧授权不可继承。
 新增测试覆盖准备流程、实际 Worker/Pipe/socket 生命周期、未准备时零启动、安装变化
 时撤销，以及不替换既有 Core。Core/安装验证使用测试替身，Worker 是真实子进程。

@@ -58,7 +58,21 @@ class MCPProjectionLease:
     async def aclose(self) -> None:
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._cleanup.aclose())
-        await asyncio.shield(self._close_task)
+        await _finish_owned_task(self._close_task)
+
+
+async def _finish_owned_task(task: asyncio.Task[None]) -> None:
+    """Finish a security cleanup before propagating caller cancellation."""
+
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+    task.result()
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 async def project_mcp_capabilities(
@@ -122,11 +136,7 @@ async def project_mcp_capabilities(
             owners.append(binding.plugin_id)
     except BaseException:
         close = asyncio.create_task(cleanup.aclose())
-        try:
-            await asyncio.shield(close)
-        except asyncio.CancelledError:
-            await close
-            raise
+        await _finish_owned_task(close)
         raise
     return MCPProjectionLease(tuple(specs), tuple(owners), cleanup)
 

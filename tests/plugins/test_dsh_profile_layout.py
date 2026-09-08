@@ -134,3 +134,53 @@ def test_migration_restores_bytes_without_reinstall_on_failure(tmp_path, monkeyp
         assert (profile / "pnpm-lock.yaml").read_text() == "original lock"
         assert len(installs) == 1  # rollback restores bytes, never re-runs pnpm
         assert not list(profile.glob(".layout-backup-*"))
+
+
+@pytest.mark.parametrize("node_linker", ["hoisted", "isolated"])
+def test_owned_profile_can_recover_external_dependency_links(tmp_path, node_linker):
+    home = tmp_path / "dsh"
+    profile = home / "profiles/web"
+    modules = profile / "node_modules"
+    modules.mkdir(parents=True)
+    external = tmp_path / "ambient-package"
+    external.mkdir()
+    (external / "index.js").write_text("ambient bytes")
+    (modules / "ambient-package").symlink_to(external, target_is_directory=True)
+    fallback = profile / ".dsh-module-fallback"
+    fallback.mkdir()
+    (fallback / "stale.txt").write_text("stale runtime cache")
+    (profile / "package.json").write_text(
+        '{"dependencies": {}, "dsh": {"profile": {"bundles": []}}}'
+    )
+    (profile / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+    (profile / "pnpm-workspace.yaml").write_text(
+        f"nodeLinker: {node_linker}\nautoInstallPeers: false\n"
+    )
+    installs = []
+
+    def native(args, cwd, environment):
+        if "--version" in args:
+            return SimpleNamespace(stdout="0.1.1-rc.2", stderr="")
+        if "install" in args:
+            installs.append(args)
+            assert not modules.exists()
+            modules.mkdir()
+            (modules / "isolated.js").write_text("isolated bytes")
+        return SimpleNamespace(stdout="plugins: []", stderr="")
+
+    with DshProfilePluginBridge(
+        dsh_home=home, profile="web", dsh_command=("fixture-dsh",), command_runner=native,
+    ) as bridge:
+        bridge.migrate_to_isolated_layout(
+            accept_host_permissions=True,
+            recover_external_dependency_links=True,
+        )
+
+    assert len(installs) == 1
+    assert (modules / "isolated.js").read_text() == "isolated bytes"
+    assert not (modules / "ambient-package").exists()
+    assert not fallback.exists()
+    assert yaml.safe_load((profile / "pnpm-workspace.yaml").read_text())["nodeLinker"] == (
+        "isolated"
+    )
+    assert not list(profile.glob(".layout-backup-*"))

@@ -133,4 +133,6 @@ class InvocationIdentity(PluginContractModel):
             self.memory_subject_ref,
         ]
         encoded = json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode()
-        return "mp1-" + hashlib.sha256(encoded).hexdigest()
+        # AICP AgentUserId accepts at most 64 characters. Keep the versioned
+        # prefix and 240 bits of the partition digest inside that wire limit.
+        return "mp1-" + hashlib.sha256(encoded).hexdigest()[:60]

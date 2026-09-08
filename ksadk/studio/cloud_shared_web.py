@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
@@ -97,6 +99,11 @@ class CloudSharedWebBridge:
             "AccessMode": "Owner",
             "ApiFormats": ["responses"],
             "Capabilities": {
+                # Cloud AgentKernel exposes durable interactions through the
+                # account-scoped SubmitInteraction action.  Advertising this
+                # keeps approvals on that protocol instead of falling back to
+                # the legacy empty-message RunAgent resume path.
+                "interaction_v1": {"enabled": True},
                 "HostedChat": {
                     "Enabled": True,
                     "ApiFormats": ["responses"],
@@ -359,6 +366,55 @@ class CloudSharedWebBridge:
             ),
             "Limit": int(payload.get("limit") if payload.get("limit") is not None else safe_limit),
         }
+
+    async def subscribe_run_events(
+        self,
+        agent_id: str,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: int = 0,
+    ) -> AsyncIterator[str]:
+        """Project cloud event polling onto the shared-Web SSE contract.
+
+        The account API exposes durable ``ListSessionEvents`` reads rather
+        than a browser-facing SSE URL.  After an interaction receipt is
+        accepted, keep the loopback connection open and forward new events
+        for the same invocation so the UI can resume without a page reload.
+        """
+
+        cursor = max(0, after_seq_id)
+        deadline = time.monotonic() + 5 * 60
+        terminal_types = {
+            "run.completed",
+            "run.failed",
+            "run.cancelled",
+            "run.interrupted",
+            "response.completed",
+            "response.failed",
+            "response.cancelled",
+        }
+        while time.monotonic() < deadline:
+            history = await self.list_session_events(
+                agent_id,
+                session_id,
+                after_seq_id=cursor,
+                limit=500,
+            )
+            terminal = False
+            for event in history["Events"]:
+                cursor = max(cursor, int(event.get("SeqId") or 0))
+                if str(event.get("InvocationId") or "") != invocation_id:
+                    continue
+                yield "event: message\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                if str(event.get("EventType") or "").lower() in terminal_types:
+                    terminal = True
+            if terminal:
+                yield "event: done\ndata: [DONE]\n\n"
+                return
+            yield ": ping\n\n"
+            await asyncio.sleep(0.5)
+        yield "event: done\ndata: [DONE]\n\n"
 
     async def open_run_stream(
         self, agent_id: str, payload: dict[str, Any]

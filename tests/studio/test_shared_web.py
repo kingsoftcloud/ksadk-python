@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -740,7 +741,7 @@ async def test_old_interaction_receipt_replay_preserves_new_pending_form(tmp_pat
 
 @pytest.mark.parametrize("legacy_route", [False, True])
 def test_cold_chat_model_catalog_reports_provider_window(tmp_path, monkeypatch, legacy_route):
-    from ksadk.studio.contracts import AgentSpec, RuntimeRef, Instructions
+    from ksadk.studio.contracts import AgentSpec, Instructions, RuntimeRef
 
     async def catalog(**kwargs):
         return [{"id": "deepseek-v4-flash", "context_window_tokens": 1_024_000}]
@@ -754,7 +755,11 @@ def test_cold_chat_model_catalog_reports_provider_window(tmp_path, monkeypatch, 
         spec=AgentSpec(
             instructions=Instructions(system="Answer the user."),
             runtime=RuntimeRef(type="codex", version="0.147.0"),
-            model=ModelSpec(model="deepseek-v4-flash", endpoint_url="https://model.example.com/v1/chat/completions", credential_ref="env://MODEL_API_KEY"),
+            model=ModelSpec(
+                model="deepseek-v4-flash",
+                endpoint_url="https://model.example.com/v1/chat/completions",
+                credential_ref="env://MODEL_API_KEY",
+            ),
         ),
     )
     assert not studio.catalog._provider_models
@@ -765,3 +770,66 @@ def test_cold_chat_model_catalog_reports_provider_window(tmp_path, monkeypatch, 
         assert response.status_code == 200
         data = response.json() if legacy_route else response.json()["Data"]
         assert data["Models"][0]["context_window_tokens"] == 1_024_000
+
+
+def test_cold_build_discovers_provider_model_before_submit(tmp_path, monkeypatch):
+    from ksadk.studio.contracts import (
+        AgentBindings,
+        AgentSpec,
+        Instructions,
+        NetworkPolicy,
+        RuntimeRef,
+        SecuritySpec,
+    )
+
+    async def catalog(**kwargs):
+        return [{"id": "deepseek-v4-flash", "context_window_tokens": 1_024_000}]
+
+    monkeypatch.setattr("ksadk.studio.resource_catalog.fetch_provider_model_catalog", catalog)
+    studio = StudioService(
+        tmp_path,
+        codex_runtime_inspector=lambda runtime: (
+            "0.8.4",
+            "0.147.0",
+            "codex-cli 0.147.0",
+        ),
+    )
+    asyncio.run(
+        studio.catalog.discover_provider_models(
+            api_base="https://model.example.com/v1",
+            api_key=None,
+            current_model="deepseek-v4-flash",
+        )
+    )
+    studio.create_studio_agent(
+        agent_id="cold-build",
+        name="Cold Build",
+        spec=AgentSpec(
+            instructions=Instructions(system="Answer the user."),
+            runtime=RuntimeRef(type="codex", version="0.147.0"),
+            bindings=AgentBindings(
+                model_profile_id="model:provider:deepseek-v4-flash:live",
+                model_profile_ids=["model:provider:deepseek-v4-flash:live"],
+            ),
+            security=SecuritySpec(
+                allowed_permissions=["process:host-user"],
+                network=NetworkPolicy(allowed_hosts=["model.example.com"])
+            ),
+        ),
+    )
+    studio.catalog._provider_models.clear()
+    assert not studio.catalog._provider_models
+
+    with TestClient(create_studio_app(tmp_path, service=studio, security_enabled=False)) as client:
+        submitted = client.post(
+            "/api/v1/agents/cold-build/builds",
+            headers={"Idempotency-Key": "cold-build-r1"},
+            json={"revision": 1},
+        )
+        assert submitted.status_code == 202
+        operation_id = submitted.json()["id"]
+        for _ in range(200):
+            operation = client.get(f"/api/v1/operations/{operation_id}").json()
+            if operation["status"] in {"SUCCEEDED", "FAILED"}:
+                break
+        assert operation["status"] == "SUCCEEDED", operation

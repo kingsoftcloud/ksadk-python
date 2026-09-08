@@ -128,6 +128,7 @@ class StudioDshCapabilityService:
         dsh_command: Sequence[str] | None = None,
         bridge_factory: BridgeFactory = DshProfilePluginBridge,
         host_factory: HostFactory = DshProfileCapabilityHost,
+        mount_studio_app: bool = True,
         max_argument_bytes: int = _MAX_ARGUMENT_BYTES,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
     ) -> None:
@@ -142,6 +143,7 @@ class StudioDshCapabilityService:
         self._explicit_dsh_executable = normalized_command[0] if normalized_command else None
         self._bridge_factory = bridge_factory
         self._host_factory = host_factory
+        self._mount_studio_app = mount_studio_app
         if (
             isinstance(max_argument_bytes, bool)
             or max_argument_bytes < 1
@@ -182,6 +184,21 @@ class StudioDshCapabilityService:
             dsh_home=dsh_home,
             profile=profile,
             dsh_command=command,
+        )
+
+    @classmethod
+    def create_workspace_resource_default(cls, workspace: Path) -> "StudioDshCapabilityService":
+        """Create the closed execution Profile used by platform resources."""
+
+        root = workspace.resolve()
+        configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
+        command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
+        return cls(
+            root,
+            dsh_home=root / ".agentkit" / "dsh-home",
+            profile="agentkit-resources",
+            dsh_command=command,
+            mount_studio_app=False,
         )
 
     @property
@@ -544,7 +561,11 @@ class StudioDshCapabilityService:
                 projection=projection,
                 dsh_home=self._dsh_home,
                 cwd=self._workspace,
-                studio_index=Path(__file__).with_name("static") / "index.html",
+                studio_index=(
+                    Path(__file__).with_name("static") / "index.html"
+                    if self._mount_studio_app
+                    else None
+                ),
                 studio_models=self.model_projection() if self.model_projection else None,
                 max_argument_bytes=self._max_argument_bytes,
                 max_result_bytes=self._max_result_bytes,
@@ -614,20 +635,32 @@ class StudioDshCapabilityService:
     ) -> tuple[DshProfileCapabilityDescriptor, str]:
         """Admit a cold Core or share an already attested, identical installation.
 
-        An incompatible existing generation is never implicitly replaced: callers
-        must explicitly stop it or choose another profile before preparing a Build.
+        A same-Profile Core started for Studio UI contributions has no resource
+        Build owner yet. Restart it under the frozen snapshot so loading a client
+        plugin cannot make platform-resource Agents impossible to run. A generation
+        already owned by another resource Build is never replaced implicitly.
         """
         expected = DshProfileBuildSnapshot.model_validate_json(expected.model_dump_json())
         async with self._lock:
             if (
                 self._host is not None and self._resource_generation_snapshot != expected
-                and (self._lease is not None or self._projection != expected.projection)
             ):
-                raise StudioError(
-                    "RESOURCE_PROFILE_IN_USE",
-                    "当前 DSH generation 未锁定此 Build；请先停止运行或选择独立 profile",
-                    status_code=409,
-                )
+                if (
+                    self._resource_generation_snapshot is not None
+                    or self._projection != expected.projection
+                ):
+                    raise StudioError(
+                        "RESOURCE_PROFILE_IN_USE",
+                        "当前 DSH generation 已由其他配置占用；请停止对应运行或选择独立 profile",
+                        status_code=409,
+                    )
+                if self._lease is not None:
+                    # The live Core only serves the exact same Profile projection
+                    # and has not activated resources. Replace it so the process
+                    # itself starts between the two immutable-installation checks
+                    # below. A Host retained after a failed start has no live
+                    # generation and remains the circuit-breaker owner for retry.
+                    await self._dispose_generation_locked()
             command = await asyncio.to_thread(self._resolve_command)
             try:
                 await asyncio.to_thread(self._verify_resource_build_snapshot, command, expected)

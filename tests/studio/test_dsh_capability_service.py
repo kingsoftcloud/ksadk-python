@@ -244,6 +244,16 @@ async def test_service_initializes_once_and_exposes_only_public_facts(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_resource_service_does_not_mount_studio_web_app(tmp_path: Path) -> None:
+    service = _RecordingService(tmp_path, mount_studio_app=False)
+
+    await service.inventory()
+
+    assert service.host_kwargs[0]["studio_index"] is None
+    await service.aclose()
+
+
+@pytest.mark.asyncio
 async def test_call_is_descriptor_fenced_validated_and_cancelled_on_refresh(
     tmp_path: Path,
 ) -> None:
@@ -629,12 +639,47 @@ async def test_resource_generation_preparation_and_actual_worker_lifetime(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_resource_preparation_does_not_replace_unattested_active_core(tmp_path):
+async def test_resource_preparation_restarts_unattested_same_profile_core(
+    tmp_path, monkeypatch
+):
+    service = _RecordingService(tmp_path)
+    await service.describe()
+    original = service.hosts[0]
+    expected = _resource_snapshot(service)
+    checks = []
+    monkeypatch.setattr(
+        service,
+        "_verify_resource_build_snapshot",
+        lambda command, snapshot: checks.append(snapshot),
+    )
+
+    _descriptor, generation = await service.prepare_resource_generation(expected)
+
+    assert original.disposed
+    assert len(service.hosts) == 2
+    assert checks == [expected, expected]
+    assert service._resource_generation_snapshot == expected
+    assert generation == service._generation_id
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resource_preparation_does_not_replace_incompatible_active_core(tmp_path):
     service = _RecordingService(tmp_path)
     await service.describe()
     host = service.hosts[0]
+    expected = _resource_snapshot(service)
+    expected = expected.model_copy(
+        update={
+            "projection": expected.projection.model_copy(
+                update={"config_digest": "sha256:" + "d" * 64}
+            )
+        }
+    )
+
     with pytest.raises(StudioError) as rejected:
-        await service.prepare_resource_generation(_resource_snapshot(service))
+        await service.prepare_resource_generation(expected)
+
     assert rejected.value.code == "RESOURCE_PROFILE_IN_USE"
     assert not host.disposed
     await service.aclose()

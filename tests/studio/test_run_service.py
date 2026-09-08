@@ -15,6 +15,7 @@ from ksadk.events.canonical import (
     InteractionRequested,
     ItemCompleted,
     ItemStarted,
+    ItemUpdated,
     OutputRef,
     RunCompleted,
     RunFailed,
@@ -210,6 +211,69 @@ class _MultiMessageAdapter(_RecordingAdapter):
         )
 
 
+class _GatedStreamingAdapter(_RecordingAdapter):
+    def __init__(self, calls: list[tuple[str, Any]]) -> None:
+        super().__init__(calls, "plugin")
+        self.delta_consumed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+        common = {
+            "schema_version": 2,
+            "timestamp": 1.0,
+            "run_id": handle.run_id,
+            "scope_id": f"scope-{handle.run_id}",
+        }
+        source = SourceRef(framework="codex")
+        yield RunStarted(event_id="e1", seq=1, status="running", source=source, **common)
+        yield ItemStarted(
+            event_id="e2",
+            seq=2,
+            item_id="msg-1",
+            item_kind="message",
+            phase="final_answer",
+            source=source,
+            **common,
+        )
+        yield ItemUpdated(
+            event_id="e3",
+            seq=3,
+            item_id="msg-1",
+            item_kind="message",
+            op="append",
+            update=TextContent(part_id="text-0", text="first chunk"),
+            source=source,
+            **common,
+        )
+        self.delta_consumed.set()
+        await self.release.wait()
+        yield ItemCompleted(
+            event_id="e4",
+            seq=4,
+            item_id="msg-1",
+            item_kind="message",
+            snapshot=ContentSnapshot(
+                parts=(TextContent(part_id="text-0", text="first chunk done"),)
+            ),
+            source=source,
+            **common,
+        )
+        yield RunCompleted(
+            event_id="e5",
+            seq=5,
+            status="completed",
+            output_refs=(
+                OutputRef(
+                    scope_id=common["scope_id"],
+                    item_id="msg-1",
+                    part_id="text-0",
+                ),
+            ),
+            source=source,
+            **common,
+        )
+
+
 def test_kernel_route_is_used_only_for_its_bound_studio_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -305,6 +369,57 @@ async def test_studio_run_service_uses_core_executor_and_persists_runtime_events
     ]
     assert [event.seq for event in canonical] == [1, 2, 3]
     assert {event.run_id for event in canonical} == {"native-langgraph"}
+
+
+@pytest.mark.asyncio
+async def test_plugin_provider_runtime_adapter_publishes_deltas_before_completion(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    adapter = _GatedStreamingAdapter(calls)
+
+    class PluginRuntime:
+        def kernel_adapter_provider(self, _spec: StudioRunSpec):
+            return lambda: adapter
+
+        async def execute(self, *_args: Any, **_kwargs: Any):
+            raise AssertionError("runtime-adapter providers must not use buffered execute()")
+
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(
+        workspace,
+        RuntimeExecutor(RuntimeRegistry()),
+        plugin_runtime=PluginRuntime(),
+    )
+    observed: list[str] = []
+    task = asyncio.create_task(
+        service.run(
+            StudioRunSpec(
+                launch_context=RuntimeLaunchContext(
+                    runtime_type="plugin",
+                    project_dir=tmp_path,
+                ),
+                build_id="build-plugin-codex",
+                agent_id="plugin-codex-agent",
+                model="fixture-model",
+                request_config={"provider_runtime_adapter": True},
+                plugin_bundle_root=tmp_path,
+            ),
+            "stream this",
+            session_id="ses-plugin-stream",
+            on_event=lambda event: observed.append(event.type),
+        )
+    )
+
+    await asyncio.wait_for(adapter.delta_consumed.wait(), timeout=1)
+    assert "message.delta" in observed
+    assert not task.done()
+    adapter.release.set()
+    record = await asyncio.wait_for(task, timeout=1)
+
+    assert record.status == RunStatus.COMPLETED
+    assert record.output == "first chunk done"
 
 
 @pytest.mark.asyncio

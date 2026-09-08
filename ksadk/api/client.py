@@ -222,10 +222,6 @@ class AgentEngineClient:
         # requests.Session must not be used by several worker threads at once.
         self._async_action_lock = asyncio.Lock()
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
-        # A Server Action can be deployed before the external KOP publication
-        # finishes.  Remember that result per client so an approval retry does
-        # not repeatedly hit the known-unpublished control-plane route.
-        self._unpublished_kop_actions: set[str] = set()
         # 反查身份的实例缓存（避免同会话重复调 IAM）；None=未尝试，ResolvedIdentity|None=已反查
         self._resolved_identity: Any = None
         self._identity_resolve_attempted: bool = False
@@ -1045,24 +1041,6 @@ class AgentEngineClient:
             )
         return AgentEngineAPIError(response.status_code, message)
 
-    @staticmethod
-    def _is_unregistered_kop_action(error: AgentEngineAPIError, action: str) -> bool:
-        """Return whether KOP rejected an otherwise valid Server Action.
-
-        Public Action publication is an infrastructure step independent of a
-        Server rollout.  During that window the per-Agent Gateway route is
-        already authenticated and still forwards the exact same Action to
-        Server admission, so callers can safely use it as the data-plane
-        fallback instead of losing an approval response.
-        """
-
-        message = str(error.message or "").strip().lower()
-        return (
-            error.code == 400
-            and f"action {action.lower()}" in message
-            and "not valid for this web service" in message
-        )
-
     def _runtime_action(
         self,
         *,
@@ -1106,22 +1084,6 @@ class AgentEngineClient:
         if not isinstance(normalized, dict):
             raise AgentEngineAPIError(502, "Runtime Action returned non-object Data")
         return normalized
-
-    async def _runtime_action_for_agent(
-        self,
-        *,
-        agent_id: str,
-        action: str,
-        params: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        detail = await self.get_agent(agent_id, include_api_key=True)
-        access = self._extract_runtime_access(detail)
-        return await asyncio.to_thread(
-            self._runtime_action,
-            access=access,
-            action=action,
-            params=params,
-        )
 
     @staticmethod
     def _compact_params(params: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -1560,39 +1522,6 @@ class AgentEngineClient:
     async def get_plugin_delivery_capabilities(self) -> Dict[str, Any]:
         return await self._action_async("GetPluginDeliveryCapabilities", {})
 
-    async def upload_plugin_artifact(self, path: Path, receipt: Dict[str, Any]) -> Dict[str, Any]:
-        """Upload verified plugin bytes using the same signed Action transport."""
-
-        def upload() -> Dict[str, Any]:
-            if self.dry_run:
-                raise AgentEngineAPIError(409, "Plugin artifact upload is disabled in dry-run mode")
-            action = "UploadPluginArtifact"
-            _, headers, url = self._build_action_request_target(
-                "/agentengine/api/v1/" + action, action
-            )
-            headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-            with path.open("rb") as stream:
-                response = self._get_session().post(
-                    url,
-                    headers=headers,
-                    auth=self._auth.get_auth(),
-                    files={"file": ("plugin.zip", stream, "application/zip")},
-                    data={"Receipt": json.dumps(receipt)},
-                    timeout=max(self.timeout, 120),
-                    verify=self._ssl_verify_enabled(),
-                )
-            if response.status_code >= 400:
-                raise AgentEngineAPIError(response.status_code, "Plugin artifact upload failed")
-            result = response.json()
-            if result.get("Code", 0) != 0 or not isinstance(result.get("Data"), dict):
-                raise AgentEngineAPIError(
-                    result.get("Code") or 502, "Invalid plugin upload receipt"
-                )
-            return self._to_snake_case(result["Data"])
-
-        async with self._async_action_lock:
-            return await asyncio.to_thread(upload)
-
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Create an Agent through the established order workflow.
 
@@ -1694,19 +1623,10 @@ class AgentEngineClient:
             advanced["ProjectId"] = project_id
         params["Advanced"] = advanced
 
-        # ManagedRuntime is an already-paid, platform-owned YAML runtime.  It
-        # has no Code/Container order callback to materialize later, so use
-        # the existing CreateAgent action to create its Agent/Runtime now.
-        # Code and Container keep the established CreateAgentProduct flow.
-        action = (
-            "CreateAgent" if params["DeploymentType"] == "ManagedRuntime" else "CreateAgentProduct"
-        )
-        if action == "CreateAgent":
-            # CreateAgent is also used as an order callback and therefore
-            # requires an InstanceId.  A declarative runtime has no order to
-            # allocate one for us, so the SDK supplies a stable request UUID.
-            params["InstanceId"] = str(data.get("instance_id") or uuid.uuid4())
-        return self._action(action, params)
+        # CreateAgentProduct is the established public Action. The Server
+        # handles ManagedRuntime synchronously without involving Ding, while
+        # Code and Container retain their existing order/callback lifecycle.
+        return self._action("CreateAgentProduct", params)
 
     async def get_agent(
         self,
@@ -1773,6 +1693,33 @@ class AgentEngineClient:
         if name:
             params["Name"] = name
         return self._action("ListAgentModels", params)
+
+    async def list_knowledge_bases(self) -> Dict[str, Any]:
+        """List knowledge bases visible to the current signed cloud identity."""
+
+        result = await self._action_async("ListKnowledgeBases", {})
+        return {
+            "knowledge_bases": result.get("knowledge_bases", []),
+            "total_count": result.get("total_count", 0),
+        }
+
+    async def list_memory_instances(self) -> Dict[str, Any]:
+        """List long-term memory instances visible to the signed identity."""
+
+        result = await self._action_async("ListMemoryInstances", {})
+        return {
+            "memory_instances": result.get("memory_instances", []),
+            "total_count": result.get("total_count", 0),
+        }
+
+    async def list_skill_workspaces(self) -> Dict[str, Any]:
+        """List Skill Center workspaces visible to the signed identity."""
+
+        result = await self._action_async("ListSkillWorkspaces", {})
+        return {
+            "skill_workspaces": result.get("skill_workspaces", []),
+            "total_count": result.get("total_count", 0),
+        }
 
     async def create_dashboard_access_link(
         self,
@@ -2148,24 +2095,7 @@ class AgentEngineClient:
             "Response": response or {},
             "IdempotencyKey": idempotency_key,
         }
-        if "SubmitInteraction" not in self._unpublished_kop_actions:
-            try:
-                return await self._action_async("SubmitInteraction", params)
-            except AgentEngineAPIError as exc:
-                if not self._is_unregistered_kop_action(exc, "SubmitInteraction"):
-                    raise
-                self._unpublished_kop_actions.add("SubmitInteraction")
-        if "SubmitInteraction" in self._unpublished_kop_actions:
-            # KOP publication can lag the Server/Gateway rollout.  The
-            # per-Agent endpoint is authenticated with the API key returned by
-            # signed GetAgent and still traverses Gateway -> Server admission;
-            # it never submits directly to Runtime.
-            return await self._runtime_action_for_agent(
-                agent_id=agent_id,
-                action="SubmitInteraction",
-                params=params,
-            )
-        raise AssertionError("unreachable SubmitInteraction transport state")
+        return await self._action_async("SubmitInteraction", params)
 
     async def list_workspace_files(
         self,

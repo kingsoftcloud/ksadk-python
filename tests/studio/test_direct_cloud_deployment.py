@@ -80,10 +80,48 @@ def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatc
     assert gateway.client is not gateway.stream_client
 
 
+def test_studio_keeps_preonline_server_route_when_region_setting_is_physical_region(
+    monkeypatch,
+) -> None:
+    """The settings page may persist cn-beijing-6 while studio.env selects pre-online."""
+    from ksadk.studio.service import StudioService
+
+    captured: list[dict[str, str]] = []
+
+    class _CapturedClient:
+        def __init__(self, **kwargs) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "studio-access")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "studio-secret")
+    monkeypatch.setenv("KSYUN_REGION", "pre-online")
+    monkeypatch.setenv("AGENTENGINE_REGION", "cn-beijing-6")
+    monkeypatch.delenv("AGENTENGINE_STREAM_SERVER_URL", raising=False)
+    monkeypatch.setattr("ksadk.studio.service.AgentEngineClient", _CapturedClient)
+
+    gateway = StudioService._configured_cloud_gateway()
+
+    assert isinstance(gateway, DirectAgentEngineCloudDeploymentGateway)
+    assert captured == [
+        {
+            "region": "pre-online",
+            "access_key": "studio-access",
+            "secret_key": "studio-secret",
+        },
+        {
+            "base_url": "http://agent-api-pre.kspmas-internal.ksyun.com",
+            "region": "pre-online",
+            "access_key": "studio-access",
+            "secret_key": "studio-secret",
+        },
+    ]
+    assert gateway._managed_runtime_client() is gateway.stream_client
+
+
 class _Uploader:
     calls: list[tuple[bytes, str]] = []
 
-    def __init__(self, *, region: str, bucket: str | None = None) -> None:
+    def __init__(self, *, region: str, bucket: str | None = None, **_kwargs) -> None:
         self.region = region
         self.bucket_name = bucket or "agentengine-test"
 
@@ -775,6 +813,35 @@ def test_managed_runtime_payload_keeps_model_env_out_of_yaml_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preonline_managed_runtime_uses_dedicated_server_client() -> None:
+    kop_client = _Client()
+    server_client = _Client()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=kop_client,
+        stream_client=server_client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+
+    await gateway.create_managed_runtime_deployment(
+        build_id="build-pre-online",
+        agent_name="yaml-agent",
+        manifest="name: yaml-agent\nframework: codex\n",
+        manifest_digest="a" * 64,
+        runtime_name="codex",
+        runtime_version="0.147.0",
+        request=request,
+    )
+
+    assert kop_client.created == []
+    assert len(server_client.created) == 1
+
+
+@pytest.mark.asyncio
 async def test_replacing_managed_runtime_uses_complete_declaration() -> None:
     client = _Client()
     gateway = DirectAgentEngineCloudDeploymentGateway(
@@ -968,7 +1035,8 @@ async def test_yaml_deployment_rejects_native_plugin_bindings_without_deliverabl
             agent_name="plugin-agent",
             manifest=(
                 "name: plugin-agent\nplugins:\n"
-                "  - pluginRef: plugin://example.plugin@1.0.0\n    enabled: true\n"
+                "  - pluginRef: plugin://example.plugin@1.0.0\n"
+                "    ecosystem: codex\n    enabled: true\n"
             ),
             runtime_name="codex",
             runtime_version="0.147.0",
@@ -982,7 +1050,9 @@ async def test_yaml_deployment_rejects_native_plugin_bindings_without_deliverabl
 
 
 @pytest.mark.asyncio
-async def test_deployment_captures_cached_creator_and_preserves_it_after_credential_change(tmp_path):
+async def test_deployment_captures_cached_creator_and_preserves_it_after_credential_change(
+    tmp_path,
+):
     from ksadk.studio.cloud import InMemoryCloudGateway
 
     class Gateway(InMemoryCloudGateway):
@@ -1005,6 +1075,64 @@ async def test_deployment_captures_cached_creator_and_preserves_it_after_credent
     revised = await service.deploy_managed_runtime(**params, replacing=first)
     assert revised.created_by_name == "original-user"
     assert revised.created_by_user_id == "original-id"
+
+
+@pytest.mark.asyncio
+async def test_missing_replacement_agent_is_created_again(tmp_path):
+    from ksadk.studio.cloud import InMemoryCloudGateway
+
+    class Gateway(InMemoryCloudGateway):
+        replaced = False
+        created = False
+
+        async def replace_managed_runtime_deployment(self, deployment, **kwargs):
+            self.replaced = True
+            raise AgentEngineAPIError(404, "未找到对应的 Agent")
+
+        async def create_managed_runtime_deployment(self, **kwargs):
+            self.created = True
+            return DeploymentRecord(
+                id="dep-created-again",
+                build_id=kwargs["build_id"],
+                bundle_digest="sha256:" + kwargs["manifest_digest"],
+                version_id="managed-created-again",
+                status="DEPLOYING",
+                target=kwargs["request"].target,
+                agent_id="ar-created-again",
+                artifact_id="managed-runtime",
+                requires_kernel=True,
+            )
+
+    gateway = Gateway()
+    service = CloudDeploymentService(workspace=Workspace(tmp_path), gateway=gateway)
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+    replacing = DeploymentRecord(
+        id="dep-stale",
+        build_id="build-old",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="managed-old",
+        status="FAILED",
+        target=request.target,
+        agent_id="ar-removed",
+        artifact_id="managed-runtime",
+    )
+
+    created = await service.deploy_managed_runtime(
+        build_id="build-new",
+        agent_name="yaml-agent",
+        manifest="name: yaml-agent\nframework: codex\n",
+        manifest_digest="b" * 64,
+        runtime_name="codex",
+        runtime_version="0.147.0",
+        request=request,
+        replacing=replacing,
+    )
+
+    assert gateway.replaced is True
+    assert gateway.created is True
+    assert created.agent_id == "ar-created-again"
 
 
 def test_gateway_reads_only_matching_identity_cache(monkeypatch):

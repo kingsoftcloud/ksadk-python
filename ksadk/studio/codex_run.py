@@ -198,7 +198,14 @@ class CodexRunSpecResolver:
         build: Any,
         manifest: CodexAgentManifest,
     ) -> dict[str, Any] | None:
-        bindings = [item for item in (manifest.plugins or []) if item.enabled]
+        # Only Codex-native bindings belong to the App Server bootstrap. DSH
+        # bindings are materialized by the Provider Bundle and intentionally do
+        # not have entries in the Codex plugin snapshot store.
+        bindings = [
+            item
+            for item in (manifest.plugins or [])
+            if item.enabled and item.ecosystem == "codex"
+        ]
         lock = getattr(build, "plugin_lock", None)
         lock_digest = getattr(build, "plugin_lock_digest", None)
         marketplace = getattr(build, "plugin_marketplace", None)

@@ -566,6 +566,18 @@ class CodexStudioBuilder:
             if not binding.enabled:
                 continue
             if binding.ecosystem != "codex":
+                from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+                # Official platform resources are DSH capabilities materialized by
+                # the Provider Bundle.  They belong in the resource Build lock,
+                # never in Codex's native marketplace lock.
+                if resource_plugin_config(
+                    binding.plugin_ref,
+                    binding.ecosystem,
+                    binding.config,
+                    enabled=True,
+                ) is not None:
+                    continue
                 raise StudioError(
                     "CODEX_PLUGIN_ECOSYSTEM_UNSUPPORTED",
                     "Codex Agent 目前只能运行 Codex 原生插件绑定",

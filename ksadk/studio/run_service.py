@@ -241,13 +241,19 @@ class StudioRunService:
             if handled is not None:
                 return handled
 
-        codex_provider = (
-            spec.plugin_bundle_root is not None and runtime_type == "codex"
+        provider_runtime_adapter = (
+            spec.plugin_bundle_root is not None
+            and (
+                runtime_type == "codex"
+                or bool(spec.request_config.get("provider_runtime_adapter"))
+            )
         )
         # A process-global Codex Kernel can share Agent/cwd with this Build
         # while owning a legacy direct factory. New Builds must retain their
         # exact Provider activation, including when that global Kernel exists.
-        kernel_runtime = None if codex_provider else self._kernel_runtime_for_spec(spec)
+        kernel_runtime = (
+            None if provider_runtime_adapter else self._kernel_runtime_for_spec(spec)
+        )
         if kernel_runtime is not None:
             return await self._kernel_run(
                 spec,
@@ -256,7 +262,7 @@ class StudioRunService:
                 on_event=on_event,
                 kernel_runtime=kernel_runtime,
             )
-        if spec.plugin_bundle_root is not None and not codex_provider:
+        if spec.plugin_bundle_root is not None and not provider_runtime_adapter:
             return await self._plugin_run(
                 spec,
                 user_input,
@@ -326,13 +332,16 @@ class StudioRunService:
                     **self._native_session_metadata(
                         spec.agent_id,
                         session,
-                        runtime_type,
+                        str(
+                            spec.request_config.get("provider_runtime_type")
+                            or runtime_type
+                        ),
                         spec.build_id,
                     ),
                 },
             )
             preparation = None
-            if codex_provider:
+            if provider_runtime_adapter:
                 if self.plugin_runtime is None:
                     raise StudioError(
                         "PLUGIN_RUNTIME_UNAVAILABLE", "Codex Provider Runtime 不可用",
