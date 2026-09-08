@@ -2,12 +2,13 @@
 
 import asyncio
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
-from ksadk.plugins.bridges.dsh import DshProfilePluginBridge
+from ksadk.plugins.bridges.dsh import DshProfilePluginBridge, dsh_subprocess_environment
 from ksadk.plugins.dsh_toolchain import DSH_VERSION, DshToolchainManager
 from ksadk.resource_runtime.langgraph import create_bound_resource_tools
 from ksadk.resource_runtime.snapshots import ResourceSnapshot
@@ -35,21 +36,30 @@ async def test_studio_starts_real_core_before_admitting_resource_worker(
     bundles = Path(__file__).resolve().parents[2] / "ksadk/plugins/providers/bundles"
 
     def install():
+        # Resource plugins share the complete official Core, including its web
+        # and connection services. A fresh arbitrary profile is an empty tree.
+        subprocess.run(
+            [str(dsh), "--profile", "web", "--dump-config"],
+            cwd=tmp_path,
+            env=dsh_subprocess_environment(dsh_home=dsh_home),
+            check=True, capture_output=True, timeout=30,
+        )
         with DshProfilePluginBridge(
-            dsh_home=dsh_home, profile="resource-startup", dsh_command=(str(dsh),), cwd=tmp_path,
+            dsh_home=dsh_home, profile="web", dsh_command=(str(dsh),), cwd=tmp_path,
         ) as bridge:
             for name in (
                 "dsh-platform-resources", "dsh-knowledge", "dsh-memory", "dsh-skill-center",
             ):
                 installed = bridge.install_plugin(str(bundles / name), accept_host_permissions=True)
                 bridge.set_enabled(installed.name, enabled=True)
+            bridge.migrate_to_isolated_layout(accept_host_permissions=True)
             return bridge.snapshot_for_build()
 
     expected = await asyncio.to_thread(install)
-    settings = dsh_home / "profiles/resource-startup/pnpm-workspace.yaml"
+    settings = dsh_home / "profiles/web/pnpm-workspace.yaml"
     assert yaml.safe_load(settings.read_text())["nodeLinker"] == "isolated"
     service = StudioDshCapabilityService(
-        tmp_path, dsh_home=dsh_home, profile="resource-startup", dsh_command=(str(dsh),),
+        tmp_path, dsh_home=dsh_home, profile="web", dsh_command=(str(dsh),),
     )
     endpoint, calls = upstream
     try:
