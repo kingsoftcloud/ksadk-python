@@ -51,6 +51,28 @@ def test_calendar_supports_interval_cron_and_dst_single_fallback() -> None:
     assert next_schedule_time(fallback, after=first) == _at("2026-11-02T06:30:00Z")
 
 
+def test_board_summary_keeps_each_task_state_outside_the_history_page(tmp_path) -> None:
+    store = SchedulerSQLiteStore(tmp_path / "scheduler.sqlite3")
+    now = _at("2026-08-27T00:00:00Z")
+    task = _task(schedule=ScheduleSpec(kind="interval", every_seconds=60), next_run_at=now)
+    busy = task.model_copy(update={"task_id": "frequent-task"})
+    store.put_task(task, generation=1)
+    store.put_task(busy, generation=1)
+    first = store.claim_manual(task, generation=1, now=now)
+    store.finish(first.occurrence_id, succeeded=False, error_code="TEST_FAILURE")
+    for index in range(201):
+        item = store.claim_manual(busy, generation=1, now=now + timedelta(seconds=index + 1))
+        store.finish(item.occurrence_id, succeeded=True)
+    assert all(item.task_id == busy.task_id for item in store.list_all_occurrences())
+    summaries = {item.task_id: item for item in store.list_task_occurrence_summaries()}
+    assert summaries[task.task_id].state == "failed"
+    assert summaries[busy.task_id].state == "succeeded"
+    # A late/manual overlap cannot hide an earlier still-active execution.
+    active = store.claim_manual(busy, generation=1, now=now + timedelta(milliseconds=500))
+    summaries = {item.task_id: item for item in store.list_task_occurrence_summaries()}
+    assert summaries[busy.task_id].occurrence_id == active.occurrence_id
+
+
 class _RecordingDispatcher:
     def __init__(self, *, fail: bool = False) -> None:
         self.calls: list[tuple[str, str, str]] = []

@@ -88,6 +88,9 @@ class StudioSchedulerService:
     def list_all_occurrences(self, *, limit: int = 200) -> list[ScheduleOccurrence]:
         return self.store.list_all_occurrences(limit=limit)
 
+    def task_occurrence_summaries(self) -> list[ScheduleOccurrence]:
+        return self.store.list_task_occurrence_summaries()
+
     def create_task(self, task: ScheduledTask) -> ScheduledTask:
         if self.store.get_task(task.task_id) is not None:
             raise StudioError(
