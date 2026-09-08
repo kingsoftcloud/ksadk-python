@@ -167,7 +167,12 @@ class ResourceConnectionRepository:
             self.workspace.atomic_write_text(path, payload + "\n")
             return record
 
-    def resolve_credentials(self, expected: ConnectionTarget) -> ResolvedResourceCredentials:
+    def resolve_credentials(
+        self,
+        expected: ConnectionTarget,
+        *,
+        expected_revision: int | None = None,
+    ) -> ResolvedResourceCredentials:
         """Host-only secret lookup after admission, not an authorization decision.
 
         Explicit references use the existing resolver without model-key aliases.
@@ -175,7 +180,9 @@ class ResourceConnectionRepository:
         """
         with self._locked():
             record = self.get(expected.connection_ref)
-            if record.target != expected:
+            if record.target != expected or (
+                expected_revision is not None and record.revision != expected_revision
+            ):
                 raise StudioError(
                     "RESOURCE_CONNECTION_CHANGED",
                     "资源连接与 Build 不一致，需要重新构建",

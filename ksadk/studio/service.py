@@ -96,6 +96,7 @@ from ksadk.studio.contracts import (
     AgentTemplateComposeRequest,
     AgentTemplateComposition,
     BuildStatus,
+    BundleManifest,
     DeploymentRequest,
     Diagnostic,
     DiagnosticSeverity,
@@ -126,6 +127,10 @@ from ksadk.studio.repository import AgentDraftRepository, BuildRepository, load_
 from ksadk.studio.resource_authority import (
     ResourceAuthorityPolicy,
     SignedKnowledgeResourceAuthority,
+)
+from ksadk.studio.resource_build_admission import (
+    admit_resource_build,
+    resource_build_required,
 )
 from ksadk.studio.resource_catalog import LocalResourceCatalog
 from ksadk.studio.resource_connections import ResourceConnectionRepository
@@ -764,11 +769,13 @@ class StudioService:
             return await asyncio.to_thread(self.codex_builder.build, agent_id)
         draft = self.drafts.get(agent_id)
         composition_required = self.plugin_compositions.required_for(draft)
+        resources_required = resource_build_required(draft)
         for record in self.builds.list_for_agent(agent_id):
             if record.status == BuildStatus.SUCCEEDED:
-                if composition_required and (
+                if (composition_required or resources_required) and (
                     record.source_revision != draft.metadata.revision
-                    or not self._build_has_composition(record)
+                    or (composition_required and not self._build_has_composition(record))
+                    or (resources_required and not self._build_has_resources(record))
                 ):
                     continue
                 if composition_required:
@@ -797,8 +804,21 @@ class StudioService:
 
     def _build_agent_bundle(self, draft: AgentDraft):
         composition = self.plugin_compositions.compile_if_required(draft)
+        resource_build = None
+        if resource_build_required(draft):
+            dsh_profile = self.dsh_capabilities.capture_resource_build_snapshot()
+            resource_build = admit_resource_build(
+                draft,
+                authority=self.resource_authority,
+                connections=self.resource_connections,
+                dsh_profile=dsh_profile,
+            )
         try:
-            record = self.builder.build(draft, composition=composition)
+            record = self.builder.build(
+                draft,
+                composition=composition,
+                resource_build=resource_build,
+            )
         except BundleSecurityError as error:
             first = error.findings[0]
             reason = {
@@ -849,6 +869,26 @@ class StudioService:
                 and manifest.get("compositionProfileDigest")
                 and "composition-profile.json" in names
                 and "plugin-lock.json" in names
+            )
+        except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile):
+            return False
+
+    def _build_has_resources(self, record: Any) -> bool:
+        if (
+            not record.artifact_path
+            or not record.resource_build_digest
+            or not record.resource_snapshot_digest
+        ):
+            return False
+        try:
+            archive = self.workspace.resolve(record.artifact_path, must_exist=True)
+            with zipfile.ZipFile(archive) as bundle:
+                manifest = BundleManifest.model_validate_json(bundle.read("manifest.json"))
+                names = frozenset(bundle.namelist())
+            return bool(
+                manifest.resource_build_digest == record.resource_build_digest
+                and manifest.resource_snapshot_digest == record.resource_snapshot_digest
+                and "platform-resources/resource-build.json" in names
             )
         except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile):
             return False

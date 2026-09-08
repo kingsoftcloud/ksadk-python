@@ -89,3 +89,6 @@ def test_config_and_plugin_lock_are_part_of_digest():
     data = original.model_dump(by_alias=True, mode="json")
     data["pluginLockDigest"] = "sha256:" + "b" * 64
     assert ResourceSnapshot.model_validate(data).digest != original.digest
+    data = original.model_dump(by_alias=True, mode="json")
+    data["bindings"][0]["connectionRevision"] = 2
+    assert ResourceSnapshot.model_validate(data).digest != original.digest

@@ -45,6 +45,9 @@ def test_declaration_reopen_rotation_and_target_drift(tmp_path):
     assert (
         reopened.resolve_credentials(record.target).secret_key.get_secret_value() == "fake-secret"
     )
+    with pytest.raises(StudioError) as revision_drift:
+        reopened.resolve_credentials(record.target, expected_revision=2)
+    assert revision_drift.value.code == "RESOURCE_CONNECTION_CHANGED"
     resolver.put_session("RESOURCE_SK", "fake-rotated")
     assert (
         reopened.resolve_credentials(record.target).secret_key.get_secret_value() == "fake-rotated"

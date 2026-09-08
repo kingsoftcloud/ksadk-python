@@ -86,6 +86,10 @@ class MemoryRecallPolicy(PluginContractModel):
 class FrozenResourceBinding(PluginContractModel):
     config: ResourceConfig
     connection: ConnectionTarget
+    # The connection target deliberately contains no credential references.
+    # Freeze the repository revision separately so rotating those references
+    # cannot make an old Build silently consume a different credential set.
+    connection_revision: int = Field(default=1, strict=True, ge=1)
     skill_execution: SkillExecutionTarget | None = None
     memory_recall: MemoryRecallPolicy | None = None
 
@@ -137,6 +141,7 @@ class ResourceSnapshot(PluginContractModel):
                 {
                     "config": json.loads(binding.config.canonical_bytes()),
                     "connection": binding.connection.model_dump(by_alias=True, mode="json"),
+                    "connectionRevision": binding.connection_revision,
                     **(
                         {
                             "memoryRecall": binding.memory_recall.model_dump(

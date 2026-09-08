@@ -72,7 +72,10 @@ def materialize_resource_build(
             )
         if frozen.memory_recall != recall:
             raise ValueError("Memory recall policy does not match admitted Build snapshot")
-        credentials[config.binding.id] = connections.resolve_credentials(frozen.connection)
+        credentials[config.binding.id] = connections.resolve_credentials(
+            frozen.connection,
+            expected_revision=frozen.connection_revision,
+        )
         if frozen.skill_execution is not None:
             connections.resolve_credentials(frozen.skill_execution.connection)
 
@@ -137,7 +140,10 @@ def materialize_resource_build(
             finally:
                 client.close()
         for frozen in snapshot.bindings:
-            connections.resolve_credentials(frozen.connection)
+            connections.resolve_credentials(
+                frozen.connection,
+                expected_revision=frozen.connection_revision,
+            )
             if frozen.skill_execution is not None:
                 connections.resolve_credentials(frozen.skill_execution.connection)
         return write_resource_build(directory, snapshot, packages)

@@ -211,6 +211,34 @@ class StudioDshCapabilityService:
             command = await asyncio.to_thread(self._resolve_command)
             return await asyncio.to_thread(self._profile_has_enabled_plugins, command)
 
+    def capture_resource_build_snapshot(self) -> DshProfileBuildSnapshot:
+        """Capture immutable Profile inputs for a caller-owned Build staging area.
+
+        The bridge uses the cross-process Profile transaction lock, so this
+        synchronous method is safe to call from Studio's existing Build worker
+        thread without starting or mutating the live Core generation.
+        """
+
+        if self._closed:
+            raise StudioError(
+                "DSH_CAPABILITY_SERVICE_CLOSED",
+                "DSH capability service 已关闭",
+                status_code=503,
+            )
+        command = self._resolve_command()
+        try:
+            with self._bridge_factory(
+                dsh_home=self._dsh_home,
+                profile=self._profile,
+                dsh_command=command,
+                cwd=self._workspace,
+            ) as bridge:
+                return bridge.snapshot_for_build()
+        except StudioError:
+            raise
+        except Exception as error:
+            raise self._unavailable(error) from error
+
     async def describe(self) -> DshProfileCapabilityDescriptor:
         host, _lease = await self._ready_generation()
         return host.descriptor
