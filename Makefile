@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.4"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.5"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -379,7 +379,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
+PUBLIC_TEST_TARGETS ?= tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -552,6 +552,16 @@ phase2-release-candidate-gate:
 public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build phase2-release-preflight
 	@echo "✅ public preflight passed"
 
+# Lightweight preflight for the PyPI publish workflow.  The publish job runs
+# alongside the deploy-pages job (which already builds/deploys the docs site),
+# and the heavy Phase 2 native/browser E2E gates are already enforced by the
+# pull-request release-check workflow before merge.  Re-running phase2 here
+# doubles the work and stalls on the shared CI runner.  So the publish
+# preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test
+# + build/twine check, without docs-site-build or phase2-release-preflight.
+public-preflight-publish: public-version-gate public-audit sync-ksadk-web-static public-test public-build-check
+	@echo "✅ public publish preflight passed"
+
 public-publish-check:
 	@echo "==> publication state check"
 	@if [ -f "scripts/check_publication_state.py" ]; then \
@@ -704,11 +714,11 @@ STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.4 release; a normal release build must
+# The shared Conversation v1 Web 0.3.5 release; a normal release build must
 # fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.4
+KSADK_WEB_VERSION ?= 0.3.5
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=

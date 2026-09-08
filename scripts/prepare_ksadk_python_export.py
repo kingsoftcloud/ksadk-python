@@ -71,21 +71,7 @@ EXPORT_PREFIXES = (
     "ksadk_runtime_common/",
 )
 
-# The public candidate carries reviewed compiled UI assets, not the editable
-# Studio React/TypeScript source tree. These directories are generated and
-# ignored in the internal repository, so export discovery must add them
-# explicitly after the internal build has completed.
-GENERATED_PUBLIC_STATIC_PREFIXES = (
-    "ksadk/server/static/",
-    "ksadk/studio/static/",
-)
-
-GENERATED_STATIC_SOURCE_SUFFIXES = (
-    ".map",
-    ".ts",
-    ".tsx",
-)
-
+# Public Git trees carry build inputs; static assets are generated for packages.
 REQUIRED_PUBLIC_FILES = {
     "AGENTS.md",
     "CLAUDE.md",
@@ -96,8 +82,8 @@ REQUIRED_PUBLIC_FILES = {
     ".gitleaks.toml",
     "docs-site/package.json",
     "docs-site/pnpm-lock.yaml",
-    "ksadk/server/static/index.html",
-    "ksadk/studio/static/index.html",
+    "ksadk/studio/react-ui/package.json",
+    "ksadk/studio/react-ui/package-lock.json",
     "pyproject.toml",
 }
 
@@ -120,6 +106,8 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/studio/test_shared_web.py",
+    "tests/studio/test_dsh_application.py",
     "tests/__init__.py",
     "tests/conftest.py",
     "tests/events/fixtures/runtime_projection_golden.json",
@@ -134,10 +122,17 @@ PUBLIC_TEST_FILES = {
     "tests/e2e/test_codex_subagent_provider_e2e.py",
     "tests/e2e/fixtures/codex-marketplace/.agents/plugins/marketplace.json",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.codex-plugin/plugin.json",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/.mcp.json",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/scripts/fixture_mcp.py",
+    "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-audit/SKILL.md",
     "tests/e2e/fixtures/codex-marketplace/plugins/ksadk-bridge-e2e/skills/bridge-check/SKILL.md",
     "tests/e2e/test_dsh_managed_toolchain_e2e.py",
     "tests/e2e/chat_completions_stub.py",
     "tests/e2e/codex_app_server_fixture.py",
+    "tests/fixtures/dsh-capability-fake-profile.mjs",
+    "tests/fixtures/dsh-node-tool-plugin/cordis.patch.yml",
+    "tests/fixtures/dsh-node-tool-plugin/index.mjs",
+    "tests/fixtures/dsh-node-tool-plugin/package.json",
     "tests/fixtures/dsh-node-agent-provider/cordis.patch.yml",
     "tests/fixtures/dsh-node-agent-provider/index.mjs",
     "tests/fixtures/dsh-node-agent-provider/package.json",
@@ -150,7 +145,15 @@ PUBLIC_TEST_FILES = {
     "tests/packaging/test_phase2_release_preflight.py",
     "tests/packaging/test_write_build_provenance.py",
     "tests/plugins/__init__.py",
+    "tests/plugins/test_codex_manifest.py",
+    "tests/plugins/test_codex_plugin_bridge.py",
+    "tests/plugins/test_codex_stdio_mcp.py",
+    "tests/plugins/test_plugin_lock_upstream.py",
     "tests/plugins/test_dsh_node_provider_e2e.py",
+    "tests/plugins/test_dsh_capability_host.py",
+    "tests/plugins/test_dsh_capability_host_e2e.py",
+    "tests/plugins/test_dsh_upstream_plugin_e2e.py",
+    "tests/plugins/test_dsh_source_policy.py",
     "tests/plugins/test_codex_provider_vertical.py",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
@@ -163,10 +166,14 @@ PUBLIC_TEST_FILES = {
     "tests/studio/test_style_system.py",
     "tests/studio/__init__.py",
     "tests/studio/test_framework_bundle_integrity.py",
+    "tests/studio/test_codex_plugin_store.py",
+    "tests/studio/test_dsh_capability_service.py",
+    "tests/studio/test_dsh_agent_binding.py",
+    "tests/studio/test_dsh_plugin_api.py",
+    "tests/studio/test_native_plugin_binding.py",
     "tests/studio/runtime_adapter_fixtures.py",
     "tests/studio/e2e/conversation_items_browser_e2e.py",
     "tests/studio/e2e/conversation_reconnect_browser_e2e.py",
-    "tests/studio/e2e/dsh_client_bundle_browser_e2e.py",
     "tests/studio/e2e/scheduler_browser_e2e.py",
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
@@ -179,6 +186,7 @@ PUBLIC_TEST_FILES = {
     "tests/test_tracing_setup_otlp.py",
     "tests/cli/test_cmd_create_codex.py",
     "tests/runners/test_adapter_contract.py",
+    "tests/runners/test_codex_plugin_bootstrap.py",
     "tests/runners/test_codex_runner.py",
 }
 
@@ -199,7 +207,10 @@ EXCLUDED_PREFIXES = (
     "htmlcov/",
     "ksadk.egg-info/",
     "ksadk/server/web-ui/",
-    "ksadk/studio/react-ui/",
+    "ksadk/server/static/",
+    "ksadk/studio/static/",
+    "ksadk/studio/react-ui/node_modules/",
+    "ksadk/studio/react-ui/dist/",
     "site/",
 )
 
@@ -271,13 +282,17 @@ def git_files(root: Path) -> list[str]:
 def git_source_provenance(root: Path) -> tuple[str, str]:
     """Return the reviewed source identity carried by a clean export."""
 
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip().lower()
+    commit = (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        .stdout.strip()
+        .lower()
+    )
     status = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=root,
@@ -302,26 +317,6 @@ def discover_files(root: Path) -> list[str]:
     if (root / ".git").exists():
         return git_files(root)
     return filesystem_files(root)
-
-
-def generated_static_files(root: Path, violations: list[str]) -> list[str]:
-    paths: list[str] = []
-    for prefix in GENERATED_PUBLIC_STATIC_PREFIXES:
-        static_root = root / prefix.rstrip("/")
-        if not static_root.is_dir():
-            violations.append(f"missing compiled public static directory: {prefix}")
-            continue
-        for path in sorted(static_root.rglob("*")):
-            if not path.is_file():
-                continue
-            rel_path = normalize(path.relative_to(root))
-            if rel_path.endswith(GENERATED_STATIC_SOURCE_SUFFIXES):
-                violations.append(
-                    f"compiled public static directory contains source artifact: {rel_path}"
-                )
-                continue
-            paths.append(rel_path)
-    return paths
 
 
 def is_excluded(path: str) -> bool:
@@ -371,9 +366,8 @@ def build_export_plan(repo_root: Path) -> ExportPlan:
             violations.append(f"failed to discover git files: {exc}")
             discovered = []
 
-    generated_paths = generated_static_files(repo_root, violations)
     export_paths = sorted(
-        set(path for path in discovered if not is_excluded(path)) | set(generated_paths)
+        set(path for path in discovered if not is_excluded(path))
     )
     excluded_paths = sorted(path for path in discovered if is_excluded(path))
 

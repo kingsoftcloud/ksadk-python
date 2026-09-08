@@ -7,6 +7,8 @@ not add a generic plugin execution API to KsADK.
 from ksadk.plugins.bridges.codex import (
     CodexAppServerPluginBridge,
     CodexBridgeError,
+    CodexHostComponentDetail,
+    CodexMarketplaceAddResult,
     CodexPluginApprovalRequired,
     CodexPluginDetail,
     CodexPluginInventory,
@@ -15,7 +17,6 @@ from ksadk.plugins.bridges.codex import (
 from ksadk.plugins.bridges.dsh import (
     DshBridgeError,
     DshBridgeHost,
-    DshClientBundle,
     DshHostUnavailableError,
     DshPluginApprovalRequired,
     DshPluginInventory,
@@ -28,13 +29,14 @@ from ksadk.plugins.bridges.dsh import (
 __all__ = [
     "CodexAppServerPluginBridge",
     "CodexBridgeError",
+    "CodexHostComponentDetail",
+    "CodexMarketplaceAddResult",
     "CodexPluginApprovalRequired",
     "CodexPluginDetail",
     "CodexPluginInventory",
     "CodexPluginNotFoundError",
     "DshBridgeError",
     "DshBridgeHost",
-    "DshClientBundle",
     "DshHostUnavailableError",
     "DshPluginApprovalRequired",
     "DshPluginInventory",

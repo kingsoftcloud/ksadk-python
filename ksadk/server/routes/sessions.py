@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import HTTPException
 
+from ksadk.runtime.executor import project_legacy_runtime_capabilities
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import SessionEvent
+from ksadk.sessions.base import CheckpointEventQuery, SessionEventQuery
+from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
 from ksadk.tools.gateway import tool_approval_capability
 from ksadk.toolsets import describe_agentengine_tools
 from ksadk_runtime_common.workspace_files import (
@@ -34,10 +38,10 @@ from .models import (
     ListToolReceiptsActionRequest,
     SessionIdRequest,
     UiBootstrapRequest,
-    _event_run_id,
     _runtime_agent_id,
 )
 from .projection import (
+    _apply_adk_only_latest_resumable,
     _apply_checkpoint_resume_audit,
     _apply_latest_checkpoint_policy,
     _checkpoint_event_to_action_payload,
@@ -45,10 +49,9 @@ from .projection import (
     _event_to_action_payload,
     _extend_invocation_after_window,
     _extend_invocation_before_window,
-    _iter_scoped_event_pages,
     _iter_session_event_pages,
-    _record_resume_audit,
     _require_action_session,
+    _resume_audit_by_checkpoint,
     _session_to_action_payload,
     _tool_receipt_event_to_action_payload,
 )
@@ -66,8 +69,38 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     framework = launch_context.runtime_type.strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = _resolve_agent_ui_spec()
-    runtime_capabilities = executor.native_capabilities(launch_context)
-    runtime_capability_matrix = executor.capability_matrix(launch_context)
+    capability_subject = executor.capability_subject(launch_context)
+    if capability_subject is not None:
+        wait_timeout = max(
+            0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2")
+        )
+        capability_snapshot = await state.persistence_capability.get_snapshot(
+            runner=capability_subject,
+            framework=framework,
+            status_provider=deps.get_persistence_status,
+            session_service_provider=deps.resolve_session_service,
+            wait_timeout=wait_timeout,
+        )
+        persistence = dict(capability_snapshot.session_persistence)
+        checkpoint_persistence = dict(capability_snapshot.checkpoint_persistence)
+        runtime_capabilities = dict(capability_snapshot.runtime_capabilities)
+        runtime_capability_matrix = executor.capability_matrix(launch_context)
+    else:
+        runtime_capability_matrix = executor.capability_matrix(launch_context)
+        persistence_status = dict(
+            await deps.get_persistence_status(framework=framework)
+        )
+        if isinstance(persistence_status.get("Session"), Mapping):
+            persistence = dict(persistence_status["Session"])
+            checkpoint_persistence = dict(
+                persistence_status.get("Checkpoint") or {}
+            )
+        else:
+            persistence = persistence_status
+            checkpoint_persistence = dict(persistence_status)
+        runtime_capabilities = project_legacy_runtime_capabilities(
+            executor.native_capabilities(launch_context), runtime_capability_matrix
+        )
     resume_capability = (
         runtime_capabilities.get("ResumeRun")
         if isinstance(runtime_capabilities, Mapping)
@@ -148,6 +181,8 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Thinking": True,
                 "StopRun": cancel_run_supported,
                 "ResumeRun": checkpoint_resume_supported,
+                "Persistence": persistence,
+                "CheckpointPersistence": checkpoint_persistence,
                 "RuntimeCapabilities": runtime_capabilities,
                 "RuntimeCapabilityMatrix": runtime_capability_matrix,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
@@ -260,17 +295,39 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
     _executor, launch_context = get_runtime_execution()
     service = deps.resolve_session_service()
     session_id = str(request.SessionId or "").strip()
+    event_types = request.EventTypes or None
+    checkpoint_ids = request.CheckpointIds or None
     if not session_id:
         # 未传 SessionId：返回该 agent 全部会话的事件（存储层跨会话查询，真分页无截断；
         # seq 游标是会话内序号，跨会话模式下不适用，直接忽略）
         agent_id = str(request.AgentId or "").strip() or _runtime_agent_id(launch_context)
-        events = await service.get_events_for_agent(
-            agent_id,
-            user_id=request.UserId,
-            offset=request.Offset,
+        session_ids = None
+        if request.UserId is not None:
+            session_ids = [
+                session.id
+                for session in await service.list_session_metadata(agent_id, request.UserId)
+            ]
+        query = SessionEventQuery(
+            session_ids=session_ids,
+            agent_id=agent_id,
+            offset=request.Offset or 0,
             limit=request.Limit,
+            event_types=event_types,
+            checkpoint_ids=checkpoint_ids,
         )
-        total = await service.count_events_for_agent(agent_id, user_id=request.UserId)
+        events = await service.query_events(query)
+        total = await service.count_event_query(
+            SessionEventQuery(
+                session_ids=session_ids,
+                agent_id=agent_id,
+                event_types=event_types,
+                checkpoint_ids=checkpoint_ids,
+            )
+        )
+        events.sort(
+            key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id),
+            reverse=True,
+        )
         return _action_response(
             "ListSessionEvents",
             {
@@ -280,6 +337,8 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
                 "Limit": request.Limit if request.Limit is not None else len(events),
                 "AfterSeqId": request.AfterSeqId,
                 "BeforeSeqId": request.BeforeSeqId,
+                "CheckpointIds": request.CheckpointIds,
+                "EventTypes": request.EventTypes,
                 "ScopedAllSessions": True,
             },
         )
@@ -289,17 +348,30 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
         agent_id=request.AgentId,
         user_id=request.UserId,
     )
-    events = await service.get_events(
-        session_id,
-        offset=request.Offset,
+    query = SessionEventQuery(
+        session_ids=[session_id],
+        agent_id=request.AgentId,
+        offset=request.Offset or 0,
         limit=request.Limit,
         after_seq_id=request.AfterSeqId,
         before_seq_id=request.BeforeSeqId,
+        event_types=event_types,
+        checkpoint_ids=checkpoint_ids,
     )
-    total = await service.count_events(
-        session_id,
-        after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
+    events = await service.query_events(query)
+    total = await service.count_event_query(
+        SessionEventQuery(
+            session_ids=[session_id],
+            agent_id=request.AgentId,
+            after_seq_id=request.AfterSeqId,
+            before_seq_id=request.BeforeSeqId,
+            event_types=event_types,
+            checkpoint_ids=checkpoint_ids,
+        )
+    )
+    events.sort(
+        key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id),
+        reverse=True,
     )
     return _action_response(
         "ListSessionEvents",
@@ -310,6 +382,8 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
             "Limit": request.Limit if request.Limit is not None else len(events),
             "AfterSeqId": request.AfterSeqId,
             "BeforeSeqId": request.BeforeSeqId,
+            "CheckpointIds": request.CheckpointIds,
+            "EventTypes": request.EventTypes,
         },
     )
 
@@ -470,116 +544,219 @@ def _count_resumable_checkpoints(checkpoints: list[dict[str, Any]]) -> int:
     return resumable
 
 
-async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
-    service = deps.resolve_session_service()
-    run_id_filter = str(request.RunId or "").strip()
-    framework_filter = str(request.Framework or "").strip().lower()
+def _normalize_action_id_list(value: list[str] | str | None) -> list[str]:
+    values = [value] if isinstance(value, str) else list(value or [])
+    return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
 
-    session_id = str(request.SessionId or "").strip()
-    if session_id:
-        await _require_action_session(
-            service,
-            session_id=session_id,
-            agent_id=request.AgentId,
-            user_id=request.UserId,
+
+def _is_checkpoint_resumable(checkpoint: Mapping[str, Any]) -> bool:
+    if checkpoint.get("IsResumable") is not True or checkpoint.get("IsTerminal") is True:
+        return False
+    if checkpoint.get("ReplayAllowed") is False:
+        return False
+    checkpoint_status = str(checkpoint.get("CheckpointStatus") or "").strip().lower()
+    resume_status = str(checkpoint.get("ResumeStatus") or "").strip().lower()
+    return (
+        checkpoint_status not in {"expired", "disabled", "terminal"}
+        and resume_status != "disabled"
+    )
+
+
+async def _list_checkpoints_payload_legacy_filtered(
+    request: ListSessionCheckpointsActionRequest,
+    session_ids: list[str],
+    checkpoint_ids: list[str],
+) -> dict[str, Any]:
+    if len(session_ids) != 1:
+        raise HTTPException(
+            status_code=501, detail="Backend does not support multi-session checkpoints"
         )
-
-    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    service = deps.resolve_session_service()
+    events = await service.get_events(session_ids[0])
+    audit = _resume_audit_by_checkpoint(events)
     latest_by_session_run: dict[tuple[str, str], int] = {}
-    run_seen = not run_id_filter
-    async for page in _iter_scoped_event_pages(
-        service,
-        session_id=session_id or None,
-        agent_id=request.AgentId,
-        user_id=request.UserId,
-    ):
-        for event in page:
-            if run_id_filter and _event_run_id(event) == run_id_filter:
-                run_seen = True
-            _record_resume_audit(audit_by_session, event)
-            checkpoint = _checkpoint_event_to_action_payload(event)
-            if checkpoint is None or not (checkpoint.get("Metadata") or {}).get(
-                "only_latest_resumable"
-            ):
-                continue
+    for event in events:
+        checkpoint = _checkpoint_event_to_action_payload(event)
+        if checkpoint is not None and (checkpoint.get("Metadata") or {}).get(
+            "only_latest_resumable"
+        ):
             key = (event.session_id, str(checkpoint.get("RunId") or ""))
             latest_by_session_run[key] = max(
-                latest_by_session_run.get(key, 0),
-                int(checkpoint.get("SeqId") or 0),
+                latest_by_session_run.get(key, 0), int(checkpoint.get("SeqId") or 0)
             )
-    if session_id and not run_seen:
-        raise HTTPException(status_code=409, detail="RunId does not belong to SessionId")
-
-    def project_checkpoint(event: SessionEvent) -> dict[str, Any] | None:
+    checkpoints: list[dict[str, Any]] = []
+    resume_status_filter = set(request.ResumeStatus)
+    resume_type_filter = set(request.ResumeTypes)
+    for event in events:
         checkpoint = _checkpoint_event_to_action_payload(event)
         if checkpoint is None:
-            return None
-        checkpoint = _apply_checkpoint_resume_audit(
-            checkpoint,
-            audit_by_session.get(event.session_id, {}),
-        )
+            continue
+        checkpoint = _apply_checkpoint_resume_audit(checkpoint, audit)
         checkpoint = _apply_latest_checkpoint_policy(
-            checkpoint,
-            latest_by_session_run,
-            session_id=event.session_id,
+            checkpoint, latest_by_session_run, session_id=event.session_id
         )
-        if run_id_filter and checkpoint["RunId"] != run_id_filter:
-            return None
-        if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
-            return None
-        return checkpoint
-
-    total = 0
-    resumable_total = 0
-    async for page in _iter_scoped_event_pages(
-        service,
-        session_id=session_id or None,
-        agent_id=request.AgentId,
-        user_id=request.UserId,
-    ):
-        for event in page:
-            checkpoint = project_checkpoint(event)
-            if checkpoint is None:
-                continue
-            if checkpoint.get("IsResumable") is True:
-                resumable_total += 1
-            if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
-                continue
-            total += 1
-
+        if request.RunId and checkpoint["RunId"] != str(request.RunId):
+            continue
+        if checkpoint_ids and checkpoint["CheckpointId"] not in checkpoint_ids:
+            continue
+        if request.Framework and str(checkpoint["Framework"]).lower() != str(
+            request.Framework
+        ).lower():
+            continue
+        if (
+            resume_status_filter
+            and str(checkpoint.get("ResumeStatus") or "").lower()
+            not in resume_status_filter
+        ):
+            continue
+        if (
+            resume_type_filter
+            and str(checkpoint.get("Scope") or "unknown").lower()
+            not in resume_type_filter
+        ):
+            continue
+        checkpoints.append(checkpoint)
+    checkpoints = _apply_adk_only_latest_resumable(checkpoints)
+    resumable_total = sum(_is_checkpoint_resumable(item) for item in checkpoints)
+    if request.OnlyResumable:
+        checkpoints = [item for item in checkpoints if _is_checkpoint_resumable(item)]
     offset = int(request.Offset or 0)
-    limit = int(request.Limit)
-    window_end = max(total - offset, 0)
-    window_start = max(window_end - limit, 0)
-    checkpoints: list[dict[str, Any]] = []
-    filtered_index = 0
-    async for page in _iter_scoped_event_pages(
-        service,
-        session_id=session_id or None,
-        agent_id=request.AgentId,
-        user_id=request.UserId,
-    ):
-        for event in page:
-            checkpoint = project_checkpoint(event)
-            if checkpoint is None:
-                continue
-            if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
-                continue
-            if window_start <= filtered_index < window_end:
-                checkpoints.append(checkpoint)
-            filtered_index += 1
-            if filtered_index >= window_end:
-                break
-        if filtered_index >= window_end:
-            break
+    checkpoints.sort(
+        key=lambda item: (item["Timestamp"], item["SessionId"], item["SeqId"]),
+        reverse=True,
+    )
+    checkpoints = checkpoints[offset: offset + request.Limit]
+    return {
+        "Checkpoints": checkpoints,
+        "Total": len(checkpoints),
+        "ResumableTotal": resumable_total,
+        "HasResumableCheckpoint": resumable_total > 0,
+        "SessionId": session_ids,
+        "CheckpointId": checkpoint_ids,
+        "ResumeStatus": request.ResumeStatus,
+        "ResumeTypes": request.ResumeTypes,
+        "Offset": offset,
+        "Limit": request.Limit,
+    }
 
+
+async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
+    service = deps.resolve_session_service()
+    session_ids = _normalize_action_id_list(request.SessionId)
+    checkpoint_ids = _normalize_action_id_list(request.CheckpointId)
+    if session_ids:
+        for session_id in session_ids:
+            await _require_action_session(
+                service,
+                session_id=session_id,
+                agent_id=request.AgentId,
+                user_id=request.UserId,
+            )
+    elif request.UserId is not None:
+        session_ids = [
+            session.id
+            for session in await service.list_session_metadata(
+                request.AgentId, request.UserId
+            )
+        ]
+    query = CheckpointEventQuery(
+        session_ids=session_ids or None,
+        agent_id=request.AgentId,
+        checkpoint_ids=checkpoint_ids or None,
+        run_id=str(request.RunId or "").strip() or None,
+        framework=str(request.Framework or "").strip().lower() or None,
+        limit=50,
+    )
+    resume_status_filter = set(request.ResumeStatus)
+    resume_type_filter = set(request.ResumeTypes)
+    offset = int(request.Offset or 0)
+    for attempt in range(2):
+        total = 0
+        resumable_total = 0
+        checkpoints: list[dict[str, Any]] = []
+        batches = service.iter_checkpoint_event_chunks(query)
+        try:
+            async for batch in batches:
+                chunk = [
+                    checkpoint
+                    for event in batch
+                    if (checkpoint := _checkpoint_event_to_action_payload(event)) is not None
+                    and (
+                        not checkpoint_ids
+                        or str(checkpoint.get("CheckpointId") or "") in checkpoint_ids
+                    )
+                    and (
+                        query.run_id is None
+                        or str(checkpoint.get("RunId") or "") == query.run_id
+                    )
+                    and (
+                        query.framework is None
+                        or str(checkpoint.get("Framework") or "").lower()
+                        == query.framework
+                    )
+                ]
+                keys = [
+                    (
+                        str(checkpoint["SessionId"]),
+                        str(checkpoint["RunId"]),
+                        str(checkpoint["CheckpointId"]),
+                    )
+                    for checkpoint in chunk
+                ]
+                stats = await service.get_checkpoint_stats(keys)
+                for checkpoint in chunk:
+                    checkpoint = _apply_checkpoint_resume_audit(
+                        checkpoint, stats.get("audits") or {}
+                    )
+                    checkpoint = _apply_latest_checkpoint_policy(
+                        checkpoint,
+                        stats.get("latest_seq_ids") or {},
+                        session_id=str(checkpoint.get("SessionId") or ""),
+                    )
+                    if resume_status_filter and str(
+                        checkpoint.get("ResumeStatus") or ""
+                    ).strip().lower() not in resume_status_filter:
+                        continue
+                    if resume_type_filter and str(
+                        checkpoint.get("Scope") or "unknown"
+                    ).strip().lower() not in resume_type_filter:
+                        continue
+                    resumable_total += int(_is_checkpoint_resumable(checkpoint))
+                    if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
+                        continue
+                    checkpoints.append(checkpoint)
+                    total += 1
+        except CheckpointScanRestartRequired as exc:
+            if attempt == 0:
+                continue
+            raise SessionBackendUnavailable(
+                "Checkpoint backend changed repeatedly during one request"
+            ) from exc
+        except NotImplementedError:
+            return await _list_checkpoints_payload_legacy_filtered(
+                request, session_ids, checkpoint_ids
+            )
+        finally:
+            close = getattr(batches, "aclose", None)
+            if callable(close):
+                await close()
+        break
+    checkpoints.sort(
+        key=lambda item: (item["Timestamp"], item["SessionId"], item["SeqId"]),
+        reverse=True,
+    )
+    checkpoints = checkpoints[offset : offset + int(request.Limit)]
     return {
         "Checkpoints": checkpoints,
         "Total": total,
         "ResumableTotal": resumable_total,
         "HasResumableCheckpoint": resumable_total > 0,
+        "SessionId": session_ids,
+        "CheckpointId": checkpoint_ids,
+        "ResumeStatus": request.ResumeStatus,
+        "ResumeTypes": request.ResumeTypes,
         "Offset": offset,
-        "Limit": limit,
+        "Limit": request.Limit,
     }
 
 

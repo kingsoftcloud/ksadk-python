@@ -124,7 +124,7 @@ class CanonicalConversationEvents:
         def event_id(seq: int) -> str:
             return f"{handle.run_id}:e{seq}"
 
-        codex = SourceRef(framework="codex")
+        codex = SourceRef(framework="ksadk")
         if phase == 0:
             yield RunStarted(
                 event_id=event_id(1),
@@ -195,7 +195,7 @@ class CanonicalConversationEvents:
                 interaction_id="approval-1",
                 interaction_kind="approval",
                 request=ApprovalRequest(
-                    call_id="call-1",
+                    call_id="approve-call-1",
                     kind="command",
                     detail={"command": "echo safe"},
                 ),
@@ -225,7 +225,7 @@ class CanonicalConversationEvents:
             )
             surface_id = "profile-form"
             a2ui = SourceRef(
-                framework="codex",
+                framework="ksadk",
                 protocol="a2ui",
                 metadata={"surface_id": surface_id},
             )
@@ -285,7 +285,7 @@ class CanonicalConversationEvents:
                     prompt="请补充姓名",
                     schema={
                         "type": "object",
-                        "properties": {"name": {"type": "string"}},
+                        "properties": {"name": {"type": "string", "title": "姓名"}},
                         "required": ["name"],
                     },
                 ),
@@ -305,7 +305,7 @@ class CanonicalConversationEvents:
 
         if phase == 2:
             a2ui = SourceRef(
-                framework="codex",
+                framework="ksadk",
                 protocol="a2ui",
                 metadata={"surface_id": "profile-form"},
             )
@@ -389,7 +389,7 @@ class CanonicalConversationEvents:
                     ),
                 ),
                 source=SourceRef(
-                    framework="codex",
+                    framework="ksadk",
                     metadata={"duration_ms": 25},
                 ),
                 **common,
@@ -404,7 +404,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     interaction_payloads: list[dict] = []
 
     def record_response(response: Response) -> None:
-        if "/interactions/" in response.url and response.url.endswith(":submit"):
+        if response.url.endswith("/agentengine/api/v1/SubmitInteraction"):
             interaction_responses.append((response.url, response.status))
             interaction_payloads.append(response.request.post_data_json)
 
@@ -419,47 +419,39 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     composer.fill("展示 canonical 会话项目")
     page.get_by_role("button", name="发送消息").click()
 
-    thinking = page.locator('details[data-ui="think"]')
-    expect(thinking).to_contain_text(REASONING, timeout=15_000)
+    page.get_by_role("button", name="已思考").click()
+    expect(page.get_by_text(REASONING, exact=True)).to_be_visible(timeout=15_000)
     # Typed ConversationItems keep their stream order: the tool is its own
     # card after the reasoning block rather than being folded into thinking.
-    tool_card = page.locator(".chat-activity-card.tool")
-    expect(tool_card).to_contain_text("codex.command")
-    expect(tool_card).to_contain_text(TOOL_OUTPUT)
+    expect(page.get_by_role("button", name="等待确认 command")).to_be_visible()
 
     approval_tray = page.locator('[data-ui="interaction-tray"]')
     expect(approval_tray).to_contain_text("echo safe")
     second_page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
     second_approval_tray = second_page.locator('[data-ui="interaction-tray"]')
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
+    second_page.get_by_role("button", name="已思考").click()
+    expect(second_page.get_by_text(REASONING, exact=True)).to_be_visible()
+    second_page.get_by_role("button", name="已完成 codex.command").click()
+    expect(second_page.get_by_text(TOOL_OUTPUT, exact=False)).to_be_visible()
     # Two Studio windows submit the same authoritative revision.  Both receive
     # the persisted receipt while the provider observes exactly one resume.
-    approval_tray.get_by_role("button", name="允许").evaluate("element => element.click()")
-    active_run_id = _json(base_url, "/api/v1/runs")["items"][0]["id"]
-    second_page.evaluate(
-        """({ runId }) => {
-          window.__interactionReplayStatus = undefined;
-          void fetch(`/api/v1/runs/${encodeURIComponent(runId)}/interactions/approval-1:submit`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: "approve",
-              data: {},
-              expectedRevision: 1,
-              idempotencyKey: "interaction:approval-1:revision-1",
-            }),
-          }).then(response => { window.__interactionReplayStatus = response.status; });
-        }""",
-        {"runId": active_run_id},
+    approval_tray.get_by_test_id("interaction-approve").click()
+    expect(page.get_by_test_id("interaction-field-name")).to_be_visible(timeout=15_000)
+    assert interaction_payloads, "approval must cross the production shared action API"
+    replay_status = second_page.evaluate(
+        """async payload => (await fetch('/agentengine/api/v1/SubmitInteraction', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        })).status""", interaction_payloads[0],
     )
-    second_page.wait_for_function("window.__interactionReplayStatus !== undefined")
-    assert second_page.evaluate("window.__interactionReplayStatus") == 200
+    assert replay_status == 200
 
     form_tray = page.locator('[data-ui="interaction-tray"]')
-    name_input = form_tray.get_by_role("textbox", name="姓名")
+    name_input = form_tray.get_by_test_id("interaction-field-name")
     expect(name_input).to_be_visible(timeout=15_000)
     name_input.fill("Alice")
-    form_tray.get_by_role("button", name="提交资料").click()
+    form_tray.get_by_test_id("interaction-submit").click()
 
     # Unhandled/additive provider items must degrade silently: no
     # "unsupported content" fallback card may ever appear in the chat
@@ -470,23 +462,21 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
 
     # Equal text from two canonical Items must remain two rendered blocks.
     # Text-based deduplication would incorrectly collapse this to one.
-    equal_paragraphs = page.locator('article[data-role="assistant"] .chat-markdown p').filter(
-        has_text=SAME_BODY
-    )
+    equal_paragraphs = page.get_by_text(SAME_BODY, exact=True)
     expect(equal_paragraphs).to_have_count(2, timeout=15_000)
 
     # A terminal canonical Run must replace the optimistic streaming turn.
-    expect(page.locator(".streaming-turn")).to_have_count(0, timeout=10_000)
+    expect(page.get_by_role("button", name="停止生成")).to_have_count(0, timeout=10_000)
     # Terminal persistence must preserve both identity-distinct outputs instead
     # of replacing them with the last completed message snapshot.
     expect(equal_paragraphs).to_have_count(2)
     assert len(interaction_responses) == 3
     assert all(status == 200 for _url, status in interaction_responses)
-    assert all(payload["expectedRevision"] == 1 for payload in interaction_payloads)
-    assert {payload["idempotencyKey"] for payload in interaction_payloads} == {
-        "interaction:approval-1:revision-1",
-        "interaction:form-1:revision-1",
-    }
+    assert all(payload["ExpectedRevision"] == 1 for payload in interaction_payloads)
+    assert interaction_payloads[0] == interaction_payloads[1]
+    assert interaction_payloads[0]["IdempotencyKey"]
+    assert interaction_payloads[2]["IdempotencyKey"]
+    assert interaction_payloads[0]["IdempotencyKey"] != interaction_payloads[2]["IdempotencyKey"]
 
     runs = _json(base_url, "/api/v1/runs")["items"]
     assert len(runs) == 1

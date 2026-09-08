@@ -142,9 +142,11 @@ class MCPRuntimeAdapter:
                 yield read_stream, write_stream
         elif transport in {"http", "streamable-http", "streamable_http"}:
             headers = self._http_headers(server)
-            async with streamablehttp_client(
-                server.endpoint_url or "", headers=headers
-            ) as (read_stream, write_stream, _):
+            async with streamablehttp_client(server.endpoint_url or "", headers=headers) as (
+                read_stream,
+                write_stream,
+                _,
+            ):
                 yield read_stream, write_stream
         elif transport == "sse":
             headers = self._http_headers(server)
@@ -193,6 +195,12 @@ class MCPRuntimeAdapter:
 
     @staticmethod
     def _validate(server: MCPServerRef) -> None:
+        if server.materialization == "dsh-profile":
+            raise StudioError(
+                "DSH_MCP_MANAGED_RESOURCE_REQUIRED",
+                "DSH Profile MCP 必须通过受管理的 PluginHost 租约使用",
+                status_code=422,
+            )
         transport = (server.transport or "stdio").lower()
         if transport == "stdio":
             command = Path(server.command or "").name.lower()

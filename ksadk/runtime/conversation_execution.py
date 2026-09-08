@@ -194,12 +194,21 @@ async def iter_runtime_conversation_events(
             for persisted in await pipeline.ingest(context_event):
                 yield persisted
         async for event in executor.stream(handle):
-            _validate_event_scope(event, request)
+            _validate_event_scope(
+                event,
+                request,
+                alternate_run_id=(
+                    prepared.invocation_id if checkpoint_resume is not None else None
+                ),
+            )
             for persisted in await pipeline.ingest(event):
                 await _project_runtime_run_status(
                     persisted,
                     session_id=prepared.session_id,
                     author=agent_id,
+                    invocation_id=(
+                        prepared.invocation_id if checkpoint_resume is not None else None
+                    ),
                     run_mode=prepared.run_mode,
                     run_trigger=prepared.run_trigger,
                     session_service_provider=provider,
@@ -223,13 +232,16 @@ async def iter_runtime_conversation_events(
             raise RuntimeError("runtime stream ended without a terminal or interrupted event")
     except asyncio.CancelledError:
         cancel_result = await executor.cancel(handle)
+        cancel_run_id = (
+            prepared.invocation_id if checkpoint_resume is not None else handle.run_id
+        )
         cancelled_event = RunCanceled(
             schema_version=2,
-            event_id=f"cancel:{handle.run_id}:{cancel_result.value}",
+            event_id=f"cancel:{cancel_run_id}:{cancel_result.value}",
             seq=0,
             timestamp=time.time(),
-            run_id=handle.run_id,
-            scope_id=handle.run_id,
+            run_id=cancel_run_id,
+            scope_id=cancel_run_id,
             source=SourceRef(
                 framework="ksadk", metadata={"cancel_result": cancel_result.value}
             ),
@@ -241,6 +253,9 @@ async def iter_runtime_conversation_events(
             persisted_cancelled,
             session_id=prepared.session_id,
             author=agent_id,
+            invocation_id=(
+                prepared.invocation_id if checkpoint_resume is not None else None
+            ),
             run_mode=prepared.run_mode,
             run_trigger=prepared.run_trigger,
             session_service_provider=provider,
@@ -375,6 +390,7 @@ async def _project_runtime_run_status(
     *,
     session_id: str,
     author: str,
+    invocation_id: str | None = None,
     run_mode: str,
     run_trigger: str,
     session_service_provider: Callable[[], Any],
@@ -389,7 +405,7 @@ async def _project_runtime_run_status(
         session_id=session_id,
         author=author,
         status=status,
-        invocation_id=event.run_id,
+        invocation_id=str(invocation_id or event.run_id),
         detail=str(detail) if detail else None,
         metadata={
             "runtime_event_id": event.event_id,
@@ -450,10 +466,7 @@ async def _resume_runtime_handle(
 def _resume_target(resume_input: Mapping[str, Any]) -> ResumeTarget:
     framework = str(resume_input.get("framework") or "").strip().lower()
     framework_ref = resume_input.get("framework_ref")
-    raw_runtime_ref = framework_ref.get(framework) if isinstance(framework_ref, Mapping) else None
-    runtime_ref: Mapping[str, Any] = (
-        raw_runtime_ref if isinstance(raw_runtime_ref, Mapping) else {}
-    )
+    runtime_ref = _runtime_ref_from_projection(framework, framework_ref)
     checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
     run_id = str(resume_input.get("run_id") or "").strip()
     if framework == "langgraph":
@@ -470,8 +483,7 @@ def _persisted_resume_native_ref(resume_input: Mapping[str, Any]) -> dict[str, A
     checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
     framework_ref = resume_input.get("framework_ref")
     normalized_ref = dict(framework_ref) if isinstance(framework_ref, Mapping) else {}
-    runtime_ref = normalized_ref.get(framework)
-    native_ref = dict(runtime_ref) if isinstance(runtime_ref, Mapping) else {}
+    native_ref = _runtime_ref_from_projection(framework, normalized_ref)
     native_ref["framework_ref"] = normalized_ref
     if checkpoint_id:
         native_ref.setdefault("checkpoint_id", checkpoint_id)
@@ -479,12 +491,45 @@ def _persisted_resume_native_ref(resume_input: Mapping[str, Any]) -> dict[str, A
     return native_ref
 
 
-def _validate_event_scope(event: RuntimeEvent, request: StartRequest) -> None:
+def _runtime_ref_from_projection(framework: str, framework_ref: Any) -> dict[str, Any]:
+    """Flatten native refs wrapped by checkpoint REST/session projections."""
+
+    if not framework or not isinstance(framework_ref, Mapping):
+        return {}
+    raw = framework_ref.get(framework)
+    if not isinstance(raw, Mapping):
+        return {}
+    resolved = dict(raw)
+    current = raw
+    for _ in range(4):
+        nested_ref: Mapping[str, Any] | None = None
+        for key in ("framework_ref", "resume_target"):
+            container = current.get(key)
+            candidate = container.get(framework) if isinstance(container, Mapping) else None
+            if isinstance(candidate, Mapping):
+                nested_ref = candidate
+                break
+        if nested_ref is None:
+            break
+        resolved.update(nested_ref)
+        current = nested_ref
+    return resolved
+
+
+def _validate_event_scope(
+    event: RuntimeEvent,
+    request: StartRequest,
+    *,
+    alternate_run_id: str | None = None,
+) -> None:
     expected_run_id = str(request.metadata["invocation_id"])
-    if event.schema_version != 2 or event.run_id != expected_run_id:
+    expected_run_ids = {expected_run_id}
+    if alternate_run_id:
+        expected_run_ids.add(str(alternate_run_id))
+    if event.schema_version != 2 or event.run_id not in expected_run_ids:
         raise ValueError(
             "runtime event scope does not match request: "
-            f"expected run_id={expected_run_id!r}, got {event.run_id!r}"
+            f"expected run_id in {sorted(expected_run_ids)!r}, got {event.run_id!r}"
         )
 
 

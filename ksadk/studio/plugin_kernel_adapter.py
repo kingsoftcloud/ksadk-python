@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from ksadk.kernel.contracts import InjectPayload, SteerPayload
@@ -42,17 +43,15 @@ class StudioPluginKernelAdapter(RuntimeAdapter):
         self._delegate: RuntimeAdapter | None = None
 
     async def start(self, request: StartRequest) -> RunHandle:
-        delegate = await self._plugin_runtime.kernel_adapter(
-            self._spec,
-            session_id=request.session_id,
-        )
-        if not isinstance(delegate, RuntimeAdapter):
-            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
-        self._delegate = delegate
-        metadata = dict(request.metadata)
-        if not metadata.get("invocation_id") and metadata.get("run_id"):
-            metadata["invocation_id"] = metadata["run_id"]
-        return await delegate.start(request.model_copy(update={"metadata": metadata}))
+        try:
+            delegate = await self._bind_delegate(request.session_id)
+            metadata = dict(request.metadata)
+            if not metadata.get("invocation_id") and metadata.get("run_id"):
+                metadata["invocation_id"] = metadata["run_id"]
+            return await delegate.start(request.model_copy(update={"metadata": metadata}))
+        except BaseException:
+            await self._release_failed_binding(request.session_id)
+            raise
 
     def stream(self, handle: RunHandle):  # type: ignore[no-untyped-def]
         return self._require_delegate().stream(handle)
@@ -75,14 +74,12 @@ class StudioPluginKernelAdapter(RuntimeAdapter):
         return await self._require_delegate().resume(handle, target, payload)
 
     async def attach(self, handle: RunHandle) -> RunHandle:
-        delegate = await self._plugin_runtime.kernel_adapter(
-            self._spec,
-            session_id=handle.session_id,
-        )
-        if not isinstance(delegate, RuntimeAdapter):
-            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
-        self._delegate = delegate
-        return await delegate.attach(handle)
+        try:
+            delegate = await self._bind_delegate(handle.session_id)
+            return await delegate.attach(handle)
+        except BaseException:
+            await self._release_failed_binding(handle.session_id)
+            raise
 
     async def steer(self, handle: RunHandle, payload: SteerPayload) -> None:
         await self._require_delegate().steer(handle, payload)
@@ -94,20 +91,24 @@ class StudioPluginKernelAdapter(RuntimeAdapter):
         return await self._require_delegate().checkpoint(handle)
 
     async def durable_restore(self, handle: RunHandle) -> RunHandle:
-        delegate = await self._plugin_runtime.kernel_adapter(
-            self._spec,
-            session_id=handle.session_id,
-        )
-        if not isinstance(delegate, RuntimeAdapter):
-            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
-        self._delegate = delegate
-        return await delegate.durable_restore(handle)
+        try:
+            delegate = await self._bind_delegate(handle.session_id)
+            return await delegate.durable_restore(handle)
+        except BaseException:
+            await self._release_failed_binding(handle.session_id)
+            raise
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return self._delegate is not None and self._delegate.is_handle_attached(handle)
 
     async def close(self, handle: RunHandle) -> None:
-        await self._require_delegate().close(handle)
+        try:
+            await self._require_delegate().close(handle)
+        finally:
+            await self._plugin_runtime.close_session_if_dynamic(
+                self._spec,
+                handle.session_id,
+            )
 
     def capabilities(self):  # type: ignore[no-untyped-def]
         # Before ``start`` the provider activation is async and not yet bound.
@@ -123,6 +124,38 @@ class StudioPluginKernelAdapter(RuntimeAdapter):
                 "PluginHost RuntimeAdapter has not started a provider activation"
             )
         return self._delegate
+
+    async def _bind_delegate(self, session_id: str) -> RuntimeAdapter:
+        delegate = await self._plugin_runtime.kernel_adapter(
+            self._spec,
+            session_id=session_id,
+        )
+        if not isinstance(delegate, RuntimeAdapter):
+            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
+        self._delegate = delegate
+        return delegate
+
+    async def _release_failed_binding(self, session_id: str) -> None:
+        """Close a partially opened dynamic activation even under cancellation."""
+
+        self._delegate = None
+        cleanup = asyncio.create_task(
+            self._plugin_runtime.close_session_if_dynamic(self._spec, session_id)
+        )
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        try:
+            cleanup.result()
+        except Exception:
+            # Preserve the provider/delegate failure. The runtime's terminal
+            # suspend path will still dispose any host that could not close.
+            pass
+        if interrupted:
+            raise asyncio.CancelledError
 
 
 __all__ = ["StudioPluginKernelAdapter"]

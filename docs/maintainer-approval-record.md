@@ -1,5 +1,7 @@
 # KsADK Public Release Approval Record
 
+> This is the historical 0.8.3 publication approval. It does not authorize PyPI publication of the 0.8.4 source/wheel candidate. A new approval record is required before publishing that package.
+
 This record approves the public `0.8.3` release candidate described below. It is the evidence consumed by the release
 gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
 deployment.
@@ -30,8 +32,8 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: Reviewed source commit `0b67fc3ccff3dfb9d38ebb5b60039f29fc29b9c8`; publication uses a clean public export of that reviewed candidate plus release-only evidence updates.
-- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `0b67fc3ccff3dfb9d38ebb5b60039f29fc29b9c8`.
+- `ksadk-python`: Reviewed public release commit `64f3607640aefcd6dea72d704e34dc5237eb0e36` on `main` (0.8.3 release head: Phase 2 composer/session-switch fix, public-export gate alignment, and lightweight PyPI publish preflight); publication publishes this reviewed public main commit directly via Trusted Publishing.
+- `ksadk-web`: GitHub tag `v0.3.4` at `63b30782e9771357185406cb99b504ac3d48a165`; npm integrity `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`; consumer binding reviewed at `64f3607640aefcd6dea72d704e34dc5237eb0e36`.
 
 Both approved source references include the reviewed Python source commit SHA.
 This prevents a stale approval record from passing after candidate changes.

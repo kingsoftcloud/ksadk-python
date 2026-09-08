@@ -4,6 +4,7 @@ The host has no knowledge of AgentControl, SessionEvent sequencing, or cloud
 deployment.  It only stages a fully resolved profile, atomically swaps it once
 healthy, and disposes owned effects in reverse dependency order.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -89,8 +90,7 @@ class PluginExecutionContext:
         return tuple(
             binding
             for binding in self.bindings
-            if binding.definition == definition
-            and (slot is None or binding.slot == slot)
+            if binding.definition == definition and (slot is None or binding.slot == slot)
         )
 
     def require(
@@ -157,6 +157,7 @@ class _ActiveActivation:
     bundle_digest: str
     runtime: PreparedAgent
     operation_lock: asyncio.Lock
+    operation_task: asyncio.Task[Any] | None = None
     closed: bool = False
 
 
@@ -406,11 +407,7 @@ class PluginHost:
         """Drain and dispose active plus retired graphs; there is no implicit restart."""
 
         async with self._transaction_lock:
-            graphs = [
-                graph
-                for graph in [self._active, *self._retired]
-                if graph is not None
-            ]
+            graphs = [graph for graph in [self._active, *self._retired] if graph is not None]
             self._active = None
             self._retired = []
             if graphs:
@@ -491,9 +488,7 @@ class PluginHost:
     def _require_bundle_graph(self, bundle: ResolvedPluginBundle) -> _ActiveGraph:
         graph = self._active
         if graph is None:
-            raise PluginHostError(
-                "plugin_profile_inactive", "no plugin profile is active"
-            )
+            raise PluginHostError("plugin_profile_inactive", "no plugin profile is active")
         if not self._bundle_matches_graph(bundle, graph):
             raise PluginHostError(
                 "plugin_bundle_profile_mismatch",
@@ -514,9 +509,7 @@ class PluginHost:
         bundle: ResolvedPluginBundle,
     ) -> PreparedAgent:
         capabilities = self._execution_context(graph)
-        provider_binding = capabilities.require(
-            "agent.provider/v1", slot="agent.execution"
-        )
+        provider_binding = capabilities.require("agent.provider/v1", slot="agent.execution")
         provider = provider_binding.runtime
         if not isinstance(provider, ExecutableAgentProvider):
             raise PluginHostError(
@@ -541,15 +534,11 @@ class PluginHost:
             try:
                 await activation.start()
             except Exception as error:  # noqa: BLE001 - activation boundary
-                raise PluginHostError(
-                    "agent_activation_start_failed", str(error)
-                ) from error
+                raise PluginHostError("agent_activation_start_failed", str(error)) from error
             try:
                 healthy = await activation.health()
             except Exception as error:  # noqa: BLE001 - activation boundary
-                raise PluginHostError(
-                    "agent_activation_health_failed", str(error)
-                ) from error
+                raise PluginHostError("agent_activation_health_failed", str(error)) from error
             if not healthy:
                 raise PluginHostError(
                     "agent_activation_health_failed",
@@ -572,15 +561,18 @@ class PluginHost:
         request: Any,
     ) -> Any:
         async with active.operation_lock:
-            if active.closed:
-                raise PluginHostError(
-                    "agent_activation_closed",
-                    f"Agent activation {active.key!r} is closed",
-                )
+            task = asyncio.current_task()
+            active.operation_task = task
             try:
+                if active.closed:
+                    raise PluginHostError(
+                        "agent_activation_closed",
+                        f"Agent activation {active.key!r} is closed",
+                    )
                 result = await active.runtime.execute(request)
             except asyncio.CancelledError:
-                await self._dispose_activation(active.runtime)
+                if not active.closed:
+                    await self._dispose_activation(active.runtime)
                 active.closed = True
                 raise
             except PluginHostError as error:
@@ -594,6 +586,9 @@ class PluginHost:
                 await self._dispose_activation(active.runtime)
                 active.closed = True
                 raise failure from error
+            finally:
+                if active.operation_task is task:
+                    active.operation_task = None
             self._last_failure = None
             return result
 
@@ -623,23 +618,77 @@ class PluginHost:
             return adapter
 
     async def _close_activation_record(self, active: _ActiveActivation) -> None:
-        async with active.operation_lock:
-            if active.closed:
-                return
-            await self._dispose_activation(active.runtime)
-            active.closed = True
+        await self._finish_cleanup(self._close_activation_record_owned(active))
+
+    async def _close_activation_record_owned(self, active: _ActiveActivation) -> None:
+        """Finish the entire terminal close before propagating caller cancellation."""
+
+        if active.closed and active.operation_task is None:
+            return
+        active.closed = True
+        operation = active.operation_task
+        await self._abort_activation(active.runtime)
+        if operation is not None and operation is not asyncio.current_task():
+            operation.cancel()
+        try:
+            await asyncio.wait_for(active.operation_lock.acquire(), timeout=2.0)
+        except TimeoutError:
+            await self._bounded_dispose_activation(active.runtime)
+            return
+        try:
+            await self._bounded_dispose_activation(active.runtime)
+        finally:
+            active.operation_lock.release()
+
+    @staticmethod
+    async def _abort_activation(activation: PreparedAgent) -> None:
+        """Finish provider revocation before a close can report success.
+
+        ``abort`` is currently implemented only by the Harness activation and
+        revokes activation-scoped MCP credentials.  A host-side timeout would
+        let close return while those credentials still authorize requests.
+        The underlying DSH lifecycle operation owns its network timeout and
+        kills the whole generation when revocation cannot be proven.
+        """
+
+        abort = getattr(activation, "abort", None)
+        if not callable(abort):
+            return
+        try:
+            result = abort()
+            if asyncio.iscoroutine(result):
+                await result
+        except BaseException:  # abort is best-effort; disposal still follows
+            pass
+
+    @classmethod
+    async def _bounded_dispose_activation(cls, activation: PreparedAgent) -> None:
+        try:
+            await asyncio.wait_for(cls._dispose_activation(activation), timeout=2.0)
+        except BaseException:  # terminal close cannot wait forever on provider code
+            pass
 
     async def _close_graph_activations(self, graph: _ActiveGraph) -> None:
-        for key, active in tuple(self._activations.items()):
-            if active.graph is not graph:
-                continue
-            await self._close_activation_record(active)
+        selected = [
+            (key, active)
+            for key, active in tuple(self._activations.items())
+            if active.graph is graph
+        ]
+        if selected:
+            await asyncio.gather(
+                *(self._close_activation_record(active) for _key, active in selected)
+            )
+        for key, active in selected:
             if self._activations.get(key) is active:
                 self._activations.pop(key, None)
 
     async def _close_all_activations(self) -> None:
-        for key, active in tuple(self._activations.items()):
-            await self._close_activation_record(active)
+        selected = tuple(self._activations.items())
+        if selected:
+            await asyncio.gather(
+                *(self._close_activation_record(active) for _key, active in selected)
+            )
+        for key, active in selected:
             if self._activations.get(key) is active:
                 self._activations.pop(key, None)
 

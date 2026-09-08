@@ -280,7 +280,15 @@ class CodeBuilder(BaseBuilder):
         "mcp>=1.1.0",
         "langchain-mcp-adapters>=0.0.1",
     )
-    BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = ("asyncpg>=0.30.0,<1.0.0",)
+    BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = (
+        "asyncpg>=0.30.0,<1.0.0",
+        "greenlet>=1.0.0",
+    )
+    BUNDLED_KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS = (
+        "langgraph-checkpoint-postgres>=3.1.0",
+        "psycopg[binary]>=3.2,<4.0",
+        "psycopg-pool>=3.2,<4.0",
+    )
     BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS = (
         "pypdf>=6.0.0",
         "beautifulsoup4>=4.12.0",
@@ -584,8 +592,14 @@ class CodeBuilder(BaseBuilder):
         value = os.getenv("KSADK_BUILD_ENABLE_ATTACHMENT_OCR", "")
         return value.strip().lower() in {"1", "true", "yes", "on"}
 
-    def _bundled_runtime_requirements(self) -> tuple[str, ...]:
+    def _bundled_runtime_requirements(self, detection_result: Any = None) -> tuple[str, ...]:
         requirements = list(self.BUNDLED_KSADK_RUNTIME_REQUIREMENTS)
+        detection_type = getattr(detection_result, "type", None)
+        framework = str(
+            getattr(detection_type, "value", detection_type) or ""
+        ).strip().lower()
+        if framework in {"langgraph", "langchain", "deepagents"}:
+            requirements.extend(self.BUNDLED_KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS)
         if self._attachment_ocr_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS)
         if self._mcp_runtime_enabled():
@@ -612,16 +626,26 @@ class CodeBuilder(BaseBuilder):
         if self._env_flag_enabled("KSADK_BUILD_ENABLE_POSTGRES_SESSION"):
             return True
         backend = (
-            self._project_env_value("KSADK_SESSION_BACKEND")
-            or self._project_env_value("AGENTENGINE_SESSION_BACKEND")
-            or self._project_env_value("KSADK_STM_BACKEND")
+            self._project_file_env_value("KSADK_SESSION_BACKEND")
+            or self._project_file_env_value("AGENTENGINE_SESSION_BACKEND")
+            or self._project_file_env_value("KSADK_STM_BACKEND")
+            or os.getenv("KSADK_SESSION_BACKEND")
+            or os.getenv("AGENTENGINE_SESSION_BACKEND")
+            or os.getenv("KSADK_STM_BACKEND")
+            or ""
         )
         if backend.strip().lower() == "postgres":
             return True
         dsn = (
-            self._project_env_value("KSADK_SESSION_DSN")
-            or self._project_env_value("KSADK_STM_URL")
-            or self._project_env_value("KSADK_STM_DB_URL")
+            self._project_file_env_value("KSADK_CHECKPOINT_DSN")
+            or self._project_file_env_value("KSADK_SESSION_DSN")
+            or self._project_file_env_value("KSADK_STM_URL")
+            or self._project_file_env_value("KSADK_STM_DB_URL")
+            or os.getenv("KSADK_CHECKPOINT_DSN")
+            or os.getenv("KSADK_SESSION_DSN")
+            or os.getenv("KSADK_STM_URL")
+            or os.getenv("KSADK_STM_DB_URL")
+            or ""
         )
         return self._looks_like_postgres_dsn(dsn)
 
@@ -642,6 +666,9 @@ class CodeBuilder(BaseBuilder):
         value = os.getenv(name)
         if value:
             return value
+        return self._project_file_env_value(name)
+
+    def _project_file_env_value(self, name: str) -> str:
         for env_file in (self.project_dir / ".env", self.project_dir / "agentengine.env"):
             if not env_file.is_file():
                 continue
@@ -942,7 +969,7 @@ class CodeBuilder(BaseBuilder):
     def _build_requirements_list(self, detection_result) -> List[str]:
         final_deps = merge_requirement_lists(
             self._get_base_requirements(detection_result),
-            self._bundled_runtime_requirements(),
+            self._bundled_runtime_requirements(detection_result),
         )
 
         user_requirements = self.project_dir / "requirements.txt"

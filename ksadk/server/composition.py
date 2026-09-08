@@ -40,11 +40,13 @@ def _configure_route_dependencies() -> None:
         _DetachedSSEStream,
         detached_streaming_response,
     )
+    from ksadk.sessions.persistence import get_persistence_status
 
     dependencies.configure(
         dependencies.ServerRouteDependencies(
             resolve_session_service=lambda: get_state().resolve_session_service(),
             describe_session_backend=lambda: get_state().describe_session_backend(),
+            get_persistence_status=get_persistence_status,
             resolve_agent_ui_spec=_resolve_agent_ui_spec,
             conversation=lambda: conversation,
             detached_streaming_response=detached_streaming_response,

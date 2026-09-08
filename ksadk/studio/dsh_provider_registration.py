@@ -27,7 +27,7 @@ from ksadk.plugins.bridges.dsh import (
     DshProfileProjection,
 )
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
-from ksadk.plugins.dsh_toolchain import DshToolchainManager
+from ksadk.plugins.dsh_toolchain import DSH_CORE_PACKAGES, DshToolchainManager
 from ksadk.plugins.host import ManagedPlugin, PluginHostError
 from ksadk.plugins.providers.codex_dsh import (
     SHIPPED_CODEX_DSH_PACKAGE,
@@ -51,7 +51,7 @@ from ksadk.plugins.providers.harness_dsh import (
 
 _PROFILE_FILES = ("package.json", "cordis.patch.yml", "index.mjs")
 _MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024
-_DSH_PLATFORM_BUNDLES = frozenset({"@deepseek-ai/dsh-base"})
+_DSH_PLATFORM_BUNDLES = frozenset(DSH_CORE_PACKAGES)
 _SHIPPED_PROVIDER_PACKAGES = frozenset({SHIPPED_CODEX_DSH_PACKAGE, SHIPPED_HARNESS_DSH_PACKAGE})
 
 
@@ -162,7 +162,7 @@ class StudioDshProviderRegistrationManager:
         workspace: Path,
         *,
         dsh_home: Path,
-        profile: str = "studio",
+        profile: str = "web",
         dsh_command: Sequence[str] | None = None,
         node_command: Sequence[str] | None = None,
         cordis_module: Path | None = None,
@@ -192,7 +192,7 @@ class StudioDshProviderRegistrationManager:
             if configured_home
             else workspace / ".agentkit" / "dsh-home"
         )
-        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "studio"
+        profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         manifest = home / "profiles" / profile / "package.json"
         if not manifest.is_file():
@@ -216,7 +216,7 @@ class StudioDshProviderRegistrationManager:
         """Discover DSH or prepare the isolated first-run Studio Profile.
 
         The default is deliberately narrower than :meth:`discover`: only the
-        Studio-owned ``.agentkit/dsh-home`` and ``studio`` Profile qualify for
+        Studio-owned ``.agentkit/dsh-home`` and official ``web`` Profile qualify for
         automatic official-provider bootstrap.  Explicit DSH homes/profiles
         are user-owned and are never mutated by Studio startup.
         """
@@ -237,7 +237,7 @@ class StudioDshProviderRegistrationManager:
                 # DSH is optional.  A missing toolchain must not make the
                 # normal Studio/legacy Codex path unavailable.
                 return None
-        return cls(root, dsh_home=home, profile="studio", dsh_command=command)
+        return cls(root, dsh_home=home, profile="web", dsh_command=command)
 
     @property
     def inventory(self) -> StudioDshProviderInventory:
@@ -251,7 +251,7 @@ class StudioDshProviderRegistrationManager:
         return (
             not configured_home
             and not configured_profile
-            and self._profile == "studio"
+            and self._profile == "web"
             and self._dsh_home == expected_home
         )
 
@@ -327,7 +327,12 @@ class StudioDshProviderRegistrationManager:
 
     @property
     def _default_marker_path(self) -> Path:
-        return self._workspace / ".agentkit" / "official-dsh-defaults.json"
+        # Scope the bootstrap receipt to the owned Profile.  Older Studio
+        # builds used one workspace-wide marker while their default Profile
+        # was ``studio``.  Reusing that marker after the default moved to
+        # official Core's ``web`` Profile incorrectly skipped first-run
+        # installation and left Studio with no runnable DSH Profile.
+        return self._workspace / ".agentkit" / f"official-dsh-defaults-{self._profile}.json"
 
     @staticmethod
     def _read_default_marker(path: Path) -> dict[str, object]:
