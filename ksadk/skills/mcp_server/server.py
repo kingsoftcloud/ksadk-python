@@ -54,7 +54,11 @@ def _create_mcp_server():
     MCPServerClass = _import_mcp_server_class()
 
     from ksadk.skills.manifest_cache import get_manifest_cache
-    from ksadk.toolsets.skills import execute_skills as _execute_skills_impl
+    from ksadk.toolsets.skills import (
+        execute_skills as _execute_skills_impl,
+        load_skill as _load_skill_impl,
+        preview_skill as _preview_skill_impl,
+    )
 
     mcp = MCPServerClass("ksadk-skill-center")
 
@@ -109,6 +113,46 @@ def _create_mcp_server():
         result = _execute_skills_impl(workflow_prompt=workflow_prompt, skill_names=skill_names)
         return json.dumps(result, ensure_ascii=False)
 
+    @mcp.tool()
+    def load_skill(
+        skill_name: str,
+        space_id: str | None = None,
+    ) -> str:
+        """Download and load a skill's full SKILL.md instructions.
+
+        Use this for instruction-first skills where the outer agent should
+        read the instructions and complete the task directly.  Returns the
+        full skill body, scripts directory listing, and root_dir.
+
+        Args:
+            skill_name: The skill name to load.
+            space_id: Optional Skill Space ID for disambiguation.
+
+        Returns a JSON string with ok, instructions, root_dir, has_scripts_dir.
+        """
+        result = _load_skill_impl(skill_name=skill_name, space_id=space_id)
+        return json.dumps(result, ensure_ascii=False)
+
+    @mcp.tool()
+    def preview_skill(
+        skill_name: str,
+        space_id: str | None = None,
+    ) -> str:
+        """Return manifest-level info for a skill without downloading.
+
+        Lightweight preview: returns name, description, version from the
+        manifest cache without downloading or unpacking the skill package.
+        Use ``load_skill`` for full instructions.
+
+        Args:
+            skill_name: The skill name to preview.
+            space_id: Optional Skill Space ID for disambiguation.
+
+        Returns a JSON string with ok, name, description, version.
+        """
+        result = _preview_skill_impl(skill_name=skill_name, space_id=space_id)
+        return json.dumps(result, ensure_ascii=False)
+
     return mcp
 
 
@@ -136,9 +180,7 @@ def _start_background_skill_refresh() -> None:
                 time.sleep(interval)
                 cache = get_manifest_cache()
                 items = cache.get_all(force_refresh=True)
-                if not items:
-                    continue
-                instruction_text = cache.build_instruction_text()
+                instruction_text = cache.build_instruction_text() if items else ""
                 for callback in get_refresh_callbacks():
                     try:
                         callback(instruction_text, items)

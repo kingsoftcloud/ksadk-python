@@ -123,7 +123,23 @@ def _is_managed_dir(skill_dir: str) -> bool:
     Returns True only if the .ksadk-skill-center marker file exists,
     meaning we created this directory and can safely overwrite/delete it.
     """
-    return os.path.isfile(os.path.join(skill_dir, _SKILL_CENTER_MARKER))
+    marker = os.path.join(skill_dir, _SKILL_CENTER_MARKER)
+    # S2 fix: do not follow symlinks when checking marker existence
+    return os.path.isfile(marker) and not os.path.islink(marker)
+
+
+def _is_path_safe(base_dir: str, target: str) -> bool:
+    """Check that *target* (joined under *base_dir*) resolves within base_dir
+    and does not involve symlinks pointing outside base_dir.
+    """
+    import pathlib as _pl
+    base = _pl.Path(base_dir).resolve()
+    tgt = _pl.Path(target).resolve()
+    try:
+        tgt.relative_to(base)
+    except ValueError:
+        return False
+    return True
 
 
 def _hermes_home() -> str:
@@ -219,14 +235,14 @@ def _prefetch_manifest_to_workspace() -> None:
         from ksadk.skills.manifest_cache import get_manifest_cache
         cache = get_manifest_cache()
         items = cache.get_all()
-        instruction_text = cache.build_instruction_text()
-        if not items:
-            logger.info("Manifest prefetch: no skills found in space %s", skill_space_id)
-            return
+        instruction_text = cache.build_instruction_text() if items else ""
         _inject_openclaw_workspace(instruction_text)
         _inject_openclaw_skill_hub(instruction_text, items)
         _inject_hermes_skill_hub(instruction_text, items)
-        logger.info("Manifest prefetch completed for space %s", skill_space_id)
+        if not items:
+            logger.info("Manifest prefetch: no skills found in space %s", skill_space_id)
+        else:
+            logger.info("Manifest prefetch completed for space %s (%d skills)", skill_space_id, len(items))
     except Exception as exc:
         logger.warning("Manifest prefetch failed: %s", exc)
 
@@ -237,23 +253,30 @@ def _inject_openclaw_workspace(instruction_text: str) -> None:
         return
     start_marker = "<!-- skill-center-start -->"
     end_marker = "<!-- skill-center-end -->"
-    # Backward-compat: also remove old single-marker block
+    # Backward-compat: old single-marker block (no end boundary)
     old_marker = "## Available Skills (Skill Center)"
     try:
         existing = ""
         if os.path.isfile(tools_md):
             existing = open(tools_md, encoding="utf-8").read()
-        # Remove old single-marker block (backward compat)
-        if old_marker in existing:
-            parts = existing.split(old_marker, 1)
-            existing = parts[0].rstrip()
-        # Remove paired-marker block
+        # Remove paired-marker block first (precise boundary)
         if start_marker in existing and end_marker in existing:
             before = existing.split(start_marker, 1)[0]
             after = existing.rsplit(end_marker, 1)[-1]
             existing = (before.rstrip() + "\n" + after.rstrip()).rstrip()
         elif start_marker in existing:
+            # Only start marker (malformed): remove from start onward
             existing = existing.split(start_marker, 1)[0].rstrip()
+        # Migrate old single-marker block: treat old_marker as start boundary
+        # but keep content after it (unlike the old truncation approach).
+        if old_marker in existing:
+            before_old = existing.split(old_marker, 1)[0]
+            after_old = existing.split(old_marker, 1)[1] if old_marker in existing else ""
+            existing = before_old.rstrip()
+            # after_old content is discarded as it was part of the old skill block,
+            # but user content after the old skill block may exist. We cannot
+            # reliably distinguish, so we preserve before_old only. This is
+            # the same behavior as before but only triggers on first migration.
         # Reconstruct: keep existing content + new paired block
         if not instruction_text.strip():
             # Empty manifest: just remove our block, keep everything else
@@ -286,7 +309,7 @@ skill_view, or similar) as a substitute for execute_skills.
 Built-in tools like terminal and browser_navigate can only perform raw operations;
 they cannot load skill instructions, dependencies, or the sandbox environment.
 execute_skills runs the skill in an isolated sandbox with the correct setup
-automatically; no manual approval is needed.
+automatically.
 
 If you are unsure whether a task matches a Skill Center skill, call
 mcp__ksadk_skill_center__list_skills first to check, then call execute_skills.
@@ -330,6 +353,15 @@ def _inject_hermes_skill_hub(
                 continue
             os.makedirs(skill_dir, exist_ok=True)
             skill_md_path = os.path.join(skill_dir, "SKILL.md")
+            # S2 fix: reject if SKILL.md is a symlink pointing outside base_dir
+            if os.path.islink(skill_md_path) and not _is_path_safe(base_dir, skill_md_path):
+                logger.warning("Skipping %s: SKILL.md symlink escapes base dir", skill_name)
+                continue
+            skill_md_path = os.path.join(skill_dir, "SKILL.md")
+            # S2 fix: reject if path is a symlink pointing outside base_dir
+            if os.path.islink(skill_md_path) and not _is_path_safe(base_dir, skill_md_path):
+                logger.warning("Skipping %s: SKILL.md symlink escapes base dir", skill_name)
+                continue
             with open(os.path.join(skill_dir, _SKILL_CENTER_MARKER), "w") as mf:
                 mf.write("1")
             skill_md_content = (
@@ -400,7 +432,7 @@ or similar) as a substitute for execute_skills.
 Built-in tools like terminal and browser_navigate can only perform raw operations;
 they cannot load skill instructions, dependencies, or the sandbox environment.
 execute_skills runs the skill in an isolated sandbox with the correct setup
-automatically; no manual approval is needed.
+automatically.
 
 If you are unsure whether a task matches a Skill Center skill, call
 mcp__ksadk_skill_center__list_skills first to check, then call execute_skills.
