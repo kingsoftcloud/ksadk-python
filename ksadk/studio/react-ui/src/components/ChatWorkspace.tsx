@@ -15,6 +15,7 @@ interface ChatWorkspaceProps {
   active?: boolean;
   refreshTick?: number;
   requestedSessionId?: string;
+  onSessionChanged?: (sessionId: string) => void;
   onRunChanged?: () => void;
   onConfigureAgent?: () => void;
   onOpenSettings?: () => void;
@@ -38,6 +39,11 @@ function sessionIsRunning(status?: string): boolean {
   return ["RUNNING", "WAITING_INPUT", "PAUSED"].includes(String(status || "").toUpperCase());
 }
 
+function sessionDisplayTitle(session: { SessionId: string; Title?: string }): string {
+  const title = String(session.Title || "").trim();
+  return !title || title === session.SessionId ? "新会话" : title;
+}
+
 /**
  * Studio keeps only its product shell here. Conversation state, replay,
  * streaming, thinking/tool rendering, approvals, HITL, attachments, and the
@@ -50,6 +56,7 @@ export function ChatWorkspace({
   active = true,
   refreshTick = 0,
   requestedSessionId = "",
+  onSessionChanged,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
@@ -74,6 +81,11 @@ export function ChatWorkspace({
   const previousTransport = useRef({ agentId, sessionId: chat.currentSessionId, streaming: false });
 
   useEffect(() => {
+    onSessionChanged?.(chat.currentSessionId || "");
+    return () => onSessionChanged?.("");
+  }, [chat.currentSessionId, onSessionChanged]);
+
+  useEffect(() => {
     const previous = previousTransport.current;
     const settled = previous.agentId === agentId
       && previous.sessionId === chat.currentSessionId
@@ -89,7 +101,7 @@ export function ChatWorkspace({
     const keyword = query.trim().toLowerCase();
     if (!keyword) return chat.sessions;
     return chat.sessions.filter(session => (
-      session.Title || session.SessionId
+      sessionDisplayTitle(session)
     ).toLowerCase().includes(keyword));
   }, [chat.sessions, query]);
 
@@ -156,6 +168,7 @@ export function ChatWorkspace({
             <div className="session-empty">{query ? "没有匹配的会话" : "还没有会话"}</div>
           ) : filteredSessions.map(session => {
             const running = sessionIsRunning(session.ActiveRunStatus);
+            const displayTitle = sessionDisplayTitle(session);
             return (
               <div
                 key={session.SessionId}
@@ -166,15 +179,15 @@ export function ChatWorkspace({
                   type="button"
                   aria-current={chat.currentSessionId === session.SessionId ? "true" : undefined}
                   onClick={() => chat.selectSession(session.SessionId)}
-                  title={`${session.Title || session.SessionId} · ${formatSessionTime(String(session.UpdatedAt || ""))}`}
+                  title={`${displayTitle} · ${formatSessionTime(String(session.UpdatedAt || ""))}`}
                 >
-                  <strong>{shortText(session.Title || session.SessionId)}</strong>
+                  <strong>{shortText(displayTitle)}</strong>
                   {running ? <span className="session-status running" aria-label="运行中" /> : null}
                 </button>
                 <button
                   className="chat-session-delete"
                   type="button"
-                  aria-label={`删除会话：${shortText(session.Title || session.SessionId)}`}
+                  aria-label={`删除会话：${shortText(displayTitle)}`}
                   title={running ? "运行中不可删除" : "删除会话"}
                   disabled={running}
                   onClick={() => setDeleteSessionId(session.SessionId)}

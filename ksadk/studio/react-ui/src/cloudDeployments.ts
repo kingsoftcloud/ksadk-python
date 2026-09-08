@@ -11,7 +11,7 @@ export interface CloudDeploymentSummary {
   chatRoutingReason?: CloudChatRoutingReason;
   versionId?: string;
   updatedAt?: string;
-  creatorName?: string;
+  creatorName?: string | null;
   kernelReady?: boolean | null;
   deploymentPhase?: string;
   statusMessage?: string;
@@ -32,7 +32,7 @@ export interface AccountCloudAgentSummary {
   chatRoutingReason?: CloudChatRoutingReason;
   versionId?: string;
   updatedAt?: string;
-  creatorName?: string;
+  creatorName?: string | null;
   kernelReady?: boolean | null;
   deploymentPhase?: string;
   statusMessage?: string;

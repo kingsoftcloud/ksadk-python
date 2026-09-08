@@ -55,7 +55,9 @@ const VIEW_TITLE: Record<View, string> = {
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
-const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
+const RESOURCE_KINDS: ResourceKind[] = [
+  "model", "tool", "mcp", "skill", "knowledge-base", "memory-instance", "skill-space",
+];
 const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "automations", "orchestration"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
 
@@ -161,6 +163,7 @@ export default function App() {
     !initialRoute.conversationAgentId && initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
   );
   const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
   useEffect(() => {
@@ -597,6 +600,7 @@ export default function App() {
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
+                  onSessionChanged={setConversationSessionId}
                   onConfigureAgent={() => openEdit(currentAgentId)}
                   onOpenSettings={() => {
                     setSettingsSection("credentials");
@@ -624,7 +628,7 @@ export default function App() {
               )}
             </div>
             {runPanelOpen && chatMounted && currentAgentId && !isCloudChat && (
-              <ChatRunPanel agentId={currentAgentId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
+              <ChatRunPanel agentId={currentAgentId} sessionId={conversationSessionId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
             )}
           </div>
 

@@ -7,6 +7,7 @@ import { apiFetch } from "../api";
 import { showToast } from "../components/Toast";
 import { AgentAppearanceEditor } from "../components/AgentAppearanceEditor";
 import { NativePluginBindings, type NativePluginBinding } from "../components/NativePluginBindings";
+import { PlatformResourceBindings } from "../components/PlatformResourceBindings";
 import type { AgentAppearance } from "../components/AgentAvatar";
 import { FormField } from "../components/ui/FormField";
 import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
@@ -636,16 +637,24 @@ export function AgentEditor({
         },
       };
       if (memoryTouched) {
+        const platformMemoryBindingId = String((
+          selectedPlugins.find(binding =>
+            (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+          )?.config as any
+        )?.binding?.id || "");
         spec.memory = {
           ...(original.memory || {}),
-          enabled: memoryEnabled,
-          providerRef: memoryProviderRef.trim(),
+          enabled: platformMemoryBindingId ? true : memoryEnabled,
+          providerRef: platformMemoryBindingId
+            ? `binding://${platformMemoryBindingId}`
+            : memoryProviderRef.trim(),
+          ...(platformMemoryBindingId ? { scopes: ["user"] } : {}),
           recall: {
             ...(original.memory?.recall || {}),
-            enabled: memoryRecallEnabled,
+            enabled: platformMemoryBindingId ? true : memoryRecallEnabled,
             maxTokens: memoryRecallMaxTokens,
             topK: memoryRecallTopK,
-            minScore: memoryRecallMinScore,
+            minScore: platformMemoryBindingId ? 0 : memoryRecallMinScore,
           },
           write: {
             ...(original.memory?.write || {}),
@@ -1036,7 +1045,39 @@ export function AgentEditor({
             />
           </div>
         </div>
-        {runtime === "codex" && visibleSection === 2 && <NativePluginBindings key={agentId} value={selectedPlugins} onChange={setSelectedPlugins} onPendingChange={setPluginsPending} />}
+        {runtime === "codex" && visibleSection === 2 && <NativePluginBindings
+          key={`${agentId}-codex-plugins`}
+          value={selectedPlugins.filter(binding => binding.ecosystem === "codex")}
+          onChange={bindings => setSelectedPlugins([
+            ...selectedPlugins.filter(binding => binding.ecosystem !== "codex"),
+            ...bindings,
+          ])}
+          onPendingChange={setPluginsPending}
+        />}
+        {visibleSection === 2 && <PlatformResourceBindings
+          key={`${agentId}-platform-resources`}
+          value={selectedPlugins}
+          onChange={bindings => {
+            setSelectedPlugins(bindings);
+            const platformMemory = bindings.find(binding =>
+              (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+            );
+            const bindingId = String((platformMemory?.config as any)?.binding?.id || "");
+            if (bindingId) {
+              setMemoryEnabled(true);
+              setMemoryProviderRef(`binding://${bindingId}`);
+              setMemoryRecallEnabled(true);
+              setMemoryRecallMinScore(0);
+              setMemoryWriteMode("off");
+              setMemoryWriteRollout("off");
+            } else if (memoryProviderRef.startsWith("binding://platform-memory-instance")) {
+              setMemoryEnabled(false);
+              setMemoryProviderRef("local-default");
+            }
+            setMemoryTouched(true);
+          }}
+          onPendingChange={setPluginsPending}
+        />}
         {detail.bindingProjection?.unresolvedMcpServers?.length ? (
           <div className="inline-alert warning" role="status">
             <CircleAlert size={16} />
@@ -1046,21 +1087,21 @@ export function AgentEditor({
             </div>
           </div>
         ) : null}
-        <div className="field quick-model-binding-field">
+        {!['codex', 'plugin'].includes(runtime) && <div className="field quick-model-binding-field">
           <div className="field-heading"><label>绑定 Tool</label><span className="helper">{["codex", "plugin"].includes(runtime) ? "当前 Runtime 不支持新增 ksadk Tool；历史绑定仅保留，不能修改。" : "仅展示当前 Runtime 合同允许的 ksadk Tool。"}</span></div>
           <StudioMultiSelect
             ariaLabel="选择绑定 Tool"
-            items={["codex", "plugin"].includes(runtime) ? visibleTools.filter(item => selectedTools.includes(item.resourceId)) : visibleTools}
+            items={visibleTools}
             selectedIds={selectedTools}
             getId={item => item.resourceId}
             getLabel={item => item.displayName}
             getDescription={item => item.version}
-            onChange={["codex", "plugin"].includes(runtime) ? () => undefined : setSelectedTools}
-            disabledIds={["codex", "plugin"].includes(runtime) ? selectedTools : []}
+            onChange={setSelectedTools}
+            disabledIds={[]}
             searchPlaceholder="搜索 Tool"
-            emptyMessage={runtime === "codex" ? "Codex 使用原生工具" : runtime === "plugin" ? "外部 Provider 当前接收 MCP 与 Skill 能力" : "没有可绑定的 Tool"}
+            emptyMessage="没有可绑定的 Tool"
           />
-        </div>
+        </div>}
         </section>
 
         <section className="agent-edit-section" hidden={visibleSection !== 3} aria-label="运行策略">

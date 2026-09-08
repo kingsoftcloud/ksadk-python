@@ -575,7 +575,7 @@ describe("AgentEditor form", () => {
     },
   );
 
-  it("keeps a historical Codex Tool binding visible and immutable while editing supported bindings", async () => {
+  it("hides unsupported Codex Tool controls while preserving the historical binding", async () => {
     mockedFetch.mockImplementation(async (_input, init) => {
       if (init?.method === "PUT") {
         return {
@@ -611,8 +611,10 @@ describe("AgentEditor form", () => {
       onSaved={vi.fn()}
     />);
 
-    expect(await screen.findByText("tool-old")).toBeVisible();
-    expect(screen.getByText(/当前 Runtime 不支持新增 ksadk Tool/)).toBeVisible();
+    await screen.findByRole("button", { name: "保存修改" });
+    expect(screen.queryByText("tool-old")).not.toBeInTheDocument();
+    expect(screen.queryByText(/绑定 Tool/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择绑定 Tool" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "移除 tool-old" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
