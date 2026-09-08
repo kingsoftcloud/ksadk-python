@@ -56,6 +56,8 @@ from ksadk.conversations.runtime_resume import (
 )
 from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
 from ksadk.runtime_context import (
+    TRUSTED_IDENTITY_METADATA_KEY,
+    PlatformIdentityContext,
     PlatformInvocationContext,
     platform_invocation_scope,
     tool_execution_scope,
@@ -180,9 +182,13 @@ async def invoke_conversation_once(
             )
         raise
     _inject_runner_deferred_tools_for_request(runner, prepared)
+    effective_user_id = prepared.user_id or user_id
+    invocation_identity = PlatformIdentityContext.from_payload(
+        dict(request_metadata or {}).get(TRUSTED_IDENTITY_METADATA_KEY)
+    )
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
-        user_id=user_id,
+        user_id=effective_user_id,
         user_input=prepared.user_input,
     )
     prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
@@ -191,7 +197,7 @@ async def invoke_conversation_once(
     runtime_context = PlatformInvocationContext(
         session=SessionContext.from_payload(prepared.session_context),
         agent_id=agent_id,
-        user_id=user_id,
+        user_id=effective_user_id,
         account_id=str(account_id or ""),
         session_id=prepared.session_id,
         history=list(prepared.history),
@@ -210,13 +216,14 @@ async def invoke_conversation_once(
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
         tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
+        identity=invocation_identity,
     )
     runner_name = _runner_name(runner)
     async with _conversation_span_scope(runner_name) as span:
         _set_conversation_span_attributes(
             span,
             agent_id=agent_id,
-            user_id=user_id,
+            user_id=effective_user_id,
             session_id=prepared.session_id,
             invocation_id=prepared.invocation_id,
             runner_name=runner_name,
@@ -434,7 +441,7 @@ async def invoke_conversation_once(
         )
         await _auto_save_ltm_turn(
             agent_id=agent_id,
-            user_id=user_id,
+            user_id=effective_user_id,
             prepared=prepared,
             output_text=output_text,
             runner_type=runtime_context.runner_type,

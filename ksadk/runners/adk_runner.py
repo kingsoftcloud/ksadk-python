@@ -21,6 +21,7 @@ from opentelemetry import trace
 from ksadk.compat.adk_compat import genai_types as types
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.conversations.model_context import supports_native_image_input
+from ksadk.runners._session_identity import ADKSessionIdentityMixin
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runners.utils import load_agent_module
@@ -45,7 +46,7 @@ def _part_metadata_flag(part: Any, key: str) -> bool:
     return False
 
 
-class ADKRunner(BaseRunner):
+class ADKRunner(ADKSessionIdentityMixin, BaseRunner):
     """ADK 框架运行时"""
 
     def __init__(self, detection_result: Any, project_dir: str):
@@ -54,6 +55,7 @@ class ADKRunner(BaseRunner):
         self._session_service: Any = None
         # Map external session_ids (e.g. from run_interactive or web) to ADK internal session IDs
         self._session_map: Dict[str, str] = {}
+        self._session_user_map: Dict[str, str] = {}
         # Fallback default session
         self._default_session_id: Optional[str] = None
         # Memory integration
@@ -304,9 +306,7 @@ class ADKRunner(BaseRunner):
         if self._short_term_memory is None:
             self._short_term_memory = self._init_short_term_memory()
         if self._short_term_memory is not None and self._session_service is None:
-            self._session_service = getattr(
-                self._short_term_memory, "session_service", None
-            )
+            self._session_service = getattr(self._short_term_memory, "session_service", None)
         resumable = self._resolve_resumability()
         self._resume_disabled_reason = None
         self._resume_disabled_reason_code = None
@@ -645,7 +645,7 @@ class ADKRunner(BaseRunner):
 
             agent_name = self._agent.name if self._agent else "default"
             ltm = LongTermMemory.from_env(app_name=agent_name)
-            logger.info(f"LongTermMemory initialized: backend={backend}, " f"app_name={agent_name}")
+            logger.info(f"LongTermMemory initialized: backend={backend}, app_name={agent_name}")
             return ltm
         except Exception as e:
             logger.warning(f"Failed to init LongTermMemory: {e}.")
@@ -669,7 +669,7 @@ class ADKRunner(BaseRunner):
 
             kb = KnowledgeBaseClient.from_env()
             logger.info(
-                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, " f"region={kb.region}"
+                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, region={kb.region}"
             )
             return kb
         except ImportError:
@@ -1197,49 +1197,6 @@ class ADKRunner(BaseRunner):
 
         return prepare_trace_metadata(detection_result=getattr(self, "detection_result", None))
 
-    async def _ensure_session(self, external_session_id: Optional[str] = None) -> str:
-        """Get or create ADK session ID based on external ID
-
-        When ShortTermMemory is configured, uses its create_session method
-        which supports session retrieval (if session_id already exists).
-        """
-        # Case 1: External ID provided
-        if external_session_id:
-            if external_session_id in self._session_map:
-                return self._session_map[external_session_id]
-
-            # Create new ADK session and map it
-            if self._short_term_memory:
-                session = await self._short_term_memory.create_session(
-                    app_name=self._agent.name,
-                    user_id="ksadk_user",
-                    session_id=external_session_id,
-                )
-            else:
-                if self._session_service is None:
-                    raise RuntimeError("ADK session service is not initialized")
-                session = await self._session_service.create_session(
-                    app_name=self._agent.name, user_id="ksadk_user"
-                )
-            self._session_map[external_session_id] = session.id
-            return str(session.id)
-
-        # Case 2: No external ID (use default singleton)
-        if self._default_session_id is None:
-            if self._short_term_memory:
-                session = await self._short_term_memory.create_session(
-                    app_name=self._agent.name,
-                    user_id="ksadk_user",
-                )
-            else:
-                if self._session_service is None:
-                    raise RuntimeError("ADK session service is not initialized")
-                session = await self._session_service.create_session(
-                    app_name=self._agent.name, user_id="ksadk_user"
-                )
-            self._default_session_id = session.id
-        return str(self._default_session_id)
-
     async def save_session_to_long_term_memory(
         self, session_id: str, user_id: str = "ksadk_user"
     ) -> bool:
@@ -1482,7 +1439,7 @@ class ADKRunner(BaseRunner):
             return max_seq
         except Exception as exc:
             logger.warning(
-                "ADKRunner: failed to query max checkpoint_seq " "for run_id=%s: %s",
+                "ADKRunner: failed to query max checkpoint_seq for run_id=%s: %s",
                 run_id,
                 exc,
             )
@@ -1589,8 +1546,14 @@ class ADKRunner(BaseRunner):
                     session_id,
                     "adk",
                     {
-                        "external_session_id": str(session_id),
-                        "internal_session_id": str(session_id),
+                        "external_session_id": str(
+                            binding.get("external_session_id") or session_id
+                        ),
+                        "internal_session_id": str(
+                            binding.get("internal_session_id") or session_id
+                        ),
+                        "native_user_id": str(binding.get("native_user_id") or "ksadk_user"),
+                        "owner_scope_ref": str(binding.get("owner_scope_ref") or ""),
                         "invocation_map": invocation_map,
                     },
                 )
@@ -1752,7 +1715,7 @@ class ADKRunner(BaseRunner):
             metadata=metadata,
         )
         logger.debug(
-            "ADKRunner: wrote checkpoint adk-ckpt-%d at boundary " "(session=%s, invocation_id=%s)",
+            "ADKRunner: wrote checkpoint adk-ckpt-%d at boundary (session=%s, invocation_id=%s)",
             checkpoint_seq,
             session_id,
             adk_invocation_id,
@@ -1793,9 +1756,7 @@ class ADKRunner(BaseRunner):
         persistence_degraded = bool(
             shared_across_pods and getattr(session_service, "degraded", False)
         )
-        platform_resumable = (
-            self._resumable and shared_across_pods and not persistence_degraded
-        )
+        platform_resumable = self._resumable and shared_across_pods and not persistence_degraded
         metadata["is_resumable"] = platform_resumable
         metadata["resume_status"] = "resumable" if platform_resumable else "disabled"
         metadata["backend"] = stm_backend or "in_memory"
@@ -1810,8 +1771,7 @@ class ADKRunner(BaseRunner):
                 self._resume_disabled_reason
                 if not self._resumable and self._resume_disabled_reason
                 else (
-                    "ADK database session persistence was degraded when this checkpoint "
-                    "was written"
+                    "ADK database session persistence was degraded when this checkpoint was written"
                 )
                 if persistence_degraded
                 else "ADK checkpoint uses an in-memory or local-only session backend; "
@@ -1852,7 +1812,7 @@ class ADKRunner(BaseRunner):
             )
         if not adk_invocation_id:
             logger.error(
-                "Resume requested but ADK invocation_id not found for " "session=%s ksadk_inv=%s",
+                "Resume requested but ADK invocation_id not found for session=%s ksadk_inv=%s",
                 session_id,
                 ksadk_invocation_id,
             )
@@ -1869,6 +1829,7 @@ class ADKRunner(BaseRunner):
         *,
         input_data: Dict[str, Any],
         session_id: str,
+        native_user_id: str = "ksadk_user",
         user_input: str,
         is_resume: bool,
         run_config: Optional[Any] = None,
@@ -1898,7 +1859,7 @@ class ADKRunner(BaseRunner):
 
         run_kwargs: Dict[str, Any] = {
             "session_id": session_id,
-            "user_id": "ksadk_user",
+            "user_id": native_user_id,
         }
         if run_config is not None:
             run_kwargs["run_config"] = run_config
@@ -1968,6 +1929,7 @@ class ADKRunner(BaseRunner):
             # Use external session ID if provided
             req_session_id = input_data.get("session_id")
             session_id = await self._ensure_session(req_session_id)
+            native_user_id = self._native_user_for_session(req_session_id)
 
             # 准备 Metadata 并设置 Span Attributes
             # Langfuse Exporter 会读取这些 span attributes
@@ -1982,6 +1944,7 @@ class ADKRunner(BaseRunner):
             wrapped_async = await self._prepare_run_events(
                 input_data=input_data,
                 session_id=session_id,
+                native_user_id=native_user_id,
                 user_input=user_input,
                 is_resume=is_resume,
             )
@@ -2073,6 +2036,7 @@ class ADKRunner(BaseRunner):
             # Use external session ID if provided
             req_session_id = input_data.get("session_id")
             session_id = await self._ensure_session(req_session_id)
+            native_user_id = self._native_user_for_session(req_session_id)
 
             # 准备 Metadata 并设置 Span Attributes
             agent_user_id, tags, _, _ = self._prepare_trace_metadata(session_id)
@@ -2087,6 +2051,7 @@ class ADKRunner(BaseRunner):
             wrapped_async = await self._prepare_run_events(
                 input_data=input_data,
                 session_id=session_id,
+                native_user_id=native_user_id,
                 user_input=user_input,
                 is_resume=is_resume,
                 run_config=run_config,

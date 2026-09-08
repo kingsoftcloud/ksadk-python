@@ -133,7 +133,9 @@ def _path_within_root(path: Path, root: Path) -> bool:
     return resolved == resolved_root or resolved_root in resolved.parents
 
 
-def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
+def resolve_attachment_storage_path(
+    file_uri: str, *, owner_scope_ref: str | None = None
+) -> Optional[Path]:
     normalized_uri = (file_uri or "").strip()
     if not normalized_uri:
         return None
@@ -146,11 +148,17 @@ def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
         if not file_id:
             return None
 
-        restored = AttachmentStorageService().ensure_local_path(normalized_uri)
+        restored = AttachmentStorageService(owner_scope_ref=owner_scope_ref).ensure_local_path(
+            normalized_uri
+        )
         if restored is not None and restored.is_file():
             return restored.resolve()
 
-        uploads_dir = resolve_uploads_dir().resolve()
+        uploads_dir = resolve_uploads_dir()
+        normalized_owner = str(owner_scope_ref or "").strip()
+        if normalized_owner:
+            uploads_dir = uploads_dir / "identities" / normalized_owner
+        uploads_dir = uploads_dir.resolve()
         safe_file_id = Path(file_id).name
         if not safe_file_id:
             return None
@@ -186,8 +194,11 @@ def read_attachment_uri_bytes(
     file_uri: Any,
     *,
     size_limit: Optional[int] = None,
+    owner_scope_ref: str | None = None,
 ) -> Optional[bytes]:
-    storage_path = resolve_attachment_storage_path(str(file_uri or ""))
+    storage_path = resolve_attachment_storage_path(
+        str(file_uri or ""), owner_scope_ref=owner_scope_ref
+    )
     if storage_path is None:
         return None
     return read_attachment_bytes(storage_path, size_limit=size_limit)
@@ -274,7 +285,7 @@ def build_attachment_prompt_text(result: Mapping[str, Any]) -> str:
 
     size_bytes = result.get("size_bytes")
     if size_bytes is not None:
-        return "[上传文件: " f"{display_name}, " f"mime={mime_type}, " f"bytes={size_bytes}]"
+        return f"[上传文件: {display_name}, mime={mime_type}, bytes={size_bytes}]"
 
     return f"[上传文件引用: {display_name}, mime={mime_type}]"
 

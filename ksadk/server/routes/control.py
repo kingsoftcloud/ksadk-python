@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import Any, Optional
 
-from fastapi import HTTPException, Query
+from fastapi import Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ksadk.conversations.run_kinds import (
@@ -19,10 +19,17 @@ from ksadk.conversations.run_kinds import (
     RUN_TRIGGER_CHECKPOINT_RESUME,
 )
 from ksadk.conversations.runtime_payloads import build_responses_payload
+from ksadk.conversations.runtime_persistence import require_conversation_session
 from ksadk.conversations.runtime_streaming import stream_runtime_responses_conversation_turn
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.factory import get_runtime_execution, get_state
 
+from ..invocation_identity import (
+    coerce_trusted_invocation_identity,
+    inject_trusted_invocation_identity,
+    resolve_trusted_invocation_identity,
+)
 from . import dependencies as deps
 from .checkpoint_resolution import _find_session_checkpoint
 from .common import _action_response
@@ -54,6 +61,33 @@ from .streaming import (
 )
 
 
+async def _require_control_session(
+    service: Any,
+    *,
+    session_id: str,
+    agent_id: str | None,
+    user_id: str | None,
+    invocation_identity: PlatformIdentityContext,
+):
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
+    if invocation_identity.is_empty:
+        return await _require_action_session(
+            service,
+            session_id=session_id,
+            agent_id=agent_id,
+            user_id=user_id,
+        )
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="AgentId is required")
+    return await require_conversation_session(
+        agent_id=agent_id,
+        user_id=str(user_id or ""),
+        session_id=session_id,
+        session_service_provider=lambda: service,
+        invocation_identity=invocation_identity,
+    )
+
+
 def _resolve_active_runner() -> Any:
     """Expose the adapter-owned runner for persistence capability probing."""
 
@@ -66,13 +100,18 @@ def _resolve_active_runner() -> Any:
 
 
 @control_router.post("/agentengine/api/v1/GetCheckpointResumePreview")
-async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePreviewActionRequest):
+async def get_checkpoint_resume_preview_action(
+    request: GetCheckpointResumePreviewActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     service = deps.resolve_session_service()
-    await _require_action_session(
+    await _require_control_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
 
     checkpoint = await _find_session_checkpoint(
@@ -123,14 +162,19 @@ async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePrevi
 
 
 @control_router.post("/agentengine/api/v1/ResumeRun")
-async def resume_run_action(request: ResumeRunActionRequest):
+async def resume_run_action(
+    request: ResumeRunActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     executor, launch_context = get_runtime_execution()
     service = deps.resolve_session_service()
-    session = await _require_action_session(
+    session = await _require_control_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
 
     checkpoint = await _find_session_checkpoint(
@@ -201,6 +245,10 @@ async def resume_run_action(request: ResumeRunActionRequest):
         **_metadata_runtime_controls,
         "responses_conversation": True,
     }
+    resume_request_metadata = inject_trusted_invocation_identity(
+        resume_request_metadata,
+        invocation_identity,
+    )
 
     if request.Background:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
@@ -374,9 +422,7 @@ async def _runtime_capability_snapshot(*, force: bool) -> Any:
 
     state = get_state()
     runner = _resolve_active_runner()
-    wait_timeout = max(
-        0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2")
-    )
+    wait_timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
     return await state.persistence_capability.get_snapshot(
         runner=runner,
         framework=_runner_framework(runner),
@@ -430,17 +476,20 @@ async def subscribe_run_events_action(
     AfterSeqId: int = Query(0),
     AgentId: Optional[str] = Query(None),
     UserId: Optional[str] = Query(None),
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
 ):
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     session_id = str(SessionId or "").strip()
     invocation_id = str(InvocationId or "").strip()
     if not session_id or not invocation_id:
         raise HTTPException(status_code=400, detail="SessionId and InvocationId are required")
     service = deps.resolve_session_service()
-    await _require_action_session(
+    await _require_control_session(
         service,
         session_id=session_id,
         agent_id=AgentId,
         user_id=UserId,
+        invocation_identity=invocation_identity,
     )
     if not await _session_contains_invocation(service, session_id, invocation_id):
         raise HTTPException(
@@ -453,6 +502,12 @@ async def subscribe_run_events_action(
         deadline = time.monotonic() + 5 * 60
         last_heartbeat_at = time.monotonic()
         last_terminal_check_at = 0.0
+        if deps.heartbeat_interval() <= 0:
+            # A zero interval explicitly requests an immediate keepalive. Do
+            # this before the first storage poll so a concurrently completed
+            # run cannot make the reconnect response timing-dependent.
+            yield ": heartbeat\n\n"
+            last_heartbeat_at = time.monotonic()
         while True:
             events = await _oldest_unconsumed_session_events(
                 service,

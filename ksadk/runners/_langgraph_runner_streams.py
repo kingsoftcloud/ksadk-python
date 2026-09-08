@@ -57,12 +57,13 @@ class _LangGraphStreamMixin:
             invoke_payload["resume_payload_provided"] = resume_payload_provided
             invoke_payload["resume_interrupt_id"] = resume_interrupt_id
 
-        config = self._get_config(session_id)
+        config = await self._get_session_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
                 config,
                 session_id=session_id,
                 checkpoint_ref=checkpoint_ref,
+                enforce_bound_thread=bool(self._invocation_identity_scope_ref()),
             )
 
         if is_checkpoint_resume:
@@ -219,15 +220,10 @@ class _LangGraphStreamMixin:
                     if not chunk:
                         continue
                     model_call_id = str(event.get("run_id") or "")
-                    if (
-                        model_call_id in model_started_at
-                        and model_call_id not in first_token_seen
-                    ):
+                    if model_call_id in model_started_at and model_call_id not in first_token_seen:
                         reasoning_content = getattr(chunk, "reasoning_content", None)
                         if not reasoning_content and hasattr(chunk, "additional_kwargs"):
-                            reasoning_content = chunk.additional_kwargs.get(
-                                "reasoning_content"
-                            )
+                            reasoning_content = chunk.additional_kwargs.get("reasoning_content")
                         if getattr(chunk, "content", None) or reasoning_content:
                             first_token_seen.add(model_call_id)
                             yield {
@@ -235,8 +231,7 @@ class _LangGraphStreamMixin:
                                 "step_id": f"step_{model_call_id}",
                                 "model_call_id": model_call_id,
                                 "ttft_ms": int(
-                                    (time.monotonic() - model_started_at[model_call_id])
-                                    * 1000
+                                    (time.monotonic() - model_started_at[model_call_id]) * 1000
                                 ),
                             }
                     chunk_usage = self._extract_usage(chunk)
@@ -581,12 +576,13 @@ class _LangGraphStreamMixin:
             context_schema=getattr(self._agent, "context_schema", None),
         )
 
-        config = self._get_config(session_id)
+        config = await self._get_session_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
                 config,
                 session_id=session_id,
                 checkpoint_ref=checkpoint_ref,
+                enforce_bound_thread=bool(self._invocation_identity_scope_ref()),
             )
 
         # --- build state (same logic as stream()) ---
