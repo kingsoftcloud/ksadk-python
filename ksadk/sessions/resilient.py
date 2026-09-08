@@ -50,23 +50,24 @@ class ResilientSessionService(BaseSessionService):
         ] = ContextVar(f"checkpoint_partition_{id(self)}", default=None)
         self._probe_task: asyncio.Task[None] | None = None
 
-    # 委托 primary 的 storage_capabilities——ResilientSessionService 只是容错包装层，
-    # 实际存储能力由 primary 决定（PostgresSessionService / LocalSessionService 都设了
-    # CANONICAL_EVENT_STORAGE_CAPABILITIES）。不委托会继承 BaseSessionService 的空默认，
-    # 导致 _require_storage_capabilities 误报"backend must support atomic seq..."。
     @property
-    def storage_capabilities(self) -> Any:
-        return self.primary.storage_capabilities
+    def canonical_event_service(self) -> BaseSessionService:
+        """Return the single durable authority for canonical runtime facts.
+
+        Legacy session state remains live-first. Canonical event sequences cannot
+        fail over to the independently sequenced fallback without splitting one
+        logical log, so RuntimeEventStore binds directly to the primary service.
+        """
+
+        return self.primary
 
     @property
     def degraded(self) -> bool:
         return not self._primary_enabled
 
     # This service is intentionally live-first and writes two independently
-    # sequenced stores.  Even when both children can atomically bind a local
-    # seq, the wrapper cannot guarantee one shared physical seq/fact across
-    # both writes, so it inherits BaseSessionService's empty canonical storage
-    # capabilities and RuntimeEventStore fails closed before either write.
+    # sequenced stores, so the wrapper itself does not claim canonical storage
+    # capabilities.
 
     async def _call_primary(self, method_name: str, *args: Any, **kwargs: Any) -> tuple[bool, Any]:
         if not self._primary_enabled:
