@@ -20,11 +20,11 @@ from urllib.parse import urlparse
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
+from ksadk.plugins.providers.codex_native import codex_runtime_registry
 from ksadk.runtime import (
     RuntimeExecutor,
     RuntimeLaunchContext,
     RuntimeServices,
-    build_default_runtime_registry,
 )
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.sessions import create_session_service
@@ -302,7 +302,7 @@ class CodexAgentActivation:
         self._bundle = bundle
         self._config = config
         self._session_service = session_service
-        self._executor = RuntimeExecutor(build_default_runtime_registry())
+        self._executor = RuntimeExecutor(codex_runtime_registry())
         self._launch_context = RuntimeLaunchContext(
             runtime_type="codex",
             project_dir=config.project_dir,

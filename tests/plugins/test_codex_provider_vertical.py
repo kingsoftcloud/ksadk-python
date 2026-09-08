@@ -669,3 +669,28 @@ async def test_codex_activation_exposes_and_disposes_kernel_runtime_adapter(
     assert activation.disposed is True
     assert backend.closed == 1
     await host.dispose()
+
+
+@pytest.mark.asyncio
+async def test_provider_native_factory_does_not_reenter_default_runtime_dispatch(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from ksadk.codex.runtime import CodexRuntimeAdapter
+    from ksadk.runtime import factory
+
+    def forbidden_registry():
+        raise AssertionError("Provider recursively entered the top-level runtime dispatcher")
+
+    monkeypatch.setattr(factory, "build_default_runtime_registry", forbidden_registry)
+    registry, profile, host, provider, backend, _service = _setup()
+    bundle = _write_bundle(tmp_path / "bundle", registry, profile)
+    await host.apply(profile)
+    try:
+        activation = await host.open_activation(bundle, activation_key="native-only")
+        adapter = await activation.runtime_adapter()
+        assert isinstance(adapter, CodexRuntimeAdapter)
+        result = await activation.execute({"user_id": "user", "input": "hello"})
+        assert result.session_id
+    finally:
+        await host.dispose()
+    assert provider.runtime.last_activation.disposed
