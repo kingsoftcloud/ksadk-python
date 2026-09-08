@@ -187,12 +187,14 @@ class CodexAgentProviderRuntime:
         codex_client_factory: Callable[..., Any] | None,
         credential_resolver: Any = None,
         runtime_state_root: Path | None = None,
+        local_launch_resolver: Callable[..., RuntimeLaunchContext | None] | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
         self._client_factory = codex_client_factory
         self._credentials = credential_resolver
         self._runtime_state_root = runtime_state_root
+        self._local_launch_resolver = local_launch_resolver
         self._ready = False
         self._disposed = False
         self._last_activation: CodexAgentActivation | None = None
@@ -229,11 +231,16 @@ class CodexAgentProviderRuntime:
         if not self._ready or self._disposed:
             raise PluginHostError("codex_provider_unavailable", "Codex provider is not ready")
         _reject_external_execution(bundle, capabilities)
+        marker = bundle.composition.profile.agent_provider.config.get("studioManifestDigest")
+        launch = self._local_launch_resolver(bundle) if self._local_launch_resolver else None
+        if marker is not None and launch is None:
+            raise PluginHostError("codex_local_build_required", "Local Codex Build is unavailable")
         config = _resolve_bundle_config(
             bundle,
             plugin_id=self._plugin_id,
             credential_resolver=self._credentials,
             runtime_state_root=self._runtime_state_root,
+            local_launch=launch,
         )
         activation = CodexAgentActivation(
             bundle=bundle,
@@ -286,6 +293,7 @@ class CodexAgentProviderFactory:
             codex_client_factory=client_factory,
             credential_resolver=credentials,
             runtime_state_root=runtime_state_root,
+            local_launch_resolver=services.get("codex_local_launch_resolver"),
         )
         return self.runtime
 
@@ -439,7 +447,9 @@ def _reject_external_execution(
 ) -> None:
     del capabilities
     profile_config = bundle.composition.profile.agent_provider.config
-    allowed_config = {"runtimeType", "runtimeVersion"}
+    allowed_config = {
+        "runtimeType", "runtimeVersion", "studioManifestDigest", "studioBuildFingerprint",
+    }
     unsupported_config = sorted(set(profile_config) - allowed_config)
     execution = bundle.resolved_agent_spec.get("execution")
     strategy = (
@@ -466,6 +476,7 @@ def _resolve_bundle_config(
     plugin_id: str,
     credential_resolver: Any,
     runtime_state_root: Path | None,
+    local_launch: RuntimeLaunchContext | None = None,
 ) -> _CodexBundleConfig:
     spec = bundle.resolved_agent_spec
     raw_model = spec.get("model")
@@ -479,6 +490,13 @@ def _resolve_bundle_config(
             "codex_bundle_model_missing", "Bundle resolved Agent spec has no model"
         )
     allowed_models = _resolve_allowed_models(bundle, default_model=model)
+    if local_launch is not None:
+        # The trusted host verified the original Codex manifest referenced by
+        # this Bundle. YAML-only model names may have no Catalog profile IDs.
+        model = str(local_launch.config["model"])
+        allowed_models = tuple(local_launch.config["models"])
+        if not allowed_models or model not in allowed_models:
+            raise PluginHostError("codex_bundle_model_inventory_invalid", "Invalid local models")
     instructions = spec.get("instructions")
     if not isinstance(instructions, Mapping):
         raise PluginHostError(
@@ -510,16 +528,19 @@ def _resolve_bundle_config(
         capabilities.get("mcpServers") or capabilities.get("mcp_servers"),
         credential_resolver=credential_resolver,
     )
-    model_env = _resolve_model_env(
+    # Local Studio has already resolved its original Codex credential policy.
+    # A second, stricter generic Bundle lookup would reject native-auth builds
+    # before their approved launch environment can be applied below.
+    model_env = {} if local_launch is not None else _resolve_model_env(
         raw_model,
         model=model,
         credential_resolver=credential_resolver,
     )
     execution = spec.get("execution")
     execution = execution if isinstance(execution, Mapping) else {}
-    project_dir = _resolve_runtime_workspace(
-        bundle,
-        runtime_state_root=runtime_state_root,
+    project_dir = (
+        local_launch.project_dir if local_launch is not None
+        else _resolve_runtime_workspace(bundle, runtime_state_root=runtime_state_root)
     )
     launch_config: dict[str, Any] = {
         "model": model,
@@ -538,6 +559,11 @@ def _resolve_bundle_config(
         "skills": skills,
         "env": {**mcp_env, **model_env},
     }
+    if local_launch is not None:
+        launch_config.update(local_launch.config)
+    # Local launch compatibility never replaces immutable Bundle Skill bytes.
+    launch_config["skills"] = skills
+    launch_config["enforce_bound_skills"] = True
     return _CodexBundleConfig(
         model=model,
         allowed_models=allowed_models,

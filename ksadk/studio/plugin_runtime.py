@@ -165,6 +165,7 @@ class StudioPluginRuntime:
         provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_capability_service: Any | None = None,
+        codex_local_launch_resolver: Any = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository
@@ -175,6 +176,7 @@ class StudioPluginRuntime:
         self._provider_manifests = dict(provider_manifests or {})
         self._provider_factories = dict(provider_factories or {})
         self._dsh_capability_service = dsh_capability_service
+        self._codex_local_launch_resolver = codex_local_launch_resolver
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
         self._lock = asyncio.Lock()
         self._hosts: dict[str, _HostEntry] = {}
@@ -409,6 +411,7 @@ class StudioPluginRuntime:
                 # Providers resolve credential *references* at activation time.
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
+                "codex_local_launch_resolver": self._codex_local_launch_resolver,
             }
             provider_id, _provider_version = _parse_plugin_ref(
                 verified.composition.profile.agent_provider.ref

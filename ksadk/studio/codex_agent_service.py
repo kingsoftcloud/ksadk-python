@@ -465,6 +465,9 @@ class CodexAgentService:
             "manifestSha256": record.manifest_sha256,
             "runtimeLock": record.runtime_lock,
             "runtimeName": record.runtime_name,
+            "localExecution": record.local_execution,
+            "providerBundle": (record.provider_bundle.model_dump(by_alias=True)
+                               if record.provider_bundle else None),
             "runtimeVersion": record.runtime_version,
             "proxyMode": record.proxy_mode,
         }
@@ -497,6 +500,7 @@ class CodexAgentService:
         revision = self._project(self.studio.codex_manifests.load(resolved_id)).metadata.revision
 
         async def runner(_operation_id: str):
+            await self.studio.start()
             return await asyncio.to_thread(
                 self.studio.codex_builder.build,
                 resolved_id,

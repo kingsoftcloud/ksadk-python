@@ -85,6 +85,7 @@ from ksadk.studio.codex_manifest import (
     CodexManifestRepository,
 )
 from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
+from ksadk.studio.codex_provider_build import CodexProviderBuildManager
 from ksadk.studio.codex_run import CodexRunSpecResolver
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
@@ -231,6 +232,7 @@ class StudioService:
         self.codex_builds = CodexBuildRepository(self.workspace)
         self.codex_drafts = CodexDraftRepository(self.workspace)
         self.codex_plugin_snapshots = CodexPluginSnapshotStore(self.workspace)
+        self.codex_provider_builds = CodexProviderBuildManager(self)
         codex_builder_kwargs = {}
         if codex_runtime_inspector is not None:
             codex_builder_kwargs["runtime_inspector"] = codex_runtime_inspector
@@ -242,6 +244,8 @@ class StudioService:
             draft_repository=self.codex_drafts,
             plugin_snapshot_store=self.codex_plugin_snapshots,
             resource_connections=self.resource_connections,
+            provider_build=self.codex_provider_builds.prepare,
+            provider_validate=self.codex_provider_builds.bundle_root,
             **codex_builder_kwargs,
         )
         self.runtime_executor = runtime_executor or RuntimeExecutor(
@@ -262,6 +266,7 @@ class StudioService:
             resource_catalog=self.catalog,
             draft_repository=self.codex_drafts,
             plugin_snapshot_store=self.codex_plugin_snapshots,
+            provider_bundle_resolver=self.codex_provider_builds.bundle_root,
         )
         self.framework_runs = FrameworkRunSpecResolver(
             self.workspace,
@@ -277,6 +282,7 @@ class StudioService:
             session_service=self.session_service,
             model_client=self.model_client,
             secret_resolver=self.credentials,
+            codex_local_launch_resolver=self.codex_provider_builds.native_launch,
             harness_reasoner=harness_reasoner,
             provider_manifests=provider_manifests,
             provider_factories=provider_factories,

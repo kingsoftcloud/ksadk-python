@@ -494,7 +494,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         context = CodexAdapterContext(run_id=self._event_run_id(handle))
         run_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
         if request is not None and request.config:
-            for key in ("sandbox", "approval_mode", "summary", "collaboration_mode"):
+            for key in ("sandbox", "approval_mode", "summary", "collaboration_mode", "effort"):
                 value = request.config.get(key)
                 if key == "approval_mode" and value == "manual":
                     continue

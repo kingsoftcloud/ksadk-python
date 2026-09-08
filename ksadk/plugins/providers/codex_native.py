@@ -236,7 +236,10 @@ def create_codex_adapter(context: RuntimeLaunchContext) -> RuntimeAdapter:
         client,
         sandbox_read_only=sandbox_read_only,
         turn_timeout_seconds=float(timeout) if timeout is not None else None,
-        turn_projector=CodexTurnProjector(bound_skill_paths=bound_skill_paths),
+        turn_projector=CodexTurnProjector(
+            bound_skill_paths=bound_skill_paths,
+            enforce_bound_skills=bool(config.get("enforce_bound_skills")),
+        ),
         plugin_bootstrap=plugin_bootstrap,
     )
 

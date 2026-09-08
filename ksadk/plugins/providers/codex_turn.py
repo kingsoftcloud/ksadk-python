@@ -19,14 +19,29 @@ from ksadk.runtime.adapter import ResumePayload, StartRequest
 
 
 class CodexTurnProjector:
-    def __init__(self, *, bound_skill_paths: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self, *, bound_skill_paths: Mapping[str, str] | None = None,
+        enforce_bound_skills: bool = False,
+    ) -> None:
         self._skills = dict(bound_skill_paths or {})
+        self._enforce_bound_skills = enforce_bound_skills
         self._closed = False
 
     def prepare(self, request: StartRequest) -> StartRequest:
         """Project admitted native Skill paths without mutating a caller request."""
         self._require_open()
         skills = request.config.get("skills")
+        if self._enforce_bound_skills:
+            if skills is not None and (not isinstance(skills, list) or any(
+                not isinstance(item, dict)
+                or str(item.get("name") or "").strip() not in self._skills
+                for item in skills
+            )):
+                raise ValueError("Codex request contains a Skill absent from the immutable Bundle")
+            return request.model_copy(update={"config": {
+                **request.config,
+                "skills": [{"name": name, "path": path} for name, path in self._skills.items()],
+            }})
         if not self._skills or not isinstance(skills, list):
             return request
         projected = [

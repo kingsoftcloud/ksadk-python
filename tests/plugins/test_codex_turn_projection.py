@@ -109,3 +109,16 @@ async def test_runtime_consumes_injected_projection_without_own_input_policy():
     finally:
         await adapter.close_all()
     assert seen[-1] == "projection closed"
+
+
+def test_provider_projection_rejects_catalog_name_drift_and_pins_all_skills():
+    projector = CodexTurnProjector(
+        bound_skill_paths={"guide": "/locked/guide/SKILL.md"}, enforce_bound_skills=True,
+    )
+    admitted = projector.prepare(request(config={"skills": []}))
+    assert admitted.config["skills"] == [{"name": "guide", "path": "/locked/guide/SKILL.md"}]
+    with pytest.raises(ValueError, match="immutable Bundle"):
+        projector.prepare(request(config={"skills": [{"name": "changed", "path": "/mutable"}]}))
+    empty = CodexTurnProjector(enforce_bound_skills=True)
+    with pytest.raises(ValueError, match="immutable Bundle"):
+        empty.prepare(request(config={"skills": [{"name": "extra", "path": "/mutable"}]}))
