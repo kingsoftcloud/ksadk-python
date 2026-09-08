@@ -10,10 +10,57 @@ async function loadChatProtocol() {
   } catch (error) {
     assert.fail(`chatProtocol.ts must own the Responses stream: ${error.message}`);
   }
+  const conversationUrl = new URL("./conversationProtocol.node.test-bridge.mjs", import.meta.url).href;
+  source = source.replace('from "./conversationProtocol"', `from ${JSON.stringify(conversationUrl)}`);
   const transformed = await transformWithOxc(source, "chatProtocol.ts", { lang: "ts" });
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(transformed.code).toString("base64")}`;
   return import(moduleUrl);
 }
+
+async function loadConversationProtocol() {
+  return import(new URL("./conversationProtocol.node.test-bridge.mjs", import.meta.url).href);
+}
+
+test("decodes optional Runtime v2 goal loop and plan capabilities", async () => {
+  const chat = await loadChatProtocol();
+  const native = { supported: true, mode: "native" };
+  const matrix = chat.decodeCapabilityMatrix({
+    schema_version: 1,
+    cancel: native,
+    pause: native,
+    resume: native,
+    submit_interaction: native,
+    attach: native,
+    steer: native,
+    inject: native,
+    checkpoint: native,
+    durable_restore: native,
+    goal: native,
+    loop: native,
+    plan: native,
+  });
+
+  assert.equal(matrix.goal.supported, true);
+  assert.equal(matrix.loop.mode, "native");
+  assert.equal(matrix.plan.mode, "native");
+
+  const legacyWireMatrix = {
+    schema_version: 1,
+    cancel: native,
+    pause: native,
+    resume: native,
+    submit_interaction: native,
+    attach: native,
+    steer: native,
+    inject: native,
+    checkpoint: native,
+    durable_restore: native,
+  };
+  const legacyMatrix = chat.decodeCapabilityMatrix(legacyWireMatrix);
+  assert.equal(legacyMatrix.goal, undefined);
+  assert.equal(legacyMatrix.loop, undefined);
+  assert.equal(legacyMatrix.plan, undefined);
+});
 
 test("parses fragmented Responses SSE and accumulates reasoning plus output", async () => {
   const chat = await loadChatProtocol();
@@ -36,6 +83,207 @@ test("parses fragmented Responses SSE and accumulates reasoning plus output", as
   assert.deepEqual(state.activities.map(item => [item.kind, item.status, item.title]), [
     ["command", "completed", "rg TODO"],
   ]);
+});
+
+test("keeps Studio Conversation decoding aligned with the frozen defaults and safe projection", async () => {
+  const conversation = await loadConversationProtocol();
+  const minimalSurface = {
+    apiVersion: "conversation.ksadk.io/v1",
+    kind: "ConversationSurface",
+    surfaceId: "surface-1",
+    sessionId: "session-1",
+    providerRef: "provider-1",
+  };
+  assert.deepEqual(conversation.decodeConversationSurface(minimalSurface)?.inputs, []);
+  assert.equal(conversation.decodeConversationSurface({
+    ...minimalSurface,
+    inputs: [{ name: "goal", mode: "unavailable" }],
+  }), null);
+
+  const item = (itemId, sourceEventId, text, visibility = "public") => ({
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId,
+    sourceEventIds: [sourceEventId],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "assistant_text",
+    operation: "append",
+    lifecycle: "streaming",
+    visibility,
+    payloadSchemaRef: "conversation.item.assistant_text/v1",
+    payload: { text },
+  });
+  let state = conversation.createConversationItemState();
+  state = conversation.reduceConversationItem(state, conversation.decodeConversationItem(
+    item("item", "source\u0000tail", "first"),
+  ));
+  state = conversation.reduceConversationItem(state, conversation.decodeConversationItem(
+    item("item\u0000source", "tail", "second"),
+  ));
+  state = conversation.reduceConversationItem(state, conversation.decodeConversationItem(
+    item("internal", "internal-source", "secret", "internal"),
+  ));
+  assert.equal(conversation.projectConversationItems(state).output, "firstsecond");
+});
+
+test("resumes a typed Conversation stream by SSE cursor without replaying item side effects", async () => {
+  const chat = await loadChatProtocol();
+  const encoder = new TextEncoder();
+  const conversationItem = (sourceEventId, text, lifecycle = "streaming", operation = "append") => ({
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId: "answer-1",
+    sourceEventIds: [sourceEventId],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "assistant_text",
+    operation,
+    lifecycle,
+    visibility: "public",
+    payloadSchemaRef: "conversation.item.assistant_text/v1",
+    payload: { text },
+    nativeRef: {},
+  });
+  const frame = (id, type, payload) => `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  let emitted = false;
+  const disconnected = new Response(new ReadableStream({
+    pull(controller) {
+      if (!emitted) {
+        emitted = true;
+        controller.enqueue(encoder.encode(frame(1, "message.delta", {
+          conversationItem: conversationItem("source-1", "hello"),
+        })));
+        return;
+      }
+      return new Promise(resolve => globalThis.setTimeout(() => {
+        controller.error(new Error("connection reset"));
+        resolve();
+      }, 5));
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+
+  let state = chat.createChatStreamState("local", "session-1");
+  const replayCursors = [];
+  const cursor = await chat.consumeConversationStream({
+    initialResponse: disconnected,
+    signal: new AbortController().signal,
+    onEvent(event) { state = chat.reduceChatStreamEvent(state, event); },
+    getRunId: () => state.runId,
+    isTerminal: () => ["completed", "failed", "cancelled"].includes(state.status),
+    replay: async (_runId, after) => {
+      replayCursors.push(after);
+      return new Response([
+        // The server may replay the cursor boundary; item identity must ignore it.
+        frame(1, "message.delta", { conversationItem: conversationItem("source-1", "hello") }),
+        frame(2, "message.delta", { conversationItem: conversationItem("source-2", " world") }),
+        frame(3, "run.completed", {
+          conversationItem: {
+            ...conversationItem("source-3", "", "completed", "completed"),
+            itemId: "run-end",
+            kind: "progress",
+            payloadSchemaRef: "conversation.item.progress/v1",
+            payload: {},
+          },
+        }),
+      ].join(""), { headers: { "Content-Type": "text/event-stream" } });
+    },
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(replayCursors, [1]);
+  assert.equal(cursor, 3);
+  assert.equal(state.output, "hello world");
+  assert.equal(state.status, "completed");
+  assert.deepEqual(state.conversationItems.items.map(item => item.itemId), ["answer-1", "run-end"]);
+});
+
+test("uses the outer run event as terminal authority even when its item was replayed", async () => {
+  const chat = await loadChatProtocol();
+  const progressItem = {
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId: "run-progress",
+    sourceEventIds: ["source-progress"],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "progress",
+    operation: "completed",
+    lifecycle: "completed",
+    visibility: "public",
+    payloadSchemaRef: "conversation.item.progress/v1",
+    payload: {},
+    nativeRef: {},
+  };
+
+  let state = chat.createChatStreamState("local", "session-1");
+  state = chat.reduceChatStreamEvent(state, {
+    type: "message.completed",
+    conversationItem: progressItem,
+  });
+  assert.equal(state.status, "streaming");
+
+  state = chat.reduceChatStreamEvent(state, {
+    type: "run.completed",
+    conversationItem: progressItem,
+  });
+  assert.equal(state.status, "completed");
+});
+
+test("stops typed Conversation reconnect after the explicit retry limit", async () => {
+  const chat = await loadChatProtocol();
+  const initial = new Response(
+    'id: 1\nevent: message.delta\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"answer","sourceEventIds":["source-1"],"sessionId":"session","runId":"run-1","kind":"assistant_text","operation":"append","lifecycle":"streaming","visibility":"public","payloadSchemaRef":"conversation.item.assistant_text/v1","payload":{"text":"partial"},"nativeRef":{}}}\n\n',
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+  let state = chat.createChatStreamState("local", "session");
+  let replayCalls = 0;
+
+  await assert.rejects(
+    chat.consumeConversationStream({
+      initialResponse: initial,
+      signal: new AbortController().signal,
+      onEvent(event) { state = chat.reduceChatStreamEvent(state, event); },
+      getRunId: () => state.runId,
+      isTerminal: () => false,
+      replay: async () => {
+        replayCalls += 1;
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      },
+      maxReconnects: 2,
+      sleep: async () => {},
+    }),
+    /自动续流 2 次后仍未到达终态/,
+  );
+  assert.equal(replayCalls, 2);
+  assert.equal(state.output, "partial");
+});
+
+test("aborts a typed Conversation reconnect while waiting without another replay request", async () => {
+  const chat = await loadChatProtocol();
+  const controller = new AbortController();
+  const initial = new Response(
+    'id: 1\nevent: message.delta\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"answer","sourceEventIds":["source-1"],"sessionId":"session","runId":"run-1","kind":"assistant_text","operation":"append","lifecycle":"streaming","visibility":"public","payloadSchemaRef":"conversation.item.assistant_text/v1","payload":{"text":"partial"},"nativeRef":{}}}\n\n',
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+  let state = chat.createChatStreamState("local", "session");
+  let replayCalls = 0;
+  const waiting = chat.consumeConversationStream({
+    initialResponse: initial,
+    signal: controller.signal,
+    onEvent(event) { state = chat.reduceChatStreamEvent(state, event); },
+    getRunId: () => state.runId,
+    isTerminal: () => false,
+    replay: async () => {
+      replayCalls += 1;
+      return new Response("");
+    },
+    retryDelayMs: () => 60_000,
+  });
+
+  controller.abort();
+  await assert.rejects(waiting, error => error?.name === "AbortError");
+  assert.equal(replayCalls, 0);
 });
 
 test("groups persisted runs into newest-first sessions for one agent", async () => {
@@ -126,6 +374,38 @@ test("reduces streamed A2UI operations and interaction state without React coupl
     name: "approve",
   });
   assert.equal(state.status, "streaming");
+  assert.equal(state.surfaces[0].interaction.status, "resolved");
+});
+
+test("does not let replayed A2UI actions reopen a terminal canonical run", async () => {
+  const chat = await loadChatProtocol();
+  let state = chat.createChatStreamState("resp-a2ui-terminal", "ses-a2ui-terminal");
+  state = chat.reduceChatStreamEvent(state, {
+    type: "a2ui.surface.begin",
+    runId: "run-a2ui-terminal",
+    surfaceId: "surface-1",
+    a2uiOperations: [
+      { version: "v0.9", createSurface: { surfaceId: "surface-1", catalogId: "catalog-1" } },
+    ],
+  });
+  state = chat.reduceChatStreamEvent(state, {
+    type: "a2ui.interaction",
+    runId: "run-a2ui-terminal",
+    surfaceId: "surface-1",
+    interactionId: "form-1",
+    kind: "form",
+  });
+  state = { ...state, status: "completed" };
+
+  state = chat.reduceChatStreamEvent(state, {
+    type: "a2ui.action",
+    runId: "run-a2ui-terminal",
+    surfaceId: "surface-1",
+    interactionId: "form-1",
+    name: "submit",
+  });
+
+  assert.equal(state.status, "completed");
   assert.equal(state.surfaces[0].interaction.status, "resolved");
 });
 
@@ -238,4 +518,94 @@ test("compacts persisted run events into a restrained inspector timeline", async
   assert.equal(timeline[3].detail, "连接成功");
   assert.equal(timeline[4].summary, "4,487 tokens");
   assert.equal(timeline.some(item => item.title === "Run 创建"), false);
+});
+
+test("projects two completed message items without replacing the first item", async () => {
+  const chat = await loadChatProtocol();
+  const twoMessageItemsFixture = [
+    { id: 1, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", operation: "append", text: "fir" } },
+    { id: 2, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", operation: "append", text: "st" } },
+    { id: 3, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", text: "first" } },
+    { id: 4, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "msg-2", partId: "text-0", operation: "append", text: "second" } },
+    { id: 5, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-2", partId: "text-0", text: "second" } },
+  ];
+  const projection = chat.projectRunActivities(twoMessageItemsFixture);
+  assert.deepEqual(projection.textItems.map(item => item.text), ["first", "second"]);
+  assert.deepEqual(projection.textItems.map(item => item.itemId), ["msg-1", "msg-2"]);
+  assert.deepEqual(projection.textItems.map(item => item.completed), [true, true]);
+});
+
+test("keeps identical-text message items as distinct indexed entries", async () => {
+  const chat = await loadChatProtocol();
+  const projection = chat.projectRunActivities([
+    { id: 1, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-a", partId: "text-0", text: "same" } },
+    { id: 2, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-b", partId: "text-0", text: "same" } },
+  ]);
+  assert.equal(projection.textItems.length, 2);
+  assert.deepEqual(projection.textItems.map(item => item.itemId), ["msg-a", "msg-b"]);
+  assert.deepEqual(projection.textItems.map(item => item.text), ["same", "same"]);
+});
+
+test("applies append and replace operations explicitly per item identity", async () => {
+  const chat = await loadChatProtocol();
+  const projection = chat.projectRunActivities([
+    { id: 1, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "m1", partId: "text-0", operation: "append", text: "hello " } },
+    { id: 2, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "m1", partId: "text-0", operation: "append", text: "world" } },
+    { id: 3, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "m1", partId: "text-0", operation: "replace", text: "rewritten" } },
+  ]);
+  assert.equal(projection.textItems.length, 1);
+  assert.equal(projection.textItems[0].text, "rewritten");
+  assert.equal(projection.textItems[0].completed, false);
+});
+
+test("derives aggregate output from terminal output refs, not per-run accumulation", async () => {
+  const chat = await loadChatProtocol();
+  const projection = chat.projectRunActivities([
+    { id: 1, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", text: "alpha" } },
+    { id: 2, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-2", partId: "text-0", text: "beta" } },
+    { id: 3, type: "run.completed", data: { runtimeEvent: { output_refs: [
+      { scope_id: "s1", item_id: "msg-2", part_id: null },
+      { scope_id: "s1", item_id: "msg-1", part_id: null },
+    ] } } },
+  ]);
+  assert.equal(projection.output, "beta\n\nalpha");
+});
+
+test("replays the cross-language golden projection fixture into item-aware text items", async () => {
+  const chat = await loadChatProtocol();
+  const fixtureUrl = new URL("../../../../tests/events/fixtures/runtime_projection_golden.json", import.meta.url);
+  const golden = JSON.parse(await readFile(fixtureUrl, "utf8"));
+
+  // Map the canonical golden events into Studio's persisted event view (text + terminal refs only).
+  const studioEvents = [];
+  for (const event of golden.events) {
+    const identity = { runId: event.run_id, scopeId: event.scope_id, itemId: event.item_id };
+    if (event.event_type === "item.updated" && (event.item_kind === "message" || event.item_kind === "reasoning")) {
+      studioEvents.push({
+        id: event.seq,
+        type: event.item_kind === "reasoning" ? "thinking.delta" : "message.delta",
+        data: { ...identity, partId: event.update?.part_id, operation: event.op, text: event.update?.text || "" },
+      });
+    } else if (event.event_type === "item.completed" && (event.item_kind === "message" || event.item_kind === "reasoning")) {
+      const part = (event.snapshot?.parts || []).find(p => p.content_type === "text") || {};
+      studioEvents.push({
+        id: event.seq,
+        type: event.item_kind === "reasoning" ? "thinking.completed" : "message.completed",
+        data: { ...identity, partId: part.part_id, text: part.text || "" },
+      });
+    } else if (event.event_type === "run.completed") {
+      studioEvents.push({ id: event.seq, type: "run.completed", data: { runtimeEvent: event } });
+    }
+  }
+
+  const projection = chat.projectRunActivities(studioEvents);
+  const messages = projection.textItems.filter(item => item.kind === "message");
+  // Two distinct message items carry identical text and must not collapse into one.
+  assert.deepEqual(messages.map(item => item.itemId), ["msg-legal-1", "msg-legal-2"]);
+  assert.deepEqual(messages.map(item => item.text), ["The answer is 42.", "The answer is 42."]);
+  assert.deepEqual(messages.map(item => item.completed), [true, true]);
+  const reasoning = projection.textItems.find(item => item.kind === "thinking");
+  assert.equal(reasoning.text, "Analyzing the question...");
+  // Aggregate output comes from the terminal output_refs order.
+  assert.equal(projection.output, "The answer is 42.\n\nThe answer is 42.");
 });

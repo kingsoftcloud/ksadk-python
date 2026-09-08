@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "conversation.ksadk.io/v1",
+      "default": "conversation.ksadk.io/v1",
+      "type": "string"
+    },
+    "kindVersion": {"const": 1, "default": 1, "type": "integer"},
+    "itemId": {"maxLength": 512, "minLength": 1, "type": "string"},
+    "parentItemId": {
+      "anyOf": [
+        {"maxLength": 512, "minLength": 1, "type": "string"},
+        {"type": "null"}
+      ],
+      "default": null
+    },
+    "sourceEventIds": {
+      "items": {"type": "string"},
+      "minItems": 1,
+      "type": "array"
+    },
+    "sessionId": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "runId": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "kind": {
+      "enum": [
+        "user_message", "assistant_text", "reasoning", "tool_call",
+        "approval", "progress", "plan", "goal", "artifact", "a2ui",
+        "error", "unknown"
+      ],
+      "type": "string"
+    },
+    "operation": {"enum": ["append", "replace", "completed"], "type": "string"},
+    "lifecycle": {
+      "enum": ["pending", "streaming", "completed", "failed"],
+      "type": "string"
+    },
+    "visibility": {
+      "default": "public",
+      "enum": ["public", "internal", "hidden"],
+      "type": "string"
+    },
+    "payloadSchemaRef": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "payload": {"additionalProperties": true, "type": "object"},
+    "capabilityRef": {
+      "anyOf": [{"maxLength": 256, "type": "string"}, {"type": "null"}],
+      "default": null
+    },
+    "nativeRef": {"additionalProperties": true, "type": "object"}
+  },
+  "required": [
+    "itemId", "sourceEventIds", "sessionId", "runId", "kind", "operation",
+    "lifecycle", "payloadSchemaRef"
+  ],
+  "title": "ConversationItem",
+  "type": "object"
+}

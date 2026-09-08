@@ -15,6 +15,13 @@ test("create page uses shared React primitives for previews and summary overlay"
   assert.doesNotMatch(source, /wizard-summary-backdrop/);
 });
 
+test("conversation authoring uses the shared aligned fields and state-aware Draft rail", () => {
+  assert.match(source, /<FormField\s+label="生成模型 Profile"/);
+  assert.match(source, /<FormField\s+label="Agent 可用模型"/);
+  assert.match(source, /data-draft-state=\{/);
+  assert.doesNotMatch(source, /<div className="field authoring-model-field">/);
+});
+
 test("agent source previews use the shared highlighted code viewer", () => {
   assert.match(editorSource, /<CodeViewer[\s\S]*language="yaml"/);
   assert.doesNotMatch(editorSource, /<pre>\{manifest\}<\/pre>/);

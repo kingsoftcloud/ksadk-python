@@ -1,0 +1,30 @@
+{
+  "title": "Capability Guides",
+  "pages": [
+    "---[Monitor]Studio and Local Development---",
+    "agentkit-local-studio",
+    "local-web-ui",
+    "evaluation-observability",
+    "frameworks",
+    "---[Blocks]Harness and Plugins---",
+    "runtime-architecture",
+    "harness-app",
+    "plugins-and-automations",
+    "tools-and-skill-runtime",
+    "agent-context",
+    "memory-knowledge",
+    "attachments-multimodal",
+    "workspace-files",
+    "---[Network]Events and Interoperability---",
+    "hosted-ui-events",
+    "a2a-runtime",
+    "---[Cloud]Build and Deploy---",
+    "managed-runtime",
+    "build-and-package",
+    "cloud-deployment",
+    "runtime-products",
+    "---[Wrench]Operations and Maintenance---",
+    "observability-tracing",
+    "web-ui-source"
+  ]
+}

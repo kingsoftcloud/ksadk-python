@@ -81,9 +81,12 @@ export const settingsSchema = z.object({
   sandbox: z.enum(["read-only", "read_only", "workspace-write", "workspace-write-auto", "full-access"]),
   buildAfterCreate: z.boolean(),
   codexProxy: z.enum(["auto", "forced", "direct"]),
-  cloudAccessKey: z.string().max(1024, "Access Key 不能超过 1024 个字符").default(""),
-  cloudSecretKey: z.string().max(4096, "Secret Key 不能超过 4096 个字符").default(""),
   cloudRegion: z.string().trim().max(128, "Region 不能超过 128 个字符").default(""),
+  cloudBucket: z.string().trim().max(128, "KS3 Bucket 不能超过 128 个字符").default(""),
+  // 云账号 AK/SK/AccountID:留空 = 不修改已保存值(后端按增量合并)
+  cloudAccessKey: z.string().trim().max(256, "Access Key 不能超过 256 个字符").default(""),
+  cloudSecretKey: z.string().trim().max(256, "Secret Key 不能超过 256 个字符").default(""),
+  cloudAccountId: z.string().trim().max(128, "Account ID 不能超过 128 个字符").default(""),
 });
 
 export type ModelProfileFormValues = z.infer<typeof modelProfileSchema>;

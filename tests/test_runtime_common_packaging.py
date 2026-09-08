@@ -158,7 +158,7 @@ def test_built_wheel_includes_react_studio_static_entrypoint():
         studio_index = archive.read("ksadk/studio/static/index.html").decode("utf-8")
 
     assert '<div id="root"></div>' in studio_index
-    assert '/static/assets/' in studio_index
+    assert "/static/assets/" in studio_index
     assert "ksadk/studio/static/shared-chat.css" not in names
     assert any(name.startswith("ksadk/studio/static/assets/") for name in names)
 
@@ -179,18 +179,30 @@ def test_release_build_generates_ignored_react_studio_static_assets():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "ksadk/studio/static/**" in gitignore
-    tracked_static_files = subprocess.run(
-        ["git", "ls-files", "ksadk/studio/static"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    assert tracked_static_files == []
+    studio_source = REPO_ROOT / "ksadk/studio/react-ui"
+    if studio_source.exists():
+        tracked_static_files = subprocess.run(
+            ["git", "ls-files", "ksadk/studio/static"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        assert tracked_static_files == []
+    else:
+        assert (REPO_ROOT / "ksadk/studio/static/index.html").is_file()
+        assert any((REPO_ROOT / "ksadk/studio/static/assets").iterdir())
     assert "STUDIO_REACT_DIR := ksadk/studio/react-ui" in makefile
     assert "STUDIO_STATIC_DIR := ksadk/studio/static" in makefile
     target = makefile.split("build-studio-static:\n", 1)[1].split("\n\n", 1)[0]
-    assert 'npm --prefix "$(STUDIO_REACT_DIR)" ci' in target
+    assert "set -eu" in target
+    assert '$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci' in target
+    assert 'WEB_TARBALL_PATH="$(KSADK_WEB_TARBALL)"' in target
+    assert (
+        '$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install '
+        '--no-save --package-lock=false "$$WEB_TARBALL_PATH"' in target
+    )
+    assert 'cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name"' not in target
     assert 'npm --prefix "$(STUDIO_REACT_DIR)" run build' in target
     assert '$(STUDIO_STATIC_DIR)/index.html' in target
     build_target = makefile.split("build: check-build-deps", 1)[1].split("\n", 1)[0]
@@ -250,8 +262,12 @@ def test_react_is_the_only_studio_frontend_source_tree():
 
     assert not (studio_root / "web").exists()
     assert not (studio_root / "static-react").exists()
-    assert (studio_root / "react-ui/src/main.tsx").is_file()
-    assert (studio_root / "react-ui/src/studio.css").is_file()
+    if (studio_root / "react-ui").exists():
+        assert (studio_root / "react-ui/src/main.tsx").is_file()
+        assert (studio_root / "react-ui/src/studio.css").is_file()
+    else:
+        assert not (studio_root / "react-ui").exists()
+        assert (studio_root / "static/index.html").is_file()
 
 
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
@@ -264,6 +280,18 @@ def test_pyproject_declares_python_socks_for_openclaw_gateway_proxy_support():
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "python-socks>=2.7.1,<3.0.0" in pyproject
+
+
+def test_pyproject_declares_tomli_for_python310_plugin_package_parsing():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    requirements = [Requirement(item) for item in project["dependencies"]]
+    tomli = next(item for item in requirements if item.name == "tomli")
+
+    assert str(tomli.specifier) == ">=2.0.0"
+    assert tomli.marker is not None
+    assert str(tomli.marker) == 'python_version < "3.11"'
 
 
 def test_pyproject_declares_kingsoftcloud_sdk_as_default_dependency():
@@ -290,8 +318,9 @@ def test_pyproject_declares_validated_framework_dependency_windows():
     optional_dependencies = pyproject["project"]["optional-dependencies"]
 
     assert "fastapi>=0.100.0,<1.0.0" in dependencies
-    # goal-00: ADK 窗口放宽为 1.34.x 至 <3.0(支持 1.x 与 2.x)
-    assert "google-adk>=1.34.0,<3.0.0" in optional_dependencies["adk"]
+    # Studio 是基础入口；ADK 本体必须随基础包安装，额外生成依赖仍保持在 [adk]。
+    assert "google-adk>=1.34.0,<3.0.0" in dependencies
+    assert any(item.startswith("litellm>=") for item in optional_dependencies["adk"])
     # LangChain 生态下限锚定本地已验证版本(不降级,<2.0 守 1.x 稳定线)
     assert "langchain>=1.3.14,<2.0.0" in dependencies
     assert "langchain-core>=1.5.0,<2.0.0" in dependencies
@@ -323,7 +352,8 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
         )
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
 
-    assert metadata["Version"] == "0.8.1"
+    from ksadk.version import VERSION
+    assert metadata["Version"] == VERSION
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
     assert all(
         requirement.name != "langchain-openai" or requirement.marker is not None

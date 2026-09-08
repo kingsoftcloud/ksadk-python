@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, Bot } from "lucide-react";
+import { Plus, Search, Bot, Trash2 } from "lucide-react";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { MoreActionsMenu } from "../components/MoreActionsMenu";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import {
   StudioDataTable,
   type StudioDataColumn,
@@ -15,9 +17,16 @@ interface AgentItem {
   builds?: Array<{ id: string; status: string }>;
 }
 
-export function AgentsPage({ agents, runtimeReady, workspaceName, onCreate, onDetail, onChat, onBuild, onChanged }: {
+function isDeclarativeAgent(agent: AgentItem): boolean {
+  // The Studio-owned Codex runtime is deployed as a ManagedRuntime: its
+  // delivery record fingerprints YAML, it is not a user code bundle.
+  return agent.spec?.runtime?.type === "codex";
+}
+
+export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, workspaceName, onCreate, onDetail, onChat, onBuild, onChanged }: {
   agents: AgentItem[];
   runtimeReady: boolean;
+  runtimeChecked?: boolean;
   workspaceName: string;
   onCreate: () => void;
   onDetail: (id: string) => void;
@@ -66,7 +75,9 @@ export function AgentsPage({ agents, runtimeReady, workspaceName, onCreate, onDe
     {
       id: "agent",
       header: "Agent",
-      minWidth: 260,
+      minWidth: 220,
+      className: "agent-name-column",
+      headerClassName: "agent-name-column",
       cell: agent => {
         const template = agent.metadata.labels?.["agentkit.ksyun.com/template"] || "blank";
         return (
@@ -82,20 +93,23 @@ export function AgentsPage({ agents, runtimeReady, workspaceName, onCreate, onDe
     },
     {
       id: "template",
-      header: "模板",
-      minWidth: 150,
+      header: "运行时",
+      minWidth: 100,
+      className: "agent-runtime-column",
+      headerClassName: "agent-runtime-column",
       cell: agent => {
-        const template = agent.metadata.labels?.["agentkit.ksyun.com/template"] || "blank";
         const runtimeType = agent.spec?.runtime?.type
           || agent.metadata.labels?.["agentkit.ksyun.com/framework"]
           || "adk";
-        return <><span className="status-badge neutral">{runtimeType}</span> <span className="meta-inline">{template === "research" ? "Research" : "Blank"}</span></>;
+        return <span className="tag mono">{runtimeType}</span>;
       },
     },
     {
       id: "capabilities",
       header: "能力",
-      minWidth: 210,
+      minWidth: 170,
+      className: "agent-capabilities-column",
+      headerClassName: "agent-capabilities-column",
       cell: agent => {
         const bindings = agent.spec?.bindings || {};
         return (
@@ -107,31 +121,46 @@ export function AgentsPage({ agents, runtimeReady, workspaceName, onCreate, onDe
         );
       },
     },
-    { id: "revision", header: "Revision", width: 100, cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
+    { id: "revision", header: "Revision", width: 84, className: "agent-revision-column", headerClassName: "agent-revision-column", cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
     {
       id: "build",
-      header: "最近构建",
-      width: 120,
+      header: "最近校验 / 构建",
+      width: 108,
+      className: "agent-build-column",
+      headerClassName: "agent-build-column",
       cell: agent => agent.builds?.some(build => build.status === "SUCCEEDED")
-        ? <span className="status-badge success">已构建</span>
-        : <span className="status-badge neutral">草稿</span>,
+        ? <span className="badge" data-state="ready">{isDeclarativeAgent(agent) ? "声明已校验" : "已构建"}</span>
+        : <span className="badge" data-state="idle">草稿</span>,
     },
     {
       id: "actions",
       header: "操作",
-      minWidth: 300,
-      className: "actions-column",
-      headerClassName: "actions-column",
+      minWidth: 108,
+      className: "actions-column agent-actions-column",
+      headerClassName: "actions-column agent-actions-column",
       cell: agent => (
-        <>
-          <button className="button tertiary small" type="button" onClick={() => onDetail(agent.metadata.id)}>配置</button>
-          <button className="button tertiary small" type="button" onClick={() => onDetail(agent.metadata.id)}>编辑</button>
+        <div className="row-actions">
           <button className="button secondary small" type="button" onClick={() => onChat(agent.metadata.id)}>会话</button>
-          <button className="button danger small" type="button" onClick={() => setPendingDelete(agent)}>删除</button>
-        </>
+          <MoreActionsMenu
+            label={`${agent.metadata.name} 的更多操作`}
+            items={[
+              { label: "配置", onSelect: () => onDetail(agent.metadata.id) },
+              { label: isDeclarativeAgent(agent) ? "校验声明" : "构建", onSelect: onBuild },
+            ]}
+          />
+          <button
+            className="icon-button danger-ghost"
+            type="button"
+            aria-label={`删除 ${agent.metadata.name}`}
+            title="删除"
+            onClick={() => setPendingDelete(agent)}
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
       ),
     },
-  ], [onChat, onDetail]);
+  ], [onBuild, onChat, onDetail]);
 
   async function confirmDelete() {
     if (!pendingDelete) return;
@@ -152,72 +181,81 @@ export function AgentsPage({ agents, runtimeReady, workspaceName, onCreate, onDe
   }
 
   return (
-    <div className="page-container" data-layout="data" data-scroll-mode="data">
-      <header className="page-header">
-        <div>
-          <h1>Agent</h1>
-          <p>创建、配置和运行本地 Agent，同一 Bundle 可直接部署至云端。</p>
-        </div>
+    <div className="page-container agents-page" data-layout="data">
+      <PageHeaderActions>
         <button className="button accent" type="button" disabled={!runtimeReady} onClick={onCreate}>
           <Plus size={16} /><span>创建 Agent</span>
         </button>
-      </header>
+      </PageHeaderActions>
 
       <div className="data-page-body table-data-body">
         {actionError && <div className="form-error" style={{ marginBottom: 16 }}>{actionError}</div>}
 
-        <div className="overview-strip">
-        <div className="overview-item"><span>Agent</span><strong>{agents.length}</strong><small>当前工作区</small></div>
-        <div className="overview-item"><span>可用模型</span><strong>{models}</strong><small>Model Profile</small></div>
-        <div className="overview-item"><span>能力资源</span><strong>{capabilities}</strong><small>Tool · MCP · Skill</small></div>
-        <div className="overview-item environment-overview">
-          <span>运行环境</span>
-          <strong><span className={`status-dot ${runtimeReady ? "success" : "warning"}`} /><span>{runtimeReady ? "运行正常" : "正在连接"}</span></strong>
-          <small>{runtimeReady ? workspaceName || "本地构建与运行" : "正在连接本地工作区"}</small>
-        </div>
-        </div>
-
-        <section className="content-section">
-        <div className="section-toolbar">
-          <div className="search-field">
-            <Search size={15} />
-            <input type="search" placeholder="搜索 Agent 名称或 ID" aria-label="搜索 Agent" value={query} onChange={e => setQuery(e.target.value)} />
+        <section className="agents-overview-section" aria-labelledby="agents-overview-title" title={workspaceName || "本地工作区"}>
+          <h2 id="agents-overview-title" className="sr-only">工作区概览</h2>
+          <div className="stat-strip compact-summary">
+            <div><span className="stat-label">Agent</span><strong className="stat-value">{agents.length}</strong></div>
+            <div><span className="stat-label">可用模型</span><strong className="stat-value">{models}</strong></div>
+            <div><span className="stat-label">能力资源</span><strong className="stat-value">{capabilities}</strong></div>
+            <div className="runtime-summary" data-state={!runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed"}>
+              <span className="stat-label">本地 Runtime</span>
+              <strong className="stat-value"><span className="summary-status-dot" />{!runtimeChecked ? "检查中" : runtimeReady ? "正常" : "连接失败"}</strong>
+            </div>
           </div>
-          <StudioSelect
-            className="compact-select"
-            ariaLabel="筛选 Agent 状态"
-            value={statusFilter || "__all__"}
-            options={[
-              { value: "__all__", label: "全部状态" },
-              { value: "built", label: "已构建" },
-              { value: "draft", label: "草稿" },
-            ]}
-            onValueChange={value => setStatusFilter(value === "__all__" ? "" : value)}
+          {runtimeChecked && !runtimeReady && (
+            <div className="compact-status-alert" role="alert">
+              <strong>本地 Runtime 连接失败</strong>
+              <span>请确认本地服务正在运行，然后刷新页面。</span>
+            </div>
+          )}
+        </section>
+
+        <section className="agents-catalog-section block" aria-labelledby="agents-catalog-title">
+          <header className="agents-catalog-header">
+            <h2 id="agents-catalog-title">Agent 列表</h2>
+            <div className="agents-catalog-meta">
+              <span>{filtered.length === agents.length ? `${agents.length} 个 Agent` : `${filtered.length} / ${agents.length} 个 Agent`}</span>
+              <span className="sync-state">已同步</span>
+            </div>
+          </header>
+          <div className="section-toolbar">
+            <div className="search-field">
+              <Search size={15} />
+              <input type="search" placeholder="搜索 Agent 名称或 ID" aria-label="搜索 Agent" value={query} onChange={e => setQuery(e.target.value)} />
+            </div>
+            <StudioSelect
+              className="compact-select"
+              ariaLabel="筛选 Agent 状态"
+              value={statusFilter || "__all__"}
+              options={[
+                { value: "__all__", label: "全部状态" },
+                { value: "built", label: "已构建" },
+                { value: "draft", label: "草稿" },
+              ]}
+              onValueChange={value => setStatusFilter(value === "__all__" ? "" : value)}
+            />
+          </div>
+          <StudioDataTable
+            columns={columns}
+            data={filtered}
+            getRowId={agent => agent.metadata.id}
+            caption="Agent 列表"
+            minWidth={0}
+            onRowActivate={agent => onDetail(agent.metadata.id)}
+            rowAriaLabel={agent => `${agent.metadata.name} ${agent.metadata.id}`}
+            empty={{
+              icon: <Bot size={24} />,
+              title: query || statusFilter ? "没有匹配的 Agent" : "还没有 Agent",
+              description: query || statusFilter
+                ? "调整搜索词或状态筛选。"
+                : "创建第一个可运行的 Agent。",
+              action: !query && !statusFilter ? (
+                <button className="button accent" type="button" onClick={onCreate}>
+                  <Plus size={16} /><span>创建 Agent</span>
+                </button>
+              ) : undefined,
+            }}
           />
-          <div className="toolbar-spacer" />
-          <span className="sync-state">已同步</span>
-        </div>
-        <StudioDataTable
-          columns={columns}
-          data={filtered}
-          getRowId={agent => agent.metadata.id}
-          caption="Agent 列表"
-          minWidth={1120}
-          onRowActivate={agent => onDetail(agent.metadata.id)}
-          rowAriaLabel={agent => `${agent.metadata.name} ${agent.metadata.id}`}
-          empty={{
-            icon: <Bot size={24} />,
-            title: query || statusFilter ? "没有匹配的 Agent" : "还没有 Agent",
-            description: query || statusFilter
-              ? "调整搜索词或状态筛选后重试。"
-              : "输入系统提示词并选择所需能力，创建第一个可在本地运行和构建的 Agent。",
-            action: !query && !statusFilter ? (
-              <button className="button accent" type="button" onClick={onCreate}>
-                <Plus size={16} /><span>创建 Agent</span>
-              </button>
-            ) : undefined,
-          }}
-        />
         </section>
       </div>
 

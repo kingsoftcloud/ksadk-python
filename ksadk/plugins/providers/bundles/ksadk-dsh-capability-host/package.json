@@ -1,0 +1,27 @@
+{
+  "name": "@kingsoftcloud/ksadk-dsh-capability-host",
+  "version": "1.0.0",
+  "description": "Profile-level Cordis tools to authenticated Streamable HTTP MCP bridge",
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml",
+      "integrity": "sha256:f86cf2b66269b7b0a61e432f6a5896fb2d148def4287ff5202038bd36e12235e"
+    }
+  }
+}

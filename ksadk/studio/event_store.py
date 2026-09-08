@@ -1,4 +1,4 @@
-"""Persistent local Run and Event store."""
+"""Persistent local Run record store and derived trace access."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import Any
 
 from pydantic import ValidationError
 
-from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus
+from ksadk.studio.contracts import RunEvent, RunRecord
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.otel_trace import OtlpTraceStore
 from ksadk.studio.workspace import Workspace
@@ -28,40 +28,94 @@ class RunEventStore:
         path = self._path(record.id)
         if path.exists():
             raise StudioError("RUN_ALREADY_EXISTS", "Run 已存在", status_code=409)
-        self._write(record, [])
+        self._write(record)
         return record
 
     def save(self, record: RunRecord) -> RunRecord:
         _, events = self._read(record.id)
-        self._write(record, events)
+        self._write(record, events or None)
         return record
 
     def append(self, run_id: str, event_type: str, data: dict) -> RunEvent:
-        record, events = self._read(run_id)
-        event = RunEvent(
-            id=len(events) + 1,
-            run_id=run_id,
-            type=event_type,
-            data=data,
-        )
-        events.append(event)
-        self._write(record, events)
-        return event
+        """Persist a Studio lifecycle RunEvent (run.created, memory.recall.projected, …).
 
-    def get(self, run_id: str) -> RunRecord:
-        record, _ = self._read(run_id)
-        return record
+        These Studio-level events (as opposed to RuntimeEvents) are durably
+        stored in the run JSON so the Studio events timeline survives restarts.
+        Runs that never call ``append`` keep ``set(run_payload) == {"record"}``.
+        """
+        return self.append_many(run_id, [(event_type, data)])[0]
+
+    def append_many(
+        self,
+        run_id: str,
+        entries: list[tuple[str, dict[str, Any]]],
+    ) -> list[RunEvent]:
+        """Persist one logical Studio transition with a single file replace."""
+        record, events = self._read(run_id)
+        appended: list[RunEvent] = []
+        for event_type, data in entries:
+            event = RunEvent(
+                id=len(events) + 1,
+                run_id=run_id,
+                type=event_type,
+                data=data,
+            )
+            events.append(event)
+            appended.append(event)
+        if appended:
+            self._write(record, events)
+        return appended
+
+    def append_interaction_resolution(
+        self,
+        run_id: str,
+        *,
+        resolved_type: str,
+        resolved_data: dict[str, Any],
+        action_data: dict[str, Any],
+    ) -> tuple[RunEvent, RunEvent, dict[str, Any]]:
+        """Atomically persist a terminal interaction and its replay receipt."""
+        record, events = self._read(run_id)
+        resolution_event_id = len(events) + 1
+        action_event_id = resolution_event_id + 1
+        receipt = {
+            "runId": run_id,
+            "interactionId": str(action_data.get("interactionId") or ""),
+            "status": "resolved",
+            "revision": int(action_data.get("revision") or 0),
+            "resolutionEventId": resolution_event_id,
+            "eventId": action_event_id,
+        }
+        resolved = RunEvent(
+            id=resolution_event_id,
+            run_id=run_id,
+            type=resolved_type,
+            data=resolved_data,
+        )
+        action = RunEvent(
+            id=action_event_id,
+            run_id=run_id,
+            type="a2ui.action",
+            data={**action_data, "receipt": receipt},
+        )
+        events.extend((resolved, action))
+        self._write(record, events)
+        return resolved, action, receipt
 
     def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
         _, events = self._read(run_id)
         return [event for event in events if event.id > after]
+
+    def get(self, run_id: str) -> RunRecord:
+        record, _ = self._read(run_id)
+        return record
 
     def list_runs(
         self,
         *,
         session_id: str | None = None,
         agent_id: str | None = None,
-    ) -> List[RunRecord]:
+    ) -> list[RunRecord]:
         records: list[RunRecord] = []
         directory = self.workspace.resolve(".agentkit/runs")
         for path in sorted(directory.glob("run_*.json")):
@@ -126,82 +180,6 @@ class RunEventStore:
             deleted += 1
         return deleted
 
-    def recover_interrupted(self) -> int:
-        """Reconcile non-terminal records left behind by a stopped Studio.
-
-        Events are persisted before the final RunRecord update.  A browser
-        disconnect or process stop can therefore leave a terminal event next
-        to a stale ``RUNNING`` record.  On startup the event log wins; a run
-        without any terminal event is explicitly marked interrupted because
-        its in-memory runtime task cannot survive a Studio restart.
-        """
-
-        recovered = 0
-        for record in self.list_runs():
-            if record.status not in {
-                RunStatus.CREATED,
-                RunStatus.RUNNING,
-                RunStatus.PAUSED,
-                RunStatus.WAITING_INPUT,
-            }:
-                continue
-            events = self.events(record.id)
-            terminal = next(
-                (
-                    event
-                    for event in reversed(events)
-                    if event.type
-                    in {
-                        "run.completed",
-                        "run.failed",
-                        "run.cancelled",
-                        "run.interrupted",
-                    }
-                ),
-                None,
-            )
-            if terminal is None:
-                terminal = self.append(
-                    record.id,
-                    "run.interrupted",
-                    {
-                        "status": "interrupted",
-                        "reason": "studio_restarted",
-                    },
-                )
-
-            if terminal.type == "run.completed":
-                record.status = RunStatus.COMPLETED
-                record.error = None
-            elif terminal.type == "run.failed":
-                record.status = RunStatus.FAILED
-                record.error = {
-                    "code": "RUNTIME_RUN_FAILED",
-                    "message": str(
-                        terminal.data.get("error")
-                        or terminal.data.get("message")
-                        or "Agent 运行失败"
-                    ),
-                }
-            elif terminal.type == "run.cancelled":
-                record.status = RunStatus.CANCELLED
-                record.error = {"code": "RUN_CANCELLED", "message": "运行已取消"}
-            else:
-                record.status = RunStatus.INTERRUPTED
-                record.error = {
-                    "code": "RUN_INTERRUPTED",
-                    "message": "Studio 重启后无法重新 attach 上一次本地运行",
-                }
-            record.completed_at = terminal.created_at
-            if record.started_at is not None:
-                record.duration_ms = max(
-                    0,
-                    int((record.completed_at - record.started_at).total_seconds() * 1000),
-                )
-            self.save(record)
-            recovered += 1
-        return recovered
-
     def trace(self, trace_id: str) -> dict:
         return self.trace_store.get_trace_view(trace_id)
 
@@ -253,14 +231,14 @@ class RunEventStore:
             status=status,
         )
 
-    def _read(self, run_id: str) -> tuple[RunRecord, List[RunEvent]]:
+    def _read(self, run_id: str) -> tuple[RunRecord, list[RunEvent]]:
         path = self._path(run_id)
         if not path.is_file():
             raise not_found("run", run_id)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             record = RunRecord.model_validate(payload["record"])
-            events = [RunEvent.model_validate(item) for item in payload["events"]]
+            events = [RunEvent.model_validate(item) for item in payload.get("events", [])]
             return record, events
         except (OSError, ValueError, KeyError, ValidationError) as exc:
             raise StudioError(
@@ -270,15 +248,15 @@ class RunEventStore:
                 details={"id": run_id},
             ) from exc
 
-    def _write(self, record: RunRecord, events: List[RunEvent]) -> None:
-        payload = {
-            "record": record.model_dump(by_alias=True, exclude_none=True, mode="json"),
-            "events": [
-                event.model_dump(by_alias=True, exclude_none=True, mode="json") for event in events
-            ],
+    def _write(self, record: RunRecord, events: list[RunEvent] | None = None) -> None:
+        payload: dict[str, Any] = {
+            "record": record.model_dump(by_alias=True, exclude_none=True, mode="json")
         }
+        if events is not None:
+            payload["events"] = [
+                event.model_dump(by_alias=True, exclude_none=True, mode="json") for event in events
+            ]
         self.workspace.atomic_write_text(
             self._path(record.id),
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         )
-        self.trace_store.sync(record, events)

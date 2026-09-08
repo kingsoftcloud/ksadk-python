@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/scheduler/v1/schedule-occurrence.schema.json",
+  "title": "ScheduleOccurrence/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "tenantId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "agentInstanceId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "agentVersionRef": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "sessionId": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "authorizationRef": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "required": ["tenantId", "agentInstanceId", "authorizationRef"]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {"enum": ["claimed", "accepted", "running", "succeeded", "failed", "skipped", "cancelled"]},
+        "at": {"$ref": "#/$defs/timestamp"},
+        "detail": {"type": ["string", "null"], "maxLength": 1024},
+        "errorCode": {"type": ["string", "null"], "maxLength": 128}
+      },
+      "required": ["state", "at"]
+    }
+  },
+  "properties": {
+    "apiVersion": {"const": "schedule.ksadk.io/v1"},
+    "kind": {"const": "ScheduleOccurrence"},
+    "schemaVersion": {"const": 1},
+    "occurrenceId": {"type": "string", "minLength": 8, "maxLength": 256},
+    "taskId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,62}$"},
+    "target": {"anyOf": [{"$ref": "#/$defs/target"}, {"type": "null"}]},
+    "scheduledFor": {"type": "string", "format": "date-time"},
+    "sessionId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "trigger": {"enum": ["schedule", "manual"]},
+    "state": {"enum": ["claimed", "accepted", "running", "succeeded", "failed", "skipped", "cancelled"]},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 100},
+    "commandId": {"type": ["string", "null"]},
+    "acceptedSeq": {"type": ["integer", "null"], "minimum": 0},
+    "lastEventSeq": {"type": ["integer", "null"], "minimum": 0},
+    "runId": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "claimedAt": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "acceptedAt": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "startedAt": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "errorCode": {"type": ["string", "null"], "maxLength": 128},
+    "detail": {"type": ["string", "null"], "maxLength": 1024},
+    "completedAt": {"type": ["string", "null"], "format": "date-time"},
+    "transitions": {"type": "array", "items": {"$ref": "#/$defs/transition"}}
+  },
+  "required": ["apiVersion", "kind", "schemaVersion", "occurrenceId", "taskId", "scheduledFor", "sessionId", "state"]
+}

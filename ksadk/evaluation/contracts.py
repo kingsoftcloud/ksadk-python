@@ -58,8 +58,11 @@ class AssertionType(str, Enum):
     RUNTIME_MAX_LATENCY_MS = "runtime.maxLatencyMs"
     RUNTIME_MAX_INPUT_TOKENS = "runtime.maxInputTokens"
     RUNTIME_MAX_OUTPUT_TOKENS = "runtime.maxOutputTokens"
+    RUNTIME_MAX_TOTAL_TOKENS = "runtime.maxTotalTokens"
     TOOL_CALLED = "tool.called"
     TOOL_NOT_CALLED = "tool.notCalled"
+    TOOL_SUCCEEDED = "tool.succeeded"
+    TOOL_SEQUENCE = "tool.sequence"
 
 
 class DataPolicy(str, Enum):
@@ -134,6 +137,13 @@ class AssertionSpec(EvaluationModel):
                 raise ValueError(f"{self.type} 的 value 必须是非负数字")
             if self.value < 0:
                 raise ValueError(f"{self.type} 的 value 必须是非负数字")
+        elif self.type is AssertionType.TOOL_SEQUENCE:
+            if (
+                not isinstance(self.value, list)
+                or not self.value
+                or any(not isinstance(item, str) or not item.strip() for item in self.value)
+            ):
+                raise ValueError("tool.sequence 的 value 必须是非空工具名称数组")
         elif not isinstance(self.value, str):
             raise ValueError(f"{self.type} 的 value 必须是字符串")
         return self
@@ -155,9 +165,21 @@ class EvalCase(EvaluationModel):
         data = dict(value)
         if "input" in data and "turns" not in data:
             turn = {"input": data.pop("input")}
-            for field in ("expected_output", "expectedOutput", "expected_tools", "expectedTools"):
+            for field in (
+                "expected_output",
+                "expectedOutput",
+                "reference_output",
+                "referenceOutput",
+                "expected_tools",
+                "expectedTools",
+            ):
                 if field in data:
-                    turn[field] = data.pop(field)
+                    normalized_field = (
+                        "expected_output"
+                        if field in {"reference_output", "referenceOutput"}
+                        else field
+                    )
+                    turn[normalized_field] = data.pop(field)
             data["turns"] = [turn]
         return data
 
@@ -198,6 +220,18 @@ class EvalSetVersion(EvaluationModel):
             exclude={"content_digest", "source_format"},
         )
         return _content_digest(payload)
+
+
+class CloudDatasetRef(EvaluationModel):
+    """Immutable reference to the exact cloud Dataset snapshot used by a run."""
+
+    provider: str = Field(min_length=1, max_length=256)
+    project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    dataset_id: str = Field(min_length=1, max_length=256)
+    version: int = Field(ge=1)
+    schema_hash: str = Field(min_length=64, max_length=64)
+    content_digest: str = Field(min_length=64, max_length=64)
+    row_count: int = Field(default=0, ge=0)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +296,7 @@ class EvaluationRequest(EvaluationModel):
     target: TargetRef
     config: EvaluationConfig = Field(default_factory=EvaluationConfig)
     report_dir: str | None = Field(default=None, min_length=1, max_length=2048)
+    cloud_dataset: CloudDatasetRef | None = None
 
 
 class EvalRunSpec(EvaluationModel):
@@ -273,6 +308,7 @@ class EvalRunSpec(EvaluationModel):
     config: EvaluationConfig = Field(default_factory=EvaluationConfig)
     environment_digest: str = Field(default="", max_length=128)
     attempt: int = Field(default=1, ge=1)
+    cloud_dataset: CloudDatasetRef | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -288,11 +324,25 @@ class TraceRef(EvaluationModel):
     run_id: str | None = None
     trace_id: str | None = None
     root_span_id: str | None = None
+    session_id: str | None = None
+    invocation_id: str | None = None
+    seq_start: int | None = Field(default=None, ge=1)
+    seq_end: int | None = Field(default=None, ge=1)
+    remote_task_id: str | None = None
     seq_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def require_reference(self) -> "TraceRef":
-        if not any((self.run_id, self.trace_id, self.seq_id)):
+        if not any(
+            (
+                self.run_id,
+                self.trace_id,
+                self.session_id,
+                self.invocation_id,
+                self.remote_task_id,
+                self.seq_id,
+            )
+        ):
             raise ValueError("TraceRef 至少需要一个可查询 ID")
         return self
 
@@ -306,6 +356,16 @@ class UsageSnapshot(EvaluationModel):
     reported: bool = False
 
 
+class ToolCallEvidence(EvaluationModel):
+    """Non-sensitive projection of one runtime tool invocation."""
+
+    call_id: str = Field(min_length=1, max_length=256)
+    name: str = Field(min_length=1, max_length=256)
+    status: Literal["SUCCEEDED", "ERROR", "INCOMPLETE"]
+    seq_start: int | None = Field(default=None, ge=1)
+    seq_end: int | None = Field(default=None, ge=1)
+
+
 class TargetRun(EvaluationModel):
     """Normalized result returned by a target adapter for one case."""
 
@@ -316,6 +376,8 @@ class TargetRun(EvaluationModel):
     error_code: str | None = None
     error_message: str | None = None
     trace_ref: TraceRef | None = None
+    trace_refs: list[TraceRef] = Field(default_factory=list)
+    tool_calls: list[ToolCallEvidence] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -377,7 +439,14 @@ class EvalRunReport(EvaluationModel):
         self.summary = self._summarize_cases()
         expected = self.compute_digest()
         if self.report_digest and self.report_digest != expected:
-            raise ValueError("reportDigest 与规范化报告内容不一致")
+            legacy_payload = self.model_dump(
+                mode="json", by_alias=False, exclude={"report_digest"}
+            )
+            legacy_payload["spec"].pop("cloud_dataset", None)
+            if self.spec.cloud_dataset is not None or self.report_digest != _content_digest(
+                legacy_payload
+            ):
+                raise ValueError("reportDigest 与规范化报告内容不一致")
         self.report_digest = expected
         return self
 

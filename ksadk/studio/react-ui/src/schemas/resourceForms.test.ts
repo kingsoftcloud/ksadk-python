@@ -96,16 +96,21 @@ describe("resource schemas", () => {
     }
   });
 
-  it("keeps credential and settings secrets bounded without requiring persisted values", () => {
+  it("keeps credential values bounded and accepts non-secret signed-deploy settings", () => {
     expect(credentialValueSchema.safeParse({ value: "" }).success).toBe(true);
     expect(credentialValueSchema.safeParse({ value: "x".repeat(16_385) }).success).toBe(false);
-    expect(settingsSchema.safeParse({
+    const settings = settingsSchema.safeParse({
       sandbox: "workspace-write",
       buildAfterCreate: true,
       codexProxy: "auto",
-      cloudAccessKey: "",
-      cloudSecretKey: "",
-      cloudRegion: "cn-beijing-6",
-    }).success).toBe(true);
+      cloudRegion: "pre-online",
+      cloudBucket: "agentengine-test",
+    });
+    expect(settings.success).toBe(true);
+    if (settings.success) {
+      expect(settings.data.cloudRegion).toBe("pre-online");
+      expect(settings.data.cloudBucket).toBe("agentengine-test");
+      expect(settings.data).not.toHaveProperty("agentEngineControlPlaneUrl");
+    }
   });
 });

@@ -4,12 +4,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ksadk.events import EventPhase, EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ErrorInfo,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    OutputRef,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+    RunStarted,
+    SourceRef,
+)
+from ksadk.events.content import (
+    ContentSnapshot,
+    TextContent,
+    ToolCallContent,
+    ToolResultContent,
+)
+from ksadk.events.identity import (
+    stable_event_id,
+    stable_item_id,
+    stable_scope_id,
+)
 from ksadk.harness.config import HarnessConfig
 from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
 from ksadk.harness.sandbox import HarnessSandboxExecutor
@@ -49,6 +72,19 @@ class _HarnessRun:
     done: bool = False
 
 
+@dataclass
+class _HarnessSession:
+    """Process-local transcript and serialization boundary for one Session.
+
+    The public capability matrix deliberately advertises process-scoped,
+    non-durable continuity.  Keeping this state on the adapter makes that
+    declaration true without pretending that a restart can recover it.
+    """
+
+    messages: list[dict[str, Any]]
+    lock: asyncio.Lock
+
+
 class HarnessRuntimeAdapter(RuntimeAdapter):
     """Execute a YAML Harness config directly as RuntimeEvent streams."""
 
@@ -72,6 +108,9 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         self._tools: tuple[HarnessTool, ...] | None = None
         self._tool_lock = asyncio.Lock()
         self._mcp_toolsets: list[Any] = []
+        self._sessions: dict[tuple[str, str, str], _HarnessSession] = {}
+        self._lifecycle_lock = asyncio.Lock()
+        self._closed = False
 
     @property
     def harness_config(self) -> HarnessConfig:
@@ -86,10 +125,13 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         return self._sandbox.workspace_root
 
     async def start(self, request: StartRequest) -> RunHandle:
-        run_id = str(request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}")
-        if run_id in self._runs:
-            raise ValueError(f"duplicate Harness invocation: {run_id}")
-        self._runs[run_id] = _HarnessRun(request=request)
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Harness runtime adapter is closed")
+            run_id = str(request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}")
+            if run_id in self._runs:
+                raise ValueError(f"duplicate Harness invocation: {run_id}")
+            self._runs[run_id] = _HarnessRun(request=request)
         return RunHandle(
             run_id=run_id,
             session_id=request.session_id,
@@ -137,23 +179,51 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         )
 
     async def close(self, handle: RunHandle) -> None:
-        run = self._runs.pop(handle.run_id, None)
+        async with self._lifecycle_lock:
+            run = self._runs.pop(handle.run_id, None)
+            has_runs = bool(self._runs)
         if run is not None and run.task is not None and not run.task.done():
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
-        if not self._runs:
+        if not has_runs:
             await self._close_tools()
+
+    async def close_all(self) -> None:
+        """Dispose every process-local run owned by this adapter instance."""
+
+        async with self._lifecycle_lock:
+            self._closed = True
+            runs = tuple(self._runs.values())
+            self._runs.clear()
+            self._sessions.clear()
+        tasks = [run.task for run in runs if run.task is not None and not run.task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._close_tools()
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return handle.run_id in self._runs
 
     async def execute_request(self, request: StartRequest) -> dict[str, Any]:
+        session = self._session_for(request)
+        async with session.lock:
+            return await self._execute_session_request(request, session)
+
+    async def _execute_session_request(
+        self,
+        request: StartRequest,
+        session: _HarnessSession,
+    ) -> dict[str, Any]:
         tools = await self._ensure_tools()
         model, prompt = self._effective(request)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": str(request.input or "")},
+            *[dict(message) for message in session.messages],
         ]
+        user_message = {"role": "user", "content": str(request.input or "")}
+        messages.append(user_message)
         execution_log: list[dict[str, Any]] = []
 
         for _turn_number in range(_MAX_REASONING_TURNS):
@@ -212,6 +282,12 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 raise RuntimeError(
                     "Harness reasoner returned neither a final response nor a tool call"
                 )
+            final_message = {"role": "assistant", "content": turn.final_text}
+            messages.append(final_message)
+            # Failed or cancelled turns never commit a partial transcript.
+            # A successful turn atomically replaces the process-local history
+            # while the per-session lock is still held.
+            session.messages[:] = [dict(message) for message in messages[1:]]
             return {
                 "output": turn.final_text,
                 "model": model,
@@ -221,11 +297,21 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
             }
         raise RuntimeError(f"Harness reasoning exceeded {_MAX_REASONING_TURNS} turns")
 
+    def _session_for(self, request: StartRequest) -> _HarnessSession:
+        key = (
+            str(request.agent_id or self._agent_name),
+            str(request.user_id),
+            str(request.session_id),
+        )
+        session = self._sessions.get(key)
+        if session is None:
+            session = _HarnessSession(messages=[], lock=asyncio.Lock())
+            self._sessions[key] = session
+        return session
+
     def _effective(self, request: StartRequest) -> tuple[str, str]:
         metadata = request.metadata or {}
-        model = str(
-            metadata.get("model_override") or request.model or self._config.model
-        ).strip()
+        model = str(metadata.get("model_override") or request.model or self._config.model).strip()
         prompt = str(
             metadata.get("prompt_override")
             or request.config.get("base_instructions")
@@ -237,86 +323,162 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
 
     async def _stream(self, handle: RunHandle):
         run = self._require_run(handle)
+        framework = "ksadk"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        message_item_id = stable_item_id(framework, run_id, "message", "final_answer")
+        run_item_id = stable_item_id(framework, run_id, "$run")
         seq = 0
+        started_items: set[tuple[str, str]] = set()
 
-        def event(
-            event_type: str,
-            payload: dict[str, Any],
-            *,
-            phase: str | None = None,
-        ) -> RuntimeEvent:
+        def next_seq() -> int:
             nonlocal seq
             seq += 1
-            request = run.request
-            return RuntimeEvent.create(
-                event_type,
-                agent_id=str(request.agent_id or self._agent_name),
-                user_id=request.user_id,
-                session_id=request.session_id,
-                invocation_id=handle.run_id,
-                seq_id=seq,
-                payload=payload,
-                phase=phase,
+            return seq
+
+        def make_source() -> SourceRef:
+            return SourceRef(
+                framework=framework,
+                native_run_id=run_id,
+                metadata={
+                    "agent_id": str(run.request.agent_id or self._agent_name),
+                    "user_id": run.request.user_id,
+                    "session_id": run.request.session_id,
+                    "invocation_id": run_id,
+                },
             )
+
+        def env_kwargs(item_id: str, event_type: str, part_id: str) -> dict[str, Any]:
+            n = next_seq()
+            return {
+                "schema_version": 2,
+                "event_id": stable_event_id(
+                    framework, scope_id, item_id, event_type, part_id, run_id, n
+                ),
+                "seq": n,
+                "timestamp": time.time(),
+                "run_id": run_id,
+                "scope_id": scope_id,
+                "source": make_source(),
+            }
+
+        def ensure_started(
+            item_id: str,
+            item_kind: str,
+            phase: str | None = None,
+            initial: ContentSnapshot | None = None,
+        ) -> list[ItemStarted]:
+            key = (scope_id, item_id)
+            if key in started_items:
+                return []
+            started_items.add(key)
+            return [
+                ItemStarted(
+                    **env_kwargs(item_id, "item.started", "item"),
+                    item_id=item_id,
+                    item_kind=item_kind,
+                    phase=phase,
+                    initial=initial,
+                )
+            ]
 
         if run.pending_cancel:
             run.done = True
-            yield event(
-                EventType.RUN_CANCELED,
-                {
-                    "status": "cancelled",
-                    "cancel_result": CancelResult.PENDING_CANCEL_RECORDED.value,
-                },
+            yield RunCanceled(
+                **env_kwargs(run_item_id, "run.canceled", "run"),
+                status="canceled",
+                reason=CancelResult.PENDING_CANCEL_RECORDED.value,
             )
             return
-        yield event(EventType.RUN_STARTED, {"status": "in_progress"})
+        yield RunStarted(
+            **env_kwargs(run_item_id, "run.started", "run"),
+            status="running",
+        )
         run.task = asyncio.create_task(self.execute_request(run.request))
         try:
             result = await run.task
             for call in result["tool_calls"]:
-                yield event(
-                    EventType.TOOL_CALL_BEGIN,
-                    {
-                        "call_id": call["call_id"],
-                        "name": call["name"],
-                        "args": call["arguments"],
-                    },
-                )
-                yield event(
-                    EventType.TOOL_CALL_END,
-                    {
-                        "call_id": call["call_id"],
-                        "name": call["name"],
-                        "result": call["result"],
-                    },
+                call_id = call["call_id"]
+                tool_item_id = stable_item_id(framework, run_id, "tool_call", call_id)
+                for ev in ensure_started(
+                    item_id=tool_item_id,
+                    item_kind="tool_call",
+                    initial=ContentSnapshot(
+                        parts=(
+                            ToolCallContent(
+                                part_id="tool-0",
+                                call_id=call_id,
+                                name=call["name"],
+                                arguments=call["arguments"],
+                            ),
+                        )
+                    ),
+                ):
+                    yield ev
+                yield ItemCompleted(
+                    **env_kwargs(tool_item_id, "item.completed", "tool-0"),
+                    item_id=tool_item_id,
+                    item_kind="tool_call",
+                    snapshot=ContentSnapshot(
+                        parts=(
+                            ToolResultContent(
+                                part_id="tool-0",
+                                call_id=call_id,
+                                result=call["result"],
+                            ),
+                        )
+                    ),
                 )
             text = str(result["output"])
-            yield event(
-                EventType.TEXT_DELTA,
-                {"text": text},
-                phase=EventPhase.FINAL_ANSWER.value,
+            for ev in ensure_started(
+                item_id=message_item_id,
+                item_kind="message",
+                phase="final_answer",
+            ):
+                yield ev
+            yield ItemUpdated(
+                **env_kwargs(message_item_id, "item.updated", "text-0"),
+                item_id=message_item_id,
+                item_kind="message",
+                op="append",
+                update=TextContent(part_id="text-0", text=text),
             )
-            yield event(
-                EventType.TEXT_COMPLETED,
-                {"text": text},
-                phase=EventPhase.FINAL_ANSWER.value,
+            yield ItemCompleted(
+                **env_kwargs(message_item_id, "item.completed", "text-0"),
+                item_id=message_item_id,
+                item_kind="message",
+                snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text=text),)),
             )
             run.done = True
-            yield event(EventType.RUN_COMPLETED, {"status": "completed"})
+            yield RunCompleted(
+                **env_kwargs(run_item_id, "run.completed", "run"),
+                status="completed",
+                output_refs=(
+                    OutputRef(
+                        scope_id=scope_id,
+                        item_id=message_item_id,
+                        part_id="text-0",
+                    ),
+                ),
+            )
         except asyncio.CancelledError:
             run.done = True
-            yield event(
-                EventType.RUN_CANCELED,
-                {
-                    "status": "cancelled",
-                    "cancel_result": CancelResult.INTERRUPTED_ACTIVE_TURN.value,
-                },
+            yield RunCanceled(
+                **env_kwargs(run_item_id, "run.canceled", "run"),
+                status="canceled",
+                reason=CancelResult.INTERRUPTED_ACTIVE_TURN.value,
             )
         except Exception as exc:  # noqa: BLE001
             run.done = True
-            yield event(
-                EventType.RUN_FAILED,
-                {"status": "failed", "error": str(exc)},
+            yield RunFailed(
+                **env_kwargs(run_item_id, "run.failed", "run"),
+                status="failed",
+                error=ErrorInfo(
+                    code="harness_failed",
+                    message=str(exc),
+                    source=framework,
+                    scope_id=scope_id,
+                ),
             )
 
     def _require_run(self, handle: RunHandle) -> _HarnessRun:

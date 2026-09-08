@@ -5,7 +5,7 @@ export const STUDIO_THEME_STORAGE_KEY = "agentkit-studio-theme";
 export const STUDIO_DARK_MEDIA_QUERY = "(prefers-color-scheme: dark)";
 
 export function normalizeThemePreference(value: unknown): StudioThemePreference {
-  return value === "light" || value === "dark" || value === "system" ? value : "system";
+  return value === "light" || value === "dark" || value === "system" ? value : "light";
 }
 
 export function resolveStudioTheme(
@@ -19,7 +19,7 @@ export function readStudioThemePreference(): StudioThemePreference {
   try {
     return normalizeThemePreference(window.localStorage.getItem(STUDIO_THEME_STORAGE_KEY));
   } catch {
-    return "system";
+    return "light";
   }
 }
 

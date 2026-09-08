@@ -23,6 +23,12 @@ _DENIED_METADATA_HOSTS = {
     "fd00:ec2::254",
 }
 
+#: 表示输出被 token 上限截断的 finishReason 集合（chat 与 Responses 两种 wire）。
+_LENGTH_FINISH_REASONS = {"length", "incomplete", "max_output_tokens"}
+#: length 截断重试时把 max_tokens 提到的目标值；未配置 max_tokens 的 profile
+#: 首次截断重试也用该值兜底（authoring 输出完整 JSON 需要宽松上限）。
+_LENGTH_RETRY_TARGET_TOKENS = 16384
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -325,36 +331,50 @@ class OpenAICompatibleModelClient:
         backoff_seconds: float,
         tools: list[dict[str, Any]] | None = None,
         allow_empty: bool = False,
+        response_format: dict[str, Any] | None = None,
+        retry_on_length: bool = False,
     ) -> ModelResponse:
         await self.network_guard.check(model.endpoint_url, network_policy)
         credential = self.credential_resolver.resolve(model.credential_ref)
         wire_api = (model.wire_api or "chat").strip().lower()
+        payload: dict[str, Any]
         if wire_api == "responses":
             payload = self._responses_payload(model, messages, tools)
         else:
             payload = {
                 "model": model.model,
                 "messages": messages,
-                "temperature": model.parameters.temperature,
-                "max_tokens": model.parameters.max_tokens,
                 "stream": False,
             }
+            # 未显式配置的采样参数一律不携带字段，交给服务端默认，
+            # 避免触碰各模型族的硬约束（kimi 温度、各家 max_tokens 上限等）。
+            if model.parameters.temperature is not None:
+                payload["temperature"] = model.parameters.temperature
+            if model.parameters.max_tokens is not None:
+                payload["max_tokens"] = model.parameters.max_tokens
             if model.parameters.top_p is not None:
                 payload["top_p"] = model.parameters.top_p
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
+            if response_format and model.parameters.allow_json_response_format:
+                payload["response_format"] = response_format
         headers = {
             "Authorization": f"Bearer {credential}",
             "Content-Type": "application/json",
         }
         timeout = httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds))
+        dropped_response_format = False
+        length_retried = False
+        last_length_error: StudioError | None = None
         async with httpx.AsyncClient(
             transport=self.transport,
             timeout=timeout,
             follow_redirects=False,
         ) as client:
-            for attempt in range(1, max_attempts + 1):
+            # 额外 1 次迭代仅用于 response_format 400 降级重发，
+            # 其余失败路径仍受 max_attempts 约束（会在原上限处 raise）。
+            for attempt in range(1, max_attempts + 2):
                 try:
                     response = await client.post(
                         model.endpoint_url,
@@ -382,17 +402,82 @@ class OpenAICompatibleModelClient:
                     if attempt < max_attempts:
                         await self.sleep(backoff_seconds * attempt)
                         continue
+                if (
+                    response.status_code == 400
+                    and "response_format" in payload
+                    and not dropped_response_format
+                ):
+                    # 网关不支持 response_format：去掉该字段重发一次。
+                    dropped_response_format = True
+                    payload.pop("response_format")
+                    continue
                 if response.status_code >= 400:
+                    if response.status_code == 429:
+                        # A selected authoring profile must not silently fall
+                        # back to a different model.  Preserve the actual
+                        # upstream condition so Studio can offer the user a
+                        # useful retry/switch decision instead of reporting a
+                        # misleading generic 502.
+                        raise StudioError(
+                            "MODEL_RATE_LIMITED",
+                            "所选生成模型当前限流，请稍后重试或切换模型 Profile",
+                            status_code=429,
+                            details={"upstreamStatus": response.status_code},
+                        )
+                    upstream_detail = ""
+                    try:
+                        upstream_detail = response.text[:200]
+                    except Exception:  # noqa: BLE001 - 诊断信息尽力而为
+                        upstream_detail = ""
                     raise StudioError(
                         "MODEL_REQUEST_FAILED",
                         "模型服务返回错误",
                         status_code=502,
-                        details={"upstreamStatus": response.status_code},
+                        details={
+                            "upstreamStatus": response.status_code,
+                            "upstreamError": upstream_detail,
+                        },
                     )
-                if wire_api == "responses":
-                    return self._parse_responses_response(response, allow_empty=allow_empty)
-                return self._parse_response(response, allow_empty=allow_empty)
+                try:
+                    if wire_api == "responses":
+                        parsed = self._parse_responses_response(response, allow_empty=allow_empty)
+                    else:
+                        parsed = self._parse_response(response, allow_empty=allow_empty)
+                except StudioError as exc:
+                    # finishReason=length 的空响应（大 JSON 被 max_tokens 截断）：
+                    # 一次性扩容 max_tokens 重发；再次截断则按原错误上抛。
+                    if retry_on_length and not length_retried and self._is_length_truncation(exc):
+                        length_retried = True
+                        last_length_error = exc
+                        payload = self._expand_length_budget(payload)
+                        continue
+                    raise
+                if (
+                    retry_on_length
+                    and not length_retried
+                    and parsed.finish_reason in _LENGTH_FINISH_REASONS
+                ):
+                    # 有内容但被 length 截断（结构化输出必然残缺），同样扩容重发一次。
+                    length_retried = True
+                    payload = self._expand_length_budget(payload)
+                    continue
+                return parsed
+        if last_length_error is not None:
+            raise last_length_error
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _is_length_truncation(exc: StudioError) -> bool:
+        if exc.code != "MODEL_EMPTY_RESPONSE":
+            return False
+        return str(exc.details.get("finishReason") or "") in _LENGTH_FINISH_REASONS
+
+    @staticmethod
+    def _expand_length_budget(payload: dict[str, Any]) -> dict[str, Any]:
+        key = "max_output_tokens" if "max_output_tokens" in payload else "max_tokens"
+        current = int(payload.get(key) or 0)
+        payload[key] = max(current, _LENGTH_RETRY_TARGET_TOKENS)
+        return payload
 
     @staticmethod
     def _responses_payload(
@@ -420,8 +505,9 @@ class OpenAICompatibleModelClient:
         payload: dict[str, Any] = {
             "model": model.model,
             "input": items,
-            "max_output_tokens": model.parameters.max_tokens,
         }
+        if model.parameters.max_tokens is not None:
+            payload["max_output_tokens"] = model.parameters.max_tokens
         if instructions:
             payload["instructions"] = "\n\n".join(instructions)
         return payload
@@ -460,7 +546,7 @@ class OpenAICompatibleModelClient:
                 "MODEL_EMPTY_RESPONSE",
                 "模型未返回可用内容",
                 status_code=502,
-                details={"status": status},
+                details={"status": status, "finishReason": status},
             )
         raw_usage = payload.get("usage") or {}
         usage = Usage(

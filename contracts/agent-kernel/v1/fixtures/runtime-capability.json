@@ -1,0 +1,96 @@
+[
+  {
+    "schema_version": 1,
+    "cancel": {
+      "supported": true,
+      "mode": "native"
+    },
+    "pause": {
+      "supported": true,
+      "mode": "native"
+    },
+    "resume": {
+      "supported": true,
+      "mode": "native"
+    },
+    "submit_interaction": {
+      "supported": true,
+      "mode": "native"
+    },
+    "attach": {
+      "supported": true,
+      "mode": "native"
+    },
+    "steer": {
+      "supported": true,
+      "mode": "native"
+    },
+    "inject": {
+      "supported": true,
+      "mode": "native"
+    },
+    "checkpoint": {
+      "supported": true,
+      "mode": "native"
+    },
+    "durable_restore": {
+      "supported": true,
+      "mode": "native"
+    },
+    "interaction_mode": "live_submit",
+    "goal": {
+      "supported": true,
+      "mode": "native"
+    },
+    "loop": {
+      "supported": false,
+      "mode": "unavailable",
+      "reason": "codex_loop_requires_run_control_spec"
+    },
+    "plan": {
+      "supported": true,
+      "mode": "native"
+    }
+  },
+  {
+    "schema_version": 1,
+    "cancel": {
+      "supported": true,
+      "mode": "native"
+    },
+    "pause": {
+      "supported": false,
+      "mode": "unavailable",
+      "reason": "runtime_pause_not_supported"
+    },
+    "resume": {
+      "supported": true,
+      "mode": "native"
+    },
+    "submit_interaction": {
+      "supported": true,
+      "mode": "native"
+    },
+    "attach": {
+      "supported": true,
+      "mode": "native"
+    },
+    "steer": {
+      "supported": true,
+      "mode": "native"
+    },
+    "inject": {
+      "supported": true,
+      "mode": "native"
+    },
+    "checkpoint": {
+      "supported": false,
+      "mode": "unavailable",
+      "reason": "runtime_checkpoint_not_supported"
+    },
+    "durable_restore": {
+      "supported": true,
+      "mode": "native"
+    }
+  }
+]

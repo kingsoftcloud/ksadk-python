@@ -26,11 +26,20 @@
     "session_id": {"type": "string"},
     "invocation_id": {"type": "string"},
     "seq_id": {"type": "integer"},
+    "turn_id": {"type": "string"},
+    "step_id": {"type": "string"},
+    "parent_event_id": {"type": "string"},
+    "trace_id": {"type": "string"},
+    "span_id": {"type": "string"},
     "phase": {"enum": ["commentary", "final_answer"]},
     "payload": {"type": "object"}
   },
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {"properties": {"event_type": {"const": "user.message"}}},
+      "then": {"properties": {"payload": {"required": ["text"]}}}
+    },
     {
       "if": {"properties": {"event_type": {"enum": ["text.delta", "text.completed"]}}},
       "then": {"properties": {"payload": {"required": ["text"]}}}
@@ -62,6 +71,34 @@
     {
       "if": {"properties": {"event_type": {"const": "run.failed"}}},
       "then": {"properties": {"payload": {"required": ["status", "error"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "turn.started"}}},
+      "then": {"properties": {"payload": {"required": ["turn_index"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "turn.completed"}}},
+      "then": {"properties": {"payload": {"required": ["turn_index", "status", "duration_ms"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "step.started"}}},
+      "then": {"properties": {"payload": {"required": ["step_index"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "step.completed"}}},
+      "then": {"properties": {"payload": {"required": ["step_index", "status", "duration_ms"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "model.call.begin"}}},
+      "then": {"properties": {"payload": {"required": ["model_call_id", "model"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "model.call.first_token"}}},
+      "then": {"properties": {"payload": {"required": ["model_call_id", "ttft_ms"]}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "model.call.end"}}},
+      "then": {"properties": {"payload": {"required": ["model_call_id", "status", "duration_ms"]}}}
     },
     {
       "if": {"properties": {"event_type": {"const": "checkpoint.created"}}},

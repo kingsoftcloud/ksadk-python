@@ -22,6 +22,11 @@ from ksadk.sessions.continuity import (
 )
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import create_local_session_service
+from ksadk.sessions.topology import (
+    PersistenceTopology,
+    StorageTarget,
+    resolve_persistence_topology,
+)
 
 _cached_session_service: BaseSessionService | None = None
 _cached_session_service_loop: asyncio.AbstractEventLoop | None = None
@@ -54,21 +59,8 @@ def register_session_backend(name: str, factory: SessionBackendFactory) -> None:
 
 def resolve_session_backend_config(*, backend: str | None = None) -> SessionBackendConfig:
     _register_builtin_backends()
-    resolved_backend = (
-        (
-            backend
-            or os.getenv("KSADK_SESSION_BACKEND")
-            or os.getenv("AGENTENGINE_SESSION_BACKEND")
-            or os.getenv("KSADK_STM_BACKEND")
-            or ""
-        )
-        .strip()
-        .lower()
-    )
-    if not resolved_backend:
-        resolved_backend = "local"
-    if resolved_backend == "sqlite":
-        resolved_backend = "local"
+    topology = resolve_persistence_topology(session_backend=backend)
+    resolved_backend = topology.session.backend
     if resolved_backend not in _backend_factories:
         supported = ", ".join(sorted({*list(_backend_factories), "sqlite"}))
         raise ValueError(
@@ -76,12 +68,7 @@ def resolve_session_backend_config(*, backend: str | None = None) -> SessionBack
             f"{resolved_backend!r}; supported backends are {supported}"
         )
 
-    dsn = (
-        os.getenv("KSADK_SESSION_DSN")
-        or os.getenv("KSADK_STM_URL")
-        or os.getenv("KSADK_STM_DB_URL")
-        or ""
-    ).strip()
+    dsn = topology.session.dsn
     path = (
         os.getenv("KSADK_SESSION_PATH")
         or os.getenv("KSADK_STM_PATH")
@@ -143,14 +130,28 @@ def _create_postgres_backend(
     from ksadk.sessions.postgres_service import PostgresSessionService
     from ksadk.sessions.resilient import ResilientSessionService
 
-    return ResilientSessionService(
-        PostgresSessionService(
-            dsn=config.dsn,
-            namespace=config.namespace,
-            tenant_id=config.tenant_id,
-            workspace_id=config.workspace_id,
-            connect_timeout=_postgres_connect_timeout_seconds(),
-        )
+    primary = PostgresSessionService(
+        dsn=config.dsn,
+        namespace=config.namespace,
+        tenant_id=config.tenant_id,
+        workspace_id=config.workspace_id,
+        connect_timeout=_postgres_connect_timeout_seconds(),
+    )
+    # A Kernel runtime writes canonical RuntimeEvents whose sequence and
+    # idempotency belong to one Postgres transaction.  A fail-open wrapper
+    # would dual-write a separately sequenced in-memory copy, so it must not
+    # advertise the primary's atomic capabilities (and cannot safely serve
+    # those events).  Deployed AgentKernel pods therefore fail closed when the
+    # store is unavailable; local/non-kernel web remains live-first.
+    if _agent_kernel_durable_mode():
+        return primary
+    return ResilientSessionService(primary)
+
+
+def _agent_kernel_durable_mode() -> bool:
+    return any(
+        str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("AGENT_KERNEL_ENABLED", "KSADK_AGENT_KERNEL")
     )
 
 
@@ -175,7 +176,10 @@ def describe_session_backend(*, backend: str | None = None) -> dict[str, object]
         "ContinuityDefault": "semantic/replay" if config.backend == "postgres" else "local_only",
     }
     if config.backend == "postgres":
-        payload.update({"FailureMode": "fail_open", "FallbackBackend": "memory"})
+        if _agent_kernel_durable_mode():
+            payload.update({"FailureMode": "fail_closed"})
+        else:
+            payload.update({"FailureMode": "fail_open", "FallbackBackend": "memory"})
     return payload
 
 
@@ -315,6 +319,7 @@ __all__ = [
     "SessionContinuityStatus",
     "SessionEvent",
     "SessionState",
+    "StorageTarget",
     "TranscriptReplayAdapter",
     "close_session_service",
     "create_session_service",
@@ -325,5 +330,7 @@ __all__ = [
     "register_session_backend",
     "reset_session_service",
     "resolve_session_backend_config",
+    "resolve_persistence_topology",
     "resolve_session_service",
+    "PersistenceTopology",
 ]
