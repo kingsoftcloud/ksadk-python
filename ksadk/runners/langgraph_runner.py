@@ -662,7 +662,8 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         "interrupt_id":..., "value":{...}}`` 里，但 ``Command(resume=...)``
         期望直接收到框架能识别的值（如 HumanInTheLoopMiddleware 的
         ``{"decisions":[...]}``）。这里拆掉外层包装，把 ``value`` 内容
-        作为 resume value 返回。
+        作为 resume value 返回。有 interrupt_id 时保留原生 {id: value} 定向
+        恢复语义，避免并行 interrupt 丢失目标；无 ID 时保留单 interrupt 值路径。
 
         非 ksadk_resume 类型（mcp_approval_response 等）原样返回，保持
         既有内置工具审批路径不变；ToolGateway 走 semantic resume 分支，
@@ -673,7 +674,14 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             if item_type in {"ksadk_resume", "ksadk.approval_response"}:
                 inner = resume_value.get("value")
                 if inner is not None:
-                    return inner
+                    interrupt_id = str(
+                        resume_value.get("interrupt_id")
+                        or resume_value.get("approval_request_id")
+                        or resume_value.get("id")
+                        or ""
+                    ).strip()
+                    # Parallel graph tasks must receive only their own decision.
+                    return {interrupt_id: inner} if interrupt_id else inner
         return resume_value
 
     @staticmethod

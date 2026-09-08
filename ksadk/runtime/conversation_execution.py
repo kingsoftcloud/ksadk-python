@@ -541,14 +541,14 @@ async def iter_runtime_conversation_semantic_events(
     reducer = StreamReducer()
     approval: dict[str, Any] | None = None
     execution_context: dict[str, str] = {}
-    # call_id → tool_name 映射，供 tool_result 反查 name
+    # (scope_id, call_id) → tool_name：不同子运行可复用原生 call_id。
     # （ToolResultContent 不带 name，前端靠 name 关联 call/result）。
-    _tool_name_by_call_id: dict[str, str] = {}
-    # 已发出 tool_call semantic 的 call_id 集合，用于跨 ItemStarted/ItemCompleted 去重。
+    _tool_name_by_call_id: dict[tuple[str, str], str] = {}
+    # 按 scope 和 call_id 跨 ItemStarted/ItemCompleted 去重，保留其他子运行的调用。
     # 各 adapter 产生 ToolCallContent 的位置不一致：Codex 在 ItemStarted.initial 和
     # ItemCompleted.snapshot 都带（需去重）；LangGraph/ADK 的 ItemStarted.initial=None，
     # ToolCallContent 只出现在 ItemCompleted.snapshot（需在 Completed 补发，不能跳过）。
-    _emitted_tool_call_ids: set[str] = set()
+    _emitted_tool_call_ids: set[tuple[str, str]] = set()
     async for event in iter_runtime_conversation_events(
         **kwargs, _execution_context=execution_context
     ):
@@ -599,11 +599,11 @@ async def iter_runtime_conversation_semantic_events(
                     # 记录 call_id → name，供后续 tool_result 反查 name
                     # （ToolResultContent 不带 name，否则前端渲染成 "tool"）。
                     if part.call_id and part.name:
-                        _tool_name_by_call_id[part.call_id] = part.name
-                    if part.call_id in _emitted_tool_call_ids:
+                        _tool_name_by_call_id[(event.scope_id, part.call_id)] = part.name
+                    if (event.scope_id, part.call_id) in _emitted_tool_call_ids:
                         continue
                     if part.call_id:
-                        _emitted_tool_call_ids.add(part.call_id)
+                        _emitted_tool_call_ids.add((event.scope_id, part.call_id))
                     yield _tool_call_semantic(part)
         elif isinstance(event, ItemCompleted):
             for part in event.snapshot.parts:
@@ -612,15 +612,15 @@ async def iter_runtime_conversation_semantic_events(
                     # LangGraph/ADK 的 ItemStarted.initial=None 没发过 → 在这里补发，
                     # 否则 tool_call 事件会丢失、tool_result 也反查不到 name。
                     if part.call_id and part.name:
-                        _tool_name_by_call_id[part.call_id] = part.name
-                    if part.call_id in _emitted_tool_call_ids:
+                        _tool_name_by_call_id[(event.scope_id, part.call_id)] = part.name
+                    if (event.scope_id, part.call_id) in _emitted_tool_call_ids:
                         continue
                     if part.call_id:
-                        _emitted_tool_call_ids.add(part.call_id)
+                        _emitted_tool_call_ids.add((event.scope_id, part.call_id))
                     yield _tool_call_semantic(part)
                 elif isinstance(part, ToolResultContent):
                     # ToolResultContent 不带 name，用 call_id 反查 tool_call 的 name。
-                    tool_name = _tool_name_by_call_id.get(part.call_id, "")
+                    tool_name = _tool_name_by_call_id.get((event.scope_id, part.call_id), "")
                     yield {
                         "type": "tool_result",
                         "name": tool_name,
