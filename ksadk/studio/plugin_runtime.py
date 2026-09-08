@@ -17,10 +17,17 @@ from ksadk.harness.reasoner import (
 from ksadk.plugins.builtins import (
     builtin_capability_factories,
     builtin_capability_manifests,
+    builtin_capability_permissions,
 )
 from ksadk.plugins.bundle import PluginBundleError, PluginBundleResolver, ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginHost, PluginHostError
+from ksadk.plugins.providers.codex import CodexTurnResult
+from ksadk.plugins.providers.dsh_mcp import (
+    DSH_PROFILE_MCP_PLUGIN_ID,
+    DshProfileMCPFactory,
+    dsh_profile_mcp_manifest,
+)
 from ksadk.plugins.providers.harness import (
     HarnessTurnResult,
     KsADKHarnessProviderFactory,
@@ -157,6 +164,7 @@ class StudioPluginRuntime:
         provider_manifests: Mapping[str, PluginManifest] | None = None,
         provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
+        dsh_capability_service: Any | None = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository
@@ -166,9 +174,12 @@ class StudioPluginRuntime:
         self._harness_reasoner = harness_reasoner
         self._provider_manifests = dict(provider_manifests or {})
         self._provider_factories = dict(provider_factories or {})
+        self._dsh_capability_service = dsh_capability_service
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
         self._lock = asyncio.Lock()
         self._hosts: dict[str, _HostEntry] = {}
+        self._admission_open = True
+        self._closed = False
 
     def replace_provider_registrations(
         self,
@@ -183,6 +194,8 @@ class StudioPluginRuntime:
             raise ValueError(
                 "plugin provider manifests and factories must use the same exact references"
             )
+        if self._closed:
+            raise RuntimeError("cannot replace provider registrations after runtime close")
         if self._hosts:
             raise RuntimeError("cannot replace provider registrations after activation")
         self._provider_manifests = manifests
@@ -205,6 +218,7 @@ class StudioPluginRuntime:
         bundle_root = self._bundle_root(build)
         bundle = self._resolve_bundle(bundle_root)
         self._preflight_bundle(bundle)
+        dynamic_dsh_mcp = self._bundle_uses_dynamic_dsh(bundle)
         selected_model = self._select_model(build, model)
         resolved = bundle.resolved_agent_spec
         instructions = resolved.get("instructions")
@@ -222,6 +236,7 @@ class StudioPluginRuntime:
                 "agent_system": str(instructions.get("system") or ""),
                 "agent_task": str(instructions.get("task") or ""),
                 "plugin_bundle_digest": bundle.bundle_digest,
+                "dynamic_dsh_mcp": dynamic_dsh_mcp,
             },
             manifest_sha256=build.resolved_digest,
             plugin_bundle_root=bundle_root,
@@ -248,8 +263,15 @@ class StudioPluginRuntime:
             entry.bundle,
             activation_key=session_id,
         )
-        raw = await activation.execute(dict(request))
-        return _normalize_result(raw, session_id=session_id)
+        try:
+            raw = await activation.execute(dict(request))
+            return _normalize_result(raw, session_id=session_id)
+        finally:
+            # Dynamic DSH leases are generation-bound. Rebuilding the
+            # activation per turn guarantees a restarted sidecar never leaves
+            # a session pinned to an expired port or scoped token.
+            if self._bundle_uses_dynamic_dsh(entry.bundle):
+                await activation.close()
 
     def kernel_adapter_provider(self, spec: StudioRunSpec):  # type: ignore[no-untyped-def]
         """Return a lazy, Build-pinned adapter factory for Scheduler Kernel."""
@@ -294,12 +316,66 @@ class StudioPluginRuntime:
         for entry in entries:
             await entry.host.close_activation(session_id)
 
-    async def aclose(self) -> None:
+    async def close_session_if_dynamic(self, spec: StudioRunSpec, session_id: str) -> None:
+        if bool(spec.request_config.get("dynamic_dsh_mcp")):
+            await self.close_session(session_id)
+
+    async def suspend_admission(self) -> None:
+        """Stop new activations and drain every currently owned host."""
+
         async with self._lock:
+            self._admission_open = False
             entries = tuple(self._hosts.values())
             self._hosts.clear()
-        for entry in entries:
-            await entry.host.dispose()
+        cleanup = asyncio.create_task(self._dispose_entries(entries))
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        cleanup.result()
+        if interrupted:
+            raise asyncio.CancelledError
+
+    async def resume_admission(self) -> None:
+        async with self._lock:
+            if self._closed:
+                raise PluginHostError(
+                    "plugin_runtime_closed",
+                    "Studio plugin runtime is closed",
+                )
+            self._admission_open = True
+
+    @staticmethod
+    async def _dispose_entries(entries: Sequence[_HostEntry]) -> None:
+        if entries:
+            results = await asyncio.gather(
+                *(entry.host.dispose() for entry in entries),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._admission_open = False
+            entries = tuple(self._hosts.values())
+            self._hosts.clear()
+        cleanup = asyncio.create_task(self._dispose_entries(entries))
+        interrupted = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                interrupted = True
+        cleanup.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
     async def _host_for(self, bundle_root: Path) -> _HostEntry:
         # Re-resolve every turn. This deliberately rechecks enabled receipts and
@@ -307,6 +383,16 @@ class StudioPluginRuntime:
         bundle = self._resolve_bundle(bundle_root)
         key = bundle.bundle_digest
         async with self._lock:
+            if self._closed:
+                raise PluginHostError(
+                    "plugin_runtime_closed",
+                    "Studio plugin runtime is closed",
+                )
+            if not self._admission_open:
+                raise PluginHostError(
+                    "plugin_runtime_reconfiguring",
+                    "Studio plugin runtime is reconfiguring",
+                )
             existing = self._hosts.get(key)
             if existing is not None:
                 return existing
@@ -319,6 +405,7 @@ class StudioPluginRuntime:
             )
             services: dict[str, Any] = {
                 "session_service": self._session_service,
+                "runtime_state_root": self.workspace.resolve(".agentkit/plugin-runtime/state"),
                 # Providers resolve credential *references* at activation time.
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
@@ -357,10 +444,17 @@ class StudioPluginRuntime:
                 await entry.host.dispose()
             return candidate
 
+    @staticmethod
+    def _bundle_uses_dynamic_dsh(bundle: ResolvedPluginBundle) -> bool:
+        reference = (
+            f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@{dsh_profile_mcp_manifest().metadata.version}"
+        )
+        return any(
+            capability.ref == reference for capability in bundle.composition.profile.capabilities
+        )
+
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:
-        registered_ids = {
-            manifest.metadata.id for manifest in self._provider_manifests.values()
-        }
+        registered_ids = {manifest.metadata.id for manifest in self._provider_manifests.values()}
         try:
             manifest, selection = self._legacy_bundles.select_from_bundle(
                 bundle_root,
@@ -390,9 +484,7 @@ class StudioPluginRuntime:
                     }
                 }
             )
-            registry = PluginRegistry(
-                [selection.manifest, *builtin_capability_manifests()]
-            )
+            registry = PluginRegistry([selection.manifest, *builtin_capability_manifests()])
             try:
                 resolved = json.loads(
                     (bundle_root / "resolved-agent-spec.json").read_text(encoding="utf-8")
@@ -421,6 +513,7 @@ class StudioPluginRuntime:
         manifests = [
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
+            dsh_profile_mcp_manifest(),
         ]
         external = self._external_manifest(profile)
         if external is not None:
@@ -442,11 +535,13 @@ class StudioPluginRuntime:
         manifests: list[PluginManifest] = [
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
+            dsh_profile_mcp_manifest(),
         ]
         factories = builtin_capability_factories(
             state_root=self.workspace.resolve(".agentkit/plugin-runtime/state"),
             secret_resolver=self._secret_resolver.resolve,
         )
+        factories[DSH_PROFILE_MCP_PLUGIN_ID] = DshProfileMCPFactory(self._dsh_capability_service)
         provider_id, provider_version = _parse_plugin_ref(
             bundle.composition.profile.agent_provider.ref
         )
@@ -467,19 +562,22 @@ class StudioPluginRuntime:
         manifests.append(manifest)
         factories[provider_id] = factory
 
+        allowed = set(builtin_capability_permissions(bundle.composition.profile))
         builtin_ids = {
             manifest.metadata.id
             for manifest in (
                 *builtin_agent_provider_manifests(),
                 *builtin_capability_manifests(),
+                dsh_profile_mcp_manifest(),
             )
         }
-        allowed = {
+        builtin_ids.discard(DSH_PROFILE_MCP_PLUGIN_ID)
+        allowed.update(
             permission
             for manifest in manifests
             if manifest.metadata.id in builtin_ids
             for permission in manifest.spec.permissions
-        }
+        )
         security = bundle.resolved_agent_spec.get("security")
         if isinstance(security, Mapping):
             raw = security.get("allowedPermissions") or security.get("allowed_permissions") or []
@@ -534,19 +632,13 @@ class StudioPluginRuntime:
             timeout_seconds=int(
                 execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 120
             ),
-            max_attempts=int(
-                retry.get("maxAttempts") or retry.get("max_attempts") or 2
-            ),
-            backoff_seconds=float(
-                retry.get("backoffSeconds") or retry.get("backoff_seconds") or 1
-            ),
+            max_attempts=int(retry.get("maxAttempts") or retry.get("max_attempts") or 2),
+            backoff_seconds=float(retry.get("backoffSeconds") or retry.get("backoff_seconds") or 1),
         )
 
     def _external_manifest(self, profile: CompositionProfile) -> PluginManifest | None:
         plugin_id, version = _parse_plugin_ref(profile.agent_provider.ref)
-        builtin_ids = {
-            manifest.metadata.id for manifest in builtin_agent_provider_manifests()
-        }
+        builtin_ids = {manifest.metadata.id for manifest in builtin_agent_provider_manifests()}
         if plugin_id in builtin_ids:
             return None
         provider_ref = f"plugin://{plugin_id}@{version}"
@@ -565,9 +657,7 @@ class StudioPluginRuntime:
             return cast(
                 CompositionProfile,
                 CompositionProfile.model_validate_json(
-                    (bundle_root / "composition-profile.json").read_text(
-                        encoding="utf-8"
-                    )
+                    (bundle_root / "composition-profile.json").read_text(encoding="utf-8")
                 ),
             )
         except (OSError, UnicodeError, ValueError) as error:
@@ -595,17 +685,13 @@ class StudioPluginRuntime:
 
     @staticmethod
     def _select_model(build: BuildRecord, requested: str | None) -> str:
-        allowed = [
-            str(item) for item in build.runtime_lock.get("models") or [] if str(item)
-        ]
+        allowed = [str(item) for item in build.runtime_lock.get("models") or [] if str(item)]
         default = str(build.runtime_lock.get("model") or "").strip()
         if default and default not in allowed:
             allowed.insert(0, default)
         selected = str(requested or default).strip()
         if not selected:
-            raise StudioError(
-                "AGENT_MODEL_REQUIRED", "Build 没有绑定可运行模型", status_code=422
-            )
+            raise StudioError("AGENT_MODEL_REQUIRED", "Build 没有绑定可运行模型", status_code=422)
         if allowed and selected not in allowed:
             raise StudioError(
                 "MODEL_NOT_BOUND",
@@ -615,13 +701,14 @@ class StudioPluginRuntime:
             )
         return selected
 
+
 def _parse_plugin_ref(value: str) -> tuple[str, str]:
     plugin_id, version = value.removeprefix("plugin://").rsplit("@", 1)
     return plugin_id, version
 
 
 def _normalize_result(raw: Any, *, session_id: str) -> StudioPluginTurnResult:
-    if isinstance(raw, HarnessTurnResult):
+    if isinstance(raw, (CodexTurnResult, HarnessTurnResult)):
         return StudioPluginTurnResult(
             output_text=raw.output_text,
             session_id=raw.session_id,
@@ -630,9 +717,7 @@ def _normalize_result(raw: Any, *, session_id: str) -> StudioPluginTurnResult:
             raw=raw,
         )
     if not isinstance(raw, Mapping):
-        raise PluginHostError(
-            "provider_result_invalid", "AgentProvider result must be an object"
-        )
+        raise PluginHostError("provider_result_invalid", "AgentProvider result must be an object")
     output_text = str(raw.get("outputText") or raw.get("output_text") or raw.get("output") or "")
     if not output_text:
         raise PluginHostError(

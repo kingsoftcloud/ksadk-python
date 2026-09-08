@@ -88,7 +88,17 @@ def scan_bundle_security(root: str | Path) -> tuple[BundleSecurityFinding, ...]:
             except json.JSONDecodeError:
                 findings.append(BundleSecurityFinding(relative, "invalid-structured-input"))
                 continue
-            _scan_value(payload, relative, "$", findings)
+            # Skill packages can contain upstream provenance and examples with
+            # historical authoring paths. They are still scanned for literal
+            # credentials and high-confidence tokens, but those reference
+            # paths are not deployment inputs for the Agent.
+            _scan_value(
+                payload,
+                relative,
+                "$",
+                findings,
+                reject_local_paths=not relative.startswith("capabilities/skills/"),
+            )
         elif suffix in {".yaml", ".yml"}:
             # Bundle-owned YAML is a narrow runtime launch declaration.  It
             # has no credential-bearing fields today, but token patterns still
@@ -111,6 +121,8 @@ def _scan_value(
     relative: str,
     field: str,
     findings: list[BundleSecurityFinding],
+    *,
+    reject_local_paths: bool,
 ) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -124,11 +136,23 @@ def _scan_value(
                 findings.append(
                     BundleSecurityFinding(relative, "literal-secret-field", child_field)
                 )
-            _scan_value(child, relative, child_field, findings)
+            _scan_value(
+                child,
+                relative,
+                child_field,
+                findings,
+                reject_local_paths=reject_local_paths,
+            )
         return
     if isinstance(value, list):
         for index, child in enumerate(value):
-            _scan_value(child, relative, f"{field}[{index}]", findings)
+            _scan_value(
+                child,
+                relative,
+                f"{field}[{index}]",
+                findings,
+                reject_local_paths=reject_local_paths,
+            )
         return
     if isinstance(value, str):
         _scan_text(value, relative, findings, field=field)
@@ -139,7 +163,7 @@ def _scan_value(
             split.username is not None or split.password is not None
         ):
             findings.append(BundleSecurityFinding(relative, "url-credentials", field))
-        if value.startswith(("/Users/", "/home/", "C:\\Users\\")):
+        if reject_local_paths and value.startswith(("/Users/", "/home/", "C:\\Users\\")):
             findings.append(BundleSecurityFinding(relative, "local-home-path", field))
 
 

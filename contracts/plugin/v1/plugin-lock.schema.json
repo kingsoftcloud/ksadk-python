@@ -25,6 +25,31 @@
       },
       "required": ["id", "version", "digest"]
     },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {"enum": ["ksadk", "codex", "dsh"]},
+        "type": {"enum": ["builtin", "registry", "local", "git", "npm", "market", "runtime-native"]},
+        "requested": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "resolved": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "integrity": {"type": ["string", "null"], "maxLength": 512},
+        "marketplace": {"type": ["string", "null"], "maxLength": 256},
+        "registry": {"type": ["string", "null"], "maxLength": 2048}
+      },
+      "required": ["ecosystem", "type", "requested", "resolved"]
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$", "maxLength": 256},
+        "kind": {"enum": ["skill", "mcp", "hook", "app", "client"]},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "path": {"type": ["string", "null"], "maxLength": 512}
+      },
+      "required": ["id", "kind", "digest"]
+    },
     "entry": {
       "type": "object",
       "additionalProperties": false,
@@ -36,7 +61,9 @@
         "signatureRef": {"type": ["string", "null"]},
         "license": {"type": ["string", "null"]},
         "provides": {"type": "array", "items": {"$ref": "#/$defs/capability"}},
-        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}}
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
+        "upstream": {"oneOf": [{"$ref": "#/$defs/upstream"}, {"type": "null"}]},
+        "components": {"type": ["array", "null"], "items": {"$ref": "#/$defs/component"}}
       },
       "required": ["id", "version", "digest", "source"]
     }

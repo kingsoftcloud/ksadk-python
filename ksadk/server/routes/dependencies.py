@@ -23,6 +23,7 @@ class ServerRouteDependencies:
     detached_stream_class: Callable[[], type[Any]]
     heartbeat_interval: Callable[[], float]
     runtime_app: Callable[[], Any]
+    get_persistence_status: Callable[..., Any] | None = None
 
 
 _dependencies: ServerRouteDependencies | None = None
@@ -72,6 +73,20 @@ def describe_session_backend() -> dict[str, Any]:
     if override is not None:
         return dict(override)
     return current().describe_session_backend()
+
+
+async def get_persistence_status(
+    *, framework: str | None = None, use_cache: bool = True
+) -> dict[str, Any]:
+    provider = current().get_persistence_status
+    if provider is None:
+        from ksadk.sessions.persistence import get_persistence_status as provider
+    try:
+        return dict(await provider(framework=framework, use_cache=use_cache))
+    except TypeError as exc:
+        if "use_cache" not in str(exc):
+            raise
+        return dict(await provider(framework=framework))
 
 
 def resolve_agent_ui_spec() -> dict[str, Any]:

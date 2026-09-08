@@ -19,13 +19,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import queue
+import re
 import secrets
+import stat
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from uuid import uuid4
 
@@ -44,6 +50,193 @@ _CAPABILITY_CACHE = CapabilityCache(ttl=3600)
 
 class CodexCapabilityUnavailableError(RuntimeError):
     """A caller-required Codex capability cannot be preserved by this route."""
+
+
+class CodexPluginBootstrapError(CodexCapabilityUnavailableError):
+    """A pinned Codex plugin marketplace could not be admitted or installed."""
+
+
+_CODEX_PLUGIN_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CODEX_PLUGIN_NAME = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+_CODEX_MARKETPLACE_MANIFEST = Path(".agents/plugins/marketplace.json")
+_CODEX_MARKETPLACE_MAX_FILES = 20_000
+_CODEX_MARKETPLACE_MAX_BYTES = 256 * 1024 * 1024
+_CODEX_MARKETPLACE_MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+
+
+def codex_marketplace_tree_digest(marketplace_path: str | Path) -> str:
+    """Hash one immutable local marketplace using the snapshot tree algorithm.
+
+    The format deliberately matches ``ksadk.plugins.codex_manifest``: sorted
+    relative POSIX path, NUL, decimal byte length, NUL, bytes, NUL. Directories
+    are ignored and symlinks are rejected, so a launch cannot substitute files
+    behind the digest-pinned build artifact.
+    """
+
+    root = Path(marketplace_path).expanduser()
+    if not root.is_absolute():
+        raise ValueError("Codex plugin marketplace_path must be absolute")
+    if root.is_symlink():
+        raise ValueError("Codex plugin marketplace root must not be a symlink")
+    if not root.is_dir():
+        raise ValueError("Codex plugin marketplace_path must name an existing directory")
+    manifest_path = root / _CODEX_MARKETPLACE_MANIFEST
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError(
+            "Codex plugin marketplace is missing a regular .agents/plugins/marketplace.json"
+        )
+
+    files: list[Path] = []
+    for candidate in sorted(
+        root.rglob("*"),
+        key=lambda item: item.relative_to(root).as_posix(),
+    ):
+        relative = candidate.relative_to(root).as_posix()
+        if candidate.is_symlink():
+            raise ValueError(f"Codex plugin marketplace must not contain symlinks: {relative}")
+        if candidate.is_dir():
+            continue
+        if not candidate.is_file():
+            raise ValueError("Codex plugin marketplace may contain regular files only: " + relative)
+        files.append(candidate)
+    if len(files) > _CODEX_MARKETPLACE_MAX_FILES:
+        raise ValueError(
+            f"Codex plugin marketplace exceeds {_CODEX_MARKETPLACE_MAX_FILES} regular files"
+        )
+
+    digest = hashlib.sha256()
+    total_bytes = 0
+    for candidate in files:
+        relative = candidate.relative_to(root).as_posix()
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"Codex plugin marketplace file cannot be read: {relative}") from exc
+        total_bytes += len(raw)
+        if total_bytes > _CODEX_MARKETPLACE_MAX_BYTES:
+            raise ValueError(
+                f"Codex plugin marketplace exceeds {_CODEX_MARKETPLACE_MAX_BYTES} content bytes"
+            )
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(f"{stat.S_IMODE(candidate.stat().st_mode) & 0o111:03o}".encode("ascii"))
+        digest.update(b"\0")
+        digest.update(str(len(raw)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(raw)
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class CodexPluginBootstrap:
+    """Digest-pinned launch contract for one build-local Codex marketplace."""
+
+    marketplace_path: str
+    marketplace_name: str
+    plugin_names: tuple[str, ...]
+    snapshot_digest: str
+
+    def __post_init__(self) -> None:
+        root = Path(self.marketplace_path).expanduser()
+        if not root.is_absolute():
+            raise ValueError("Codex plugin marketplace_path must be absolute")
+        if not self.marketplace_name or len(self.marketplace_name) > 256:
+            raise ValueError("Codex plugin marketplace_name must be 1..256 characters")
+        if _CODEX_PLUGIN_NAME.fullmatch(self.marketplace_name) is None:
+            raise ValueError("Codex plugin marketplace_name has an unsupported format")
+        if not self.plugin_names:
+            raise ValueError("Codex plugin plugin_names must not be empty")
+        if any(
+            not isinstance(name, str)
+            or len(name) > 256
+            or _CODEX_PLUGIN_NAME.fullmatch(name) is None
+            for name in self.plugin_names
+        ):
+            raise ValueError("Codex plugin plugin_names contain an unsupported name")
+        if tuple(sorted(set(self.plugin_names))) != self.plugin_names:
+            raise ValueError("Codex plugin plugin_names must be unique and lock-sorted")
+        if _CODEX_PLUGIN_DIGEST.fullmatch(self.snapshot_digest) is None:
+            raise ValueError("Codex plugin snapshot_digest must be a lowercase sha256 digest")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "CodexPluginBootstrap":
+        expected = {
+            "marketplace_path",
+            "marketplace_name",
+            "plugin_names",
+            "snapshot_digest",
+        }
+        supplied = set(value)
+        if supplied != expected:
+            missing = sorted(expected - supplied)
+            unexpected = sorted(supplied - expected)
+            details: list[str] = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unexpected:
+                details.append("unexpected " + ", ".join(unexpected))
+            raise ValueError("invalid Codex plugin bootstrap config: " + "; ".join(details))
+        raw_names = value["plugin_names"]
+        if not isinstance(raw_names, (list, tuple)):
+            raise ValueError("Codex plugin plugin_names must be an array")
+        return cls(
+            marketplace_path=str(value["marketplace_path"]),
+            marketplace_name=str(value["marketplace_name"]),
+            plugin_names=tuple(raw_names),
+            snapshot_digest=str(value["snapshot_digest"]),
+        )
+
+    @property
+    def root(self) -> Path:
+        return Path(self.marketplace_path).expanduser()
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.root / _CODEX_MARKETPLACE_MANIFEST
+
+    def verify(self) -> None:
+        """Verify bytes and the small manifest projection consumed at launch."""
+
+        try:
+            observed_digest = codex_marketplace_tree_digest(self.root)
+        except ValueError as exc:
+            raise CodexPluginBootstrapError("Codex plugin marketplace cannot be verified") from exc
+        if observed_digest != self.snapshot_digest:
+            raise CodexPluginBootstrapError(
+                "Codex plugin marketplace digest mismatch: "
+                f"expected {self.snapshot_digest}, observed {observed_digest}"
+            )
+        try:
+            raw = self.manifest_path.read_bytes()
+        except OSError as exc:
+            raise CodexPluginBootstrapError(
+                "Codex plugin marketplace manifest cannot be read"
+            ) from exc
+        if len(raw) > _CODEX_MARKETPLACE_MAX_MANIFEST_BYTES:
+            raise CodexPluginBootstrapError("Codex plugin marketplace manifest is too large")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CodexPluginBootstrapError(
+                "Codex plugin marketplace manifest is not valid UTF-8 JSON"
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("name") != self.marketplace_name:
+            raise CodexPluginBootstrapError(
+                "Codex plugin marketplace manifest name does not match launch config"
+            )
+        raw_plugins = payload.get("plugins")
+        if not isinstance(raw_plugins, list):
+            raise CodexPluginBootstrapError(
+                "Codex plugin marketplace manifest plugins must be an array"
+            )
+        manifest_names = [item.get("name") for item in raw_plugins if isinstance(item, dict)]
+        missing = [name for name in self.plugin_names if manifest_names.count(name) != 1]
+        if missing:
+            raise CodexPluginBootstrapError(
+                "Codex plugin marketplace does not contain each pinned plugin exactly once: "
+                + ", ".join(missing)
+            )
 
 
 @dataclass(frozen=True)
@@ -167,6 +360,19 @@ def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
 class CodexClient(ABC):
     """codex 后端(thread/turn 生命周期)的最小接口(对齐真实 SDK 线程模型)。"""
 
+    async def bootstrap_plugins(self, config: CodexPluginBootstrap) -> None:
+        """Install one admitted plugin set before creating the first thread.
+
+        Custom clients must opt into this capability explicitly. Failing
+        closed prevents a plugin-bearing launch from silently running without
+        its locked native Codex capabilities.
+        """
+
+        del config
+        raise CodexPluginBootstrapError(
+            "connected Codex client does not support native plugin bootstrap"
+        )
+
     @abstractmethod
     async def start_thread(self, config: Optional[dict[str, Any]] = None) -> str:
         """新建 thread(真实 SDK ``thread_start``),返回 thread_id。"""
@@ -183,6 +389,9 @@ class CodexClient(ABC):
         """在 thread 上跑一个 turn(``thread.turn`` + ``handle.stream``),
         产出规范化事件 dict(``{"method": ..., "params": ...}``)。"""
         raise NotImplementedError
+
+    async def compact_thread(self, thread_id: str) -> dict[str, Any]:
+        raise RuntimeError("connected Codex client does not support context compaction")
 
     def run_goal(
         self,
@@ -294,6 +503,7 @@ class AsyncCodexClient(CodexClient):
         self._codex = AsyncCodex(config=config)
         self.sdk_version = sdk_version
         self._threads: dict[str, Any] = {}  # thread_id -> AsyncThread
+        self._thread_approval_configs: dict[str, dict[str, Any]] = {}
         self._active_handles: dict[str, Any] = {}  # thread_id -> 活跃 AsyncTurnHandle
         self._goal_states: dict[str, Any] = {}
         self._approval_queues: dict[str, queue.Queue[Any]] = {}
@@ -301,6 +511,109 @@ class AsyncCodexClient(CodexClient):
         self._pending_interactions: dict[str, _PendingInteraction] = {}
         self._approval_lock = threading.Lock()
         self._install_approval_bridge()
+
+    async def bootstrap_plugins(self, config: CodexPluginBootstrap) -> None:
+        """Install a pinned local marketplace on this client's App Server.
+
+        This intentionally uses the ``AsyncCodex`` object's already-owned
+        low-level transport. Spawning a second bridge process would install
+        into a different host lifecycle and would not guarantee that the
+        thread started below observes the same plugin inventory.
+        """
+
+        config.verify()
+        try:
+            from openai_codex.generated.v2_all import (  # type: ignore[import-not-found]
+                MarketplaceAddResponse,
+                PluginInstallResponse,
+                PluginListResponse,
+            )
+        except ImportError as exc:  # pragma: no cover - guarded by __init__
+            raise _missing_codex_error() from exc
+
+        await self._codex._ensure_initialized()
+        transport = getattr(self._codex, "_client", None)
+        if transport is None or not callable(getattr(transport, "request", None)):
+            raise CodexPluginBootstrapError(
+                f"openai-codex {self.sdk_version} lacks the App Server request transport"
+            )
+
+        receipt = await transport.request(
+            "marketplace/add",
+            {
+                "source": str(config.root),
+                "refName": None,
+                "sparsePaths": None,
+            },
+            response_model=MarketplaceAddResponse,
+        )
+        if str(receipt.marketplace_name) != config.marketplace_name:
+            raise CodexPluginBootstrapError(
+                "Codex App Server added an unexpected marketplace: "
+                f"expected {config.marketplace_name!r}, got {receipt.marketplace_name!r}"
+            )
+        installed_root_value = getattr(receipt.installed_root, "root", receipt.installed_root)
+        try:
+            installed_root = Path(str(installed_root_value)).resolve(strict=True)
+            expected_root = config.root.resolve(strict=True)
+        except OSError as exc:
+            raise CodexPluginBootstrapError(
+                "Codex App Server marketplace receipt names an unavailable root"
+            ) from exc
+        if installed_root != expected_root:
+            raise CodexPluginBootstrapError(
+                "Codex App Server marketplace receipt does not match the pinned root"
+            )
+
+        marketplace_manifest = str(config.manifest_path.resolve(strict=True))
+        for plugin_name in config.plugin_names:
+            await transport.request(
+                "plugin/install",
+                {
+                    "pluginName": plugin_name,
+                    "marketplacePath": marketplace_manifest,
+                    "remoteMarketplaceName": None,
+                },
+                response_model=PluginInstallResponse,
+            )
+
+        inventory = await transport.request(
+            "plugin/list",
+            {"forceRefetch": True, "cwds": None, "marketplaceKinds": None},
+            response_model=PluginListResponse,
+        )
+        marketplaces = [
+            marketplace
+            for marketplace in inventory.marketplaces
+            if str(marketplace.name) == config.marketplace_name
+        ]
+        if len(marketplaces) != 1:
+            raise CodexPluginBootstrapError(
+                "Codex App Server did not report exactly one pinned marketplace"
+            )
+        marketplace = marketplaces[0]
+        reported_path_value = getattr(marketplace.path, "root", marketplace.path)
+        if reported_path_value is None:
+            raise CodexPluginBootstrapError(
+                "Codex App Server reported the pinned marketplace as remote"
+            )
+        try:
+            reported_path = Path(str(reported_path_value)).resolve(strict=True)
+        except OSError as exc:
+            raise CodexPluginBootstrapError(
+                "Codex App Server reported an unavailable marketplace manifest"
+            ) from exc
+        if reported_path != Path(marketplace_manifest):
+            raise CodexPluginBootstrapError(
+                "Codex App Server inventory does not match the pinned marketplace path"
+            )
+        for plugin_name in config.plugin_names:
+            matches = [plugin for plugin in marketplace.plugins if plugin.name == plugin_name]
+            if len(matches) != 1 or not matches[0].installed or not matches[0].enabled:
+                raise CodexPluginBootstrapError(
+                    "Codex App Server did not reconcile pinned plugin as installed and enabled: "
+                    + plugin_name
+                )
 
     def _install_approval_bridge(self) -> None:
         """Replace the SDK's unconditional accept handler with a HITL bridge.
@@ -339,7 +652,7 @@ class AsyncCodexClient(CodexClient):
             "item/fileChange/requestApproval",
         }:
             return self._handle_approval_request(method, params)
-        if method == "item/tool/requestUserInput":
+        if method in {"item/tool/requestUserInput", "mcpServer/elicitation/request"}:
             return self._handle_user_input_request(method, params)
         return {}
 
@@ -402,6 +715,22 @@ class AsyncCodexClient(CodexClient):
     ) -> dict[str, Any]:
         raw = dict(params or {})
         thread_id, request_queue = self._active_request_queue(raw)
+        policy = getattr(self, "_thread_approval_configs", {}).get(thread_id, {})
+        metadata = raw.get("_meta") or {}
+        # Full access authorizes tool execution, never OAuth login or arbitrary
+        # server forms. Only Codex's native, empty tool-approval form qualifies.
+        schema = raw.get("requestedSchema") or {}
+        if (
+            method == "mcpServer/elicitation/request"
+            and request_queue is not None
+            and isinstance(metadata, dict)
+            and metadata.get("codex_approval_kind") == "mcp_tool_call"
+            and raw.get("mode") == "form"
+            and schema == {"type": "object", "properties": {}}
+            and policy.get("sandbox") == "full-access"
+            and policy.get("approval_mode") == "deny_all"
+        ):
+            return {"action": "accept", "content": {}}
         interaction_id = str(
             raw.get("itemId")
             or raw.get("item_id")
@@ -416,104 +745,24 @@ class AsyncCodexClient(CodexClient):
             method=method,
             params=raw,
         )
-        if request_queue is None:
-            return {"answers": {}}
-
-        surface_id = f"input-{interaction_id}"
-        components: list[dict[str, Any]] = []
-        question_components: list[dict[str, Any]] = []
-        input_schema: dict[str, Any] = {"type": "object", "properties": {}}
-        questions = raw.get("questions") if isinstance(raw.get("questions"), list) else []
-        for index, raw_question in enumerate(questions):
-            if not isinstance(raw_question, dict):
-                continue
-            question_id = str(raw_question.get("id") or f"question_{index + 1}")
-            raw_options = raw_question.get("options")
-            options = (
-                [dict(option) for option in raw_options if isinstance(option, dict)]
-                if isinstance(raw_options, list)
-                else []
-            )
-            multiple = bool(
-                raw_question.get("multiple")
-                or raw_question.get("isMultiple")
-                or raw_question.get("is_multiple")
-                or raw_question.get("isMultiSelect")
-                or raw_question.get("is_multi_select")
-            )
-            question_components.append(
-                {
-                    "id": question_id,
-                    "component": "MultipleChoice",
-                    "props": {
-                        "name": question_id,
-                        "label": str(
-                            raw_question.get("header")
-                            or raw_question.get("question")
-                            or question_id
-                        ),
-                        "description": str(raw_question.get("question") or ""),
-                        "options": options,
-                        "multiple": multiple,
-                        "allow_other": bool(
-                            raw_question.get("isOther") or raw_question.get("is_other")
-                        ),
-                        "secret": bool(
-                            raw_question.get("isSecret") or raw_question.get("is_secret")
-                        ),
-                    },
-                }
-            )
-            option_labels = [
-                str(option.get("label") or "") for option in options if option.get("label")
-            ]
-            input_schema["properties"][question_id] = (
-                {
-                    "type": "array",
-                    "items": {"type": "string", "enum": option_labels},
-                }
-                if multiple
-                else {"type": "string", "enum": option_labels}
-            )
-        components.append(
-            {
-                "id": "form",
-                "component": "Form",
-                "props": {"title": "需要你的反馈", "submit_label": "提交"},
-                "children": question_components,
-            }
+        default_response = (
+            {"action": "cancel"} if method == "mcpServer/elicitation/request" else {"answers": {}}
         )
+        if request_queue is None:
+            return default_response
+
+        # Preserve the native question contract (including multiple choice and
+        # custom answers) for the canonical interaction mapper. Legacy A2UI
+        # forms cannot provide the native continuation/response correlation.
         with self._approval_lock:
             self._pending_interactions[interaction_id] = pending
-            request_queue.put(
-                {
-                    "method": "a2ui/surface",
-                    "params": {
-                        "surface_id": surface_id,
-                        "surface": {
-                            "catalog_id": "https://a2ui.org/specification/v0_9/basic_catalog.json",
-                            "components": components,
-                            "data_model": {},
-                        },
-                    },
-                }
-            )
-            request_queue.put(
-                {
-                    "method": "a2ui/interaction",
-                    "params": {
-                        "surface_id": surface_id,
-                        "interaction_id": interaction_id,
-                        "kind": "form",
-                        "input_schema": input_schema,
-                        "is_blocking": bool(raw.get("isBlocking", raw.get("is_blocking", True))),
-                    },
-                }
-            )
+            request_queue.put({"id": interaction_id, "method": method, "params": raw})
         pending.resolved.wait()
         with self._approval_lock:
             self._pending_interactions.pop(interaction_id, None)
-        return pending.response or {"answers": {}}
+        response = pending.response or default_response
+        request_queue.put({"id": interaction_id, "result": dict(response)})
+        return response
 
     @staticmethod
     def _maybe_apply_proxy(
@@ -714,6 +963,55 @@ class AsyncCodexClient(CodexClient):
         self._threads[thread.id] = thread
         return str(thread.id)
 
+    async def compact_thread(self, thread_id: str) -> dict[str, Any]:
+        """Wait for native compaction completion, not just request admission.
+
+        The caller owns an idle, dedicated client and closes it on timeout.
+        No model prompt or shell command is used to emulate compaction.
+        """
+        thread = self._threads[thread_id]
+        low_level = self._codex._client
+        turn_id = None
+        compacted = False
+        usage: dict[str, Any] = {}
+        try:
+            async with asyncio.timeout(120):
+                before = await thread.read(include_turns=True)
+                previous_ids = {turn.id for turn in before.thread.turns}
+                await thread.compact()
+                # compact/start returns no turn id. The SDK buffers scoped
+                # notifications until their turn is registered; global reads
+                # deliberately exclude them. Discover the new turn first.
+                while turn_id is None:
+                    current = await thread.read(include_turns=True)
+                    new_turns = [
+                        turn for turn in current.thread.turns if turn.id not in previous_ids
+                    ]
+                    if new_turns:
+                        turn_id = new_turns[-1].id
+                        low_level.register_turn_notifications(turn_id)
+                        break
+                    await asyncio.sleep(0.25)
+                while True:
+                    notification = await low_level.next_turn_notification(turn_id)
+                    event = self._notification_to_event_dict(notification) or {}
+                    params = event.get("params") or {}
+                    if params.get("threadId") != thread_id:
+                        continue
+                    method = event.get("method")
+                    if method == "item/completed":
+                        compacted |= (params.get("item") or {}).get("type") == "contextCompaction"
+                    elif method == "thread/tokenUsage/updated":
+                        usage = dict(params.get("tokenUsage") or {})
+                    elif method == "turn/completed":
+                        turn = params["turn"]
+                        if turn.get("status") != "completed" or not compacted:
+                            raise RuntimeError("Codex context compaction did not complete")
+                        return usage
+        finally:
+            if turn_id is not None:
+                low_level.unregister_turn_notifications(turn_id)
+
     async def resume_thread(self, thread_id: str, config: Optional[dict[str, Any]] = None) -> str:
         # An ephemeral thread has no rollout on disk, so SDK thread_resume would
         # fail with -32600. Reuse its live AsyncThread for same-process resume.
@@ -834,6 +1132,7 @@ class AsyncCodexClient(CodexClient):
         approval_queue: queue.Queue[Any] = queue.Queue()
         with self._approval_lock:
             self._approval_queues[thread_id] = approval_queue
+            self._thread_approval_configs[thread_id] = dict(config or {})
         handle = await self._start_turn(thread, self._coerce_input(prompt), config)
         self._active_handles[thread_id] = handle
         notifications = handle.stream()
@@ -890,6 +1189,7 @@ class AsyncCodexClient(CodexClient):
         approval_queue: queue.Queue[Any] = queue.Queue()
         with self._approval_lock:
             self._approval_queues[thread_id] = approval_queue
+            self._thread_approval_configs[thread_id] = dict(config or {})
         state, _logical_turn_id = await low_level.start_goal_operation(thread_id, objective)
         self._goal_states[thread_id] = state
         notifications = _AsyncGoalNotificationStream(
@@ -1040,7 +1340,25 @@ class AsyncCodexClient(CodexClient):
             pending = self._pending_interactions.get(interaction_id)
             if pending is None:
                 return False
-            pending.response = {"answers": answers}
+            if pending.method == "mcpServer/elicitation/request":
+                action = data.get("action") or {
+                    "cancel": "cancel",
+                    "skip": "decline",
+                    "reject": "decline",
+                    "deny": "decline",
+                    "decline": "decline",
+                }.get(str(data.get("decision") or ""), "accept")
+                if action not in {"accept", "decline", "cancel"}:
+                    raise ValueError("MCP elicitation action must be accept, decline, or cancel")
+                pending.response = {"action": action}
+                if action == "accept":
+                    pending.response["content"] = {
+                        key: value
+                        for key, value in data.items()
+                        if key not in {"action", "decision"}
+                    }
+            else:
+                pending.response = {"answers": answers}
             pending.resolved.set()
         return True
 
@@ -1060,7 +1378,11 @@ class AsyncCodexClient(CodexClient):
             with approval_lock:
                 interactions = list(getattr(self, "_pending_interactions", {}).values())
         for interaction in interactions:
-            interaction.response = {"answers": {}}
+            interaction.response = (
+                {"action": "cancel"}
+                if interaction.method == "mcpServer/elicitation/request"
+                else {"answers": {}}
+            )
             interaction.resolved.set()
         for thread_id, state in list(getattr(self, "_goal_states", {}).items()):
             try:
@@ -1189,4 +1511,10 @@ def _coerce_enum(enum_type: Any, value: Any) -> Any:
         ) from exc
 
 
-__all__ = ["AsyncCodexClient", "CodexClient"]
+__all__ = [
+    "AsyncCodexClient",
+    "CodexClient",
+    "CodexPluginBootstrap",
+    "CodexPluginBootstrapError",
+    "codex_marketplace_tree_digest",
+]

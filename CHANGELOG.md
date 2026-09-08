@@ -5,9 +5,37 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.8.3] - Unreleased
+## [0.8.4] - 2026-09-07
 
-> `0.8.3` 发布候选已完成下述验证；正式 PyPI 发布完成后再写入发布日期。
+### Studio 与共享会话
+
+- Studio 使用 `@kingsoftcloud/ksadk-web@0.3.5` 的共享会话控制器、时间线和输入框；细分入口可供其他应用复用，并支持宿主自己的欢迎页面与样式。
+- 修复会话历史分页、刷新后的工具结果与提问回放，统一思考流光、取消提示和审批交互；上下文入口支持悬停、点击固定、外部点击关闭和手动压缩进度。用量来自运行时，窗口容量可回退到模型目录；冷启动直接进入对话也会加载模型目录，不再依赖先打开工程资源页；未知用量不会伪造百分比。
+- 统一 Studio 页面配色、Agent 表单和部署表格；复用本地身份缓存展示当前凭证身份，新部署记录保存创建人快照，历史创建人缺失时不冒充其他用户。
+- 纳入社区贡献的 Studio UI 改进（PR #66，by @aibuilder-leo），保留其配色方向。
+
+- 流传输提前结束时重新核对同一会话的持久化记录并恢复订阅，不重复执行提问；修复公共回放 ID 不一致造成的重复消息，以及多窗口重放旧审批回执影响下一条待填表单的问题。
+
+### 插件与运行时
+
+- 使用完整受管 DSH Core/Profile 和官方客户端运行时承载插件；Studio 直接展示插件设置入口，移除不完整的 mini runtime 与嵌套聊天页面。插件详情支持描述、图标和多插件选择。
+- npm 插件名可解析到具体版本后安装；实际准入和构建仍冻结版本与摘要。Codex 官方插件通过原生宿主安装，Agent 使用已选择的插件绑定。
+- 修复 Codex 代理调用参数、跨回合 thread 恢复、运行句柄回收和 MCP 配置传递，保留原生工具授权边界。
+- 增加 Codex 插件不可变制品交付与运行时恢复：插件字节和依赖引用随版本交付，启动不再按市场最新版本重新安装。该路径需要控制面支持相应制品接口；接口不可用时明确阻断，不静默丢弃绑定。
+
+### 构建与兼容性
+
+- Git 仓库保存前端源码与依赖锁；Web 与 Studio 静态资源在构建时生成并包含在通用 `py3-none-any` wheel 中，不提交编译产物。
+- 同一个基础 wheel 服务多种 Agent 框架，不为每个框架另建 wheel。基础安装已声明 ADK、LangChain 与 LangGraph 等依赖，额外能力由 extras 扩展。wheel 含页面资源，不捆绑 Python 依赖、Node/Codex/DSH 工具链、社区插件或用户凭证。
+- 既有 Agent 不因本地 SDK 升级自动重建、重新部署或修改插件绑定。使用新插件交付能力需要显式构建/更新部署。
+
+### 当前边界
+
+- 云端插件交付需新版控制面和不可变制品存储配合；本地与离线容器验证不代表所有云环境已部署这些接口。
+- 云端第三方 MCP OAuth 登录与凭证托管留待后续版本；本地登录状态不会自动复制到云端。DSH UI、Codex skills 和 MCP 工具具有不同宿主要求，不承诺任意插件在所有 Harness 上直接执行。
+- 长时间闲置后的偶发连接报错尚未获得稳定复现，本次不声明该问题已修复。
+
+## [0.8.3] - 2026-09-01
 
 ### 插件化基础
 
@@ -27,17 +55,17 @@
 
 ### 兼容与发布验证
 
-- Phase 2 只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
+- 本版本只增加本地能力，不要求已发布 Agent、历史 Bundle、无来源三元组 Runtime、未启用 Kernel 或无 PostgreSQL 的单机模式升级。历史 Harness 只有命中显式登记的精确来源摘要才进入 legacy adapter；未知 v1 fail closed，新 v2 缺少就绪 DSH registration 时也不会回退旧路径。
 - Codex 已覆盖真实 App Server 插件生命周期、DSH Codex Provider 的 MCP 两轮/同一 Thread、插件 inventory 与失败回滚、以及隔离 one-shot child 的取消和清理；DSH 也覆盖受管 Profile 和一个真实外部 AgentProvider 的连续多轮与完整失败回滚。上述证据不等于任意第三方 Provider 自动受支持，也不把云端持续后台任务纳入本地稳定声明。
 - Claude Code、游戏插件和任意第三方插件格式尚未作为已支持生态发布。后续可以通过 Provider 或 ecosystem bridge 接入，但必须先通过权限、生命周期、ConversationSurface 和兼容性 conformance。
 - `ksadk-web@0.3.4` 已通过 npm Trusted Publishing 发布；registry integrity 为 `sha512-IudZCNnWAWYJOb/s/lbr02qg17KWQ0s/419StDVZxcEcbJOVVKE4GkbGtGs/5X+WkzbXE9eOUvIEydN5QEV4LQ==`，registry tarball SHA-256 为 `0d88fb37506bae77ba863b3986b2fde4546cd74cbd3f3021eed1ecd05f15c596`。Studio 已从公开 registry 重建，Hosted UI 发布验证镜像 digest 为 `sha256:d629384e44a2e35f5dd5f7788ea16097cb49d79c582206d5fe453911fe20d66d`；真实 Studio 创建的 Codex Agent 与 0.8.2 历史 Agent 均完成多轮流式、思考、刷新回放、上下文续接和最终消息去重验证。
-- 新增 Phase 2 最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
+- 新增最终候选聚合门禁：只有最终源码提交、wheel/sdist、npm integrity、Hosted UI 镜像 digest、Helm revision，以及 Studio 新 Agent/历史 0.8.2 Agent 在 Studio 与 Hosted UI 的多轮流式证据全部一致时才输出 `passed`；本地 preflight 不再能被误当成完整发布结论。
 
 ## [0.8.2] - 2026-08-26
 
 ### 亮点
 
-- **Agent Runtime V2 Phase 1 基座完成**：冻结 `AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、`RuntimeCapabilityMatrix/v1` 与 `Interaction/v1`，通过 schema digest 和 additive-only gate 防止下游再随意改协议。
+- **运行时协议地基冻结**：冻结 `AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、`RuntimeCapabilityMatrix/v1` 与 `Interaction/v1`，通过 schema digest 和 additive-only gate 防止下游再随意改协议。
 - **可靠执行不再强制 PostgreSQL**：AgentKernelStore 支持 InMemory、SQLite 与 PostgreSQL。普通单副本 Agent 可不配置 PG；需要跨 Pod 恢复、接管和高可用时再启用 PostgreSQL，并使用 lease、fencing 与事务 CAS 保证唯一 owner。
 - **Studio 打通本地创作到云端生命周期**：沿用平台既有 `CreateAgent` / `UpdateAgent` 等接口，支持构建、部署、状态、详情、会话、删除、版本选择与二次确认回滚；账号中由 CLI 部署的高代码 Agent 也可直接选择和管理。
 - **前后端会话统一到真实事件流**：本地 Web UI 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.2`，Studio 对齐同一 Interaction / RuntimeEvent 合同，支持签名 SSE、流式正文、思考、工具、审批、附件、模型、三档审批以及 Goal / Plan 控制；普通前台聊天不依赖 Background 长任务模式。

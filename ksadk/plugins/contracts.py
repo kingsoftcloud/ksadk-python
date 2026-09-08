@@ -5,13 +5,16 @@ Only the models exported through ``__all__`` are public Phase 2 contracts.
 they project DSH/Codex host inventory into the Python composition engine and
 are not a third installable package format or a stable public contract.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import re
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -98,6 +101,77 @@ class CapabilityOffer(PluginContractModel):
         return value
 
 
+class PluginSourceSnapshot(PluginContractModel):
+    """Credential-free upstream identity retained in an immutable plugin lock.
+
+    Lifecycle hosts (Codex App Server or DSH) remain responsible for resolving
+    and installing packages.  This record only captures the exact source that
+    was admitted so a later build cannot silently follow a mutable marketplace,
+    Git branch, npm tag, or local directory.
+    """
+
+    ecosystem: Literal["ksadk", "codex", "dsh"]
+    type: Literal["builtin", "registry", "local", "git", "npm", "market", "runtime-native"]
+    requested: str = Field(min_length=1, max_length=2048)
+    resolved: str = Field(min_length=1, max_length=2048)
+    integrity: str | None = Field(default=None, max_length=512)
+    marketplace: str | None = Field(default=None, max_length=256)
+    registry: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("requested", "resolved", "integrity", "marketplace", "registry")
+    @classmethod
+    def validate_public_coordinate(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value != value.strip() or any(ord(character) < 32 for character in value):
+            raise ValueError("plugin source coordinates must be trimmed printable text")
+        # Build artifacts and inventories are routinely shared.  A source URL
+        # therefore cannot retain embedded credentials, query tokens, or URL
+        # fragments.  Authentication remains a host-owned credential concern.
+        if "://" in value:
+            parsed = urlsplit(value)
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("plugin source coordinates must not contain credentials")
+        return value
+
+
+class LockedPluginComponent(PluginContractModel):
+    """One selected native component and the bytes admitted for a build."""
+
+    id: str = Field(min_length=1, max_length=256)
+    kind: Literal["skill", "mcp", "hook", "app", "client"]
+    digest: str
+    path: str | None = Field(default=None, max_length=512)
+
+    @field_validator("id")
+    @classmethod
+    def validate_component_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", value):
+            raise ValueError("plugin component id is invalid")
+        return value
+
+    @field_validator("digest")
+    @classmethod
+    def validate_component_digest(cls, value: str) -> str:
+        return _validate_digest(value)
+
+    @field_validator("path")
+    @classmethod
+    def validate_component_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if "\\" in value:
+            raise ValueError("plugin component paths must use POSIX separators")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise ValueError("plugin component path must stay relative to the plugin root")
+        return value
+
+
 class CapabilityRequirement(PluginContractModel):
     definition: str
     version: str = Field(min_length=1, max_length=128)
@@ -122,11 +196,25 @@ class PluginProvenance(PluginContractModel):
     digest: str
     signature_ref: str | None = Field(default=None, max_length=512)
     license: str | None = Field(default=None, max_length=128)
+    upstream: PluginSourceSnapshot | None = None
+    components: tuple[LockedPluginComponent, ...] | None = None
 
     @field_validator("digest")
     @classmethod
     def validate_digest(cls, value: str) -> str:
         return _validate_digest(value)
+
+    @field_validator("components")
+    @classmethod
+    def validate_components(
+        cls, value: tuple[LockedPluginComponent, ...] | None
+    ) -> tuple[LockedPluginComponent, ...] | None:
+        if value is None:
+            return None
+        identities = [(item.kind, item.id) for item in value]
+        if len(identities) != len(set(identities)):
+            raise ValueError("plugin components must have unique kind/id identities")
+        return tuple(sorted(value, key=lambda item: (item.kind, item.id, item.digest)))
 
 
 class PluginSpec(PluginContractModel):
@@ -303,6 +391,8 @@ class PluginLockEntry(PluginContractModel):
     license: str | None = Field(default=None, max_length=128)
     provides: list[LockedCapability] = Field(default_factory=list)
     dependencies: list[PluginDependency] = Field(default_factory=list)
+    upstream: PluginSourceSnapshot | None = None
+    components: tuple[LockedPluginComponent, ...] | None = None
 
     @field_validator("id")
     @classmethod
@@ -320,6 +410,32 @@ class PluginLockEntry(PluginContractModel):
     @classmethod
     def validate_digest(cls, value: str) -> str:
         return _validate_digest(value)
+
+    @field_validator("components")
+    @classmethod
+    def validate_components(
+        cls, value: tuple[LockedPluginComponent, ...] | None
+    ) -> tuple[LockedPluginComponent, ...] | None:
+        if value is None:
+            return None
+        identities = [(item.kind, item.id) for item in value]
+        if len(identities) != len(set(identities)):
+            raise ValueError("plugin lock components must have unique kind/id identities")
+        return tuple(sorted(value, key=lambda item: (item.kind, item.id, item.digest)))
+
+    @model_validator(mode="after")
+    def validate_external_snapshot(self) -> "PluginLockEntry":
+        if self.upstream is not None:
+            compatible_sources = {
+                "builtin": {"builtin"},
+                "registry": {"registry", "npm"},
+                "local": {"local", "git", "npm"},
+                "market": {"market", "local", "git", "npm"},
+                "runtime-native": {"runtime-native"},
+            }
+            if self.upstream.type not in compatible_sources[self.source]:
+                raise ValueError("plugin lock source and upstream source type are inconsistent")
+        return self
 
 
 class PluginLock(PluginContractModel):
@@ -442,10 +558,12 @@ def plugin_lock_digest(lock: PluginLock) -> str:
 __all__ = [
     "CapabilityDefinition",
     "CompositionProfile",
+    "LockedPluginComponent",
     "PluginLock",
     "PluginLockEntry",
     "PluginInventory",
     "PluginInventoryItem",
+    "PluginSourceSnapshot",
     "canonical_plugin_lock",
     "plugin_lock_digest",
 ]

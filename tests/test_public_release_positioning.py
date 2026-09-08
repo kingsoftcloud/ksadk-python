@@ -300,7 +300,7 @@ def test_docs_versioned_facts_match_083_source():
     web_version_match = re.search(r"^KSADK_WEB_VERSION \?= (\S+)$", makefile, re.MULTILINE)
     assert web_version_match is not None
     web_version = web_version_match.group(1)
-    assert web_version == "0.3.4"
+    assert web_version == "0.3.5"
 
     versioned_docs = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx"))
@@ -326,8 +326,8 @@ def test_docs_versioned_facts_match_083_source():
     ):
         assert stale not in public_surfaces
 
-    assert 'version = "0.8.3"' in _read("pyproject.toml")
-    assert "0.8.3" in _read("docs-site/app/[lang]/(home)/page.tsx")
+    assert 'version = "0.8.4"' in _read("pyproject.toml")
+    assert "0.8.4" in _read("docs-site/app/[lang]/(home)/page.tsx")
 
     for relative in (
         "framework/guides/web-ui-source.mdx",
@@ -425,9 +425,9 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.3"
-    assert 'VERSION = "0.8.3"' in version_text
-    assert "## [0.8.3] - Unreleased" in changelog
+    assert pyproject["project"]["version"] == "0.8.4"
+    assert 'VERSION = "0.8.4"' in version_text
+    assert "## [0.8.3] - 2026-09-01" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
@@ -498,10 +498,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.4"' in workflow
+    assert 'default: "0.3.5"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.4' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.5' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -519,11 +519,11 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.4"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.5"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.4" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.5" in makefile
     assert (
-        "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
+        "PUBLIC_TEST_TARGETS ?= tests/studio/test_shared_web.py tests/test_public_release_positioning.py "
         "tests/test_docs_site_output_audit.py tests/test_config_env_registry.py "
         "tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
@@ -565,7 +565,7 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         '"$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)")' in makefile
     )
     assert 'npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"' not in makefile
-    assert "KSADK_WEB_VERSION ?= 0.3.4" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.5" in makefile
 
     sync_dry_run = subprocess.run(
         [
@@ -580,8 +580,8 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         text=True,
         stdout=subprocess.PIPE,
     ).stdout
-    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.4"' in sync_dry_run
-    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.4"' in sync_dry_run
+    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.5"' in sync_dry_run
+    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.5"' in sync_dry_run
 
     studio_dry_run = subprocess.run(
         ["make", "-n", "build-studio-static", f"KSADK_WEB_REGISTRY={registry}"],
@@ -616,7 +616,7 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Branch protection and publish environment are configured" in approval_record
 
 
-def test_public_release_candidate_tracks_current_version():
+def test_historical_public_release_approval_is_not_reused_for_unpublished_candidate():
     approval_record = _read("docs/maintainer-approval-record.md")
 
     assert "| Python package version | 0.8.3 |" in approval_record
