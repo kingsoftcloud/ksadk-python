@@ -6,10 +6,14 @@ admission must verify the declared principal using the actual platform authority
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 from contextlib import contextmanager
 from typing import Annotated
+
+try:
+    import fcntl
+except ImportError:  # Windows can use Studio without the Unix resource host.
+    fcntl = None  # type: ignore[assignment]
 
 from pydantic import ConfigDict, Field, SecretStr, model_validator
 
@@ -72,6 +76,12 @@ class ResourceConnectionRepository:
 
     @contextmanager
     def _locked(self):
+        if fcntl is None:
+            raise StudioError(
+                "RESOURCE_CONNECTION_PLATFORM_UNSUPPORTED",
+                "当前平台不支持资源连接锁，请在 Unix 宿主中使用平台资源插件",
+                status_code=501,
+            )
         self.workspace.resolve(self.root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.workspace.resolve(self.root / ".lock").open("a+b") as lock:
