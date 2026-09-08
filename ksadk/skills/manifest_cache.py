@@ -13,10 +13,10 @@ from __future__ import annotations
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from ksadk.skills.models import SkillRef
+from ksadk.skills.mcp_server._routing import skill_routing_instructions
 from ksadk.skills.service_client import SkillServiceClient
 from ksadk.skills.service_env import (
     public_skill_space_ids,
@@ -220,33 +220,8 @@ class ManifestCache:
             "",
             "## Available Skills (Skill Center)",
             "",
-            "IMPORTANT: The skills below are REMOTE skills hosted in a Skill Center.",
-            "They are NOT available as local files or built-in tools.",
-            "You MUST use the MCP tool execute_skills to run them.",
-            "",
-            "CRITICAL ROUTING RULES (read before choosing tools):",
-            "1. If the user task matches ANY skill listed below, you MUST call",
-            "   execute_skills with workflow_prompt (describe the task) and",
-            "   skill_names (the matching skill name). This is the ONLY correct way",
-            "   to handle matching tasks.",
-            "2. Do NOT use any of these built-in tools as a substitute for execute_skills:",
-            "   - web-safe, browser, browser_navigate, browser_* (cannot run skill logic)",
-            "   - terminal, bash, sh (cannot load skill dependencies)",
-            "   - write_file, read_file, fs (cannot set up sandbox environment)",
-            "   - exec, execute_code, code (bypasses skill sandbox isolation)",
-            "   These tools can only do raw operations; they CANNOT load the skill",
-            "   instructions, dependencies, or sandbox environment that execute_skills provides.",
-            "3. Do NOT attempt to read or load SKILL.md files for these skills locally.",
-            "   The skill instructions are loaded on-demand inside the sandbox.",
-            "4. When in doubt about whether a task matches a skill, call execute_skills",
-            "   anyway. It is always better to route through the sandbox.",
-            "",
-            "Examples of correct routing:",
-            "  User: \"查一下今天英超有没有比赛\" -> execute_skills(skill_names=[\"sports-results\"])",
-            "  User: \"帮我用React做一个仪表盘\" -> execute_skills(skill_names=[\"web-artifacts-builder\"])",
-            "  User: \"用无头浏览器测试页面\" -> execute_skills(skill_names=[\"webapp-testing\"])",
-            "",
-            "",
+            "Current Skill Center usage (replaces legacy routing notes):",
+            skill_routing_instructions(),
             "Available skills:",
             "",
         ]

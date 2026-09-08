@@ -18,6 +18,16 @@ import os
 import shutil
 import sys
 
+from ksadk.skills.mcp_server._routing import skill_routing_instructions
+from ksadk.skills.mcp_server._workspace_files import (
+    cleanup_skills,
+    update_text,
+    write_skill,
+)
+from ksadk.skills.mcp_server._workspace_files import (
+    is_skill_name as _is_safe_single_segment,
+)
+
 logger = logging.getLogger("ksadk.skills.mcp_server.register")
 
 MCP_NAME = "ksadk-skill-center"
@@ -69,77 +79,13 @@ def _collect_env() -> dict[str, str]:
     if not env_vars.get("KSADK_SKILL_SERVICE_URL"):
         try:
             from ksadk.skills.service_env import resolve_skill_service_url
+
             url = resolve_skill_service_url(require_spaces=False)
             if url:
                 env_vars["KSADK_SKILL_SERVICE_URL"] = url
         except Exception:
             pass
     return env_vars
-
-
-def _is_safe_single_segment(name: str) -> bool:
-    """Validate that *name* is a safe single-path-segment identifier.
-
-    Rejects empty, absolute paths, parent traversal, separators, and
-    other characters that could escape the base directory.
-    """
-    if not name or not name.strip():
-        return False
-    if "/" in name or "\\" in name or name.startswith("."):
-        return False
-    if name in {".", ".."}:
-        return False
-    # Reject null bytes and other control characters
-    if any(ord(c) < 32 for c in name):
-        return False
-    return True
-
-
-def _is_safe_skill_dir(base_dir: str, skill_name: str) -> bool:
-    """Check that joining base_dir + skill_name stays within base_dir.
-
-    Returns True if the resolved path is inside base_dir and the name
-    passes single-segment validation.
-    """
-    if not _is_safe_single_segment(skill_name):
-        return False
-    resolved = pathlib_resolve(base_dir, skill_name)
-    base_resolved = pathlib_resolve(base_dir)
-    try:
-        resolved.relative_to(base_resolved)
-    except ValueError:
-        return False
-    return True
-
-
-def pathlib_resolve(*parts: str) -> "pathlib.PosixPath | pathlib.WindowsPath":
-    import pathlib as _pl
-    return _pl.Path(*parts).resolve()
-
-
-def _is_managed_dir(skill_dir: str) -> bool:
-    """Check if a directory is already managed by Skill Center.
-
-    Returns True only if the .ksadk-skill-center marker file exists,
-    meaning we created this directory and can safely overwrite/delete it.
-    """
-    marker = os.path.join(skill_dir, _SKILL_CENTER_MARKER)
-    # S2 fix: do not follow symlinks when checking marker existence
-    return os.path.isfile(marker) and not os.path.islink(marker)
-
-
-def _is_path_safe(base_dir: str, target: str) -> bool:
-    """Check that *target* (joined under *base_dir*) resolves within base_dir
-    and does not involve symlinks pointing outside base_dir.
-    """
-    import pathlib as _pl
-    base = _pl.Path(base_dir).resolve()
-    tgt = _pl.Path(target).resolve()
-    try:
-        tgt.relative_to(base)
-    except ValueError:
-        return False
-    return True
 
 
 def _hermes_home() -> str:
@@ -163,6 +109,7 @@ def _split_command(cmd_str: str) -> dict[str, object]:
 
 def _register_mcporter(env: dict[str, str]) -> None:
     import subprocess
+
     if not shutil.which("mcporter"):
         return
     subprocess.run(["mcporter", "config", "remove", MCP_NAME], capture_output=True)
@@ -233,6 +180,7 @@ def _prefetch_manifest_to_workspace() -> None:
         return
     try:
         from ksadk.skills.manifest_cache import get_manifest_cache
+
         cache = get_manifest_cache()
         items = cache.get_all()
         instruction_text = cache.build_instruction_text() if items else ""
@@ -242,78 +190,63 @@ def _prefetch_manifest_to_workspace() -> None:
         if not items:
             logger.info("Manifest prefetch: no skills found in space %s", skill_space_id)
         else:
-            logger.info("Manifest prefetch completed for space %s (%d skills)", skill_space_id, len(items))
+            logger.info(
+                "Manifest prefetch completed for space %s (%d skills)", skill_space_id, len(items)
+            )
     except Exception as exc:
         logger.warning("Manifest prefetch failed: %s", exc)
 
 
+def _remove_managed_blocks(existing: str) -> str:
+    # Only exact, complete marker pairs establish ownership. Preserve old-format
+    # text and incomplete blocks because their end boundary is unknown.
+    kept: list[str] = []
+    pending: list[str] = []
+    for line in existing.splitlines(keepends=True):
+        marker = line.rstrip("\r\n")
+        if marker == "<!-- skill-center-start -->":
+            kept.extend(pending)
+            pending = [line]
+        elif marker == "<!-- skill-center-end -->" and pending:
+            pending = []
+        elif pending:
+            pending.append(line)
+        else:
+            kept.append(line)
+    kept.extend(pending)
+    return "".join(kept)
+
+
 def _inject_openclaw_workspace(instruction_text: str) -> None:
     tools_md = os.environ.get("OPENCLAW_TOOLS_MD", "/home/node/.openclaw/workspace/TOOLS.md")
-    if not os.path.isdir(os.path.dirname(tools_md)):
-        return
-    start_marker = "<!-- skill-center-start -->"
-    end_marker = "<!-- skill-center-end -->"
-    # Backward-compat: old single-marker block (no end boundary)
-    old_marker = "## Available Skills (Skill Center)"
-    try:
-        existing = ""
-        if os.path.isfile(tools_md):
-            existing = open(tools_md, encoding="utf-8").read()
-        # Remove paired-marker block first (precise boundary)
-        if start_marker in existing and end_marker in existing:
-            before = existing.split(start_marker, 1)[0]
-            after = existing.rsplit(end_marker, 1)[-1]
-            existing = (before.rstrip() + "\n" + after.rstrip()).rstrip()
-        elif start_marker in existing:
-            # Only start marker (malformed): remove from start onward
-            existing = existing.split(start_marker, 1)[0].rstrip()
-        # Migrate old single-marker block: treat old_marker as start boundary
-        # but keep content after it (unlike the old truncation approach).
-        if old_marker in existing:
-            before_old = existing.split(old_marker, 1)[0]
-            after_old = existing.split(old_marker, 1)[1] if old_marker in existing else ""
-            existing = before_old.rstrip()
-            # after_old content is discarded as it was part of the old skill block,
-            # but user content after the old skill block may exist. We cannot
-            # reliably distinguish, so we preserve before_old only. This is
-            # the same behavior as before but only triggers on first migration.
-        # Reconstruct: keep existing content + new paired block
+
+    def refresh(existing: str) -> str:
+        existing = _remove_managed_blocks(existing)
         if not instruction_text.strip():
-            # Empty manifest: just remove our block, keep everything else
-            with open(tools_md, "w", encoding="utf-8") as f:
-                f.write(existing.rstrip() + "\n" if existing.strip() else "")
-            return
-        block = f"{start_marker}\n{instruction_text.strip()}\n{end_marker}"
-        content = existing.rstrip() + "\n\n" + block if existing.strip() else block
-        with open(tools_md, "w", encoding="utf-8") as f:
-            f.write(content + "\n")
+            return existing
+        separator = (
+            ""
+            if not existing or existing.endswith("\n\n")
+            else ("\n" if existing.endswith("\n") else "\n\n")
+        )
+        return (
+            existing
+            + separator
+            + "<!-- skill-center-start -->\n"
+            + instruction_text.strip()
+            + "\n<!-- skill-center-end -->\n"
+        )
+
+    try:
+        update_text(tools_md, refresh)
         logger.info("OpenClaw workspace TOOLS.md updated with skill manifest")
-    except Exception as exc:
+    except OSError as exc:
         logger.warning("OpenClaw workspace injection failed: %s", exc)
 
 
-
-_HERMES_TOOL_NOTE = """
-## Hermes MCP Tool Calling Convention
-
-In Hermes, MCP tools from Skill Center are accessed via tool_call with the prefix mcp__ksadk_skill_center__.
-
-To execute a Skill Center skill, call:
-  tool_call(name=mcp__ksadk_skill_center__execute_skills, arguments={workflow_prompt: ..., skill_names: [...]})
-
-CRITICAL ROUTING RULE: When a user task matches ANY skill listed in the Skill Center,
-you MUST call mcp__ksadk_skill_center__execute_skills. Do NOT use any built-in tool
-(terminal, browser_navigate, browser_*, read_file, write_file, execute_code,
-skill_view, or similar) as a substitute for execute_skills.
-
-Built-in tools like terminal and browser_navigate can only perform raw operations;
-they cannot load skill instructions, dependencies, or the sandbox environment.
-execute_skills runs the skill in an isolated sandbox with the correct setup
-automatically.
-
-If you are unsure whether a task matches a Skill Center skill, call
-mcp__ksadk_skill_center__list_skills first to check, then call execute_skills.
-"""
+_HERMES_TOOL_NOTE = "## Hermes MCP Tool Calling Convention\n\n" + skill_routing_instructions(
+    "mcp__ksadk_skill_center__"
+)
 
 
 def _inject_hermes_skill_hub(
@@ -328,9 +261,7 @@ def _inject_hermes_skill_hub(
     The agent can then match user tasks to specific skills (e.g.
     "sports-results", "web-artifacts-builder") instead of a generic bridge.
     """
-    base_dir = os.environ.get(
-        "HERMES_SKILL_HUB_DIR", os.path.join(_hermes_home(), "skills")
-    )
+    base_dir = os.environ.get("HERMES_SKILL_HUB_DIR", os.path.join(_hermes_home(), "skills"))
     if not os.path.isdir(base_dir):
         return
     try:
@@ -347,121 +278,40 @@ def _inject_hermes_skill_hub(
                 logger.warning("Skipping unsafe skill name: %r", skill_name)
                 continue
             skill_desc = getattr(item, "description", "") or "No description"
-            skill_dir = os.path.join(base_dir, skill_name)
-            if os.path.isdir(skill_dir) and not _is_managed_dir(skill_dir):
-                logger.warning("Skipping %s: directory exists but is not Skill Center-managed", skill_name)
-                continue
-            os.makedirs(skill_dir, exist_ok=True)
-            skill_md_path = os.path.join(skill_dir, "SKILL.md")
-            # S2 fix: reject if SKILL.md is a symlink pointing outside base_dir
-            if os.path.islink(skill_md_path) and not _is_path_safe(base_dir, skill_md_path):
-                logger.warning("Skipping %s: SKILL.md symlink escapes base dir", skill_name)
-                continue
-            skill_md_path = os.path.join(skill_dir, "SKILL.md")
-            # S2 fix: reject if path is a symlink pointing outside base_dir
-            if os.path.islink(skill_md_path) and not _is_path_safe(base_dir, skill_md_path):
-                logger.warning("Skipping %s: SKILL.md symlink escapes base dir", skill_name)
-                continue
-            with open(os.path.join(skill_dir, _SKILL_CENTER_MARKER), "w") as mf:
-                mf.write("1")
             skill_md_content = (
                 "---\n"
                 f"name: {skill_name}\n"
                 "description: >\n"
                 f"  {skill_desc}\n"
-                "  To execute this skill, call\n"
-                "  mcp__ksadk_skill_center__execute_skills with\n"
-                f"  skill_names=[\"{skill_name}\"].\n"
-                "  Do NOT use terminal, browser_navigate, read_file,\n"
-                "  write_file, or execute_code as a substitute.\n"
+                "  Read its full instructions with\n"
+                "  mcp__ksadk_skill_center__load_skill using\n"
+                f'  skill_name="{skill_name}".\n'
                 "---\n\n"
                 f"# {skill_name}\n\n"
-                f"{skill_desc}\n\n"
-                + _HERMES_TOOL_NOTE.strip()
-                + "\n"
+                f"{skill_desc}\n\n" + _HERMES_TOOL_NOTE.strip() + "\n"
             )
-            with open(skill_md_path, "w", encoding="utf-8") as f:
-                f.write(skill_md_content)
+            try:
+                write_skill(base_dir, skill_name, skill_md_content)
+            except OSError as exc:
+                logger.warning("Skipping Skill Center entry %s: %s", skill_name, exc)
         logger.info("Hermes skill-hub entries created: %d skills under %s", len(items), base_dir)
     except Exception as exc:
         logger.warning("Hermes skill-hub injection failed: %s", exc)
 
 
-_SKILL_CENTER_MARKER = ".ksadk-skill-center"
-
-
 def _cleanup_stale_hermes_skills(base_dir: str, current_items: list) -> None:
-    """Remove only Skill Center-managed skill directories that no longer exist.
-
-    Uses a marker file (.ksadk-skill-center) inside each managed directory to
-    distinguish Skill Center entries from Hermes built-in skills.  This
-    ensures we never delete Hermes' own skill directories.
-    """
-    try:
-        current_names = {getattr(i, "name", "") for i in current_items}
-        current_names.discard("")
-        for entry in os.listdir(base_dir):
-            entry_path = os.path.join(base_dir, entry)
-            if not os.path.isdir(entry_path):
-                continue
-            if entry.startswith("."):
-                continue
-            marker_path = os.path.join(entry_path, _SKILL_CENTER_MARKER)
-            if not os.path.isfile(marker_path):
-                continue
-            if entry not in current_names:
-                shutil.rmtree(entry_path, ignore_errors=True)
-                logger.info("Removed stale Skill Center entry: %s", entry)
-    except Exception as exc:
-        logger.warning("Stale skill cleanup failed: %s", exc)
+    """Remove generated Skill Center files, preserving local skills and sidecars."""
+    cleanup_skills(base_dir, {getattr(item, "name", "") for item in current_items})
 
 
-_OPENCLAW_TOOL_NOTE = """
-## OpenClaw MCP Tool Calling Convention
-
-In OpenClaw, MCP tools from Skill Center are accessed via tool_call with the prefix mcp__ksadk_skill_center__.
-
-To execute a Skill Center skill, call:
-  tool_call(name=mcp__ksadk_skill_center__execute_skills, arguments={workflow_prompt: ..., skill_names: [...]})
-
-CRITICAL ROUTING RULE: When a user task matches ANY skill listed in the Skill Center,
-you MUST call mcp__ksadk_skill_center__execute_skills. Do NOT use any built-in tool
-(terminal, browser_navigate, browser_*, read_file, write_file, execute_code,
-or similar) as a substitute for execute_skills.
-
-Built-in tools like terminal and browser_navigate can only perform raw operations;
-they cannot load skill instructions, dependencies, or the sandbox environment.
-execute_skills runs the skill in an isolated sandbox with the correct setup
-automatically.
-
-If you are unsure whether a task matches a Skill Center skill, call
-mcp__ksadk_skill_center__list_skills first to check, then call execute_skills.
-"""
+_OPENCLAW_TOOL_NOTE = "## OpenClaw MCP Tool Calling Convention\n\n" + skill_routing_instructions(
+    "mcp__ksadk_skill_center__"
+)
 
 
 def _cleanup_stale_openclaw_skills(base_dir: str, current_items: list) -> None:
-    """Remove only Skill Center-managed skill directories that no longer exist.
-
-    Uses a marker file (.ksadk-skill-center) inside each managed directory to
-    distinguish Skill Center entries from OpenClaw built-in skills.
-    """
-    try:
-        current_names = {getattr(i, "name", "") for i in current_items}
-        current_names.discard("")
-        for entry in os.listdir(base_dir):
-            entry_path = os.path.join(base_dir, entry)
-            if not os.path.isdir(entry_path):
-                continue
-            if entry.startswith("."):
-                continue
-            marker_path = os.path.join(entry_path, _SKILL_CENTER_MARKER)
-            if not os.path.isfile(marker_path):
-                continue
-            if entry not in current_names:
-                shutil.rmtree(entry_path, ignore_errors=True)
-                logger.info("Removed stale Skill Center entry: %s", entry)
-    except Exception as exc:
-        logger.warning("Stale skill cleanup failed: %s", exc)
+    """Remove generated Skill Center files, preserving local skills and sidecars."""
+    cleanup_skills(base_dir, {getattr(item, "name", "") for item in current_items})
 
 
 def _inject_openclaw_skill_hub(
@@ -497,32 +347,22 @@ def _inject_openclaw_skill_hub(
                 logger.warning("Skipping unsafe skill name: %r", skill_name)
                 continue
             skill_desc = getattr(item, "description", "") or "No description"
-            skill_dir = os.path.join(base_dir, skill_name)
-            # S1 fix: do not overwrite a pre-existing directory we don't own
-            if os.path.isdir(skill_dir) and not _is_managed_dir(skill_dir):
-                logger.warning("Skipping %s: directory exists but is not Skill Center-managed", skill_name)
-                continue
-            os.makedirs(skill_dir, exist_ok=True)
-            with open(os.path.join(skill_dir, _SKILL_CENTER_MARKER), "w") as mf:
-                mf.write("1")
             skill_md_content = (
                 "---\n"
                 f"name: {skill_name}\n"
                 "description: >\n"
                 f"  {skill_desc}\n"
-                "  To execute this skill, call\n"
-                "  mcp__ksadk_skill_center__execute_skills with\n"
-                f"  skill_names=[\"{skill_name}\"].\n"
-                "  Do NOT use terminal, browser_navigate, read_file,\n"
-                "  write_file, or execute_code as a substitute.\n"
+                "  Read its full instructions with\n"
+                "  mcp__ksadk_skill_center__load_skill using\n"
+                f'  skill_name="{skill_name}".\n'
                 "---\n\n"
                 f"# {skill_name}\n\n"
-                f"{skill_desc}\n\n"
-                + _OPENCLAW_TOOL_NOTE.strip()
-                + "\n"
+                f"{skill_desc}\n\n" + _OPENCLAW_TOOL_NOTE.strip() + "\n"
             )
-            with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
-                f.write(skill_md_content)
+            try:
+                write_skill(base_dir, skill_name, skill_md_content)
+            except OSError as exc:
+                logger.warning("Skipping Skill Center entry %s: %s", skill_name, exc)
         logger.info("OpenClaw skill-hub entries created: %d skills under %s", len(items), base_dir)
     except Exception as exc:
         logger.warning("OpenClaw skill-hub injection failed: %s", exc)
