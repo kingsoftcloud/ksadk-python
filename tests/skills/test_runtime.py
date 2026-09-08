@@ -127,6 +127,9 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
         stderr="",
         duration_ms=result.duration_ms,
         output_files=["/tmp/bundle.html"],
+        workflow_status="ok",
+        executed_skill="",
+        instructions="",
     )
     assert calls[0] == (
         "create",

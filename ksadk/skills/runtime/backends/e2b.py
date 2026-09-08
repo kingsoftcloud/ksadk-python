@@ -13,6 +13,7 @@ from ksadk.sandbox import (
     SandboxInputFile as RuntimeSandboxInputFile,
 )
 from ksadk.skills.runtime.base import (
+    parse_workflow_result,
     SandboxInputFile,
     SkillRuntimeError,
     SkillRuntimeResult,
@@ -148,6 +149,7 @@ class E2BSkillRuntimeBackend:
             command = f"python -u /home/ksadk/agent.py --request-file {request_path}"
             result = session.run_command(command, timeout=effective_timeout, env=sandbox_env)
             stdout = result.stdout
+            wf = parse_workflow_result(stdout)
             return SkillRuntimeResult(
                 runtime_id=session.sandbox_id,
                 exit_code=result.exit_code,
@@ -155,6 +157,9 @@ class E2BSkillRuntimeBackend:
                 stderr=result.stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 output_files=parse_output_files(stdout),
+                workflow_status=str(wf.get("status", "")),
+                executed_skill=str(wf.get("executed_skill", "")),
+                instructions=str(wf.get("instructions", "")),
             )
         except Exception as exc:
             error_type = type(exc).__name__

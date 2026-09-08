@@ -132,6 +132,7 @@ def test_render_lancedb_manifest_to_openclaw_patch():
                 "entries": {
                     "memory-lancedb": {
                         "enabled": True,
+                        "hooks": {"allowConversationAccess": True},
                     },
                 },
             }
@@ -156,12 +157,10 @@ def test_render_lancedb_manifest_passes_optional_config_to_plugin():
         }
     )
 
-    assert result.config_patch["plugins"]["entries"]["memory-lancedb"] == {
-        "enabled": True,
-        "config": {
-            "dbPath": "/home/node/.openclaw/memory/lancedb",
-        },
-    }
+    entry = result.config_patch["plugins"]["entries"]["memory-lancedb"]
+    assert entry["enabled"] is True
+    assert entry["config"]["dbPath"] == "/home/node/.openclaw/memory/lancedb"
+    assert entry["hooks"] == {"allowConversationAccess": True}
 
 
 def test_manifest_model_instances_are_revalidated_against_schema():

@@ -731,7 +731,7 @@ def test_runtime_agent_collects_generic_workflow_output_dir(monkeypatch, tmp_pat
     assert result.artifacts == [artifact]
 
 
-def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_path: Path):
+def test_runtime_agent_returns_instructions_for_instruction_only_skill(tmp_path: Path):
     skill_root = tmp_path / "skills" / "instruction-only"
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(
@@ -745,10 +745,12 @@ def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_pa
         selected_skill_names=["instruction-only"],
     )
 
-    assert result.status == "skipped"
+    assert result.status == "instructions"
     assert result.selected_skills == ["instruction-only"]
     assert result.loaded_skills == ["instruction-only"]
-    assert result.warnings == ["No loaded skill exposes an executable workflow entrypoint."]
+    assert result.executed_skill == "instruction-only"
+    assert result.instructions == "# Demo\n"
+    assert any("instruction-only" in w for w in result.warnings)
 
 
 def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypatch, tmp_path: Path):
@@ -787,3 +789,96 @@ def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypat
     assert result.executed_skill == "web-artifacts-builder"
     assert result.output_files == [str(workdir / "demo-artifact" / "bundle.html")]
     assert [command["exit_code"] for command in result.commands] == [0, 0]
+
+
+def test_parse_workflow_result_extracts_status_and_instructions():
+    """parse_workflow_result returns the full workflow_result= JSON payload."""
+    from ksadk.skills.runtime.base import parse_workflow_result
+
+    stdout = "some line\nworkflow_result=" + json.dumps({
+        "status": "ok",
+        "executed_skill": "demo-skill",
+        "instructions": "# Demo\n",
+        "output_files": ["result.txt"],
+    }) + "\nmore output\n"
+    result = parse_workflow_result(stdout)
+    assert result["status"] == "ok"
+    assert result["executed_skill"] == "demo-skill"
+    assert result["instructions"] == "# Demo\n"
+    assert result["output_files"] == ["result.txt"]
+
+
+def test_parse_workflow_result_returns_empty_on_no_result_line():
+    """parse_workflow_result returns empty dict when no workflow_result= line."""
+    from ksadk.skills.runtime.base import parse_workflow_result
+
+    result = parse_workflow_result("just stdout\nno workflow result here\n")
+    assert result == {}
+
+
+def test_parse_workflow_result_returns_empty_on_invalid_json():
+    """parse_workflow_result returns empty dict when JSON is malformed."""
+    from ksadk.skills.runtime.base import parse_workflow_result
+
+    result = parse_workflow_result("workflow_result={invalid json}\n")
+    assert result == {}
+
+
+def test_parse_output_files_delegates_to_parse_workflow_result():
+    """parse_output_files extracts the output_files field from workflow_result."""
+    from ksadk.skills.runtime.base import parse_output_files
+
+    stdout = "workflow_result=" + json.dumps({
+        "output_files": ["a.txt", "b.txt"],
+    }) + "\n"
+    files = parse_output_files(stdout)
+    assert files == ["a.txt", "b.txt"]
+
+
+def test_skill_runtime_result_to_dict_includes_new_fields():
+    """SkillRuntimeResult.to_dict includes workflow_status, executed_skill, instructions."""
+    from ksadk.skills.runtime.base import SkillRuntimeResult
+
+    result = SkillRuntimeResult(
+        runtime_id="local:test",
+        exit_code=0,
+        stdout="ok",
+        stderr="",
+        workflow_status="ok",
+        executed_skill="demo-skill",
+        instructions="# Demo\n",
+    )
+    d = result.to_dict()
+    assert d["workflow_status"] == "ok"
+    assert d["executed_skill"] == "demo-skill"
+    assert d["instructions"] == "# Demo\n"
+    assert result.ok is True
+
+
+def test_has_instructions_detects_instruction_only_skill(tmp_path: Path):
+    """_has_instructions returns True for skills with body but no scripts dir."""
+    from ksadk.skills.runtime.executor import _has_instructions
+
+    skill_root = tmp_path / "skills" / "instruction-only"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: instruction-only\ndescription: Test\n---\n# Instructions\n",
+        encoding="utf-8",
+    )
+    skill = load_local_skill(skill_root)
+    assert _has_instructions(skill) is True
+
+
+def test_has_instructions_returns_false_for_skill_with_scripts(tmp_path: Path):
+    """_has_instructions returns False when a scripts/ dir exists."""
+    from ksadk.skills.runtime.executor import _has_instructions
+
+    skill_root = tmp_path / "skills" / "scripted"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: scripted\ndescription: Test\n---\n# Has scripts\n",
+        encoding="utf-8",
+    )
+    skill = load_local_skill(skill_root)
+    assert _has_instructions(skill) is False
