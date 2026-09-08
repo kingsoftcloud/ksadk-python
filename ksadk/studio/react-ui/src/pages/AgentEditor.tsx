@@ -17,6 +17,7 @@ import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import { agentEditSchema, type AgentEditFormValues } from "../schemas/agentForms";
 import {
   parseProviderConfig,
+  providerConsentKey,
   providerOptionDescription,
   type AgentProviderCatalogItem,
 } from "../agentProviders";
@@ -236,7 +237,7 @@ export function AgentEditor({
   const [runtimeAgentVariable, setRuntimeAgentVariable] = useState("root_agent");
   const [providerRef, setProviderRef] = useState("");
   const [providerConfigText, setProviderConfigText] = useState("{}");
-  const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
+  const [providerConsent, setProviderConsent] = useState<{ key: string; approved: boolean } | null>(null);
   const [executionStrategy, setExecutionStrategy] = useState("direct");
   const [executionMaxSteps, setExecutionMaxSteps] = useState(12);
   const [executionTimeoutSeconds, setExecutionTimeoutSeconds] = useState(120);
@@ -295,6 +296,16 @@ export function AgentEditor({
   const selectedProvider = visibleProviders.find(item => item.providerRef === providerRef);
   const codexProvider = providers.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
   const permissionProvider = runtime === "codex" ? codexProvider : runtime === "plugin" ? selectedProvider : undefined;
+  const consentKey = JSON.stringify([agentId, runtime, providerConsentKey(permissionProvider)]);
+  const savedProviderRef = detail?.draft.spec.runtime?.type === "codex"
+    ? STUDIO_CODEX_PROVIDER_REF : detail?.draft.spec.runtime?.providerRef;
+  const savedPermissions = new Set(detail?.draft.spec.security?.allowedPermissions || []);
+  const providerPermissionsApproved = providerConsent?.key === consentKey
+    ? providerConsent.approved
+    : Boolean(detail?.draft.metadata.id === agentId && permissionProvider
+      && savedProviderRef === permissionProvider.providerRef
+      && permissionProvider.permissions.every(permission => savedPermissions.has(permission)));
+  const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent({ key: consentKey, approved });
   const providerOptions = visibleProviders.map(item => ({
     value: item.providerRef,
     label: item.displayName,
@@ -335,13 +346,6 @@ export function AgentEditor({
         setRuntimeAgentVariable(String(draft.spec?.runtime?.agentVariable || (draft.spec?.runtime?.type === "langgraph" ? "app" : "root_agent")));
         setProviderRef(String(draft.spec?.runtime?.providerRef || ""));
         setProviderConfigText(JSON.stringify(draft.spec?.runtime?.providerConfig || {}, null, 2));
-        const provider = providers.find(item => item.providerRef === (
-          draft.spec?.runtime?.type === "codex" ? STUDIO_CODEX_PROVIDER_REF : draft.spec?.runtime?.providerRef
-        ));
-        const allowed = new Set(draft.spec?.security?.allowedPermissions || []);
-        setProviderPermissionsApproved(Boolean(
-          provider && provider.permissions.every(permission => allowed.has(permission)),
-        ));
         setExecutionStrategy(String(draft.spec?.execution?.strategy || "direct"));
         setExecutionMaxSteps(Number(draft.spec?.execution?.maxSteps ?? 12));
         setExecutionTimeoutSeconds(Number(draft.spec?.execution?.timeoutSeconds ?? 120));
@@ -837,7 +841,6 @@ export function AgentEditor({
                 options={providerOptions}
                 onValueChange={value => {
                   setProviderRef(value);
-                  setProviderPermissionsApproved(false);
                 }}
               />
             </FormField>

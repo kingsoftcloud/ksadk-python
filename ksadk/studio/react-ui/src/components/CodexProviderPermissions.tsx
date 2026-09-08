@@ -19,7 +19,8 @@ export function CodexProviderPermissions({ provider, approved, onChange }: {
           <input type="checkbox" checked={approved} onChange={event => onChange(event.target.checked)} />
           <span>
             <strong>确认 Codex Provider 请求的权限</strong>
-            <small>{provider.permissions.join("、")}；确认后写入此 Agent。安装插件时的同意不代替 Agent 授权。</small>
+            <small>{provider.permissions.map(permission => permission === "process:host-user"
+              ? "允许 Codex 以当前系统用户启动本地进程" : permission).join("、")}；确认后写入此 Agent。安装插件时的同意不代替 Agent 授权。</small>
           </span>
         </label>
       ) : null}

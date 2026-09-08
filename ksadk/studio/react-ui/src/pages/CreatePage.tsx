@@ -25,6 +25,7 @@ import { applyApiFieldErrors } from "../lib/formErrors";
 import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import {
   parseProviderConfig,
+  providerConsentKey,
   providerOptionDescription,
   type AgentProviderCatalogItem,
 } from "../agentProviders";
@@ -201,9 +202,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [agentProviders, setAgentProviders] = useState<AgentProviderCatalogItem[]>([]);
   const [selectedProviderRef, setSelectedProviderRef] = useState("");
   const [providerConfigText, setProviderConfigText] = useState("{}");
-  const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
-  const [codexPermissionsApproved, setCodexPermissionsApproved] = useState(false);
-  const [convCodexPermissionsApproved, setConvCodexPermissionsApproved] = useState(false);
+  const [providerConsent, setProviderConsent] = useState<string | null>(null);
+  const [codexConsent, setCodexConsent] = useState<string | null>(null);
+  const [convCodexConsent, setConvCodexConsent] = useState<string | null>(null);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
   /* 向导状态 */
   const [step, setStep] = useState(1);
@@ -400,6 +401,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     [effectiveAgentProviders, selectedProviderRef],
   );
   const codexProvider = agentProviders.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
+  const selectedConsentKey = providerConsentKey(selectedProvider);
+  const codexConsentKey = providerConsentKey(codexProvider);
+  const providerPermissionsApproved = selectedConsentKey !== null && providerConsent === selectedConsentKey;
+  const codexPermissionsApproved = codexConsentKey !== null && codexConsent === codexConsentKey;
+  const convCodexPermissionsApproved = codexConsentKey !== null && convCodexConsent === codexConsentKey;
+  const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent(approved ? selectedConsentKey : null);
+  const setCodexPermissionsApproved = (approved: boolean) => setCodexConsent(approved ? codexConsentKey : null);
+  const setConvCodexPermissionsApproved = (approved: boolean) => setConvCodexConsent(approved ? codexConsentKey : null);
   const usesNativeCodexTools = runtime === "codex"
     || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
   const effectiveSelectedTools = usesNativeCodexTools ? [] : selectedTools;
