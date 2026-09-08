@@ -17,7 +17,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_APPROVAL_RECORD = REPO_ROOT / "docs" / "maintainer-approval-record.md"
 REQUIRED_SIGNOFF_ROLES = ("Maintainer", "Security reviewer", "Release owner")
@@ -90,18 +89,12 @@ def _decision_map(text: str) -> dict[str, str]:
 
 def _strategy_map(text: str) -> dict[str, str]:
     return {
-        cells[0]: cells[1]
-        for cells in _table_rows(text, "Publication Strategy")
-        if len(cells) >= 2
+        cells[0]: cells[1] for cells in _table_rows(text, "Publication Strategy") if len(cells) >= 2
     }
 
 
 def _signoff_rows(text: str) -> dict[str, list[str]]:
-    return {
-        cells[0]: cells
-        for cells in _table_rows(text, "Approval Sign-Off")
-        if len(cells) >= 4
-    }
+    return {cells[0]: cells for cells in _table_rows(text, "Approval Sign-Off") if len(cells) >= 4}
 
 
 def _source_ref(text: str, name: str) -> str:
@@ -126,14 +119,16 @@ def _current_commit() -> str:
 
 def _source_ref_is_filled(value: str) -> bool:
     normalized = value.strip().lower()
-    return bool(normalized) and normalized not in {
+    if not normalized or normalized in {
         "tbd",
         "todo",
         "no",
         "none",
         "n/a",
         "<reviewed source reference>",
-    }
+    }:
+        return False
+    return not any(marker in normalized for marker in ("tbd", "todo", "pending", "awaiting"))
 
 
 def validate_approval_record(
@@ -209,12 +204,20 @@ def validate_approval_record(
     signoffs = _signoff_rows(text)
     for role in REQUIRED_SIGNOFF_ROLES:
         cells = signoffs.get(role, [])
-        filled = len(cells) >= 4 and all(cell.strip() for cell in cells[1:4])
+        name = cells[1].strip() if len(cells) >= 2 else ""
+        decision = cells[2].strip() if len(cells) >= 3 else ""
+        date = cells[3].strip() if len(cells) >= 4 else ""
+        filled = bool(
+            name
+            and name.lower() not in {"pending", "tbd", "todo"}
+            and decision.lower() == "approved"
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
+        )
         checks.append(
             ApprovalCheck(
                 name=f"signoff:{role}",
                 ok=filled,
-                detail="name, decision, and date must be filled",
+                detail="name, the exact decision Approved, and an ISO date are required",
             )
         )
 
@@ -228,7 +231,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--expected-current-commit",
         default=None,
-        help="commit SHA that approved source references must include; defaults to git rev-parse HEAD",
+        help=(
+            "commit SHA that approved source references must include; "
+            "defaults to git rev-parse HEAD"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="print JSON output")
     return parser.parse_args(argv)

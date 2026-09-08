@@ -5,11 +5,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ksadk.events.runtime_event import EventType
-
 
 def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return A2UI v0.9 operations carried by an AG-UI activity event."""
+    """Return A2UI v0.9 operations carried by an AG-UI activity event.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``）：
+    - 操作列表，每条形如 ``{"version": "v0.9", createSurface|updateComponents|
+      updateDataModel|deleteSurface: {...}}``，内层必含 ``surfaceId``；
+    - 无 surface 信息时返回空列表。
+
+    内部不保证字段：操作的构造来源（显式 operations vs 从 surface 推导）、
+    catalogId 缺省值之外的字段顺序与附加键。
+    """
 
     explicit = payload.get("operations", payload.get("a2ui_operations"))
     if isinstance(explicit, list):
@@ -18,7 +25,7 @@ def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list
     surface_id = str(payload.get("surface_id") or payload.get("surfaceId") or "")
     if not surface_id:
         return []
-    if event_type == EventType.A2UI_SURFACE_END:
+    if event_type == "a2ui.surface.end":
         return [{"version": "v0.9", "deleteSurface": {"surfaceId": surface_id}}]
 
     surface = payload.get("surface")
@@ -26,7 +33,7 @@ def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list
     components = _flatten_components(surface_data.get("components"))
     data_model = surface_data.get("data_model", surface_data.get("dataModel"))
     operations: list[dict[str, Any]] = []
-    if event_type == EventType.A2UI_SURFACE_BEGIN:
+    if event_type == "a2ui.surface.begin":
         catalog_id = str(
             surface_data.get("catalog_id")
             or surface_data.get("catalogId")

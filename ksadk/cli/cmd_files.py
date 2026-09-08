@@ -607,7 +607,11 @@ def _resolve_workspace_command_context(
     cwd = Path(".").resolve()
     state = load_state(cwd)
     resolved_region = _resolve_workspace_region(region, state)
-    target_agent = _resolve_workspace_agent_ref(agent_input, cwd)
+    # An explicit runtime endpoint is authoritative. Do not leak an unrelated
+    # Agent id from the current workspace state into direct-runtime requests.
+    target_agent = (
+        None if endpoint and not agent_input else _resolve_workspace_agent_ref(agent_input, cwd)
+    )
     resolved_endpoint, resolved_api_key = _resolve_workspace_runtime_access(
         state=state,
         target_agent=target_agent,

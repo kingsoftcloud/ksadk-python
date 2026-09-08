@@ -1,0 +1,493 @@
+{
+  "description": "Cross-protocol golden fixture: two text items with identical text, reasoning, tool call/result, approval, structured input, A2UI surface, and terminal output_refs.",
+  "session_id": "golden-session",
+  "run_id": "golden-run",
+  "events": [
+    {
+      "schema_version": 2,
+      "event_type": "run.started",
+      "event_id": "evt-run-started",
+      "seq": 1,
+      "timestamp": 1000.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {
+          "session_id": "golden-session",
+          "input": "do the task",
+          "source": "ag-ui"
+        }
+      },
+      "status": "running"
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.started",
+      "event_id": "evt-msg-1-started",
+      "seq": 2,
+      "timestamp": 1001.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "msg-legal-1",
+      "item_kind": "message",
+      "phase": "final_answer",
+      "initial": null
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.updated",
+      "event_id": "evt-msg-1-delta-1",
+      "seq": 3,
+      "timestamp": 1002.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "msg-legal-1",
+      "item_kind": "message",
+      "op": "append",
+      "update": {
+        "content_type": "text",
+        "part_id": "text-0",
+        "text": "The answer is 42."
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.completed",
+      "event_id": "evt-msg-1-completed",
+      "seq": 4,
+      "timestamp": 1003.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "msg-legal-1",
+      "item_kind": "message",
+      "snapshot": {
+        "parts": [
+          {
+            "content_type": "text",
+            "part_id": "text-0",
+            "text": "The answer is 42."
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.started",
+      "event_id": "evt-msg-2-started",
+      "seq": 5,
+      "timestamp": 1004.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "msg-legal-2",
+      "item_kind": "message",
+      "phase": "final_answer",
+      "initial": null
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.updated",
+      "event_id": "evt-msg-2-delta-1",
+      "seq": 6,
+      "timestamp": 1005.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "msg-legal-2",
+      "item_kind": "message",
+      "op": "append",
+      "update": {
+        "content_type": "text",
+        "part_id": "text-0",
+        "text": "The answer is 42."
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.completed",
+      "event_id": "evt-msg-2-completed",
+      "seq": 7,
+      "timestamp": 1006.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "msg-legal-2",
+      "item_kind": "message",
+      "snapshot": {
+        "parts": [
+          {
+            "content_type": "text",
+            "part_id": "text-0",
+            "text": "The answer is 42."
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.started",
+      "event_id": "evt-reasoning-1-started",
+      "seq": 8,
+      "timestamp": 1007.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "reasoning-1",
+      "item_kind": "reasoning",
+      "phase": "commentary",
+      "initial": null
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.updated",
+      "event_id": "evt-reasoning-1-delta",
+      "seq": 9,
+      "timestamp": 1008.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "reasoning-1",
+      "item_kind": "reasoning",
+      "op": "append",
+      "update": {
+        "content_type": "text",
+        "part_id": "text-0",
+        "text": "Analyzing the question..."
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.completed",
+      "event_id": "evt-reasoning-1-completed",
+      "seq": 10,
+      "timestamp": 1009.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "reasoning-1",
+      "item_kind": "reasoning",
+      "snapshot": {
+        "parts": [
+          {
+            "content_type": "text",
+            "part_id": "text-0",
+            "text": "Analyzing the question..."
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.started",
+      "event_id": "evt-tool-call-started",
+      "seq": 11,
+      "timestamp": 1010.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "tool-call-1",
+      "item_kind": "tool_call",
+      "phase": "commentary",
+      "initial": {
+        "parts": [
+          {
+            "content_type": "tool_call",
+            "part_id": "call-1",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": {"query": "meaning of life"}
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.completed",
+      "event_id": "evt-tool-call-completed",
+      "seq": 12,
+      "timestamp": 1011.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "tool-call-1",
+      "item_kind": "tool_call",
+      "snapshot": {
+        "parts": [
+          {
+            "content_type": "tool_call",
+            "part_id": "call-1",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": {"query": "meaning of life"}
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.started",
+      "event_id": "evt-tool-result-started",
+      "seq": 13,
+      "timestamp": 1010.5,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "tool-result-1",
+      "item_kind": "tool_result",
+      "phase": "commentary",
+      "initial": null
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.completed",
+      "event_id": "evt-tool-result-completed",
+      "seq": 14,
+      "timestamp": 1012.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "item_id": "tool-result-1",
+      "item_kind": "tool_result",
+      "snapshot": {
+        "parts": [
+          {
+            "content_type": "tool_result",
+            "part_id": "call-1",
+            "call_id": "call-1",
+            "result": "42 is the answer"
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "interaction.requested",
+      "event_id": "evt-approval-requested",
+      "seq": 15,
+      "timestamp": 1013.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {"protocol": "ag-ui"}
+      },
+      "interaction_id": "approval-1",
+      "interaction_kind": "approval",
+      "request": {
+        "request_type": "approval",
+        "call_id": "call-1",
+        "kind": "command_execution",
+        "detail": {"command": "rm -rf /tmp/test", "cwd": "/workspace"}
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "interaction.resolved",
+      "event_id": "evt-approval-resolved",
+      "seq": 16,
+      "timestamp": 1014.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {"protocol": "ag-ui"}
+      },
+      "interaction_id": "approval-1",
+      "interaction_kind": "approval",
+      "response": {
+        "response_type": "approval",
+        "decision": "approved",
+        "data": null
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "interaction.requested",
+      "event_id": "evt-structured-input-requested",
+      "seq": 17,
+      "timestamp": 1015.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "interaction_id": "structured-input-1",
+      "interaction_kind": "structured_input",
+      "request": {
+        "request_type": "structured_input",
+        "prompt": "Enter your configuration",
+        "schema": {
+          "type": "object",
+          "properties": {"mode": {"type": "string"}},
+          "required": ["mode"]
+        }
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "interaction.resolved",
+      "event_id": "evt-structured-input-resolved",
+      "seq": 18,
+      "timestamp": 1016.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "interaction_id": "structured-input-1",
+      "interaction_kind": "structured_input",
+      "response": {
+        "response_type": "structured_input",
+        "data": {"mode": "production"}
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.started",
+      "event_id": "evt-a2ui-surface-started",
+      "seq": 19,
+      "timestamp": 1017.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "protocol": "a2ui",
+        "metadata": {"surface_id": "surface-golden"}
+      },
+      "item_id": "a2ui-surface-golden",
+      "item_kind": "data",
+      "phase": "commentary",
+      "initial": {
+        "parts": [
+          {
+            "content_type": "data",
+            "part_id": "a2ui-surface",
+            "data": [
+              {
+                "version": "v0.9",
+                "createSurface": {
+                  "surfaceId": "surface-golden",
+                  "catalogId": "catalog-golden"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.updated",
+      "event_id": "evt-a2ui-surface-updated",
+      "seq": 20,
+      "timestamp": 1018.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "protocol": "a2ui",
+        "metadata": {"surface_id": "surface-golden"}
+      },
+      "item_id": "a2ui-surface-golden",
+      "item_kind": "data",
+      "op": "replace",
+      "update": {
+        "content_type": "data",
+        "part_id": "a2ui-surface",
+        "data": [
+          {
+            "version": "v0.9",
+            "updateComponents": {
+              "surfaceId": "surface-golden",
+              "components": [
+                {"id": "root", "component": "Text", "text": "Status: done"}
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "item.completed",
+      "event_id": "evt-a2ui-surface-completed",
+      "seq": 21,
+      "timestamp": 1019.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "protocol": "a2ui",
+        "metadata": {"surface_id": "surface-golden"}
+      },
+      "item_id": "a2ui-surface-golden",
+      "item_kind": "data",
+      "snapshot": {
+        "parts": []
+      }
+    },
+    {
+      "schema_version": 2,
+      "event_type": "run.completed",
+      "event_id": "evt-run-completed",
+      "seq": 22,
+      "timestamp": 1020.0,
+      "run_id": "golden-run",
+      "scope_id": "scope-golden-run",
+      "source": {
+        "framework": "ksadk",
+        "metadata": {}
+      },
+      "status": "completed",
+      "output_refs": [
+        {"scope_id": "scope-golden-run", "item_id": "msg-legal-1", "part_id": null},
+        {"scope_id": "scope-golden-run", "item_id": "msg-legal-2", "part_id": null}
+      ]
+    }
+  ]
+}

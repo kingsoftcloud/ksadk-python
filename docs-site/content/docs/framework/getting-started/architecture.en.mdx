@@ -2,55 +2,51 @@
 title: Architecture
 ---
 
-KsADK's public architecture is an **Agent Runtime Platform** layer. You keep building business agents with your chosen framework, while KsADK unifies runtime, debugging, protocols, tools, sandboxing, deployment, and observability.
+KsADK provides runtime capabilities for Agents. Agent Kernel centralizes concurrency, recovery, and state consistency. Harness owns unified control and lifecycle, while pluggable Providers connect different execution kernels. Native framework semantics remain inside each Provider, and APIs, Studio, and hosted surfaces share one event fact chain.
 
-![KsADK Agent Runtime Platform architecture](/assets/ksadk-runtime-architecture.en.svg)
+![KsADK technical architecture](/assets/ksadk-runtime-architecture.en.svg)
 
-## Overview
+## Architecture Flow
 
-The diagram above shows KsADK's three-layer architecture: business Agent frameworks (user-provided) → KsADK Runtime data plane (core) → hosted control plane. KsADK layers runtime, debugging, protocols, tools, sandbox, deployment, and observability on top of your chosen Agent framework, while business logic stays in your framework code.
+| Layer | Core responsibility |
+| --- | --- |
+| Access | SDK, CLI, Studio, standard APIs, A2A, and automated tasks |
+| Trusted kernel | admission, leases and fencing, concurrency and backpressure, cancel and resume, and state consistency |
+| Harness and plugins | load a composition, select one Provider, and own the Activation lifecycle |
+| Shared capabilities | inject context, tools, safety, MCP, Skill, sandbox, memory, and observability through a capability bus |
+| Events and presentation | adapt native Provider events to RuntimeEvent v2, persist them, and project them to each surface |
 
-<Callout type="info" title="Key boundary">
-  KsADK owns "how the agent runs", not "what it does". Agent logic, prompts, and domain tools stay in your framework code; runtime, sessions, tool protocols, deployment, and observability are handled by KsADK.
+<Callout type="info" title="Core boundary">
+  Agent Kernel decides whether a run can execute safely. Harness decides how the run is assembled and hosted. The Provider decides how its framework executes. Keeping these responsibilities separate prevents one Agent framework from becoming platform control logic.
 </Callout>
 
-## Main Boundaries
+## Harness and Plugins
 
-| Layer | Responsibility |
+A plugin composition describes what an activation loads. PluginHost discovers, validates, stages, health-checks, switches, and disposes the selected graph. Each Activation selects exactly one Agent Provider and receives an isolated execution context.
+
+| Component | Ownership |
 | --- | --- |
-| Agent frameworks | business orchestration, state, tool calls, and model interaction |
-| KsADK CLI | project creation, config loading, local runs, Web UI startup, packaging |
-| Runner | adapt ADK, LangGraph, LangChain, and DeepAgents to one invocation contract |
-| Local server | expose `/v1/responses`, `/v1/chat/completions`, and local Web UI APIs |
-| Toolsets | provide Skill, Workspace, Platform, and Sandbox tool entrypoints |
-| AgentEngine / Hermes / OpenClaw | remote runtime, deployment, and fuller backend execution |
-| OpenTelemetry | standard tracing output for external observability systems |
+| PluginHost | plugin graph, permission admission, health checks, atomic switching, and lifecycle |
+| Harness | control entry, tool access, session continuity, context, and event output |
+| Provider | native framework execution, private thread or checkpoint state, and native event semantics |
+| Capability plugins | composable Session, Memory, Context, Renderer, MCP, and Skill capabilities |
 
-## Local Runtime Path
+This boundary lets Codex, KsADK Harness, DSH / Cordis, and SubagentProvider share one host contract while preserving their execution models.
 
-The flow when you run `agentengine run` or `agentengine web`:
+## Event Fact Chain
 
-<Steps>
-  1. The CLI resolves the project directory, `.env`, and `agentengine.yaml`.
-  2. Framework detection identifies ADK, LangGraph, LangChain, or DeepAgents.
-  3. The runner factory creates the matching runner.
-  4. The runner loads the user agent.
-  5. The terminal, Web UI, or OpenAI-Compatible API invokes the runner.
-  6. Sessions, attachments, workspace files, tool calls, and tracing use the KsADK runtime path.
-</Steps>
+Framework adapters preserve source, scope, and item identity before converting Provider events to `RuntimeEvent v2`. Events are written to the SessionEvent log, then projected into streaming responses, aggregate results, and resumable views.
 
 <Callout type="info">
-  Sessions, attachments, workspace, and tracing all flow through the same KsADK runtime path — local and remote behavior match, so you can debug locally and migrate to the hosted runtime seamlessly.
+  APIs, Studio, and hosted surfaces consume the same projections instead of parsing framework-private streams independently. Live output, persisted replay, and final results therefore stay consistent.
 </Callout>
 
-## Why This Architecture Matters
+## SDK and Platform Boundary
 
-The boundary lets teams keep their preferred agent frameworks while sharing:
+| Inside the KsADK runtime | Connected through external contracts |
+| --- | --- |
+| SDK, CLI, Server, Agent Kernel, Harness, plugin host, Providers, events, and sessions | AgentEngine control plane, model and A2A services, Skill and Sandbox services, and OTLP backends |
 
-- one local command surface.
-- one browser debugging experience.
-- one OpenAI-Compatible API surface.
-- one Skill / Workspace / Sandbox tool model.
-- one deployment and observability path.
+KsADK does not rebuild a complete control platform inside the SDK. Registration, remote lifecycle, gateway governance, and external service resources remain platform responsibilities exposed through explicit contracts.
 
-For lower-level implementation details, see [Runtime Architecture](../guides/runtime-architecture).
+For implementation details, see [Runtime Architecture](../guides/runtime-architecture.mdx). For plugin, Provider, and scheduled-task configuration, see [Plugins and Automations](../guides/plugins-and-automations.mdx).

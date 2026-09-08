@@ -21,6 +21,7 @@ from .server import ProxyServer
 # 进程级单例:setup_environment 多次调用只起一个 proxy
 _proxy: Optional[ProxyServer] = None
 _original_base: Optional[str] = None
+_original_base_env: Optional[dict[str, str | None]] = None
 
 
 def setup_proxy_redirect_if_enabled(
@@ -35,7 +36,7 @@ def setup_proxy_redirect_if_enabled(
     返回 proxy base_url(已重定向)或 None(未启用)。多次调用幂等(单例)。
     上游凭证来自 ProxyConfig(从 env 读),不下发给子进程(凭证闭合)。
     """
-    global _proxy, _original_base
+    global _proxy, _original_base, _original_base_env
     if _proxy is not None:
         return _proxy.base_url  # 幂等:已起
     gate = gate or ProxyGate.from_env()
@@ -48,9 +49,7 @@ def setup_proxy_redirect_if_enabled(
         or os.environ.get("OPENAI_API_BASE")
         or ""
     )
-    key = (
-        api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY") or ""
-    )
+    key = api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY") or ""
     token = local_token or os.environ.get("KSADK_PROXY_TOKEN") or ""
     if not upstream or not key:
         return None  # 缺凭证/上游,不启用(保持原 env)
@@ -59,7 +58,11 @@ def setup_proxy_redirect_if_enabled(
     srv.start()
     _proxy = srv
     # 记录原 base 并重定向(双别名都指向 proxy)
-    _original_base = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+    _original_base_env = {
+        "OPENAI_BASE_URL": os.environ.get("OPENAI_BASE_URL"),
+        "OPENAI_API_BASE": os.environ.get("OPENAI_API_BASE"),
+    }
+    _original_base = _original_base_env["OPENAI_BASE_URL"] or _original_base_env["OPENAI_API_BASE"]
     os.environ["OPENAI_BASE_URL"] = srv.base_url
     os.environ["OPENAI_API_BASE"] = srv.base_url
     if not token:
@@ -70,11 +73,15 @@ def setup_proxy_redirect_if_enabled(
 
 def teardown_proxy_redirect() -> None:
     """回收 proxy 并恢复原 OPENAI_BASE_URL(进程退出/卸载时调)。"""
-    global _proxy, _original_base
+    global _proxy, _original_base, _original_base_env
     if _proxy is not None:
         _proxy.stop()
         _proxy = None
-    if _original_base is not None:
-        os.environ["OPENAI_BASE_URL"] = _original_base
-        os.environ["OPENAI_API_BASE"] = _original_base
+    if _original_base_env is not None:
+        for key, value in _original_base_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        _original_base_env = None
         _original_base = None

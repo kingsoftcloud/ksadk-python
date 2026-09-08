@@ -30,12 +30,21 @@ adapter)。本模块定义三层结构与六动词签名,供 Runtime 产生端�
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ksadk.events.runtime_event import RuntimeEvent
+from ksadk.kernel.contracts import (
+    InjectPayload,
+    RuntimeCapability,
+    RuntimeCapabilityMatrix,
+    SteerPayload,
+)
+from ksadk.kernel.errors import UnsupportedControlError
+from ksadk.runtime.launch import RuntimeLaunchContext, RuntimeServices
 
 # ---------------------------------------------------------------------------
 # cancel 状态机
@@ -60,6 +69,19 @@ class CancelResult(str, Enum):
 
     FAILED = "failed"
     """取消动作本身失败(如底层 runtime 报错)。"""
+
+
+class PauseResult(str, Enum):
+    """Non-terminal pause capability result.
+
+    Pause is deliberately separate from :class:`CancelResult`: an adapter must
+    never claim a run is resumable after applying destructive cancel semantics.
+    """
+
+    PAUSED_ACTIVE_TURN = "paused_active_turn"
+    NOT_SUPPORTED = "not_supported"
+    NOT_RUNNING = "not_running"
+    FAILED = "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +158,9 @@ class CheckpointDescriptor(BaseModel):
 
 CONVERSATION_PREPROCESSING_METADATA_KEY = "conversation_request"
 """StartRequest metadata key for the shared conversation preprocessing contract."""
+
+RESUME_START_REQUEST_NATIVE_KEY = "_conversation_start_request"
+"""Ephemeral adapter-private key carrying current request context across attach/resume."""
 
 
 class ConversationPreprocessingRequest(BaseModel):
@@ -216,6 +241,19 @@ class BaseRuntime(ABC):
         """原生能力声明(cancel / checkpoint / resume / session continuity 等)。"""
         raise NotImplementedError
 
+    def describe_context_capabilities(self) -> Any:
+        """Context ownership 合同（方案 6.1）：默认按 ``runtime_type`` 显式分派已知 Runner
+        capability，未知走保守 ``framework_assisted + opaque``。
+
+        合同放在 ``BaseRuntime``/``RuntimeAdapter``（平台边界），不再依赖 Runner 类名猜测。
+        ``RunnerRuntimeAdapter`` 经 ``_RunnerAsBaseRuntime`` 汇总内部 ``BaseRunner`` 的声明；
+        Codex 等 native adapter 自带 override。第一个 PR+shadow 接线修正阶段仅供 shadow
+        ContextPlan / conformance 测试消费，不改变真实输入。
+        """
+        from ksadk.context_engine.capabilities import capabilities_for_runtime_type
+
+        return capabilities_for_runtime_type(self.runtime_type)
+
 
 # ---------------------------------------------------------------------------
 # RuntimeAdapter:平台六动词
@@ -236,6 +274,26 @@ class RuntimeAdapter(ABC):
     def runtime(self) -> BaseRuntime:
         return self._runtime
 
+    def describe_context_capabilities(self) -> Any:
+        """平台边界的 Context ownership 合同入口：委托给底层 ``BaseRuntime``。
+
+        ``RunnerRuntimeAdapter`` 经 ``_RunnerAsBaseRuntime`` 汇总内部 Runner 的声明；
+        CodexRuntimeAdapter 自带 override。不在本方法里做类名猜测。
+        """
+        return self._runtime.describe_context_capabilities()
+
+    async def preflight(self) -> None:
+        """Validate that this adapter can accept a new run without creating one.
+
+        This is deliberately an additive lifecycle hook rather than a seventh
+        platform verb.  HTTP streaming routes use it before committing a 200
+        response, so a lazy runner import or configuration failure is returned
+        as a normal request error instead of a detached, half-open SSE stream.
+        Implementations must not allocate a run handle or start model work.
+        """
+
+        return None
+
     @abstractmethod
     async def start(self, request: StartRequest) -> RunHandle:
         """启动一次 run,返回句柄。"""
@@ -255,6 +313,28 @@ class RuntimeAdapter(ABC):
         """请求取消。返回状态机结果;成功 cancel 级联丢弃该 turn 的 pending 审批。"""
         raise NotImplementedError
 
+    async def pause(self, handle: RunHandle) -> PauseResult:
+        """Pause an active turn without invalidating its resumable state.
+
+        This additive hook defaults to an honest unsupported result.  It must
+        not fall back to ``cancel`` because cancellation is terminal for some
+        runtimes (notably Codex).
+        """
+
+        return PauseResult.NOT_SUPPORTED
+
+    async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
+        """Submit input to a live interaction without restarting the stream.
+
+        Runtimes whose HITL model ends the current stream should continue to
+        use :meth:`resume`; live JSON-RPC approval requests use this command
+        channel instead.
+        """
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support live interaction input"
+        )
+
     @abstractmethod
     async def resume(
         self,
@@ -273,10 +353,94 @@ class RuntimeAdapter(ABC):
         cross-process recovery must implement this seam using their framework's
         durable checkpoint/session API.  The default deliberately fails closed.
         """
-        raise RuntimeError(
+        raise UnsupportedControlError(
             f"{type(self).__name__} does not support attaching persisted run "
             f"{handle.run_id!r}; durable runtime restore is unavailable"
         )
+
+    async def steer(self, handle: RunHandle, payload: SteerPayload) -> None:
+        """Mid-turn steering: adjust an in-flight run without ending the turn.
+
+        No runtime exposes a native steer channel today; start/stream never
+        implies steer.  Fails closed until a real implementation overrides it.
+        """
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support steer: "
+            "runtime has no native mid-turn steering channel"
+        )
+
+    async def inject(self, handle: RunHandle, payload: InjectPayload) -> None:
+        """Inject ambient context into an in-flight run without a user turn."""
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support inject: "
+            "runtime has no native mid-turn context injection channel"
+        )
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        """Cross-process restore of a persisted run from durable state.
+
+        Stronger than :meth:`attach`: requires the runtime's checkpoint /
+        continuation to be genuinely durable across processes.  Fails closed
+        by default; an in-memory run table is never evidence of durability.
+        """
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support durable restore of run "
+            f"{handle.run_id!r}: no cross-process checkpoint backend"
+        )
+
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """Typed/versioned capability matrix (``RuntimeCapabilityMatrix/v1``).
+
+        The base declaration is honest: every verb is unavailable with the
+        stable reason ``not_implemented``.  A subclass may only mark a verb
+        ``supported`` when it really overrides the method and the conformance
+        suite passes; unsupported verbs must raise
+        :class:`~ksadk.kernel.errors.UnsupportedControlError` (``pause`` is a
+        state machine and may return ``PauseResult.NOT_SUPPORTED``).
+        """
+
+        def _unavailable(reason: str = "not_implemented") -> RuntimeCapability:
+            return RuntimeCapability(
+                supported=False, mode="unavailable", reason=reason
+            )
+
+        return RuntimeCapabilityMatrix(
+            cancel=_unavailable(),
+            pause=_unavailable(),
+            resume=_unavailable(),
+            submit_interaction=_unavailable(),
+            attach=_unavailable(),
+            steer=_unavailable("runtime_no_native_steer"),
+            inject=_unavailable("runtime_no_native_inject"),
+            checkpoint=_unavailable(),
+            durable_restore=_unavailable(),
+            interaction_mode="unavailable",
+        )
+
+    def native_capabilities(self) -> dict[str, object]:
+        """One-way legacy projection of the typed matrix.
+
+        New code (Server/Studio) must read :meth:`capabilities`; the returned
+        dict is a compatibility view for one release cycle and is never allowed
+        to flow back into the matrix.
+        """
+
+        matrix = self.capabilities()
+        names = (
+            "cancel",
+            "pause",
+            "resume",
+            "submit_interaction",
+            "attach",
+            "steer",
+            "inject",
+            "checkpoint",
+            "durable_restore",
+        )
+        return {name: getattr(matrix, name).supported for name in names}
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         """Return whether ``handle`` is already attached to this adapter process."""
@@ -298,48 +462,68 @@ class RuntimeAdapter(ABC):
 # ---------------------------------------------------------------------------
 
 
+RuntimeAdapterFactory = Callable[[RuntimeLaunchContext], RuntimeAdapter]
+
+
 class RuntimeRegistry:
-    """按 ``runtime_type`` 注册/查找 :class:`RuntimeAdapter`。
+    """按 ``runtime_type`` 注册/创建 :class:`RuntimeAdapter`。
 
     替代 ``runners/factory.py`` 的 if/elif 分发:新 runtime 通过 ``register``
     注册,不再改 factory 分支。
     """
 
     def __init__(self) -> None:
-        self._adapters: dict[str, type[RuntimeAdapter]] = {}
+        self._factories: dict[str, RuntimeAdapterFactory] = {}
 
-    def register(self, runtime_type: str, adapter_cls: type[RuntimeAdapter]) -> None:
+    def register(self, runtime_type: str, factory: RuntimeAdapterFactory) -> None:
         if not isinstance(runtime_type, str) or not runtime_type.strip():
-            raise ValueError("runtime_type 必须是非空字符串")
-        if not (isinstance(adapter_cls, type) and issubclass(adapter_cls, RuntimeAdapter)):
-            raise TypeError(f"adapter_cls 必须是 RuntimeAdapter 子类: {adapter_cls!r}")
-        self._adapters[runtime_type.strip()] = adapter_cls
+            raise ValueError("runtime type must be a non-empty string")
+        key = runtime_type.strip().lower()
+        if key in self._factories:
+            raise ValueError(f"duplicate runtime type: {runtime_type!r}")
+        if not callable(factory):
+            raise TypeError(f"runtime factory must be callable: {factory!r}")
+        self._factories[key] = factory
 
-    def get(self, runtime_type: str) -> type[RuntimeAdapter]:
+    def get(self, runtime_type: str) -> RuntimeAdapterFactory:
+        key = runtime_type.strip().lower()
         try:
-            return self._adapters[runtime_type]
+            return self._factories[key]
         except KeyError:
             raise KeyError(
-                f"未注册的 runtime_type: {runtime_type!r}(已注册: {sorted(self._adapters)})"
+                f"missing runtime type: {runtime_type!r}; registered: {sorted(self._factories)}"
             ) from None
 
-    def create(self, runtime_type: str, runtime: BaseRuntime) -> RuntimeAdapter:
-        """按 runtime_type 实例化 adapter(注入原生 runtime)。"""
-        return self.get(runtime_type)(runtime)
+    def create(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
+        """使用不可变启动上下文创建一个新的 Adapter 实例。"""
+
+        adapter = self.get(context.runtime_type)(context)
+        if not isinstance(adapter, RuntimeAdapter):
+            raise TypeError(
+                f"runtime factory must return RuntimeAdapter, got {type(adapter).__name__}"
+            )
+        return adapter
 
     def registered_types(self) -> list[str]:
-        return sorted(self._adapters)
+        return sorted(self._factories)
 
 
 __all__ = [
     "BaseRuntime",
     "CancelResult",
+    "PauseResult",
     "CheckpointCapability",
     "CheckpointDescriptor",
     "ResumePayload",
     "ResumeTarget",
     "RunHandle",
     "RuntimeAdapter",
+    "RuntimeAdapterFactory",
+    "RuntimeCapability",
+    "RuntimeCapabilityMatrix",
+    "RuntimeLaunchContext",
     "RuntimeRegistry",
+    "RuntimeServices",
     "StartRequest",
+    "UnsupportedControlError",
 ]

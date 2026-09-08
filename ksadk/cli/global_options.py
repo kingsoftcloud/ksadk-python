@@ -18,7 +18,9 @@ def ensure_global_cli_options(command: click.Command) -> click.Command:
     """Inject hidden common options into groups/commands that do not declare them locally."""
     if not _has_long_option(command, "--dry-run"):
         command.params.insert(0, build_dry_run_click_option(hidden=True, expose_value=False))
-    if not _has_long_option(command, "--output"):
+    if not getattr(command, "disable_global_output_option", False) and not _has_long_option(
+        command, "--output"
+    ):
         command.params.insert(0, build_output_click_option(hidden=True, expose_value=False))
     if not _has_long_option(command, "--no-color"):
         command.params.insert(0, build_no_color_click_option(hidden=True, expose_value=False))

@@ -5,8 +5,9 @@
 
 环境变量:
     KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
-    KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
-    KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
+    KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY / KSYUN_ACCESS_KEY_ID)
+    KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY / KSYUN_SECRET_ACCESS_KEY)
+    KSADK_KB_SESSION_TOKEN: STS 临时会话 token (可选，默认取 KSYUN_SESSION_TOKEN)
     KSADK_KB_REGION: 区域 (默认 cn-beijing-6)
     KSADK_KB_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_KB_TOP_K: 返回结果数 (默认 5)
@@ -59,6 +60,7 @@ class KnowledgeBaseClient(BaseModel):
         dataset_id: 知识库 ID (DatasetId)
         access_key: 访问密钥 ID (AK)
         secret_key: 访问密钥 (SK)
+        session_token: STS 临时会话 token
         region: API 区域
         endpoint: API 端点
         top_k: 返回结果数
@@ -71,6 +73,7 @@ class KnowledgeBaseClient(BaseModel):
     dataset_id: str
     access_key: str = ""
     secret_key: str = ""
+    session_token: str = ""
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -79,6 +82,10 @@ class KnowledgeBaseClient(BaseModel):
     score_threshold: float = 0.0
     score_threshold_enabled: bool = False
     reranking_enable: bool = False
+    # 最近一次检索失败原因（成功调用前置空，失败时填充）。供
+    # KnowledgeBaseService.build_context 区分"后端吞错返空"与"真无结果"，
+    # 避免错误伪装成"未找到"注入模型上下文。
+    last_error: str = ""
 
     _aicp_client: Any = None
 
@@ -133,7 +140,9 @@ class KnowledgeBaseClient(BaseModel):
                 "Ensure kingsoftcloud-sdk-python is installed and up to date."
             )
 
-        cred = credential.Credential(self.access_key, self.secret_key)
+        cred = credential.Credential(
+            self.access_key, self.secret_key, self.session_token or None
+        )
 
         http_profile = HttpProfile()
         http_profile.endpoint = self.endpoint
@@ -183,6 +192,7 @@ class KnowledgeBaseClient(BaseModel):
         try:
             data = json.loads(response) if isinstance(response, str) else response
         except (json.JSONDecodeError, TypeError):
+            self.last_error = f"Failed to parse response: {str(response)[:200]}"
             logger.error(f"Failed to parse response: {str(response)[:200]}")
             return []
 
@@ -225,6 +235,7 @@ class KnowledgeBaseClient(BaseModel):
             f"Searching knowledge base: dataset_id={self.dataset_id}, " f"query='{query[:50]}'"
         )
 
+        self.last_error = ""
         try:
             response = client.call("RetrieveKnowledge", params, options={"IsPostJson": True})
             results = self._parse_response(response)
@@ -233,6 +244,7 @@ class KnowledgeBaseClient(BaseModel):
             )
             return results
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Knowledge base search failed: {e}")
             raise
 
@@ -255,12 +267,17 @@ class KnowledgeBaseClient(BaseModel):
         access_key = (
             os.environ.get("KSADK_KB_ACCESS_KEY")
             or os.environ.get("KSYUN_ACCESS_KEY")
+            or os.environ.get("KSYUN_ACCESS_KEY_ID")
             or os.environ.get("KSYUN_SECRET_ID", "")
         )
         secret_key = (
             os.environ.get("KSADK_KB_SECRET_KEY")
             or os.environ.get("KSYUN_SECRET_KEY")
-            or os.environ.get("KSYUN_SECRET_KEY", "")
+            or os.environ.get("KSYUN_SECRET_ACCESS_KEY", "")
+        )
+        session_token = (
+            os.environ.get("KSADK_KB_SESSION_TOKEN")
+            or os.environ.get("KSYUN_SESSION_TOKEN", "")
         )
 
         score_threshold_str = os.environ.get("KSADK_KB_SCORE_THRESHOLD", "")
@@ -275,6 +292,7 @@ class KnowledgeBaseClient(BaseModel):
             dataset_id=dataset_id,
             access_key=access_key,
             secret_key=secret_key,
+            session_token=session_token,
             region=connection["region"],
             endpoint=connection["endpoint"],
             scheme=connection["scheme"],

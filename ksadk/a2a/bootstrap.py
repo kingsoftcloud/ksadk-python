@@ -241,7 +241,6 @@ class AgentEngineA2ABootstrap:
         self,
         app: FastAPI,
         *,
-        runner: Any,
         runtime_adapter: RuntimeAdapter,
         runtime_type: str,
     ) -> Any | None:
@@ -276,7 +275,6 @@ class AgentEngineA2ABootstrap:
         )
         self._server = add_a2a_protocol_routes(
             app,
-            runner,
             config,
             task_adapter=task_adapter,
             task_store=_require(self._task_store, "task_store"),

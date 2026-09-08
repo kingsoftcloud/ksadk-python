@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,17 +27,16 @@ from a2a.types import (
     SendMessageConfiguration,
     SendMessageRequest,
     SubscribeToTaskRequest,
-    TaskState,
 )
 from google.protobuf.json_format import MessageToDict, ParseDict
 
+from ksadk.a2a._space_client_events import _SpaceClientEventMixin
 from ksadk.a2a.control_plane import (
-    ENV_A2A_CONTROL_PLANE_URL,
+    A2AAgentCardClient,
     A2AControlPlane,
     A2ARouteInterface,
     CredentialInjection,
     DiscoveredAgent,
-    InternalA2AControlPlaneClient,
     PreparedA2AOperation,
     SpaceAgentPage,
 )
@@ -54,6 +53,7 @@ from ksadk.events.runtime_event import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
+ENV_A2A_SPACE_ID = "KSADK_A2A_SPACE_ID"
 ENV_A2A_SPACE_IDS = "KSADK_A2A_SPACE_IDS"
 ENV_A2A_ENABLE_PUBLIC_EGRESS = "KSADK_A2A_ENABLE_PUBLIC_EGRESS"
 
@@ -61,6 +61,14 @@ ERR_PUBLIC_EGRESS_DISABLED = "A2A_PUBLIC_EGRESS_DISABLED"
 MAX_A2A_MESSAGE_BYTES = 1024 * 1024
 MAX_A2A_MESSAGE_PARTS = 64
 MAX_A2A_MESSAGE_ID_LENGTH = 128
+
+
+def _require_opaque_space_id(value: str, *, field_name: str) -> str:
+    """Validate a server-issued opaque Space ID without assuming a prefix."""
+    normalized = str(value or "").strip()
+    if not normalized or len(normalized) > 256 or any(char.isspace() for char in normalized):
+        raise ValueError(f"{field_name} must be a non-empty opaque resource ID")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -96,7 +104,7 @@ def _present_message_field(value: Any, field_name: str) -> Any | None:
     return getattr(value, field_name, None)
 
 
-class A2ASpaceClient:
+class A2ASpaceClient(_SpaceClientEventMixin):
     """Discovers Space members and performs permit-authorized A2A calls."""
 
     def __init__(
@@ -111,7 +119,7 @@ class A2ASpaceClient:
         event_outbox: A2ATaskEventOutbox | None = None,
         event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> None:
-        require_a2a_resource_id(space_id, "a2a-space-", field_name="space_id")
+        space_id = _require_opaque_space_id(space_id, field_name="space_id")
         if external_transport is not None and not isinstance(
             external_transport, A2AExternalTransport
         ):
@@ -148,19 +156,15 @@ class A2ASpaceClient:
         event_outbox: A2ATaskEventOutbox | None = None,
         event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> "A2ASpaceClient":
-        selected_space_id = str(space_id or "").strip()
+        selected_space_id = str(space_id or os.getenv(ENV_A2A_SPACE_ID) or "").strip()
         if selected_space_id:
-            require_a2a_resource_id(
-                selected_space_id,
-                "a2a-space-",
-                field_name="space_id",
-            )
+            selected_space_id = _require_opaque_space_id(selected_space_id, field_name="space_id")
         else:
             raw_space_ids = str(os.getenv(ENV_A2A_SPACE_IDS) or "").strip()
             if not raw_space_ids:
                 raise ValueError(
-                    f"missing {ENV_A2A_SPACE_IDS}; pass space_id or add the Runtime Agent "
-                    "to an A2A Space first"
+                    f"missing {ENV_A2A_SPACE_ID} and {ENV_A2A_SPACE_IDS}; pass space_id "
+                    "or add the Runtime Agent to an A2A Space first"
                 )
             try:
                 configured_space_ids = json.loads(raw_space_ids)
@@ -175,10 +179,8 @@ class A2ASpaceClient:
                 if not isinstance(configured_space_id, str):
                     raise ValueError(f"{ENV_A2A_SPACE_IDS}[{index}] must be an A2A Space ID string")
                 normalized = configured_space_id.strip()
-                require_a2a_resource_id(
-                    normalized,
-                    "a2a-space-",
-                    field_name=f"{ENV_A2A_SPACE_IDS}[{index}]",
+                normalized = _require_opaque_space_id(
+                    normalized, field_name=f"{ENV_A2A_SPACE_IDS}[{index}]"
                 )
                 normalized_space_ids.append(normalized)
             if len(set(normalized_space_ids)) != len(normalized_space_ids):
@@ -189,11 +191,19 @@ class A2ASpaceClient:
                 )
             selected_space_id = normalized_space_ids[0]
         if backend is None:
-            control_plane_url = str(os.getenv(ENV_A2A_CONTROL_PLANE_URL) or "").strip()
-            if not control_plane_url:
-                raise ValueError(f"missing {ENV_A2A_CONTROL_PLANE_URL}")
-            backend = InternalA2AControlPlaneClient(
-                control_plane_url,
+            from ksadk.a2a.service_env import (
+                resolve_a2a_service_token,
+                resolve_a2a_service_url,
+            )
+
+            service_url = resolve_a2a_service_url()
+            if not service_url:
+                raise ValueError(
+                    "A2A service url not configured: set KSADK_A2A_SERVICE_URL or AICP env"
+                )
+            backend = A2AAgentCardClient(
+                service_url,
+                service_token=resolve_a2a_service_token(),
                 httpx_client=httpx_client,
             )
         if egress_enabled is None:
@@ -354,7 +364,9 @@ class A2ASpaceClient:
             async for response in client.send_message(request, context=context):
                 response_task = _present_message_field(response, "task")
                 if response_task is not None and str(getattr(response_task, "id", None) or ""):
-                    first_task = first_task or response_task
+                    # 跟踪最新 task 状态：每个带 task 的 response 都更新 first_task，
+                    # 使 send_message 返回的是最终状态(如 COMPLETED)而非首个 SUBMITTED。
+                    first_task = response_task
                     observed_task_id = str(response_task.id)
                     observed_context_id = str(response_task.context_id or "") or None
                     if remote_task_id is None:
@@ -464,9 +476,11 @@ class A2ASpaceClient:
 
     async def get_task(self, task_id: str) -> A2APlatformTask:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        cached_agent = self._agents_by_task.get(task_id)
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
             operation="get_task",
+            agent_id=getattr(cached_agent, "agent_id", None),
         )
         self._validate_prepared_ids(prepared)
         remote_task_ref = self._require_remote_task(prepared)
@@ -627,10 +641,12 @@ class A2ASpaceClient:
         headers: dict[str, str]
         async with AsyncExitStack() as exit_stack:
             if prepared.route.kind == "hosted_gateway":
+                token = self._backend.gateway_token()
                 headers = {
-                    "Authorization": f"Bearer {self._backend.gateway_token()}",
                     "X-AgentEngine-A2A-Permit": prepared.call_permit,
                 }
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
                 http = self._httpx_client
             else:
                 if prepared.route.kind == "external_public" and not self._egress_enabled:
@@ -670,6 +686,7 @@ class A2ASpaceClient:
             route_card = self._card_for_route(agent.agent_card, route)
             owned_http = None
             if http is None:
+                # 外部调用方需自行传入已配置 verify 的 httpx_client。
                 owned_http = httpx.AsyncClient(trust_env=False)
                 http = owned_http
             client = await create_client(
@@ -731,330 +748,6 @@ class A2ASpaceClient:
             observed_at=_utc_now(),
         )
 
-    async def _project_stream_item(
-        self,
-        platform_task_id: str,
-        item: Any,
-        agent: DiscoveredAgent,
-        *,
-        wire_position: int,
-        operation_instance_id: str,
-    ) -> list[RuntimeEvent]:
-        runtime_events = self._stream_item_to_events(
-            item,
-            agent,
-            wire_position=wire_position,
-            invocation_id=platform_task_id,
-        )
-        platform_events = self._platform_events(
-            item,
-            platform_task_id,
-            operation_instance_id=operation_instance_id,
-            wire_position=wire_position,
-        )
-        if platform_events:
-            await self._event_dispatcher.enqueue(
-                platform_task_id=platform_task_id,
-                events=platform_events,
-            )
-        return await self._persist_events(runtime_events)
-
-    def _platform_events(
-        self,
-        item: Any,
-        platform_task_id: str,
-        *,
-        operation_instance_id: str,
-        wire_position: int,
-    ) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
-
-        def append_event(
-            kind: str,
-            payload: dict[str, Any],
-            *,
-            status: str | None = None,
-            occurred_at: str | None = None,
-        ) -> None:
-            events.append(
-                self._platform_event(
-                    kind,
-                    payload,
-                    platform_task_id,
-                    operation_instance_id=operation_instance_id,
-                    wire_position=wire_position,
-                    event_ordinal=len(events),
-                    status=status,
-                    occurred_at=occurred_at,
-                )
-            )
-
-        task = _present_message_field(item, "task")
-        if task is None and hasattr(item, "status") and hasattr(item, "id"):
-            task = item
-        status_update = _present_message_field(item, "status_update")
-        artifact_update = _present_message_field(item, "artifact_update")
-        message = _present_message_field(item, "message")
-        if task is not None and getattr(task, "status", None) is not None:
-            payload = _canonical_proto(task.status)
-            state_name = TaskState.Name(task.status.state)
-            append_event(
-                "status",
-                payload,
-                status=state_name.removeprefix("TASK_STATE_").lower(),
-                occurred_at=str(payload.get("timestamp") or _utc_now()),
-            )
-            for artifact in getattr(task, "artifacts", None) or []:
-                append_event(
-                    "artifact",
-                    {
-                        "Artifact": _canonical_proto(artifact),
-                        "Append": False,
-                        "LastChunk": True,
-                    },
-                )
-        if status_update is not None and getattr(status_update, "status", None) is not None:
-            payload = _canonical_proto(status_update.status)
-            state_name = TaskState.Name(status_update.status.state)
-            append_event(
-                "status",
-                payload,
-                status=state_name.removeprefix("TASK_STATE_").lower(),
-                occurred_at=str(payload.get("timestamp") or _utc_now()),
-            )
-        if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
-            append_event(
-                "artifact",
-                {
-                    "Artifact": _canonical_proto(artifact_update.artifact),
-                    "Append": bool(getattr(artifact_update, "append", False)),
-                    "LastChunk": bool(getattr(artifact_update, "last_chunk", False)),
-                },
-            )
-        if message is not None:
-            payload = _canonical_proto(message)
-            append_event("message", payload)
-            append_event(
-                "status",
-                {"state": "TASK_STATE_COMPLETED", "message": payload},
-                status="completed",
-            )
-        return events
-
-    @staticmethod
-    def _platform_event(
-        kind: str,
-        payload: dict[str, Any],
-        platform_task_id: str,
-        *,
-        operation_instance_id: str,
-        wire_position: int,
-        event_ordinal: int,
-        status: str | None = None,
-        occurred_at: str | None = None,
-    ) -> dict[str, Any]:
-        source_id = hashlib.sha256(
-            (
-                f"{platform_task_id}:{operation_instance_id}:{wire_position}:{event_ordinal}:{kind}"
-            ).encode("utf-8")
-        ).hexdigest()
-        event: dict[str, Any] = {
-            "SourceEventId": source_id,
-            "EventKind": kind,
-            "Payload": payload,
-            "OccurredAt": occurred_at or _utc_now(),
-        }
-        if status:
-            event["Status"] = status
-        return event
-
-    async def flush_pending_events(self) -> int:
-        """Deliver all currently queued platform event batches or raise on failure."""
-
-        return await self._event_dispatcher.drain(raise_on_error=True)
-
-    def _next_seq(self) -> int:
-        self._seq += 1
-        return self._seq
-
-    def _event_ctx(
-        self,
-        agent: DiscoveredAgent,
-        invocation_id: str,
-        *,
-        event_id: str | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "agent_id": agent.agent_id,
-            "user_id": "a2a_space",
-            "session_id": self._space_id,
-            "invocation_id": invocation_id,
-            "seq_id": self._next_seq(),
-            "event_id": event_id,
-        }
-
-    def task_to_event(self, task: Any, agent: DiscoveredAgent) -> RuntimeEvent:
-        return self._event_adapter.task_status_to_event(
-            task.status, **self._event_ctx(agent, invocation_id=str(task.id))
-        )
-
-    def _stream_item_to_events(
-        self,
-        item: Any,
-        agent: DiscoveredAgent,
-        *,
-        wire_position: int = 0,
-        invocation_id: str | None = None,
-    ) -> list[RuntimeEvent]:
-        events: list[RuntimeEvent] = []
-        task = _present_message_field(item, "task")
-        if task is None and hasattr(item, "status") and hasattr(item, "id"):
-            task = item
-        status_update = _present_message_field(item, "status_update")
-        artifact_update = _present_message_field(item, "artifact_update")
-        message = _present_message_field(item, "message")
-        resolved_invocation_id = invocation_id or str(
-            getattr(item, "task_id", None)
-            or getattr(task, "id", "")
-            or getattr(status_update, "task_id", "")
-            or getattr(artifact_update, "task_id", "")
-            or getattr(message, "task_id", "")
-            or ""
-        )
-
-        def ctx(kind: str, value: Any) -> dict[str, Any]:
-            metadata = getattr(value, "metadata", None)
-            native_event_id = ""
-            if metadata is not None:
-                if isinstance(metadata, Mapping):
-                    metadata_dict = dict(metadata)
-                else:
-                    try:
-                        metadata_dict = MessageToDict(metadata, preserving_proto_field_name=True)
-                    except (AttributeError, TypeError, ValueError):
-                        metadata_dict = {}
-                native_event_id = str(
-                    metadata_dict.get("event_id") or metadata_dict.get("ksadk_event_id") or ""
-                )
-            message_id = str(getattr(value, "message_id", "") or "")
-            artifact = getattr(value, "artifact", None)
-            artifact_id = str(
-                getattr(value, "artifact_id", "") or getattr(artifact, "artifact_id", "") or ""
-            )
-            source_id = native_event_id or message_id or artifact_id
-            event_id = uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"ksadk:a2a:{resolved_invocation_id}:{wire_position}:{kind}:{source_id}",
-            ).hex
-            return self._event_ctx(agent, invocation_id=resolved_invocation_id, event_id=event_id)
-
-        if task is not None and getattr(task, "status", None) is not None:
-            task_status_message = _present_message_field(task.status, "message")
-            task_status_text = A2AEventAdapter._parts_text(
-                getattr(task_status_message, "parts", None)
-            )
-            task_is_terminal = task.status.state in {
-                TaskState.TASK_STATE_COMPLETED,
-                TaskState.TASK_STATE_FAILED,
-                TaskState.TASK_STATE_CANCELED,
-                TaskState.TASK_STATE_REJECTED,
-            }
-            if not task_is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
-                        task.status,
-                        **ctx("task", task),
-                    )
-                )
-            if task_status_text:
-                events.append(
-                    self._event_adapter.message_to_event(
-                        task_status_text,
-                        final=task_is_terminal,
-                        **ctx("task-status-message", task_status_message),
-                    )
-                )
-            if task_is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
-                        task.status,
-                        **ctx("task", task),
-                    )
-                )
-        if status_update is not None and getattr(status_update, "status", None) is not None:
-            status_message = _present_message_field(status_update.status, "message")
-            text = A2AEventAdapter._parts_text(getattr(status_message, "parts", None))
-            terminal_states = {
-                TaskState.TASK_STATE_COMPLETED,
-                TaskState.TASK_STATE_FAILED,
-                TaskState.TASK_STATE_CANCELED,
-                TaskState.TASK_STATE_REJECTED,
-            }
-            is_terminal = status_update.status.state in terminal_states
-            if not is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
-                        status_update.status, **ctx("status", status_update)
-                    )
-                )
-            if text:
-                events.append(
-                    self._event_adapter.message_to_event(
-                        text,
-                        final=is_terminal,
-                        **ctx("status-message", status_message),
-                    )
-                )
-            if is_terminal:
-                events.append(
-                    self._event_adapter.task_status_to_event(
-                        status_update.status, **ctx("status", status_update)
-                    )
-                )
-        if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
-            artifact = artifact_update.artifact
-            events.append(
-                self._event_adapter.artifact_to_event(artifact, **ctx("artifact", artifact_update))
-            )
-            artifact_text = A2AEventAdapter._parts_text(getattr(artifact, "parts", None))
-            if artifact_text and str(getattr(artifact, "name", "") or "") == "response":
-                events.append(
-                    self._event_adapter.message_to_event(
-                        artifact_text,
-                        final=bool(getattr(artifact_update, "last_chunk", False)),
-                        **ctx("artifact-text", artifact_update),
-                    )
-                )
-        if message is not None:
-            text = A2AEventAdapter._parts_text(getattr(message, "parts", None))
-            if text:
-                events.append(
-                    self._event_adapter.message_to_event(
-                        text, final=True, **ctx("message", message)
-                    )
-                )
-        return events
-
-    async def _persist_events(self, events: list[RuntimeEvent]) -> list[RuntimeEvent]:
-        existing_ids = set(self._persisted_wire_events)
-        if self._event_sink is not None:
-            list_events = getattr(self._event_sink, "list", None)
-            if callable(list_events) and events:
-                persisted_before = await list_events(events[0].session_id)
-                existing_ids.update(event.event_id for event in persisted_before)
-        fresh = [event for event in events if event.event_id not in existing_ids]
-        if not fresh:
-            return []
-        if self._event_sink is not None:
-            append = getattr(self._event_sink, "append", None)
-            if append is None:
-                raise TypeError("event_sink must provide async append(events)")
-            persisted = await append(fresh)
-            if persisted is not None:
-                fresh = list(persisted)
-        self._persisted_wire_events.update(event.event_id for event in fresh)
-        return fresh
-
     async def subscribe_events(self, task_id: str):
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
         prepared = await self._backend.prepare_task_operation(
@@ -1095,6 +788,7 @@ __all__ = [
     "A2ASpaceClient",
     "DiscoveredAgent",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
+    "ENV_A2A_SPACE_ID",
     "ENV_A2A_SPACE_IDS",
     "ERR_PUBLIC_EGRESS_DISABLED",
     "SpaceAgentPage",

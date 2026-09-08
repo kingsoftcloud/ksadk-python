@@ -19,7 +19,7 @@ uv run --extra dev pytest -q
 make open-source-audit
 make docs-site-build
 make public-audit
-uv build
+make build-wheel
 uv run --extra dev python -m twine check dist/*
 ```
 
@@ -30,6 +30,10 @@ generated snapshots.
 
 `open-source-audit` checks the current public repository candidate for files
 that should not enter the open-source surface.
+
+`make build-wheel` is the local package-build entrypoint. It synchronizes the
+pinned `ksadk-web` static payload and generates the ignored React Studio
+payload before running `uv build`.
 
 Do not push, publish, or create a release before maintainer review.
 

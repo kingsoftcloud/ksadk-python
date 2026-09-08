@@ -50,6 +50,40 @@ def _resolve_workspace_root(root_getter: Callable[[], Path]) -> Path:
     return root
 
 
+def _symlink_allowlist(root: Path) -> tuple[Path, ...]:
+    """Load allowed symlink target prefixes from ``<root>/.symlink-allowlist``.
+
+    One absolute path prefix per line (``#`` comments and blank lines ignored).
+    The file lives inside the workspace root itself, so whoever can write the
+    workspace decides which outside targets its symlinks may point at — the
+    escape check stays authoritative for everything else.
+    """
+    entries: list[Path] = []
+    allow_file = root / ".symlink-allowlist"
+    try:
+        for line in allow_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            candidate = Path(line)
+            if candidate.is_absolute():
+                # Normalize the allowlist prefix the same way targets are
+                # resolved, so symlinked parent dirs (e.g. /var on macOS)
+                # cannot break prefix matching.
+                entries.append(candidate.resolve(strict=False))
+    except OSError:
+        return ()
+    return tuple(entries)
+
+
+def _target_in_allowlist(resolved_target: Path, allowlist: tuple[Path, ...]) -> bool:
+    return any(
+        resolved_target == allowed
+        or resolved_target.is_relative_to(allowed)
+        for allowed in allowlist
+    )
+
+
 def _resolve_workspace_target(
     root: Path, raw_path: str | None, *, allow_root: bool
 ) -> tuple[str, Path]:
@@ -67,5 +101,12 @@ def _resolve_workspace_target(
         target = root.joinpath(*segments)
     resolved_target = target.resolve(strict=False)
     if resolved_target != root and root not in resolved_target.parents:
+        # Symlinks legitimately point outside the workspace (e.g. workspace
+        # convenience links to the profile's config.yaml/.env). Allow them only
+        # when the link target is registered in the workspace's own allowlist.
+        if target.is_symlink() and _target_in_allowlist(
+            resolved_target, _symlink_allowlist(root)
+        ):
+            return normalized, resolved_target
         raise HTTPException(status_code=400, detail=WORKSPACE_PATH_ESCAPE_DETAIL)
     return normalized, resolved_target

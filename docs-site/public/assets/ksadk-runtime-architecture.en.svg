@@ -1,204 +1,268 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
-  <title id="title">KsADK Agent Runtime Platform Architecture</title>
-  <desc id="desc">Agent frameworks flow through the KsADK unified runtime, runtime capabilities, and local or AgentEngine hosted deployment targets.</desc>
-  <style>
-    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; letter-spacing: 0; }
-    .eyebrow { font-size: 12px; font-weight: 700; fill: #087f9c; }
-    .title { font-size: 34px; font-weight: 750; fill: #111827; }
-    .subtitle { font-size: 15px; font-weight: 450; fill: #64748b; }
-    .section { font-size: 12px; font-weight: 750; fill: #475569; }
-    .section-accent { font-size: 12px; font-weight: 750; fill: #047857; }
-    .card-title { font-size: 17px; font-weight: 680; fill: #18212f; }
-    .card-subtitle { font-size: 12px; font-weight: 450; fill: #64748b; }
-    .small-title { font-size: 14px; font-weight: 650; fill: #26313f; }
-    .small-subtitle { font-size: 11px; font-weight: 450; fill: #64748b; }
-    .micro { font-size: 10px; font-weight: 650; fill: #7a8594; }
-    .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
-  </style>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1250" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK Technical Architecture</title>
+  <desc id="desc">Light-theme KsADK architecture highlighting the trusted kernel, Harness execution, and pluggable Providers.</desc>
   <defs>
-    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
-      <path d="M32 0H0V32" fill="none" stroke="#dfe5ec" stroke-width="0.7" opacity="0.7"/>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#dbe5f0" stroke-width="1" opacity="0.62"/>
     </pattern>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#6b7687"/>
+    <linearGradient id="headerGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="0.48" stop-color="#ecfdf5"/>
+      <stop offset="1" stop-color="#f5f3ff"/>
+    </linearGradient>
+    <linearGradient id="harnessGlow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ecfeff"/>
+      <stop offset="0.52" stop-color="#eff6ff"/>
+      <stop offset="1" stop-color="#f5f3ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrowCyan" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#0891b2"/>
     </marker>
-    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#43c9e8"/>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#2563eb"/>
     </marker>
-    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10Z" fill="#38d6a5"/>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#ea580c"/>
     </marker>
+    <marker id="arrowGray" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#64748b"/>
+    </marker>
+    <style>
+      .title { font: 700 31px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .section-title { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .section-note { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #64748b; }
+      .box-title { font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .box-title-lg { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #0f172a; }
+      .body { font: 400 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #334155; }
+      .small { font: 400 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #475569; }
+      .pill { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #155e75; }
+      .mono { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #64748b; }
+      .arrow-label { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif; fill: #475569; }
+      .line-cyan { fill: none; stroke: #0891b2; stroke-width: 2.2; marker-end: url(#arrowCyan); }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrowBlue); }
+      .line-orange { fill: none; stroke: #ea580c; stroke-width: 2.2; marker-end: url(#arrowOrange); }
+      .line-gray { fill: none; stroke: #64748b; stroke-width: 1.8; stroke-dasharray: 6 5; marker-end: url(#arrowGray); }
+      .bus-cyan { fill: none; stroke: #0891b2; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .bus-blue { fill: none; stroke: #2563eb; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
   </defs>
 
-  <!-- Background -->
-  <rect width="1440" height="900" fill="#f8fafc"/>
-  <rect width="1440" height="900" fill="url(#grid)"/>
-  <path d="M0 112H1440" stroke="#d8dee7" stroke-width="1"/>
+  <rect width="1600" height="1250" fill="#f8fafc"/>
+  <rect width="1600" height="1250" fill="url(#grid)" opacity="0.72"/>
 
-  <!-- Header -->
-  <text x="44" y="38" class="eyebrow">KSADK / RUNTIME DATA PLANE</text>
-  <text x="44" y="78" class="title">KsADK Agent Runtime Platform</text>
-  <text x="1396" y="51" class="micro" text-anchor="end">LOCAL-FIRST  /  CLOUD-READY</text>
-  <text x="1396" y="78" class="subtitle" text-anchor="end">One agent codebase from local development to hosted runtime</text>
+  <!-- Title -->
+  <rect x="36" y="24" width="1528" height="80" rx="18" fill="url(#headerGlow)" stroke="#cbd5e1" filter="url(#shadow)"/>
+  <text class="title" x="64" y="76">KsADK Technical Architecture</text>
+  <rect x="1394" y="46" width="140" height="36" rx="18" fill="#ffffff" stroke="#0891b2"/>
+  <text class="pill" x="1464" y="69" text-anchor="middle">Runtime capabilities</text>
 
-  <!-- Agent code region -->
-  <rect x="40" y="138" width="1360" height="122" rx="8" fill="#ffffff" stroke="#d5dde7" stroke-width="1.2"/>
-  <rect x="40" y="138" width="5" height="122" rx="2.5" fill="#43c9e8"/>
-  <text x="68" y="173" class="section">01  AGENT CODE</text>
-  <text x="68" y="202" class="card-title">Bring your framework</text>
-  <text x="68" y="224" class="card-subtitle">Keep your business logic</text>
-
+  <!-- Section backgrounds -->
   <g>
-    <rect x="300" y="164" width="236" height="70" rx="7" fill="#fbfdff" stroke="#2e78d6" stroke-width="1.2"/>
-    <rect x="300" y="164" width="4" height="70" rx="2" fill="#3b82f6"/>
-    <text x="326" y="194" class="card-title">Google ADK</text>
-    <text x="326" y="216" class="card-subtitle mono">root_agent</text>
-  </g>
-  <g>
-    <rect x="556" y="164" width="236" height="70" rx="7" fill="#fbfefc" stroke="#248e75" stroke-width="1.2"/>
-    <rect x="556" y="164" width="4" height="70" rx="2" fill="#34d399"/>
-    <text x="582" y="194" class="card-title">LangGraph</text>
-    <text x="582" y="216" class="card-subtitle mono">StateGraph</text>
-  </g>
-  <g>
-    <rect x="812" y="164" width="236" height="70" rx="7" fill="#fffdf8" stroke="#ad7a22" stroke-width="1.2"/>
-    <rect x="812" y="164" width="4" height="70" rx="2" fill="#f5b942"/>
-    <text x="838" y="194" class="card-title">LangChain</text>
-    <text x="838" y="216" class="card-subtitle mono">Runnable / chain</text>
-  </g>
-  <g>
-    <rect x="1068" y="164" width="300" height="70" rx="7" fill="#fcfbff" stroke="#7864c8" stroke-width="1.2"/>
-    <rect x="1068" y="164" width="4" height="70" rx="2" fill="#9b87f5"/>
-    <text x="1094" y="194" class="card-title">DeepAgents</text>
-    <text x="1094" y="216" class="card-subtitle mono">create_deep_agent</text>
+    <rect x="36" y="126" width="1528" height="154" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="36" y="300" width="1528" height="174" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="36" y="494" width="1528" height="326" rx="20" fill="url(#harnessGlow)" stroke="#2563eb" stroke-width="2" filter="url(#shadow)"/>
+    <rect x="36" y="840" width="1528" height="128" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="36" y="988" width="1528" height="124" rx="18" fill="#fff7ed" stroke="#fdba74"/>
+    <rect x="36" y="1132" width="1528" height="86" rx="18" fill="#f1f5f9" stroke="#94a3b8" stroke-dasharray="7 5"/>
   </g>
 
-  <!-- Agent code to runtime -->
-  <path d="M720 260V294" fill="none" stroke="#43c9e8" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
-  <rect x="648" y="267" width="144" height="18" rx="3" fill="#f8fafc"/>
-  <text x="720" y="279" class="micro" text-anchor="middle">RUNNER ADAPTERS</text>
+  <!-- Section headings -->
+  <text class="section-title" x="60" y="153">1 · Access</text>
+  <text class="section-note" x="184" y="153">One runtime foundation for development, invocation, and protocols</text>
+  <text class="section-title" x="60" y="327">2 · Trusted kernel</text>
+  <text class="section-note" x="230" y="327">Concurrency, recovery, and consistency converge at one trusted boundary</text>
+  <text class="section-title" x="60" y="523">3 · Harness and plugin architecture</text>
+  <text class="section-note" x="360" y="523">The stable host owns control and lifecycle; Providers preserve native semantics</text>
+  <text class="section-title" x="60" y="867">4 · Harness shared capabilities</text>
+  <text class="section-note" x="336" y="867">Injected through a capability bus; framework-independent</text>
+  <text class="section-title" x="60" y="1015">5 · Canonical events and presentation</text>
+  <text class="section-note" x="420" y="1015">Harness events are adapted, persisted, and projected to every surface</text>
+  <text class="section-title" x="60" y="1159">External platform dependencies</text>
+  <text class="section-note" x="350" y="1159">KsADK connects through explicit contracts instead of rebuilding platform services</text>
 
-  <!-- KsADK runtime region -->
-  <rect x="40" y="300" width="1360" height="414" rx="9" fill="#f1faf7" stroke="#2fcfa0" stroke-width="1.8"/>
-  <rect x="40" y="300" width="5" height="414" rx="2.5" fill="#38d6a5"/>
-  <text x="68" y="334" class="section-accent">02  KSADK RUNTIME</text>
-  <text x="68" y="359" class="card-subtitle">One execution model · one protocol surface · one runtime contract</text>
+  <!-- Main flow: access entrypoints converge before the trusted kernel -->
+  <path class="bus-cyan" d="M203 253V270M501 253V270M799 253V270M1097 253V270M1395 253V270M203 270H1395"/>
+  <circle cx="203" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="501" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="799" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="1097" cy="270" r="3.5" fill="#0891b2"/>
+  <circle cx="1395" cy="270" r="3.5" fill="#0891b2"/>
+  <path class="line-cyan" d="M799 270V342"/>
+  <path class="line-blue" d="M800 454V538"/>
+  <path class="line-blue" d="M470 663H514"/>
+  <path class="line-blue" d="M926 663H966"/>
+  <!-- Runtime events use a separate channel to layer 5 -->
+  <path class="line-orange" d="M900 786V828H1538V1023H197V1035"/>
+  <!-- Shared capabilities converge and inject upward into the Harness -->
+  <path class="bus-blue" d="M169 944V956M407 944V956M645 944V956M927 944V956M1165 944V956M1403 944V956M169 956H1403"/>
+  <path class="line-blue" d="M786 956V790"/>
+  <rect x="758" y="476" width="84" height="20" rx="10" fill="#ffffff" stroke="#93c5fd"/>
+  <text class="arrow-label" x="800" y="490" text-anchor="middle">Kernel dispatch</text>
 
-  <!-- Runtime access rail -->
-  <rect x="498" y="320" width="870" height="52" rx="6" fill="#ffffff" stroke="#b9d9cf" stroke-width="1"/>
-  <text x="522" y="341" class="micro">ENTRYPOINTS</text>
-  <text x="522" y="359" class="small-title mono">SDK + CLI</text>
-  <path d="M700 331V361M918 331V361M1136 331V361" stroke="#dbe7e3"/>
-  <text x="724" y="352" class="small-title">Browser UI</text>
-  <text x="942" y="352" class="small-title">OpenAI API</text>
-  <text x="1160" y="352" class="small-title">A2A</text>
-  <text x="1337" y="352" class="small-subtitle" text-anchor="end">invoke · stream · serve</text>
-
-  <!-- Core execution flow -->
-  <path d="M428 428H504M936 428H1012" fill="none" stroke="#38d6a5" stroke-width="1.8" marker-end="url(#arrow-green)"/>
-  <g>
-    <rect x="68" y="394" width="360" height="78" rx="7" fill="#ffffff" stroke="#71ae9d" stroke-width="1.2"/>
-    <text x="92" y="422" class="card-title">Framework Runners</text>
-    <text x="92" y="447" class="card-subtitle">Adapt invoke · stream · tool binding</text>
-    <text x="404" y="444" class="micro mono" text-anchor="end">BaseRunner</text>
+  <!-- Access -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="171" width="278" height="82" rx="13" fill="#ecfeff" stroke="#0891b2"/>
+    <rect x="362" y="171" width="278" height="82" rx="13" fill="#ecfdf5" stroke="#059669"/>
+    <rect x="660" y="171" width="278" height="82" rx="13" fill="#eff6ff" stroke="#2563eb"/>
+    <rect x="958" y="171" width="278" height="82" rx="13" fill="#f5f3ff" stroke="#7c3aed"/>
+    <rect x="1256" y="171" width="278" height="82" rx="13" fill="#fffbeb" stroke="#d97706"/>
   </g>
-  <g>
-    <rect x="504" y="386" width="432" height="94" rx="8" fill="#dff7ee" stroke="#0aa578" stroke-width="2"/>
-    <text x="720" y="419" class="card-title" text-anchor="middle">Conversation Runtime</text>
-    <text x="720" y="444" class="small-subtitle" text-anchor="middle">invocation · streaming · session events</text>
-    <text x="720" y="464" class="micro" text-anchor="middle">THE DATA-PLANE CORE</text>
-  </g>
-  <g>
-    <rect x="1012" y="394" width="356" height="78" rx="7" fill="#ffffff" stroke="#71ae9d" stroke-width="1.2"/>
-    <text x="1036" y="422" class="card-title">Protocol Surface</text>
-    <text x="1036" y="447" class="card-subtitle">OpenAI-compatible · A2A · streaming</text>
-  </g>
-
-  <!-- Runtime capability matrix -->
-  <text x="68" y="514" class="section">RUNTIME CAPABILITIES</text>
-  <path d="M246 509H1368" stroke="#d8e4e0"/>
-
-  <g>
-    <rect x="68" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="91" cy="553" r="4" fill="#43c9e8"/>
-    <text x="106" y="558" class="small-title">Session Continuity</text>
-    <text x="91" y="579" class="small-subtitle">state · transcript · resilient store</text>
-  </g>
-  <g>
-    <rect x="390" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="413" cy="553" r="4" fill="#43c9e8"/>
-    <text x="428" y="558" class="small-title">Checkpoint Control</text>
-    <text x="413" y="579" class="small-subtitle">resume · cancel · run events</text>
-  </g>
-  <g>
-    <rect x="712" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="735" cy="553" r="4" fill="#f5b942"/>
-    <text x="750" y="558" class="small-title">Toolsets + MCP</text>
-    <text x="735" y="579" class="small-subtitle">discovery · policy · dispatch</text>
-  </g>
-  <g>
-    <rect x="1034" y="532" width="334" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="1057" cy="553" r="4" fill="#9b87f5"/>
-    <text x="1072" y="558" class="small-title">Skill Runtime</text>
-    <text x="1057" y="579" class="small-subtitle">discover · load · isolated execute</text>
+  <g text-anchor="middle">
+    <text class="box-title" x="203" y="202">Developer entry</text>
+    <text class="body" x="203" y="227">Python SDK · AgentEngine CLI</text>
+    <text class="box-title" x="501" y="202">Local workbench</text>
+    <text class="body" x="501" y="227">Studio · debug and replay</text>
+    <text class="box-title" x="799" y="202">Standard APIs</text>
+    <text class="body" x="799" y="227">Responses · Chat · Session</text>
+    <text class="box-title" x="1097" y="202">Protocol access</text>
+    <text class="body" x="1097" y="227">A2A · AG-UI · A2UI</text>
+    <text class="box-title" x="1395" y="202">Automation</text>
+    <text class="body" x="1395" y="227">Scheduler · scheduled and batch</text>
   </g>
 
-  <g>
-    <rect x="68" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="91" cy="631" r="4" fill="#f5b942"/>
-    <text x="106" y="636" class="small-title">Workspace + Artifacts</text>
-    <text x="91" y="657" class="small-subtitle">read · edit · lint · export</text>
+  <!-- Trusted kernel -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="348" width="292" height="100" rx="14" fill="#f8fafc" stroke="#64748b"/>
+    <rect x="380" y="342" width="840" height="112" rx="16" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <rect x="1244" y="348" width="290" height="100" rx="14" fill="#f8fafc" stroke="#64748b"/>
   </g>
-  <g>
-    <rect x="390" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="413" cy="631" r="4" fill="#ef6f8d"/>
-    <text x="428" y="636" class="small-title">Sandbox + Approval</text>
-    <text x="413" y="657" class="small-subtitle">isolated code · tool safety</text>
+  <text class="box-title" x="86" y="377">Application assembly</text>
+  <text class="body" x="86" y="401">FastAPI routes · lifecycle</text>
+  <text class="small" x="86" y="424">Authentication, sessions, and protocols</text>
+  <text class="box-title-lg" x="406" y="374">Agent Kernel</text>
+  <text class="body" x="406" y="399">Admission permits · durable inbox · leases and fencing · recovery</text>
+  <rect x="406" y="416" width="180" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <rect x="598" y="416" width="180" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <rect x="790" y="416" width="180" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <rect x="982" y="416" width="210" height="24" rx="12" fill="#cffafe" stroke="#67e8f9"/>
+  <text class="pill" x="496" y="432" text-anchor="middle">Concurrency and backpressure</text>
+  <text class="pill" x="688" y="432" text-anchor="middle">Cancel and resume</text>
+  <text class="pill" x="880" y="432" text-anchor="middle">State consistency</text>
+  <text class="pill" x="1087" y="432" text-anchor="middle">Runtime safety boundary</text>
+  <text class="box-title" x="1266" y="377">Build and deploy</text>
+  <text class="body" x="1266" y="401">Code / container / ManagedRuntime</text>
+  <text class="small" x="1266" y="424">Traceable bundle, digest, and provenance</text>
+
+  <!-- Harness core: three columns -->
+  <rect x="64" y="548" width="406" height="238" rx="16" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="514" y="548" width="412" height="238" rx="16" fill="#ffffff" stroke="#2563eb" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="966" y="548" width="568" height="238" rx="16" fill="#ffffff" stroke="#0891b2" stroke-width="1.5"/>
+
+  <text class="box-title-lg" x="88" y="580">Plugin composition</text>
+  <text class="small" x="88" y="602">Configuration selects what this activation loads</text>
+  <rect x="88" y="619" width="358" height="38" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <text class="body" x="267" y="643" text-anchor="middle">Revision → CompositionProfile → AgentBundle v2</text>
+  <rect x="88" y="668" width="358" height="38" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <text class="body" x="267" y="692" text-anchor="middle">PluginHost: discover, load, activate, rollback</text>
+  <text class="small" x="88" y="731">Lockfile / digest / provenance; atomic switching</text>
+  <text class="small" x="88" y="754">Default ecosystem: DSH / Cordis; native bridge: Codex</text>
+
+  <text class="box-title-lg" x="538" y="580">Harness execution</text>
+  <text class="small" x="538" y="602">Stable host: unified control without hiding framework features</text>
+  <rect x="538" y="619" width="364" height="46" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+  <text class="box-title" x="720" y="639" text-anchor="middle">One Activation selects one Provider</text>
+  <text class="small" x="720" y="656" text-anchor="middle">and creates an isolated execution context</text>
+  <rect x="538" y="676" width="174" height="42" rx="10" fill="#ecfeff" stroke="#67e8f9"/>
+  <rect x="728" y="676" width="174" height="42" rx="10" fill="#ecfeff" stroke="#67e8f9"/>
+  <text class="small" x="625" y="701" text-anchor="middle">Control / tools / continuity</text>
+  <text class="small" x="815" y="701" text-anchor="middle">Context / events / observability</text>
+  <rect x="538" y="730" width="364" height="34" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text class="small" x="720" y="752" text-anchor="middle">Host owns lifecycle · Provider owns semantics and state</text>
+
+  <text class="box-title-lg" x="990" y="580">Pluggable Providers</text>
+  <text class="small" x="990" y="602">Different execution kernels under one Harness contract</text>
+  <rect x="990" y="619" width="250" height="63" rx="11" fill="#ecfeff" stroke="#0891b2"/>
+  <rect x="1258" y="619" width="250" height="63" rx="11" fill="#ecfdf5" stroke="#059669"/>
+  <rect x="990" y="698" width="250" height="63" rx="11" fill="#f5f3ff" stroke="#7c3aed"/>
+  <rect x="1258" y="698" width="250" height="63" rx="11" fill="#fffbeb" stroke="#d97706"/>
+  <text class="box-title" x="1115" y="644" text-anchor="middle">Codex native Provider</text>
+  <text class="small" x="1115" y="665" text-anchor="middle">Bridges native execution and events</text>
+  <text class="box-title" x="1383" y="644" text-anchor="middle">KsADK Harness Provider</text>
+  <text class="small" x="1383" y="665" text-anchor="middle">ADK / LangGraph framework family</text>
+  <text class="box-title" x="1115" y="723" text-anchor="middle">DSH / Cordis Provider</text>
+  <text class="small" x="1115" y="744" text-anchor="middle">Plugin ecosystem and host collaboration</text>
+  <text class="box-title" x="1383" y="723" text-anchor="middle">SubagentProvider</text>
+  <text class="small" x="1383" y="744" text-anchor="middle">Subagent routing and nested execution</text>
+
+  <!-- Connector label masks -->
+  <rect x="473" y="651" width="38" height="24" rx="12" fill="#ffffff" stroke="#93c5fd"/>
+  <text class="arrow-label" x="492" y="667" text-anchor="middle">Load</text>
+  <rect x="927" y="651" width="38" height="24" rx="12" fill="#ffffff" stroke="#93c5fd"/>
+  <text class="arrow-label" x="946" y="667" text-anchor="middle">Select</text>
+
+  <!-- Shared capabilities -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="884" width="210" height="60" rx="12" fill="#ecfeff" stroke="#0891b2"/>
+    <rect x="302" y="884" width="210" height="60" rx="12" fill="#ecfdf5" stroke="#059669"/>
+    <rect x="540" y="884" width="210" height="60" rx="12" fill="#f5f3ff" stroke="#7c3aed"/>
+    <rect x="822" y="884" width="210" height="60" rx="12" fill="#fffbeb" stroke="#d97706"/>
+    <rect x="1060" y="884" width="210" height="60" rx="12" fill="#fff1f2" stroke="#e11d48"/>
+    <rect x="1298" y="884" width="210" height="60" rx="12" fill="#eff6ff" stroke="#2563eb"/>
   </g>
-  <g>
-    <rect x="712" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="735" cy="631" r="4" fill="#9b87f5"/>
-    <text x="750" y="636" class="small-title">Memory + Knowledge</text>
-    <text x="735" y="657" class="small-subtitle">long-term context · retrieval</text>
-  </g>
-  <g>
-    <rect x="1034" y="610" width="334" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
-    <circle cx="1057" cy="631" r="4" fill="#38d6a5"/>
-    <text x="1072" y="636" class="small-title">Observability</text>
-    <text x="1057" y="657" class="small-subtitle">traces · usage · evaluation</text>
+  <rect x="718" y="849" width="136" height="28" rx="14" fill="#eff6ff" stroke="#2563eb"/>
+  <text class="arrow-label" x="786" y="868" text-anchor="middle">Capability injection</text>
+  <rect x="1480" y="849" width="92" height="28" rx="14" fill="#fff7ed" stroke="#ea580c"/>
+  <text class="arrow-label" x="1526" y="868" text-anchor="middle">Event channel</text>
+  <g text-anchor="middle">
+    <text class="box-title" x="169" y="910">Context and prompts</text>
+    <text class="small" x="169" y="930">Compaction, assembly, snapshots</text>
+    <text class="box-title" x="407" y="910">Tools and safety</text>
+    <text class="small" x="407" y="930">Policy, approval, permissions</text>
+    <text class="box-title" x="645" y="910">MCP and Skill</text>
+    <text class="small" x="645" y="930">Discovery and capability injection</text>
+    <text class="box-title" x="927" y="910">Sandbox and workspace</text>
+    <text class="small" x="927" y="930">Isolated execution, files, commands</text>
+    <text class="box-title" x="1165" y="910">Memory and knowledge</text>
+    <text class="small" x="1165" y="930">Memory · KnowledgeBase</text>
+    <text class="box-title" x="1403" y="910">Tracing and evaluation</text>
+    <text class="small" x="1403" y="930">Trace · metrics · Eval</text>
   </g>
 
-  <!-- Runtime to deployment -->
-  <path d="M720 714V744H394V760" fill="none" stroke="#6b7687" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <path d="M720 744H972V760" fill="none" stroke="#6b7687" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <rect x="650" y="720" width="140" height="18" rx="3" fill="#f8fafc"/>
-  <text x="720" y="733" class="micro" text-anchor="middle">ONE RUNTIME CONTRACT</text>
-
-  <!-- Deployment targets -->
-  <text x="44" y="780" class="section">03  RUN ANYWHERE</text>
-  <text x="44" y="803" class="card-subtitle">Local to hosted, one contract</text>
-
-  <g>
-    <rect x="244" y="762" width="300" height="104" rx="8" fill="#f4f8ff" stroke="#3b82f6" stroke-width="1.3"/>
-    <rect x="244" y="762" width="5" height="104" rx="2.5" fill="#3b82f6"/>
-    <text x="274" y="796" class="card-title">Local Runtime</text>
-    <text x="274" y="821" class="card-subtitle">CLI · Browser UI · local process</text>
-    <text x="274" y="846" class="micro">FAST FEEDBACK  /  NO CLOUD REQUIRED</text>
+  <!-- Canonical event chain -->
+  <path class="line-orange" d="M330 1070H365"/>
+  <path class="line-orange" d="M624 1070H659"/>
+  <path class="line-orange" d="M918 1070H953"/>
+  <path class="line-orange" d="M1212 1070H1247"/>
+  <g filter="url(#shadow)">
+    <rect x="64" y="1034" width="266" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="365" y="1034" width="259" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="659" y="1034" width="259" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="953" y="1034" width="259" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+    <rect x="1247" y="1034" width="287" height="72" rx="12" fill="#ffffff" stroke="#ea580c"/>
+  </g>
+  <g text-anchor="middle">
+    <text class="box-title" x="197" y="1062">Framework event adapters</text>
+    <text class="small" x="197" y="1084">Preserve native Provider identity</text>
+    <text class="box-title" x="494.5" y="1062">RuntimeEvent v2</text>
+    <text class="small" x="494.5" y="1084">Canonical fact model</text>
+    <text class="box-title" x="788.5" y="1062">SessionEvent log</text>
+    <text class="small" x="788.5" y="1084">Persistence and ordering</text>
+    <text class="box-title" x="1082.5" y="1062">Projection and replay</text>
+    <text class="small" x="1082.5" y="1084">Streaming, aggregation, resume</text>
+    <text class="box-title" x="1390.5" y="1062">API / Studio / Hosted UI</text>
+    <text class="small" x="1390.5" y="1084">Consistent views from one source</text>
   </g>
 
-  <g>
-    <rect x="576" y="762" width="792" height="104" rx="8" fill="#fff9ed" stroke="#c69333" stroke-width="1.3"/>
-    <rect x="576" y="762" width="5" height="104" rx="2.5" fill="#f5b942"/>
-    <text x="606" y="793" class="card-title">AgentEngine Hosted Control Plane</text>
-    <text x="606" y="817" class="card-subtitle">artifact · runtime · route · invoke · observe</text>
-    <g>
-      <rect x="1010" y="783" width="100" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
-      <text x="1060" y="805" class="small-title" text-anchor="middle">Serverless</text>
-      <rect x="1122" y="783" width="100" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
-      <text x="1172" y="805" class="small-title" text-anchor="middle">Hermes</text>
-      <rect x="1234" y="783" width="110" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
-      <text x="1289" y="805" class="small-title" text-anchor="middle">OpenClaw</text>
-    </g>
-    <text x="1344" y="846" class="micro" text-anchor="end">HOSTED LIFECYCLE + PLATFORM SERVICES</text>
+  <!-- External dependencies -->
+  <g text-anchor="middle">
+    <rect x="320" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <rect x="590" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <rect x="860" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <rect x="1130" y="1171" width="250" height="32" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+    <text class="small" x="445" y="1192">AgentEngine control plane</text>
+    <text class="small" x="715" y="1192">Model / MCP / A2A services</text>
+    <text class="small" x="985" y="1192">Skill / Sandbox services</text>
+    <text class="small" x="1255" y="1192">OTLP observability</text>
   </g>
+
+  <!-- Legend -->
+  <line x1="1140" y1="1234" x2="1178" y2="1234" stroke="#2563eb" stroke-width="2.4"/>
+  <text class="small" x="1188" y="1239">Main runtime path</text>
+  <line x1="1300" y1="1234" x2="1338" y2="1234" stroke="#ea580c" stroke-width="2.2"/>
+  <text class="small" x="1348" y="1239">Event fact path</text>
+  <line x1="1452" y1="1234" x2="1490" y2="1234" stroke="#64748b" stroke-width="1.8" stroke-dasharray="6 5"/>
+  <text class="small" x="1500" y="1239">External contract</text>
 </svg>
