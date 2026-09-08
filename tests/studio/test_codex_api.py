@@ -86,9 +86,7 @@ async def _slow_codex_events(
         seq=2,
         item_id="msg-1",
         item_kind="message",
-        snapshot=ContentSnapshot(
-            parts=(TextContent(part_id="text-0", text="刷新不会中断。"),)
-        ),
+        snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text="刷新不会中断。"),)),
         source=source,
         **common,
     )
@@ -731,6 +729,90 @@ def test_openai_responses_applies_turn_scoped_approval_mode(
     assert conversation.request_metadata["tool_approval_mode"] == approval_mode
 
 
+def test_openai_responses_reads_shared_web_agentengine_metadata(tmp_path: Path) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "glm-5.2",
+                "input": "使用共享 Web 的风险确认和计划模式",
+                "metadata": {
+                    "agent_id": "review-helper",
+                    "agentengine": {
+                        "tool_approval_mode": "risk",
+                        "collaboration_mode": "plan",
+                        "goal_objective": "完成协议回归",
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    request = runtime_fixture.start_requests[0]
+    assert request.config["sandbox"] == "workspace-write"
+    assert request.config["sandbox_read_only"] is False
+    assert request.config["approval_mode"] == "auto_review"
+    assert request.config["tool_approval_mode"] == "risk"
+    assert request.config["collaboration_mode"] == "plan"
+    assert request.config["goal_objective"] == "完成协议回归"
+
+
+def test_run_agent_reads_shared_web_turn_controls(tmp_path: Path) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "review-helper",
+                "SessionId": "ses-shared-controls",
+                "InvocationId": "run-shared-controls",
+                "ApiFormat": "responses",
+                "ResponsesInput": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "执行审批测试"}],
+                    }
+                ],
+                "Metadata": {
+                    "agentengine": {
+                        "tool_approval_mode": "ask",
+                        "collaboration_mode": "plan",
+                        "goal_objective": "验证共享会话控制",
+                    }
+                },
+                "ModelOptions": {"reasoning_effort": "high"},
+            },
+        ) as response:
+            assert response.status_code == 200
+            assert "response.completed" in "".join(response.iter_text())
+
+    request = runtime_fixture.start_requests[0]
+    assert request.config["sandbox"] == "workspace-write"
+    assert request.config["approval_mode"] == "manual"
+    assert request.config["tool_approval_mode"] == "ask"
+    assert request.config["collaboration_mode"] == "plan"
+    assert request.config["goal_objective"] == "验证共享会话控制"
+    assert request.config["effort"] == "high"
+
+
 def test_openai_responses_forwards_plan_goal_and_structured_attachments(
     tmp_path: Path,
 ) -> None:
@@ -1287,20 +1369,24 @@ def test_codex_yaml_first_agent_projects_and_losslessly_updates_model_skill_and_
             endpoint_url="https://mcp.example.test/rpc",
         ),
     )
-    service.codex_manifests.save(CodexAgentManifest.model_validate({
-        **_manifest("Review the workspace carefully.\n"),
-        "model": "codex-primary",
-        "models": ["codex-primary", "codex-fallback"],
-        "skills": [skill.resource_id],
-        "mcp_servers": [
-            {"name": "review-mcp", "url": "https://mcp.example.test/rpc"},
+    service.codex_manifests.save(
+        CodexAgentManifest.model_validate(
             {
-                "name": "legacy-private",
-                "url": "https://legacy.example.test/rpc",
-                "custom": {"keep": True},
-            },
-        ],
-    }))
+                **_manifest("Review the workspace carefully.\n"),
+                "model": "codex-primary",
+                "models": ["codex-primary", "codex-fallback"],
+                "skills": [skill.resource_id],
+                "mcp_servers": [
+                    {"name": "review-mcp", "url": "https://mcp.example.test/rpc"},
+                    {
+                        "name": "legacy-private",
+                        "url": "https://legacy.example.test/rpc",
+                        "custom": {"keep": True},
+                    },
+                ],
+            }
+        )
+    )
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
 
     with TestClient(app) as client:

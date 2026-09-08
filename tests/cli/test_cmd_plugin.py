@@ -29,6 +29,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginInventory,
     DshProfileProjection,
 )
+from ksadk.plugins.dsh_toolchain import DshPluginSourceError
 
 ensure_global_cli_options(plugin)
 
@@ -71,6 +72,37 @@ def test_plugin_help_exposes_only_dsh_default_and_codex_compatibility() -> None:
         assert retired_public_concept.casefold() not in lowered
     assert "dsh" in lowered
     assert "codex" in lowered
+
+
+def test_validate_reports_actionable_dsh_source_error(monkeypatch) -> None:
+    def reject_unpinned_source(self, source: str):
+        del self, source
+        raise DshPluginSourceError(
+            "DSH registry source must be <package>@<exact-semver>; "
+            "Git URLs, tags, and ranges are not allowed"
+        )
+
+    monkeypatch.setattr(
+        "ksadk.plugins.dsh_toolchain.DshPluginDeveloper.validate",
+        reject_unpinned_source,
+    )
+
+    result = CliRunner().invoke(
+        plugin,
+        ["--output", "json", "validate", "@xmanrui/dsh-im"],
+    )
+
+    assert result.exit_code == EXIT_CODE_VALIDATION
+    assert json.loads(result.output)["error"] == {
+        "code": "dsh_plugin_source_invalid",
+        "message": "DSH 插件源码不是有效的标准 Bundle",
+        "details": {
+            "reason": (
+                "DSH registry source must be <package>@<exact-semver>; "
+                "Git URLs, tags, and ranges are not allowed"
+            )
+        },
+    }
 
 
 def test_missing_dsh_host_is_a_typed_failure(tmp_path: Path) -> None:
@@ -304,7 +336,7 @@ class _FakeDshCLIHost:
             bundles=("@deepseek-ai/dsh-base",),
             config_digest="sha256:" + "a" * 64,
             config_bytes=128,
-            host_version="0.1.1-rc.2",
+            host_version="0.1.2-rc.1",
         )
 
 
@@ -322,7 +354,7 @@ def test_top_level_dsh_lifecycle_and_explicit_alias_are_identical(
         _FakeDshCLIHost,
     )
     dsh = tmp_path / "dsh"
-    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.1-rc.2'\n", encoding="utf-8")
+    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.2-rc.1'\n", encoding="utf-8")
     dsh.chmod(0o755)
     environment = {
         DSH_HOME_ENV: str(tmp_path / "dsh-home"),

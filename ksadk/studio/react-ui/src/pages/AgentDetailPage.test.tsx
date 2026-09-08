@@ -151,17 +151,19 @@ describe("AgentDetailPage cloud deployment", () => {
     expect(await screen.findByText("每日报告")).toBeInTheDocument();
     expect(screen.queryByText("其他 Agent 任务")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("row", { name: "查看定时任务 每日报告 的详情" }));
+    await user.click(screen.getByRole("button", { name: "查看定时任务 每日报告 的详情" }));
     expect((await screen.findAllByText("成功")).length).toBeGreaterThan(0);
     expect(screen.getByText("run-1")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "停用" }));
+    await user.click(screen.getByRole("button", { name: "暂停" }));
     await waitFor(() => expect(scheduleEnabled).toBe(false));
     expect(apiFetch).toHaveBeenCalledWith(
       "/api/v1/agents/demo-agent/schedules/task-daily",
       expect.objectContaining({ method: "PUT" }),
     );
 
+    await user.click(screen.getByRole("button", { name: "启用" }));
+    await waitFor(() => expect(scheduleEnabled).toBe(true));
     await user.click(screen.getByRole("button", { name: "立即运行" }));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
       "/api/v1/agents/demo-agent/schedules/task-daily:run",

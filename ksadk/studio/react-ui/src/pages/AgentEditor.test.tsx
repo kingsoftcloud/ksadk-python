@@ -357,7 +357,7 @@ describe("AgentEditor form", () => {
         draft: {
           metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 3 },
           spec: {
-            runtime: { type: "codex", version: "0.144.4" },
+            runtime: { type: "codex", version: "0.147.0" },
             instructions: { system: "Answer with evidence.", task: "" },
             soul: {
               schemaVersion: "agentkit.soul/v1",
@@ -388,6 +388,8 @@ describe("AgentEditor form", () => {
     expect(screen.getByText(/ManagedRuntime 启动时会把 Soul 确定性编译到 base_instructions/)).toBeVisible();
     const manifest = screen.getByRole("region", { name: "agentkit.yaml 源码" });
     await waitFor(() => {
+      expect(manifest).toHaveTextContent("version: 0.147.0");
+      expect(manifest).not.toHaveTextContent("0.144.4");
       expect(manifest).toHaveTextContent("soul:");
       expect(manifest).toHaveTextContent("identity:");
       expect(manifest).toHaveTextContent("A careful release reviewer.");
@@ -734,5 +736,59 @@ describe("AgentEditor form", () => {
       });
       expect(spec.security.allowedPermissions).toEqual(["process:host-user"]);
     });
+  });
+});
+
+it.each(["update", "build"])("preserves multiple model selections when %s loses its connection", async (stage) => {
+  mockedFetch.mockReset();
+  const draft = {
+    metadata: { id: "agentkit-save", name: "Save test", revision: 1 },
+    spec: {
+      runtime: { type: "codex" },
+      instructions: { system: "Answer with evidence." },
+      bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a", "model-b"] },
+    },
+  };
+  mockedFetch.mockImplementation(async (_input, init) => {
+    if (init?.method === "PUT") {
+      if (stage === "update") throw new TypeError("Failed to fetch");
+      return { ok: true, json: async () => ({ ...draft, metadata: { ...draft.metadata, revision: 2 } }) } as Response;
+    }
+    if (init?.method === "POST") throw new TypeError("Failed to fetch");
+    return { ok: true, json: async () => ({ draft }) } as Response;
+  });
+  const onSaved = vi.fn();
+  const catalog = ["a", "b"].map(id => ({ resourceId: `model-${id}`, kind: "model", name: `model-${id}`, displayName: `Model ${id}`, version: "1", status: "ready" }));
+  render(<AgentEditor agentId="agentkit-save" catalog={catalog} onSaved={onSaved} />);
+  fireEvent.click(await screen.findByRole("button", { name: "能力绑定" }));
+  fireEvent.submit(screen.getByRole("button", { name: "保存修改" }).closest("form")!);
+  expect(await screen.findByText(stage === "update" ? /尚未确认保存结果/ : /配置已保存，但后续构建未完成/)).toBeVisible();
+  expect(screen.getAllByTestId("studio-multi-select-selection")[0]).toHaveTextContent("Model b");
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(mockedFetch.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+});
+
+it("saves the installed Figma plugin snapshot as an Agent binding", async () => {
+  mockedFetch.mockReset();
+  const snapshot = { pluginRef: "plugin://codex.figma@2.0.20", snapshotDigest: `sha256:${"a".repeat(64)}`, components: [{ id: "app:figma", kind: "app" }, { id: "skill:figma-use", kind: "skill" }] };
+  mockedFetch.mockImplementation(async (input, init) => {
+    const url = String(input);
+    let data: unknown = { draft: { metadata: { id: "agent-test", name: "Designer", revision: 1 }, spec: { runtime: { type: "codex" }, instructions: { system: "Help with product designs." }, bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a"], plugins: [] } } } };
+    if (url.includes("/plugin-ecosystems/")) data = url.includes("?")
+      ? { items: [{ pluginId: "figma@official", displayName: "Figma", installed: true, enabled: true }] }
+      : { item: { displayName: "Figma" }, snapshot };
+    if (init?.method === "PUT") data = { metadata: { id: "agent-test", revision: 2 } };
+    return { ok: true, json: async () => data } as Response;
+  });
+  render(<AgentEditor agentId="agent-test" activeSection={2} catalog={[{ resourceId: "model-a", kind: "model", name: "model-a", displayName: "model-a", version: "1", status: "ready" }]} onSaved={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "选择绑定插件" }));
+  await userEvent.click(await screen.findByRole("option", { name: /Figma/ }));
+  await userEvent.keyboard("{Escape}");
+  fireEvent.click(screen.getByRole("checkbox", { name: /保存后生成配置快照/ }));
+  fireEvent.submit(screen.getByRole("button", { name: "保存修改" }).closest("form")!);
+  await waitFor(() => {
+    const put = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(put).toBeDefined();
+    expect(JSON.parse(String(put![1]!.body)).bindings.plugins).toEqual([{ ecosystem: "codex", pluginRef: snapshot.pluginRef, snapshotDigest: snapshot.snapshotDigest, components: ["app:figma", "skill:figma-use"], enabled: true, config: {} }]);
   });
 });

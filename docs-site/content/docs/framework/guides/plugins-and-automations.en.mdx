@@ -6,7 +6,7 @@ status: experimental
 Phase 2 adds local-first plugin lifecycle operations, ecosystem host bridges, Scheduler Lite, and a shared conversation surface. These features are still behind unreleased gates. Released Agents and precisely identified historical Bundles remain on their original paths and do not require a Runtime rebuild or upgrade.
 
 Studio and Hosted UI pin the versioned Conversation v1 headless module from
-`@kingsoftcloud/ksadk-web@0.3.4`. Candidate source, independent browser, and
+`@kingsoftcloud/ksadk-web@0.3.5`. Candidate source, independent browser, and
 deployed two-turn checks for both a new and a historical Agent are green;
 the stable release still requires a rebuild from the public npm artifact and
 the final artifact audit.
@@ -14,6 +14,16 @@ the final artifact audit.
 <Callout type="warning" title="Unreleased preview">
   This page is not a stable-release announcement. Cloud PluginHost, cloud 24x7 scheduling, the P2-06 DSH Codex Bundle/child Provider, Claude Code, and game-plugin execution are outside the current support claim. One passing reference DSH AgentProvider E2E does not make arbitrary third-party Providers supported.
 </Callout>
+
+## 0.8.4 delivery and installation boundaries
+
+Studio uses a managed full DSH Core/Profile and renders plugin settings in its own interface. Codex plugins retain native App Server ownership. Installing a plugin makes it available in the workspace; bind the required skills and MCP capabilities to the Agent before use. Multiple UI plugins have independent entries; opening settings does not select the IM plugin automatically.
+
+Codex cloud delivery freezes plugin bytes and admitted references into immutable artifacts associated with the Agent version. It requires compatible control-plane artifact APIs and storage; an unsupported endpoint blocks deployment instead of silently dropping plugins. It does not copy desktop OAuth credentials. Cloud MCP OAuth and credential management are deferred. A skill being present does not prove its MCP server is connected or authenticated.
+
+The universal Python wheel includes Web 0.3.5 and built Studio pages. It does not include Python dependencies, Node/Codex/DSH binaries, community plugins or credentials. The base package declares shared framework dependencies, with extras for additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and any native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
+
+The verified DSH plugin environment uses Node.js 22 and `pnpm@10.33.2` on PATH. The managed toolchain installer uses its own pinned pnpm through Corepack; DSH profile add/remove commands use pnpm from PATH. Avoid pnpm 11.7.0 for profile operations for now: removing the official Codex bundle can print completion without terminating the process.
 
 ## Choose an integration mode
 
@@ -24,6 +34,29 @@ the final artifact audit.
 | `linked` | External host | Discovery or navigation only; it must not appear installed and executable |
 
 KsADK does not define a third private package, manifest, or ABI. Plugins do not change Kernel contracts: a new Runtime is a coarse-grained AgentProvider in a standard DSH Bundle, while Codex plugins stay under App Server ownership.
+
+## Reuse the Codex and DSH data planes
+
+Both ecosystems retain their native hosts; neither is converted into a private KsADK plugin format:
+
+| Data plane | Assembly and execution | Immutable boundary |
+| --- | --- | --- |
+| Codex `skills` / `mcpServers` / `hooks` / `apps` | Codex App Server owns marketplace and installation lifecycle. KsADK creates a selective marketplace only after explicit admission into an Agent Build | `plugin.json`, component bytes, and executable bits enter a SHA-256 snapshot and `plugin.lock`; each Build gets an isolated `CODEX_HOME` |
+| DSH `ctx.tools` | The pinned DSH CLI starts a complete Profile. An ordinary wheel-owned Cordis Bundle projects `ctx.tools.schemas()` / `ctx.tools.execute()` through a real Streamable HTTP MCP endpoint | Profile, inventory, sidecar-version, and MCP-lease digests are fenced independently; drift fails closed |
+
+The Codex manifest reader accepts official camelCase and compatible snake_case spellings, but rejects alias collisions. Local, Git, and npm sources must resolve to immutable coordinates: Git requires a full commit SHA and npm requires an exact semver; host-reported integrity is retained in the source snapshot. Only selected components reach the Agent. Because Codex does not currently expose a verifiable hook-trust API, a Build that selects hooks is blocked rather than bypassing the host trust prompt.
+
+The DSH capability sidecar binds a random loopback port, uses a process-only bearer lease, and bounds request, argument, result, concurrency, deadline, and Node-heap resources. Cancellation reaches the Cordis `AbortSignal`; Profile mutation, disable/uninstall, and Studio shutdown revoke UI leases, cancel active calls, and clean up the complete sidecar process group. The shipped ten-method `dsh-agent-provider-host/v1` ABI remains unchanged. Tool projection uses a separate standard `mcp.connector/v1` data plane so existing Bundles keep working.
+
+The capability endpoint also publishes an in-memory provider MCP Resource that can be added directly to a Harness/Plugin Agent's MCP bindings. A Build locks only the Profile, descriptor, inventory, and tool-filter identity. PluginHost reacquires and fences the endpoint/bearer lease for every new Agent activation, so neither address nor credential enters Catalog files, the Agent spec, Bundle, or plugin lock. A Profile change withdraws the old Resource first, and an old Build fails closed on digest mismatch.
+
+The local capability host requires Node.js **>= 22.19** and the KsADK-pinned DSH release. It never falls back to an arbitrary DSH CLI from `PATH`.
+
+### DSH client UI
+
+The current secure vertical accepts only a self-contained `dsh.client` web bundle with no `external` or `inject` dependencies, and runs it in a credentialless, network-disabled, opaque-origin iframe with `sandbox="allow-scripts"`. The Studio API derives sidebar, route, and workspace-tab extension points from the enabled, digest-pinned plugin. The frame uses a short-lived capability, `MessageChannel`, and the closed `listTools` / `callTool` / `cancelTool` contract to reach the Python host and then the same MCP path. The upstream client dependency graph is not integrated yet; legacy authenticated top-level dynamic execution is disabled by default, while A2UI remains the separate Agent-output UI channel.
+
+This Python repository supplies the extension declarations, sandbox document, relay API, and an independent browser conformance fixture. The packaged SPA's React source is maintained in the external Web package, so visible navigation/tab wiring must consume those extension points in that package release; it is not implemented by editing this repository's minified static assets.
 
 ## Develop a DSH Bundle
 
@@ -93,6 +126,8 @@ agentengine plugin uninstall <bundle-name>
 `agentengine plugin dsh ...` remains only as a compatibility alias for early scripts.
 
 A DSH bundle may run install scripts, so host permissions require explicit confirmation. An AgentProvider appears in the Runtime selector only after handshake, permission, conversation-projection, and execution conformance pass.
+
+The DSH capability sidecar currently requires POSIX process-group isolation. Windows and cloud deployment fail closed until process-tree cleanup and Node Profile materialization can be verified; the host never degrades to parent-only termination.
 
 ## Create a local scheduled task
 

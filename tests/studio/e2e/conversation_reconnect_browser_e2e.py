@@ -55,33 +55,37 @@ def _json(base_url: str, path: str) -> dict:
         return json.loads(response.read())
 
 
-def _first_canonical_item_prefix(body: str) -> str:
+def _first_reasoning_prefix(body: str) -> str:
     blocks = [block for block in body.replace("\r\n", "\n").split("\n\n") if block]
     for index, block in enumerate(blocks):
-        if '"conversationItem"' in block:
+        if "response.reasoning_summary_text.delta" in block:
             return "\n\n".join(blocks[: index + 1]) + "\n\n"
-    raise AssertionError("initial stream did not contain a canonical ConversationItem")
+    raise AssertionError("initial stream did not contain a reasoning delta")
 
 
 def _exercise_reconnect(page: Page, base_url: str) -> None:
     initial_posts = 0
+    stream_cut = False
     replay_requests: list[str] = []
 
     def cut_first_stream(route: Route) -> None:
-        nonlocal initial_posts
+        nonlocal initial_posts, stream_cut
         initial_posts += 1
         if initial_posts > 1:
             route.continue_()
             return
         response = route.fetch()
-        partial = _first_canonical_item_prefix(response.body().decode("utf-8"))
+        partial = _first_reasoning_prefix(response.body().decode("utf-8"))
+        assert FINAL_ANSWER not in partial
+        assert "response.completed" not in partial
+        stream_cut = True
         route.fulfill(response=response, body=partial)
 
-    page.route("**/api/v1/builds/*/conversation:stream", cut_first_stream)
+    page.route("**/agentengine/api/v1/RunAgent", cut_first_stream)
     page.on(
         "request",
         lambda request: replay_requests.append(request.url)
-        if "/api/v1/runs/" in request.url and "/events?after=" in request.url
+        if stream_cut and "/agentengine/api/v1/ListSessionMessages" in request.url
         else None,
     )
 
@@ -96,14 +100,12 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
 
     composer.fill("检查一次")
     page.get_by_role("button", name="发送消息").click()
-    answer = page.locator('article[data-role="assistant"] .chat-markdown').filter(
-        has_text=FINAL_ANSWER
-    )
+    answer = page.get_by_text(FINAL_ANSWER, exact=True)
     expect(answer).to_have_count(1, timeout=15_000)
     expect(composer).to_have_value("")
     assert initial_posts == 1
-    assert replay_requests, "typed stream EOF must resume from the durable event cursor"
-    assert any("after=" in url and not url.endswith("after=0") for url in replay_requests)
+    assert len(_json(base_url, "/api/v1/runs")["items"]) == 1
+    assert replay_requests, "truncated stream must reconcile durable session history"
 
     # A second turn uses the same Session but creates one new Run. Identical
     # answer text must remain visible twice because item identity, not text,

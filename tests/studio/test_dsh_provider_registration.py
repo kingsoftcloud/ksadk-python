@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ksadk.harness.reasoner import HarnessReasoningTurn
+from ksadk.plugins.bridges.dsh import DshPluginInventory, DshProfileProjection
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.plugins.providers.legacy_catalog import legacy_harness_agent_provider_manifest
 from ksadk.studio.contracts import (
@@ -235,3 +236,78 @@ def test_multiple_inconsistent_registration_sources_are_rejected() -> None:
     with pytest.raises(StudioDshProviderRegistrationError) as captured:
         merge_provider_registrations(first, second)
     assert captured.value.code == "dsh_provider_registration_conflict"
+
+
+def test_official_default_marker_is_scoped_to_the_owned_profile(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    manager = StudioDshProviderRegistrationManager(
+        workspace,
+        dsh_home=workspace / ".agentkit" / "dsh-home",
+        profile="web",
+        dsh_command=("dsh",),
+    )
+    legacy_marker = workspace / ".agentkit" / "official-dsh-defaults.json"
+    legacy_marker.parent.mkdir(parents=True)
+    legacy_marker.write_text(
+        json.dumps({"version": 1, "codexProviderApplied": True}),
+        encoding="utf-8",
+    )
+
+    assert manager._default_marker_path == (  # noqa: SLF001 - migration contract
+        workspace / ".agentkit" / "official-dsh-defaults-web.json"
+    )
+    assert manager._read_default_marker(manager._default_marker_path) == {}  # noqa: SLF001
+
+
+class _OfficialCoreProfileBridge:
+    def __init__(self, **_kwargs) -> None:  # noqa: ANN003
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:  # noqa: ANN002
+        return None
+
+    def list_plugins(self) -> tuple[DshPluginInventory, ...]:
+        return (
+            DshPluginInventory(
+                profile="web",
+                name="@example/community-plugin",
+                display_name="Community Plugin",
+                version="1.0.0",
+                requested_spec="@example/community-plugin@1.0.0",
+                enabled=True,
+            ),
+        )
+
+    def project_profile(self) -> DshProfileProjection:
+        return DshProfileProjection(
+            profile="web",
+            bundles=(
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "@example/community-plugin",
+            ),
+            config_digest="sha256:" + "c" * 64,
+            config_bytes=128,
+            host_version="0.1.2-rc.1",
+        )
+
+
+def test_official_core_bundles_do_not_conflict_with_plugin_inventory(tmp_path: Path) -> None:
+    manager = StudioDshProviderRegistrationManager(
+        tmp_path,
+        dsh_home=tmp_path / ".agentkit" / "dsh-home",
+        profile="web",
+        dsh_command=("dsh",),
+        bridge_factory=_OfficialCoreProfileBridge,
+    )
+
+    snapshot = manager._discover_profile()  # noqa: SLF001 - profile contract
+
+    assert snapshot.projection.bundles[:2] == (
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+    )
+    assert snapshot.packages[0].name == "@example/community-plugin"

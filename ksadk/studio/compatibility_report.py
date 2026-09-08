@@ -12,6 +12,7 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ksadk.plugins.builtins import builtin_capability_permissions
 from ksadk.plugins.contracts import LockedCapability, PluginLockEntry, PluginManifest
 from ksadk.plugins.resolver import (
     PluginResolutionError,
@@ -36,6 +37,11 @@ def compatibility_facts_digest(
 
     payload: dict[str, Any] = {
         "allowedPermissions": sorted(set(draft.spec.security.allowed_permissions)),
+        "hostOwnedPermissions": (
+            sorted(builtin_capability_permissions(composition.profile))
+            if composition is not None
+            else []
+        ),
         "runtime": {
             "type": str(runtime_lock.get("type") or ""),
             "version": str(runtime_lock.get("version") or ""),
@@ -90,7 +96,12 @@ def build_bundle_compatibility_report(
             else {}
         ),
     }
-    allowed_permissions = sorted(set(draft.spec.security.allowed_permissions))
+    allowed_permissions = sorted(
+        set(draft.spec.security.allowed_permissions)
+        | set(builtin_capability_permissions(composition.profile))
+        if composition is not None
+        else set(draft.spec.security.allowed_permissions)
+    )
     if composition is None:
         return _legacy_report(
             bundle=bundle,

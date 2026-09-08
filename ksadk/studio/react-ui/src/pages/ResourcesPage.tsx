@@ -1045,7 +1045,7 @@ function ResourceDetailDrawer({ item, onClose }: { item: ResItem; onClose: () =>
         {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{String(v)}</dd></div>)}
       </dl>
       <div className="inspector-title inspector-title-spaced">说明</div>
-      <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
+      <p style={{ margin: 0, color: "var(--studio-text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
         {item.description || contract.description || "未提供说明"}
       </p>
       {item.kind === "skill" && item.source === "local" && (

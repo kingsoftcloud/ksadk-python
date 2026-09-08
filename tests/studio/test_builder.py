@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from ksadk.plugins.contracts import (
 )
 from ksadk.plugins.resolver import PluginRegistry, ResolvedComposition
 from ksadk.studio.builder import AgentBundleBuilder
+from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.contracts import (
     AgentDraft,
     AgentMetadata,
@@ -58,6 +60,12 @@ def _build_in(
             ),
         ),
     )
+    if composition is not None:
+        source_payload = draft.model_dump(by_alias=True, exclude_none=True, mode="json")
+        composition = replace(
+            composition,
+            source_digest=sha256_digest(canonical_json(source_payload)),
+        )
     record = AgentBundleBuilder(workspace).build(draft, composition=composition)
     archive = workspace.resolve(record.artifact_path or "")
     return workspace, record, archive

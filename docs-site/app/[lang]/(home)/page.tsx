@@ -5,7 +5,7 @@ const copy = {
   cn: {
     title: "Kingsoft Cloud Agent Development Kit",
     subtitle: "金山云智能体开发套件",
-    desc: "构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架。0.8.3 以可信内核、Harness 执行层和可插拔 Provider 统一 Codex、ADK、LangGraph 等运行时。",
+    desc: "构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架。0.8.4 以可信内核、Harness 执行层和可插拔 Provider 统一 Codex、ADK、LangGraph 等运行时。",
     cta: "阅读文档",
     ctaSecondary: "GitHub 仓库",
     installLabel: "安装",
@@ -13,7 +13,7 @@ const copy = {
   en: {
     title: "Kingsoft Cloud Agent Development Kit",
     subtitle: "Agent development kit for Kingsoft Cloud",
-    desc: "A cloud-native framework to build, deploy, debug, and observe enterprise AI agents. Version 0.8.3 unifies Codex, ADK, LangGraph, and other runtimes through a trusted kernel, Harness execution layer, and pluggable Providers.",
+    desc: "A cloud-native framework to build, deploy, debug, and observe enterprise AI agents. Version 0.8.4 unifies Codex, ADK, LangGraph, and other runtimes through a trusted kernel, Harness execution layer, and pluggable Providers.",
     cta: "Read the docs",
     ctaSecondary: "GitHub",
     installLabel: "Install",

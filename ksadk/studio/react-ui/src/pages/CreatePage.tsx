@@ -21,6 +21,7 @@ import { StudioDrawer } from "../components/ui/StudioDialog";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { applyApiFieldErrors } from "../lib/formErrors";
+import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import {
   parseProviderConfig,
   providerOptionDescription,
@@ -36,12 +37,6 @@ import {
   type ProjectImportFormValues,
   type QuickAgentFormValues,
 } from "../schemas/agentForms";
-import {
-  STUDIO_DSH_SLOTS,
-  useStudioDshContributions,
-} from "../dsh-runtime/studioContributions";
-import { studioDshRuntime } from "../dsh-runtime/studioDshRuntime";
-import { createStudioRuntimeOptions } from "../dsh-runtime/runtimeOptions";
 
 /* 四种创建方式；quick 模式即四步向导。 */
 type Mode = "quick" | "conversation" | "import" | "project";
@@ -56,6 +51,16 @@ interface ResItem {
 }
 
 const DRAFT_PREFIX = "agentkit.studio.agentDraft.v1";
+const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
+const BUILTIN_RUNTIME_OPTIONS = [
+  { value: "codex", label: "Codex · ManagedRuntime" },
+  { value: "adk", label: "Google ADK · Python source" },
+  { value: "langgraph", label: "LangGraph · Python graph" },
+];
+
+function isCodexAgentProvider(providerRef: string): boolean {
+  return providerRef.startsWith(CODEX_AGENT_PROVIDER_PREFIX);
+}
 
 function credentialReference(item?: ResItem): string {
   return item?.requiredSecretRefs?.[0]
@@ -197,11 +202,6 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [providerConfigText, setProviderConfigText] = useState("{}");
   const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
-  const dshAgentProviders = useStudioDshContributions(
-    studioDshRuntime.contributions,
-    STUDIO_DSH_SLOTS.agentProvider,
-  );
-
   /* 向导状态 */
   const [step, setStep] = useState(1);
   const [maxStep, setMaxStep] = useState(1);
@@ -390,31 +390,15 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const mcps = useMemo(() => catalog.filter(i => i.kind === "mcp"), [catalog]);
   const skills = useMemo(() => catalog.filter(i => i.kind === "skill" && i.status === "ready"), [catalog]);
   const effectiveAgentProviders = useMemo<AgentProviderCatalogItem[]>(() => {
-    const known = new Set(agentProviders.map(item => item.providerRef));
-    return [
-      ...agentProviders,
-      ...dshAgentProviders.filter(item => (
-        item.state === "ready" && item.compatible && !known.has(item.providerRef)
-      )).map(item => ({
-        providerRef: item.providerRef,
-        pluginId: item.id,
-        resolvedVersion: "cordis",
-        displayName: item.displayName,
-        state: "enabled" as const,
-        compatible: true,
-        selectable: true,
-        reason: null,
-        permissions: [],
-        isolation: "cordis",
-        configSchemaDeclared: false,
-        secretFields: [],
-      })),
-    ];
-  }, [agentProviders, dshAgentProviders]);
+    return agentProviders;
+  }, [agentProviders]);
   const selectedProvider = useMemo(
     () => effectiveAgentProviders.find(item => item.providerRef === selectedProviderRef),
     [effectiveAgentProviders, selectedProviderRef],
   );
+  const usesNativeCodexTools = runtime === "codex"
+    || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
+  const effectiveSelectedTools = usesNativeCodexTools ? [] : selectedTools;
   const providerOptions = useMemo(() => effectiveAgentProviders.map(item => ({
     value: item.providerRef,
     label: item.displayName,
@@ -422,14 +406,28 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     disabled: !item.selectable,
   })), [effectiveAgentProviders]);
   const quickRuntimeOptions = useMemo(
-    () => createStudioRuntimeOptions(dshAgentProviders, agentProviders),
-    [agentProviders, dshAgentProviders],
+    () => agentProviders.some(item => item.selectable)
+      ? [
+          ...BUILTIN_RUNTIME_OPTIONS,
+          {
+            value: "plugin",
+            label: agentProviders.filter(item => item.selectable).length === 1
+              ? `${agentProviders.find(item => item.selectable)?.displayName || "DSH AgentProvider"} · Plugin`
+              : `DSH AgentProvider · ${agentProviders.filter(item => item.selectable).length} 个可用`,
+          },
+        ]
+      : [...BUILTIN_RUNTIME_OPTIONS],
+    [agentProviders],
   );
 
   useEffect(() => {
     if (selectedProviderRef && effectiveAgentProviders.some(item => item.providerRef === selectedProviderRef && item.selectable)) return;
     setSelectedProviderRef(effectiveAgentProviders.find(item => item.selectable)?.providerRef || "");
   }, [effectiveAgentProviders, selectedProviderRef]);
+
+  useEffect(() => {
+    if (usesNativeCodexTools && selectedTools.length) setSelectedTools([]);
+  }, [selectedTools.length, usesNativeCodexTools]);
   const resourceById = useCallback((id: string) => catalog.find(i => i.resourceId === id), [catalog]);
   const credentialOf = useCallback((item?: ResItem) => {
     const ref = credentialReference(item);
@@ -516,14 +514,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     outputFormat: format,
     modelProfileId: selectedModels[0] || null,
     modelProfileIds: selectedModels,
-    toolResourceIds: selectedTools,
+    toolResourceIds: effectiveSelectedTools,
     skillResourceIds: selectedSkills,
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
     maxSteps: template === "research" ? 28 : 12,
     timeoutSeconds: template === "research" ? 900 : 120,
-  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, selectedTools, selectedSkills, selectedMcp, policy]);
+  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true } = {}) => {
     const seq = ++composeSeq.current;
@@ -542,7 +540,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (seq !== composeSeq.current) return;
       compositionRef.current = composition;
       const b = composition.spec?.bindings || {};
-      setSelectedTools(runtime === "codex" ? [] : (b.tools || []).map((i: any) => i.resourceId));
+      setSelectedTools(usesNativeCodexTools ? [] : (b.tools || []).map((i: any) => i.resourceId));
       setSelectedSkills((b.skills || []).map((i: any) => i.resourceId));
       setSelectedMcp((b.mcpServers || []).map((i: any) => i.resourceId));
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
@@ -560,7 +558,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         setCreateError(error.message || "生成 Agent 配置失败");
       }
     }
-  }, [template, wizardPayload, runtime, systemPrompt, taskPrompt, quickForm]);
+  }, [template, wizardPayload, usesNativeCodexTools, systemPrompt, taskPrompt, quickForm]);
 
   const optimizePromptWithModel = useCallback(async () => {
     const authoringModel = selectedModels[0];
@@ -593,7 +591,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           runtimeType: runtime === "plugin" ? "codex" : runtime,
           agentModelProfileIds: selectedModels,
           agentDefaultModelProfileId: authoringModel,
-          toolResourceIds: runtime === "codex" ? [] : selectedTools,
+          toolResourceIds: effectiveSelectedTools,
           mcpResourceIds: selectedMcp,
           skillResourceIds: selectedSkills,
           requestId,
@@ -645,7 +643,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     selectedMcp,
     selectedModels,
     selectedSkills,
-    selectedTools,
+    effectiveSelectedTools,
     systemPrompt,
     taskPrompt,
   ]);
@@ -735,6 +733,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           ])].sort(),
         };
       }
+      if (usesNativeCodexTools) {
+        spec.bindings = { ...(spec.bindings || {}), tools: [] };
+        spec.capabilities = { ...(spec.capabilities || {}), tools: [] };
+      }
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -749,8 +751,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) {
+        setCreateError(d?.error?.message || `创建失败（${res.status}）`);
         if (applyApiFieldErrors(d, quickForm.setError)) {
-          setStep(1);
           return;
         }
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
@@ -939,6 +941,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) {
+        setConvError(d?.error?.message || `创建失败（${res.status}）`);
         if (applyApiFieldErrors(d, conversationForm.setError)) return;
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
       }
@@ -1314,9 +1317,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                           ariaLabel="选择对话 Agent MCP Server"
                           items={mcps}
                           selectedIds={convMcp}
+                          disabledIds={mcps.filter(item => !convMcp.includes(item.resourceId) && mcpUnavailableReason(item, conversationRuntime)).map(item => item.resourceId)}
                           getId={item => item.resourceId}
                           getLabel={item => item.displayName}
-                          getDescription={item => `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool`}
+                          getDescription={item => mcpUnavailableReason(item, conversationRuntime) || `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool`}
                           onChange={setConvMcp}
                           searchPlaceholder="搜索 MCP Server"
                           emptyMessage="没有已连接的 MCP Server"
@@ -1720,10 +1724,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <span className="panel-index">02</span>
                     <div><h2>选择 Agent 可以使用的能力</h2><p>所有依赖都会在构建时锁定版本和摘要，并由权限策略控制调用。</p></div>
                   </div>
-                  {runtime === "codex" && (
+                  {usesNativeCodexTools && (
                     <div className="inline-alert warning codex-capability-notice">
                       <CircleAlert size={16} />
-                      <div><strong>ManagedRuntime 不绑定 ksadk Tool</strong><p>codex CLI 自身提供工具能力，ksadk Tool 不会绑定到 codex Agent。MCP（streamable-http）与 Skill 可绑定：MCP 经 codex config_overrides 注入，Skill 以原生 SkillInput 注入。模型仍需选择并配置凭证。</p></div>
+                      <div><strong>Codex 使用原生工具，不绑定 KsADK 内置 Tool</strong><p>Codex CLI 自身提供工具能力。MCP（streamable-http）与 Skill 仍可绑定：MCP 经 Codex 配置注入，Skill 以原生 SkillInput 注入。模型仍需选择并配置凭证。</p></div>
                     </div>
                   )}
                   <div className="capability-section">
@@ -1758,7 +1762,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     />
                     <span className="helper">{selectedModelStatus}</span>
                   </div>
-                  {runtime !== "codex" && (
+                  {!usesNativeCodexTools && (
                     <div className="capability-section">
                       <div className="capability-heading">
                         <span className="capability-icon"><Wrench size={15} /></span>
@@ -1797,9 +1801,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       ariaLabel="选择 MCP Server"
                       items={mcps}
                       selectedIds={selectedMcp}
+                      disabledIds={mcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId)}
                       getId={item => item.resourceId}
                       getLabel={item => item.displayName}
-                      getDescription={item => `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool · ${item.status === "ready" ? "Ready" : item.status}`}
+                      getDescription={item => mcpUnavailableReason(item, runtime) || `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool · ${item.status === "ready" ? "Ready" : item.status}`}
                       onChange={ids => { setSelectedMcp(ids); markDirty(); }}
                       searchPlaceholder="搜索 MCP Server"
                       emptyMessage="没有已连接的 MCP Server"
@@ -1829,13 +1834,13 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div className="panel-heading">
                     <span className="panel-index">03</span>
                     <div><h2>检查系统提示词与任务契约</h2><p>保存前可以继续编辑，创建时会完整写入 Agent Draft。</p></div>
-                    <button className="button secondary small" type="button" disabled={promptStatus === "composing"} onClick={optimizePromptWithModel}>
-                      <RefreshCw size={14} /><span>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在优化" : "正在生成") : "一键优化 Prompt"}</span>
+                    <button className={`button secondary small prompt-optimize-button${promptStatus === "composing" ? " is-working" : ""}`} type="button" disabled={promptStatus === "composing"} aria-busy={promptStatus === "composing"} onClick={optimizePromptWithModel}>
+                      <RefreshCw size={14} aria-hidden="true" /><span className={promptStatus === "composing" ? "text-shimmer" : undefined}>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在优化" : "正在生成") : "一键优化 Prompt"}</span>
                     </button>
                   </div>
-                  <div className="prompt-status">
+                  <div className={`prompt-status${promptStatus === "composing" ? " is-working" : ""}`} role="status" aria-live="polite">
                     <span className={`status-dot ${promptStatus === "done" ? "success" : "info"}`} />
-                    <span>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在使用生成模型优化角色与任务契约" : "正在根据模板与能力生成角色与任务契约") : promptStatus === "done" ? "角色与任务契约已根据当前选择生成" : "进入此步骤后生成 Prompt"}</span>
+                    <span>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在使用生成模型优化角色与任务契约，通常需要几十秒" : "正在根据模板与能力生成角色与任务契约") : promptStatus === "done" ? "角色与任务契约已根据当前选择生成" : "进入此步骤后生成 Prompt"}</span>
                   </div>
                   <FormField label="角色与系统提示词" requirement="required" htmlFor="composedSystemPrompt" hint="定义角色、目标、工作边界和回答原则" error={quickForm.formState.errors.systemPrompt?.message}>
                     <textarea id="composedSystemPrompt" className="prompt-editor" rows={16} {...quickForm.register("systemPrompt", { onChange: markDirty })} />
@@ -1916,7 +1921,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <div className="review-title"><span>能力绑定</span><button className="text-button" type="button" onClick={() => gotoStep(2)}>编辑</button></div>
                     <div className="review-capabilities">
                       <div className="review-capability"><Cpu size={16} /><div><strong>{selectedModelItems[0]?.displayName || "模型"}</strong></div></div>
-                      <div className="review-capability"><Wrench size={16} /><div><strong>{selectedTools.length} 个 Tool</strong><span>{policyMeta.title}</span></div></div>
+                      <div className="review-capability"><Wrench size={16} /><div><strong>{effectiveSelectedTools.length} 个 Tool</strong><span>{usesNativeCodexTools ? "由 Codex Runtime 提供原生工具" : policyMeta.title}</span></div></div>
                       <div className="review-capability"><Network size={16} /><div><strong>{selectedMcp.length} 个 MCP</strong><span>{selectedMcp.length ? "已连接外部服务" : "未绑定"}</span></div></div>
                       <div className="review-capability"><Sparkles size={16} /><div><strong>{selectedSkills.length} 个 Skill</strong><span>{selectedSkills.length ? "已注入版本化能力" : "未绑定"}</span></div></div>
                     </div>
@@ -1947,7 +1952,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <div><dt>模板</dt><dd>{templateLabel}</dd></div>
                     <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
                     <div><dt>模型</dt><dd>{reviewModel}</dd></div>
-                    <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
+                    <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>
                     <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
                     <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
                   </dl>
@@ -1984,7 +1989,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div><dt>模型</dt><dd>{reviewModel}</dd></div>
                   <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
                   <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
-                  <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
+                  <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>
                   <div><dt>策略</dt><dd>{template === "research" ? "Plan-Act-Observe" : "Direct"}</dd></div>
                 </dl>
                 <div className="summary-divider" />
@@ -1994,7 +1999,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 </div>
                 <div className="summary-note">
                   <Package size={16} />
-                  <div><strong>{isManagedRuntime ? "声明校验" : "不可变构建"}</strong><p>{isManagedRuntime ? "冻结 YAML 与 runtime 摘要；云端部署不使用代码包。" : "Skill、MCP 和 Tool 将锁定版本与摘要。"}</p></div>
+                  <div><strong>{isManagedRuntime ? "声明校验" : "不可变构建"}</strong><p>{isManagedRuntime ? "冻结 YAML 与 runtime 摘要；云端部署不使用代码包。" : usesNativeCodexTools ? "Skill 与 MCP 将锁定版本与摘要；工具由 Codex Runtime 提供。" : "Skill、MCP 和 Tool 将锁定版本与摘要。"}</p></div>
                 </div>
                 </div>
               </StudioDrawer>

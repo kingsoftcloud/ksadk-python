@@ -53,15 +53,17 @@ def _avatar_png(*, size: tuple[int, int] = (96, 96)) -> bytes:
     return stream.getvalue()
 
 
-def test_generic_api_error_does_not_echo_exception_details(tmp_path: Path) -> None:
+def test_generic_api_error_does_not_echo_exception_details(tmp_path: Path, monkeypatch) -> None:
     app = create_studio_app(tmp_path, security_enabled=False)
 
-    @app.get("/api/v1/test-generic-error")
-    async def raise_generic_error():
+    def raise_generic_error():
         raise RuntimeError("Bearer secret-should-never-reach-the-browser")
 
+    # Exercise a registered API route; routes appended after the Studio Core
+    # catch-all are not dispatched and only test its 404 response.
+    monkeypatch.setattr(app.state.studio_service.cloud, "list", raise_generic_error)
     with TestClient(app, raise_server_exceptions=False) as client:
-        response = client.get("/api/v1/test-generic-error")
+        response = client.get("/api/v1/deployments")
 
     assert response.status_code == 500
     payload = response.json()["error"]

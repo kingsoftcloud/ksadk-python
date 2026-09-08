@@ -19,6 +19,7 @@ from ksadk.studio.contracts import (
     MCPServerRef,
     ModelParameters,
     ModelSpec,
+    RuntimeRef,
     ToolContract,
 )
 from ksadk.studio.errors import StudioError
@@ -475,6 +476,83 @@ def test_compiler_materializes_bindings_into_immutable_dependencies(tmp_path: Pa
     ] == "always"
     assert "workspace:file:write" in result.resolved.security.allowed_permissions
     assert result.dependency_lock["model"]["model"] == "glm-5.1"
+
+
+def test_compiler_ignores_legacy_tool_bindings_for_codex_provider(tmp_path: Path):
+    catalog = _catalog(tmp_path)
+    _register_model(catalog)
+    model = catalog.list(kind="model")[0]
+    tool = next(item for item in catalog.list(kind="tool", limit=100))
+    draft = AgentDraft(
+        metadata=AgentMetadata(id="codex-provider-agent", name="Codex Provider Agent"),
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref="plugin://io.ksadk.codex-provider@1.0.0",
+            ),
+            instructions=Instructions(system="Use Codex native tools."),
+            bindings=AgentBindings(
+                model_profile_id=model.resource_id,
+                tools=[CapabilityBinding(resource_id=tool.resource_id)],
+            ),
+        ),
+    )
+
+    result = AgentCompiler(catalog.workspace, catalog=catalog).compile(draft)
+
+    assert result.resolved.capabilities.tools == []
+    assert result.dependency_lock["tools"] == []
+
+
+def test_compiler_keeps_codex_mcp_native_instead_of_expanding_discovered_tools(
+    tmp_path: Path,
+):
+    catalog = _catalog(tmp_path)
+    _register_model(catalog)
+    model = catalog.list(kind="model")[0]
+    mcp = catalog.create_mcp_server(
+        display_name="Search MCP",
+        description="Native Codex MCP server",
+        server=MCPServerRef(
+            name="search",
+            version="1.0.0",
+            transport="http",
+            endpoint_url="https://mcp.example.test/rpc",
+        ),
+    )
+    catalog.save_probe(
+        mcp.resource_id,
+        result={
+            "tools": [
+                ToolContract(
+                    name="web_search",
+                    version="1.0.0",
+                    executor="mcp",
+                    mcp_server="search",
+                ).model_dump(by_alias=True, exclude_none=True, mode="json")
+            ]
+        },
+    )
+    draft = AgentDraft(
+        metadata=AgentMetadata(id="codex-mcp-agent", name="Codex MCP Agent"),
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref="plugin://io.ksadk.codex-provider@1.0.0",
+            ),
+            instructions=Instructions(system="Use the native MCP server."),
+            bindings=AgentBindings(
+                model_profile_id=model.resource_id,
+                mcp_servers=[CapabilityBinding(resource_id=mcp.resource_id)],
+            ),
+        ),
+    )
+
+    result = AgentCompiler(catalog.workspace, catalog=catalog).compile(draft)
+
+    assert [server["name"] for server in result.resolved.capabilities.mcp_servers] == ["search"]
+    assert result.resolved.capabilities.tools == []
+    assert result.dependency_lock["tools"] == []
 
 
 def test_skill_zip_import_is_installed_and_content_addressed(tmp_path: Path):

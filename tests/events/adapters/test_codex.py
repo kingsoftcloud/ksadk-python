@@ -266,12 +266,15 @@ def test_client_owned_a2ui_surface_and_interaction_are_canonical_and_replay_safe
     for event in (*surface_events, *interaction_events):
         reducer.apply(event)
     assert reducer.snapshot().status == "interrupted"
-    assert adapter.map_protocol_message(
-        surface_frame,
-        context,
-        native_cursor="jsonl:a2ui-surface",
-        timestamp=1.0,
-    ) == ()
+    assert (
+        adapter.map_protocol_message(
+            surface_frame,
+            context,
+            native_cursor="jsonl:a2ui-surface",
+            timestamp=1.0,
+        )
+        == ()
+    )
 
 
 def test_same_native_item_in_two_turns_has_distinct_scope_and_item_identity() -> None:
@@ -2221,3 +2224,27 @@ def test_replay_window_stores_only_fixed_length_payload_digests() -> None:
         )
         == ()
     )
+
+
+def test_question_schema_supports_custom_multi_select_answers():
+    from jsonschema import Draft202012Validator
+
+    from ksadk.events.adapters._codex_validators import _question_schema
+
+    _, schema, _, _ = _question_schema(
+        [
+            {
+                "id": "scope",
+                "header": "范围",
+                "question": "检查哪些部分？",
+                "isMultiSelect": True,
+                "isOther": True,
+                "options": [{"label": "前端", "description": "UI"}],
+            }
+        ]
+    )
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"scope": ["前端", "请改成 echo 你好"]})
+    assert not validator.is_valid({})
+    assert not validator.is_valid({"scope": []})
+    assert schema["properties"]["scope"]["type"] == "array"

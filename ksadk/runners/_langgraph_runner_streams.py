@@ -42,7 +42,10 @@ class _LangGraphStreamMixin:
             payload["input"] = self._gateway_approval_follow_up_input()
             resume_value = payload["input"]
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
         if history:
@@ -67,7 +70,7 @@ class _LangGraphStreamMixin:
         elif is_resume and not is_gateway_approval_resume:
             # Keep the interrupt value intact for ``Command(resume=...)``;
             # prepare-state hooks only shape fresh user turns.
-            state = resume_value
+            state = self._unwrap_resume_value(resume_value)
         elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(
                 payload,
@@ -391,9 +394,28 @@ class _LangGraphStreamMixin:
                     output = event.get("data", {}).get("output", {})
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
+                        # __interrupt__ 是 LangGraph 原始 Interrupt 对象列表，
+                        # 直接 yield 会导致下游拿不到 tool_name/description（非 Mapping）。
+                        # 用 _get_interrupt_info 从 state 提取结构化 interrupt_info，
+                        # 与 406-412 的异常路径和 419-436 的 pending_approval 兜底一致。
+                        _interrupt_info = {}
+                        try:
+                            _get_state = getattr(self._agent, "aget_state", None) or getattr(
+                                self._agent, "get_state", None
+                            )
+                            if _get_state is not None:
+                                _maybe_state = _get_state(config)
+                                if inspect.isawaitable(_maybe_state):
+                                    _maybe_state = await _maybe_state
+                                _interrupt_info = self._get_interrupt_info(_maybe_state)
+                        except Exception:
+                            _interrupt_info = {}
+                        if not _interrupt_info:
+                            # 取不到 state 时 fallback 到原始 __interrupt__（兼容旧行为）。
+                            _interrupt_info = output["__interrupt__"]
                         yield {
                             "type": "interrupt",
-                            "interrupt_info": output["__interrupt__"],
+                            "interrupt_info": _interrupt_info,
                             "session_id": session_id,
                         }
                         return
@@ -554,7 +576,10 @@ class _LangGraphStreamMixin:
         resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
         resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
 
         config = self._get_config(session_id)
         if is_checkpoint_resume:
@@ -568,7 +593,7 @@ class _LangGraphStreamMixin:
         if is_checkpoint_resume:
             state = resume_value
         elif is_resume:
-            state = resume_value
+            state = self._unwrap_resume_value(resume_value)
         elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history)
         else:

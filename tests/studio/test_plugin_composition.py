@@ -123,8 +123,18 @@ async def test_harness_build_writes_profile_lock_and_catalog_resources(
     with zipfile.ZipFile(archive) as bundle:
         profile = json.loads(bundle.read("composition-profile.json"))
         lock = json.loads(bundle.read("plugin-lock.json"))
+        compatibility = json.loads(bundle.read("compatibility-report.json"))
     assert profile["agentProvider"]["ref"] == "plugin://io.ksadk.harness-provider@1.0.0"
     assert "io.ksadk.mcp.workspace" in {item["id"] for item in lock["plugins"]}
+    assert compatibility["overallStatus"] == "compatible"
+    assert compatibility["permissions"]["allowed"] == [
+        "filesystem:bundle-read",
+        "filesystem:session-store",
+        "network:mcp",
+        "process:host-user",
+    ]
+    assert compatibility["blockingReasons"] == []
+    assert studio.resolve_run_spec(record.id).plugin_bundle_root is not None
     await studio.aclose()
 
 

@@ -54,6 +54,7 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
+from ksadk.runtime_context import session_invocation_context
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +281,15 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._active_runs[run_id] = _ActiveRun(invocation_id=run_id, session_id=request.session_id)
         # 暂存 start 输入,供 stream() 使用。
         self._active_runs[run_id].__dict__["_start_request"] = request
+        snapshot = request.metadata.get("session_context")
+        if snapshot is not None:
+            self._active_runs[run_id].__dict__["_tag_context"] = session_invocation_context(
+                snapshot,
+                agent_id=request.agent_id or "",
+                user_id=request.user_id,
+                session_id=request.session_id,
+                runner_type=self._runtime_type,
+            )
         if prepared_start is not None:
             self._active_runs[run_id].__dict__["_prepared_start"] = prepared_start
         return handle
@@ -426,6 +436,14 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             resume_key=resume_key,
             resume_fingerprint=resume_fingerprint,
         )
+        if payload is not None and payload.session_context is not None:
+            run.__dict__["_tag_context"] = session_invocation_context(
+                payload.session_context,
+                agent_id=str(handle.native_ref.get("agent_id") or ""),
+                user_id=str(handle.native_ref.get("user_id") or ""),
+                session_id=handle.session_id,
+                runner_type=self._runtime_type,
+            )
         if prepared_start is not None:
             run.__dict__["_prepared_start"] = prepared_start
         if override:
@@ -593,6 +611,24 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             self._active_runs.pop(handle.run_id, None)
 
     def _build_runner_input(self, handle: RunHandle, request: Optional[StartRequest]) -> dict:
+        result = self._build_base_runner_input(handle, request)
+        run = self._active_runs.get(handle.run_id)
+        context = run.__dict__.get("_tag_context") if run is not None else None
+        if context is not None:
+            existing_context = result.get("platform_context")
+            result["platform_context"] = (
+                {**existing_context, "session": context.session.to_payload()}
+                if isinstance(existing_context, dict)
+                else context.to_payload()
+            )
+            result["metadata"] = {
+                key: value
+                for key, value in dict(result.get("metadata") or {}).items()
+                if key != "session_context"
+            }
+        return result
+
+    def _build_base_runner_input(self, handle: RunHandle, request: Optional[StartRequest]) -> dict:
         # resume 覆盖优先:_resume_native 注入的 checkpoint_resume + framework_ref
         # 直接作为 runner 输入,驱动框架原生恢复。
         run = self._active_runs.get(handle.run_id)

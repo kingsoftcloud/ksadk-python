@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -98,6 +99,22 @@ class Harness:
         monkeypatch.setenv("KSADK_AGENT_KERNEL", "1")
         # 注册进程级 kernel（monkeypatch 会在 teardown 还原为 None）。
         monkeypatch.setattr(ingress, "_kernel", self.kernel, raising=True)
+        # Studio additionally verifies that the process Kernel is bound to the
+        # exact Agent/runtime before submitting.  Supply that production shape
+        # while keeping the test's RecordingKernel as the control plane.
+        from ksadk.studio.run_service import StudioRunService
+
+        kernel_runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                tenant_id=TENANT,
+                agent_instance_id=AGENT_INSTANCE,
+            )
+        )
+        monkeypatch.setattr(
+            StudioRunService,
+            "_kernel_runtime_for_spec",
+            staticmethod(lambda _spec: kernel_runtime),
+        )
 
     @property
     def submit_count(self) -> int:

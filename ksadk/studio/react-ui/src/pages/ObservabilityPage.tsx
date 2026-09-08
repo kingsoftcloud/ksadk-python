@@ -1067,13 +1067,13 @@ function OverviewChart({ buckets: rawBuckets, range }: {
     <svg className="overview-chart" viewBox="0 0 800 118" preserveAspectRatio="none" aria-label="运行趋势曲线">
       {[0, 0.25, 0.5, 0.75, 1].map(proportion => {
         const y = pad.t + innerH - proportion * innerH;
-        return <line key={proportion} x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray={proportion === 0 ? "0" : "3 3"} />;
+        return <line key={proportion} x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--studio-border)" strokeWidth="1" strokeDasharray={proportion === 0 ? "0" : "3 3"} />;
       })}
       <path d={areaPath} fill="var(--accent-soft)" opacity="0.6" />
-      <polyline points={runsPoints} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      <polyline points={runsPoints} fill="none" stroke="var(--studio-accent)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
       <polyline points={successPoints} fill="none" stroke="var(--success)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="4 3" />
       {buckets.map((bucket, index) => (
-        <circle key={bucket.startedAt} cx={pad.l + index * stepX} cy={yScale(bucket.runs)} r="2.5" fill="var(--accent)">
+        <circle key={bucket.startedAt} cx={pad.l + index * stepX} cy={yScale(bucket.runs)} r="2.5" fill="var(--studio-accent)">
           <title>{`${bucket.label}：${bucket.runs} 次运行，${bucket.success} 次成功`}</title>
         </circle>
       ))}

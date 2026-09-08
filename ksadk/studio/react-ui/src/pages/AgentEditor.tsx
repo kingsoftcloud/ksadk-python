@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CircleAlert, Code, Package } from "lucide-react";
+import { Check, CircleAlert, Package } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { apiFetch } from "../api";
 import { showToast } from "../components/Toast";
 import { AgentAppearanceEditor } from "../components/AgentAppearanceEditor";
+import { NativePluginBindings, type NativePluginBinding } from "../components/NativePluginBindings";
 import type { AgentAppearance } from "../components/AgentAvatar";
 import { FormField } from "../components/ui/FormField";
 import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { applyApiFieldErrors } from "../lib/formErrors";
+import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import { agentEditSchema, type AgentEditFormValues } from "../schemas/agentForms";
 import {
   parseProviderConfig,
@@ -25,7 +27,7 @@ export interface EditorCatalogItem {
   displayName: string;
   version: string;
   status: string;
-  contract?: { model?: string; executor?: string };
+  contract?: { model?: string; executor?: string; materialization?: string; discoveredTools?: unknown[] };
   health?: { toolCount?: number };
 }
 
@@ -89,6 +91,7 @@ interface AgentDetail {
         skills?: CapabilityBindingValue[];
         mcpServers?: CapabilityBindingValue[];
         tools?: CapabilityBindingValue[];
+        plugins?: NativePluginBinding[];
         [key: string]: unknown;
       };
       security?: {
@@ -224,6 +227,8 @@ export function AgentEditor({
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [selectedPlugins, setSelectedPlugins] = useState<NativePluginBinding[]>([]);
+  const [pluginsPending, setPluginsPending] = useState(false);
   const [visibleSection, setVisibleSection] = useState(activeSection);
   const [runtimeProjectPath, setRuntimeProjectPath] = useState(".");
   const [runtimeEntryPoint, setRuntimeEntryPoint] = useState("");
@@ -321,6 +326,7 @@ export function AgentEditor({
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedTools((bindings.tools || []).map((item: { resourceId: string }) => item.resourceId));
+        setSelectedPlugins(bindings.plugins || []);
         setRuntimeProjectPath(String(draft.spec?.runtime?.projectPath || "."));
         setRuntimeEntryPoint(String(draft.spec?.runtime?.entryPoint || (draft.spec?.runtime?.type === "langgraph" ? "graph.py" : "agent.py")));
         setRuntimeAgentVariable(String(draft.spec?.runtime?.agentVariable || (draft.spec?.runtime?.type === "langgraph" ? "app" : "root_agent")));
@@ -441,7 +447,9 @@ export function AgentEditor({
     "artifact_type: ManagedRuntime",
     "runtime:",
     "  name: codex",
-    "  version: 0.144.4",
+    ...(detail?.draft.spec.runtime?.version
+      ? [`  version: ${detail.draft.spec.runtime.version}`]
+      : []),
     `model: ${modelName(primaryModel) || fallbackModel}`,
     ...(manifestModels.length > 1 ? ["models:", ...manifestModels.map(item => `  - ${item}`)] : []),
     ...codexSoulYamlLines,
@@ -480,7 +488,7 @@ export function AgentEditor({
   ].join("\n");
 
   async function save(values: AgentEditFormValues) {
-    if (!detail || saving) return;
+    if (!detail || saving || pluginsPending) return;
     const resolvedDefaultModel = defaultModel || selectedModels[0] || "";
     if (!resolvedDefaultModel && !preservesManifestModel) {
       setSaveError("请至少绑定一个模型并设置为默认模型");
@@ -543,6 +551,7 @@ export function AgentEditor({
     }
     setSaving(true);
     setSaveError("");
+    let updateSaved = false;
     try {
       const original = detail.draft.spec;
       const spec = JSON.parse(JSON.stringify(original));
@@ -596,6 +605,7 @@ export function AgentEditor({
         skills: mergeCapabilityBindings(original.bindings?.skills, selectedSkills),
         mcpServers: mergeCapabilityBindings(original.bindings?.mcpServers, selectedMcp),
         tools: mergeCapabilityBindings(original.bindings?.tools, selectedTools),
+        plugins: selectedPlugins,
       };
       spec.context = {
         ...(original.context || {}),
@@ -643,8 +653,12 @@ export function AgentEditor({
       );
       const saved = await response.json().catch(() => null);
       if (!response.ok) {
-        if (applyApiFieldErrors(saved, agentForm.setError)) return;
+        applyApiFieldErrors(saved, agentForm.setError);
         throw new Error(saved?.error?.message || `保存失败（${response.status}）`);
+      }
+      updateSaved = true;
+      if (saved?.metadata) {
+        setDetail(current => current ? { ...current, draft: { metadata: saved.metadata, spec } } : current);
       }
       const savedId = saved?.metadata?.id || agentId;
       showToast(
@@ -687,8 +701,15 @@ export function AgentEditor({
       }
       onSaved(savedId, buildAfterSave);
     } catch (error: any) {
-      setSaveError(error.message || "保存失败");
-      showToast("保存失败", error.message || "保存失败", "error");
+      const disconnected = error instanceof TypeError && /fetch|network|load failed/i.test(error.message);
+      const reason = disconnected
+        ? "与 Studio 的连接中断，请确认本地服务仍在运行。当前填写的内容已保留。"
+        : error.message || "保存失败";
+      const message = updateSaved
+        ? `配置已保存，但后续构建未完成。${reason}`
+        : disconnected ? `尚未确认保存结果。${reason}` : reason;
+      setSaveError(message);
+      showToast(updateSaved ? "构建未完成" : "保存未完成", message, "error");
     } finally {
       setSaving(false);
     }
@@ -730,15 +751,9 @@ export function AgentEditor({
         })}
         noValidate
       >
-        <div className="quick-runtime-strip">
-          <span className="runtime-logo"><Code size={17} /></span>
-          <div><strong>{runtimeTitle(runtime)}</strong><span>一 Agent 一 YAML · 不可变 Bundle</span></div>
-          <span className="badge" data-state="ready">本地可运行</span>
-        </div>
         <div className="quick-create-heading">
-          <span className="eyebrow">YAML-first</span>
-          <h2 title={slug}>编辑 {name || detail.draft.metadata.name}</h2>
-          <p>保存会直接回写该 Agent 的 agentengine.yaml；旧构建会标记为过期。</p>
+          <h2 title={slug}>{name || detail.draft.metadata.name}</h2>
+          <p>{runtimeTitle(runtime)} · 修改基础信息、模型和运行设置</p>
         </div>
         <nav className="agent-edit-nav" aria-label="Agent 编辑分区">
           {[
@@ -755,14 +770,7 @@ export function AgentEditor({
             >{section.label}</button>
           ))}
         </nav>
-        <div className="callout compact agent-version-boundary">
-          <div>
-            <strong>{isManagedDeclaration ? "配置修订边界" : "部署版本边界"}</strong>
-            <p>{isManagedDeclaration
-              ? "本页保存本地 YAML 配置；已部署版本不会自动改变，执行云端更新后才会生效。"
-              : "本页保存 Prompt、模型与能力绑定。Runtime 类型不可直接切换；代码入口等修改会进入新 Revision，并按运行时能力生成新 Bundle。"}</p>
-          </div>
-        </div>
+        <p className="agent-version-note">保存修改后在本地生效；已部署到云端的版本需重新部署。</p>
         <section className="agent-edit-section" hidden={visibleSection !== 1} aria-label="基础与 Prompt">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">01</span>
@@ -977,7 +985,7 @@ export function AgentEditor({
             selectedIds={selectedModels}
             getId={item => item.resourceId}
             getLabel={item => item.displayName}
-            getDescription={item => `${modelName(item)} · ${item.status}`}
+            getDescription={item => modelName(item) !== item.displayName ? modelName(item) : ""}
             onChange={changeModels}
             searchPlaceholder="搜索绑定模型"
             emptyMessage="当前模型服务没有返回可绑定模型"
@@ -1003,14 +1011,15 @@ export function AgentEditor({
               selectedIds={selectedMcp}
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
-              getDescription={item => `${item.version} · ${item.health?.toolCount || 0} Tool`}
+              getDescription={item => mcpUnavailableReason(item, runtime) || `${item.version} · ${item.health?.toolCount || 0} Tool`}
               onChange={["codex", "plugin"].includes(runtime) ? setSelectedMcp : () => undefined}
-              disabledIds={["codex", "plugin"].includes(runtime) ? [] : selectedMcp}
+              disabledIds={["codex", "plugin"].includes(runtime) ? visibleMcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId) : selectedMcp}
               searchPlaceholder="搜索 MCP"
               emptyMessage={["codex", "plugin"].includes(runtime) ? "没有已连接的 MCP" : "当前 Runtime 不支持新增 MCP"}
             />
           </div>
         </div>
+        {runtime === "codex" && visibleSection === 2 && <NativePluginBindings key={agentId} value={selectedPlugins} onChange={setSelectedPlugins} onPendingChange={setPluginsPending} />}
         {detail.bindingProjection?.unresolvedMcpServers?.length ? (
           <div className="inline-alert warning" role="status">
             <CircleAlert size={16} />
@@ -1196,19 +1205,20 @@ export function AgentEditor({
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />
             <span><strong>{isManagedDeclaration ? "保存后生成配置快照" : "保存后构建新 Bundle"}</strong><small>{isManagedDeclaration ? "校验 YAML 并生成可追溯的部署输入" : "新 Bundle 完成后进入会话工作台"}</small></span>
           </label>
-          <button className="button accent" type="submit" disabled={saving}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
+          <button className="button accent" type="submit" disabled={saving || pluginsPending}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
         </div>
-        {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>保存失败</strong><p>{saveError}</p></div></div>}
+        {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>操作未完成</strong><p>{saveError}</p></div></div>}
       </form>
       </FormProvider>
-      <aside className="manifest-preview">
+      <details className="manifest-preview">
+        <summary>查看配置源码</summary>
         <CodeViewer code={manifest} language="yaml" filename="agentkit.yaml" wrap />
         <div className="manifest-contract">
           <span><Check size={13} />唯一配置源</span>
           <span><Check size={13} />SHA-256 可追溯</span>
           <span><Check size={13} />RuntimeAdapter 执行</span>
         </div>
-      </aside>
+      </details>
     </div>
   );
 }
