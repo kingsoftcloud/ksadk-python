@@ -185,6 +185,48 @@ def _parse_approval_arguments(value: Any) -> dict[str, Any]:
 
 
 def _approval_decision_from_resume(resume_input: Mapping[str, Any]) -> dict[str, Any]:
+    # ksadk_resume + decisions 协议（HumanInTheLoopMiddleware）：
+    # resume_input.value.decisions[0].type 为 approve/edit/reject。
+    value = resume_input.get("value")
+    if isinstance(value, Mapping):
+        decisions = value.get("decisions")
+        if isinstance(decisions, list) and decisions:
+            first = decisions[0]
+            if isinstance(first, Mapping):
+                decision_type = str(first.get("type") or "").strip().lower()
+                if decision_type in {"approve", "edit"}:
+                    approved = True
+                    if decision_type == "edit":
+                        # edit 带修改后的参数；记录到 decision 供下游使用。
+                        edited = first.get("edited_action")
+                        if isinstance(edited, Mapping):
+                            return {
+                                "approved": True,
+                                "approval_request_id": str(
+                                    resume_input.get("approval_request_id")
+                                    or resume_input.get("interrupt_id")
+                                    or resume_input.get("id")
+                                    or ""
+                                ),
+                                "edited_action": dict(edited),
+                            }
+                elif decision_type in {"reject", "respond"}:
+                    approved = False
+                else:
+                    approved = True
+                decision = {
+                    "approved": approved,
+                    "approval_request_id": str(
+                        resume_input.get("approval_request_id")
+                        or resume_input.get("interrupt_id")
+                        or resume_input.get("id")
+                        or ""
+                    ),
+                }
+                message = first.get("message") or first.get("feedback")
+                if message is not None:
+                    decision["reason"] = str(message)
+                return decision
     if "approve" in resume_input:
         approved = bool(resume_input.get("approve"))
     elif "approved" in resume_input:

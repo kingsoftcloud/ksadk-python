@@ -431,6 +431,34 @@ def _tool_event_from_call(event: Mapping[str, Any], metadata: Mapping[str, Any])
     }
 
 
+def _approval_status_from_resume(response: Any, resume_input: Mapping[str, Any]) -> str:
+    """从 approval_response 事件的 resume_input 判断审批结果状态。
+
+    支持两种协议：
+    - mcp_approval_response: resume_input 含 approve/approved bool
+    - ksadk_resume + decisions: resume_input.value.decisions[0].type 为
+      approve/edit/reject（HumanInTheLoopMiddleware 协议）
+    """
+    if response is None:
+        return "paused"
+    # ksadk_resume + decisions 协议
+    value = resume_input.get("value")
+    if isinstance(value, Mapping):
+        decisions = value.get("decisions")
+        if isinstance(decisions, list) and decisions:
+            first = decisions[0]
+            if isinstance(first, Mapping):
+                decision_type = str(first.get("type") or "").strip().lower()
+                if decision_type in {"approve", "edit"}:
+                    return "approved"
+                if decision_type in {"reject", "respond"}:
+                    return "denied"
+    # mcp_approval_response 协议
+    if resume_input.get("approve") or resume_input.get("approved"):
+        return "approved"
+    return "denied"
+
+
 def _project_approval_events(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -438,10 +466,41 @@ def _project_approval_events(
 ) -> list[dict[str, Any]]:
     approvals: list[dict[str, Any]] = []
     for request in events:
-        if request.get("EventType") != "approval_request":
+        event_type = str(request.get("EventType") or "")
+        # 识别归一化后的 approval_request，以及未归一化的 canonical interaction.requested。
+        if event_type not in {"approval_request", "interaction.requested"}:
             continue
         metadata = _event_metadata(request)
+        # 归一化路径：interrupt_info 在 metadata；canonical 路径：在 Content.runtime_event.request.detail。
         interrupt_info = metadata.get("interrupt_info")
+        if not isinstance(interrupt_info, Mapping):
+            # 尝试从 canonical event 的 Content.runtime_event 提取
+            raw_content = request.get("Content")
+            content = raw_content if isinstance(raw_content, Mapping) else {}
+            runtime_event = content.get("runtime_event")
+            if isinstance(runtime_event, Mapping):
+                req = runtime_event.get("request") or {}
+                if isinstance(req, Mapping):
+                    detail = req.get("detail")
+                    if isinstance(detail, Mapping):
+                        # 从 detail.action_requests[0] 提取（HumanInTheLoopMiddleware 结构）
+                        action_requests = detail.get("action_requests")
+                        first_action = (
+                            action_requests[0]
+                            if isinstance(action_requests, list) and action_requests
+                            else {}
+                        )
+                        if not isinstance(first_action, Mapping):
+                            first_action = {}
+                        interrupt_info = {
+                            "approval_request_id": runtime_event.get("interaction_id") or req.get("call_id"),
+                            "id": runtime_event.get("interaction_id") or req.get("call_id"),
+                            "tool_name": detail.get("tool_name") or first_action.get("name") or req.get("kind"),
+                            "arguments": detail.get("arguments") or detail.get("args") or first_action.get("args") or first_action.get("arguments"),
+                            "description": detail.get("description") or first_action.get("description"),
+                            "review_configs": detail.get("review_configs"),
+                            "approval_message": detail.get("message") or first_action.get("description"),
+                        }
         if not isinstance(interrupt_info, Mapping):
             interrupt_info = {}
         request_id = str(
@@ -452,31 +511,56 @@ def _project_approval_events(
         resume_input = response_metadata.get("resume_input")
         if not isinstance(resume_input, Mapping):
             resume_input = {}
-        status = (
-            "paused"
-            if response is None
-            else (
-                "approved"
-                if resume_input.get("approve") or resume_input.get("approved")
-                else "denied"
-            )
+        status = _approval_status_from_resume(response, resume_input)
+        # HumanInTheLoopMiddleware 的 interrupt_info 把 tool_name 嵌在
+        # action_requests[0].name 里，runtime path 存的事件可能没有顶层 tool_name。
+        # 这里统一提取，避免 Name fallback 成 "approval" 导致前端显示不对。
+        action_requests = interrupt_info.get("action_requests")
+        first_action = (
+            action_requests[0]
+            if isinstance(action_requests, list) and action_requests
+            else {}
+        )
+        if not isinstance(first_action, Mapping):
+            first_action = {}
+        tool_name = (
+            interrupt_info.get("tool_name")
+            or first_action.get("name")
+            or "approval"
         )
         entry: dict[str, Any] = {
             "SeqId": request.get("SeqId"),
             "Type": "approval",
-            "Name": str(interrupt_info.get("tool_name") or "approval"),
+            "Name": str(tool_name),
             "Status": status,
             "ApprovalRequestId": request_id or None,
         }
         if metadata.get("protocol") == "ag-ui":
             entry["Protocol"] = "ag-ui"
+        # arguments/description 优先从顶层取（_get_interrupt_info/归一化已提取），
+        # fallback 到 action_requests[0]（runtime path 存的原始 interrupt_info）。
         arguments = (
             interrupt_info.get("arguments")
             or interrupt_info.get("tool_args")
             or interrupt_info.get("args")
+            or first_action.get("args")
+            or first_action.get("arguments")
         )
         if arguments is not None:
             entry["Args"] = arguments
+        description = (
+            interrupt_info.get("description")
+            or first_action.get("description")
+        )
+        if description:
+            entry["Description"] = str(description)
+        review_configs = interrupt_info.get("review_configs")
+        if isinstance(review_configs, list) and review_configs:
+            first_review = review_configs[0]
+            if isinstance(first_review, Mapping):
+                allowed = first_review.get("allowed_decisions")
+                if isinstance(allowed, list) and allowed:
+                    entry["AllowedDecisions"] = [str(d) for d in allowed]
         approval_level = interrupt_info.get("approval_level") or interrupt_info.get("risk_level")
         if approval_level:
             entry["ApprovalLevel"] = str(approval_level)
@@ -722,15 +806,36 @@ def _normalize_canonical_event(
             detail = request.get("detail")
             if not isinstance(detail, Mapping):
                 detail = {}
+            # HumanInTheLoopMiddleware 的 detail 把 tool_name/arguments/description
+            # 嵌在 action_requests[0] 里，detail 顶层没有，需要提取。
+            action_requests = detail.get("action_requests")
+            first_action = (
+                action_requests[0]
+                if isinstance(action_requests, list) and action_requests
+                else {}
+            )
+            if not isinstance(first_action, Mapping):
+                first_action = {}
+            review_configs = detail.get("review_configs")
             normalized["EventType"] = "approval_request"
             normalized["Content"] = {"detail": detail}
             normalized_metadata["interrupt_info"] = {
                 "approval_request_id": interaction_id or call_id,
                 "id": interaction_id or call_id,
-                "tool_name": detail.get("tool_name") or kind,
-                "arguments": detail.get("arguments") or detail.get("args"),
-                "approval_level": detail.get("approval_level"),
-                "approval_message": detail.get("message"),
+                "tool_name": detail.get("tool_name")
+                or first_action.get("name")
+                or kind,
+                "arguments": detail.get("arguments")
+                or detail.get("args")
+                or first_action.get("args")
+                or first_action.get("arguments"),
+                "description": detail.get("description")
+                or first_action.get("description"),
+                "review_configs": review_configs if isinstance(review_configs, list) else None,
+                "approval_level": detail.get("approval_level")
+                or first_action.get("approval_level"),
+                "approval_message": detail.get("message")
+                or first_action.get("description"),
             }
             # Preserve ag-ui protocol tag from source metadata.
             source = runtime_event.get("source") or {}
@@ -861,6 +966,11 @@ def _normalize_runtime_event(
             or approval_request.get("args")
             or detail.get("arguments")
             or detail.get("args"),
+            "description": action.get("description")
+            or approval_request.get("description")
+            or detail.get("description"),
+            "review_configs": approval_request.get("review_configs")
+            or detail.get("review_configs"),
             "approval_level": action.get("approval_level")
             or approval_request.get("approval_level")
             or detail.get("approval_level")

@@ -48,7 +48,10 @@ def studio_server(
     thread.start()
     base_url = f"http://127.0.0.1:{port}"
     try:
-        for _ in range(100):
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if not thread.is_alive():
+                raise AssertionError("Studio server thread exited before becoming healthy")
             try:
                 with urlopen(f"{base_url}/api/v1/system/health", timeout=0.2) as response:
                     if response.status == 200:
@@ -56,7 +59,10 @@ def studio_server(
             except OSError:
                 time.sleep(0.05)
         else:
-            raise AssertionError("Studio server did not start")
+            raise AssertionError(
+                "Studio server did not become healthy within 30 seconds "
+                f"(started={server.started}, thread_alive={thread.is_alive()})"
+            )
         yield base_url
     finally:
         server.should_exit = True
