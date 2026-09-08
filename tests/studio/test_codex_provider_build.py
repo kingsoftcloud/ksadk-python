@@ -12,7 +12,7 @@ from ksadk.plugins.providers.codex import CodexAgentProviderFactory
 from ksadk.runtime import StartRequest
 from ksadk.studio.codex_builder import CodexBuildRecord, CodexStudioBuilder
 from ksadk.studio.codex_provider_build import CODEX_PROVIDER_REF
-from ksadk.studio.contracts import AgentSpec, Instructions, ModelSpec, RuntimeRef
+from ksadk.studio.contracts import AgentSpec, Instructions, ModelSpec, RuntimeRef, SecuritySpec
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
 from tests.plugins.test_codex_provider_vertical import (
@@ -38,7 +38,9 @@ def _studio(tmp_path):
     manifest = _provider_manifest()
     manifest = manifest.model_copy(
         update={
-            "spec": manifest.spec.model_copy(update={"isolation": "sidecar"}),
+            "spec": manifest.spec.model_copy(
+                update={"isolation": "sidecar", "permissions": ["process:host-user"]}
+            ),
         }
     )
     studio = StudioService(
@@ -62,6 +64,7 @@ def _studio(tmp_path):
                 base_url="https://fixture.invalid/v1",
             ),
             instructions=Instructions(system="Answer the user."),
+            security=SecuritySpec(allowed_permissions=["process:host-user"]),
         ),
     )
     studio._started = True  # Registry fixture substitutes for managed DSH startup.
@@ -479,5 +482,24 @@ async def test_registration_change_rejects_old_build_and_runs_rebuilt(tmp_path):
         result = await studio.run_build(second.id, "New registration", "registration-change")
         assert result.status.value == "COMPLETED", result.error
         assert backend.turn_count == 1
+    finally:
+        await studio.aclose()
+
+
+@pytest.mark.asyncio
+async def test_native_codex_permission_denial_points_to_agent_settings(tmp_path):
+    studio, backend = _studio(tmp_path)
+    try:
+        draft = studio.codex_agents._project(studio.codex_manifests.load("codex-local"))
+        draft.spec.security.allowed_permissions = []
+        studio.codex_agents.update(
+            "codex-local", draft.spec, expected_revision=draft.metadata.revision
+        )
+        with pytest.raises(StudioError) as error:
+            studio.codex_builder.build("codex-local")
+        assert error.value.code == "AGENT_PROVIDER_PERMISSION_DENIED"
+        assert "Codex 本地执行权限" in str(error.value)
+        assert error.value.details["missingPermissions"] == ["process:host-user"]
+        assert backend.thread_count == 0
     finally:
         await studio.aclose()

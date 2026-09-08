@@ -792,3 +792,53 @@ it("saves the installed Figma plugin snapshot as an Agent binding", async () => 
     expect(JSON.parse(String(put![1]!.body)).bindings.plugins).toEqual([{ ecosystem: "codex", pluginRef: snapshot.pluginRef, snapshotDigest: snapshot.snapshotDigest, components: ["app:figma", "skill:figma-use"], enabled: true, config: {} }]);
   });
 });
+
+it("persists explicit native Codex permissions and restores consent when reopened", async () => {
+  mockedFetch.mockReset();
+  const provider = {
+    providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider",
+    resolvedVersion: "1.0.0", displayName: "Codex", state: "enabled" as const,
+    compatible: true, selectable: true, permissions: ["process:host-user"], isolation: "sidecar",
+    configSchemaDeclared: false, secretFields: [],
+  };
+  let draft = {
+    metadata: { id: "native-codex", name: "Native", revision: 1 },
+    spec: {
+      runtime: { type: "codex", version: "0.147.0" },
+      instructions: { system: "Answer with evidence." },
+      bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a"] },
+      security: { allowedPermissions: ["filesystem:read"], toolPolicy: "deny-by-default" },
+    },
+  };
+  mockedFetch.mockImplementation(async (_input, init) => {
+    if (init?.method === "PUT") {
+      draft = { metadata: { ...draft.metadata, revision: draft.metadata.revision + 1 }, spec: JSON.parse(String(init.body)) };
+      return { ok: true, json: async () => draft } as Response;
+    }
+    return { ok: true, json: async () => ({ draft }) } as Response;
+  });
+  const props = {
+    agentId: "native-codex", providers: [provider], onSaved: vi.fn(),
+    catalog: [{ resourceId: "model-a", kind: "model", name: "model-a", displayName: "Model A", version: "1", status: "ready" }],
+  };
+  const view = render(<AgentEditor {...props} />);
+  const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
+  expect(consent).not.toBeChecked();
+  fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  expect(await screen.findByText("请先确认 Codex Provider 请求的 Agent 权限")).toBeVisible();
+  expect(mockedFetch.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(0);
+  fireEvent.click(consent);
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(props.onSaved).toHaveBeenCalled());
+  expect(draft.spec.runtime.type).toBe("codex");
+  expect(draft.spec.security.allowedPermissions).toEqual(["filesystem:read", "process:host-user"]);
+  expect(draft.spec.security.toolPolicy).toBe("deny-by-default");
+  view.unmount();
+  render(<AgentEditor {...props} />);
+  expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+  fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(2));
+  expect(draft.spec.security.allowedPermissions).toEqual(["filesystem:read", "process:host-user"]);
+});

@@ -112,6 +112,19 @@ class CodexProviderBuildManager:
         # marketplace. The unmodified manifest digest above binds those separate
         # native selections, which CodexStudioBuilder retains and verifies.
         draft.spec.bindings.plugins = []
+        manifest = self.studio._active_provider_manifests[CODEX_PROVIDER_REF]
+        missing_permissions = sorted(
+            set(manifest.spec.permissions) - set(draft.spec.security.allowed_permissions)
+        )
+        if missing_permissions:
+            raise StudioError(
+                "AGENT_PROVIDER_PERMISSION_DENIED",
+                "请打开 Agent 编辑页，在 Codex 本地执行权限中确认 Provider 请求的权限并保存；"
+                "安装插件时的同意不代替 Agent 授权",
+                status_code=422,
+                field="spec.security.allowedPermissions",
+                details={"missingPermissions": missing_permissions},
+            )
         composition = self.studio.plugin_compositions.compile(draft)
         built = self.studio.builder.build(draft, composition=composition)
         # Refuse a registration change during staging, before saving success.

@@ -1,3 +1,4 @@
+import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useEffect, useMemo, useState } from "react";
 import { Check, CircleAlert, Package } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -292,6 +293,8 @@ export function AgentEditor({
     }, ...providers];
   }, [providerRef, providers]);
   const selectedProvider = visibleProviders.find(item => item.providerRef === providerRef);
+  const codexProvider = providers.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
+  const permissionProvider = runtime === "codex" ? codexProvider : runtime === "plugin" ? selectedProvider : undefined;
   const providerOptions = visibleProviders.map(item => ({
     value: item.providerRef,
     label: item.displayName,
@@ -332,7 +335,9 @@ export function AgentEditor({
         setRuntimeAgentVariable(String(draft.spec?.runtime?.agentVariable || (draft.spec?.runtime?.type === "langgraph" ? "app" : "root_agent")));
         setProviderRef(String(draft.spec?.runtime?.providerRef || ""));
         setProviderConfigText(JSON.stringify(draft.spec?.runtime?.providerConfig || {}, null, 2));
-        const provider = providers.find(item => item.providerRef === draft.spec?.runtime?.providerRef);
+        const provider = providers.find(item => item.providerRef === (
+          draft.spec?.runtime?.type === "codex" ? STUDIO_CODEX_PROVIDER_REF : draft.spec?.runtime?.providerRef
+        ));
         const allowed = new Set(draft.spec?.security?.allowedPermissions || []);
         setProviderPermissionsApproved(Boolean(
           provider && provider.permissions.every(permission => allowed.has(permission)),
@@ -503,6 +508,11 @@ export function AgentEditor({
       setSaveError("请完整填写项目相对路径、入口文件和 Agent 变量");
       return;
     }
+    if (values.runtimeType === "codex" && permissionProvider?.permissions.length && !providerPermissionsApproved) {
+      setSaveError("请先确认 Codex Provider 请求的 Agent 权限");
+      setVisibleSection(1);
+      return;
+    }
     let providerConfig: Record<string, unknown> = {};
     if (values.runtimeType === "plugin") {
       if (!selectedProvider?.selectable) {
@@ -569,12 +579,12 @@ export function AgentEditor({
           agentVariable: runtimeAgentVariable.trim(),
         } : {}),
       };
-      if (values.runtimeType === "plugin") {
+      if (permissionProvider) {
         spec.security = {
           ...(original.security || {}),
           allowedPermissions: [...new Set([
             ...(original.security?.allowedPermissions || []),
-            ...(selectedProvider?.permissions || []),
+            ...permissionProvider.permissions,
           ])].sort(),
         };
       }
@@ -868,6 +878,10 @@ export function AgentEditor({
               </label>
             ) : null}
           </div>
+        )}
+        {runtime === "codex" && (
+          <CodexProviderPermissions provider={codexProvider} approved={providerPermissionsApproved}
+            onChange={setProviderPermissionsApproved} />
         )}
         <fieldset className="agent-policy-editor soul-editor" aria-describedby="soulPolicyHint">
           <legend>Soul · 稳定人格</legend>

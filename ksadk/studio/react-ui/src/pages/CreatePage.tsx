@@ -1,3 +1,4 @@
+import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, Zap, MessagesSquare, Upload, Folder, Check,
@@ -201,6 +202,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [selectedProviderRef, setSelectedProviderRef] = useState("");
   const [providerConfigText, setProviderConfigText] = useState("{}");
   const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
+  const [codexPermissionsApproved, setCodexPermissionsApproved] = useState(false);
+  const [convCodexPermissionsApproved, setConvCodexPermissionsApproved] = useState(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
   /* 向导状态 */
   const [step, setStep] = useState(1);
@@ -396,6 +399,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     () => effectiveAgentProviders.find(item => item.providerRef === selectedProviderRef),
     [effectiveAgentProviders, selectedProviderRef],
   );
+  const codexProvider = agentProviders.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
   const usesNativeCodexTools = runtime === "codex"
     || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
   const effectiveSelectedTools = usesNativeCodexTools ? [] : selectedTools;
@@ -490,7 +494,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           selectedMcp, selectedModels, policy, contextOwnership,
           contextEngineRollout, memoryEnabled, memoryWriteRollout,
           selectedProviderRef, providerConfigText,
-          providerPermissionsApproved,
+          providerPermissionsApproved, codexPermissionsApproved,
         },
         fields: { name, slug, description, prompt, audience, language, format, systemPrompt, taskPrompt, buildAfterCreate },
       }));
@@ -654,6 +658,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (step === 1) {
         const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
+        if (runtime === "codex" && codexProvider?.permissions.length && !codexPermissionsApproved) {
+          setCreateError("请先确认 Codex Provider 请求的 Agent 权限。");
+          return;
+        }
         if (runtime === "plugin") {
           if (!selectedProvider?.selectable) {
             setCreateError(selectedProvider?.reason?.message || "请先在插件中心安装并启用一个兼容的 AgentProvider。");
@@ -713,6 +721,15 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         enabled: memoryEnabled,
         recall: { ...(spec.memory?.recall || {}), enabled: memoryEnabled },
       };
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
+        if (!codexPermissionsApproved) throw new Error("请先确认 Codex Provider 请求的 Agent 权限");
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []), ...codexProvider.permissions,
+          ])].sort(),
+        };
+      }
       if (values.runtimeType === "plugin") {
         if (!selectedProvider?.selectable) {
           throw new Error(selectedProvider?.reason?.message || "所选 AgentProvider 当前不可用");
@@ -900,6 +917,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     setConvBusy(true);
     setConvError("");
     try {
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length && !convCodexPermissionsApproved) {
+        throw new Error("请在部署配置中确认 Codex Provider 请求的 Agent 权限");
+      }
       const proposalSpec = proposal.spec || {
         description: proposal.description || "",
         instructions: proposal.instructions || {},
@@ -930,6 +950,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           skills: convSkills.map(resourceId => ({ resourceId })),
         },
       });
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []), ...codexProvider.permissions,
+          ])].sort(),
+        };
+      }
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1282,6 +1310,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                           onValueChange={value => conversationForm.setValue("runtimeType", value as ConversationCommitFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true })}
                         />
                       </FormField>
+                      {conversationRuntime === "codex" && (
+                        <CodexProviderPermissions provider={codexProvider} approved={convCodexPermissionsApproved}
+                          onChange={setConvCodexPermissionsApproved} />
+                      )}
                       <FormField
                         label="Agent 可用模型"
                         className="authoring-model-field"
@@ -1594,6 +1626,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       }}
                     />
                   </FormField>
+                  {runtime === "codex" && (
+                    <CodexProviderPermissions provider={codexProvider} approved={codexPermissionsApproved}
+                      onChange={approved => { setCodexPermissionsApproved(approved); markDirty(); }} />
+                  )}
                   {runtime === "plugin" && (
                     <div className="template-specific" data-testid="external-provider-config">
                       <FormField
