@@ -8,11 +8,12 @@ stream or transcript is created here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
@@ -21,6 +22,10 @@ from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
 from ksadk.plugins.providers.codex_native import codex_runtime_registry
+from ksadk.plugins.providers.mcp_projection import (
+    MCPProjectionLease,
+    project_mcp_capabilities,
+)
 from ksadk.runtime import (
     RuntimeExecutor,
     RuntimeLaunchContext,
@@ -231,23 +236,37 @@ class CodexAgentProviderRuntime:
         if not self._ready or self._disposed:
             raise PluginHostError("codex_provider_unavailable", "Codex provider is not ready")
         _reject_external_execution(bundle, capabilities)
+        projection = await project_mcp_capabilities(
+            capabilities,
+            bundle,
+            activation_only=True,
+        )
         marker = bundle.composition.profile.agent_provider.config.get("studioManifestDigest")
         launch = self._local_launch_resolver(bundle) if self._local_launch_resolver else None
         if marker is not None and launch is None:
+            await projection.aclose()
             raise PluginHostError("codex_local_build_required", "Local Codex Build is unavailable")
-        config = _resolve_bundle_config(
-            bundle,
-            plugin_id=self._plugin_id,
-            credential_resolver=self._credentials,
-            runtime_state_root=self._runtime_state_root,
-            local_launch=launch,
-        )
-        activation = CodexAgentActivation(
-            bundle=bundle,
-            config=config,
-            session_service=self._session_service,
-            codex_client_factory=self._client_factory,
-        )
+        try:
+            config = _with_projected_mcp(
+                _resolve_bundle_config(
+                    bundle,
+                    plugin_id=self._plugin_id,
+                    credential_resolver=self._credentials,
+                    runtime_state_root=self._runtime_state_root,
+                    local_launch=launch,
+                ),
+                projection,
+            )
+            activation = CodexAgentActivation(
+                bundle=bundle,
+                config=config,
+                session_service=self._session_service,
+                codex_client_factory=self._client_factory,
+                mcp_projection=projection,
+            )
+        except BaseException:
+            await projection.aclose()
+            raise
         self._last_activation = activation
         return activation
 
@@ -306,10 +325,12 @@ class CodexAgentActivation:
         config: _CodexBundleConfig,
         session_service: BaseSessionService,
         codex_client_factory: Callable[..., Any] | None,
+        mcp_projection: MCPProjectionLease,
     ) -> None:
         self._bundle = bundle
         self._config = config
         self._session_service = session_service
+        self._mcp_projection = mcp_projection
         self._executor = RuntimeExecutor(codex_runtime_registry())
         self._launch_context = RuntimeLaunchContext(
             runtime_type="codex",
@@ -406,6 +427,9 @@ class CodexAgentActivation:
     async def drain(self) -> None:
         self._ready = False
 
+    async def abort(self) -> None:
+        await self._mcp_projection.aclose()
+
     async def dispose(self) -> None:
         self._ready = False
         first_error: BaseException | None = None
@@ -424,6 +448,11 @@ class CodexAgentActivation:
         except BaseException as error:  # cleanup must continue
             if first_error is None:
                 first_error = error
+        try:
+            await self._mcp_projection.aclose()
+        except BaseException as error:  # security cleanup must still finish
+            if first_error is None:
+                first_error = error
         self._disposed = True
         if first_error is not None:
             raise first_error
@@ -439,6 +468,60 @@ def _reject_aliased_duplicates(
                 "codex_input_invalid",
                 f"Codex input cannot contain both {snake_case} and {camel_case}",
             )
+
+
+def _with_projected_mcp(
+    config: _CodexBundleConfig,
+    projection: MCPProjectionLease,
+) -> _CodexBundleConfig:
+    """Add activation-scoped connectors to Codex's generic launch config."""
+
+    launch = dict(config.launch_config)
+    servers = [dict(item) for item in launch.get("mcp_servers") or []]
+    environment = dict(launch.get("env") or {})
+    names = {str(item.get("name") or "") for item in servers}
+    for spec in projection.specs:
+        parsed = urlparse(spec.url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise PluginHostError(
+                "codex_mcp_projection_invalid",
+                f"projected MCP connector {spec.name!r} has an invalid endpoint",
+            )
+        if spec.name in names:
+            raise PluginHostError(
+                "codex_mcp_projection_ambiguous",
+                f"projected MCP connector {spec.name!r} conflicts with the Bundle",
+            )
+        server: dict[str, Any] = {
+            "name": spec.name,
+            "transport": "http",
+            "url": spec.url,
+        }
+        if spec.api_key is not None:
+            suffix = hashlib.sha256(spec.name.encode()).hexdigest()[:16].upper()
+            env_key = f"KSADK_ACTIVATION_MCP_TOKEN_{suffix}"
+            if env_key in environment:
+                raise PluginHostError(
+                    "codex_mcp_projection_ambiguous",
+                    f"projected MCP connector {spec.name!r} has an environment collision",
+                )
+            environment[env_key] = spec.api_key
+            server["env_key"] = env_key
+        servers.append(server)
+        names.add(spec.name)
+    launch["mcp_servers"] = servers
+    launch["env"] = environment
+    inventory = replace(
+        config.inventory,
+        mcp_servers=tuple(item["name"] for item in servers),
+    )
+    return replace(config, launch_config=launch, inventory=inventory)
 
 
 def _reject_external_execution(

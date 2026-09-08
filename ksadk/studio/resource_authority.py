@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -144,6 +144,14 @@ class VerifiedResourceAuthority(PluginContractModel):
 
 
 @dataclass(frozen=True)
+class AdmittedResourceAccess:
+    """Runtime-only authority proof paired with the exact verified credentials."""
+
+    authority: VerifiedResourceAuthority
+    credentials: ResolvedResourceCredentials = field(repr=False)
+
+
+@dataclass(frozen=True)
 class _VerifiedIamIdentity:
     tenant_ref: str
     principal_ref: str
@@ -246,6 +254,19 @@ class SignedKnowledgeResourceAuthority:
         *,
         expected_connection_revision: int | None = None,
     ) -> VerifiedResourceAuthority:
+        return self.admit_runtime(
+            config,
+            expected_connection_revision=expected_connection_revision,
+        ).authority
+
+    def admit_runtime(
+        self,
+        config: ResourceConfig,
+        *,
+        expected_connection_revision: int | None = None,
+    ) -> AdmittedResourceAccess:
+        """Return only credentials proven inside this exact admission transaction."""
+
         resource = config.binding.resource
         field = "spec.bindings.plugins.config.binding"
         if resource.kind != "knowledge-base":
@@ -311,19 +332,22 @@ class SignedKnowledgeResourceAuthority:
                 "RESOURCE_CONNECTION_CHANGED", "资源连接或凭证在准入期间发生变更", status_code=409
             )
         now = datetime.now(timezone.utc)
-        return VerifiedResourceAuthority(
-            connection_ref=target.connection_ref,
-            connection_revision=before.revision,
-            tenant_ref=identity.tenant_ref,
-            resource_principal_ref=identity.principal_ref,
-            resource=resource,
-            allowed_operations=("search_knowledge_base",),
-            issuer_endpoint=self.policy.iam_endpoint,
-            issuer_region=self.policy.iam_region,
-            data_endpoint=target.endpoint,
-            observed_at=now,
-            expires_at=now + timedelta(seconds=self.policy.grant_ttl_seconds),
-            request_id=request_id,
+        return AdmittedResourceAccess(
+            authority=VerifiedResourceAuthority(
+                connection_ref=target.connection_ref,
+                connection_revision=before.revision,
+                tenant_ref=identity.tenant_ref,
+                resource_principal_ref=identity.principal_ref,
+                resource=resource,
+                allowed_operations=("search_knowledge_base",),
+                issuer_endpoint=self.policy.iam_endpoint,
+                issuer_region=self.policy.iam_region,
+                data_endpoint=target.endpoint,
+                observed_at=now,
+                expires_at=now + timedelta(seconds=self.policy.grant_ttl_seconds),
+                request_id=request_id,
+            ),
+            credentials=credentials,
         )
 
     def _verify_identity(self, access_key: str, secret_key: str) -> _VerifiedIamIdentity:

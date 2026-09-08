@@ -42,6 +42,12 @@ from ksadk.plugins.providers.legacy_catalog import (
     builtin_agent_provider_manifests,
     legacy_harness_agent_provider_manifest,
 )
+from ksadk.plugins.providers.platform_resources import (
+    PLATFORM_RESOURCE_MCP_PLUGIN_ID,
+    PLATFORM_RESOURCE_MCP_REF,
+    PlatformResourceMCPFactory,
+    platform_resource_mcp_manifest,
+)
 from ksadk.plugins.resolver import PluginRegistry
 from ksadk.runtime import RuntimeLaunchContext
 from ksadk.sessions.base import BaseSessionService
@@ -165,6 +171,9 @@ class StudioPluginRuntime:
         provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_capability_service: Any | None = None,
+        resource_authority: Any | None = None,
+        resource_connections: Any | None = None,
+        resource_actor_ref: str = "local-user",
         codex_local_launch_resolver: Any = None,
     ) -> None:
         self.workspace = workspace
@@ -176,6 +185,9 @@ class StudioPluginRuntime:
         self._provider_manifests = dict(provider_manifests or {})
         self._provider_factories = dict(provider_factories or {})
         self._dsh_capability_service = dsh_capability_service
+        self._resource_authority = resource_authority
+        self._resource_connections = resource_connections
+        self._resource_actor_ref = resource_actor_ref
         self._codex_local_launch_resolver = codex_local_launch_resolver
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
         self._lock = asyncio.Lock()
@@ -412,6 +424,10 @@ class StudioPluginRuntime:
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
                 "codex_local_launch_resolver": self._codex_local_launch_resolver,
+                "dsh_capability_service": self._dsh_capability_service,
+                "resource_authority": self._resource_authority,
+                "resource_connections": self._resource_connections,
+                "resource_actor_ref": self._resource_actor_ref,
             }
             provider_id, _provider_version = _parse_plugin_ref(
                 verified.composition.profile.agent_provider.ref
@@ -452,8 +468,10 @@ class StudioPluginRuntime:
         reference = (
             f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@{dsh_profile_mcp_manifest().metadata.version}"
         )
+        dynamic_refs = {reference, PLATFORM_RESOURCE_MCP_REF}
         return any(
-            capability.ref == reference for capability in bundle.composition.profile.capabilities
+            capability.ref in dynamic_refs
+            for capability in bundle.composition.profile.capabilities
         )
 
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:
@@ -517,6 +535,7 @@ class StudioPluginRuntime:
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
             dsh_profile_mcp_manifest(),
+            platform_resource_mcp_manifest(),
         ]
         external = self._external_manifest(profile)
         if external is not None:
@@ -539,12 +558,14 @@ class StudioPluginRuntime:
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
             dsh_profile_mcp_manifest(),
+            platform_resource_mcp_manifest(),
         ]
         factories = builtin_capability_factories(
             state_root=self.workspace.resolve(".agentkit/plugin-runtime/state"),
             secret_resolver=self._secret_resolver.resolve,
         )
         factories[DSH_PROFILE_MCP_PLUGIN_ID] = DshProfileMCPFactory(self._dsh_capability_service)
+        factories[PLATFORM_RESOURCE_MCP_PLUGIN_ID] = PlatformResourceMCPFactory()
         provider_id, provider_version = _parse_plugin_ref(
             bundle.composition.profile.agent_provider.ref
         )
@@ -572,6 +593,7 @@ class StudioPluginRuntime:
                 *builtin_agent_provider_manifests(),
                 *builtin_capability_manifests(),
                 dsh_profile_mcp_manifest(),
+                platform_resource_mcp_manifest(),
             )
         }
         builtin_ids.discard(DSH_PROFILE_MCP_PLUGIN_ID)

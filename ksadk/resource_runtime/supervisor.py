@@ -210,6 +210,18 @@ class ResourceSupervisor:
         async with self._lock:
             await self._deactivate_locked(activation_id)
 
+    async def owns(self, current: ActiveResources) -> bool:
+        """Confirm an opaque activation handle still names this live generation."""
+
+        async with self._lock:
+            running = self._running.get(current.activation_id)
+            return (
+                not self._closed
+                and running is not None
+                and running.resources is current
+                and running.worker.is_running
+            )
+
     async def renew(
         self,
         current: ActiveResources,

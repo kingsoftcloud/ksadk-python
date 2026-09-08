@@ -711,6 +711,29 @@ class StudioDshCapabilityService:
             if self._resource_supervisor is not None:
                 await self._resource_supervisor.deactivate(activation_id)
 
+    async def resource_connector_lease(
+        self,
+        current: ActiveResources,
+    ) -> DshMcpConnectorLease:
+        """Return the matching Core lease only while the worker is still live."""
+
+        async with self._lock:
+            _host, lease = await self._ensure_ready_locked()
+            supervisor = self._resource_supervisor
+            if (
+                supervisor is None
+                or not current.leases
+                or current.leases[0].scope.generation_id != self._generation_id
+                or current.leases[0].scope.profile_digest != lease.profile_digest
+                or not await supervisor.owns(current)
+            ):
+                raise StudioError(
+                    "RESOURCE_ACTIVATION_STALE",
+                    "资源 worker 已失效，需要重新激活",
+                    status_code=409,
+                )
+            return lease
+
     async def renew_resources(
         self, current: ActiveResources, *, expected: DshProfileBuildSnapshot,
         revalidate: ResourceRevalidator,

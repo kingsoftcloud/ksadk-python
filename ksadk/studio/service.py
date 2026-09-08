@@ -307,6 +307,9 @@ class StudioService:
             provider_factories=provider_factories,
             legacy_harness_sources=legacy_harness_sources,
             dsh_capability_service=self.dsh_capabilities,
+            resource_authority=self.resource_authority,
+            resource_connections=self.resource_connections,
+            resource_actor_ref="local-user",
         )
         self.run_service.plugin_runtime = self.plugin_runs
         self.scheduler_runtimes = StudioScheduledKernelRegistry(
