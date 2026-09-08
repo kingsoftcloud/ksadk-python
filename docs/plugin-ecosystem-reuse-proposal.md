@@ -1,6 +1,6 @@
 # KsADK 插件生态复用与完整 DSH Core 架构
 
-> 状态：`ksadk 0.8.4` / `@kingsoftcloud/ksadk-web 0.3.5` 发布候选实施方案，尚未批准发布。
+> 状态：`@kingsoftcloud/ksadk-web 0.3.7` 已发布；`ksadk 0.8.4` 发布候选实施方案，尚未批准发布。
 > 修订日期：2026-09-07。
 > DSH 基线：`@deepseek-ai/dsh@0.1.2-rc.1`，Git tag `dsh-v0.1.2-rc.1`，commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`。
 > 视觉基线：`kingsoftcloud/ksadk-python#66`；遇到配色、间距、圆角冲突时以该 PR 的 King Design 规则为准。
@@ -295,12 +295,12 @@ make public-preflight
 3. 将 `main` 合入本地 `master`；
 4. 将 `master` 合入当前特性分支，视觉冲突采用 PR #66；
 5. 在 `ksadk-web` 的 `feat/conversation-v1-unified-render` 上完成共享聊天候选；
-6. 构建 `@kingsoftcloud/ksadk-web@0.3.5` tarball；
+6. 构建并验证 `@kingsoftcloud/ksadk-web@0.3.7` tarball；
 7. 从该 tarball 同步 `ksadk/server/static`，禁止从任意工作目录随手复制；
 8. 构建 Studio static；
 9. 运行 Python、React、真实 DSH、浏览器和制品门禁；
 10. 确认两个仓库状态干净、提交和证据一致；
-11. 获得明确发布授权后，先发布 Web 0.3.5，再发布 Python 0.8.4。
+11. Web 0.3.7 已正式发布；其余门禁通过并获得明确发布授权后，再发布 Python 0.8.4。
 
 ## 16. 发布停止条件
 
@@ -320,7 +320,7 @@ make public-preflight
 
 ## 17. 当前边界与后续迭代
 
-### 17.1 0.8.4 / 0.3.5 前必须完成
+### 17.1 0.8.4 / 0.3.7 前必须完成
 
 - 完整 Core 和上游插件 E2E 全绿；
 - PR #66 合并并做视觉复查；

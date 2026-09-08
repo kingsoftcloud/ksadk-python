@@ -45,7 +45,7 @@ KsADK 0.8.4 把“框架适配”收敛为稳定的运行时分层，同时保�
 - **可插拔 Provider**：Codex、KsADK Harness、DSH/Cordis 与 Subagent 在同一 Harness 契约下运行，Provider 保留原生线程、checkpoint 与事件语义。
 - **统一事件**：`RuntimeEvent(schema_version=2)` 是存储、回放、API、Studio 与托管界面的事件事实来源；v1 仅作为只读兼容投影。
 - **受控插件化**：DSH Bundle/Profile 使用固定工具链、不可变来源摘要和失败回滚；Codex 官方插件仍由 Codex App Server 管理。
-- **本地开发闭环**：Studio 覆盖创建、构建、调试、评测与本地 Scheduler Lite；配套 Web UI 固定为 `@kingsoftcloud/ksadk-web@0.3.5`。
+- **本地开发闭环**：Studio 覆盖创建、构建、调试、评测与本地 Scheduler Lite；配套 Web UI 固定为 `@kingsoftcloud/ksadk-web@0.3.7`。
 
 从 [0.8.4 运行时架构](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/runtime-architecture/)、[AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/) 和[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)开始阅读。版本演进与发行状态见 [CHANGELOG](CHANGELOG.md) 和 PyPI 徽章。
 
