@@ -29,7 +29,9 @@ from ksadk.plugins.artifacts import (
 class PluginDelivery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["ksadk.plugin-delivery/v1"] = "ksadk.plugin-delivery/v1"
-    artifact_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    artifact_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
+    artifact_path: str = Field(pattern=r"^ks3://[a-z0-9][a-z0-9.-]*/[^\s]+\.zip$")
+    storage_region: str = Field(min_length=1, max_length=100)
     receipt: PluginArtifactReceipt
     build_id: str = Field(pattern=r"^build_[0-9a-f]{8,64}$")
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

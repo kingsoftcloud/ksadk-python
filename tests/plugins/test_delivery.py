@@ -49,6 +49,11 @@ def frozen(tmp_path):
     )
     delivery = PluginDelivery(
         artifact_id="12345678-1234-1234-1234-123456789abc",
+        artifact_path=(
+            "ks3://agentengine-test-cn-beijing-6/plugin-artifacts/v1/"
+            f"{receipt.artifact_digest[7:]}.zip"
+        ),
+        storage_region="cn-beijing-6",
         receipt=receipt,
         build_id="build_12345678",
         manifest_sha256=hashlib.sha256(serialize_managed_runtime_manifest(manifest)).hexdigest(),
