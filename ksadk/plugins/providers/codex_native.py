@@ -19,6 +19,7 @@ from typing import Any
 
 from ksadk.codex.client import AsyncCodexClient, CodexPluginBootstrap
 from ksadk.plugins.providers.codex_turn import CodexTurnProjector
+from ksadk.resource_runtime.managed_projection import native_codex_plugin_bindings
 from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry
 from ksadk.runtime.launch import RuntimeLaunchContext
 
@@ -137,8 +138,7 @@ def _codex_plugin_bootstrap(config: Mapping[str, Any]) -> CodexPluginBootstrap |
 
     raw = config.get("codex_plugin_bootstrap")
     if raw is None:
-        declared = config.get("plugins") or []
-        if any(not isinstance(item, Mapping) or item.get("enabled", True) for item in declared):
+        if native_codex_plugin_bindings(config):
             raise ValueError(
                 "原生插件绑定缺少可验证的交付快照；当前启动只收到 plugins 声明，"
                 "无法恢复插件。请提供完整插件交付配置后再启动。"

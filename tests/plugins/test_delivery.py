@@ -3,14 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import zipfile
 
-import httpx
 import pytest
 
 from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
 from ksadk.codex.client import CodexPluginBootstrap, codex_marketplace_tree_digest
 from ksadk.plugins.artifacts import export_plugin_artifact
-from ksadk.plugins.delivery import PluginDelivery, prepare_cloud_plugins, restore_delivery
+from ksadk.plugins.delivery import (
+    PluginDelivery,
+    prepare_cloud_plugins,
+    restore_delivery,
+)
 
 
 @pytest.fixture
@@ -35,7 +39,14 @@ def frozen(tmp_path):
         "framework": "codex",
         "artifact_type": "ManagedRuntime",
         "runtime": {"name": "codex", "version": "0.147.0"},
-        "plugins": [{"plugin_ref": "demo@1.0.0", "enabled": True, "components": ["skills"]}],
+        "plugins": [
+            {
+                "plugin_ref": "demo@1.0.0",
+                "ecosystem": "codex",
+                "enabled": True,
+                "components": ["skills"],
+            }
+        ],
     }
     receipt, archive = export_plugin_artifact(
         root,
@@ -45,6 +56,11 @@ def frozen(tmp_path):
     )
     delivery = PluginDelivery(
         artifact_id="12345678-1234-1234-1234-123456789abc",
+        artifact_path=(
+            "ks3://agentengine-test-cn-beijing-6/plugin-artifacts/v1/"
+            f"{receipt.artifact_digest[7:]}.zip"
+        ),
+        storage_region="cn-beijing-6",
         receipt=receipt,
         build_id="build_12345678",
         manifest_sha256=hashlib.sha256(serialize_managed_runtime_manifest(manifest)).hexdigest(),
@@ -84,65 +100,38 @@ def test_pinned_declaration_cannot_drift(frozen, change):
         delivery.validate_manifest(manifest)
 
 
-@pytest.mark.parametrize(
-    "failure", [None, "truncated", "changed-receipt", "http-download", "unadmitted"]
-)
-def test_workload_download_is_scoped_and_precedes_activation(
+@pytest.mark.parametrize("failure", [None, "missing", "changed-file", "extra", "symlink"])
+def test_materialized_workload_artifact_is_verified_before_activation(
     frozen, tmp_path, monkeypatch, failure
 ):
     manifest, delivery, archive = frozen
     monkeypatch.setenv("AGENTENGINE_PLUGIN_DELIVERY", delivery.model_dump_json())
-    monkeypatch.setenv("AGENTENGINE_PLUGIN_CONTROL_URL", "https://control.example")
-    monkeypatch.setenv("AGENTENGINE_PLUGIN_AGENT_ID", "ar-test")
-    monkeypatch.setenv("AGENTENGINE_PLUGIN_API_KEY", "fake-workload-credential")
-    calls = []
-
-    def handle(request):
-        calls.append(request)
-        if request.url.host == "control.example":
-            assert request.headers["Authorization"] == "Bearer fake-workload-credential"
-            assert json.loads(request.content) == {
-                "AgentId": "ar-test",
-                "ManifestSHA256": delivery.manifest_sha256,
-            }
-            if failure == "unadmitted":
-                return httpx.Response(403)
-            receipt = delivery.receipt.model_dump()
-            if failure == "changed-receipt":
-                receipt["runtime_version"] = "0.0.1"
-            return httpx.Response(
-                200,
-                json={
-                    "Code": 0,
-                    "Data": {
-                        "ArtifactId": delivery.artifact_id,
-                        "Receipt": receipt,
-                        "DownloadUrl": ("http" if failure == "http-download" else "https")
-                        + "://objects.example/archive?fake-signature",
-                    },
-                },
-            )
-        assert request.url.host == "objects.example"
-        assert "Authorization" not in request.headers
-        data = archive.read_bytes()
-        return httpx.Response(200, content=data[:-1] if failure == "truncated" else data)
-
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        "ksadk.plugins.delivery.httpx.Client",
-        lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
-    )
+    materialized = tmp_path / "materialized"
+    materialized.mkdir()
+    with zipfile.ZipFile(archive) as package:
+        package.extractall(materialized)
+    if failure == "missing":
+        (materialized / "manifest.json").unlink()
+    elif failure == "changed-file":
+        next((materialized / "payload").rglob("SKILL.md")).write_text("changed")
+    elif failure == "extra":
+        (materialized / "payload" / "extra.txt").write_text("extra")
+    elif failure == "symlink":
+        next((materialized / "payload").rglob("run.sh")).unlink()
+        next((materialized / "payload").rglob("demo")).joinpath("run.sh").symlink_to(
+            "/tmp/elsewhere"
+        )
+    monkeypatch.setenv("AGENTENGINE_PLUGIN_ARTIFACT_DIR", str(materialized))
     work = tmp_path / "workload"
     if failure:
-        with pytest.raises((ValueError, httpx.HTTPStatusError)):
+        with pytest.raises(ValueError):
             prepare_cloud_plugins(manifest, work)
         assert not (work / ".agentkit/cloud-plugin-launch.json").exists()
     else:
         config = prepare_cloud_plugins(manifest, work)
         text = (work / ".agentkit/cloud-plugin-launch.json").read_text()
-        assert "fake-workload-credential" not in text and "fake-signature" not in text
+        assert str(materialized) not in text
         assert json.loads(text)["config"] == config
-        assert len(calls) == 2
         # Exercise the real declaration detector and web composition boundary,
         # not just the archive helper: the adapter must receive the restored path.
         from ksadk.cli import runtime_bootstrap
@@ -178,6 +167,36 @@ def test_native_binding_without_reference_fails_before_serving(frozen, tmp_path,
     assert result.exit_code != 0
     assert "admitted cloud delivery reference" in result.output
     assert not calls
+
+
+def test_resource_only_manifest_does_not_require_native_artifact(tmp_path, monkeypatch):
+    manifest = {
+        "name": "resource-agent",
+        "runtime": {"name": "codex", "version": "0.147.0"},
+        "plugins": [
+            {
+                "plugin_ref": "plugin://kingsoftcloud.dsh-knowledge@0.1.0",
+                "ecosystem": "dsh",
+                "enabled": True,
+                "config": {
+                    "schemaVersion": 1,
+                    "binding": {
+                        "id": "kb",
+                        "connectionRef": "ksyun-platform-default",
+                        "required": True,
+                        "resource": {
+                            "kind": "knowledge-base",
+                            "id": "dataset-1",
+                            "region": "cn-beijing-6",
+                        },
+                    },
+                    "retrieval": {"mode": "tool", "topK": 5, "maxChars": 16000},
+                },
+            }
+        ],
+    }
+    monkeypatch.delenv("AGENTENGINE_PLUGIN_DELIVERY", raising=False)
+    assert prepare_cloud_plugins(manifest, tmp_path) == {}
 
 
 def test_concurrent_workers_restore_the_same_frozen_artifact(frozen, tmp_path, monkeypatch):

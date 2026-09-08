@@ -39,7 +39,7 @@ from ksadk.kernel.contract_fingerprints import (
 )
 from ksadk.kernel.contracts import RuntimeCapabilityMatrix
 from ksadk.kernel.control import AgentKernel, default_capability_matrix
-from ksadk.kernel.errors import InvalidCommandError
+from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
 from ksadk.kernel.recovery import RecoveryCoordinator
 from ksadk.kernel.runtime_identity import runtime_identity
 from ksadk.kernel.store import AgentKernelStore, now_utc
@@ -465,8 +465,25 @@ class AgentKernelRuntime:
                             lease,
                             session_id=session_id,
                         )
-                        if result.outcome != "idle":
+                        if result.outcome in {"claimed", "completed"}:
                             progressed = True
+                        elif result.outcome == "terminal_failure":
+                            if isinstance(result.error, StaleFenceError):
+                                # 当前 activation 已失去 fence，不能继续触碰该
+                                # session，也不应把正常 takeover 误判为坏数据。
+                                self._heartbeat_sessions.discard(session_id)
+                                self._last_renewed.pop(session_id, None)
+                                self.lease_heartbeat.forget(session_id)
+                                continue
+                            failure = result.error or RuntimeError(
+                                "agent kernel command failed without an error detail"
+                            )
+                            if not await self._quarantine_session(
+                                session_id,
+                                failure,
+                                context="command execution",
+                            ):
+                                return
                     self._store_failures = 0
                 except asyncio.CancelledError:
                     raise
@@ -609,7 +626,13 @@ class AgentKernelRuntime:
             return False
         return True
 
-    async def _quarantine_session(self, session_id: str, exc: Exception) -> bool:
+    async def _quarantine_session(
+        self,
+        session_id: str,
+        exc: Exception,
+        *,
+        context: str = "takeover recovery",
+    ) -> bool:
         """隔离一个恢复失败的 session；返回 False 表示已触发进程级降级。
 
         被隔离的 session 不再被本 runtime claim / 恢复 / 续约，其 inbox
@@ -631,9 +654,10 @@ class AgentKernelRuntime:
         self._last_renewed.pop(session_id, None)
         self.lease_heartbeat.forget(session_id)
         logger.warning(
-            "agent kernel session %s quarantined after takeover recovery "
+            "agent kernel session %s quarantined after %s "
             "failed: agent_instance_id=%s error=%s: %s",
             session_id,
+            context,
             self.config.agent_instance_id,
             type(exc).__name__,
             exc,
