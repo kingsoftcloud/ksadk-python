@@ -784,7 +784,17 @@ class AgentKernelWorker:
             )
         else:
             request_schema = dict(event.request.schema_)
-            native_target = {"call_id": event.interaction_id}
+            # Codex maps the native JSON-RPC request id to a stable canonical
+            # interaction id for replay.  The live client, however, indexes its
+            # pending callback by the original request id.  Preserve that id as
+            # the provider target or SubmitInteraction can find the durable
+            # record but cannot wake the blocked Codex callback.
+            native_call_id = (
+                event.source.native_event_id
+                or event.source.native_item_id
+                or event.interaction_id
+            )
+            native_target = {"call_id": native_call_id}
         for key in ("checkpoint_id", "thread_id"):
             value = execution.handle.native_ref.get(key)
             if value is not None:
