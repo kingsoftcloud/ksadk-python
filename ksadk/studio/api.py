@@ -224,7 +224,7 @@ def create_studio_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             await studio.start()
-            await studio.run_service.recover_interrupted()
+            await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
         finally:

@@ -1253,6 +1253,9 @@ class StudioService:
                 raise asyncio.CancelledError
 
     async def _close_owned_plugin_services(self) -> None:
+        from ksadk.studio.provider_recovery import detach_recovered_runs
+
+        await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
         owned = [self.plugin_runs.aclose, self.dsh_capabilities.aclose]
         if self.resource_dsh_capabilities is not self.dsh_capabilities:

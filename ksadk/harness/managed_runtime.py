@@ -202,6 +202,18 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         target: ResumeTarget,
         payload: ResumePayload | None,
     ) -> RunHandle:
+        if payload is not None and payload.kind == "approval_decision":
+            decision = payload.data
+            if isinstance(decision, dict):
+                decision = decision.get("decision")
+            # Studio submits action-shaped data; the loop consumes a decision
+            # string. Unknown/missing decisions never become an approval.
+            normalized = {
+                "approve": "approved", "approved": "approved",
+                "reject": "denied", "rejected": "denied", "deny": "denied",
+                "denied": "denied", "cancel": "denied", "canceled": "denied",
+            }.get(decision if isinstance(decision, str) else "", "denied")
+            payload = payload.model_copy(update={"data": normalized})
         internal = await self._engine.resume(self._internal_handle(handle), target, payload)
         external = internal.model_copy(update={"runtime_type": "harness"})
         self._external_handles[external.run_id] = internal
@@ -327,7 +339,8 @@ def _project_event(event: HarnessEvent) -> list[Any]:
                 **envelope("run.interrupted", run_item, "run"),
                 status="interrupted",
                 reason=str(payload.get("reason") or "harness_interrupted"),
-                interaction_id=f"ap-{run_id}" if payload.get("reason") == "tool_approval" else None,
+                interaction_id=(str(payload.get("approval_id") or f"ap-{run_id}")
+                                if payload.get("reason") == "tool_approval" else None),
             )
         ]
     if rich.event_type == EventType.USAGE_REPORTED:

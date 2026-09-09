@@ -89,3 +89,23 @@ def test_permission_denial_error_carries_remediation_hint() -> None:
     assert details["reason"] == "plugin_permission_denied"
     assert "process:host-user" in details["missingPermissions"]
     assert "重新构建" in details["hint"]
+
+
+def test_harness_validator_rejects_unsupported_executor_before_chat(tmp_path: Path) -> None:
+    from ksadk.studio.contracts import ToolContract
+    from ksadk.studio.validator import AgentValidator
+
+    studio = StudioService(tmp_path)
+    draft = studio.create_studio_agent(
+        agent_id="executor-check", name="Executor Check", runtime=RuntimeRef(type="harness")
+    )
+    draft.spec.capabilities.tools = [
+        ToolContract(name="unavailable", executor="deferred", version="1.0.0")
+    ]
+    result = AgentValidator().validate(draft)
+    assert any(item.code == "TOOL_RUNTIME_INCOMPATIBLE" for item in result.diagnostics)
+    draft.spec.capabilities.tools = [
+        ToolContract(name="edit_workspace_file", executor="builtin", version="1.0.0")
+    ]
+    result = AgentValidator().validate(draft)
+    assert not any(item.code == "TOOL_RUNTIME_INCOMPATIBLE" for item in result.diagnostics)

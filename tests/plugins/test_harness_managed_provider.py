@@ -115,6 +115,76 @@ class _ManagedMcpReasoner:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("decision,written", [("approve", True), ("reject", False)])
+async def test_builtin_write_runs_only_after_studio_approval(tmp_path, decision, written):
+    import hashlib
+
+    from ksadk.events.canonical import InteractionRequested
+    from ksadk.runtime import ResumePayload, ResumeTarget
+
+    class Reasoner:
+        turn = 0
+
+        async def complete(self, **kwargs):
+            self.turn += 1
+            if self.turn == 1:
+                return HarnessReasoningTurn(tool_calls=(HarnessToolCall(
+                    call_id="write-test", name="write_workspace_file",
+                    arguments={"path": "approval.txt", "content": "verified"},
+                ),))
+            if self.turn == 2 and written:
+                return HarnessReasoningTurn(tool_calls=(HarnessToolCall(
+                    call_id="write-second", name="write_workspace_file",
+                    arguments={"path": "approval.txt", "content": "verified twice"},
+                ),))
+            return HarnessReasoningTurn(final_text="finished")
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    state_dir = tmp_path / "state"
+    adapter = await build_managed_provider_adapter(
+        HarnessConfig(model="fixture", prompt="test"), agent_name="test",
+        workspace_root=bundle, bundle_root=bundle, state_dir=state_dir,
+        reasoner=Reasoner(), tool_contracts={
+            "capabilities": {"tools": [{
+                "name": "write_workspace_file", "executor": "builtin",
+                "approval": "never", "sideEffect": "none",
+            }]},
+        },
+    )
+    handle = await adapter.start(StartRequest(
+        input="write", user_id="user", agent_id="agent", session_id="session",
+    ))
+    events = [event async for event in adapter.stream(handle)]
+    assert any(isinstance(event, InteractionRequested) for event in events)
+    first_approval = next(event for event in events if isinstance(event, InteractionRequested))
+    target = (state_dir / "tool-workspaces" / hashlib.sha256(b"test").hexdigest()
+              / ".harness-tools/workspace/approval.txt")
+    assert not target.exists()
+    handle = await adapter.resume(
+        handle, ResumeTarget(kind="checkpoint_id", id="test"),
+        ResumePayload(kind="approval_decision", call_id="write-test", data={"decision": decision}),
+    )
+    events = [event async for event in adapter.stream(handle)]
+    if written:
+        second_approval = next(event for event in events if isinstance(event, InteractionRequested))
+        assert first_approval.interaction_id != second_approval.interaction_id
+        assert target.read_text() == "verified"
+        handle = await adapter.resume(
+            handle, ResumeTarget(kind="checkpoint_id", id="test"),
+            ResumePayload(kind="approval_decision", call_id="write-second",
+                          data={"decision": "approve"}),
+        )
+        events = [event async for event in adapter.stream(handle)]
+    assert any(isinstance(event, RunCompleted) for event in events)
+    assert target.exists() is written
+    if written:
+        assert target.read_text() == "verified twice"
+    assert not list(bundle.iterdir()), "builtin execution must never mutate the locked Bundle"
+    await adapter.close_all()
+
+
+@pytest.mark.asyncio
 async def test_dsh_contributions_run_through_managed_harness(tmp_path):
     reasoner = _ManagedMcpReasoner()
     with run_fixture_mcp_server(label="managed") as fixture:

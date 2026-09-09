@@ -7,6 +7,7 @@ objects consumed by the LangGraph-based Managed Agent Loop.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import re
 from collections.abc import Sequence
@@ -61,7 +62,19 @@ async def build_managed_provider_adapter(
     mcp_runtime, transports, mcp_bindings = _mcp_runtime(config.mcp_tools)
     from ksadk.plugins.providers.harness_tools import assemble_python_tools
 
-    tools, approvals = assemble_python_tools(bundle_root or workspace_root, tool_contracts or {})
+    tool_workspace = (
+        Path(state_dir) / "tool-workspaces" / hashlib.sha256(agent_name.encode()).hexdigest()
+        if state_dir is not None else workspace_root
+    )
+    if bundle_root is not None and tool_workspace.resolve().is_relative_to(bundle_root.resolve()):
+        if any(
+            item.get("enabled", True) and item.get("executor", "builtin") == "builtin"
+            for item in (tool_contracts or {}).get("capabilities", {}).get("tools", ())
+        ):
+            raise ValueError("内置 Tool 需要 Bundle 之外的可写 state_dir，不能修改不可变运行包")
+    tools, approvals = assemble_python_tools(
+        bundle_root or workspace_root, tool_contracts or {}, workspace_root=tool_workspace
+    )
     spec = HarnessSpec(
         agent_revision_ref=f"agent-revision://{agent_id}@1",
         model=ModelBinding(profile_ref=f"model-profile://{model_name}@1"),

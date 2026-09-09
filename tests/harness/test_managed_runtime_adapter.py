@@ -10,6 +10,31 @@ from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 from ksadk.runtime import StartRequest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision,expected", [
+    ({"decision": "approve"}, "approved"),
+    ({"decision": "approved"}, "approved"),
+    ({"decision": "reject"}, "denied"),
+    ({"decision": "edit"}, "denied"),
+    ({}, "denied"), (None, "denied"), (True, "denied"),
+    ("approved", "approved"),
+])
+async def test_studio_approval_shape_is_normalized(decision, expected):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from ksadk.runtime import ResumePayload, ResumeTarget
+
+    handle = Mock(run_id="run", runtime_type="harness")
+    handle.model_copy.return_value = handle
+    engine = SimpleNamespace(resume=AsyncMock(return_value=handle))
+    adapter = ManagedHarnessRuntimeAdapter(_spec(), engine=engine)
+    adapter._external_handles["run"] = handle
+    await adapter.resume(handle, ResumeTarget(kind="checkpoint_id", id="checkpoint"),
+                         ResumePayload(kind="approval_decision", data=decision))
+    assert engine.resume.call_args.args[2].data == expected
+
+
 def test_tool_error_projection_preserves_result_and_error():
     from ksadk.harness.events import EventType, RuntimeEvent
     from ksadk.harness.managed_runtime import _project_event

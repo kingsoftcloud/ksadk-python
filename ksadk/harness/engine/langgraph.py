@@ -494,12 +494,13 @@ class ManagedLangGraphEngine:
                 run.state.status = RunStatus.AWAITING_APPROVAL
                 run.done = False
                 info = getattr(interrupts[0], "value", {}) or {}
+                approval_id = f"ap-{run.handle.run_id}-{info.get('call_id', '')}"
                 run.events.append(
                     self._event(
                         run,
                         EventType.APPROVAL_REQUESTED,
                         {
-                            "approval_id": f"ap-{run.handle.run_id}",
+                            "approval_id": approval_id,
                             "call_id": str(info.get("call_id", "")),
                             "kind": "tool",
                             "detail": info,
@@ -510,7 +511,8 @@ class ManagedLangGraphEngine:
                     self._event(
                         run,
                         EventType.RUN_INTERRUPTED,
-                        {"status": "awaiting_approval", "reason": "tool_approval"},
+                        {"status": "awaiting_approval", "reason": "tool_approval",
+                         "approval_id": approval_id},
                     )
                 )
                 return []
@@ -708,7 +710,13 @@ class ManagedLangGraphEngine:
                     )
                 run.artifacts_created += artifact_cost
         call = getattr(tool, "call", None)
-        result = await call(arguments) if callable(call) else await tool(arguments)
+        from ksadk.runtime_context import tool_execution_scope
+
+        with tool_execution_scope(
+            run.state.session_id if run is not None else "",
+            run.handle.run_id if run is not None else "",
+        ):
+            result = await call(arguments) if callable(call) else await tool(arguments)
         # 缺口 5：工具产出的 Artifact → artifact.created 事件（与子事件同
         # 缓冲，tool.call.end 之后统一重排并入，seq 单调）。
         drain = getattr(tool, "drain_artifacts", None)
@@ -824,7 +832,7 @@ class ManagedLangGraphEngine:
                     run,
                     EventType.APPROVAL_RESOLVED,
                     {
-                        "approval_id": f"ap-{run.handle.run_id}",
+                        "approval_id": f"ap-{run.handle.run_id}-{payload.call_id or ''}",
                         "call_id": payload.call_id or "",
                         "decision": decision,
                     },

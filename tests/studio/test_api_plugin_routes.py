@@ -75,6 +75,11 @@ def test_dsh_options_keep_explicit_binary_above_managed_toolchain(
 def test_plugin_page_uses_ready_managed_dsh_without_manual_binary_env(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from unittest.mock import AsyncMock
+
+    # This case tests an empty profile, not first-launch installation. Keep it
+    # independent of the developer machine's real managed DSH toolchain.
+    monkeypatch.setattr(StudioService, "_bootstrap_official_dsh_defaults", AsyncMock())
     managed = tmp_path / "managed-dsh"
     managed.write_text(
         "#!/bin/sh\n"
