@@ -27,8 +27,8 @@ Record exactly one approved source publication strategy.
 
 The approved strategy names the reviewed source used for both release artifacts:
 
-- `ksadk-python`: Clean public export of reviewed source commit `da95538e9a8e6790d3420bfff41b0638fe8cbca4`; publication uses the corresponding reviewed public pull request and GitHub Trusted Publishing.
-- `ksadk-web`: GitHub source commit `6a2814e17f361f452396c7265049190f2e668a0c` published as `@kingsoftcloud/ksadk-web@0.3.7`; npm integrity `sha512-Js1Tk9Fo19QUgth1gXRBxZNEbtk5p81bMkX1ncdPRN4llldpfi3apAcaMxprsfI8V23cqf7pIKZIkeSDSAMZ8w==`; Python consumer binding reviewed in source commit `da95538e9a8e6790d3420bfff41b0638fe8cbca4`.
+- `ksadk-python`: Clean public export of reviewed source commit `08301cc6c2797c12b14857d36f524b4681e5703a`; publication uses the corresponding reviewed public pull request and GitHub Trusted Publishing.
+- `ksadk-web`: GitHub source commit `6a2814e17f361f452396c7265049190f2e668a0c` published as `@kingsoftcloud/ksadk-web@0.3.7`; npm integrity `sha512-Js1Tk9Fo19QUgth1gXRBxZNEbtk5p81bMkX1ncdPRN4llldpfi3apAcaMxprsfI8V23cqf7pIKZIkeSDSAMZ8w==`; Python consumer binding reviewed in source commit `08301cc6c2797c12b14857d36f524b4681e5703a`.
 
 Both approved source references include the reviewed Python source commit SHA so a changed candidate cannot reuse this record.
 
