@@ -5,7 +5,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.8.4] - 2026-09-07
+## [0.8.4] - 2026-09-09
 
 ### Studio 与共享会话
 
@@ -23,6 +23,8 @@
 - 新建官方 Codex Agent 默认写入其固定的本地进程权限，快速创建与对话创建不再因空权限被拒绝；第三方 Provider 仍需逐项确认，显式撤销后的 Build 继续拒绝。
 - 修复 Codex 代理调用参数、跨回合 thread 恢复、运行句柄回收和 MCP 配置传递，保留原生工具授权边界。
 - 增加 Codex 插件不可变制品交付与运行时恢复：插件字节和依赖引用随版本交付，启动不再按市场最新版本重新安装。该路径需要控制面支持相应制品接口；接口不可用时明确阻断，不静默丢弃绑定。
+- 新增知识库、长期记忆与 Skill Center 的官方平台资源插件：Studio 把资源连接写入 Agent Revision，Build 固化连接引用与插件摘要，Runtime 在 Activation 时按账号、区域和凭证策略装配；“已绑定”只表示配置进入版本，不替代服务端授权与运行时连通性检查。
+- 修复托管 Runtime 把公开 `/v1/responses`、`/v1/chat/completions` 和兼容 RunAgent 请求误送入只接受 Server 签发 permit 的 Kernel 入口而返回 `unknown_signing_key`；专用 `/agent-kernel/v1/*` 入口继续执行 Server JWKS 校验。
 
 ### 构建与兼容性
 

@@ -15,7 +15,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
 </p>
 
-<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-platform-hero.png"><img alt="KsADK 真实 CLI 截图：agentengine -h" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
+<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-platform-hero.png"><img alt="KsADK 0.8.4 AgentKit Studio 真实 Agent 工作区" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
 
 ## 30 秒快速体验
 
@@ -45,6 +45,7 @@ KsADK 0.8.4 把“框架适配”收敛为稳定的运行时分层，同时保�
 - **可插拔 Provider**：Codex、KsADK Harness、DSH/Cordis 与 Subagent 在同一 Harness 契约下运行，Provider 保留原生线程、checkpoint 与事件语义。
 - **统一事件**：`RuntimeEvent(schema_version=2)` 是存储、回放、API、Studio 与托管界面的事件事实来源；v1 仅作为只读兼容投影。
 - **受控插件化**：DSH Bundle/Profile 使用固定工具链、不可变来源摘要和失败回滚；Codex 官方插件仍由 Codex App Server 管理。
+- **平台资源插件**：Studio 可绑定知识库、长期记忆与 Skill Center；Agent Revision 保存资源选择，Build 固化连接引用和插件摘要，Runtime 在 Activation 时按平台授权装配。
 - **本地开发闭环**：Studio 覆盖创建、构建、调试、评测与本地 Scheduler Lite；配套 Web UI 固定为 `@kingsoftcloud/ksadk-web@0.3.7`。
 
 从 [0.8.4 运行时架构](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/runtime-architecture/)、[AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/) 和[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)开始阅读。版本演进与发行状态见 [CHANGELOG](CHANGELOG.md) 和 PyPI 徽章。
@@ -53,9 +54,9 @@ KsADK 0.8.4 把“框架适配”收敛为稳定的运行时分层，同时保�
 
 运行事件主路径固定为 canonical `RuntimeEvent(schema_version=2)`；能力描述为 `RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`。v1 仅作只读兼容投影。
 
-<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png"><img alt="KsADK 真实 Web UI 调试截图" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></a></p>
+<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png"><img alt="KsADK 0.8.4 Studio 知识库、记忆库与 Skill Center 真实绑定界面" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></a></p>
 
-<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif"><img alt="KsADK 真实本地 Web UI 演示" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></a></p>
+<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif"><img alt="KsADK 0.8.4 Studio Agent、资源绑定与插件页真实演示" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></a></p>
 
 ## 为什么需要 KsADK
 
