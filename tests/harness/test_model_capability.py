@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from ksadk.harness.model_capability import (
@@ -238,58 +236,6 @@ async def test_reasoner_keeps_streaming_for_supported_model(monkeypatch):
     assert reasoner.last_streaming_mode is True
 
 
-def test_run_model_matrix_writes_declaration_file(tmp_path, monkeypatch):
-    from ksadk.harness.model_matrix_eval import run_model_matrix
-
-    canned = {
-        "schemaVersion": 1,
-        "status": "ready",
-        "model_count": 1,
-        "passed_count": 1,
-        "all_passed": True,
-        "summary": {"passed": 1, "failed": 0, "skipped": 0},
-        "requirements": {},
-        "results": [
-            {
-                "model_id": "model-a",
-                "basic_chat": True,
-                "tool_calling": True,
-                "usage_reported": True,
-                "stream_text": None,
-                "stream_tool_calling": None,
-                "errors": [],
-            }
-        ],
-    }
-    monkeypatch.setattr(
-        "ksadk.harness.model_matrix_eval.discover_models",
-        lambda **_: (
-            __import__(
-                "ksadk.harness.model_matrix_eval", fromlist=["DiscoveredModel"]
-            ).DiscoveredModel("model-a"),
-        ),
-    )
-    monkeypatch.setattr(
-        "ksadk.harness.model_matrix_eval.evaluate_model_matrix",
-        lambda *args, **kwargs: _async_return(canned),
-    )
-
-    declare_path = tmp_path / "capabilities.json"
-    report = run_model_matrix(
-        base_url="http://gateway.test/v1",
-        api_key="test-key",
-        requested_models=("model-a",),
-        declare_out=str(declare_path),
-    )
-    assert report["capabilityDeclarations"]["applied"] == 1
-    payload = json.loads(declare_path.read_text(encoding="utf-8"))
-    assert payload["declarations"][0]["model_id"] == "model-a"
-    assert payload["declarations"][0]["supports_basic_chat"] is True
-    assert payload["declarations"][0]["supports_streaming_tool_calls"] is None
-
-
-async def _async_return(value):
-    return value
 
 
 def test_default_mode_upgrades_to_streaming_when_non_stream_tool_calls_broken() -> None:

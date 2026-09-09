@@ -96,8 +96,7 @@ def classify_model_failure(error: Exception) -> ClassifiedModelFailure:
             "context window",
             "too many tokens",
             "context_length_exceeded",
-            # 真实网关实测：HTTP 400 "input token limit is N"（见
-            # model_matrix_eval 的 overflow 探针）。
+            # 真实网关的上下文溢出错误：HTTP 400 "input token limit is N"。
             "input token limit",
             "token limit exceeded",
             # 金山云 OpenAI-compatible 网关实测文案。

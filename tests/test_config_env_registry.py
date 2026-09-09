@@ -58,6 +58,7 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
 
 def test_env_registry_docs_cover_registered_names():
     doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
+    doc_text += Path("docs/KsADK-Harness分支技术总览.md").read_text(encoding="utf-8")
 
     for item in ENV_VAR_REGISTRY:
         if item.documented:

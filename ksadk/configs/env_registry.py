@@ -17,10 +17,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "ksadk-harness", documented=False,
     ),
     EnvVarSpec(
-        "KSADK_SANDBOX_MATRIX_REQUIRE_E2B", "harness", "Require E2B in sandbox validation.",
-        documented=False,
-    ),
-    EnvVarSpec(
         "KSADK_SANDBOX_API_KEY", "sandbox", "Legacy Skill MCP forwarded sandbox credential.",
         sensitive=True, documented=False,
     ),
@@ -156,15 +152,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_A2A_SERVICE",
         "a2a",
         "A2A KOP signing service name (default: aicp).",
-    ),
-    EnvVarSpec(
-        "KSADK_EVAL_API_KEY", "evaluation", "Evaluation model API key.", sensitive=True
-    ),
-    EnvVarSpec(
-        "KSADK_EVAL_BASE_URL", "evaluation", "Evaluation model base URL.", sensitive=True
-    ),
-    EnvVarSpec(
-        "KSADK_EVAL_LITELLM_MODEL", "evaluation", "Evaluation LiteLLM model id.",
     ),
     EnvVarSpec(
         "KSADK_EVAL_JUDGE_API_KEY",
@@ -777,12 +764,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec(
         "KSADK_SKILL_CACHE_DIR", "skills", "Skill package download and extraction cache directory."
-    ),
-    EnvVarSpec(
-        "KSADK_REAL_MODEL_EVAL",
-        "evaluation",
-        "Gate real-model evaluation entrypoints (requires live endpoints).",
-        documented=False,
     ),
     EnvVarSpec(
         "KSADK_SKILL_MANIFEST_LIMIT",

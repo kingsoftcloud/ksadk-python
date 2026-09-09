@@ -1,6 +1,9 @@
 # KsADK Harness 分支技术总览
 
-> 分支：`feat-ksadk-harness` · 文档状态：评审与合入说明 · 更新日期：2026-09-04
+> 分支：`feat-ksadk-harness` · 文档状态：评审与合入说明 · 更新日期：2026-09-09
+
+本次合入仅包含生产实现、必要回归测试及本文。历史 OpenSpec 过程文件、实验报告、
+截图和独立真实模型/矩阵评测脚本保留在本地备份，不随本次评审提交。
 
 ## 1. 概览
 
@@ -20,7 +23,7 @@ Runtime 暴露相同内部实现，而是通过 Capability Declaration 如实声
 
 ## 2. OpenSpec 依据
 
-本文基于以下已完成的 OpenSpec change 汇总，不以历史计划代替当前实现：
+本文基于以下历史 OpenSpec change 汇总；名称用于追溯设计来源，不表示过程文件随本次合入：
 
 | OpenSpec change | 解决的问题 | 状态 |
 |---|---|---|
@@ -139,11 +142,9 @@ Harness 保留两条互不污染但编译合同一致的路径：
 
 ## 7. 验证与证据边界
 
-本分支已经形成从单元/集成测试、真实模型与 MCP 矩阵、Sandbox Conformance 到本地
-生命周期 E2E 的分层验证体系。最近一次长任务控制器及默认 Runtime 受影响测试为
-`104 passed`；此前
-Harness + Memory 回归为 `787 passed / 6 skipped`，OpenSpec Harness 合同测试为
-`4 passed`。
+仓内保留单元/集成测试、Sandbox Conformance 和本地生命周期 E2E 等必要回归。
+开发期间使用的独立长任务 Benchmark、真实模型与 MCP 矩阵评测入口及实验结果
+另行保留，不属于本次生产代码交付；历史测试数字不作为精简后版本的通过证明。
 
 这些结果证明仓内合同和本地路径可重复，但不替代下列目标环境验证：
 
@@ -156,6 +157,17 @@ Harness + Memory 回归为 `787 passed / 6 skipped`，OpenSpec Harness 合同测
 未配置项必须保持 `not_configured` 或升级为发布阻断，不能写成“已生产验证”。
 
 ## 8. 仓库边界
+
+### 运行配置
+
+| 变量 | 用途与默认行为 |
+| --- | --- |
+| `KSADK_HARNESS_STATE_DIR` | 私有持久状态目录，保存 Checkpoint、Run 索引和工具回执；CLI 可用 `--state-dir` 指定。按 Deployment 隔离，不得打入 Bundle。 |
+| `KSADK_MODEL_PROFILE_MAP` | JSON 格式的版本化模型引用到供应商模型名映射；未配置时使用 Profile 名称，不得包含凭证。 |
+| `KSADK_MODEL_STREAMING` | 控制模型流式响应；未设置时按 Provider 能力选择。 |
+| `KSADK_MODEL_CAPABILITY_FILE` | 可选模型能力声明文件，供运行时选择受支持的调用模式。 |
+
+### 职责范围
 
 本仓负责 Python SDK、CLI 和数据面 Runtime，包括运行、恢复、Skill/MCP 消费、
 Sandbox/Approval/Tool Safety 以及 RuntimeAdapter。完整 Registry、云端资源治理、Skill

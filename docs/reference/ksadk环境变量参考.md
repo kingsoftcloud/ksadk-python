@@ -55,7 +55,6 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_SKILLS_MODE` | 否 | 无 | 否 | 开发者 / Runner 环境 | `auto/local/sandbox`。本地调试可显式设为 `local`。 |
-| `KSADK_HARNESS_STATE_DIR` | 否 | 无 | 否 | Runtime agent | Harness runtime server 持久状态目录（checkpoints 与 tool receipts）。 |
 | `KSADK_LOCAL_SKILLS_DIR` | 条件必传 | `KSADK_SKILL_CACHE_DIR` 可作为 fallback | 否 | 开发者 | 本地已解压 Skill 包目录；目录下每个 skill 应包含 `SKILL.md`。 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | 否 | 无 | 否 | 开发者 | 本地进程模式设为 `local_process`。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | 条件必传 | 默认使用 SDK 内置 agent | 否 | 开发者 | `local_process` backend 的 agent 入口。 |
@@ -151,8 +150,6 @@
 | `OPENAI_API_KEY` | 本地运行时 / Runtime 镜像 / OpenClaw / Hermes | 条件必传 | 未设置 | `LLM_API_KEY`、`MODEL_API_KEY`、部分 OpenClaw 场景使用 `OPENCLAW_MODEL_API_KEY` | 是 | 开发者 / Secret | 否 | OpenAI 兼容接口 API key。 |
 | `OPENAI_BASE_URL` | 本地运行时 / Runtime 镜像 / OpenClaw / Hermes | 条件必传 | 未设置 | `OPENAI_API_BASE`、`LLM_API_BASE`、`MODEL_API_BASE`、部分 OpenClaw 场景使用 `OPENCLAW_MODEL_BASE_URL` | 否 | 开发者 / 平台 | 否 | OpenAI 兼容接口 base url。 |
 | `OPENAI_MODEL_NAME` | 本地运行时 / Runtime 镜像 | 条件必传 | 未设置 | `LLM_MODEL`、`MODEL_NAME`、Hermes fallback 读取 `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | 默认模型名。 |
-| `KSADK_MODEL_PROFILE_MAP` | KsADK Harness 本地部署 Runtime | 否 | `{}` | 无 | 否 | 平台 / 开发者 | 否 | JSON 对象，将不可变的 `model-profile://name@version` 引用映射为供应商模型标识；仅保存标识映射，不得包含 endpoint 或凭证。未配置匹配项时回退使用 Profile 名称。 |
-| `KSADK_HARNESS_STATE_DIR` | KsADK Harness 本地部署 Runtime | 否 | 未设置 | CLI `--state-dir` | 是 | 平台 / 本地部署器 | 否 | Runtime 的私有状态目录，保存 SQLite Checkpoint 与可查询 Run 索引，用于同一 Deployment 进程重启后的恢复。目录可能包含会话和工具执行状态，必须使用受保护的逐 Deployment 卷，不得写入源码或 Bundle。 |
 | `OPENAI_CONTEXT_LENGTH` | Hermes / 模型配置 | 否 | 未设置 | `MODEL_CONTEXT_LENGTH`、`HERMES_CONTEXT_LENGTH` | 否 | 开发者 / 平台 | 否 | 模型上下文长度提示。 |
 | `OPENAI_FALLBACK_MODEL_NAME` | Hermes / 模型配置 | 否 | 未设置 | `HERMES_FALLBACK_MODEL` | 否 | 开发者 / 平台 | 否 | Hermes fallback 模型名 fallback。 |
 | `AGENTENGINE_MODEL_POLICY_JSON` | Runtime / 模型策略 | 否 | 内置 v1 默认策略 | 无 | 否 | 平台 / 开发者 | 否 | 运行时模型策略 JSON，统一声明 `primary` / `multimodal` / `fallback` 三档与每个模型的 `reasoning` / `options`，覆盖 `OPENAI_MODEL_NAME` / `OPENCLAW_*` / `HERMES_*` 默认语义。0.6.6 起 v1 默认策略为 `primary=glm-5.2` / `multimodal=kimi-k2.7-code` / `fallback=deepseek-v4-pro`；0.6.7 起每个模型 `reasoning:true`，catalog 输出含 `reasoning` 字段。 |
@@ -365,9 +362,6 @@
 | `KSADK_A2A_SERVICE_SCHEME` | A2A Runtime / KOP | 否 | `https` | 无 | 否 | 部署层 / 平台 | 否 | A2A service URL scheme（`http`/`https`）。 |
 | `KSADK_A2A_SERVICE_REGION` | A2A Runtime / KOP | 否 | 回退 `KSYUN_REGION` → `cn-beijing-6` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 region。 |
 | `KSADK_EVAL_JUDGE_API_KEY` | 评测 / LLM Judge | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | LLM Judge 评测后端的 API key。 |
-| `KSADK_EVAL_API_KEY` | 评测 | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | 真实模型评测端点的 API key。 |
-| `KSADK_EVAL_BASE_URL` | 评测 | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | 真实模型评测端点的 base URL。 |
-| `KSADK_EVAL_LITELLM_MODEL` | 评测 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 真实模型评测使用的 LiteLLM 模型 id。 |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
@@ -400,9 +394,6 @@
 | `AGENTENGINE_MANAGED_RUNTIME_VERSION` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | catalog 解析后的 Runtime 版本；镜像启动时同时校验已安装的 `openai-codex` 版本。 |
 | `AGENTENGINE_MANIFEST_PROTOCOL` | Codex Runtime 镜像 | 是（平台注入） | `runtime-manifest/v1`（旧 bundle 兼容） | 无 | 否 | AgentEngine Server | 否 | 内联 manifest 协议版本。当前只支持 `runtime-manifest/v1`。 |
 | `AGENTENGINE_MANIFEST_SHA256` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端规范化 `agentengine.yaml` 的 SHA-256；镜像启动时校验挂载内容。 |
-| `KSADK_MODEL_PROFILE_MAP` | 模型 | 否 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | JSON 对象，把 model profile ref 映射到 provider 模型 id。 |
-| `KSADK_MODEL_STREAMING` | 模型 | 否 | 自动 | 无 | 否 | 开发者 / 平台 | 否 | 开启流式模型响应（未设置时按 provider 能力自动）。 |
-| `KSADK_MODEL_CAPABILITY_FILE` | 模型 | 否 | 无 | 无 | 否 | 开发者 / 平台 | 否 | 模型矩阵产出的 Provider 能力声明文件；运行时据此自动选择各模型受支持的模式（如流式降级）。 |
 | `KSADK_MODEL_PROXY_ENABLED` | Model proxy | 否 | `0` | 无 | 否 | 开发者 / 平台 | 否 | 启用实验性模型协议转换层。 |
 | `KSADK_MODEL_PROXY_AGENTS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 agent allowlist。 |
 | `KSADK_MODEL_PROXY_MODELS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 model allowlist。 |
