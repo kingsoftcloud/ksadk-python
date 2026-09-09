@@ -45,6 +45,35 @@ class RecordingModelClient:
         )
 
 
+def _codex_provider_manifest() -> PluginManifest:
+    return PluginManifest.model_validate(
+        {
+            "metadata": {"id": "io.ksadk.codex-provider", "version": "1.0.0"},
+            "spec": {
+                "domain": "runtime-native",
+                "runtime": "native",
+                "provides": [
+                    {
+                        "definition": "agent.provider/v1",
+                        "slot": "agent.execution",
+                        "mode": "unique",
+                    }
+                ],
+                "isolation": "native",
+                "compatibility": {
+                    "kernelApi": ">=1,<2",
+                    "runtimeProtocols": ["AgentControlChannel/v1"],
+                },
+                "healthContract": "plugin.health/v1",
+                "provenance": {
+                    "source": "runtime-native",
+                    "digest": "sha256:" + "1" * 64,
+                },
+            },
+        }
+    )
+
+
 def _valid_spec():
     return {
         "description": "Shared Web test",
@@ -764,32 +793,6 @@ def test_cold_chat_model_catalog_reports_provider_window(tmp_path, monkeypatch, 
             ),
         ),
     )
-    studio._active_provider_manifests[CODEX_PROVIDER_REF] = PluginManifest.model_validate(
-        {
-            "metadata": {"id": "io.ksadk.codex-provider", "version": "1.0.0"},
-            "spec": {
-                "domain": "runtime-native",
-                "runtime": "native",
-                "provides": [
-                    {
-                        "definition": "agent.provider/v1",
-                        "slot": "agent.execution",
-                        "mode": "unique",
-                    }
-                ],
-                "isolation": "native",
-                "compatibility": {
-                    "kernelApi": ">=1,<2",
-                    "runtimeProtocols": ["AgentControlChannel/v1"],
-                },
-                "healthContract": "plugin.health/v1",
-                "provenance": {
-                    "source": "runtime-native",
-                    "digest": "sha256:" + "1" * 64,
-                },
-            },
-        }
-    )
     assert not studio.catalog._provider_models
     with TestClient(create_studio_app(tmp_path, service=studio, security_enabled=False)) as client:
         response = (client.get("/api/v1/agents/cold-model/models") if legacy_route else client.post(
@@ -849,6 +852,7 @@ def test_cold_build_discovers_provider_model_before_submit(tmp_path, monkeypatch
     assert not studio.catalog._provider_models
 
     with TestClient(create_studio_app(tmp_path, service=studio, security_enabled=False)) as client:
+        studio._active_provider_manifests[CODEX_PROVIDER_REF] = _codex_provider_manifest()
         submitted = client.post(
             "/api/v1/agents/cold-build/builds",
             headers={"Idempotency-Key": "cold-build-r1"},
