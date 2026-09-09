@@ -73,7 +73,6 @@ def _seed_agent(service: StudioService) -> None:
             ),
             instructions=Instructions(system="Render every canonical item by identity."),
             security=SecuritySpec(
-                allowed_permissions=["process:host-user"],
                 network=NetworkPolicy(allowed_hosts=["model.example.com"]),
             ),
         ),

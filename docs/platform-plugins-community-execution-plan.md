@@ -26,7 +26,7 @@
 | D01 | Codex Runtime / Provider 职责与入口审查 | 已完成首轮 | 已有官方 Provider；直连路径和 Provider 必须共用原生工厂，避免默认 registry 递归；正式 Studio 迁移另列 D04 |
 | D02 | 实施首批 Codex Provider 能力迁移 | 已完成首批 | `0c9b2dde`：Provider 原生工厂与输入投影；Runtime 1080→842 行，通用 factory 484→172 行；保留兼容构造入口 |
 | D03 | Codex 回归与兼容验证 | 已完成首批 | 70 项通过；真实 Codex App Server + 本地 Responses/MCP stub 1 项通过（两轮工具调用和 native thread 续接） |
-| D04 | 正式 Studio Build / Run 进入 Provider | 本地接线已完成 | `61a70be2`：新 Build 冻结 Provider/Bundle，Run 经 PluginHost，禁用拒绝，历史 Build 显式 legacy；真实 DSH 组合验证 `89f0c0fd`；`7d8c2831`、`7e19c25b` 完成显式权限 UI、异步回显和真实浏览器阻断/持久化验证。云端迁移、多连接模型与附件清理仍需后续推进 |
+| D04 | 正式 Studio Build / Run 进入 Provider | 本地接线已完成 | `61a70be2`：新 Build 冻结 Provider/Bundle，Run 经 PluginHost，禁用拒绝，历史 Build 显式 legacy；真实 DSH 组合验证 `89f0c0fd`；`7d8c2831`、`7e19c25b` 完成权限 UI、异步回显和浏览器验证，0.8.4 候选补充官方 Codex 默认授权，外部 Provider 仍显式确认。云端迁移、多连接模型与附件清理仍需后续推进 |
 | P04 | 接通平台资源的可信准入 | 知识库首片已完成 | `04e7829a` 实现宿主签名子账号与指定知识库只读准入；`ebadee5f` 加固响应信封、流式上限、连接关闭和官方内网策略。76 项相关回归通过；真实内网 IAM 身份、账号匹配和指定知识库只读检索成功 |
 | P05 | 知识库插件接入正式 Build / Run | 待 P04、D02 | 冻结绑定、正式 Builder 产物、同一 DSH Core、Worker 调用、租约/连接变更隔离、模型可实际调用 |
 | P06 | Studio 平台资源选择与状态 | 待 P04 | 复用现有 React Studio 与 ComponentConfig，连接范围内选项代理、保存/刷新/错误状态；真实浏览器验证 |
@@ -93,6 +93,6 @@ Skill 输入最终以 Bundle 冻结字节为准，本地 launch overlay 不得�
 
 ### 真实 Core 与正式 Codex Provider 组合补验
 
-`89f0c0fd` 用实际官方 Node DSH Core 安装 `ksadk-codex`，经真实 Python descriptor 注册桥接入 Studio，再创建正式 Provider Build 并调用真实 AppServer；上游模型为本地无认证 stub。测试覆盖未获 `process:host-user` 授权时拒绝、通过正式 Agent 更新显式授权后调用成功、禁用 Provider 后 Build/Run 拒绝与进程退出。这里的 descriptor 注册由 Python 宿主读取受管 profile 完成，不表述为 Core 直接提供 Provider RPC。
+`89f0c0fd` 用实际官方 Node DSH Core 安装 `ksadk-codex`，经真实 Python descriptor 注册桥接入 Studio，再创建正式 Provider Build 并调用真实 AppServer；上游模型为本地无认证 stub。新建 Codex Agent 会随官方内置 Provider 默认获得 `process:host-user`，第三方插件仍需单独授权；用户后续显式撤销该权限时，Provider Build 会拒绝。测试同时覆盖禁用 Provider 后 Build/Run 拒绝与进程退出。这里的 descriptor 注册由 Python 宿主读取受管 profile 完成，不表述为 Core 直接提供 Provider RPC。
 
-`7d8c2831` 将官方 Provider 权限显示在原生 Codex 快速创建、对话创建和编辑表单，默认不勾选；插件安装同意不自动写成 Agent 授权。`7e19c25b` 修复 Provider 目录异步晚到时的授权回显和精确 consent scope。真实浏览器已验证未勾选时阻止创建、编辑页持久化已选权限并能保存后重开；相关后端、Vitest 与生产 Vite 构建通过。
+`7d8c2831` 将官方 Provider 权限显示在原生 Codex 快速创建、对话创建和编辑表单；`7e19c25b` 修复 Provider 目录异步晚到时的授权回显和精确 consent scope。0.8.4 调整为：选择官方内置 Codex Runtime 即默认授权其固定宿主权限，编辑页继续展示持久化的授权状态；外部 Provider/插件不继承该授权。通过 Agent Revision 显式撤销后，Provider Build 仍会拒绝。相关后端、Vitest、生产 Vite 构建和浏览器回归必须按此语义验证。

@@ -72,7 +72,7 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
-  it("requires explicit native Codex consent and saves it with the Agent", async () => {
+  it("defaults the shipped Codex permission and saves it with the Agent", async () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation((input, init) => String(input) === "/api/v1/agent-providers"
       ? Promise.resolve(response({ items: [{
@@ -84,12 +84,8 @@ describe("CreatePage quick authoring", () => {
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
-    expect(consent).not.toBeChecked();
+    expect(consent).toBeChecked();
     await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "你是一个本地验证助手，请简洁回答。");
-    await user.click(screen.getByRole("button", { name: "继续" }));
-    expect(await screen.findByText("请先确认 Codex Provider 请求的 Agent 权限。")).toBeVisible();
-    expect(mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick")).toBeUndefined();
-    await user.click(consent);
     await user.click(screen.getByRole("button", { name: "继续" }));
     await user.click(await screen.findByRole("button", { name: "选择模型" }));
     await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
@@ -117,7 +113,7 @@ describe("CreatePage quick authoring", () => {
       ] })) : base(input, init));
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    await user.click(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ }));
+    expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
     await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "Answer with evidence.");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /DSH AgentProvider/ }));
@@ -575,13 +571,7 @@ describe("CreatePage quick authoring", () => {
     await screen.findByDisplayValue("Review releases.");
     expect(screen.queryByText(/1\.0元/)).not.toBeInTheDocument();
     expect(screen.queryByText(/models\.example\.test\/v1\/models/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "确认并创建 Revision" }));
-    expect(await screen.findByText("请在部署配置中确认 Codex Provider 请求的 Agent 权限")).toBeVisible();
-    expect(mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick")).toBeUndefined();
-    await user.click(screen.getByText("部署配置"));
-    const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
-    expect(consent).not.toBeChecked();
-    await user.click(consent);
+    expect(screen.getByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
     await user.click(screen.getByRole("button", { name: "确认并创建 Revision" }));
 
     await waitFor(() => {

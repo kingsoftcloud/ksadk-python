@@ -20,6 +20,7 @@ from typing import Any, Callable, cast
 from pydantic import ValidationError
 
 from ksadk.managed_runtime import installed_runtime_version
+from ksadk.plugins.providers.dsh import DSH_HOST_USER_PERMISSION
 from ksadk.studio.codex_builder import CodexBuildRecord
 from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
@@ -168,6 +169,11 @@ class CodexAgentService:
             )
         resolved = (spec or default_agent_spec("blank")).model_copy(deep=True)
         resolved.runtime = RuntimeRef(type="codex", version=self._runtime_version(resolved))
+        # Selecting the wheel-owned Codex Runtime also selects its shipped Provider.
+        # Grant only that Provider's required host permission on first creation;
+        # third-party plugins still require explicit Agent-level authorization.
+        if DSH_HOST_USER_PERMISSION not in resolved.security.allowed_permissions:
+            resolved.security.allowed_permissions.append(DSH_HOST_USER_PERMISSION)
         self.ensure_bindings_supported(resolved)
         manifest = self._manifest(agent_id, resolved)
         snapshot = self.studio.codex_manifests.save(manifest)

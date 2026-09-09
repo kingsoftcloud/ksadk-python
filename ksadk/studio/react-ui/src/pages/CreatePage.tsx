@@ -207,6 +207,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [providerConsent, setProviderConsent] = useState<string | null>(null);
   const [codexConsent, setCodexConsent] = useState<string | null>(null);
   const [convCodexConsent, setConvCodexConsent] = useState<string | null>(null);
+  const codexConsentDefaulted = useRef(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
   /* 向导状态 */
   const [step, setStep] = useState(1);
@@ -413,6 +414,12 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent(approved ? selectedConsentKey : null);
   const setCodexPermissionsApproved = (approved: boolean) => setCodexConsent(approved ? codexConsentKey : null);
   const setConvCodexPermissionsApproved = (approved: boolean) => setConvCodexConsent(approved ? codexConsentKey : null);
+  useEffect(() => {
+    if (codexConsentKey === null || codexConsentDefaulted.current) return;
+    codexConsentDefaulted.current = true;
+    setCodexConsent(codexConsentKey);
+    setConvCodexConsent(codexConsentKey);
+  }, [codexConsentKey]);
   const usesNativeCodexTools = runtime === "codex"
     || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
   const supportsKsAdkTools = runtime === "adk" || runtime === "langgraph";

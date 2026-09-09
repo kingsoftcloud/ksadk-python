@@ -43,7 +43,6 @@ def _seed_agent(service: StudioService) -> None:
             ),
             instructions=Instructions(system="Keep every turn identity distinct."),
             security=SecuritySpec(
-                allowed_permissions=["process:host-user"],
                 network=NetworkPolicy(allowed_hosts=["model.example.com"])
             ),
         ),
