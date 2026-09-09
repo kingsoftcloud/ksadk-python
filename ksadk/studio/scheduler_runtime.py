@@ -272,6 +272,15 @@ class StudioScheduledKernelRegistry:
                 user_id=command.tenant_id,
                 session_id=command.session_id,
             )
+            prompt = command.payload.get("content")
+            if isinstance(prompt, str) and prompt.strip():
+                await self._session_service.update_session_metadata(
+                    command.session_id,
+                    title=f"定时任务 · {prompt[:40]}",
+                    title_source="scheduler",
+                    first_prompt=prompt,
+                    last_prompt=prompt,
+                )
         return await entry.runtime.kernel.submit(command, permit=permit)
 
     async def read_events(

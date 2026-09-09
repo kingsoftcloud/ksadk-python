@@ -1,3 +1,4 @@
+import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, Zap, MessagesSquare, Upload, Folder, Check,
@@ -20,10 +21,13 @@ import { FormField } from "../components/ui/FormField";
 import { StudioDrawer } from "../components/ui/StudioDialog";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
+import { PlatformResourceBindings } from "../components/PlatformResourceBindings";
+import type { NativePluginBinding } from "../components/NativePluginBindings";
 import { applyApiFieldErrors } from "../lib/formErrors";
 import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import {
   parseProviderConfig,
+  providerConsentKey,
   providerOptionDescription,
   type AgentProviderCatalogItem,
 } from "../agentProviders";
@@ -200,7 +204,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [agentProviders, setAgentProviders] = useState<AgentProviderCatalogItem[]>([]);
   const [selectedProviderRef, setSelectedProviderRef] = useState("");
   const [providerConfigText, setProviderConfigText] = useState("{}");
-  const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
+  const [providerConsent, setProviderConsent] = useState<string | null>(null);
+  const [codexConsent, setCodexConsent] = useState<string | null>(null);
+  const [convCodexConsent, setConvCodexConsent] = useState<string | null>(null);
+  const codexConsentDefaulted = useRef(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
   /* 向导状态 */
   const [step, setStep] = useState(1);
@@ -242,6 +249,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [selectedPlatformResources, setSelectedPlatformResources] = useState<NativePluginBinding[]>([]);
+  const [platformResourcesPending, setPlatformResourcesPending] = useState(false);
   const [policy, setPolicy] = useState("strict");
   const [contextOwnership, setContextOwnership] = useState("auto");
   const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
@@ -396,9 +405,25 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     () => effectiveAgentProviders.find(item => item.providerRef === selectedProviderRef),
     [effectiveAgentProviders, selectedProviderRef],
   );
+  const codexProvider = agentProviders.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
+  const selectedConsentKey = providerConsentKey(selectedProvider);
+  const codexConsentKey = providerConsentKey(codexProvider);
+  const providerPermissionsApproved = selectedConsentKey !== null && providerConsent === selectedConsentKey;
+  const codexPermissionsApproved = codexConsentKey !== null && codexConsent === codexConsentKey;
+  const convCodexPermissionsApproved = codexConsentKey !== null && convCodexConsent === codexConsentKey;
+  const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent(approved ? selectedConsentKey : null);
+  const setCodexPermissionsApproved = (approved: boolean) => setCodexConsent(approved ? codexConsentKey : null);
+  const setConvCodexPermissionsApproved = (approved: boolean) => setConvCodexConsent(approved ? codexConsentKey : null);
+  useEffect(() => {
+    if (codexConsentKey === null || codexConsentDefaulted.current) return;
+    codexConsentDefaulted.current = true;
+    setCodexConsent(codexConsentKey);
+    setConvCodexConsent(codexConsentKey);
+  }, [codexConsentKey]);
   const usesNativeCodexTools = runtime === "codex"
     || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
-  const effectiveSelectedTools = usesNativeCodexTools ? [] : selectedTools;
+  const supportsKsAdkTools = runtime === "adk" || runtime === "langgraph";
+  const effectiveSelectedTools = supportsKsAdkTools ? selectedTools : [];
   const providerOptions = useMemo(() => effectiveAgentProviders.map(item => ({
     value: item.providerRef,
     label: item.displayName,
@@ -426,8 +451,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }, [effectiveAgentProviders, selectedProviderRef]);
 
   useEffect(() => {
-    if (usesNativeCodexTools && selectedTools.length) setSelectedTools([]);
-  }, [selectedTools.length, usesNativeCodexTools]);
+    if (!supportsKsAdkTools && selectedTools.length) setSelectedTools([]);
+  }, [selectedTools.length, supportsKsAdkTools]);
   const resourceById = useCallback((id: string) => catalog.find(i => i.resourceId === id), [catalog]);
   const credentialOf = useCallback((item?: ResItem) => {
     const ref = credentialReference(item);
@@ -487,10 +512,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         version: 1, savedAt: new Date().toISOString(), mode,
         wizard: {
           step, maxStep, template, runtime, depth, selectedTools, selectedSkills,
-          selectedMcp, selectedModels, policy, contextOwnership,
+          selectedMcp, selectedModels, selectedPlatformResources, policy, contextOwnership,
           contextEngineRollout, memoryEnabled, memoryWriteRollout,
           selectedProviderRef, providerConfigText,
-          providerPermissionsApproved,
+          providerPermissionsApproved, codexPermissionsApproved,
         },
         fields: { name, slug, description, prompt, audience, language, format, systemPrompt, taskPrompt, buildAfterCreate },
       }));
@@ -540,7 +565,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (seq !== composeSeq.current) return;
       compositionRef.current = composition;
       const b = composition.spec?.bindings || {};
-      setSelectedTools(usesNativeCodexTools ? [] : (b.tools || []).map((i: any) => i.resourceId));
+      setSelectedTools(supportsKsAdkTools ? (b.tools || []).map((i: any) => i.resourceId) : []);
       setSelectedSkills((b.skills || []).map((i: any) => i.resourceId));
       setSelectedMcp((b.mcpServers || []).map((i: any) => i.resourceId));
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
@@ -558,7 +583,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         setCreateError(error.message || "生成 Agent 配置失败");
       }
     }
-  }, [template, wizardPayload, usesNativeCodexTools, systemPrompt, taskPrompt, quickForm]);
+  }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm]);
 
   const optimizePromptWithModel = useCallback(async () => {
     const authoringModel = selectedModels[0];
@@ -654,6 +679,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (step === 1) {
         const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
+        if (runtime === "codex" && codexProvider?.permissions.length && !codexPermissionsApproved) {
+          setCreateError("请先确认 Codex Provider 请求的 Agent 权限。");
+          return;
+        }
         if (runtime === "plugin") {
           if (!selectedProvider?.selectable) {
             setCreateError(selectedProvider?.reason?.message || "请先在插件中心安装并启用一个兼容的 AgentProvider。");
@@ -713,6 +742,37 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         enabled: memoryEnabled,
         recall: { ...(spec.memory?.recall || {}), enabled: memoryEnabled },
       };
+      const platformMemory = selectedPlatformResources.find(binding =>
+        (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+      );
+      const platformMemoryBindingId = String(
+        (platformMemory?.config as any)?.binding?.id || "",
+      );
+      if (platformMemoryBindingId) {
+        spec.memory = {
+          ...(spec.memory || {}),
+          enabled: true,
+          providerRef: `binding://${platformMemoryBindingId}`,
+          scopes: ["user"],
+          recall: {
+            ...(spec.memory?.recall || {}),
+            enabled: true,
+            // The current AICP query contract does not expose a portable score
+            // threshold. Zero keeps filtering at the provider boundary.
+            minScore: 0,
+          },
+          write: { ...(spec.memory?.write || {}) },
+        };
+      }
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
+        if (!codexPermissionsApproved) throw new Error("请先确认 Codex Provider 请求的 Agent 权限");
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []), ...codexProvider.permissions,
+          ])].sort(),
+        };
+      }
       if (values.runtimeType === "plugin") {
         if (!selectedProvider?.selectable) {
           throw new Error(selectedProvider?.reason?.message || "所选 AgentProvider 当前不可用");
@@ -733,10 +793,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           ])].sort(),
         };
       }
-      if (usesNativeCodexTools) {
+      if (!supportsKsAdkTools) {
         spec.bindings = { ...(spec.bindings || {}), tools: [] };
         spec.capabilities = { ...(spec.capabilities || {}), tools: [] };
       }
+      spec.bindings = {
+        ...(spec.bindings || {}),
+        plugins: selectedPlatformResources,
+      };
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -900,6 +964,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     setConvBusy(true);
     setConvError("");
     try {
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length && !convCodexPermissionsApproved) {
+        throw new Error("请在部署配置中确认 Codex Provider 请求的 Agent 权限");
+      }
       const proposalSpec = proposal.spec || {
         description: proposal.description || "",
         instructions: proposal.instructions || {},
@@ -930,6 +997,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           skills: convSkills.map(resourceId => ({ resourceId })),
         },
       });
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []), ...codexProvider.permissions,
+          ])].sort(),
+        };
+      }
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1282,6 +1357,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                           onValueChange={value => conversationForm.setValue("runtimeType", value as ConversationCommitFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true })}
                         />
                       </FormField>
+                      {conversationRuntime === "codex" && (
+                        <CodexProviderPermissions provider={codexProvider} approved={convCodexPermissionsApproved}
+                          onChange={setConvCodexPermissionsApproved} />
+                      )}
                       <FormField
                         label="Agent 可用模型"
                         className="authoring-model-field"
@@ -1594,6 +1673,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       }}
                     />
                   </FormField>
+                  {runtime === "codex" && (
+                    <CodexProviderPermissions provider={codexProvider} approved={codexPermissionsApproved}
+                      onChange={approved => { setCodexPermissionsApproved(approved); markDirty(); }} />
+                  )}
                   {runtime === "plugin" && (
                     <div className="template-specific" data-testid="external-provider-config">
                       <FormField
@@ -1762,7 +1845,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     />
                     <span className="helper">{selectedModelStatus}</span>
                   </div>
-                  {!usesNativeCodexTools && (
+                  {supportsKsAdkTools && (
                     <div className="capability-section">
                       <div className="capability-heading">
                         <span className="capability-icon"><Wrench size={15} /></span>
@@ -1825,6 +1908,22 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       onChange={ids => { setSelectedSkills(ids); markDirty(); }}
                       searchPlaceholder="搜索 Skill"
                       emptyMessage="没有已安装的 Skill"
+                    />
+                  </div>
+                  <div className="capability-section platform-capability-section">
+                    <PlatformResourceBindings
+                      value={selectedPlatformResources}
+                      onChange={bindings => {
+                        setSelectedPlatformResources(bindings);
+                        if (bindings.some(binding =>
+                          (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+                        )) {
+                          setMemoryEnabled(true);
+                          setMemoryWriteRollout("off");
+                        }
+                        markDirty();
+                      }}
+                      onPendingChange={setPlatformResourcesPending}
                     />
                   </div>
                 </section>
@@ -1921,7 +2020,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <div className="review-title"><span>能力绑定</span><button className="text-button" type="button" onClick={() => gotoStep(2)}>编辑</button></div>
                     <div className="review-capabilities">
                       <div className="review-capability"><Cpu size={16} /><div><strong>{selectedModelItems[0]?.displayName || "模型"}</strong></div></div>
-                      <div className="review-capability"><Wrench size={16} /><div><strong>{effectiveSelectedTools.length} 个 Tool</strong><span>{usesNativeCodexTools ? "由 Codex Runtime 提供原生工具" : policyMeta.title}</span></div></div>
+                      {supportsKsAdkTools && <div className="review-capability"><Wrench size={16} /><div><strong>{effectiveSelectedTools.length} 个 Tool</strong><span>{policyMeta.title}</span></div></div>}
                       <div className="review-capability"><Network size={16} /><div><strong>{selectedMcp.length} 个 MCP</strong><span>{selectedMcp.length ? "已连接外部服务" : "未绑定"}</span></div></div>
                       <div className="review-capability"><Sparkles size={16} /><div><strong>{selectedSkills.length} 个 Skill</strong><span>{selectedSkills.length ? "已注入版本化能力" : "未绑定"}</span></div></div>
                     </div>
@@ -1952,7 +2051,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <div><dt>模板</dt><dd>{templateLabel}</dd></div>
                     <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
                     <div><dt>模型</dt><dd>{reviewModel}</dd></div>
-                    <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>
+                    {supportsKsAdkTools && <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>}
                     <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
                     <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
                   </dl>
@@ -1962,11 +2061,11 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div className="wizard-flow-actions">
                     <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
                     {step < 4 ? (
-                      <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
+                      <button className="button accent" type="button" disabled={platformResourcesPending} onClick={() => gotoStep(step + 1)}>
                         <span>继续</span><ArrowRight size={16} />
                       </button>
                     ) : (
-                      <button className="button accent" type="submit" disabled={submitting}>
+                      <button className="button accent" type="submit" disabled={submitting || platformResourcesPending}>
                         <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
                       </button>
                     )}

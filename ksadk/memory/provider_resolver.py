@@ -32,6 +32,9 @@ def resolve_memory_provider(provider_ref: str) -> MemoryProviderLike:
     """
     ref = str(provider_ref or "").strip().lower()
 
+    if ref.startswith("binding://"):
+        raise ValueError("RESOURCE_MEMORY_BINDING_REQUIRES_ACTIVATION")
+
     if ref in ("local-inmemory", "inmemory"):
         from ksadk.memory.adk.backends.inmemory_ltm_backend import (
             InMemoryLTMBackend,

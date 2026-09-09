@@ -95,8 +95,10 @@ test("keeps Lucide geometry square instead of overriding component dimensions gl
 
 test("keeps cloud versions in a bounded compact grid instead of native radio geometry", () => {
   assert.match(foundation, /\.deployment-version-list\s*\{[\s\S]*?max-height:\s*430px;[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;/);
-  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:/);
+  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:\s*minmax\(160px, 1fr\) minmax\(112px, max-content\) minmax\(180px, 216px\) minmax\(136px, max-content\);/);
   assert.match(foundation, /\.deployment-version-name\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(foundation, /\.deployment-version-state,[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(foundation, /\.deployment-version-option\s*>\s*code\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
   assert.doesNotMatch(foundation, /\.deployment-version-option\s*>\s*input/);
 });
 

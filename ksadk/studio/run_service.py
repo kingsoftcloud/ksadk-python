@@ -62,6 +62,7 @@ from ksadk.runtime import (
     RuntimeLaunchContext,
     StartRequest,
 )
+from ksadk.runtime.executor import RuntimeStartPreparation
 from ksadk.sessions.base import BaseSessionService
 from ksadk.sessions.local_service import LocalSessionService
 from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, Usage
@@ -110,6 +111,7 @@ class StudioRunService:
         )
         self.runtime_events = runtime_events or RuntimeEventStore(self.session_service)
         self.plugin_runtime = plugin_runtime
+        self.schedule_assistant: Any | None = None
         self._active_handles: dict[str, Any] = {}
         self._active_sessions: set[tuple[str, str]] = set()
         self._cancel_flags: dict[str, bool] = {}
@@ -231,7 +233,27 @@ class StudioRunService:
         if on_event is not None:
             on_event(created)
 
-        kernel_runtime = self._kernel_runtime_for_spec(spec)
+        if self.schedule_assistant is not None and (
+            self.schedule_assistant.matches(user_input)
+            or self.schedule_assistant.matches_followup(spec.agent_id, session, user_input)
+        ):
+            handled = await self._schedule_run(record, user_input, on_event=on_event)
+            if handled is not None:
+                return handled
+
+        provider_runtime_adapter = (
+            spec.plugin_bundle_root is not None
+            and (
+                runtime_type == "codex"
+                or bool(spec.request_config.get("provider_runtime_adapter"))
+            )
+        )
+        # A process-global Codex Kernel can share Agent/cwd with this Build
+        # while owning a legacy direct factory. New Builds must retain their
+        # exact Provider activation, including when that global Kernel exists.
+        kernel_runtime = (
+            None if provider_runtime_adapter else self._kernel_runtime_for_spec(spec)
+        )
         if kernel_runtime is not None:
             return await self._kernel_run(
                 spec,
@@ -240,7 +262,7 @@ class StudioRunService:
                 on_event=on_event,
                 kernel_runtime=kernel_runtime,
             )
-        if spec.plugin_bundle_root is not None:
+        if spec.plugin_bundle_root is not None and not provider_runtime_adapter:
             return await self._plugin_run(
                 spec,
                 user_input,
@@ -310,12 +332,26 @@ class StudioRunService:
                     **self._native_session_metadata(
                         spec.agent_id,
                         session,
-                        runtime_type,
+                        str(
+                            spec.request_config.get("provider_runtime_type")
+                            or runtime_type
+                        ),
                         spec.build_id,
                     ),
                 },
             )
-            handle = await self.executor.start(spec.launch_context, request)
+            preparation = None
+            if provider_runtime_adapter:
+                if self.plugin_runtime is None:
+                    raise StudioError(
+                        "PLUGIN_RUNTIME_UNAVAILABLE", "Codex Provider Runtime 不可用",
+                        status_code=503,
+                    )
+                adapter = self.plugin_runtime.kernel_adapter_provider(spec)()
+                preparation = RuntimeStartPreparation(context=spec.launch_context, adapter=adapter)
+            handle = await self.executor.start(
+                spec.launch_context, request, preparation=preparation,
+            )
             record.runtime_handle = handle.model_dump(mode="json")
             self.event_store.save(record)
             self._active_handles[run_id] = handle
@@ -563,6 +599,179 @@ class StudioRunService:
                 record.duration_source = "studio"
             self.event_store.save(record)
             await self._sync_trace(record)
+        return record
+
+    async def _schedule_run(
+        self,
+        record: RunRecord,
+        user_input: str,
+        *,
+        on_event: Callable[[RunEvent], None] | None,
+    ) -> RunRecord | None:
+        """Persist real host tool receipts on the canonical conversation stream."""
+        started = time.monotonic()
+
+        def envelope(kind: str) -> dict[str, Any]:
+            result = _plugin_event_envelope(record, kind)
+            result["source"] = SourceRef(
+                framework="ksadk",
+                metadata={"runtime": "studio-scheduler", "agent_id": record.agent_id},
+            )
+            return result
+
+        async def publish(event: RuntimeEvent) -> None:
+            persisted = await self.runtime_events.append_one(record.session_id, event)
+            kind, data = project_runtime_event(
+                persisted, session_id=record.session_id, public_run_id=record.id
+            )
+            stored = self.event_store.append(record.id, kind, data)
+            if on_event is not None:
+                on_event(stored)
+
+        call_id = None
+        try:
+            intent = await self.schedule_assistant.plan(
+                record.agent_id,
+                user_input,
+                record.session_id,
+                build_id=record.build_id,
+                model_name=record.model,
+            )
+            if self._cancel_flags.get(record.id):
+                raise asyncio.CancelledError()
+            if intent.action == "ignore":
+                return None
+            record.status = RunStatus.RUNNING
+            record.started_at = datetime.now(timezone.utc)
+            record.runtime_handle = {"provider": "studio-scheduler"}
+            self.event_store.save(record)
+            await publish(RunStarted(**envelope("run.started"), status="running"))
+            call_id = f"{record.id}:schedule"
+            arguments = intent.model_dump(mode="json", exclude_none=True)
+            await publish(
+                ItemStarted(
+                    **envelope("tool.started"),
+                    item_id=call_id,
+                    item_kind="tool_call",
+                    initial=ContentSnapshot(
+                        parts=(
+                            ToolCallContent(
+                                part_id=f"{call_id}:call",
+                                call_id=call_id,
+                                name="studio_schedule",
+                                arguments=arguments,
+                            ),
+                        )
+                    ),
+                )
+            )
+            result = await self.schedule_assistant.execute(
+                record.agent_id, record.session_id, intent
+            )
+            await publish(
+                ItemCompleted(
+                    **envelope("tool.completed"),
+                    item_id=call_id,
+                    item_kind="tool_call",
+                    snapshot=ContentSnapshot(
+                        parts=(
+                            ToolResultContent(
+                                part_id=f"{call_id}:result", call_id=call_id, result=result
+                            ),
+                        )
+                    ),
+                )
+            )
+            output = result["message"]
+            item_id, part_id = f"{record.id}:assistant", f"{record.id}:text"
+            await publish(
+                ItemStarted(
+                    **envelope("item.started"),
+                    item_id=item_id,
+                    item_kind="message",
+                    phase="final_answer",
+                )
+            )
+            await publish(
+                ItemUpdated(
+                    **envelope("item.updated"),
+                    item_id=item_id,
+                    item_kind="message",
+                    op="append",
+                    update=TextContent(part_id=part_id, text=output),
+                )
+            )
+            await publish(
+                ItemCompleted(
+                    **envelope("item.completed"),
+                    item_id=item_id,
+                    item_kind="message",
+                    snapshot=ContentSnapshot(parts=(TextContent(part_id=part_id, text=output),)),
+                )
+            )
+            if intent._usage is not None and intent._usage.reported:
+                record.usage = intent._usage.model_copy(update={"source": "studio-scheduler"})
+                await publish(
+                    UsageReported(
+                        **envelope("usage.reported"),
+                        input_tokens=record.usage.input_tokens,
+                        output_tokens=record.usage.output_tokens,
+                        total_tokens=record.usage.total_tokens,
+                        cached_tokens=record.usage.cached_input_tokens,
+                        reasoning_tokens=record.usage.reasoning_output_tokens,
+                    )
+                )
+            await publish(
+                RunCompleted(
+                    **envelope("run.completed"),
+                    status="completed",
+                    output_refs=(OutputRef(scope_id=record.id, item_id=item_id, part_id=part_id),),
+                )
+            )
+            record.output = output
+            record.status = RunStatus.COMPLETED
+        except asyncio.CancelledError:
+            record.status = RunStatus.CANCELLED
+            record.completed_at = datetime.now(timezone.utc)
+            self._cancel_flags.pop(record.id, None)
+            await publish(
+                RunCanceled(**envelope("run.canceled"), status="canceled", reason="cancelled")
+            )
+            self.event_store.save(record)
+            raise
+        except Exception as error:
+            code = str(getattr(error, "code", "SCHEDULE_REQUEST_FAILED"))
+            record.status = RunStatus.FAILED
+            record.error = {"code": code, "message": str(error)}
+            if call_id is not None:
+                await publish(
+                    ItemFailed(
+                        **envelope("tool.failed"),
+                        item_id=call_id,
+                        item_kind="tool_call",
+                        error=ErrorInfo(
+                            code=code,
+                            message=str(error),
+                            source="studio-scheduler",
+                            scope_id=record.id,
+                        ),
+                    )
+                )
+            await publish(
+                RunFailed(
+                    **envelope("run.failed"),
+                    status="failed",
+                    error=ErrorInfo(
+                        code=code, message=str(error), source="studio-scheduler", scope_id=record.id
+                    ),
+                )
+            )
+        record.completed_at = datetime.now(timezone.utc)
+        record.duration_ms = int((time.monotonic() - started) * 1000)
+        record.duration_source = "studio"
+        self._cancel_flags.pop(record.id, None)
+        self.event_store.save(record)
+        await self._sync_trace(record)
         return record
 
     async def _sync_trace(self, record: RunRecord) -> None:

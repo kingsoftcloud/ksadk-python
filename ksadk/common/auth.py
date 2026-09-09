@@ -49,6 +49,8 @@ class AWSV4Auth:
         secret_access_key: str = "",
         region: str = "cn-beijing-6",
         service: str = "aicp",
+        *,
+        allow_env_fallback: bool = True,
     ):
         """初始化签名器
 
@@ -57,17 +59,21 @@ class AWSV4Auth:
             secret_access_key: 访问密钥 (SK)，默认从环境变量读取
             region: 区域 ID (如 cn-beijing-6)
             service: 服务名称 (如 kmr, aicp, iam 等)
+            allow_env_fallback: 显式运行时连接设为 False，禁止继承宿主凭证
         """
-        self.access_key_id = (
-            access_key_id
-            or os.environ.get("KSYUN_ACCESS_KEY")
-            or os.environ.get("KS3_ACCESS_KEY", "")
-        )
-        self.secret_access_key = (
-            secret_access_key
-            or os.environ.get("KSYUN_SECRET_KEY")
-            or os.environ.get("KS3_SECRET_KEY", "")
-        )
+        self.access_key_id = access_key_id
+        self.secret_access_key = secret_access_key
+        if allow_env_fallback:
+            self.access_key_id = (
+                self.access_key_id
+                or os.environ.get("KSYUN_ACCESS_KEY")
+                or os.environ.get("KS3_ACCESS_KEY", "")
+            )
+            self.secret_access_key = (
+                self.secret_access_key
+                or os.environ.get("KSYUN_SECRET_KEY")
+                or os.environ.get("KS3_SECRET_KEY", "")
+            )
         self.region = region
         self.service = service
 

@@ -72,6 +72,8 @@ class SandboxSession(Protocol):
 
     def read_file(self, path: str) -> str: ...
 
+    def read_file_bytes(self, path: str, *, max_bytes: int) -> bytes: ...
+
     def run_command(
         self,
         command: str,

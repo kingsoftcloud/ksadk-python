@@ -38,6 +38,15 @@ class LocalProcessSandboxSession:
     def read_file(self, path: str) -> str:
         return self._resolve_workspace_path(path).read_text(encoding="utf-8")
 
+    def read_file_bytes(self, path: str, *, max_bytes: int) -> bytes:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise ValueError("File download limit must be positive")
+        with self._resolve_workspace_path(path).open("rb") as source:
+            content = source.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise ValueError("Sandbox file exceeds download limit")
+        return content
+
     def run_command(
         self,
         command: str,

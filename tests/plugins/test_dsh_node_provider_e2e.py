@@ -157,7 +157,9 @@ def test_normal_studio_discovers_runs_and_releases_external_node_provider(
         assert manager is not None
         assert manager.inventory.state == "bound"
         assert manager.inventory.packages[0].state == "bound"
-        assert manager.host_pids
+        # Discovery is bounded: the registration process must be released
+        # before Studio begins any provider execution in its own event loop.
+        assert manager.host_pids == ()
         plugin_inventory = client.get("/api/v1/plugin-ecosystems/dsh/plugins").json()
         assert plugin_inventory["items"][0]["runtimeState"] == {
             "state": "bound",

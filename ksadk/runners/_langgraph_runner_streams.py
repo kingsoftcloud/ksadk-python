@@ -42,7 +42,10 @@ class _LangGraphStreamMixin:
             payload["input"] = self._gateway_approval_follow_up_input()
             resume_value = payload["input"]
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
         if history:
@@ -573,7 +576,10 @@ class _LangGraphStreamMixin:
         resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
         resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
 
         config = self._get_config(session_id)
         if is_checkpoint_resume:

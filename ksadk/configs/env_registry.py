@@ -522,6 +522,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Comma-separated public Skill Space ids appended after user spaces.",
     ),
     EnvVarSpec(
+        "KSADK_RESOURCE_IAM_ENDPOINT",
+        "platform_resources",
+        "Operator-owned IAM endpoint used to authorize Studio platform-resource bindings.",
+    ),
+    EnvVarSpec(
         "KSADK_RESPONSES_SESSION_HEADER",
         "runners",
         "Header name for remote Responses session propagation.",
@@ -861,7 +866,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.5",
+        "0.3.7",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

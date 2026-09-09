@@ -335,6 +335,83 @@ class DshMcpConnectorLease:
 
         return {"Authorization": f"Bearer {self._bearer_token}"}
 
+    def resource_bearer_token(self, tool_aliases: Mapping[str, str], resource_leases) -> str:
+        """Mint scope v2 from host-issued, activation-bound resource leases."""
+        from ksadk.resource_runtime.leases import ResourceLease
+
+        leases = tuple(resource_leases)
+        if not leases or any(not isinstance(lease, ResourceLease) for lease in leases):
+            raise ValueError("Resource scope requires host-issued leases")
+        first = leases[0].scope
+        if first.profile_digest != self.profile_digest:
+            raise ValueError("Resource scope belongs to another profile")
+        aliases = dict(tool_aliases)
+        if not 1 <= len(aliases) <= 32 or any(
+            not isinstance(alias, str)
+            or not isinstance(source, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", alias)
+            or not _TOOL_NAME.fullmatch(source)
+            for alias, source in aliases.items()
+        ):
+            raise ValueError("Resource scope requires explicit valid tool aliases")
+        resources = {}
+        lifetime = 600
+        for lease in leases:
+            scope = lease.scope
+            if (
+                scope.generation_id != first.generation_id
+                or scope.activation_id != first.activation_id
+                or scope.build_digest != first.build_digest
+                or scope.binding_snapshot_digest != first.binding_snapshot_digest
+                or scope.identity != first.identity
+                or scope.profile_digest != first.profile_digest
+            ):
+                raise ValueError("Resource scope cannot mix activations")
+            lifetime = min(lifetime, math.floor(lease.expires_at - time.monotonic()))
+            for operation in scope.allowed_operations:
+                if operation not in aliases.values():
+                    continue
+                if operation in resources:
+                    raise ValueError("Resource operation has ambiguous bindings")
+                resources[operation] = {
+                    "handle": lease.handle,
+                    "bindingId": scope.binding_id,
+                    "operation": operation,
+                }
+        if lifetime < 1 or not resources:
+            raise ValueError("Resource scope has no live operations")
+        issued = int(time.time())
+        payload = {
+            "v": 2,
+            "profileDigest": self.profile_digest,
+            "generationId": first.generation_id,
+            "activationId": first.activation_id,
+            "buildDigest": first.build_digest,
+            "bindingSnapshotDigest": first.binding_snapshot_digest,
+            "identity": first.identity.model_dump(by_alias=True, mode="json"),
+            "aliases": aliases,
+            "resources": resources,
+            "issuedAt": issued,
+            "expiresAt": issued + lifetime,
+            "jti": secrets.token_urlsafe(24),
+        }
+        raw = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+        encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+        message = f"ks2.{encoded}"
+        signature = (
+            base64.urlsafe_b64encode(
+                hmac.new(self._bearer_token.encode(), message.encode(), hashlib.sha256).digest()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
+        token = f"{message}.{signature}"
+        if len(token) > 12 * 1024:
+            raise ValueError("Resource scope exceeds header size limit")
+        return token
+
     def browser_url(self) -> str:
         """Return the one-time full Core DSH browser handoff URL."""
 
@@ -554,6 +631,7 @@ class DshProfileCapabilityHost:
         self._token_future: asyncio.Future[str] | None = None
         self._core_token_future: asyncio.Future[str] | None = None
         self._runtime_dir: Path | None = None
+        self._resource_socket_path: Path | None = None
         self._lease: DshMcpConnectorLease | None = None
         self._descriptor: DshProfileCapabilityDescriptor | None = None
         self._stdout_tail: deque[str] = deque(maxlen=64)
@@ -759,6 +837,25 @@ class DshProfileCapabilityHost:
             await self._terminate()
             self._state = "disposed"
 
+    async def configure_resource_socket(self, path: Path) -> None:
+        """Stop any old Core and bind next-start IPC after owner revokes old resources."""
+        import stat
+
+        path = Path(path)
+        if (
+            not path.is_absolute() or path.is_symlink()
+            or not stat.S_ISSOCK(path.stat().st_mode)
+            or path.stat().st_mode & 0o077 or path.parent.stat().st_mode & 0o077
+        ):
+            raise PluginHostError("dsh_resource_socket_invalid", "Resource IPC must be private")
+        async with self._lifecycle_lock:
+            if self._disposed:
+                raise PluginHostError("dsh_resource_socket_busy", "Resource host is disposed")
+            if self._process is not None:
+                await self._terminate()
+            self._state = "stopped"
+            self._resource_socket_path = path
+
     def _overlay_text(self) -> str:
         entrypoint = json.dumps(self._bundle.entrypoint.as_uri())
         overlay = (
@@ -773,6 +870,12 @@ class DshProfileCapabilityHost:
             f"        maxInFlight: {self._max_in_flight}\n"
             f"        inventoryQuietMs: {self._inventory_quiet_ms}\n"
         )
+        if self._resource_socket_path is not None:
+            overlay += (
+                "- id: dsh-platform-resources\n"
+                "  config:\n"
+                f"    socketPath: {json.dumps(str(self._resource_socket_path))}\n"
+            )
         if self._studio_index is not None:
             app = self._bundle.root.parent / "ksadk-dsh-studio" / "index.mjs"
             overlay += (

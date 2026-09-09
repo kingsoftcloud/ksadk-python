@@ -247,7 +247,7 @@ async function loadEvents(runId: string): Promise<RunEvent[]> {
 }
 
 /** 会话页右侧运行检查器：状态、用量、Trace 瀑布与压缩事件时间线。 */
-export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: string; onOpenTrace: () => void; onClose: () => void }) {
+export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { agentId: string; sessionId: string; onOpenTrace: () => void; onClose: () => void }) {
   const [latest, setLatest] = useState<RunRecord | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [spans, setSpans] = useState<Span[]>([]);
@@ -262,11 +262,22 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
     let cancelled = false;
     let timer: number | null = null;
     let requestId = 0;
+    setLatest(null);
+    setEvents([]);
+    setSpans([]);
+    setContextEvidence(null);
+    setPromptEvidence(null);
+    if (!sessionId) {
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
     async function load() {
       const currentRequest = ++requestId;
       try {
-        const runPayload = await apiFetch("/api/v1/runs").then(response => response.json());
-        const matches: RunRecord[] = (runPayload.items || []).filter((run: RunRecord) => !agentId || run.agentId === agentId);
+        const runPayload = await apiFetch(`/api/v1/runs?sessionId=${encodeURIComponent(sessionId)}`).then(response => response.json());
+        const matches: RunRecord[] = (runPayload.items || []).filter((run: RunRecord) => (
+          (!agentId || run.agentId === agentId) && run.sessionId === sessionId
+        ));
         const current = matches.at(-1) || null;
         if (cancelled || currentRequest !== requestId) return;
         setLatest(current);
@@ -303,7 +314,7 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
       requestId += 1;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [agentId, refreshKey]);
+  }, [agentId, sessionId, refreshKey]);
 
   useEffect(() => {
     setPromptReveal(null);

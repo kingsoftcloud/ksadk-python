@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ksadk.plugins.providers.legacy_catalog import CODEX_AGENT_PROVIDER_PLUGIN_ID
+from ksadk.resource_runtime.plugin_config import resource_plugin_config
 from ksadk.studio.capabilities import (
     CapabilityResolver,
     LocalCapabilityResolver,
@@ -47,12 +48,25 @@ class AgentCompiler:
         self.catalog = catalog or LocalResourceCatalog(workspace)
 
     def compile(self, draft: AgentDraft) -> CompileResult:
-        if draft.spec.bindings.plugins:
+        unsupported_plugins = [
+            binding.plugin_ref
+            for binding in draft.spec.bindings.plugins
+            if binding.enabled
+            and resource_plugin_config(
+                binding.plugin_ref,
+                binding.ecosystem,
+                binding.config,
+                enabled=True,
+            )
+            is None
+        ]
+        if unsupported_plugins:
             raise StudioError(
                 "NATIVE_PLUGIN_RUNTIME_INCOMPATIBLE",
-                "Framework Agent 不直接绑定原生插件快照；DSH 工具请绑定其 provider MCP Resource",
+                "Framework Agent 不能直接绑定未物化的原生插件快照",
                 status_code=422,
                 field="spec.bindings.plugins",
+                details={"pluginRefs": sorted(unsupported_plugins)},
             )
         direct_dynamic = [
             server.name

@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
+
+from ksadk.session_context import SessionContext
 
 
 @dataclass
@@ -30,9 +32,10 @@ class PlatformInvocationContext:
     # Request-scoped runtime control. It is intentionally separate from
     # public caller metadata so built-in tools can enforce it consistently.
     tool_approval_mode: str = ""
+    session: SessionContext = field(default_factory=SessionContext)
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "agent_id": self.agent_id,
             "user_id": self.user_id,
             "account_id": self.account_id,
@@ -51,6 +54,10 @@ class PlatformInvocationContext:
             "model": self.model,
             "model_options": dict(self.model_options or {}),
         }
+
+        if self.session.tags or self.session.revision:
+            payload["session"] = self.session.to_payload()
+        return payload
 
 
 @dataclass
@@ -179,3 +186,34 @@ def tool_execution_scope(
         yield context
     finally:
         reset_current_tool_execution_context(token)
+
+
+def get_current_session_context() -> SessionContext:
+    """Read the current immutable snapshot in LangChain, LangGraph or ADK code."""
+    context = get_current_invocation_context()
+    return context.session if context is not None else SessionContext()
+
+
+def get_current_session_tags() -> Mapping[str, str]:
+    """Return read-only business labels; these are not authorization claims."""
+    return get_current_session_context().tags
+
+
+def session_invocation_context(snapshot, *, agent_id="", user_id="", session_id="", runner_type=""):
+    """Build the narrow context for kernel starts without conversation preprocessing."""
+    return PlatformInvocationContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        runner_type=runner_type,
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        session=SessionContext.from_payload(snapshot),
+    )

@@ -276,6 +276,25 @@ class DshProfileMCPRuntime:
             ),
         )
 
+    async def activation_mcp_specs(
+        self,
+        bundle: ResolvedPluginBundle,
+        *,
+        activation_key: str,
+    ) -> tuple[McpToolSpec, ...]:
+        """Project the same lease through the provider-neutral activation ABI."""
+
+        del activation_key  # compatibility contexts predating PluginHost activation IDs
+        return await self.harness_mcp_specs(bundle)
+
+    async def release_activation_mcp_specs(
+        self,
+        activation_key: str,
+        specs: Sequence[McpToolSpec],
+    ) -> None:
+        del activation_key
+        await self.release_harness_mcp_specs(specs)
+
     async def release_harness_mcp_specs(
         self,
         specs: Sequence[McpToolSpec],

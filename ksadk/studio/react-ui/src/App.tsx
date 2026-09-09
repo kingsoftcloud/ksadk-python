@@ -55,7 +55,9 @@ const VIEW_TITLE: Record<View, string> = {
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
-const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
+const RESOURCE_KINDS: ResourceKind[] = [
+  "model", "tool", "mcp", "skill", "knowledge-base", "memory-instance", "skill-space",
+];
 const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "automations", "orchestration"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
 
@@ -81,8 +83,11 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
+  conversationAgentId?: string;
+  sessionId?: string;
 } {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const [pathname, search = ""] = hash.replace(/^#\/?/, "").split("?");
+  const parts = pathname.split("/").filter(Boolean);
   const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
     ? decodeURIComponent(parts[1])
     : "";
@@ -103,7 +108,8 @@ export function parseStudioLocationHash(hash: string): {
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId };
+  const params = new URLSearchParams(search);
+  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}) };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -136,11 +142,13 @@ export default function App() {
   const [currentAgentId, setCurrentAgentId] = useState(
     initialRoute.detailAgentId
       || initialRoute.editingAgentId
+      || initialRoute.conversationAgentId
       || (initialRoute.view === "conversations" && initialChatTarget.kind === "local"
         ? initialChatTarget.id
         : ""),
   );
   const [automationAgentScopeId, setAutomationAgentScopeId] = useState("");
+  const [requestedSessionId, setRequestedSessionId] = useState(initialRoute.sessionId || "");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
@@ -152,9 +160,10 @@ export default function App() {
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
   const [cloudDeploymentId, setCloudDeploymentId] = useState(
-    initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
+    !initialRoute.conversationAgentId && initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
   );
   const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
   useEffect(() => {
@@ -170,6 +179,11 @@ export default function App() {
       setEditingAgentId(route.editingAgentId);
       setDetailAgentId(route.detailAgentId);
       setEvaluationRunId(route.evaluationRunId);
+      if (route.conversationAgentId) {
+        setCurrentAgentId(route.conversationAgentId);
+        setCloudDeploymentId("");
+      }
+      setRequestedSessionId(route.sessionId || "");
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -581,10 +595,12 @@ export default function App() {
                 <ChatWorkspace
                   key={currentAgentId}
                   agentId={currentAgentId}
+                  requestedSessionId={requestedSessionId}
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
+                  onSessionChanged={setConversationSessionId}
                   onConfigureAgent={() => openEdit(currentAgentId)}
                   onOpenSettings={() => {
                     setSettingsSection("credentials");
@@ -612,7 +628,7 @@ export default function App() {
               )}
             </div>
             {runPanelOpen && chatMounted && currentAgentId && !isCloudChat && (
-              <ChatRunPanel agentId={currentAgentId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
+              <ChatRunPanel agentId={currentAgentId} sessionId={conversationSessionId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
             )}
           </div>
 

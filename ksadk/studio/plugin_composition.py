@@ -45,10 +45,16 @@ from ksadk.plugins.providers.legacy_catalog import (
     KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID,
     builtin_agent_provider_manifests,
 )
+from ksadk.plugins.providers.platform_resources import (
+    PLATFORM_RESOURCE_MCP_REF,
+    platform_resource_mcp_manifest,
+)
 from ksadk.plugins.resolver import PluginRegistry, ResolvedComposition
+from ksadk.resource_runtime.plugin_config import resource_plugin_config
 from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.contracts import AgentDraft, CapabilityBinding
 from ksadk.studio.errors import StudioError
+from ksadk.studio.resource_build_admission import resource_build_required
 from ksadk.studio.resource_catalog import LocalResourceCatalog
 from ksadk.studio.workspace import Workspace
 
@@ -122,6 +128,9 @@ class StudioPluginCompositionCompiler:
             *builtin_capability_manifests(),
             dsh_profile_mcp_manifest(),
         ]
+        requires_platform_resources = resource_build_required(draft)
+        if requires_platform_resources:
+            manifests.append(platform_resource_mcp_manifest())
         harness_ref = _plugin_ref(
             KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID,
             BUILTIN_PROVIDER_VERSION,
@@ -154,6 +163,17 @@ class StudioPluginCompositionCompiler:
                 "session.events",
             ),
             resource_materializations=self._resource_materializations(draft),
+            memory_providers=self._memory_providers(draft),
+            host_capabilities=(
+                PluginCapabilitySelection(
+                    ref=PLATFORM_RESOURCE_MCP_REF,
+                    definition="mcp.connector/v1",
+                    slot="mcp.platform-resources",
+                    config={"artifactPath": "platform-resources"},
+                ),
+            )
+            if requires_platform_resources
+            else (),
             context_contributors={
                 "workspace_rules": _selection(
                     READ_ONLY_CONTEXT_PLUGIN_ID,
@@ -409,6 +429,40 @@ class StudioPluginCompositionCompiler:
                     config=config,
                 )
         return materializations
+
+    @staticmethod
+    def _memory_providers(
+        draft: AgentDraft,
+    ) -> dict[str, PluginCapabilitySelection]:
+        """Materialize a bound platform memory through its official DSH owner."""
+
+        memory = draft.spec.memory
+        if not memory.enabled or not memory.provider_ref.startswith("binding://"):
+            return {}
+        binding_id = memory.provider_ref.removeprefix("binding://")
+        for binding in draft.spec.bindings.plugins:
+            if not binding.enabled:
+                continue
+            config = resource_plugin_config(
+                binding.plugin_ref,
+                binding.ecosystem,
+                binding.config,
+                enabled=True,
+            )
+            if (
+                config is not None
+                and config.binding.id == binding_id
+                and config.binding.resource.kind == "memory-instance"
+            ):
+                return {
+                    memory.provider_ref: PluginCapabilitySelection(
+                        ref=PLATFORM_RESOURCE_MCP_REF,
+                        definition="memory.provider/v1",
+                        slot="memory.primary",
+                        config={"artifactPath": "platform-resources"},
+                    )
+                }
+        return {}
 
 
 __all__ = ["StudioPluginCompositionCompiler"]

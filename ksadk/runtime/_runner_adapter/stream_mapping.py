@@ -15,6 +15,7 @@ import logging
 import time
 from collections.abc import Mapping
 from contextlib import nullcontext
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional, cast
 
 from pydantic import JsonValue
@@ -238,6 +239,13 @@ class _RunnerStreamMappingMixin:
         invocation_context = (
             prepared_start.context if isinstance(prepared_start, PreparedRuntimeStart) else None
         )
+        if run is not None and run.__dict__.get("_tag_context") is not None:
+            tag_context = run.__dict__["_tag_context"]
+            invocation_context = (
+                replace(invocation_context, session=tag_context.session)
+                if invocation_context is not None
+                else tag_context
+            )
         scope = (
             platform_invocation_scope(invocation_context)
             if invocation_context is not None

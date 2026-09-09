@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from ksadk.skills.package_store import SkillPackage
+
 
 class SkillRuntimeError(RuntimeError):
     pass
@@ -56,6 +58,7 @@ class SkillRuntimeBackend(Protocol):
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        pinned_packages: list[SkillPackage] | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult: ...
 

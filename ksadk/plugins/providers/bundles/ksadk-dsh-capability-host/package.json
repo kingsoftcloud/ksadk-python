@@ -21,7 +21,7 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml",
-      "integrity": "sha256:f86cf2b66269b7b0a61e432f6a5896fb2d148def4287ff5202038bd36e12235e"
+      "integrity": "sha256:70cf891711d9b6614a38a828d1196415ee9cc45ff43e933aa2105ddb3fa0e813"
     }
   }
 }

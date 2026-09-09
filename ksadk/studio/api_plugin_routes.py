@@ -30,6 +30,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginMutationError,
     DshPluginNotFoundError,
     DshProfilePluginBridge,
+    DshProfileRecoveryError,
     validate_dsh_registry_request,
 )
 from ksadk.plugins.codex_manifest import (
@@ -479,6 +480,8 @@ def _public_dsh_inventory(
         "distributionName": inventory.name,
         "displayName": inventory.display_name,
         "description": inventory.description,
+        "clientExtension": inventory.client_extension,
+        "settingsIntegration": inventory.settings_integration,
         "profile": inventory.profile,
         "source": source,
         "installed": True,
@@ -517,6 +520,12 @@ def _dsh_error(error: Exception) -> StudioError:
             "DSH_PLUGIN_RISK_CONFIRMATION_REQUIRED",
             "安装或升级 DSH 插件前必须确认宿主权限风险",
             status_code=422,
+        )
+    if isinstance(error, DshProfileRecoveryError):
+        return StudioError(
+            "DSH_PROFILE_RECOVERY_REQUIRED",
+            "Profile 迁移恢复失败，已保留恢复备份并暂停运行准入",
+            status_code=503,
         )
     if isinstance(error, DshPluginMutationError):
         return StudioError(
@@ -789,6 +798,41 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             "state": inventory.model_dump(by_alias=True, mode="json"),
             "tools": [tool.model_dump(by_alias=True, mode="json") for tool in tools],
             "bindableResource": resource.model_dump(by_alias=True, exclude_none=True, mode="json"),
+        }
+
+    @app.post("/api/v1/plugin-ecosystems/dsh/profile:migrate-layout")
+    async def migrate_dsh_profile_layout(payload: DshPluginUpdateRequest):
+        if not payload.accept_host_permissions:
+            raise _dsh_error(DshPluginApprovalRequired("approval required"))
+
+        def migrate(bridge: DshProfilePluginBridge):
+            bridge.migrate_to_isolated_layout(accept_host_permissions=True)
+            return bridge.project_profile()
+
+        async def operation():
+            # Do not release Studio's admission fence while a cancelled HTTP
+            # request still has a filesystem migration running in its thread.
+            task = asyncio.create_task(asyncio.to_thread(call_dsh, migrate))
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                # Retrieve any exception; the reconfiguration owner will recover
+                # before allowing another run even when the requester has gone.
+                error = task.exception()
+                if error is not None:
+                    raise error
+                raise asyncio.CancelledError
+            return task.result()
+
+        host, projection = await studio.reconfigure_dsh_profile(operation)
+        return {
+            "profile": projection.model_dump(mode="json", by_alias=True),
+            "nodeLinker": "isolated",
+            "host": {"id": host.host_id, "version": host.version, "available": True},
         }
 
     @app.post("/api/v1/plugin-ecosystems/dsh/plugins:install", status_code=201)

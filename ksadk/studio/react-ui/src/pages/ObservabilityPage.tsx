@@ -374,7 +374,7 @@ const DETAIL_TABS: Array<{ id: DetailTab; label: string }> = [
   { id: "raw", label: "Raw OTLP" },
 ];
 
-const TRACE_PAGE_SIZE = 50;
+const TRACE_PAGE_SIZE = 10;
 
 export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const [traces, setTraces] = useState<TraceSummary[]>([]);
@@ -663,6 +663,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       className="page-container observability-page"
       id="traceExplorer"
       data-layout="workbench"
+      data-scroll-mode="workbench"
     >
       <PageHeaderTools>
         <div className="search-field header-search-field">

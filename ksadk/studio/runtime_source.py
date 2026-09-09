@@ -330,7 +330,7 @@ _tools = (
 ) + _load_python_tools()
 
 
-def _call_model(state: AgentState):
+def _call_model(state: AgentState, tools):
     selected = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME") or {json.dumps(model)}
     client = ChatOpenAI(
         model=selected,
@@ -338,7 +338,7 @@ def _call_model(state: AgentState):
         base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE"),
         stream_usage=True,
     )
-    runnable = client.bind_tools(_tools) if _tools else client
+    runnable = client.bind_tools(tools) if tools else client
     messages = list(state["messages"])
     # KsADK Runtime 已投影 CompiledPrompt/ContextPlan 时，state 中存在 SystemMessage，
     # 不再重复注入模板 Prompt；直接调用 graph 时仍保留独立运行能力。
@@ -347,18 +347,26 @@ def _call_model(state: AgentState):
     return {{"messages": [runnable.invoke(messages)]}}
 
 
-def ksadk_graph_factory(*, checkpointer):
-    """Compile the graph with a caller-owned checkpoint backend.
+def ksadk_graph_factory(*, checkpointer, resource_tools=()):
+    """Compile with caller-owned checkpoint backend and admitted resource tools.
 
     Studio uses ``MemorySaver`` for local authoring.  The hosted KsADK runner
     rebuilds this graph through the same factory with its admitted PostgreSQL
     saver before the first turn, so an interrupt can resume after a Pod move.
+    The resource session owner must remain open while invoking this graph.
+    Tools stay in this graph's closure, never in checkpoint state or globals.
     """
+    from functools import partial
+
+    tools = tuple(_tools) + tuple(resource_tools)
+    names = [tool.name for tool in tools]
+    if len(names) != len(set(names)):
+        raise ValueError("RESOURCE_TOOL_NAME_CONFLICT")
     builder = StateGraph(AgentState)
-    builder.add_node("model", _call_model)
+    builder.add_node("model", partial(_call_model, tools=tools))
     builder.add_edge(START, "model")
-    if _tools:
-        builder.add_node("tools", ToolNode(_tools))
+    if tools:
+        builder.add_node("tools", ToolNode(tools))
         builder.add_conditional_edges("model", tools_condition)
         builder.add_edge("tools", "model")
     else:
