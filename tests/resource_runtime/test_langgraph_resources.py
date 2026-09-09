@@ -44,6 +44,8 @@ async def test_graph_consumes_real_scoped_core_and_closes_tools(upstream, monkey
         }) + "\n").encode())
         await node.stdin.drain()
         token_line = await asyncio.wait_for(node.stdout.readline(), 10)
+        browser_line = await asyncio.wait_for(node.stdout.readline(), 10)
+        assert browser_line.startswith(b"@@KSADK_DSH_CORE_TOKEN@@")
         ready_line = await asyncio.wait_for(node.stdout.readline(), 10)
         token_prefix = b"@@KSADK_DSH_CAPABILITY_TOKEN@@"
         ready_prefix = b"@@KSADK_DSH_CAPABILITY_READY@@"
