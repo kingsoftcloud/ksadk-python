@@ -92,6 +92,7 @@ class _EngineRun:
     pause_requested: bool = False
     done: bool = False
     started_emitted: bool = False
+    pending_approval_call_id: str | None = None
     #: 最近一次 ContextManifest（Actual Token 由 usage 回填，长任务方案 §6.2）。
     context_manifest: Any | None = None
     #: 本 Run 的 CompactionRecord 列表（长任务方案 §6.4）。
@@ -354,6 +355,12 @@ class ManagedLangGraphEngine:
         if isinstance(tasks, dict):
             tasks = tuple(tasks.values())
         has_interrupt = any(getattr(task, "interrupts", None) for task in tasks)
+        for task in tasks:
+            for pending in getattr(task, "interrupts", ()):
+                value = getattr(pending, "value", {})
+                if isinstance(value, dict) and value.get("call_id"):
+                    run.pending_approval_call_id = str(value["call_id"])
+                    break
         if run.controller is not None:
             values = getattr(snapshot, "values", None) or {}
             control_snapshot = values.get("run_control") if isinstance(values, dict) else None
@@ -494,6 +501,7 @@ class ManagedLangGraphEngine:
                 run.state.status = RunStatus.AWAITING_APPROVAL
                 run.done = False
                 info = getattr(interrupts[0], "value", {}) or {}
+                run.pending_approval_call_id = str(info.get("call_id") or "")
                 approval_id = f"ap-{run.handle.run_id}-{info.get('call_id', '')}"
                 run.events.append(
                     self._event(
@@ -824,7 +832,16 @@ class ManagedLangGraphEngine:
             raise ExecutionEngineError(
                 "resume 需要 Checkpointer：interrupt 状态由 Checkpoint 持久化"
             )
-        decision = "approved"
+        if (
+            payload is None or payload.kind != "approval_decision"
+            or not run.pending_approval_call_id
+            or payload.call_id != run.pending_approval_call_id
+            or payload.data not in ("approved", "denied", "rejected")
+        ):
+            raise ExecutionEngineError(
+                "approval resume requires an explicit decision for the pending call_id"
+            )
+        decision = "denied"
         if payload is not None:
             decision = str(payload.data) if payload.data is not None else "approved"
             run.events.append(

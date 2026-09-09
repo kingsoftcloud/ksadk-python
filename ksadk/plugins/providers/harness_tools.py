@@ -66,6 +66,27 @@ print(json.dumps(value, ensure_ascii=False))
 """
 
 
+def _supervised_script(script: str) -> str:
+    """Stop the owned process group if its supervisor dies, including SIGKILL.
+
+    Cooperative cleanup in the parent cannot run after a hard kill. This is
+    lifecycle cleanup for trusted host tools, not a sandbox or an undo promise.
+    """
+    return f"""
+import os, signal, threading, time
+_supervisor_pid = {os.getpid()}
+def _check_supervisor():
+    if os.getppid() != _supervisor_pid:
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+def _watch_supervisor():
+    while True:
+        _check_supervisor()
+        time.sleep(0.05)
+_check_supervisor()
+threading.Thread(target=_watch_supervisor, daemon=True).start()
+""" + script
+
+
 def validate_tool_executor(contract: Mapping[str, Any]) -> dict[str, Any] | None:
     """Validate the same executor contract at build time and provider activation."""
     name = str(contract.get("name", ""))
@@ -102,15 +123,26 @@ def _plain(value: Any) -> Any:
 
 
 def assemble_python_tools(
-    root: Path, resolved: dict[str, Any], *, workspace_root: Path | None = None
+    root: Path, resolved: dict[str, Any], *, workspace_root: Path | None = None,
+    mcp_server_names: frozenset[str] = frozenset(),
 ):
     """Load descriptors only; source code runs after the engine's approval gate."""
     tools: dict[str, HarnessTool] = {}
     approvals: set[str] = set()
     granted = set(resolved.get("security", {}).get("allowedPermissions", []))
+    bound_mcp = {
+        item.get("name") for item in resolved.get("capabilities", {}).get("mcpServers", ())
+        if item.get("enabled", True)
+    }
     for contract in resolved.get("capabilities", {}).get("tools", []):
         contract = _plain(contract)
         if not contract.get("enabled", True):
+            continue
+        if (
+            contract.get("executor") == "mcp"
+            and contract.get("mcpServer") in bound_mcp & mcp_server_names
+        ):
+            # Executed by the projected MCP runtime, never by the host Python dispatcher.
             continue
         descriptor = validate_tool_executor(contract)
         if descriptor is None and "process:host-user" not in granted:
@@ -184,7 +216,8 @@ def assemble_python_tools(
                 "-B",
                 "-I",
                 "-c",
-                *command,
+                _supervised_script(command[0]),
+                *command[1:],
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,

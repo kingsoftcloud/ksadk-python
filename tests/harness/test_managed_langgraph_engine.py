@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from ksadk.harness.conformance import run_conformance_suite
+from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
 from ksadk.harness.events import EventType
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, HarnessToolCall
@@ -434,6 +437,30 @@ def test_approval_deny_resume_skips_tool_but_completes():
     assert second[-1].event_type == EventType.RUN_COMPLETED
     assert "high_risk" not in tools.executed  # 拒绝后高风险工具不执行
     assert tools.executed == ["normal"]
+
+
+@pytest.mark.parametrize("payload", [
+    None,
+    ResumePayload(kind="approval_decision", call_id="wrong-call", data="approved"),
+    ResumePayload(kind="approval_decision", call_id="tc-1", data=None),
+    ResumePayload(kind="hitl_answer", call_id="tc-1", data="approved"),
+])
+def test_approval_resume_rejects_missing_or_mismatched_decision(payload):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    engine, tools = _approval_engine(InMemorySaver())
+
+    async def drive():
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(_start_request(), compiled)
+        [e async for e in engine.stream(handle)]
+        with pytest.raises(ExecutionEngineError, match="approval"):
+            await engine.resume(
+                handle, ResumeTarget(kind="thread_id", id=handle.native_ref["thread_id"]), payload,
+            )
+        assert not tools.executed
+
+    asyncio.run(drive())
 
 
 def test_resume_requires_checkpointer():

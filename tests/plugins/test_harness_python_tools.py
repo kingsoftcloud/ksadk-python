@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from types import MappingProxyType
@@ -78,6 +79,22 @@ def test_disabled_unsupported_binding_is_ignored(tmp_path):
     ) == ({}, set())
 
 
+@pytest.mark.parametrize("enabled,projected", [(True, True), (False, True), (True, False)])
+def test_mcp_projection_requires_enabled_binding_and_live_contribution(
+    tmp_path, enabled, projected,
+):
+    resolved = {"capabilities": {
+        "mcpServers": [{"name": "bound", "enabled": enabled}],
+        "tools": [{"executor": "mcp", "name": "remote", "mcpServer": "bound"}],
+    }}
+    names = frozenset({"bound"}) if projected else frozenset()
+    if enabled and projected:
+        assert assemble_python_tools(tmp_path, resolved, mcp_server_names=names) == ({}, set())
+    else:
+        with pytest.raises(ValueError):
+            assemble_python_tools(tmp_path, resolved, mcp_server_names=names)
+
+
 def fixture_tool(
     tmp_path, source="def calculate(budget, actual): return (actual-budget)/budget*100"
 ):
@@ -136,3 +153,117 @@ async def test_locked_python_tool_timeout_and_approval(tmp_path):
     assert approvals == {"calculate"}
     with pytest.raises(TimeoutError):
         await tools["calculate"].call({})
+
+
+@pytest.mark.asyncio
+async def test_builtin_concurrent_identity_and_agent_workspaces_are_isolated(tmp_path):
+    from ksadk.runtime_context import (
+        platform_invocation_scope,
+        session_invocation_context,
+        tool_execution_scope,
+    )
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    contracts = {"capabilities": {"tools": [builtin_contract(name) for name in (
+        "write_workspace_file", "read_workspace_file", "edit_workspace_file",
+    )]}}
+
+    async def drive(agent, tenant, subject):
+        marker = f"{agent}-{tenant}-{subject}"
+        tools, _ = assemble_python_tools(bundle, contracts, workspace_root=tmp_path / agent)
+        context = session_invocation_context({}, agent_id=agent, identity={
+            "identity_namespace": "acceptance", "tenant_id": tenant,
+            "subject_type": "user", "subject_id": subject,
+        })
+        with platform_invocation_scope(context), tool_execution_scope("same-session"):
+            assert (await tools["write_workspace_file"].call({
+                "path": "shared-name.txt", "content": marker,
+            }))["ok"]
+            result = await tools["read_workspace_file"].call({"path": "shared-name.txt"})
+            assert marker in json.dumps(result)
+            assert (await tools["edit_workspace_file"].call({
+                "path": "shared-name.txt", "old_text": marker, "new_text": marker + "-ok",
+            }))["ok"]
+        return marker + "-ok"
+
+    markers = await asyncio.gather(*(
+        drive(*scope) for scope in (
+            ("agent-a", "tenant-a", "user-a"), ("agent-a", "tenant-a", "user-b"),
+            ("agent-a", "tenant-b", "user-a"), ("agent-b", "tenant-a", "user-a"),
+        )
+    ))
+    assert sorted(p.read_text() for p in tmp_path.rglob("shared-name.txt")) == sorted(markers)
+    assert not list(bundle.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_cancel_python_tool_kills_child_before_late_side_effect(tmp_path):
+    marker = tmp_path / "started"
+    late = tmp_path / "must-not-exist"
+    source = (
+        "import pathlib, time\n"
+        "def calculate():\n"
+        f" pathlib.Path({str(marker)!r}).touch()\n"
+        " time.sleep(2)\n"
+        f" pathlib.Path({str(late)!r}).touch()\n"
+    )
+    resolved, _ = fixture_tool(tmp_path, source)
+    resolved["capabilities"]["tools"][0]["timeoutSeconds"] = 10
+    tools, _ = assemble_python_tools(tmp_path, resolved)
+    task = asyncio.create_task(tools["calculate"].call({}))
+    try:
+        async with asyncio.timeout(5):
+            while not marker.exists():
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(2.1)
+    assert not late.exists()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_sigkill_stops_orphan_tool_before_late_write(tmp_path):
+    import os
+    import signal
+    import sys
+    from pathlib import Path
+
+    marker, late = tmp_path / "child-pid", tmp_path / "late-write"
+    source = (
+        "import os, pathlib, time\n"
+        "def calculate():\n"
+        f" pathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+        " time.sleep(2)\n"
+        f" pathlib.Path({str(late)!r}).touch()\n"
+    )
+    resolved, _ = fixture_tool(tmp_path, source)
+    resolved["capabilities"]["tools"][0]["timeoutSeconds"] = 10
+    supervisor = await asyncio.create_subprocess_exec(
+        sys.executable, "-c",
+        "import asyncio, json, sys; from pathlib import Path; "
+        "from ksadk.plugins.providers.harness_tools import assemble_python_tools; "
+        "tools, _ = assemble_python_tools(Path(sys.argv[1]), json.loads(sys.argv[2])); "
+        "asyncio.run(tools['calculate'].call({}))",
+        str(tmp_path), json.dumps(resolved),
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        async with asyncio.timeout(10):
+            while not marker.exists():
+                await asyncio.sleep(0.01)
+        supervisor.kill()
+        await supervisor.wait()
+        await asyncio.sleep(2.2)
+        assert not late.exists(), "Tool continued writing after its supervisor was killed"
+    finally:
+        if supervisor.returncode is None:
+            supervisor.kill()
+        await supervisor.wait()
+        if marker.exists():
+            try:
+                os.kill(int(marker.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass

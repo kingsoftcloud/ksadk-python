@@ -73,7 +73,8 @@ async def build_managed_provider_adapter(
         ):
             raise ValueError("内置 Tool 需要 Bundle 之外的可写 state_dir，不能修改不可变运行包")
     tools, approvals = assemble_python_tools(
-        bundle_root or workspace_root, tool_contracts or {}, workspace_root=tool_workspace
+        bundle_root or workspace_root, tool_contracts or {}, workspace_root=tool_workspace,
+        mcp_server_names=frozenset(item.name for item in config.mcp_tools),
     )
     spec = HarnessSpec(
         agent_revision_ref=f"agent-revision://{agent_id}@1",
