@@ -484,7 +484,7 @@ docs-site-dev:
 		echo "⚠️  docs-site 不存在，无法启动 Fumadocs dev server"; \
 	fi
 
-public-test:
+public-test: sync-ksadk-web-static build-studio-static
 	@echo "==> test"
 	@uv sync --extra dev
 	@uv run pytest $(PUBLIC_TEST_TARGETS)

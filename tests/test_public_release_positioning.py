@@ -622,11 +622,18 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Branch protection and publish environment are configured" in approval_record
 
 
-def test_historical_public_release_approval_is_not_reused_for_unpublished_candidate():
+def test_public_release_approval_is_current_or_explicitly_historical():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.8.3 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.3" in approval_record
+    current_version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
+    current_approval = f"| Python package version | {current_version} |"
+    historical_approval = "| Python package version | 0.8.3 |"
+    if current_approval in approval_record:
+        assert "This is the historical" not in approval_record
+        assert "Approved | 2026-09-09" in approval_record
+    else:
+        assert historical_approval in approval_record
+        assert "does not authorize PyPI publication" in approval_record
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
