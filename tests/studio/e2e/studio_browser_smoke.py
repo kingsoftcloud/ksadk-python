@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
@@ -20,7 +21,7 @@ def _open_skill_discovery(page: Page) -> None:
     # Resource kinds now live behind one navigation entry. Select the Skill
     # tab using its accessible role instead of relying on the former sidebar.
     # The selected tab appends its resource count to the accessible name.
-    skill_tab = page.get_by_role("tab").filter(has_text="Skill")
+    skill_tab = page.get_by_role("tab", name=re.compile(r"^Skill(?:\s+\d+)?$"))
     skill_tab.click()
     expect(skill_tab).to_have_attribute("aria-selected", "true")
     page.get_by_role("button", name="发现 Skill", exact=True).click()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.request import Request, urlopen
@@ -318,7 +319,7 @@ def assert_page_matrix(page: Page, width: int) -> None:
     for nav_label, page_title, layout, tab_label in pages:
         navigation.get_by_role("button", name=nav_label, exact=True).click()
         if tab_label is not None:
-            page.get_by_role("tab").filter(has_text=tab_label).click()
+            page.get_by_role("tab", name=tab_label, exact=True).click()
         expect(
             page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)
         ).to_be_visible()
@@ -518,8 +519,11 @@ def main() -> None:
                     "button", name="工程资源", exact=True
                 )
                 resource_trigger.click()
-                page.get_by_role("tab").filter(has_text="Skill").click()
-                expect(page.get_by_role("tab").filter(has_text="Skill")).to_have_attribute(
+                skill_tab = page.get_by_role(
+                    "tab", name=re.compile(r"^Skill(?:\s+\d+)?$")
+                )
+                skill_tab.click()
+                expect(skill_tab).to_have_attribute(
                     "aria-selected", "true"
                 )
                 discovery_trigger = page.get_by_role("button", name="发现 Skill", exact=True)
