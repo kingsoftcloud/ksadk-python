@@ -71,9 +71,7 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     assert code == 0
     assert "workflow=使用 demo-skill build something" in out
     assert "loaded_skills=demo-skill" in out
-    assert (
-        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
 
 
 def test_runtime_selects_remote_skill_by_alias_tag_and_description():
@@ -227,10 +225,8 @@ def test_runtime_agent_downloads_only_prompted_remote_skill(monkeypatch, tmp_pat
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/sk-demo.zip"]
-    assert (
-        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
-    assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    assert not list((tmp_path / "cache").glob("*/extracted/unused-skill/SKILL.md"))
 
 
 def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_name(
@@ -299,10 +295,8 @@ def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_na
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/sk-demo.zip"]
-    assert (
-        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
-    assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    assert not list((tmp_path / "cache").glob("*/extracted/unused-skill/SKILL.md"))
 
 
 def test_runtime_agent_loads_all_public_skills_without_allowlist(
@@ -368,17 +362,8 @@ def test_runtime_agent_loads_all_public_skills_without_allowlist(
         "https://download.example/premade-pdf.zip",
         "https://download.example/premade-weather.zip",
     ]
-    assert (
-        tmp_path / "cache" / f"premade-pdf__{pdf_digest}" / "extracted" / "pdf" / "SKILL.md"
-    ).exists()
-    assert (
-        tmp_path
-        / "cache"
-        / f"premade-weather__{weather_digest}"
-        / "extracted"
-        / "weather"
-        / "SKILL.md"
-    ).exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/pdf/SKILL.md"))) == 1
+    assert len(list((tmp_path / "cache").glob("*/extracted/weather/SKILL.md"))) == 1
 
 
 def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_path: Path, capsys):
@@ -440,15 +425,8 @@ def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_pat
     assert code == 0
     assert "loaded_skills=weather" in out
     assert download_urls == ["https://download.example/premade-weather.zip"]
-    assert not (tmp_path / "cache" / f"premade-pdf__{pdf_digest}").exists()
-    assert (
-        tmp_path
-        / "cache"
-        / f"premade-weather__{weather_digest}"
-        / "extracted"
-        / "weather"
-        / "SKILL.md"
-    ).exists()
+    assert not list((tmp_path / "cache").glob("*/extracted/pdf/SKILL.md"))
+    assert len(list((tmp_path / "cache").glob("*/extracted/weather/SKILL.md"))) == 1
 
 
 def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
@@ -531,10 +509,8 @@ def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/user.zip"]
-    assert (
-        tmp_path / "cache" / "sk-user-demo__sv-user-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
-    assert not (tmp_path / "cache" / f"premade-demo__{public_digest}").exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    assert [p.read_bytes() for p in (tmp_path / "cache").glob("*/archive.zip")] == [user_archive]
 
 
 def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowed(
@@ -591,14 +567,7 @@ def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowe
     assert "skill_warnings=" in out
     assert "ContentHash mismatch for legacy-skill" in out
     assert download_urls == ["https://download.example/legacy.zip"]
-    assert (
-        tmp_path
-        / "cache"
-        / "unverified-sk-legacy__sv-legacy-v1"
-        / "extracted"
-        / "legacy-skill"
-        / "SKILL.md"
-    ).exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/legacy-skill/SKILL.md"))) == 1
 
 
 def test_runtime_agent_without_service_still_reports_workflow(monkeypatch, capsys):

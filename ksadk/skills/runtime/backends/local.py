@@ -122,4 +122,56 @@ class LocalProcessSkillRuntimeBackend:
                     env=runtime_env,
                     check=False,
                 )
+                stdout = completed.stdout
+                output_files = parse_output_files(stdout)
+                if pinned_packages is not None:
+                    payloads = [
+                        json.loads(line.split("=", 1)[1])
+                        for line in stdout.splitlines()
+                        if line.startswith("workflow_result=")
+                    ]
+                    if len(payloads) != 1 or not isinstance(payloads[0], dict):
+                        raise SkillRuntimeError("Runtime did not return a unique workflow result")
+                    payload = payloads[0]
+                    paths = payload.get("output_files")
+                    if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
+                        raise SkillRuntimeError("Runtime returned invalid artifact paths")
+                    # Snapshot only bounded regular files from the admitted workspace.
+                    # A workflow's stdout is not authority to read arbitrary host files.
+                    bundle_path = Path(tmp_dir) / "artifacts.zip"
+                    receipt = export_artifacts(
+                        paths, Path(runtime_env["KSADK_SKILL_WORKDIR"]), bundle_path
+                    )
+                    output_files = import_artifacts(bundle_path.read_bytes(), receipt)
+                    payload["output_files"] = output_files
+                    payload["artifacts"] = output_files
+                    payload["artifact_bundle"] = receipt.model_dump()
+                    stdout = "\n".join(
+                        "workflow_result=" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                        if line.startswith("workflow_result=")
+                        else line
+                        for line in stdout.splitlines()
+                    ) + "\n"
+            wf = parse_workflow_result(stdout)
+            return SkillRuntimeResult(
+                runtime_id=f"local:{session_id}",
+                exit_code=completed.returncode,
+                stdout=stdout,
+                stderr=completed.stderr,
+                duration_ms=int((time.monotonic() - started) * 1000),
                 output_files=output_files,
+                workflow_status=str(wf.get("status", "")),
+                executed_skill=str(wf.get("executed_skill", "")),
+                instructions=str(wf.get("instructions", "")),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return SkillRuntimeResult(
+                runtime_id=f"local:{session_id}",
+                exit_code=None,
+                stdout=_coerce_output(exc.stdout),
+                stderr=_coerce_output(exc.stderr),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                timed_out=True,
+                error_type="TimeoutExpired",
+                error_message=f"Skill workflow timed out after {timeout or self.timeout}s",
+            )

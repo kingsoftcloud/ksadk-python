@@ -213,4 +213,59 @@ class E2BSkillRuntimeBackend:
                 )
             result = session.run_command(command, timeout=effective_timeout, env=sandbox_env)
             stdout = result.stdout
+            output_files = parse_output_files(stdout)
+            if pinned_packages is not None:
+                payloads = [
+                    json.loads(line.split("=", 1)[1])
+                    for line in stdout.splitlines()
+                    if line.startswith("workflow_result=")
+                ]
+                if len(payloads) != 1 or not isinstance(payloads[0], dict):
+                    raise SkillRuntimeError("Sandbox did not return a unique workflow result")
+                payload = payloads[0]
+                if payload.get("artifact_bundle") is None:
+                    raise SkillRuntimeError("Sandbox did not return an artifact delivery receipt")
+                receipt = ArtifactBundle.model_validate(payload["artifact_bundle"])
+                content = session.read_file_bytes(
+                    f"{delivery}/artifacts.zip", max_bytes=receipt.size
+                )
+                output_files = import_artifacts(content, receipt, parent=self.artifact_directory)
+                payload["output_files"] = output_files
+                payload["artifacts"] = output_files
+                stdout = (
+                    "\n".join(
+                        "workflow_result=" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                        if line.startswith("workflow_result=")
+                        else line
+                        for line in stdout.splitlines()
+                    )
+                    + "\n"
+                )
+            wf = parse_workflow_result(stdout)
+            return SkillRuntimeResult(
+                runtime_id=session.sandbox_id,
+                exit_code=result.exit_code,
+                stdout=stdout,
+                stderr=result.stderr,
+                duration_ms=int((time.monotonic() - started) * 1000),
                 output_files=output_files,
+                workflow_status=str(wf.get("status", "")),
+                executed_skill=str(wf.get("executed_skill", "")),
+                instructions=str(wf.get("instructions", "")),
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+            return SkillRuntimeResult(
+                runtime_id=session.sandbox_id if session is not None else "",
+                exit_code=None,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                timed_out="timeout" in error_type.lower(),
+                error_type=error_type,
+                error_message=_redact(str(exc)),
+            )
+        finally:
+            if session is not None:
+                try:
+                    session.kill()
+                except Exception:
+                    pass

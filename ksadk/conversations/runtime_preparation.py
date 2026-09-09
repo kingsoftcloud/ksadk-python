@@ -49,6 +49,7 @@ from ksadk.conversations.runtime_metadata import (
 )
 from ksadk.conversations.runtime_observability import _latest_deferred_tool_names
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
+from ksadk.session_context import split_session_context
 from ksadk.conversations.runtime_persistence import (
     append_conversation_event,
     append_run_resume_event,
