@@ -425,7 +425,7 @@ def test_observability_opens_as_a_paginated_trace_list() -> None:
 
     assert "limit: String(TRACE_PAGE_SIZE)" in source
     assert 'sort: "startedAt:desc"' in source
-    assert "TRACE_PAGE_SIZE = 50" in source
+    assert "TRACE_PAGE_SIZE = 10" in source
     assert 'className="trace-list-page"' in source
     assert "<StudioDataTable" in source
     assert "cursorStack" in source

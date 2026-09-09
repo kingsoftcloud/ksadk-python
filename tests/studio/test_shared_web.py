@@ -17,7 +17,9 @@ from ksadk.events.canonical import (
     SourceRef,
 )
 from ksadk.events.content import TextContent
+from ksadk.plugins.contracts import PluginManifest
 from ksadk.studio.api import create_studio_app
+from ksadk.studio.codex_provider_build import CODEX_PROVIDER_REF
 from ksadk.studio.contracts import ModelSpec, RunRecord, RunStatus, Usage
 from ksadk.studio.model_client import ModelResponse
 from ksadk.studio.service import StudioService
@@ -761,6 +763,32 @@ def test_cold_chat_model_catalog_reports_provider_window(tmp_path, monkeypatch, 
                 credential_ref="env://MODEL_API_KEY",
             ),
         ),
+    )
+    studio._active_provider_manifests[CODEX_PROVIDER_REF] = PluginManifest.model_validate(
+        {
+            "metadata": {"id": "io.ksadk.codex-provider", "version": "1.0.0"},
+            "spec": {
+                "domain": "runtime-native",
+                "runtime": "native",
+                "provides": [
+                    {
+                        "definition": "agent.provider/v1",
+                        "slot": "agent.execution",
+                        "mode": "unique",
+                    }
+                ],
+                "isolation": "native",
+                "compatibility": {
+                    "kernelApi": ">=1,<2",
+                    "runtimeProtocols": ["AgentControlChannel/v1"],
+                },
+                "healthContract": "plugin.health/v1",
+                "provenance": {
+                    "source": "runtime-native",
+                    "digest": "sha256:" + "1" * 64,
+                },
+            },
+        }
     )
     assert not studio.catalog._provider_models
     with TestClient(create_studio_app(tmp_path, service=studio, security_enabled=False)) as client:

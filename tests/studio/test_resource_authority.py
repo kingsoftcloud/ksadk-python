@@ -15,6 +15,7 @@ from ksadk.studio.resource_authority import (
     ResourceAuthorityPolicy,
     SignedKnowledgeResourceAuthority,
     _HardenedSdkTransport,
+    resource_authority_policy_from_environment,
 )
 from ksadk.studio.resource_connections import (
     ResourceConnectionDeclaration,
@@ -414,6 +415,29 @@ def test_internal_http_requires_explicit_host_policy_and_exact_ksyun_host():
         allow_ksyun_internal_http=True,
     )
     assert secure_policy.iam_endpoint == "https://iam.inner.api.ksyun.com"
+
+
+def test_environment_policy_uses_parsed_hostname_for_internal_iam(monkeypatch):
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "fixture-access")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "fixture-secret")
+    monkeypatch.setenv("AGENTENGINE_REGION", "cn-beijing-6")
+    monkeypatch.delenv("KSADK_RESOURCE_IAM_ENDPOINT", raising=False)
+
+    monkeypatch.setenv(
+        "AGENTENGINE_SERVER_URL",
+        "https://aicp.inner.api.ksyun.com.attacker.example",
+    )
+    public_policy = resource_authority_policy_from_environment()
+    assert public_policy is not None
+    assert public_policy.iam_endpoint == "https://iam.api.ksyun.com"
+
+    monkeypatch.setenv(
+        "AGENTENGINE_SERVER_URL",
+        "https://aicp.inner.api.ksyun.com",
+    )
+    internal_policy = resource_authority_policy_from_environment()
+    assert internal_policy is not None
+    assert internal_policy.iam_endpoint == "http://iam.inner.api.ksyun.com"
 
 
 def test_studio_validation_only_reports_verified_after_real_authority_calls(

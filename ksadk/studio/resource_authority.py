@@ -606,9 +606,26 @@ def resource_authority_policy_from_environment() -> ResourceAuthorityPolicy | No
     )
     iam_endpoint = os.environ.get("KSADK_RESOURCE_IAM_ENDPOINT", "").strip()
     if not iam_endpoint:
+        try:
+            endpoint_host = (
+                (urlsplit(endpoint).hostname or "")
+                .encode("idna")
+                .decode("ascii")
+                .lower()
+                .rstrip(".")
+            )
+        except (UnicodeError, ValueError):
+            endpoint_host = ""
+        endpoint_labels = endpoint_host.split(".")
+        uses_ksyun_internal_dns = endpoint_labels[-4:] == [
+            "inner",
+            "api",
+            "ksyun",
+            "com",
+        ]
         iam_endpoint = (
             "http://iam.inner.api.ksyun.com"
-            if ".inner.api.ksyun.com" in endpoint
+            if uses_ksyun_internal_dns
             else "https://iam.api.ksyun.com"
         )
     return ResourceAuthorityPolicy(
