@@ -223,6 +223,24 @@ class SchedulerSQLiteStore:
             ).fetchall()
         return [ScheduleOccurrence.model_validate_json(row["body_json"]) for row in rows]
 
+    def list_task_occurrence_summaries(self) -> list[ScheduleOccurrence]:
+        """One current state per live task, independent of the history page.
+
+        An active run takes precedence over a newer skipped overlap. Otherwise
+        the most recent occurrence owns the task's board state.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT o.body_json FROM scheduler_tasks t
+                JOIN scheduler_occurrences o ON o.occurrence_id = (
+                    SELECT occurrence_id FROM scheduler_occurrences
+                    WHERE task_id = t.task_id
+                    ORDER BY (state IN ('claimed','accepted','running')) DESC,
+                             scheduled_for DESC, occurrence_id DESC LIMIT 1
+                )"""
+            ).fetchall()
+        return [ScheduleOccurrence.model_validate_json(row["body_json"]) for row in rows]
+
     def list_active_occurrences(self, *, limit: int = 200) -> list[ScheduleOccurrence]:
         """Return only non-terminal occurrences for event reconciliation.
 

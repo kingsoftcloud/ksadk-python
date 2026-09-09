@@ -95,6 +95,6 @@ Studio 的工作区数据和会话是本地开发状态，不是需要提交的�
 
 ## UI 包与源码
 
-安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含经过审计的生产静态资源。公开仓、sdist 与 wheel 都不包含 Studio 的 React / TypeScript 可编辑源码；公开发布门禁只校验并打包 `ksadk/studio/static`。
+安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含经过审计的生产静态资源。公开仓保存 Studio 的 React / TypeScript 源码与依赖锁；构建门禁编译并审计静态资源。sdist 与 wheel 携带这些页面资源，生成文件不提交 Git。
 
 详见[构建与打包](./build-and-package.mdx)和[Web UI 源码与发布契约](./web-ui-source.mdx)。

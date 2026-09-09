@@ -9,6 +9,7 @@ import pytest
 
 from ksadk.harness.reasoner import HarnessReasoningTurn
 from ksadk.plugins.contracts import PluginManifest
+from ksadk.plugins.providers.codex import CodexProviderInventory, CodexTurnResult
 from ksadk.studio.contracts import (
     AgentSpec,
     Instructions,
@@ -19,6 +20,7 @@ from ksadk.studio.contracts import (
     SecuritySpec,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.plugin_runtime import _normalize_result
 from ksadk.studio.service import StudioService
 
 _EXTERNAL_PROVIDER_REF = "plugin://io.example.echo-provider@1.0.0"
@@ -133,6 +135,29 @@ def _security(*permissions: str) -> SecuritySpec:
         allowed_permissions=list(permissions),
         network=NetworkPolicy(allowed_hosts=["model.example.test"]),
     )
+
+
+def test_studio_normalizes_native_codex_provider_result() -> None:
+    raw = CodexTurnResult(
+        session_id="codex-session",
+        output_text="codex-provider-ok",
+        usage={"output_tokens": 3},
+        metadata={"threadId": "thread-1"},
+        inventory=CodexProviderInventory(
+            provider="codex",
+            model="fixture-model",
+            mcp_servers=("metaso-inner",),
+            skills=("skill-creator",),
+        ),
+    )
+
+    result = _normalize_result(raw, session_id="fallback-session")
+
+    assert result.output_text == "codex-provider-ok"
+    assert result.session_id == "codex-session"
+    assert result.usage == {"output_tokens": 3}
+    assert result.metadata == {"threadId": "thread-1"}
+    assert result.raw is raw
 
 
 class _ConversationReasoner:

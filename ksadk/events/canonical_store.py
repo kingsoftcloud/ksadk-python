@@ -158,7 +158,9 @@ class RuntimeEventStore:
             self._typed_session_id = session_id
         else:
             self._event_store = None
-            self._service = store
+            # A live-first session wrapper may expose one durable authority for
+            # canonical facts without claiming that its dual writes are atomic.
+            self._service = getattr(store, "canonical_event_service", store)
             self._typed_session_id = session_id
 
     @property

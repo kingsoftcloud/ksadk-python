@@ -215,6 +215,57 @@ class InterruptingApprovalCodexAdapter(BlockingCodexAdapter):
         return _gen()
 
 
+class BlockingStructuredCodexAdapter(BlockingCodexAdapter):
+    """Canonical id differs from the live Codex JSON-RPC request id."""
+
+    def stream(self, handle: RunHandle):
+        from ksadk.events.canonical import (
+            InteractionRequested,
+            RunCompleted,
+            SourceRef,
+            StructuredInputRequest,
+        )
+
+        self.streams.append(handle.run_id)
+
+        async def _gen():
+            yield InteractionRequested(
+                schema_version=2,
+                event_id="codex-structured-1",
+                seq=0,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id=f"run:{handle.run_id}",
+                source=SourceRef(
+                    framework="codex",
+                    native_event_id="native-jsonrpc-request-1",
+                    native_item_id="native-tool-item-1",
+                ),
+                interaction_id="stable-structured-interaction-1",
+                interaction_kind="structured_input",
+                request=StructuredInputRequest(
+                    prompt="Choose",
+                    schema={"type": "object", "properties": {}},
+                ),
+            )
+            self.interaction_seen.set()
+            await self.response_received.wait()
+            self.stream_finished.set()
+            yield RunCompleted(
+                schema_version=2,
+                event_id="codex-structured-completed-1",
+                seq=0,
+                timestamp=2.0,
+                run_id=handle.run_id,
+                scope_id=f"run:{handle.run_id}",
+                source=SourceRef(framework="codex"),
+                status="completed",
+                output_refs=(),
+            )
+
+        return _gen()
+
+
 async def _seed_active_run(stack, adapter):
     """enqueue 一个 run 并让 stream 以 retryable 错误停住（run 保持 RUNNING，
     execution 保留在 worker 内）。返回 durable run id。"""
@@ -588,6 +639,57 @@ async def test_live_interaction_does_not_block_worker_and_resumes_the_same_strea
         for event in events
         if event.family == "runtime" and event.event_type == "interaction.requested"
     ]
+
+
+async def test_structured_interaction_uses_native_jsonrpc_request_id():
+    """Live callback uses source.native_event_id, not the canonical stable id."""
+
+    stack = await kernel_stack(adapter=BlockingStructuredCodexAdapter())
+    adapter = stack.adapter
+    lease = await stack.lease()
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: adapter,
+        session_events=stack.events,
+    )
+    await stack.kernel.submit(
+        command(idempotency_key="structured-interaction-start"),
+        permit=stack.permit("enqueue"),
+    )
+    started = await worker.run_once(AGENT, lease)
+    assert started.run_id is not None
+    await asyncio.wait_for(adapter.interaction_seen.wait(), timeout=0.2)
+
+    record = await stack.store.get(
+        "stable-structured-interaction-1",
+        tenant_id="tenant-1",
+        agent_instance_id=AGENT,
+        session_id="s1",
+        run_id=started.run_id,
+    )
+    assert record is not None
+    assert record.native_target == {"call_id": "native-jsonrpc-request-1"}
+
+    await stack.kernel.submit(
+        command(
+            "submit_interaction",
+            idempotency_key="structured-interaction-response",
+            payload={
+                "run_id": started.run_id,
+                "interaction_id": "stable-structured-interaction-1",
+                "token_ref": "server-permit-ref",
+                "response": {"city": "Beijing"},
+                "action": "submit",
+                "expected_revision": 1,
+            },
+        ),
+        permit=stack.permit("submit_interaction"),
+    )
+    resolved = await worker.run_once(AGENT, lease)
+    assert resolved.outcome == "completed"
+    assert adapter.submits[-1][1].call_id == "native-jsonrpc-request-1"
 
 
 async def test_interaction_interruption_keeps_waiting_run_and_live_execution():

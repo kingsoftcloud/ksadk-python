@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from ksadk.skills.package_store import SkillPackage
+
 
 class SkillRuntimeError(RuntimeError):
     pass
@@ -27,6 +29,9 @@ class SkillRuntimeResult:
     error_type: str | None = None
     error_message: str | None = None
     output_files: list[str] = field(default_factory=list)
+    workflow_status: str = ""
+    executed_skill: str = ""
+    instructions: str = ""
 
     @property
     def ok(self) -> bool:
@@ -43,6 +48,9 @@ class SkillRuntimeResult:
             "error_type": self.error_type,
             "error_message": self.error_message,
             "output_files": list(self.output_files),
+            "workflow_status": self.workflow_status,
+            "executed_skill": self.executed_skill,
+            "instructions": self.instructions,
         }
 
 
@@ -56,11 +64,17 @@ class SkillRuntimeBackend(Protocol):
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        pinned_packages: list[SkillPackage] | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult: ...
 
 
-def parse_output_files(stdout: str) -> list[str]:
+def parse_workflow_result(stdout: str) -> dict[str, object]:
+    """Parse the workflow_result= JSON line from agent.py stdout.
+
+    Returns a dict with keys: status, executed_skill, instructions,
+    output_files, warnings, etc.  Returns empty dict if not found.
+    """
     for line in stdout.splitlines():
         if not line.startswith("workflow_result="):
             continue
@@ -68,10 +82,17 @@ def parse_output_files(stdout: str) -> list[str]:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return []
-        output_files = payload.get("output_files") if isinstance(payload, dict) else None
-        if isinstance(output_files, list):
-            return [str(item) for item in output_files]
+            return {}
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def parse_output_files(stdout: str) -> list[str]:
+    payload = parse_workflow_result(stdout)
+    output_files = payload.get("output_files")
+    if isinstance(output_files, list):
+        return [str(item) for item in output_files]
     return []
 
 

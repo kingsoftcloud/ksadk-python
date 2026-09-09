@@ -82,8 +82,10 @@ def _write_bundle(
     *,
     execution_strategy: str = "direct",
     approval_mode: str = "risk",
+    sandbox: str | None = "read_only",
     mcp_servers: list[dict[str, Any]] | None = None,
     models: list[str] | None = None,
+    model_config: dict[str, Any] | None = None,
 ):
     root.mkdir()
     skill = (
@@ -96,15 +98,13 @@ def _write_bundle(
             profile.model_dump(by_alias=True, exclude_none=True, mode="json")
         ),
         "plugin-lock.json": _json_bytes(
-            composition.plugin_lock.model_dump(
-                by_alias=True, exclude_none=True, mode="json"
-            )
+            composition.plugin_lock.model_dump(by_alias=True, exclude_none=True, mode="json")
         ),
         "resolved-agent-spec.json": _json_bytes(
             {
                 "schemaVersion": "agentkit.resolved/v1",
                 "agentId": "codex-report-agent",
-                "model": {"model": "fixture-codex-model"},
+                "model": model_config or {"model": "fixture-codex-model"},
                 "instructions": {
                     "system": "You are a report assistant.",
                     "task": "Use the locked Bundle capabilities.",
@@ -133,7 +133,7 @@ def _write_bundle(
                 "execution": {
                     "strategy": execution_strategy,
                     "timeoutSeconds": 30,
-                    "sandbox": "read_only",
+                    "sandbox": sandbox,
                     "approvalMode": approval_mode,
                 },
             }
@@ -352,6 +352,7 @@ class _StrictCodexClient(CodexClient):
 def _setup(
     *,
     provider_config: dict[str, Any] | None = None,
+    credential_resolver: Any = None,
 ) -> tuple[
     PluginRegistry,
     CompositionProfile,
@@ -367,12 +368,101 @@ def _setup(
     provider = CodexAgentProviderFactory(
         session_service=service,
         codex_client_factory=backend.client,
+        credential_resolver=credential_resolver,
     )
     host = PluginHost(
         registry,
         {"io.ksadk.codex-provider": provider},
     )
     return registry, profile, host, provider, backend, service
+
+
+@pytest.mark.asyncio
+async def test_codex_provider_injects_bundle_model_connection_with_mcp_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+
+    class Credentials:
+        @staticmethod
+        def resolve(reference: str) -> str:
+            return {
+                "env://MODEL_API_KEY": "model-secret",
+                "env://WEATHER_TOKEN": "weather-secret",
+            }[reference]
+
+    registry, profile, host, provider, backend, _service = _setup(
+        credential_resolver=Credentials(),
+    )
+    bundle = _write_bundle(
+        tmp_path / "bundle",
+        registry,
+        profile,
+        model_config={
+            "model": "fixture-codex-model",
+            "endpointUrl": "https://models.example.test/v1/chat/completions",
+            "credentialRef": "env://MODEL_API_KEY",
+            "wireApi": "chat",
+        },
+        mcp_servers=[
+            {
+                "name": "weather",
+                "transport": "http",
+                "endpointUrl": "https://mcp.example.test/rpc",
+                "envRefs": {"WEATHER_TOKEN": "env://WEATHER_TOKEN"},
+            }
+        ],
+    )
+    bundle_snapshot = {
+        path.relative_to(bundle.root).as_posix(): path.read_bytes()
+        for path in bundle.root.rglob("*")
+        if path.is_file()
+    }
+    await host.apply(profile)
+
+    await host.execute(bundle, {"user_id": "u1", "input": "weather"})
+
+    runtime_env = dict(getattr(backend.configs[0], "env", {}) or {})
+    assert runtime_env["OPENAI_API_KEY"] == "model-secret"
+    assert runtime_env["OPENAI_BASE_URL"] == "https://models.example.test/v1"
+    assert runtime_env["OPENAI_API_BASE"] == "https://models.example.test/v1"
+    assert runtime_env["OPENAI_MODEL_NAME"] == "fixture-codex-model"
+    assert runtime_env["KSADK_CODEX_USE_PROXY"] == "1"
+    assert runtime_env["WEATHER_TOKEN"] == "weather-secret"
+    codex_home = Path(runtime_env["CODEX_HOME"])
+    assert not codex_home.is_relative_to(bundle.root)
+    activation = provider.runtime.last_activation if provider.runtime else None
+    assert activation is not None
+    assert not activation._launch_context.project_dir.is_relative_to(bundle.root)
+    assert {
+        path.relative_to(bundle.root).as_posix(): path.read_bytes()
+        for path in bundle.root.rglob("*")
+        if path.is_file()
+    } == bundle_snapshot
+    await host.dispose()
+
+
+@pytest.mark.asyncio
+async def test_codex_provider_defaults_to_workspace_write_auto_without_bundle_sandbox(
+    tmp_path: Path,
+) -> None:
+    registry, profile, host, _provider, backend, _service = _setup()
+    bundle = _write_bundle(
+        tmp_path / "bundle",
+        registry,
+        profile,
+        sandbox=None,
+        approval_mode="",
+    )
+    await host.apply(profile)
+
+    await host.execute(bundle, {"user_id": "u1", "input": "ordinary project work"})
+
+    assert backend.turn_configs[0]["sandbox_read_only"] is False
+    assert backend.turn_configs[0]["sandbox"] == "workspace-write"
+    assert backend.turn_configs[0]["approval_mode"] == "auto_review"
+    await host.dispose()
 
 
 @pytest.mark.asyncio
@@ -424,8 +514,7 @@ async def test_codex_provider_reuses_native_thread_and_isolates_other_session(
     bound_skill_inputs = [
         item
         for item in prompt_items
-        if type(item).__name__ == "SkillInput"
-        and getattr(item, "name", None) == "report-style"
+        if type(item).__name__ == "SkillInput" and getattr(item, "name", None) == "report-style"
     ]
     assert len(bound_skill_inputs) == 1
     bound_skill_path = Path(str(getattr(bound_skill_inputs[0], "path", "")))
@@ -443,9 +532,7 @@ async def test_codex_provider_reuses_native_thread_and_isolates_other_session(
 async def test_codex_provider_rejects_unsupported_execution_strategy(
     tmp_path: Path,
 ) -> None:
-    registry, profile, host, _provider, backend, _service = _setup(
-        provider_config={}
-    )
+    registry, profile, host, _provider, backend, _service = _setup(provider_config={})
     bundle = _write_bundle(
         tmp_path / "bundle", registry, profile, execution_strategy="plan-act-observe"
     )
@@ -582,3 +669,28 @@ async def test_codex_activation_exposes_and_disposes_kernel_runtime_adapter(
     assert activation.disposed is True
     assert backend.closed == 1
     await host.dispose()
+
+
+@pytest.mark.asyncio
+async def test_provider_native_factory_does_not_reenter_default_runtime_dispatch(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from ksadk.codex.runtime import CodexRuntimeAdapter
+    from ksadk.runtime import factory
+
+    def forbidden_registry():
+        raise AssertionError("Provider recursively entered the top-level runtime dispatcher")
+
+    monkeypatch.setattr(factory, "build_default_runtime_registry", forbidden_registry)
+    registry, profile, host, provider, backend, _service = _setup()
+    bundle = _write_bundle(tmp_path / "bundle", registry, profile)
+    await host.apply(profile)
+    try:
+        activation = await host.open_activation(bundle, activation_key="native-only")
+        adapter = await activation.runtime_adapter()
+        assert isinstance(adapter, CodexRuntimeAdapter)
+        result = await activation.execute({"user_id": "user", "input": "hello"})
+        assert result.session_id
+    finally:
+        await host.dispose()
+    assert provider.runtime.last_activation.disposed

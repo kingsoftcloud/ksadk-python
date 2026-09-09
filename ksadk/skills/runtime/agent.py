@@ -13,6 +13,7 @@ from ksadk.skills.models import SkillRef
 from ksadk.skills.package_store import PackageStore
 from ksadk.skills.runtime import loader as runtime_loader
 from ksadk.skills.runtime import registry as runtime_registry
+from ksadk.skills.runtime.artifact_delivery import export_artifacts
 from ksadk.skills.runtime.base import normalize_skill_names
 from ksadk.skills.runtime.executor import (
     WorkflowExecution,
@@ -36,11 +37,17 @@ from ksadk.skills.runtime.executor import (
 from ksadk.skills.runtime.executor import (
     _tail as _executor_tail,
 )
+from ksadk.skills.runtime.pinned import (
+    PINNED_PACKAGE_PROTOCOL_VERSION as PINNED_PACKAGE_PROTOCOL_VERSION,
+)
+from ksadk.skills.runtime.pinned import load_pinned_packages
 from ksadk.skills.runtime.request import (
     SkillWorkflowRequest,
     SkillWorkflowRequestError,
     parse_workflow_request,
 )
+
+ARTIFACT_DELIVERY_PROTOCOL_VERSION = 1
 
 
 def _skill_space_ids() -> list[str]:
@@ -126,13 +133,31 @@ def run_agent(
         return 1
 
     prompt = request.workflow_prompt
-    selected_skill_names = request.skill_names or _selected_skill_names()
-    loaded_skills = _load_skills(
-        prompt=prompt,
-        skill_names=selected_skill_names,
-        service_transport=service_transport,
-    )
+    selected_skill_names = request.skill_names
+    if request.pinned_packages is not None:
+        if request.package_directory is None:
+            raise SkillWorkflowRequestError("Pinned Skill delivery directory is missing")
+        loaded_skills = load_pinned_packages(request.pinned_packages, request.package_directory)
+    else:
+        selected_skill_names = selected_skill_names or _selected_skill_names()
+        loaded_skills = _load_skills(
+            prompt=prompt,
+            skill_names=selected_skill_names,
+            service_transport=service_transport,
+        )
     execution = _execute_workflow(prompt, loaded_skills, selected_skill_names=selected_skill_names)
+    if request.collect_artifacts and request.package_directory is not None:
+        try:
+            root = Path(os.environ.get("KSADK_SKILL_WORKDIR") or "/tmp/ksadk-skill-workflow")
+            receipt = export_artifacts(
+                execution.output_files, root, request.package_directory / "artifacts.zip"
+            )
+            execution.artifact_bundle = receipt.model_dump()
+        except Exception:
+            execution.status = "failed"
+            execution.error = "Skill artifact delivery failed"
+            execution.output_files = []
+            execution.artifacts = []
     print(f"workflow={prompt}")
     print(f"skill_spaces={','.join(_skill_space_ids())}")
     print(f"loaded_skills={','.join(skill.name for skill in loaded_skills)}")

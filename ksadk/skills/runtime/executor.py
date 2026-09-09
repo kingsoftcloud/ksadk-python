@@ -27,6 +27,8 @@ class WorkflowExecution:
     artifacts: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: str = ""
+    instructions: str = ""
+    artifact_bundle: dict[str, object] | None = None
 
 
 def execute_workflow(
@@ -49,6 +51,12 @@ def execute_workflow(
     for skill in _candidate_skills(skills, selected):
         if _can_run_generic_workflow(skill):
             result = _run_generic_workflow(skill, prompt)
+            _attach_context(result, selected=selected, loaded=loaded)
+            return result
+
+    for skill in _candidate_skills(skills, selected):
+        if _has_instructions(skill):
+            result = _run_instruction_only(skill, prompt)
             _attach_context(result, selected=selected, loaded=loaded)
             return result
 
@@ -90,6 +98,24 @@ def _can_run_web_artifacts_builder(skill: LocalSkill, prompt: str) -> bool:
 
 def _can_run_generic_workflow(skill: LocalSkill) -> bool:
     return (skill.root_dir / "scripts" / "run-workflow.sh").exists()
+
+
+def _has_instructions(skill: LocalSkill) -> bool:
+    has_scripts = (skill.root_dir / "scripts").is_dir()
+    return not has_scripts and bool(skill.body and skill.body.strip())
+
+
+def _run_instruction_only(skill: LocalSkill, prompt: str) -> WorkflowExecution:
+    return WorkflowExecution(
+        status="instructions",
+        executed_skill=skill.name,
+        instructions=skill.body,
+        warnings=[
+            "This skill is instruction-only (no executable scripts). "
+            "Follow the instructions below using your available tools."
+        ],
+    )
+
 
 
 def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
@@ -136,6 +162,7 @@ def _run_generic_workflow(skill: LocalSkill, prompt: str) -> WorkflowExecution:
     workdir = _skill_workdir()
     workdir.mkdir(parents=True, exist_ok=True)
     output_dir = workdir / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
     timeout = _runtime_timeout()
     command = _run_command(
         ["bash", str(skill.root_dir / "scripts" / "run-workflow.sh")],

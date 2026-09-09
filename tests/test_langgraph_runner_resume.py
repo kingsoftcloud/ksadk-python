@@ -5,6 +5,7 @@ import pytest
 from langgraph.types import Command
 
 from ksadk.runners.langgraph_runner import LangGraphRunner
+from ksadk.runtime.adapter import RunHandle
 
 
 class _DummyAgent:
@@ -36,9 +37,352 @@ class _DummyAgent:
 class _AsyncStateAgent(_DummyAgent):
     async def aget_state(self, config):
         del config
-        return SimpleNamespace(config=self.state_config)
+        return SimpleNamespace(
+            config=self.state_config,
+            values={"messages": []},
+            next=(),
+            metadata={"source": "loop", "step": 1},
+            created_at="2026-09-02T00:00:00+00:00",
+            parent_config=None,
+            tasks=(),
+        )
 
     get_state = None
+
+
+class _MissingCheckpointAgent(_DummyAgent):
+    async def aget_state(self, config):
+        return SimpleNamespace(
+            config=config,
+            values={},
+            next=(),
+            metadata=None,
+            created_at=None,
+            parent_config=None,
+            tasks=(),
+        )
+
+    get_state = None
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_attaches_persisted_checkpoint_with_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch restarted RuntimeExecutor failing before LangGraph sees its checkpoint."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    runner._agent = _AsyncStateAgent()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "session-1:run-1",
+            "checkpoint_id": "checkpoint-1",
+        }
+    }
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "known_checkpoint_ids": ["checkpoint-1"],
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rejects_checkpoint_missing_from_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch attach accepting a durable address that the graph cannot resolve."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    runner._agent = _MissingCheckpointAgent()
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rejects_incomplete_persisted_checkpoint(
+    monkeypatch, tmp_path
+):
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={"checkpoint_id": "checkpoint-1"},
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_lazy_checkpoint_capability_owns_attach(
+    monkeypatch, tmp_path
+):
+    """Catch base managed-graph errors masking a custom runner's lazy saver."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = None
+    lazy_agent = _AsyncStateAgent()
+    lazy_agent.state_config = {
+        "configurable": {
+            "thread_id": "session-1:run-1",
+            "checkpoint_id": "checkpoint-1",
+        }
+    }
+
+    async def with_graph(callback):
+        runner._agent = lazy_agent
+        try:
+            return await callback()
+        finally:
+            runner._agent = None
+
+    monkeypatch.setattr(runner, "_with_graph", with_graph, raising=False)
+    runner._managed_checkpoint_error = (
+        "LANGGRAPH_FACTORY_REQUIRED",
+        "base managed graph factory is not used by this custom runner",
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_lazy_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Backend": "postgres",
+            "Scope": "shared",
+            "Durable": True,
+            "SharedAcrossPods": True,
+            "ResumeMode": "time_travel",
+            "Reason": "",
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(
+    monkeypatch, tmp_path
+):
+    """Catch a managed saver opening the Session database despite a dedicated target."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    captured_dsns = []
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    async def create_saver(dsn):
+        captured_dsns.append(dsn)
+        return SimpleNamespace(), _Pool()
+
+    def graph_factory(*, checkpointer):
+        assert checkpointer is not None
+        return SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+
+    runner._module = SimpleNamespace(ksadk_graph_factory=graph_factory)
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://session.example.test/session_db")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert captured_dsns == ["postgresql://checkpoint.example.test/checkpoint_db"]
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_reports_target_unreachable(
+    monkeypatch, tmp_path
+):
+    """Catch collapsing managed checkpoint setup failures into a generic DB error."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(invoke=lambda: checkpointer)
+    )
+
+    async def fail_to_create_saver(_dsn):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", fail_to_create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner.describe_checkpoint_capability()["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_retries_transient_initialization_failure(
+    monkeypatch, tmp_path
+):
+    """A startup network failure must not pin capability false until restart."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
+            invoke=lambda *_args, **_kwargs: None,
+            checkpointer=checkpointer,
+        )
+    )
+    attempts = 0
+
+    class PostgresSaver:
+        pass
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    async def create_saver(_dsn):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("database network unavailable")
+        return PostgresSaver(), _Pool()
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+    first = runner.describe_checkpoint_capability()
+    await runner.refresh_runtime_capabilities()
+    second = runner.describe_checkpoint_capability()
+
+    assert attempts == 2
+    assert first["Supported"] is False
+    assert first["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
+    assert second["Supported"] is True
+    assert second["Backend"] == "postgres"
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_does_not_retry_authentication_failure(
+    monkeypatch, tmp_path
+):
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
+            invoke=lambda *_args, **_kwargs: None,
+            checkpointer=checkpointer,
+        )
+    )
+    attempts = 0
+
+    class InvalidPasswordError(Exception):
+        pass
+
+    async def create_saver(_dsn):
+        nonlocal attempts
+        attempts += 1
+        raise InvalidPasswordError("invalid password")
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_CHECKPOINT_DSN", "postgresql://placeholder.invalid/db")
+
+    await runner.prepare_runtime_capabilities()
+    await runner.refresh_runtime_capabilities()
+
+    capability = runner.describe_checkpoint_capability()
+    assert attempts == 1
+    assert capability["Supported"] is False
+    assert capability["ReasonCode"] == "AUTH_FAILED"
 
 
 class _Chunk:

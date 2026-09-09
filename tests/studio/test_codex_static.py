@@ -24,13 +24,15 @@ def test_studio_serves_the_react_shell_and_resolvable_production_assets(
     assert page.status_code == 200
     assert '<div id="root"></div>' in page.text
     assert re.search(
-        r'<script type="module"[^>]+src="/static/assets/[^"]+\.js(?:\?v=\d+)?"',
+        r'<script type="module"[^>]+src="/static/assets/[^"]+\.js"',
         page.text,
     )
     assert re.search(
-        r'<link rel="stylesheet"[^>]+href="/static/assets/[^"]+\.css(?:\?v=\d+)?"',
+        r'<link rel="stylesheet"[^>]+href="/static/assets/[^"]+\.css"',
         page.text,
     )
+    assert "?v=" not in page.text
+    assert page.headers["cache-control"] == "no-store"
     assert assets
     assert {path: response.status_code for path, response in assets.items()} == {
         path: 200 for path in assets

@@ -203,6 +203,7 @@ def project_conversation_item(
         )
         payload = {
             "interactionId": event.interaction_id,
+            "callId": getattr(event.request, "call_id", None),
             "kind": getattr(event.request, "kind", event.interaction_kind),
             "detail": getattr(event.request, "detail", None),
             "prompt": getattr(event.request, "prompt", None),
@@ -250,7 +251,7 @@ def project_conversation_item(
         schema = "conversation.item.error/v1"
         payload = {
             "status": "failed" if isinstance(event, RunFailed) else "canceled",
-            "error": event.error.message if isinstance(event, RunFailed) else event.reason or ""
+            "error": event.error.message if isinstance(event, RunFailed) else event.reason or "",
         }
     elif isinstance(event, (ContinuationCreated, ContinuationResumed)):
         kind = "progress"
@@ -524,9 +525,7 @@ def _item_snapshot(
 def _artifact_payload(snapshot: ContentSnapshot | None) -> dict[str, Any]:
     if snapshot is None:
         return {}
-    artifact = next(
-        (part for part in snapshot.parts if isinstance(part, ArtifactContent)), None
-    )
+    artifact = next((part for part in snapshot.parts if isinstance(part, ArtifactContent)), None)
     if artifact is None:
         return {}
     return {
@@ -583,8 +582,7 @@ def _is_codex_goal_item(event: RuntimeEvent) -> bool:
         isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted))
         and event.item_kind == "data"
         and event.source.framework == "codex"
-        and event.source.metadata.get("method")
-        in {"thread/goal/updated", "thread/goal/cleared"}
+        and event.source.metadata.get("method") in {"thread/goal/updated", "thread/goal/cleared"}
     )
 
 

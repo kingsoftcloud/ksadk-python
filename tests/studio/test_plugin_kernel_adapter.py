@@ -107,6 +107,9 @@ class _PluginRuntime:
         del spec, session_id
         return self.delegate
 
+    async def close_session_if_dynamic(self, spec: StudioRunSpec, session_id: str) -> None:
+        del spec, session_id
+
 
 def _spec(tmp_path: Path) -> StudioRunSpec:
     return StudioRunSpec(
@@ -132,6 +135,9 @@ async def test_plugin_kernel_adapter_forwards_the_full_declared_control_surface(
     handle = await adapter.start(
         StartRequest(input="hello", user_id="user", session_id="session")
     )
+
+    assert handle.runtime_type == "plugin"
+    assert handle.native_ref["_ksadk_plugin_provider_runtime_type"] == "plugin-fixture"
 
     checkpoint = await adapter.checkpoint(handle)
     await adapter.steer(handle, SteerPayload(content="adjust"))

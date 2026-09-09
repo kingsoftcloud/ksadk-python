@@ -212,9 +212,7 @@ async def _prepare_matrix(workspace: Path) -> None:
         clock=lambda: restart_at + timedelta(seconds=1),
     )
     recovered = await restarted.reconcile()
-    assert [(item.state, item.run_id) for item in recovered] == [
-        ("succeeded", "run-after-restart")
-    ]
+    assert [(item.state, item.run_id) for item in recovered] == [("succeeded", "run-after-restart")]
 
     concurrency_at = base + timedelta(seconds=3)
     concurrency_task = _task(
@@ -260,9 +258,7 @@ async def _prepare_matrix(workspace: Path) -> None:
         owner_id="fault-matrix",
         clock=lambda: misfire_at + timedelta(hours=2),
     ).tick()
-    assert [(item.state, item.detail) for item in misfire] == [
-        ("skipped", "misfire_skipped")
-    ]
+    assert [(item.state, item.detail) for item in misfire] == [("skipped", "misfire_skipped")]
 
 
 def _assert_fault_matrix(page: Page, base_url: str) -> None:
@@ -271,38 +267,30 @@ def _assert_fault_matrix(page: Page, base_url: str) -> None:
     # browser reaching a global network-idle state; the page's own heading and
     # durable history are the product-level readiness signals.
     page.goto(f"{base_url}/#/automations", wait_until="domcontentloaded")
-    expect(page.get_by_role("heading", name="自动化 / 定时任务")).to_be_visible()
+    expect(page.get_by_role("heading", name="让重复的工作，按时完成")).to_be_visible()
     page.get_by_role("tab", name="执行记录", exact=True).click()
 
     history = page.locator(".automation-history")
     expect(history.locator(".automation-occurrence-card")).to_have_count(6)
 
-    failure = history.locator(".automation-occurrence-card").filter(
-        has_text="故障矩阵 · 提交失败"
-    )
+    failure = history.locator(".automation-occurrence-card").filter(has_text="故障矩阵 · 提交失败")
     expect(failure).to_contain_text("失败")
     expect(failure).to_contain_text("插件执行失败 · PLUGIN_EXECUTION_FAILED")
     expect(failure).to_contain_text("provider process exited with status 17")
 
-    timeout = history.locator(".automation-occurrence-card").filter(
-        has_text="故障矩阵 · 执行超时"
-    )
+    timeout = history.locator(".automation-occurrence-card").filter(has_text="故障矩阵 · 执行超时")
     expect(timeout).to_contain_text("失败")
     expect(timeout).to_contain_text("执行超时 · RUNTIME_TIMEOUT")
     expect(timeout).to_contain_text("execution exceeded the 30 second deadline")
 
-    recovery = history.locator(".automation-occurrence-card").filter(
-        has_text="故障矩阵 · 重启恢复"
-    )
+    recovery = history.locator(".automation-occurrence-card").filter(has_text="故障矩阵 · 重启恢复")
     expect(recovery).to_contain_text("成功")
     expect(recovery).to_contain_text("运行时已确认完成")
     expect(recovery.locator(".automation-timeline li")).to_have_count(4)
     expect(recovery.locator(".automation-timeline")).to_contain_text("已接收")
     expect(recovery.locator(".automation-timeline")).to_contain_text("运行中")
 
-    misfire = history.locator(".automation-occurrence-card").filter(
-        has_text="故障矩阵 · 错过调度"
-    )
+    misfire = history.locator(".automation-occurrence-card").filter(has_text="故障矩阵 · 错过调度")
     expect(misfire).to_contain_text("已跳过")
     expect(misfire).to_contain_text("错过计划时间，已按策略跳过")
 

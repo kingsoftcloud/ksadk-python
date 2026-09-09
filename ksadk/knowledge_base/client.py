@@ -86,6 +86,8 @@ class KnowledgeBaseClient(BaseModel):
     # KnowledgeBaseService.build_context 区分"后端吞错返空"与"真无结果"，
     # 避免错误伪装成"未找到"注入模型上下文。
     last_error: str = ""
+    last_request_id: str = ""
+    last_http_status: int | None = None
 
     _aicp_client: Any = None
 
@@ -140,9 +142,7 @@ class KnowledgeBaseClient(BaseModel):
                 "Ensure kingsoftcloud-sdk-python is installed and up to date."
             )
 
-        cred = credential.Credential(
-            self.access_key, self.secret_key, self.session_token or None
-        )
+        cred = credential.Credential(self.access_key, self.secret_key, self.session_token or None)
 
         http_profile = HttpProfile()
         http_profile.endpoint = self.endpoint
@@ -153,17 +153,23 @@ class KnowledgeBaseClient(BaseModel):
         client_profile = ClientProfile()
         client_profile.httpProfile = http_profile
 
-        self._aicp_client = aicp_module.AicpClient(cred, self.region, profile=client_profile)
+        owner = self
+
+        class ObservedAicpClient(aicp_module.AicpClient):
+            def _check_status(self, response):
+                # The upstream SDK discards HTTP status when raising its generic
+                # ServerNetworkError. Capture only the status before delegation;
+                # never infer authorization from exception text/response content.
+                owner.last_http_status = response.status
+                return super()._check_status(response)
+
+        self._aicp_client = ObservedAicpClient(cred, self.region, profile=client_profile)
 
         # 强制覆写 API 版本为 RetrieveKnowledge 所需的 2025-11-14
         # SDK 的 _apiVersion 由导入的模块版本决定，可能不匹配
         self._aicp_client._apiVersion = "2025-11-14"
 
-        logger.info(
-            f"KnowledgeBaseClient initialized: "
-            f"dataset_id={self.dataset_id}, region={self.region}, "
-            f"endpoint={self.endpoint}"
-        )
+        logger.debug("KnowledgeBaseClient initialized")
         return self._aicp_client
 
     def _build_params(self, query: str, top_k: Optional[int] = None) -> dict:
@@ -192,11 +198,41 @@ class KnowledgeBaseClient(BaseModel):
         try:
             data = json.loads(response) if isinstance(response, str) else response
         except (json.JSONDecodeError, TypeError):
-            self.last_error = f"Failed to parse response: {str(response)[:200]}"
-            logger.error(f"Failed to parse response: {str(response)[:200]}")
+            self.last_error = "Invalid knowledge response JSON"
+            logger.error("Invalid knowledge response JSON")
             return []
 
-        records = data.get("Records", [])
+        if not isinstance(data, dict):
+            self.last_error = "Knowledge response must be an object"
+            return []
+        metadata = data.get("ResponseMetadata") or {}
+        if not isinstance(metadata, dict):
+            self.last_error = "Invalid knowledge response metadata"
+            return []
+        request_id = data.get("RequestId") or metadata.get("RequestId")
+        self.last_request_id = (
+            request_id if isinstance(request_id, str) and len(request_id) <= 256 else ""
+        )
+        code = data.get("Code")
+        if "Code" in data:
+            valid_code = (
+                (type(code) is int and code in {0, 200})
+                or (type(code) is str and code in {"0", "200"})
+            )
+            if not valid_code:
+                self.last_error = "Knowledge service rejected the request"
+                return []
+        if data.get("Error") or metadata.get("Error"):
+            self.last_error = "Knowledge service rejected the request"
+            return []
+
+        if "Records" not in data:
+            self.last_error = "Knowledge response omitted records"
+            return []
+        records = data["Records"]
+        if not isinstance(records, list):
+            self.last_error = "Invalid knowledge records"
+            return []
         results = []
 
         for record in records:
@@ -228,24 +264,19 @@ class KnowledgeBaseClient(BaseModel):
         Returns:
             匹配的文档片段列表
         """
-        client = self._get_client()
-        params = self._build_params(query, top_k)
-
-        logger.info(
-            f"Searching knowledge base: dataset_id={self.dataset_id}, " f"query='{query[:50]}'"
-        )
-
         self.last_error = ""
+        self.last_request_id = ""
+        self.last_http_status = None
         try:
+            client = self._get_client()
+            params = self._build_params(query, top_k)
             response = client.call("RetrieveKnowledge", params, options={"IsPostJson": True})
             results = self._parse_response(response)
-            logger.info(
-                f"Knowledge base returned {len(results)} results " f"for query='{query[:50]}'"
-            )
+            logger.debug("Knowledge base returned %d results", len(results))
             return results
         except Exception as e:
             self.last_error = str(e)
-            logger.error(f"Knowledge base search failed: {e}")
+            logger.error("Knowledge base search failed (%s)", type(e).__name__)
             raise
 
     @classmethod
@@ -261,7 +292,7 @@ class KnowledgeBaseClient(BaseModel):
         dataset_id = os.environ.get("KSADK_KB_DATASET_ID", "")
         if not dataset_id:
             raise ValueError(
-                "KSADK_KB_DATASET_ID environment variable is required " "to enable knowledge base."
+                "KSADK_KB_DATASET_ID environment variable is required to enable knowledge base."
             )
 
         access_key = (
@@ -275,9 +306,8 @@ class KnowledgeBaseClient(BaseModel):
             or os.environ.get("KSYUN_SECRET_KEY")
             or os.environ.get("KSYUN_SECRET_ACCESS_KEY", "")
         )
-        session_token = (
-            os.environ.get("KSADK_KB_SESSION_TOKEN")
-            or os.environ.get("KSYUN_SESSION_TOKEN", "")
+        session_token = os.environ.get("KSADK_KB_SESSION_TOKEN") or os.environ.get(
+            "KSYUN_SESSION_TOKEN", ""
         )
 
         score_threshold_str = os.environ.get("KSADK_KB_SCORE_THRESHOLD", "")

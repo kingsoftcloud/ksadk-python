@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from fastapi import Depends
 from fastapi.responses import StreamingResponse
 
 from ksadk.conversations.normalize import (
@@ -44,9 +45,16 @@ from ksadk.runtime.conversation_execution import (
     invoke_runtime_conversation_once,
     iter_runtime_conversation_semantic_events,
 )
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.api_models import AgentRunRequest
 from ksadk.server.factory import get_runtime_execution
+from ksadk.sessions.invocation_identity import identity_scope_ref
 
+from ..invocation_identity import (
+    coerce_trusted_invocation_identity,
+    inject_trusted_invocation_identity,
+    resolve_trusted_invocation_identity,
+)
 from . import dependencies as deps
 from .checkpoint_resolution import _resolve_checkpoint_resume_input_from_session
 from .common import (
@@ -76,14 +84,33 @@ logger = logging.getLogger(__name__)
 
 
 @run_router.post("/agentengine/api/v1/RunAgent")
-async def run_agent_action(request: RunAgentActionRequest):
+async def run_agent_action(
+    request: RunAgentActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     executor, launch_context = get_runtime_execution()
     if kernel_route_active():
-        return await _kernel_run_agent_action(request, launch_context)
+        return await _kernel_run_agent_action(request, launch_context, invocation_identity)
     api_format = (request.ApiFormat or "responses").strip().lower()
-    run_user_id = _clean_optional_string(request.UserId) or "user"
+    requested_user_id = _clean_optional_string(request.UserId)
     account_id = _clean_optional_string(request.AccountId)
     service = deps.resolve_session_service()
+    user_id_explicit = "UserId" in request.model_fields_set
+    if not user_id_explicit and invocation_identity.is_empty and request.SessionId:
+        legacy_session = await service.get_session_metadata(request.SessionId)
+        if legacy_session is not None and legacy_session.agent_id == request.AgentId:
+            requested_user_id = legacy_session.user_id
+    requested_user_id = requested_user_id or "user"
+    authorized_session = await ensure_conversation_session(
+        agent_id=request.AgentId,
+        user_id=requested_user_id,
+        session_id=request.SessionId,
+        session_service_provider=deps.resolve_session_service,
+        invocation_identity=invocation_identity,
+    )
+    run_user_id = authorized_session.user_id
+    run_session_id = authorized_session.id
     resume_input = (
         extract_responses_resume_input(request.ResponsesInput)
         if request.ResponsesInput is not None
@@ -92,39 +119,47 @@ async def run_agent_action(request: RunAgentActionRequest):
     resume_input = await _resolve_checkpoint_resume_input_from_session(
         service=service,
         agent_id=request.AgentId,
-        session_id=request.SessionId,
+        session_id=run_session_id,
         resume_input=resume_input,
     )
     if resume_input is not None:
         messages = []
     elif request.ResponsesInput is not None and api_format == "responses":
-        messages = normalize_responses_input(request.ResponsesInput)
+        messages = normalize_responses_input(
+            request.ResponsesInput,
+            owner_scope_ref=(
+                identity_scope_ref(invocation_identity)
+                if not invocation_identity.is_empty
+                else None
+            ),
+        )
     else:
-        messages = normalize_kop_messages(request.Messages)
+        messages = normalize_kop_messages(
+            request.Messages,
+            owner_scope_ref=(
+                identity_scope_ref(invocation_identity)
+                if not invocation_identity.is_empty
+                else None
+            ),
+        )
     request_metadata: dict[str, Any] = (
         {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else {}
     )
     custom_metadata, metadata_runtime_controls = _split_custom_metadata(request.Metadata)
     request_metadata.update(metadata_runtime_controls)
+    request_metadata = inject_trusted_invocation_identity(request_metadata, invocation_identity)
     if api_format == "responses":
         request_metadata["responses_conversation"] = True
 
     if request.Background:
         runtime_preparation = (
-            None
-            if resume_input is not None
-            else await executor.prepare_start(launch_context)
+            None if resume_input is not None else await executor.prepare_start(launch_context)
         )
-        invocation_id = request.InvocationId or new_run_id(request.SessionId)
+        invocation_id = request.InvocationId or new_run_id(run_session_id)
         # 后台 stream 在 detached task 里才被消费（lazy），此时 session 尚未创建。
         # 先 ensure 出 session，才能立刻写 run_status=in_progress（供 SubscribeRunEvents
         # 拉到起始态），并把 resolved session_id 回填给 detached stream 的终态写入与 SubscribeUrl。
-        background_session = await ensure_conversation_session(
-            agent_id=request.AgentId,
-            user_id=run_user_id,
-            session_id=request.SessionId,
-            session_service_provider=deps.resolve_session_service,
-        )
+        background_session = authorized_session
         resolved_background_session_id = background_session.id
         if resume_input is None:
             await prime_session_metadata_for_user_turn(
@@ -196,9 +231,7 @@ async def run_agent_action(request: RunAgentActionRequest):
 
     if request.Stream:
         runtime_preparation = (
-            None
-            if resume_input is not None
-            else await executor.prepare_start(launch_context)
+            None if resume_input is not None else await executor.prepare_start(launch_context)
         )
         if api_format == "chat_completions":
             return StreamingResponse(
@@ -208,7 +241,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                     agent_id=_runtime_agent_id(launch_context),
                     user_id=run_user_id,
                     messages=messages,
-                    session_id=request.SessionId,
+                    session_id=run_session_id,
                     model=request.Model,
                     model_metadata=request.ModelMetadata,
                     model_options=request.ModelOptions,
@@ -222,7 +255,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 ),
                 media_type="text/event-stream",
             )
-        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
+        resume_key = _detached_resume_key_from_input(run_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
         return deps.detached_streaming_response(
             stream_runtime_responses_conversation_turn(
@@ -231,7 +264,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 agent_id=request.AgentId,
                 user_id=run_user_id,
                 messages=messages,
-                session_id=request.SessionId,
+                session_id=run_session_id,
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
                 model_options=request.ModelOptions,
@@ -258,7 +291,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         agent_id=request.AgentId,
         user_id=run_user_id,
         messages=messages,
-        session_id=request.SessionId,
+        session_id=run_session_id,
         model=request.Model,
         model_metadata=request.ModelMetadata,
         model_options=request.ModelOptions,
@@ -291,7 +324,11 @@ async def run_agent_action(request: RunAgentActionRequest):
     return _action_response("RunAgent", payload)
 
 
-async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_context):
+async def _kernel_run_agent_action(
+    request: RunAgentActionRequest,
+    launch_context,
+    invocation_identity: PlatformIdentityContext,
+):
     """kernel 路径（灰度 opt-in）：RunAgent -> AgentControlCommand -> receipt。
 
     旧响应 shape 不变；receipt 状态走 RECEIPT_HTTP_STATUS 映射；
@@ -305,6 +342,7 @@ async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_contex
         user_id=run_user_id,
         session_id=request.SessionId,
         session_service_provider=deps.resolve_session_service,
+        invocation_identity=invocation_identity,
     )
     session_id = session.id
     idempotency_key = (
@@ -317,10 +355,24 @@ async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_contex
         or new_run_id(session_id)
     )
     messages = (
-        normalize_responses_input(request.ResponsesInput)
+        normalize_responses_input(
+            request.ResponsesInput,
+            owner_scope_ref=(
+                identity_scope_ref(invocation_identity)
+                if not invocation_identity.is_empty
+                else None
+            ),
+        )
         if request.ResponsesInput is not None
         and (request.ApiFormat or "responses").strip().lower() == "responses"
-        else normalize_kop_messages(request.Messages)
+        else normalize_kop_messages(
+            request.Messages,
+            owner_scope_ref=(
+                identity_scope_ref(invocation_identity)
+                if not invocation_identity.is_empty
+                else None
+            ),
+        )
     )
     # RunAgent 的 Model 覆盖走 runtime_options.model:与 agentengine-server 的
     # _kernel_runtime_options 投影同构;worker 侧按部署 defaults/白名单校验。
@@ -336,6 +388,7 @@ async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_contex
         correlation_ref=request.InvocationId,
         source_kind="system",
         runtime_options=runtime_options or None,
+        invocation_identity=invocation_identity,
     )
     if receipt.status not in ("accepted", "duplicate"):
         return _kernel_error_response(receipt)
@@ -401,7 +454,10 @@ def _adk_usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, int] | Non
     }
 
 
-async def _runtime_run_sse(request: AgentRunRequest) -> StreamingResponse:
+async def _runtime_run_sse(
+    request: AgentRunRequest,
+    invocation_identity: PlatformIdentityContext | None = None,
+) -> StreamingResponse:
     executor, launch_context = get_runtime_execution()
     # Validate explicit ownership before StreamingResponse commits HTTP 200.
     # Also resolve an omitted id exactly once so preparation cannot create a
@@ -411,9 +467,19 @@ async def _runtime_run_sse(request: AgentRunRequest) -> StreamingResponse:
         user_id=request.userId,
         session_id=request.sessionId,
         session_service_provider=deps.resolve_session_service,
+        invocation_identity=invocation_identity,
     )
     execution_session_id = execution_session.id
-    normalized = normalize_parts_content(request.newMessage.parts)
+    execution_user_id = execution_session.user_id
+    request_metadata = inject_trusted_invocation_identity({}, invocation_identity)
+    normalized = normalize_parts_content(
+        request.newMessage.parts,
+        owner_scope_ref=(
+            identity_scope_ref(invocation_identity)
+            if invocation_identity is not None and not invocation_identity.is_empty
+            else None
+        ),
+    )
     message = {
         "role": "user",
         "content": str(normalized.get("content") or ""),
@@ -432,11 +498,12 @@ async def _runtime_run_sse(request: AgentRunRequest) -> StreamingResponse:
                     executor=executor,
                     launch_context=launch_context,
                     agent_id=request.appName,
-                    user_id=request.userId,
+                    user_id=execution_user_id,
                     messages=[message],
                     session_id=execution_session_id,
                     model=request.model,
                     state_delta=request.stateDelta or {},
+                    request_metadata=request_metadata,
                     invocation_id=invocation_id,
                     session_service_provider=deps.resolve_session_service,
                     run_mode=RUN_MODE_FOREGROUND,
@@ -477,11 +544,12 @@ async def _runtime_run_sse(request: AgentRunRequest) -> StreamingResponse:
                 executor=executor,
                 launch_context=launch_context,
                 agent_id=request.appName,
-                user_id=request.userId,
+                user_id=execution_user_id,
                 messages=[message],
                 session_id=execution_session_id,
                 model=request.model,
                 state_delta=request.stateDelta or {},
+                request_metadata=request_metadata,
                 invocation_id=invocation_id,
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_FOREGROUND,
@@ -528,9 +596,7 @@ async def _runtime_run_sse(request: AgentRunRequest) -> StreamingResponse:
                         )
                     else:
                         text_payload.update({"partial": True, "replace": False})
-                    yield _adk_sse_event(
-                        text_payload
-                    )
+                    yield _adk_sse_event(text_payload)
                 elif event_type == "tool_call":
                     yield _adk_sse_event(
                         {"name": event.get("name"), "args": event.get("args") or {}},
@@ -592,14 +658,17 @@ async def _runtime_run_sse(request: AgentRunRequest) -> StreamingResponse:
 
 
 @run_router.post("/run_sse")
-async def run_sse(request: AgentRunRequest):
+async def run_sse(
+    request: AgentRunRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Unified Streaming Endpoint compatible with ADK Web
 
     Respects the `streaming` parameter:
     - streaming=False: Accumulate full response, send as single event
     - streaming=True: Stream tokens as they arrive (real-time)
     """
-    return await _runtime_run_sse(request)
+    return await _runtime_run_sse(request, coerce_trusted_invocation_identity(invocation_identity))
 
 
 # ============================================================

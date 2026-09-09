@@ -18,7 +18,7 @@ const defaultBuilds = [
   { id: "build-current", status: "SUCCEEDED" },
   { id: "build-previous", status: "SUCCEEDED" },
 ];
-let agentBuilds: Array<{ id: string; status: string; createdAt?: string }> = defaultBuilds;
+let agentBuilds: Array<{ id: string; status: string; createdAt?: string; isCurrent?: boolean }> = defaultBuilds;
 let currentCloudVersionId = "cloud-agent-1";
 let deploymentRefreshFails = false;
 let newDeploymentReady = false;
@@ -78,7 +78,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       endpoint: "http://ar-cloud-new.example.test",
       artifactId: "managed-runtime",
     });
-    return new Response(JSON.stringify({ items }));
+    return new Response(JSON.stringify({ items, currentIdentity: { userName: "credential-user", userId: "credential-id" } }));
   }
   if (path === "/api/v1/cloud-agents?size=100") {
     return new Response(JSON.stringify({ items: accountAgentItems, total: accountAgentItems.length }));
@@ -296,6 +296,17 @@ describe("DeploymentsPage", () => {
   const renderPage = (onOpenChat = vi.fn(), onSelectBuild = vi.fn()) => render(
     <DeploymentsPage onCreate={vi.fn()} onOpenChat={onOpenChat} onSelectBuild={onSelectBuild} />,
   );
+
+  it("labels credential fallback only for local receipts without a recorded creator", async () => {
+    accountAgentItems = [
+      { agentId: "ar-cloud-ui", name: "Managed YAML Agent", status: "RUNNING", creatorName: null },
+      { agentId: "ar-other", name: "Other Agent", status: "RUNNING", creatorName: null },
+    ];
+    renderPage();
+    expect(await screen.findByText("credential-user")).toBeInTheDocument();
+    expect(screen.getByText("当前凭证")).toBeInTheDocument();
+    expect(screen.getByText("创建人未记录")).toBeInTheDocument();
+  });
 
   it("keeps the Server cloud projection authoritative after refreshing a local receipt", async () => {
     const user = userEvent.setup();
@@ -765,5 +776,39 @@ describe("DeploymentsPage", () => {
     expect(await screen.findByRole("radio", { name: /New Agent.*build-new/ })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("button", { name: "部署到云端" })).toBeEnabled();
     expect(screen.queryByRole("heading", { name: "云端 Agent" })).not.toBeInTheDocument();
+  });
+
+  it("limits an Agent-scoped deployment route to Builds from that Agent", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "#/deployments/new?buildId=build-current&agentId=demo-agent",
+    );
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "部署 Demo Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Demo Agent.*build-current/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.queryByRole("radio", { name: /New Agent.*build-new/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps stale-Build fallback within the Agent from the route", async () => {
+    agentBuilds = [
+      { id: "build-current", status: "SUCCEEDED", isCurrent: false, createdAt: "2026-08-23T10:00:00Z" },
+      { id: "build-previous", status: "SUCCEEDED", isCurrent: true, createdAt: "2026-08-24T10:00:00Z" },
+    ];
+    window.history.replaceState(
+      null,
+      "",
+      "#/deployments/new?buildId=build-current&agentId=demo-agent",
+    );
+    renderPage();
+
+    await waitFor(() => expect(
+      screen.getByRole("radio", { name: /Demo Agent.*build-previous/ }),
+    ).toHaveAttribute("aria-checked", "true"));
+    expect(screen.queryByRole("radio", { name: /New Agent.*build-new/ })).not.toBeInTheDocument();
   });
 });

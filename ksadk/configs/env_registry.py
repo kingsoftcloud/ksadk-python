@@ -5,6 +5,30 @@ from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
+        "KSADK_MEMORY_POSTGRES_DSN", "memory", "Harness memory PostgreSQL DSN.",
+        sensitive=True, documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_OTEL_ENDPOINT", "harness", "Optional Harness trace export endpoint.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_OTEL_SERVICE_NAME", "harness", "Harness trace service name.",
+        "ksadk-harness", documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_MATRIX_REQUIRE_E2B", "harness", "Require E2B in sandbox validation.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_API_KEY", "sandbox", "Legacy Skill MCP forwarded sandbox credential.",
+        sensitive=True, documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_MANIFEST_TTL", "skills", "Skill manifest cache TTL in seconds.",
+        "60", documented=False,
+    ),
+    EnvVarSpec(
         "KSADK_AGENT_EVAL",
         "evaluation",
         "Enable internal Agent evaluation integration.",
@@ -379,6 +403,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
+        "KSADK_CHECKPOINT_DSN",
+        "sessions",
+        "Framework-agnostic PostgreSQL checkpoint DSN.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
         "sessions",
         "LangGraph PostgreSQL checkpoint DSN.",
@@ -397,6 +427,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_HARNESS_STATE_DIR",
         "harness",
         "Runtime server durable state directory (checkpoints and receipts).",
+    ),
+    EnvVarSpec(
+        "KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS",
+        "builders",
+        "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
     ),
     EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
@@ -491,6 +526,18 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "model_proxy",
         "Comma-separated model allowlist for the experimental model proxy.",
     ),
+    EnvVarSpec(
+        "KSADK_PERSISTENCE_PROBE_CACHE_TTL",
+        "sessions",
+        "PostgreSQL persistence readiness cache TTL seconds.",
+        "30",
+    ),
+    EnvVarSpec(
+        "KSADK_PERSISTENCE_PROBE_TIMEOUT",
+        "sessions",
+        "PostgreSQL persistence readiness timeout seconds.",
+        "2",
+    ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
     EnvVarSpec(
         "KSADK_PG_SESSIONS_TABLE", "sessions", "Internal PostgreSQL sessions table constant."
@@ -527,6 +574,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_PUBLIC_SKILL_SPACE_IDS",
         "skills",
         "Comma-separated public Skill Space ids appended after user spaces.",
+    ),
+    EnvVarSpec(
+        "KSADK_RESOURCE_IAM_ENDPOINT",
+        "platform_resources",
+        "Operator-owned IAM endpoint used to authorize Studio platform-resource bindings.",
     ),
     EnvVarSpec(
         "KSADK_RESPONSES_SESSION_HEADER",
@@ -874,7 +926,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.4",
+        "0.3.7",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

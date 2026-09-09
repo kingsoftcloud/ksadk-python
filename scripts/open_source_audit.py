@@ -81,14 +81,6 @@ class AuditResult:
 
 COMMON_RULES = (
     DenyRule(
-        name="studio-frontend-source",
-        prefixes=("ksadk/studio/react-ui/",),
-        description=(
-            "editable Studio React/TypeScript source stays internal; public source and "
-            "Python artifacts carry reviewed compiled static assets only"
-        ),
-    ),
-    DenyRule(
         name="zread-output",
         prefixes=(".zread/",),
         description=(
@@ -178,6 +170,15 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
 )
 
 WHEEL_RULES = (
+    DenyRule(
+        name="studio-frontend-source",
+        prefixes=("ksadk/studio/react-ui/",),
+        description=(
+            "editable Studio React/TypeScript source belongs in the Git repository; "
+            "Python artifacts carry compiled static assets only"
+        ),
+    ),
+
     DenyRule(
         name="hosted-ui-bundle",
         prefixes=("ksadk/server/web-ui/dist-hosted/",),
@@ -299,7 +300,7 @@ CONTENT_RULES = (
             r"(?<![A-Za-z0-9.-])"
             # 金山云公开服务 endpoint(用户在金山云环境跑 agent 必需,公开 SDK 必须支持)
             r"(?!(?:aicp|vpc)\.(?:inner|internal)\.api\.ksyun\.com\b)"
-            r"(?!iam\.inner\.api\.ksyun\.com\b)"
+            r"(?!iam\.(?:inner|internal)\.api\.ksyun\.com\b)"
             r"(?!kspmas(?:-internal)?\.sdns\.ksyun\.com\b)"
             r"(?!ks3-[a-z-]+(?:-internal)?\.ksyuncs\.com\b)"
             r"(?!kmr\.[a-z-]+\.inner\.api\.ksyun\.com\b)"
@@ -730,7 +731,9 @@ def audit_public_export_manifest(root: Path, paths: Iterable[str]) -> AuditResul
                         Violation(
                             path="export-manifest.json",
                             rule="wrong-public-export-documentation",
-                            description="export manifest must point to the public documentation site",
+                            description=(
+                                "export manifest must point to the public documentation site"
+                            ),
                         )
                     )
                 if not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("sourceCommit", ""))):
@@ -773,7 +776,9 @@ def audit_public_export_manifest(root: Path, paths: Iterable[str]) -> AuditResul
                         Violation(
                             path="export-manifest.json",
                             rule="invalid-public-export-policy",
-                            description="exportPolicy must be a versioned allowlist SHA-256 attestation",
+                            description=(
+                                "exportPolicy must be a versioned allowlist SHA-256 attestation"
+                            ),
                         )
                     )
 

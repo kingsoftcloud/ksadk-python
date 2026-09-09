@@ -99,24 +99,21 @@ class Harness:
         monkeypatch.setenv("KSADK_AGENT_KERNEL", "1")
         # 注册进程级 kernel（monkeypatch 会在 teardown 还原为 None）。
         monkeypatch.setattr(ingress, "_kernel", self.kernel, raising=True)
-        # Studio additionally requires an exact Build/runtime binding before
-        # it is allowed to enter Kernel ingress.  Register that trusted
-        # binding instead of relying on the obsolete "any active kernel"
-        # behaviour this convergence test predates.
-        from ksadk.kernel import bootstrap
+        # Studio additionally verifies that the process Kernel is bound to the
+        # exact Agent/runtime before submitting.  Supply that production shape
+        # while keeping the test's RecordingKernel as the control plane.
+        from ksadk.studio.run_service import StudioRunService
 
+        kernel_runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                tenant_id=TENANT,
+                agent_instance_id=AGENT_INSTANCE,
+            )
+        )
         monkeypatch.setattr(
-            bootstrap,
-            "_runtime",
-            SimpleNamespace(
-                config=SimpleNamespace(
-                    tenant_id=TENANT,
-                    agent_instance_id=AGENT_INSTANCE,
-                    launch_context=self.launch_context,
-                    start_request_defaults={"agent_id": AGENT_INSTANCE},
-                )
-            ),
-            raising=True,
+            StudioRunService,
+            "_kernel_runtime_for_spec",
+            staticmethod(lambda _spec: kernel_runtime),
         )
 
     @property
@@ -321,6 +318,23 @@ async def test_kernel_disabled_by_default(monkeypatch):
     monkeypatch.delenv("KSADK_AGENT_KERNEL", raising=False)
     assert not ingress.kernel_ingress_enabled()
     assert not ingress.kernel_route_active()
+
+
+def test_hosted_runtime_keeps_public_compatibility_routes_off_local_permits(
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    monkeypatch.setenv(
+        "AGENT_CONTROL_JWKS_URL",
+        "https://server.internal/agent-control/jwks",
+    )
+    ingress.set_agent_kernel(object())
+    try:
+        assert ingress.kernel_ingress_enabled()
+        assert not ingress.kernel_route_active()
+    finally:
+        ingress.clear_agent_kernel()
 
 
 def test_map_run_request_carries_runtime_options_model():

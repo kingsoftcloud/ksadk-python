@@ -291,7 +291,10 @@ async def test_harness_apps_have_distinct_session_services(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_harness_http_sessions_are_app_scoped(tmp_path):
+async def test_harness_http_sessions_are_app_scoped(tmp_path, monkeypatch):
+    from ksadk.server.routes import dependencies
+
+    monkeypatch.setattr(dependencies, "_dependencies", None)
     first = HarnessApp(
         HarnessConfig(model="m", prompt="p"), workspace_root=tmp_path / "one"
     ).build_app()

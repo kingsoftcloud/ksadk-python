@@ -62,6 +62,7 @@ from ksadk.kernel.store import (
     control_event,
     new_message_id,
 )
+from ksadk.kernel.worker_identity import prepare_worker_identity
 from ksadk.runtime.adapter import (
     CancelResult,
     PauseResult,
@@ -75,6 +76,7 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.adapter import (
     ResumeTarget as AdapterResumeTarget,
 )
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,7 @@ class WorkResult:
     message_id: str | None = None
     run_id: str | None = None
     last_seq: int | None = None
+    error: Exception | None = None
 
 
 class AgentKernelWorker:
@@ -120,12 +123,14 @@ class AgentKernelWorker:
         session_events: object | None = None,
         interaction_providers: Mapping[str, InteractionProvider] | None = None,
         start_request_defaults: Mapping[str, object] | None = None,
+        session_service: object | None = None,
     ) -> None:
         self._store = store
         self._adapter_factory = adapter_factory
         # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
         # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
         self._session_events = session_events
+        self._session_service = session_service
         # Deployment-owned defaults (model, prompt and sandbox) come from the
         # admitted immutable manifest. Server may attach a bounded per-turn
         # model/approval selector to the signed command; the worker validates
@@ -294,8 +299,10 @@ class AgentKernelWorker:
             )
             await self._store.discard_claim(message_id, expected_fence=fence)
             return WorkResult(outcome="completed", message_id=message_id)
-        except StaleFenceError:
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+        except StaleFenceError as error:
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
         except AgentKernelError as error:
             if error.code == RUNTIME_INTERACTION_UNAVAILABLE:
                 # typed rejection：provider 诚实声明无法原生送达回包，
@@ -316,23 +323,46 @@ class AgentKernelWorker:
                 await self._store.discard_claim(message_id, expected_fence=fence)
                 return WorkResult(outcome="completed", message_id=message_id)
             if error.retryable:
-                return WorkResult(outcome="retryable_failure", message_id=message_id)
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
-        except Exception:
-            # 未知异常绝不 ack 为成功：消息保持 claimed。
-            logger.exception(
-                "agent kernel command failed before deterministic settlement: "
-                "command_id=%s command_type=%s session_id=%s",
+                return WorkResult(
+                    outcome="retryable_failure", message_id=message_id, error=error
+                )
+            logger.error(
+                "agent kernel command failed permanently: "
+                "agent_instance_id=%s session_id=%s command_id=%s "
+                "command_type=%s error=%s: %s",
+                command.agent_instance_id,
+                command.session_id,
                 command.command_id,
                 command.command_type,
-                command.session_id,
+                type(error).__name__,
+                error,
             )
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
+        except Exception as error:
+            # 未知异常绝不 ack 为成功：消息保持 claimed。
+            logger.exception(
+                "agent kernel command raised an unexpected exception: "
+                "agent_instance_id=%s session_id=%s command_id=%s "
+                "command_type=%s error=%s: %s",
+                command.agent_instance_id,
+                command.session_id,
+                command.command_id,
+                command.command_type,
+                type(error).__name__,
+                error,
+            )
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
 
         try:
             await self._store.complete_claim(message_id, expected_fence=fence)
-        except StaleFenceError:
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+        except StaleFenceError as error:
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
         return WorkResult(outcome="completed", message_id=message_id, run_id=run_id)
 
     async def _message_id_for(self, command: AgentControlCommand) -> str:
@@ -403,10 +433,16 @@ class AgentKernelWorker:
         }
         if approval_mode in approval_overrides:
             request_config["approval_mode"] = approval_overrides[approval_mode]
+        effective_user_id, invocation_identity = await prepare_worker_identity(
+            command=command,
+            defaults=defaults,
+            session_service=self._session_service,
+        )
+
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
-                user_id=str(command.tenant_id or "agent-kernel"),
+                user_id=effective_user_id,
                 session_id=command.session_id,
                 agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
                 model=selected_model,
@@ -414,8 +450,18 @@ class AgentKernelWorker:
                 # durable run_id 优先传给 adapter；adapter 不认时以
                 # runtime_run_id 映射显式记录两个 ID 的对应关系。
                 metadata={
+                    **(
+                        {"session_context": command.payload["session_context"]}
+                        if "session_context" in command.payload
+                        else {}
+                    ),
                     "command_id": str(command.command_id),
                     "run_id": run_id,
+                    **(
+                        {TRUSTED_IDENTITY_METADATA_KEY: dict(invocation_identity)}
+                        if isinstance(invocation_identity, Mapping)
+                        else {}
+                    ),
                     **continuation_metadata,
                 },
             )
@@ -753,7 +799,17 @@ class AgentKernelWorker:
             )
         else:
             request_schema = dict(event.request.schema_)
-            native_target = {"call_id": event.interaction_id}
+            # Codex maps the native JSON-RPC request id to a stable canonical
+            # interaction id for replay.  The live client, however, indexes its
+            # pending callback by the original request id.  Preserve that id as
+            # the provider target or SubmitInteraction can find the durable
+            # record but cannot wake the blocked Codex callback.
+            native_call_id = (
+                event.source.native_event_id
+                or event.source.native_item_id
+                or event.interaction_id
+            )
+            native_target = {"call_id": native_call_id}
         for key in ("checkpoint_id", "thread_id"):
             value = execution.handle.native_ref.get(key)
             if value is not None:
@@ -819,7 +875,13 @@ class AgentKernelWorker:
                 kind=RESUME_TARGET_KINDS[target_dict["kind"]],
                 id=str(target_dict["id"]),
             )
-            resumed = await adapter.resume(handle, target, AdapterResumePayload(kind="free_text"))
+            resumed = await adapter.resume(
+                handle,
+                target,
+                AdapterResumePayload(
+                    kind="free_text", session_context=command.payload.get("session_context")
+                ),
+            )
             execution = self._replace_handle(execution, resumed)
             self._start_stream(
                 execution,
@@ -886,10 +948,7 @@ class AgentKernelWorker:
         # e.g. calling LangGraph checkpoint resume with a Codex live handle
         # would acknowledge a response that can never reach the original run.
         provider = execution.interaction_provider
-        if (
-            provider.provider_id != record.provider_id
-            or provider.mode == "unavailable"
-        ):
+        if provider.provider_id != record.provider_id or provider.mode == "unavailable":
             raise AgentKernelError(
                 RUNTIME_INTERACTION_UNAVAILABLE,
                 f"interaction provider {record.provider_id!r} cannot deliver "
@@ -917,6 +976,7 @@ class AgentKernelWorker:
         context = InteractionResolveContext(
             adapter=execution.adapter,
             handle=execution.handle,
+            session_context=command.payload.get("session_context"),
             activation_id=activation.activation_id,
             fencing_token=fence,
         )

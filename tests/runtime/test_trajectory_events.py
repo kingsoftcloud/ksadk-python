@@ -183,6 +183,39 @@ async def test_runner_projects_reasoning_tool_usage_and_message_as_v2_items() ->
 
 
 @pytest.mark.asyncio
+async def test_repeated_tool_call_id_creates_distinct_chunk_path_items() -> None:
+    """Break caught: resumed graph repeats a stage call id and fails reduction."""
+
+    _, events = await _events_for(
+        [
+            {"type": "tool_start", "call_id": "fetch_sources", "name": "web.fetch"},
+            {
+                "type": "tool_end",
+                "call_id": "fetch_sources",
+                "name": "web.fetch",
+                "output": {"attempt": 1},
+            },
+            {"type": "tool_start", "call_id": "fetch_sources", "name": "web.fetch"},
+            {
+                "type": "tool_end",
+                "call_id": "fetch_sources",
+                "name": "web.fetch",
+                "output": {"attempt": 2},
+            },
+            {"type": "final", "output": "done"},
+        ]
+    )
+
+    tool_items = [
+        event
+        for event in events
+        if isinstance(event, ItemCompleted) and event.item_kind in {"tool_call", "tool_result"}
+    ]
+    assert len(tool_items) == 4
+    assert len({event.item_id for event in tool_items}) == 4
+
+
+@pytest.mark.asyncio
 async def test_legacy_model_boundary_chunks_do_not_invent_v2_protocol_facts() -> None:
     """The v2 contract has items, not synthetic turn/step/model-call records."""
 

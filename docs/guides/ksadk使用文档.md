@@ -399,9 +399,9 @@ GET /agentengine/api/v1/AttachmentContent?FileUri=ae-upload://<file_id>
 | Action | 请求字段 | 响应字段 |
 | --- | --- | --- |
 | `ListSessions` | `AgentId`、`UserId`（可选；不传返回该 agent 全部用户）、`Page`（≥1）、`PageSize`（1~200，默认 20） | `Sessions`、`Total`、`Page`、`PageSize` |
-| `ListSessionEvents` | `AgentId`、`SessionId`（可选；不传时跨会话）、`UserId`（可选）、`Offset`（≥0）、`Limit`（≥1） | `Events`、`Total`、`Offset`、`Limit` |
+| `ListSessionEvents` | `AgentId`（`SessionId` 不传时必填）、`SessionId`（可选单字符串；不传时跨会话）、`UserId`（跨会话可选）、`CheckpointIds` / `EventTypes`（可选数组）、`Offset`（≥0）、`Limit`（默认 10，最大 1000） | `Events`、查询范围与过滤数组、`Total`、`Offset`、`Limit` |
 
-`ListSessions` 用 `Page` / `PageSize` 做页式分页，客户端按 `Total` 计算总页数；`ListSessionEvents` 用 `Offset` / `Limit` 做偏移分页，`Total` 为该会话事件总数。事件按追加顺序返回，分页只读取已落盘事件，不会阻塞正在写入的事件流。
+`ListSessions` 用 `Page` / `PageSize` 做页式分页，客户端按 `Total` 计算总页数；`ListSessionEvents` 用 `Offset` / `Limit` 做偏移分页。`SessionId` 只接受单个非空字符串；不传时按 `AgentId` 跨会话查询，`UserId` 可进一步缩小该范围。`CheckpointIds` 按事件 metadata 的 `checkpoint_id` 过滤，`EventTypes` 按事件类型过滤；数组内部为 OR、字段之间为 AND，空数组不过滤。存储层先过滤并计算 `Total`，再按“最新窗口、正序返回”分页；序号游标仅适用于指定单个 `SessionId`。
 
 多副本部署要展示完整事件、checkpoint 或执行 resume 时，各 runtime 副本必须连接同一个 PostgreSQL（或等价共享 session backend）。InMemory 和 Local backend 仅用于单副本本地调试；控制面的 session 目录降级不能替代完整 transcript 或 checkpoint 存储。
 
@@ -577,7 +577,7 @@ flowchart TB
 - 推荐多模态图片写法：让支持图片的模型直接消费 OpenAI Responses `input_image` / runner `input_content`，不要为了“看图”默认启用本地 OCR。
 - 兼容 OCR 写法：如果业务明确需要平台先把图片转成 `current_attachment_results[*].text`，再设置 `KSADK_BUILD_ENABLE_ATTACHMENT_OCR=true`，或在项目 `requirements.txt` 显式写入 OCR 依赖。
 - MCP adapter：默认不打包；当项目 import `mcp` / `langchain_mcp_adapters`，或 `.env` 配置了非空 `KSADK_MCP_SERVERS` 时自动加入。自动发现不到时可设置 `KSADK_BUILD_ENABLE_MCP=true`。
-- PostgreSQL session：默认不打包 `asyncpg`；当 `.env` 设置 `KSADK_SESSION_BACKEND=postgres` 或 PostgreSQL DSN 时自动加入。自动发现不到时可设置 `KSADK_BUILD_ENABLE_POSTGRES_SESSION=true`。
+- PostgreSQL session/checkpoint：默认不打包 `asyncpg`；当 `.env` 设置 `KSADK_SESSION_BACKEND=postgres`、`KSADK_SESSION_DSN` 或 `KSADK_CHECKPOINT_DSN` 时自动加入。LangGraph、LangChain graph 与 DeepAgents 还会携带托管 PostgreSQL saver 依赖。自动发现不到时可设置 `KSADK_BUILD_ENABLE_POSTGRES_SESSION=true`。
 
 构建会复用 `.agentengine/code_build/pip_cache`，依赖清单未变化时也会复用 `.agentengine/code_build/linux_deps`，避免第二次构建从头下载。`pip install` 默认超时为 45 分钟，可用 `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` 调整。
 
@@ -754,6 +754,22 @@ Hosted 部署下，bootstrap 会返回 `RuntimeCapabilities` 字段，声明当�
 
 `ResumeRun.Supported=true` 时，`ListSessionCheckpoints` 返回的每条 checkpoint 会带 `ResumeDisabled` / `ResumeDisabledReason`，标记哪些恢复点当前可用。已恢复过的 checkpoint 在当前策略下不允许重复恢复。
 
+### 8.6 Session / Checkpoint 双库配置
+
+生产环境可以把 KsADK Session 与框架原生 Checkpoint 分开部署：
+
+```bash
+# 只使用占位符；请通过 Secret 注入真实 DSN。
+KSADK_SESSION_DSN=postgresql://<user>:<password>@<session-host>:5432/<session-db>
+KSADK_CHECKPOINT_DSN=postgresql://<user>:<password>@<checkpoint-host>:5432/<checkpoint-db>
+```
+
+两者都未配置时不声明远端持久化能力；只配置任一 DSN 时，另一个逻辑存储会回退复用该库；两者都配置时各自使用各自的库。`KSADK_SESSION_BACKEND=local`、`sqlite` 或 `memory` 是明确的 Session 本地 opt-out，不会被 checkpoint DSN 替换。
+
+框架专用覆盖优先级如下：ADK 为 `KSADK_ADK_SESSION_URL` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`；LangGraph、LangChain graph 与 DeepAgents 为 `KSADK_LANGGRAPH_CHECKPOINT_DSN` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`。`agentengine web` 本地调试会忽略仅来自项目 `.env` 的 Session/Checkpoint DSN，并写入项目本地 SQLite 默认值；命令环境中显式传入的配置会保留。
+
+Bootstrap 的 `Capabilities.Persistence` 与 `Capabilities.CheckpointPersistence` 分别展示两者的 readiness。即便数据库可连通，`ResumeRun.Supported` 仍要求这两个状态都 ready 且框架原生 saver/session service 完成初始化；旧版 LangChain 不具备 checkpoint 恢复能力。
+
 ## 9. 长任务恢复与 CancelRun / ResumeRun
 
 !!! new "0.6.7 新增"
@@ -779,7 +795,7 @@ sequenceDiagram
   UI->>RT: ListSessionEvents(SessionId, Offset, Limit)
   RT-->>UI: 已落盘事件 + Total
   U->>UI: 选择「从恢复点继续」
-  UI->>RT: ListSessionCheckpoints(AgentId, SessionId)
+  UI->>RT: ListSessionCheckpoints(AgentId, SessionId[], CheckpointId[])
   RT-->>UI: checkpoints (含 ResumeDisabled 标记)
   UI->>RT: ResumeRun(AgentId, SessionId, RunId, CheckpointId)
   RT-->>UI: 从恢复点继续生成
@@ -788,8 +804,10 @@ sequenceDiagram
 关键 action：
 
 - `CancelRun`：传入 `InvocationId`（即 `run_id`）取消正在运行的流式任务。runtime 会先尝试取消进程内 detached stream，再调用 runner 的 cancel 接口；返回 `Cancelled`、`Found`、`Status`、`RunnerCancelStatus`。
-- `ListSessionCheckpoints`：列出某个会话可恢复的 checkpoint，支持 `OnlyResumable` 过滤、`Offset` / `Limit` 分页（`Limit` 上限 500）。
-- `ResumeRun`：传入 `AgentId` / `SessionId` / `RunId` / `CheckpointId` 从指定恢复点继续。同一 session+run 已有进行中的 resume 时会返回 `resume_already_running`，避免并发重复恢复。
+- `ListSessionCheckpoints`：按一个、多个或全部 session 列出 checkpoint；`SessionId`、`CheckpointId` 均兼容字符串和数组，缺省或空数组表示不过滤。支持 `OnlyResumable`、`RunId`、`Framework`、开放值域的 `ResumeStatus[]`，以及限定为 `invocation/shared/pod_local/process_local/unknown` 的 `ResumeTypes[]`。恢复审计和最终状态修正后再过滤、计算总数并分页；默认每页 100 条、最大 1000 条，内部固定按 50 条扫描。
+- `ResumeRun`：传入 `AgentId` / `SessionId` / `RunId` / `CheckpointId` 从指定恢复点继续。`Background=true` 优先于 `Stream` 和 SSE `Accept`，立即返回 JSON 接受响应及 `SubscribeUrl`，客户端无需等待恢复过程；`Background=false` 时仍按 `Stream` 选择 SSE 或非流式最终 JSON。非流式正常完成返回 `success=true`，terminal checkpoint 的同步 noop 返回 `success=false`。同一 session+run 已有进行中的 resume 时会返回 `resume_already_running`，避免并发重复恢复。
+
+多 session / 全部 session 的跨实例完整性只对共享 Postgres backend 承诺；内存或 pod-local backend 只代表当前实例可见数据。
 
 !!! warning "不可恢复的 checkpoint"
 - 已是终态的 checkpoint 不可恢复（`ResumeDisabledReason` 会提示「选择更早恢复点重跑」）。

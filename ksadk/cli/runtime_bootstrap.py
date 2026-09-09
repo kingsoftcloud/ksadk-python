@@ -31,11 +31,33 @@ def _managed_a2a_card() -> Any:
 def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
     """Compose one detected project around the canonical RuntimeExecutor."""
 
+    config = dict(getattr(detection, "raw_config", None) or {})
+    managed_runtime = os.getenv("AGENTENGINE_MANAGED_RUNTIME") == "1"
+    if managed_runtime:
+        from ksadk.resource_runtime.managed_projection import native_codex_plugin_bindings
+
+    if managed_runtime and native_codex_plugin_bindings(config):
+        import hashlib
+        import json
+
+        from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
+
+        launch = json.loads((agent_path / ".agentkit/cloud-plugin-launch.json").read_text())
+        if (
+            launch["manifest_sha256"]
+            != hashlib.sha256(serialize_managed_runtime_manifest(config)).hexdigest()
+        ):
+            raise ValueError("Restored plugin launch does not match the runtime declaration")
+        config.update(launch["config"])
+    if managed_runtime:
+        from ksadk.resource_runtime.managed_projection import apply_managed_platform_resources
+
+        apply_managed_platform_resources(config)
     context = RuntimeLaunchContext(
         runtime_type=str(detection.type.value),
         project_dir=agent_path,
         detection=detection,
-        config=dict(getattr(detection, "raw_config", None) or {}),
+        config=config,
     )
     return create_runtime_app(
         RuntimeAppConfig(

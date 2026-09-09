@@ -205,7 +205,12 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
     assert calls[-1] == ("kill", "sbx-123")
 
 
-def test_e2b_sandbox_backend_reconnects_existing_session():
+@pytest.mark.parametrize("explicit", [False, True])
+def test_e2b_sandbox_backend_reconnects_existing_session(explicit, monkeypatch):
+    from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
+
+    options = {"api_url": "https://sandbox.example", "api_key": "fixture-only"}
+    monkeypatch.setattr(ExplicitE2BConnection, "sdk_options", lambda self: options)
     calls: list[tuple[str, object]] = []
 
     class FakeResult:
@@ -232,8 +237,8 @@ def test_e2b_sandbox_backend_reconnects_existing_session():
             self.files = FakeFiles()
 
         @classmethod
-        def connect(cls, sandbox_id: str, *, timeout: int):
-            calls.append(("connect", {"sandbox_id": sandbox_id, "timeout": timeout}))
+        def connect(cls, sandbox_id: str, *, timeout: int, **kwargs):
+            calls.append(("connect", {"sandbox_id": sandbox_id, "timeout": timeout, **kwargs}))
             return cls(sandbox_id)
 
         def kill(self):
@@ -242,13 +247,19 @@ def test_e2b_sandbox_backend_reconnects_existing_session():
     backend = E2BSandboxBackend(
         spec=SandboxSpec(template_id="tpl-aio", timeout=321),
         sandbox_cls=FakeSandbox,
+        connection=ExplicitE2BConnection(
+            api_url="https://sandbox.example", domain="sandbox.example", api_key="fixture-only"
+        ) if explicit else None,
     )
 
     session = backend.reconnect_session(session_locator="sbx-existing")
 
     assert session.sandbox_id == "sbx-existing"
     assert calls == [
-        ("connect", {"sandbox_id": "sbx-existing", "timeout": 321}),
+        (
+            "connect",
+            {"sandbox_id": "sbx-existing", "timeout": 321, **(options if explicit else {})},
+        ),
         ("run", "true"),
     ]
 

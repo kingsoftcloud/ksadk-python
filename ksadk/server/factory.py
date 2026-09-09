@@ -37,6 +37,7 @@ from ksadk.sandbox.registry import (
     bind_sandbox_registry,
     set_fallback_sandbox_registry,
 )
+from ksadk.server.persistence_capability import PersistenceCapabilityCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ class StreamRegistry:
         self.streams_by_invocation: dict[str, Any] = {}
         self.resume_keys_by_invocation: dict[str, tuple[str, str]] = {}
         self.active_resume_invocation_by_key: dict[tuple[str, str], str] = {}
+        self.resume_key_lock = asyncio.Lock()
 
     def clear(self) -> None:
         self.streams.clear()
@@ -130,6 +132,7 @@ class RuntimeAppState:
         # AG-UI endpoint 及其 app-owned RuntimeAdapter handle registry。
         self.agui_agent: Any = None
         self.agui_config: Any = None
+        self.persistence_capability = PersistenceCapabilityCoordinator()
 
     def resolve_session_service(self) -> Any:
         """Return this app's session service for the current execution loop."""
@@ -288,6 +291,8 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
     if pending_streams:
         await asyncio.gather(*pending_streams, return_exceptions=True)
     registry.clear()
+
+    await state.persistence_capability.aclose()
 
     if state.executor is not None:
         try:

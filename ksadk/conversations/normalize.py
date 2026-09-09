@@ -290,7 +290,9 @@ def compact_attachment_for_session(attachment: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-def attachment_from_part(part: Part) -> Optional[Dict[str, Any]]:
+def attachment_from_part(
+    part: Part, *, owner_scope_ref: str | None = None
+) -> Optional[Dict[str, Any]]:
     inline = part.inlineData
     if inline and inline.data:
         display_name = inline.displayName or "uploaded_file"
@@ -312,7 +314,9 @@ def attachment_from_part(part: Part) -> Optional[Dict[str, Any]]:
     if file_data and (file_data.fileUri or file_data.displayName):
         display_name = file_data.displayName or file_data.fileUri or "uploaded_file"
         mime_type = (file_data.mimeType or "").strip() or "application/octet-stream"
-        storage_path = resolve_attachment_storage_path(file_data.fileUri or "")
+        storage_path = resolve_attachment_storage_path(
+            file_data.fileUri or "", owner_scope_ref=owner_scope_ref
+        )
         try:
             size_bytes = (
                 storage_path.stat().st_size if storage_path and storage_path.exists() else None
@@ -357,9 +361,15 @@ def display_content_from_parts(parts: List[Part]) -> str:
     return "\n\n".join(blocks).strip()
 
 
-def normalize_parts_content(parts: List[Part]) -> dict[str, Any]:
+def normalize_parts_content(
+    parts: List[Part], *, owner_scope_ref: str | None = None
+) -> dict[str, Any]:
     attachments = [
-        attachment for attachment in (attachment_from_part(part) for part in parts) if attachment
+        attachment
+        for attachment in (
+            attachment_from_part(part, owner_scope_ref=owner_scope_ref) for part in parts
+        )
+        if attachment
     ]
     attachment_results = build_attachment_results(attachments)
     display_content = display_content_from_parts(parts)
@@ -383,7 +393,9 @@ def normalize_parts_content(parts: List[Part]) -> dict[str, Any]:
     }
 
 
-def normalize_kop_message_content(content: Any) -> dict[str, Any]:
+def normalize_kop_message_content(
+    content: Any, *, owner_scope_ref: str | None = None
+) -> dict[str, Any]:
     input_content = canonical_input_content_from_message_content(content)
     if isinstance(content, list):
         parts: List[Part] = []
@@ -397,7 +409,7 @@ def normalize_kop_message_content(content: Any) -> dict[str, Any]:
                 parts.append(Part.model_validate(payload))
             except Exception:
                 continue
-        normalized = normalize_parts_content(parts)
+        normalized = normalize_parts_content(parts, owner_scope_ref=owner_scope_ref)
         normalized["input_content"] = input_content
         return normalized
     text = str(content or "")
@@ -411,11 +423,15 @@ def normalize_kop_message_content(content: Any) -> dict[str, Any]:
     }
 
 
-def normalize_kop_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def normalize_kop_messages(
+    messages: List[Dict[str, Any]], *, owner_scope_ref: str | None = None
+) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for message in messages or []:
         role = str(message.get("role") or "user")
-        normalized_content = normalize_kop_message_content(message.get("content", ""))
+        normalized_content = normalize_kop_message_content(
+            message.get("content", ""), owner_scope_ref=owner_scope_ref
+        )
         normalized.append(
             {
                 "role": role,
@@ -430,7 +446,9 @@ def normalize_kop_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any
     return normalized
 
 
-def normalize_responses_input(input_payload: Any) -> List[Dict[str, Any]]:
+def normalize_responses_input(
+    input_payload: Any, *, owner_scope_ref: str | None = None
+) -> List[Dict[str, Any]]:
     if isinstance(input_payload, str):
         return [
             {
@@ -446,5 +464,5 @@ def normalize_responses_input(input_payload: Any) -> List[Dict[str, Any]]:
             }
         ]
     if isinstance(input_payload, list):
-        return normalize_kop_messages(input_payload)
+        return normalize_kop_messages(input_payload, owner_scope_ref=owner_scope_ref)
     return []

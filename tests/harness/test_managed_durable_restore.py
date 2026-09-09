@@ -227,7 +227,10 @@ async def test_studio_plugin_kernel_restores_managed_harness_handle(tmp_path: Pa
     assert proxy.capabilities().durable_restore.supported is True
     restored = await proxy.durable_restore(handle)
 
-    assert restored == handle
+    assert restored.run_id == handle.run_id
+    assert restored.session_id == handle.session_id
+    assert restored.runtime_type == "harness"
+    assert proxy._provider_handle(restored) == handle
     assert second._engine.attached == [handle.run_id]
 
 

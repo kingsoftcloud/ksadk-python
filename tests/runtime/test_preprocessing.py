@@ -6,6 +6,7 @@ import pytest
 
 from ksadk.runtime.adapter import CONVERSATION_PREPROCESSING_METADATA_KEY, StartRequest
 from ksadk.runtime.preprocessing import PreparedConversationTurn, prepare_runtime_start
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
 
 
 class _Runner:
@@ -92,3 +93,40 @@ async def test_request_scoped_tool_approval_mode_reaches_runtime_context() -> No
 
     assert prepared is not None
     assert prepared.context.tool_approval_mode == "ask"
+
+
+@pytest.mark.asyncio
+async def test_verified_identity_reaches_runtime_context_without_leaking_as_request_metadata() -> (
+    None
+):
+    request = StartRequest(
+        input="current",
+        user_id="bff-service",
+        session_id="session-1",
+        agent_id="agent-1",
+        metadata={
+            CONVERSATION_PREPROCESSING_METADATA_KEY: {
+                "messages": [{"role": "user", "content": "current"}],
+                "request_metadata": {
+                    TRUSTED_IDENTITY_METADATA_KEY: {
+                        "identity_namespace": "customer-crm",
+                        "tenant_id": "enterprise-a",
+                        "subject_type": "user",
+                        "subject_id": "user-007",
+                    }
+                },
+                "prepared_turn": asdict(_prepared_turn()),
+            },
+        },
+    )
+
+    prepared = await prepare_runtime_start(request, _Runner())
+
+    assert prepared is not None
+    assert prepared.context.identity.user_scope == (
+        "customer-crm",
+        "enterprise-a",
+        "user",
+        "user-007",
+    )
+    assert TRUSTED_IDENTITY_METADATA_KEY not in str(prepared.runner_input.get("request_metadata"))

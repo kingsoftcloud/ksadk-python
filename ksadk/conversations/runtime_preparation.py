@@ -49,6 +49,7 @@ from ksadk.conversations.runtime_metadata import (
 )
 from ksadk.conversations.runtime_observability import _latest_deferred_tool_names
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
+from ksadk.session_context import split_session_context
 from ksadk.conversations.runtime_persistence import (
     append_conversation_event,
     append_run_resume_event,
@@ -72,6 +73,8 @@ from ksadk.conversations.runtime_resume import (
 )
 from ksadk.ids import new_run_id
 from ksadk.model_policy import model_policy_options_for_model
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY, PlatformIdentityContext
+from ksadk.session_context import split_session_context
 from ksadk.sessions import SessionEvent, resolve_session_service
 
 logger = logging.getLogger(__name__)
@@ -110,6 +113,7 @@ async def build_run_input(
     deployment_mode: str = "local",
     agent_max_input_tokens: int | None = None,
     agent_reserve_output_tokens: int | None = None,
+    resume_lifecycle_prepared: bool = False,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -120,25 +124,25 @@ async def build_run_input(
     caller_run_trigger = trigger_from_resume_input(resume_input)
     provider = session_service_provider or resolve_session_service
     service = provider()
-    resolved_user_id = user_id
-    if session_id:
-        existing_session = await service.get_session(session_id)
-        if existing_session and existing_session.user_id:
-            resolved_user_id = existing_session.user_id
+    private_request_metadata = dict(request_metadata or {})
+    identity_payload = private_request_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, None)
+    invocation_identity = PlatformIdentityContext.from_payload(identity_payload)
 
     session = await ensure_conversation_session(
         agent_id=agent_id,
-        user_id=resolved_user_id,
+        user_id=user_id,
         session_id=session_id,
         session_service_provider=provider,
+        invocation_identity=invocation_identity,
     )
+    resolved_user_id = session.user_id
     resolved_session_id = session.id
     resolved_invocation_id = str(invocation_id or new_run_id(resolved_session_id))
     resolved_model_metadata = await _resolve_runtime_model_metadata(
         model,
         model_metadata=model_metadata,
     )
-    normalized_request_metadata = dict(request_metadata or {})
+    session_context, normalized_request_metadata = split_session_context(private_request_metadata)
     normalized_custom_metadata = dict(custom_metadata or {})
     policy_model = model or os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
     normalized_model_options = {
@@ -170,41 +174,41 @@ async def build_run_input(
     if resume_input is not None:
         if not session_id:
             raise ValueError("Responses resume input requires session_id")
-        existing_events = await service.get_events(resolved_session_id)
         normalized_resume_input = dict(resume_input)
         if _is_checkpoint_resume_input(normalized_resume_input):
             normalized_resume_input = _normalize_checkpoint_resume_input(normalized_resume_input)
-            await append_run_resume_event(
-                session_id=resolved_session_id,
-                author=agent_id,
-                run_id=str(normalized_resume_input["run_id"]),
-                checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
-                resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
-                framework=str(normalized_resume_input["framework"]),
-                framework_ref=normalized_resume_input["framework_ref"],
-                invocation_id=resolved_invocation_id,
-                session_service_provider=provider,
-            )
-            # 补写 run_status(resuming)：让 ActiveRunStatus 在 resume 期间正确反映"恢复中"。
-            # append_run_resume_event 写的是 run_resume 事件（status=resuming），而
-            # _latest_session_run_status 只扫 run_status 事件 → 不补写则
-            # resuming 不进 ActiveRunStatus。
-            await append_run_status_event(
-                session_id=resolved_session_id,
-                author=agent_id,
-                status="resuming",
-                invocation_id=resolved_invocation_id,
-                detail="checkpoint_resume",
-                session_service_provider=provider,
-                run_mode=caller_run_mode,
-                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-            )
+            if not resume_lifecycle_prepared:
+                await append_run_resume_event(
+                    session_id=resolved_session_id,
+                    author=agent_id,
+                    run_id=str(normalized_resume_input["run_id"]),
+                    checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
+                    resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
+                    framework=str(normalized_resume_input["framework"]),
+                    framework_ref=normalized_resume_input["framework_ref"],
+                    invocation_id=resolved_invocation_id,
+                    session_service_provider=provider,
+                )
+                # run_resume 与 ActiveRunStatus 分属不同事件类型，因此补写 resuming。
+                await append_run_status_event(
+                    session_id=resolved_session_id,
+                    author=agent_id,
+                    status="resuming",
+                    invocation_id=resolved_invocation_id,
+                    detail="checkpoint_resume",
+                    session_service_provider=provider,
+                    run_mode=caller_run_mode,
+                    run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+                )
             event_history = await service.get_events(resolved_session_id)
             history = build_history_from_events(event_history)
             responses_history = project_responses_history(event_history)
             return PreparedConversationTurn(
+                session_context=session_context.to_payload(),
                 session_id=resolved_session_id,
                 invocation_id=resolved_invocation_id,
+                user_id=resolved_user_id,
+                agent_id=agent_id,
                 user_input="",
                 user_display_input="",
                 history=history,
@@ -239,6 +243,7 @@ async def build_run_input(
                 provider_ref=provider_ref,
             )
 
+        existing_events = await service.get_events(resolved_session_id)
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
         existing_tool_receipt_event = None
         if is_approval_resume and not _has_pending_approval(existing_events):
@@ -319,8 +324,11 @@ async def build_run_input(
         history = build_history_from_events(event_history)
         responses_history = project_responses_history(event_history)
         return PreparedConversationTurn(
+            session_context=session_context.to_payload(),
             session_id=resolved_session_id,
             invocation_id=resolved_invocation_id,
+            user_id=resolved_user_id,
+            agent_id=agent_id,
             user_input=resume_text,
             user_display_input=resume_text,
             history=history,
@@ -478,6 +486,7 @@ async def build_run_input(
         working_state = _latest_checkpoint_working_state(event_history)
 
     prepared = PreparedConversationTurn(
+        session_context=session_context.to_payload(),
         session_id=resolved_session_id,
         invocation_id=resolved_invocation_id,
         user_id=resolved_user_id,

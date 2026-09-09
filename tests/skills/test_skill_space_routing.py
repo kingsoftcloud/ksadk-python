@@ -153,36 +153,19 @@ def test_load_skill_resolves_same_name_by_space(multi_space_env, monkeypatch, tm
     )
     _patch_client(monkeypatch, client)
 
-    # 不下载真实包:patch 下载与 loader,只验证按 space 命中。
-    class _Pkg:
-        root_dir = tmp_path
-        cache_hit = True
-
-    class _Local:
-        def __init__(self, name, description):
-            self.name = name
-            self.description = description
-            self.root_dir = tmp_path
-            self.body = "instructions"
-
-    monkeypatch.setattr(skills_toolset, "_get_or_download_package", lambda c, s: _Pkg())
-    monkeypatch.setattr(
-        skills_toolset,
-        "load_local_skill",
-        lambda _root: _Local("common-skill", "desc"),
-    )
-
-    result_b = skills_toolset.load_skill("common-skill", space_id="ss-b")
+    # preview_skill returns manifest-level info (no package download).
+    result_b = skills_toolset.preview_skill("common-skill", space_id="ss-b")
     assert result_b["ok"] is True
     assert result_b["space_id"] == "ss-b"
     assert result_b["skill_id"] == "sk-b"
+    assert result_b["execution_context"] == "manifest_preview"
 
-    result_a = skills_toolset.load_skill("common-skill", space_id="ss-a")
+    result_a = skills_toolset.preview_skill("common-skill", space_id="ss-a")
     assert result_a["space_id"] == "ss-a"
     assert result_a["skill_id"] == "sk-a"
 
     # 不带 space_id 时按配置顺序取第一个(user space ss-a 在前)。
-    result_default = skills_toolset.load_skill("common-skill")
+    result_default = skills_toolset.preview_skill("common-skill")
     assert result_default["space_id"] == "ss-a"
 
 
