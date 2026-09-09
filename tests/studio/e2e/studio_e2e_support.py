@@ -11,6 +11,7 @@ from urllib.request import urlopen
 import uvicorn
 
 from ksadk.studio.api import create_studio_app
+from ksadk.studio.service import StudioService
 
 
 def write_skill(root: Path, name: str, body: str = "Follow the instructions.") -> Path:
@@ -35,15 +36,22 @@ def free_port() -> int:
 
 
 @contextmanager
-def studio_server(workspace: Path) -> Iterator[str]:
+def studio_server(
+    workspace: Path,
+    *,
+    service: StudioService | None = None,
+) -> Iterator[str]:
     port = free_port()
-    app = create_studio_app(workspace, security_enabled=False)
+    app = create_studio_app(workspace, service=service, security_enabled=False)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{port}"
     try:
-        for _ in range(100):
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if not thread.is_alive():
+                raise AssertionError("Studio server thread exited before becoming healthy")
             try:
                 with urlopen(f"{base_url}/api/v1/system/health", timeout=0.2) as response:
                     if response.status == 200:
@@ -51,7 +59,10 @@ def studio_server(workspace: Path) -> Iterator[str]:
             except OSError:
                 time.sleep(0.05)
         else:
-            raise AssertionError("Studio server did not start")
+            raise AssertionError(
+                "Studio server did not become healthy within 30 seconds "
+                f"(started={server.started}, thread_alive={thread.is_alive()})"
+            )
         yield base_url
     finally:
         server.should_exit = True

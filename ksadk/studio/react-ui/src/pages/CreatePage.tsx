@@ -1,3 +1,4 @@
+import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, Zap, MessagesSquare, Upload, Folder, Check,
@@ -15,11 +16,21 @@ import { GeneratedIdField } from "../components/ui/GeneratedIdField";
 import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { FileDropzone } from "../components/ui/FileDropzone";
+import { TextShimmer } from "../components/ui/TextShimmer";
 import { FormField } from "../components/ui/FormField";
 import { StudioDrawer } from "../components/ui/StudioDialog";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
+import { PlatformResourceBindings } from "../components/PlatformResourceBindings";
+import type { NativePluginBinding } from "../components/NativePluginBindings";
 import { applyApiFieldErrors } from "../lib/formErrors";
+import { mcpUnavailableReason } from "../lib/mcpCompatibility";
+import {
+  parseProviderConfig,
+  providerConsentKey,
+  providerOptionDescription,
+  type AgentProviderCatalogItem,
+} from "../agentProviders";
 import {
   agentImportSchema,
   conversationCommitSchema,
@@ -44,6 +55,16 @@ interface ResItem {
 }
 
 const DRAFT_PREFIX = "agentkit.studio.agentDraft.v1";
+const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
+const BUILTIN_RUNTIME_OPTIONS = [
+  { value: "codex", label: "Codex · ManagedRuntime" },
+  { value: "adk", label: "Google ADK · Python source" },
+  { value: "langgraph", label: "LangGraph · Python graph" },
+];
+
+function isCodexAgentProvider(providerRef: string): boolean {
+  return providerRef.startsWith(CODEX_AGENT_PROVIDER_PREFIX);
+}
 
 function credentialReference(item?: ResItem): string {
   return item?.requiredSecretRefs?.[0]
@@ -65,7 +86,6 @@ const RUNTIME_OPTIONS = [
   { value: "adk", label: "Google ADK · Python source" },
   { value: "langgraph", label: "LangGraph · Python graph" },
 ];
-
 const WIZARD_STEP_META = [
   ["定义 Agent", "模板与系统提示词"],
   ["绑定能力", "Model · Tool · MCP · Skill"],
@@ -74,6 +94,70 @@ const WIZARD_STEP_META = [
 ];
 
 const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
+const PROXY_MODEL_FAMILIES = ["deepseek", "glm", "kimi", "minimax", "qwen"];
+
+function modelSortKey(item: ResItem): [number, number[], string] {
+  const raw = String(item.contract?.model || item.name || "").toLowerCase();
+  const normalized = raw.includes("/") ? raw.split("/", 2)[1] : raw;
+  const normalizedForFamily = normalized.replaceAll(".", "-");
+  const familyIndex = PROXY_MODEL_FAMILIES.findIndex(family => (
+    normalizedForFamily === family
+    || normalizedForFamily.startsWith(family === "qwen" ? family : `${family}-`)
+  ));
+  const numbers = (normalized.match(/\d+/g) || []).slice(0, 8).map(value => -Number(value));
+  while (numbers.length < 8) numbers.push(0);
+  return [familyIndex < 0 ? PROXY_MODEL_FAMILIES.length : familyIndex, numbers, normalized];
+}
+
+function compareStudioModels(left: ResItem, right: ResItem): number {
+  const [leftFamily, leftVersion, leftName] = modelSortKey(left);
+  const [rightFamily, rightVersion, rightName] = modelSortKey(right);
+  if (leftFamily !== rightFamily) return leftFamily - rightFamily;
+  for (let index = 0; index < leftVersion.length; index += 1) {
+    if (leftVersion[index] !== rightVersion[index]) return leftVersion[index] - rightVersion[index];
+  }
+  return leftName.localeCompare(rightName);
+}
+
+/** The API keeps the complete structured proposal in the conversation context.
+ *  The transcript deliberately renders a small, human-readable acknowledgement
+ *  instead of leaking a JSON patch into every assistant turn. */
+function summarizeConversationProposal(content: string): { title: string; body: string } {
+  try {
+    const proposal = JSON.parse(content);
+    const instructions = proposal?.spec?.instructions || proposal?.instructions || {};
+    const name = String(proposal?.name || "未命名 Agent").trim();
+    const body = String(
+      proposal?.description
+      || proposal?.spec?.description
+      || instructions?.task
+      || instructions?.system
+      || "已根据这轮对话更新草稿。",
+    ).trim();
+    return { title: `已更新草稿：${name}`, body };
+  } catch {
+    return { title: "已更新草稿", body: content || "已根据这轮对话更新草稿。" };
+  }
+}
+
+/** Keep only the semantic patch in multi-turn browser context.  Runtime model
+ *  profiles and capabilities are sent as separately validated request fields,
+ *  so repeating their catalog contracts here only bloats the next LLM turn. */
+function compactConversationProposal(proposal: any): any {
+  const instructions = proposal?.spec?.instructions || proposal?.instructions || {};
+  return {
+    name: proposal?.name || "",
+    slug: proposal?.slug || "",
+    runtimeType: proposal?.runtimeType || "",
+    description: proposal?.description || proposal?.spec?.description || "",
+    spec: {
+      instructions: {
+        system: instructions?.system || "",
+        task: instructions?.task || "",
+      },
+    },
+  };
+}
 
 function mergeAgentSpec(base: any, patch: any): any {
   if (!base || typeof base !== "object" || Array.isArray(base)) return patch;
@@ -117,8 +201,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [createRailOpen, setCreateRailOpen] = useState(false);
   const [draftState, setDraftState] = useState("尚未保存");
   const [catalog, setCatalog] = useState<ResItem[]>([]);
+  const [agentProviders, setAgentProviders] = useState<AgentProviderCatalogItem[]>([]);
+  const [selectedProviderRef, setSelectedProviderRef] = useState("");
+  const [providerConfigText, setProviderConfigText] = useState("{}");
+  const [providerConsent, setProviderConsent] = useState<string | null>(null);
+  const [codexConsent, setCodexConsent] = useState<string | null>(null);
+  const [convCodexConsent, setConvCodexConsent] = useState<string | null>(null);
+  const codexConsentDefaulted = useRef(false);
   const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { configured?: boolean }>>({});
-
   /* 向导状态 */
   const [step, setStep] = useState(1);
   const [maxStep, setMaxStep] = useState(1);
@@ -159,6 +249,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [selectedPlatformResources, setSelectedPlatformResources] = useState<NativePluginBinding[]>([]);
+  const [platformResourcesPending, setPlatformResourcesPending] = useState(false);
   const [policy, setPolicy] = useState("strict");
   const [contextOwnership, setContextOwnership] = useState("auto");
   const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
@@ -193,6 +285,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     ];
   }, [runtime]);
   const [promptStatus, setPromptStatus] = useState<"idle" | "composing" | "done">("idle");
+  const [promptOperation, setPromptOperation] = useState<"compose" | "optimize">("compose");
   const [createError, setCreateError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -212,7 +305,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   /* conversation 模式 */
   const [convMessages, setConvMessages] = useState<Array<{ role: string; content: string }>>([]);
   const [convInput, setConvInput] = useState("");
-  const [convModels, setConvModels] = useState<string[]>([]);
+  // Generating a Draft Patch and running the resulting Agent are separate
+  // choices.  The former is one profile; the latter is an allow-list with a
+  // runtime-selected latest entry as its default.
+  const [convAuthoringModel, setConvAuthoringModel] = useState("");
+  const [convAgentModels, setConvAgentModels] = useState<string[]>([]);
+  const [convTools, setConvTools] = useState<string[]>([]);
+  const [convMcp, setConvMcp] = useState<string[]>([]);
+  const [convSkills, setConvSkills] = useState<string[]>([]);
   const [proposal, setProposal] = useState<any>(null);
   const conversationForm = useForm<ConversationCommitFormValues>({
     resolver: zodResolver(conversationCommitSchema) as Resolver<ConversationCommitFormValues>,
@@ -227,6 +327,12 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   });
   const [convBusy, setConvBusy] = useState(false);
   const [convError, setConvError] = useState("");
+  const [convFallbackNotice, setConvFallbackNotice] = useState("");
+  const [convStage, setConvStage] = useState<string | null>(null);
+  const [convStartedAt, setConvStartedAt] = useState<number | null>(null);
+  const [convReviewOpen, setConvReviewOpen] = useState(false);
+  const convPollAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => convPollAbort.current?.abort(), []);
 
   /* import / project 模式 */
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -246,14 +352,22 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
 
   const loadCatalog = useCallback(async () => {
     try {
-      const [d, discovered] = await Promise.all([
+      const [d, discovered, providerCatalog] = await Promise.all([
       apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()),
       apiFetch("/api/v1/catalog/models").then(r => r.json()).catch(() => null),
+      apiFetch("/api/v1/agent-providers").then(r => r.json()).catch(() => null),
       ]);
       const items: ResItem[] = d.items || [];
       const localModels = items.filter(i => i.kind === "model" && (i.source === "local" || i.source === "market"));
       const modelItems = discovered?.items?.length ? [...localModels, ...discovered.items] : items.filter(i => i.kind === "model");
       setCatalog([...modelItems, ...items.filter((i: ResItem) => i.kind !== "model")]);
+      const providerItems: AgentProviderCatalogItem[] = providerCatalog?.items || [];
+      setAgentProviders(providerItems);
+      setSelectedProviderRef(current => (
+        providerItems.some(item => item.providerRef === current && item.selectable)
+          ? current
+          : providerItems.find(item => item.selectable)?.providerRef || ""
+      ));
 
       const references = [...new Set(
         modelItems.map(credentialReference).filter(ref => ref.startsWith("env://")),
@@ -275,25 +389,120 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
 
   useEffect(() => { loadCatalog(); }, [loadCatalog]);
 
-  const models = useMemo(() => catalog.filter(i => i.kind === "model" && ["ready", "missing-secret"].includes(i.status)), [catalog]);
+  const models = useMemo(
+    () => catalog
+      .filter(i => i.kind === "model" && ["ready", "missing-secret"].includes(i.status))
+      .sort(compareStudioModels),
+    [catalog],
+  );
   const tools = useMemo(() => catalog.filter(i => i.kind === "tool" && i.status === "ready"), [catalog]);
   const mcps = useMemo(() => catalog.filter(i => i.kind === "mcp"), [catalog]);
   const skills = useMemo(() => catalog.filter(i => i.kind === "skill" && i.status === "ready"), [catalog]);
+  const effectiveAgentProviders = useMemo<AgentProviderCatalogItem[]>(() => {
+    return agentProviders;
+  }, [agentProviders]);
+  const selectedProvider = useMemo(
+    () => effectiveAgentProviders.find(item => item.providerRef === selectedProviderRef),
+    [effectiveAgentProviders, selectedProviderRef],
+  );
+  const codexProvider = agentProviders.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
+  const selectedConsentKey = providerConsentKey(selectedProvider);
+  const codexConsentKey = providerConsentKey(codexProvider);
+  const providerPermissionsApproved = selectedConsentKey !== null && providerConsent === selectedConsentKey;
+  const codexPermissionsApproved = codexConsentKey !== null && codexConsent === codexConsentKey;
+  const convCodexPermissionsApproved = codexConsentKey !== null && convCodexConsent === codexConsentKey;
+  const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent(approved ? selectedConsentKey : null);
+  const setCodexPermissionsApproved = (approved: boolean) => setCodexConsent(approved ? codexConsentKey : null);
+  const setConvCodexPermissionsApproved = (approved: boolean) => setConvCodexConsent(approved ? codexConsentKey : null);
+  useEffect(() => {
+    if (codexConsentKey === null || codexConsentDefaulted.current) return;
+    codexConsentDefaulted.current = true;
+    setCodexConsent(codexConsentKey);
+    setConvCodexConsent(codexConsentKey);
+  }, [codexConsentKey]);
+  const usesNativeCodexTools = runtime === "codex"
+    || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
+  const supportsKsAdkTools = runtime === "adk" || runtime === "langgraph";
+  const effectiveSelectedTools = supportsKsAdkTools ? selectedTools : [];
+  const providerOptions = useMemo(() => effectiveAgentProviders.map(item => ({
+    value: item.providerRef,
+    label: item.displayName,
+    description: providerOptionDescription(item),
+    disabled: !item.selectable,
+  })), [effectiveAgentProviders]);
+  const quickRuntimeOptions = useMemo(
+    () => agentProviders.some(item => item.selectable)
+      ? [
+          ...BUILTIN_RUNTIME_OPTIONS,
+          {
+            value: "plugin",
+            label: agentProviders.filter(item => item.selectable).length === 1
+              ? `${agentProviders.find(item => item.selectable)?.displayName || "DSH AgentProvider"} · Plugin`
+              : `DSH AgentProvider · ${agentProviders.filter(item => item.selectable).length} 个可用`,
+          },
+        ]
+      : [...BUILTIN_RUNTIME_OPTIONS],
+    [agentProviders],
+  );
+
+  useEffect(() => {
+    if (selectedProviderRef && effectiveAgentProviders.some(item => item.providerRef === selectedProviderRef && item.selectable)) return;
+    setSelectedProviderRef(effectiveAgentProviders.find(item => item.selectable)?.providerRef || "");
+  }, [effectiveAgentProviders, selectedProviderRef]);
+
+  useEffect(() => {
+    if (!supportsKsAdkTools && selectedTools.length) setSelectedTools([]);
+  }, [selectedTools.length, supportsKsAdkTools]);
   const resourceById = useCallback((id: string) => catalog.find(i => i.resourceId === id), [catalog]);
   const credentialOf = useCallback((item?: ResItem) => {
     const ref = credentialReference(item);
     return ref ? credentialStatuses[ref] : undefined;
   }, [credentialStatuses]);
+  const hasConfiguredCredential = useCallback((item?: ResItem) => {
+    if (!item) return false;
+    // The catalogue and Settings share this status.  While the optional
+    // per-secret probe is still in flight, a ready catalogue record is enough
+    // to avoid flashing a misleading "configure credential" action.
+    return credentialOf(item)?.configured ?? item.status === "ready";
+  }, [credentialOf]);
+  const conversationRuntime = conversationForm.watch("runtimeType");
+  const conversationModelOptions = useMemo(() => models.map(item => ({
+    value: item.resourceId,
+    label: item.displayName,
+    description: `${item.contract?.model || item.name} · ${hasConfiguredCredential(item) ? "凭证已配置" : "需配置凭证"}`,
+  })), [hasConfiguredCredential, models]);
+  const preferredConversationAuthoringModel = useMemo(() => {
+    const preferred = models.find(item => String(item.contract?.model || item.name).toLowerCase() === "deepseek-v4-flash");
+    return preferred?.resourceId || models[0]?.resourceId || "";
+  }, [models]);
 
   useEffect(() => {
     if (mode !== "conversation") {
       conversationEntryInitialized.current = false;
       return;
     }
-    if (conversationEntryInitialized.current || !models.length) return;
+    if (conversationEntryInitialized.current || !preferredConversationAuthoringModel) return;
     conversationEntryInitialized.current = true;
-    if (!convModels.length) setConvModels([models[0].resourceId]);
-  }, [mode, models, convModels.length]);
+    if (!convAuthoringModel) setConvAuthoringModel(preferredConversationAuthoringModel);
+    if (!convAgentModels.length) setConvAgentModels([preferredConversationAuthoringModel]);
+  }, [
+    convAgentModels.length,
+    convAuthoringModel,
+    mode,
+    preferredConversationAuthoringModel,
+  ]);
+
+  function updateConversationAgentModels(next: string[]) {
+    // Preserve the catalog's newest-first order rather than click order.  The
+    // first binding is the actual runtime default, so the model declaration
+    // has one unambiguous source of truth.
+    const selected = new Set(next);
+    const ordered = models
+      .map(item => item.resourceId)
+      .filter(resourceId => selected.has(resourceId));
+    setConvAgentModels(ordered);
+    conversationForm.setValue("modelProfileId", ordered[0] || "", { shouldDirty: true, shouldValidate: true });
+  }
 
   /* 草稿（localStorage） */
   function draftKey() { return `${DRAFT_PREFIX}:local-workspace`; }
@@ -303,8 +512,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         version: 1, savedAt: new Date().toISOString(), mode,
         wizard: {
           step, maxStep, template, runtime, depth, selectedTools, selectedSkills,
-          selectedMcp, selectedModels, policy, contextOwnership,
+          selectedMcp, selectedModels, selectedPlatformResources, policy, contextOwnership,
           contextEngineRollout, memoryEnabled, memoryWriteRollout,
+          selectedProviderRef, providerConfigText,
+          providerPermissionsApproved, codexPermissionsApproved,
         },
         fields: { name, slug, description, prompt, audience, language, format, systemPrompt, taskPrompt, buildAfterCreate },
       }));
@@ -315,7 +526,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
 
   /* 向导 compose */
   const wizardPayload = useCallback(() => ({
-    prompt,
+    // ``prompt`` is the final system-prompt compatibility field.  Quick
+    // authoring owns only an intent brief here, so let the template compile
+    // ``goal`` into an editable structured prompt instead of echoing it.
+    prompt: "",
     goal: prompt,
     description,
     taskPrompt,
@@ -325,17 +539,18 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     outputFormat: format,
     modelProfileId: selectedModels[0] || null,
     modelProfileIds: selectedModels,
-    toolResourceIds: selectedTools,
+    toolResourceIds: effectiveSelectedTools,
     skillResourceIds: selectedSkills,
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
     maxSteps: template === "research" ? 28 : 12,
     timeoutSeconds: template === "research" ? 900 : 120,
-  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, selectedTools, selectedSkills, selectedMcp, policy]);
+  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true } = {}) => {
     const seq = ++composeSeq.current;
+    setPromptOperation("compose");
     setPromptStatus("composing");
     try {
       const res = await apiFetch(`/api/v1/agent-templates/${template}:compose`, {
@@ -350,7 +565,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (seq !== composeSeq.current) return;
       compositionRef.current = composition;
       const b = composition.spec?.bindings || {};
-      setSelectedTools(runtime === "codex" ? [] : (b.tools || []).map((i: any) => i.resourceId));
+      setSelectedTools(supportsKsAdkTools ? (b.tools || []).map((i: any) => i.resourceId) : []);
       setSelectedSkills((b.skills || []).map((i: any) => i.resourceId));
       setSelectedMcp((b.mcpServers || []).map((i: any) => i.resourceId));
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
@@ -368,7 +583,95 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         setCreateError(error.message || "生成 Agent 配置失败");
       }
     }
-  }, [template, wizardPayload, runtime, systemPrompt, taskPrompt, quickForm]);
+  }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm]);
+
+  const optimizePromptWithModel = useCallback(async () => {
+    const authoringModel = selectedModels[0];
+    if (!authoringModel) {
+      setCreateError("请先选择用于优化 Prompt 的模型。");
+      return;
+    }
+    const seq = ++composeSeq.current;
+    setCreateError("");
+    setPromptOperation("optimize");
+    setPromptStatus("composing");
+    try {
+      const optimizationBrief = [
+        "请在不改变业务目标、Runtime 和已选能力的前提下，重写并增强这个 Agent 的角色与任务契约。",
+        "system 必须明确角色、目标、事实边界、失败处理和回答原则；task 必须明确每次请求的执行步骤、约束和交付结构。",
+        "不要返回解释，只生成可审查的 Agent Draft Patch。",
+        `Agent 名称：${name.trim() || "未命名 Agent"}`,
+        `业务描述：${description.trim() || "未填写"}`,
+        `原始目标：${prompt.trim()}`,
+        `当前角色与系统提示词：${systemPrompt.trim() || "未生成"}`,
+        `当前任务契约：${taskPrompt.trim() || "未生成"}`,
+      ].join("\n\n");
+      const requestId = `quick-optimize-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const res = await apiFetch("/api/v1/authoring/conversations:compose", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: optimizationBrief }],
+          modelProfileId: authoringModel,
+          runtimeType: runtime === "plugin" ? "codex" : runtime,
+          agentModelProfileIds: selectedModels,
+          agentDefaultModelProfileId: authoringModel,
+          toolResourceIds: effectiveSelectedTools,
+          mcpResourceIds: selectedMcp,
+          skillResourceIds: selectedSkills,
+          requestId,
+        }),
+      });
+      const result = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(result?.error?.message || `优化 Prompt 失败（${res.status}）`);
+      }
+      if (seq !== composeSeq.current) return;
+      if (result?.fallback?.active) {
+        throw new Error("生成模型暂时不可用，已保留当前角色与任务契约，请稍后重试。");
+      }
+      const proposalSpec = result?.proposal?.spec || {};
+      const improvedSystem = String(
+        proposalSpec.instructions?.system || result?.proposal?.instructions?.system || "",
+      ).trim();
+      const improvedTask = String(
+        proposalSpec.instructions?.task || result?.proposal?.instructions?.task || "",
+      ).trim();
+      if (!improvedSystem || !improvedTask) {
+        throw new Error("生成模型没有同时返回角色提示词与任务契约，已保留当前内容。");
+      }
+      quickForm.setValue("systemPrompt", improvedSystem, { shouldDirty: true, shouldValidate: true });
+      quickForm.setValue("taskPrompt", improvedTask, { shouldDirty: true, shouldValidate: true });
+      if (compositionRef.current?.spec) {
+        compositionRef.current = {
+          ...compositionRef.current,
+          spec: {
+            ...compositionRef.current.spec,
+            instructions: { system: improvedSystem, task: improvedTask },
+          },
+        };
+      }
+      markDirty();
+      setPromptStatus("done");
+    } catch (error: any) {
+      if (seq === composeSeq.current) {
+        setPromptStatus("done");
+        setCreateError(error.message || "优化 Prompt 失败，已保留当前内容。");
+      }
+    }
+  }, [
+    description,
+    name,
+    prompt,
+    quickForm,
+    runtime,
+    selectedMcp,
+    selectedModels,
+    selectedSkills,
+    effectiveSelectedTools,
+    systemPrompt,
+    taskPrompt,
+  ]);
 
   async function gotoStep(next: number) {
     if (next < 1 || next > 4) return;
@@ -376,6 +679,26 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       if (step === 1) {
         const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
+        if (runtime === "codex" && codexProvider?.permissions.length && !codexPermissionsApproved) {
+          setCreateError("请先确认 Codex Provider 请求的 Agent 权限。");
+          return;
+        }
+        if (runtime === "plugin") {
+          if (!selectedProvider?.selectable) {
+            setCreateError(selectedProvider?.reason?.message || "请先在插件中心安装并启用一个兼容的 AgentProvider。");
+            return;
+          }
+          try {
+            parseProviderConfig(providerConfigText, selectedProvider.secretFields);
+          } catch (error: any) {
+            setCreateError(error.message || "Provider 配置无效");
+            return;
+          }
+          if (selectedProvider.permissions.length && !providerPermissionsApproved) {
+            setCreateError("请先确认 AgentProvider 请求的权限。");
+            return;
+          }
+        }
       }
       if (step === 2 && !selectedModels.length) {
         setCreateError("请至少选择一个模型后继续。");
@@ -419,6 +742,65 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         enabled: memoryEnabled,
         recall: { ...(spec.memory?.recall || {}), enabled: memoryEnabled },
       };
+      const platformMemory = selectedPlatformResources.find(binding =>
+        (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+      );
+      const platformMemoryBindingId = String(
+        (platformMemory?.config as any)?.binding?.id || "",
+      );
+      if (platformMemoryBindingId) {
+        spec.memory = {
+          ...(spec.memory || {}),
+          enabled: true,
+          providerRef: `binding://${platformMemoryBindingId}`,
+          scopes: ["user"],
+          recall: {
+            ...(spec.memory?.recall || {}),
+            enabled: true,
+            // The current AICP query contract does not expose a portable score
+            // threshold. Zero keeps filtering at the provider boundary.
+            minScore: 0,
+          },
+          write: { ...(spec.memory?.write || {}) },
+        };
+      }
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
+        if (!codexPermissionsApproved) throw new Error("请先确认 Codex Provider 请求的 Agent 权限");
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []), ...codexProvider.permissions,
+          ])].sort(),
+        };
+      }
+      if (values.runtimeType === "plugin") {
+        if (!selectedProvider?.selectable) {
+          throw new Error(selectedProvider?.reason?.message || "所选 AgentProvider 当前不可用");
+        }
+        if (selectedProvider.permissions.length && !providerPermissionsApproved) {
+          throw new Error("请先确认 AgentProvider 请求的权限");
+        }
+        spec.runtime = {
+          type: "plugin",
+          providerRef: selectedProvider.providerRef,
+          providerConfig: parseProviderConfig(providerConfigText, selectedProvider.secretFields),
+        };
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []),
+            ...selectedProvider.permissions,
+          ])].sort(),
+        };
+      }
+      if (!supportsKsAdkTools) {
+        spec.bindings = { ...(spec.bindings || {}), tools: [] };
+        spec.capabilities = { ...(spec.capabilities || {}), tools: [] };
+      }
+      spec.bindings = {
+        ...(spec.bindings || {}),
+        plugins: selectedPlatformResources,
+      };
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -433,8 +815,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) {
+        setCreateError(d?.error?.message || `创建失败（${res.status}）`);
         if (applyApiFieldErrors(d, quickForm.setError)) {
-          setStep(1);
           return;
         }
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
@@ -475,24 +857,52 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   /* conversation 模式 */
   async function sendConversation() {
     const input = convInput.trim();
-    if (!input || !convModels.length) {
+    if (!input || !convAuthoringModel || !convAgentModels.length) {
       setConvError("请输入需求并选择用于构建的模型。");
       return;
     }
+    if (convBusy) return; // 创建中禁止重复提交
     setConvError("");
+    setConvFallbackNotice("");
     const next = [...convMessages, { role: "user", content: input }];
     setConvMessages(next);
     setConvInput("");
     setConvBusy(true);
+    setConvStartedAt(Date.now());
+    const requestId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setConvStage("resolving_model");
+    const poller = pollConversationStages(requestId);
     try {
       const res = await apiFetch("/api/v1/authoring/conversations:compose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next, modelProfileId: convModels[0] }),
+        body: JSON.stringify({
+          messages: next,
+          // The authoring model is a single request-scoped choice.  The
+          // multi-model Agent contract is carried separately and injected by
+          // the server after validating every profile.
+          modelProfileId: convAuthoringModel,
+          runtimeType: conversationRuntime,
+          agentModelProfileIds: convAgentModels,
+          agentDefaultModelProfileId: convAgentModels[0] || null,
+          toolResourceIds: conversationRuntime === "codex" ? [] : convTools,
+          mcpResourceIds: convMcp,
+          skillResourceIds: convSkills,
+          requestId,
+        }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d?.error?.message || `生成失败（${res.status}）`);
+      setConvStage("done");
+      if (d?.fallback?.active) {
+        setConvFallbackNotice(
+          "所选生成模型暂时未能返回可用草稿。Studio 已按当前对话和你选定的 Runtime、模型与能力资源生成可编辑的本地兜底草稿；确认创建前请检查并补全。",
+        );
+      }
       setProposal(d.proposal);
+      // A fresh turn updates the compact rail; the editable form stays hidden
+      // until the user explicitly decides to inspect and confirm the patch.
+      setConvReviewOpen(false);
       const proposalSpec = d.proposal.spec || {
         description: d.proposal.description || "",
         instructions: d.proposal.instructions || {},
@@ -500,17 +910,53 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       conversationForm.reset({
         name: d.proposal.name || "",
         slug: generateAgentSlug(),
-        runtimeType: d.proposal.runtimeType || "codex",
+        // Runtime is selected by Studio and enforced again by the server.
+        // Never let a model response replace the user's deployment target.
+        runtimeType: conversationRuntime,
         prompt: proposalSpec.instructions?.system || "",
         description: proposalSpec.description || d.proposal.description || "",
-        modelProfileId: proposalSpec.bindings?.modelProfileId || convModels[0],
+        modelProfileId: proposalSpec.bindings?.modelProfileId || convAgentModels[0],
       });
-      setConvMessages([...next, { role: "assistant", content: JSON.stringify(d.proposal) }]);
+      setConvMessages([
+        ...next,
+        { role: "assistant", content: JSON.stringify(compactConversationProposal(d.proposal)) },
+      ]);
     } catch (e: any) {
+      setConvStage("failed");
       setConvError(e.message || "对话构建失败");
     } finally {
+      convPollAbort.current?.abort();
+      convPollAbort.current = null;
+      void poller;
       setConvBusy(false);
     }
+  }
+
+  /* 轮询后端构建阶段（resolving_model → generating → validating → correcting → done/failed），
+   * 只驱动等待文案，不解析内容；失败时静默停止。 */
+  function pollConversationStages(requestId: string) {
+    const controller = new AbortController();
+    convPollAbort.current?.abort();
+    convPollAbort.current = controller;
+    const poll = async () => {
+      while (!controller.signal.aborted) {
+        await new Promise(resolve => window.setTimeout(resolve, 800));
+        if (controller.signal.aborted) return;
+        try {
+          const response = await apiFetch(
+            `/api/v1/authoring/conversations:status/${encodeURIComponent(requestId)}`,
+            { signal: controller.signal },
+          );
+          if (!response.ok) continue;
+          const status = await response.json();
+          if (status?.stage) setConvStage(String(status.stage));
+        } catch {
+          return; // 轮询失败不打断主请求，静默停止
+        }
+      }
+    };
+    void poll();
+    return controller;
   }
 
   async function confirmConversation(values: ConversationCommitFormValues) {
@@ -518,17 +964,25 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     setConvBusy(true);
     setConvError("");
     try {
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length && !convCodexPermissionsApproved) {
+        throw new Error("请在部署配置中确认 Codex Provider 请求的 Agent 权限");
+      }
       const proposalSpec = proposal.spec || {
         description: proposal.description || "",
         instructions: proposal.instructions || {},
       };
-      const proposedBindings = proposalSpec.bindings || {};
-      const defaultModel = proposedBindings.modelProfileId || values.modelProfileId || convModels[0] || null;
-      const allowedModels = proposedBindings.modelProfileIds?.length
-        ? proposedBindings.modelProfileIds
-        : defaultModel ? [defaultModel] : [];
+      const defaultModel = convAgentModels[0] || values.modelProfileId || null;
+      const allowedModels = convAgentModels.length ? convAgentModels : defaultModel ? [defaultModel] : [];
+      const selectedTools = values.runtimeType === "codex" ? [] : convTools;
       const spec = mergeAgentSpec(proposalSpec, {
         description: values.description?.trim() || proposalSpec.description || proposal.description || "",
+        // Framework source is generated by Studio during confirmation from the
+        // selected Runtime. A Draft Patch never carries a model-authored ADK
+        // or LangGraph project path.
+        runtime: null,
+        // Persist only the validated Profile binding.  Build/run resolves the
+        // live model contract; catalog metadata never belongs to Agent Drafts.
+        model: null,
         instructions: {
           system: values.prompt.trim(),
           task: proposalSpec.instructions?.task || "",
@@ -536,8 +990,21 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         bindings: {
           modelProfileId: defaultModel,
           modelProfileIds: allowedModels,
+          modelParameters: null,
+          policyTemplate: "strict",
+          tools: selectedTools.map(resourceId => ({ resourceId })),
+          mcpServers: convMcp.map(resourceId => ({ resourceId })),
+          skills: convSkills.map(resourceId => ({ resourceId })),
         },
       });
+      if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
+        spec.security = {
+          ...(spec.security || {}),
+          allowedPermissions: [...new Set([
+            ...(spec.security?.allowedPermissions || []), ...codexProvider.permissions,
+          ])].sort(),
+        };
+      }
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -549,6 +1016,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) {
+        setConvError(d?.error?.message || `创建失败（${res.status}）`);
         if (applyApiFieldErrors(d, conversationForm.setError)) return;
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
       }
@@ -648,15 +1116,18 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }
 
   const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
-  const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph" } as Record<string, string>)[runtime] || runtime;
+  const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
   const selectedModelStatus = selectedModelItems.length === 0
     ? "未选择模型；Agent 可以先构建，但运行前需要配置。"
-    : selectedModelItems.every(item => credentialOf(item)?.configured)
+    : selectedModelItems.every(hasConfiguredCredential)
       ? `已选 ${selectedModelItems.length} 个模型 · 凭证已配置`
       : "部分模型凭证未配置；Agent 可以先构建，但运行前需要配置 API Key。";
+  const selectedModelNeedsCredential = selectedModelItems.some(
+    item => !hasConfiguredCredential(item),
+  );
   const isManagedRuntime = runtime === "codex";
   const wizardStepMeta = isManagedRuntime
     ? [...WIZARD_STEP_META.slice(0, 3), ["检查并创建", "校验声明与打开会话"]]
@@ -784,6 +1255,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
             <AgentEditor
               agentId={editingAgentId}
               catalog={catalog}
+              providers={agentProviders}
               onSaved={(id, openChat) => onCreated(id, openChat)}
               onAppearanceSaved={onAgentsChanged}
             />
@@ -795,90 +1267,217 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               role="tabpanel"
               aria-labelledby="authoring-tab-conversation"
             >
-              <div className="authoring-panel-heading">
-                <div><span className="eyebrow">Conversation authoring</span><h2>通过多轮对话设计 Agent</h2><p>模型只返回结构化 Draft Patch；确认前不会写入工作区。</p></div>
-                <span className="tag">Inspect → Confirm</span>
+              <div className="authoring-panel-heading conversation-panel-heading">
+                <div><span className="eyebrow">Conversation authoring</span><h2>对话创建 Agent</h2><p>描述目标，逐轮完善；准备好后再检查并确认草稿。</p></div>
+                <span className="tag">不会自动创建</span>
               </div>
-              <div className="conversation-authoring-layout">
-                <div className="authoring-chat-column">
-                  <div className="authoring-section-heading">
-                    <span className="authoring-section-index">01</span>
-                    <div><strong>描述需求</strong><p>通过多轮输入澄清职责、边界、Runtime 与期望能力。</p></div>
+              <div
+                className="conversation-authoring-layout"
+                data-draft-state={!proposal ? "empty" : convReviewOpen ? "review" : "summary"}
+              >
+                <section className="conversation-chat" aria-label="对话创建">
+                  <div className="conversation-chat-header">
+                    <div><strong>从需求开始</strong><p>像对话一样说明要做什么；后续可以继续补充边界和能力。</p></div>
+                    <span className="conversation-context-state">{convMessages.length ? `${Math.ceil(convMessages.length / 2)} 轮上下文` : "持续保留上下文"}</span>
                   </div>
-                  <div className="authoring-transcript">
-                    {convMessages.length === 0 && <div className="trace-stage-empty compact"><p>说明 Agent 的职责、边界、Runtime 和期望能力。</p></div>}
-                    {convMessages.map((m, i) => (
-                      <div key={i} className={`authoring-message ${m.role}`}>
-                        <strong>{m.role === "user" ? "你" : "构建助手"}</strong>
-                        <p>{m.role === "user" ? m.content : "已生成结构化方案，见右侧 Draft Patch。"}</p>
+                  <div className="conversation-transcript" aria-live="polite">
+                    {convMessages.length === 0 && (
+                      <div className="conversation-empty-state">
+                        <Sparkles size={18} aria-hidden="true" />
+                        <strong>从一句需求开始</strong>
+                        <p>例如：帮我做一个销售日报 Agent，能汇总群聊记录并标出待跟进事项。</p>
                       </div>
-                    ))}
-                  </div>
-                  <div className="authoring-composer"><textarea rows={3} placeholder="例如：做一个 ADK 发布评审 Agent，只输出阻断项和证据" value={convInput} onChange={e => setConvInput(e.target.value)} /></div>
-                  <div className="authoring-card-actions">
-                    <button className="button accent" type="button" disabled={convBusy} onClick={sendConversation}>
-                      <Send size={16} /><span>{convBusy ? "正在生成" : "生成方案"}</span>
-                    </button>
+                    )}
+                    {convMessages.map((m, i) => {
+                      const assistant = m.role !== "user" ? summarizeConversationProposal(m.content) : null;
+                      return (
+                        <div key={i} className={`conversation-message ${m.role === "user" ? "user" : "assistant"}`}>
+                          {m.role === "user" ? (
+                            <p>{m.content}</p>
+                          ) : (
+                            <><strong>{assistant?.title}</strong><p>{assistant?.body}</p></>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {convBusy && (
+                      <div className="conversation-thinking" role="status">
+                        <span className="conversation-thinking-orb" aria-hidden="true"><i /><i /><i /></span>
+                        <TextShimmer stage={convStage} startedAt={convStartedAt} />
+                      </div>
+                    )}
                   </div>
                   {convError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>对话构建失败</strong><p>{convError}</p></div></div>}
-                  <div className="field authoring-model-field">
-                    <label>用于构建的模型（可多选）</label>
-                    <StudioMultiSelect
-                      ariaLabel="选择用于构建的模型"
-                      items={models}
-                      selectedIds={convModels}
-                      getId={item => item.resourceId}
-                      getLabel={item => item.displayName}
-                      getDescription={item => `${item.contract?.model || item.name} · ${credentialOf(item)?.configured ? "凭证已配置" : "需配置凭证"}`}
-                      onChange={setConvModels}
-                      searchPlaceholder="搜索构建模型"
-                      emptyMessage="没有可用模型"
+                  {convFallbackNotice && <div className="inline-alert warning" role="status"><CircleAlert size={16} /><div><strong>已生成本地兜底草稿</strong><p>{convFallbackNotice}</p></div></div>}
+                  <form className="conversation-composer" onSubmit={event => { event.preventDefault(); void sendConversation(); }}>
+                    <textarea
+                      rows={3}
+                      placeholder="描述你想创建或调整的 Agent…"
+                      value={convInput}
+                      onChange={event => setConvInput(event.target.value)}
+                      onKeyDown={event => {
+                        const nativeEvent = event.nativeEvent;
+                        if (event.key === "Enter" && !event.shiftKey && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) {
+                          event.preventDefault();
+                          void sendConversation();
+                        }
+                      }}
                     />
-                  </div>
-                </div>
+                    <div className="conversation-composer-footer">
+                      <span>Enter 发送 <b>·</b> Shift + Enter 换行</span>
+                      <button className="conversation-send-button" type="submit" disabled={convBusy || !convInput.trim()} aria-label={convBusy ? "正在生成" : "生成方案"} title={convBusy ? "正在生成" : "生成方案"}>
+                        <Send size={16} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </form>
+                  <details className="conversation-settings">
+                    <summary>
+                      <span>部署配置</span>
+                      <small>{RUNTIME_OPTIONS.find(option => option.value === conversationRuntime)?.label.split(" · ")[0] || "Runtime"} · {convAgentModels.length || 0} 个模型 · {convSkills.length + convMcp.length + (conversationRuntime === "codex" ? 0 : convTools.length)} 项能力</small>
+                    </summary>
+                    <div className="conversation-settings-body">
+                      <FormField
+                        label="生成模型 Profile"
+                        className="authoring-model-field"
+                        footer={<span>只决定本次如何生成草稿；默认 DeepSeek V4 Flash。</span>}
+                      >
+                        <StudioSelect
+                          ariaLabel="选择用于生成草稿的模型"
+                          value={convAuthoringModel}
+                          options={conversationModelOptions}
+                          onValueChange={setConvAuthoringModel}
+                        />
+                      </FormField>
+                      <FormField label="Runtime" requirement="required" htmlFor="conversationRuntime" error={conversationForm.formState.errors.runtimeType?.message}>
+                        <StudioSelect
+                          id="conversationRuntime"
+                          ariaLabel="Runtime"
+                          value={conversationRuntime}
+                          options={RUNTIME_OPTIONS}
+                          onValueChange={value => conversationForm.setValue("runtimeType", value as ConversationCommitFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true })}
+                        />
+                      </FormField>
+                      {conversationRuntime === "codex" && (
+                        <CodexProviderPermissions provider={codexProvider} approved={convCodexPermissionsApproved}
+                          onChange={setConvCodexPermissionsApproved} />
+                      )}
+                      <FormField
+                        label="Agent 可用模型"
+                        className="authoring-model-field"
+                        footer={<span>可多选；按目录中最新的模型作为运行默认值。</span>}
+                      >
+                        <StudioMultiSelect
+                          ariaLabel="选择对话 Agent 模型"
+                          items={models}
+                          selectedIds={convAgentModels}
+                          getId={item => item.resourceId}
+                          getLabel={item => item.displayName}
+                          getDescription={item => `${item.contract?.model || item.name} · ${hasConfiguredCredential(item) ? "凭证已配置" : "需配置凭证"}`}
+                          onChange={updateConversationAgentModels}
+                          searchPlaceholder="搜索 Agent 模型"
+                          emptyMessage="没有可用模型"
+                        />
+                      </FormField>
+                      <FormField label="Skill" className="authoring-model-field">
+                        <StudioMultiSelect
+                          ariaLabel="选择对话 Agent Skill"
+                          items={skills}
+                          selectedIds={convSkills}
+                          getId={item => item.resourceId}
+                          getLabel={item => item.displayName}
+                          getDescription={item => `${item.version} · ${item.description || "版本化 Skill"}`}
+                          onChange={setConvSkills}
+                          searchPlaceholder="搜索 Skill"
+                          emptyMessage="没有已安装的 Skill"
+                        />
+                      </FormField>
+                      <FormField label="MCP Server" className="authoring-model-field">
+                        <StudioMultiSelect
+                          ariaLabel="选择对话 Agent MCP Server"
+                          items={mcps}
+                          selectedIds={convMcp}
+                          disabledIds={mcps.filter(item => !convMcp.includes(item.resourceId) && mcpUnavailableReason(item, conversationRuntime)).map(item => item.resourceId)}
+                          getId={item => item.resourceId}
+                          getLabel={item => item.displayName}
+                          getDescription={item => mcpUnavailableReason(item, conversationRuntime) || `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool`}
+                          onChange={setConvMcp}
+                          searchPlaceholder="搜索 MCP Server"
+                          emptyMessage="没有已连接的 MCP Server"
+                        />
+                      </FormField>
+                      {conversationRuntime === "codex" ? (
+                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；KsADK Tool 仅绑定到 ADK / LangGraph 通用 Agent。</p>
+                      ) : (
+                        <FormField label="KsADK Tool" className="authoring-model-field">
+                          <StudioMultiSelect
+                            ariaLabel="选择对话 Agent Tool"
+                            items={tools}
+                            selectedIds={convTools}
+                            getId={item => item.resourceId}
+                            getLabel={item => item.displayName}
+                            getDescription={item => `${item.version} · ${item.description || "本地 Tool"}`}
+                            onChange={setConvTools}
+                            searchPlaceholder="搜索 Tool"
+                            emptyMessage="没有可用 Tool"
+                          />
+                        </FormField>
+                      )}
+                    </div>
+                  </details>
+                </section>
                 <FormProvider {...conversationForm}>
-                <form className="authoring-inspection-card" onSubmit={conversationForm.handleSubmit(confirmConversation)} noValidate>
-                  <div className="authoring-section-heading">
-                    <span className="authoring-section-index">02</span>
-                    <div><strong>检查 Draft Patch</strong><p>核对结构化方案；只有确认后才会创建 Revision。</p></div>
-                    <span className="badge" data-state={proposal ? "ready" : "pending"} aria-live="polite">
-                      {proposal ? "方案已生成" : "等待生成"}
-                    </span>
+                <aside className={`conversation-draft-rail${!proposal ? " is-empty" : convReviewOpen ? " is-reviewing" : ""}`} aria-label="Draft Patch">
+                  <div className="conversation-draft-rail-heading">
+                    <div><strong>Draft Patch</strong><p>{proposal ? "草稿已随对话更新" : "对话后生成，可随时检查"}</p></div>
+                    <span className="badge" data-state={proposal ? "ready" : "pending"}>{proposal ? "已更新" : "待生成"}</span>
                   </div>
-                  <div className="form-grid two-columns">
-                    <FormField label="显示名称" requirement="required" htmlFor="conversationName" error={conversationForm.formState.errors.name?.message}>
-                      <input id="conversationName" {...conversationForm.register("name")} />
-                    </FormField>
-                    <GeneratedIdField
-                      id="conversationSlug"
-                      value={conversationForm.watch("slug")}
-                      onChange={value => conversationForm.setValue("slug", value, { shouldDirty: true, shouldValidate: true })}
-                      error={conversationForm.formState.errors.slug?.message}
-                    />
-                  </div>
-                  <FormField label="Runtime" requirement="required" htmlFor="conversationRuntime" error={conversationForm.formState.errors.runtimeType?.message}>
-                    <StudioSelect
-                      id="conversationRuntime"
-                      ariaLabel="Runtime"
-                      value={conversationForm.watch("runtimeType")}
-                      options={RUNTIME_OPTIONS}
-                      onValueChange={value => conversationForm.setValue("runtimeType", value as ConversationCommitFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true })}
-                    />
-                  </FormField>
-                  <FormField label="系统提示词" requirement="required" htmlFor="conversationPrompt" error={conversationForm.formState.errors.prompt?.message}>
-                    <textarea id="conversationPrompt" rows={8} {...conversationForm.register("prompt")} />
-                  </FormField>
-                  <CodeViewer
-                    code={proposal ? JSON.stringify(proposal, null, 2) : "完成一轮或多轮对话后，这里会出现可编辑的 Draft Patch。"}
-                    language={proposal ? "json" : "text"}
-                    filename="draft-patch.json"
-                    showLineNumbers={Boolean(proposal)}
-                    wrap={!proposal}
-                  />
-                  <div className="authoring-card-actions">
-                    <button className="button accent" type="submit" disabled={!proposal || convBusy}><Check size={16} /><span>确认并创建 Revision</span></button>
-                  </div>
-                </form>
+                  {!proposal ? (
+                    <div className="conversation-draft-empty">
+                      <Bot size={20} aria-hidden="true" />
+                      <strong>从对话开始</strong>
+                      <p>先描述目标。草稿会在这里显示摘要，不会自动创建 Agent。</p>
+                    </div>
+                  ) : !convReviewOpen ? (
+                    <div className="conversation-draft-summary">
+                      <div className="conversation-draft-title"><Bot size={18} aria-hidden="true" /><div><strong>{conversationForm.watch("name") || proposal.name}</strong><p>{conversationForm.watch("description") || proposal.description || "已生成可编辑的 Agent 草稿"}</p></div></div>
+                      <div className="conversation-preview-section">
+                        <span>角色与系统提示词</span>
+                        <p>{conversationForm.watch("prompt") || proposal?.spec?.instructions?.system || "尚未生成"}</p>
+                      </div>
+                      <div className="conversation-preview-section">
+                        <span>任务契约</span>
+                        <p>{proposal?.spec?.instructions?.task || "根据对话目标完成任务。"}</p>
+                      </div>
+                      <div className="conversation-draft-tags">
+                        <span>{RUNTIME_OPTIONS.find(option => option.value === conversationRuntime)?.label.split(" · ")[0] || "Runtime"}</span>
+                        <span>{convAgentModels.length} 个模型</span>
+                        {(convSkills.length + convMcp.length + (conversationRuntime === "codex" ? 0 : convTools.length)) > 0 && <span>{convSkills.length + convMcp.length + (conversationRuntime === "codex" ? 0 : convTools.length)} 项能力</span>}
+                      </div>
+                      <button className="button accent" type="button" onClick={() => setConvReviewOpen(true)}><PanelRight size={16} /><span>编辑并创建</span></button>
+                    </div>
+                  ) : (
+                    <form className="conversation-review-form" onSubmit={conversationForm.handleSubmit(confirmConversation)} noValidate>
+                      <div className="conversation-review-heading"><div><strong>检查并确认</strong><p>编辑名称、提示词或打开左侧部署配置；确认后才会创建 Revision。</p></div><button type="button" className="button secondary" onClick={() => setConvReviewOpen(false)}>收起</button></div>
+                      <div className="form-grid two-columns">
+                        <FormField label="显示名称" requirement="required" htmlFor="conversationName" error={conversationForm.formState.errors.name?.message}>
+                          <input id="conversationName" {...conversationForm.register("name")} />
+                        </FormField>
+                        <GeneratedIdField
+                          id="conversationSlug"
+                          value={conversationForm.watch("slug")}
+                          onChange={value => conversationForm.setValue("slug", value, { shouldDirty: true, shouldValidate: true })}
+                          error={conversationForm.formState.errors.slug?.message}
+                        />
+                      </div>
+                      <FormField label="系统提示词" requirement="required" htmlFor="conversationPrompt" error={conversationForm.formState.errors.prompt?.message}>
+                        <textarea id="conversationPrompt" rows={8} {...conversationForm.register("prompt")} />
+                      </FormField>
+                      <div className="authoring-card-actions">
+                        <button className="button accent" type="submit" disabled={convBusy}><Check size={16} /><span>确认并创建 Revision</span></button>
+                      </div>
+                    </form>
+                  )}
+                </aside>
                 </FormProvider>
               </div>
             </section>
@@ -1067,13 +1666,77 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       id="quickRuntime"
                       ariaLabel="Runtime"
                       value={runtime}
-                      options={RUNTIME_OPTIONS}
+                      options={quickRuntimeOptions}
                       onValueChange={value => {
                         quickForm.setValue("runtimeType", value as QuickAgentFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true });
                         markDirty();
                       }}
                     />
                   </FormField>
+                  {runtime === "codex" && (
+                    <CodexProviderPermissions provider={codexProvider} approved={codexPermissionsApproved}
+                      onChange={approved => { setCodexPermissionsApproved(approved); markDirty(); }} />
+                  )}
+                  {runtime === "plugin" && (
+                    <div className="template-specific" data-testid="external-provider-config">
+                      <FormField
+                        label="AgentProvider"
+                        requirement="required"
+                        htmlFor="quickAgentProvider"
+                        hint="选项来自本机已安装的 agent.provider/v1；不可用版本会保留原因但不能选择。"
+                      >
+                        <StudioSelect
+                          id="quickAgentProvider"
+                          ariaLabel="AgentProvider"
+                          value={selectedProviderRef}
+                          placeholder="没有可用的 AgentProvider"
+                          options={providerOptions}
+                          disabled={!providerOptions.some(option => !option.disabled)}
+                          onValueChange={value => {
+                            setSelectedProviderRef(value);
+                            setProviderPermissionsApproved(false);
+                            markDirty();
+                          }}
+                        />
+                      </FormField>
+                      {!selectedProvider?.selectable && (
+                        <div className="inline-alert warning" role="status">
+                          <CircleAlert size={16} />
+                          <div>
+                            <strong>AgentProvider 当前不可用</strong>
+                            <p>{selectedProvider?.reason?.message || "请先在插件中心安装并启用兼容的 AgentProvider。"}</p>
+                          </div>
+                        </div>
+                      )}
+                      <FormField
+                        label="Provider 配置"
+                        requirement="optional"
+                        htmlFor="quickProviderConfig"
+                        hint="填写 JSON 对象；密码、Token、API Key 只能使用 env://、secret://、credential:// 或 vault:// 引用。"
+                      >
+                        <textarea
+                          id="quickProviderConfig"
+                          className="mono"
+                          rows={5}
+                          value={providerConfigText}
+                          onChange={event => { setProviderConfigText(event.target.value); markDirty(); }}
+                        />
+                      </FormField>
+                      {selectedProvider?.permissions.length ? (
+                        <label className="post-create-option">
+                          <input
+                            type="checkbox"
+                            checked={providerPermissionsApproved}
+                            onChange={event => { setProviderPermissionsApproved(event.target.checked); markDirty(); }}
+                          />
+                          <span>
+                            <strong>确认 Provider 请求的权限</strong>
+                            <small>{selectedProvider.permissions.join("、")}；确认后才会写入本 Revision。</small>
+                          </span>
+                        </label>
+                      ) : null}
+                    </div>
+                  )}
                   <FormField label="描述" requirement="optional" htmlFor="quickDescription" error={quickForm.formState.errors.description?.message}>
                     <input id="quickDescription" maxLength={1024} placeholder="简要说明这个 Agent 解决什么问题" {...quickForm.register("description", { onChange: markDirty })} />
                   </FormField>
@@ -1144,10 +1807,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <span className="panel-index">02</span>
                     <div><h2>选择 Agent 可以使用的能力</h2><p>所有依赖都会在构建时锁定版本和摘要，并由权限策略控制调用。</p></div>
                   </div>
-                  {runtime === "codex" && (
+                  {usesNativeCodexTools && (
                     <div className="inline-alert warning codex-capability-notice">
                       <CircleAlert size={16} />
-                      <div><strong>ManagedRuntime 不绑定 ksadk Tool</strong><p>codex CLI 自身提供工具能力，ksadk Tool 不会绑定到 codex Agent。MCP（streamable-http）与 Skill 可绑定：MCP 经 codex config_overrides 注入，Skill 以原生 SkillInput 注入。模型仍需选择并配置凭证。</p></div>
+                      <div><strong>Codex 使用原生工具，不绑定 KsADK 内置 Tool</strong><p>Codex CLI 自身提供工具能力。MCP（streamable-http）与 Skill 仍可绑定：MCP 经 Codex 配置注入，Skill 以原生 SkillInput 注入。模型仍需选择并配置凭证。</p></div>
                     </div>
                   )}
                   <div className="capability-section">
@@ -1158,6 +1821,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                         <p>至少选择一个；支持多选</p>
                       </div>
                     </div>
+                    {selectedModelNeedsCredential && (
                     <div className="model-profile-control">
                       <button
                         className="button secondary"
@@ -1167,20 +1831,21 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                         配置凭证
                       </button>
                     </div>
+                    )}
                     <StudioMultiSelect
                       ariaLabel="选择模型"
                       items={models}
                       selectedIds={selectedModels}
                       getId={item => item.resourceId}
                       getLabel={item => item.displayName}
-                      getDescription={item => `${item.contract?.model || item.name} · ${credentialOf(item)?.configured ? "凭证已配置" : "需配置凭证"}`}
+                      getDescription={item => `${item.contract?.model || item.name} · ${hasConfiguredCredential(item) ? "凭证已配置" : "需配置凭证"}`}
                       onChange={ids => { setSelectedModels(ids); markDirty(); }}
                       searchPlaceholder="搜索模型"
                       emptyMessage="没有可用模型"
                     />
                     <span className="helper">{selectedModelStatus}</span>
                   </div>
-                  {runtime !== "codex" && (
+                  {supportsKsAdkTools && (
                     <div className="capability-section">
                       <div className="capability-heading">
                         <span className="capability-icon"><Wrench size={15} /></span>
@@ -1219,9 +1884,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       ariaLabel="选择 MCP Server"
                       items={mcps}
                       selectedIds={selectedMcp}
+                      disabledIds={mcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId)}
                       getId={item => item.resourceId}
                       getLabel={item => item.displayName}
-                      getDescription={item => `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool · ${item.status === "ready" ? "Ready" : item.status}`}
+                      getDescription={item => mcpUnavailableReason(item, runtime) || `${item.description || "MCP Server"} · ${item.health?.toolCount || 0} Tool · ${item.status === "ready" ? "Ready" : item.status}`}
                       onChange={ids => { setSelectedMcp(ids); markDirty(); }}
                       searchPlaceholder="搜索 MCP Server"
                       emptyMessage="没有已连接的 MCP Server"
@@ -1244,6 +1910,22 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       emptyMessage="没有已安装的 Skill"
                     />
                   </div>
+                  <div className="capability-section platform-capability-section">
+                    <PlatformResourceBindings
+                      value={selectedPlatformResources}
+                      onChange={bindings => {
+                        setSelectedPlatformResources(bindings);
+                        if (bindings.some(binding =>
+                          (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+                        )) {
+                          setMemoryEnabled(true);
+                          setMemoryWriteRollout("off");
+                        }
+                        markDirty();
+                      }}
+                      onPendingChange={setPlatformResourcesPending}
+                    />
+                  </div>
                 </section>
 
                 {/* 第 3 步：Prompt 与策略 */}
@@ -1251,13 +1933,13 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div className="panel-heading">
                     <span className="panel-index">03</span>
                     <div><h2>检查系统提示词与任务契约</h2><p>保存前可以继续编辑，创建时会完整写入 Agent Draft。</p></div>
-                    <button className="button secondary small" type="button" onClick={() => composeAgent({ preservePrompt: false })}>
-                      <RefreshCw size={14} /><span>重新生成</span>
+                    <button className={`button secondary small prompt-optimize-button${promptStatus === "composing" ? " is-working" : ""}`} type="button" disabled={promptStatus === "composing"} aria-busy={promptStatus === "composing"} onClick={optimizePromptWithModel}>
+                      <RefreshCw size={14} aria-hidden="true" /><span className={promptStatus === "composing" ? "text-shimmer" : undefined}>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在优化" : "正在生成") : "一键优化 Prompt"}</span>
                     </button>
                   </div>
-                  <div className="prompt-status">
+                  <div className={`prompt-status${promptStatus === "composing" ? " is-working" : ""}`} role="status" aria-live="polite">
                     <span className={`status-dot ${promptStatus === "done" ? "success" : "info"}`} />
-                    <span>{promptStatus === "composing" ? "正在根据模板与能力生成 Agent 配置" : promptStatus === "done" ? "Agent 配置已根据当前选择生成" : "进入此步骤后生成 Prompt"}</span>
+                    <span>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在使用生成模型优化角色与任务契约，通常需要几十秒" : "正在根据模板与能力生成角色与任务契约") : promptStatus === "done" ? "角色与任务契约已根据当前选择生成" : "进入此步骤后生成 Prompt"}</span>
                   </div>
                   <FormField label="角色与系统提示词" requirement="required" htmlFor="composedSystemPrompt" hint="定义角色、目标、工作边界和回答原则" error={quickForm.formState.errors.systemPrompt?.message}>
                     <textarea id="composedSystemPrompt" className="prompt-editor" rows={16} {...quickForm.register("systemPrompt", { onChange: markDirty })} />
@@ -1338,7 +2020,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <div className="review-title"><span>能力绑定</span><button className="text-button" type="button" onClick={() => gotoStep(2)}>编辑</button></div>
                     <div className="review-capabilities">
                       <div className="review-capability"><Cpu size={16} /><div><strong>{selectedModelItems[0]?.displayName || "模型"}</strong></div></div>
-                      <div className="review-capability"><Wrench size={16} /><div><strong>{selectedTools.length} 个 Tool</strong><span>{policyMeta.title}</span></div></div>
+                      {supportsKsAdkTools && <div className="review-capability"><Wrench size={16} /><div><strong>{effectiveSelectedTools.length} 个 Tool</strong><span>{policyMeta.title}</span></div></div>}
                       <div className="review-capability"><Network size={16} /><div><strong>{selectedMcp.length} 个 MCP</strong><span>{selectedMcp.length ? "已连接外部服务" : "未绑定"}</span></div></div>
                       <div className="review-capability"><Sparkles size={16} /><div><strong>{selectedSkills.length} 个 Skill</strong><span>{selectedSkills.length ? "已注入版本化能力" : "未绑定"}</span></div></div>
                     </div>
@@ -1369,7 +2051,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <div><dt>模板</dt><dd>{templateLabel}</dd></div>
                     <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
                     <div><dt>模型</dt><dd>{reviewModel}</dd></div>
-                    <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
+                    {supportsKsAdkTools && <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>}
                     <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
                     <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
                   </dl>
@@ -1379,11 +2061,11 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div className="wizard-flow-actions">
                     <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
                     {step < 4 ? (
-                      <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
+                      <button className="button accent" type="button" disabled={platformResourcesPending} onClick={() => gotoStep(step + 1)}>
                         <span>继续</span><ArrowRight size={16} />
                       </button>
                     ) : (
-                      <button className="button accent" type="submit" disabled={submitting}>
+                      <button className="button accent" type="submit" disabled={submitting || platformResourcesPending}>
                         <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
                       </button>
                     )}
@@ -1406,7 +2088,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div><dt>模型</dt><dd>{reviewModel}</dd></div>
                   <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
                   <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
-                  <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
+                  <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>
                   <div><dt>策略</dt><dd>{template === "research" ? "Plan-Act-Observe" : "Direct"}</dd></div>
                 </dl>
                 <div className="summary-divider" />
@@ -1416,7 +2098,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 </div>
                 <div className="summary-note">
                   <Package size={16} />
-                  <div><strong>{isManagedRuntime ? "声明校验" : "不可变构建"}</strong><p>{isManagedRuntime ? "冻结 YAML 与 runtime 摘要；云端部署不使用代码包。" : "Skill、MCP 和 Tool 将锁定版本与摘要。"}</p></div>
+                  <div><strong>{isManagedRuntime ? "声明校验" : "不可变构建"}</strong><p>{isManagedRuntime ? "冻结 YAML 与 runtime 摘要；云端部署不使用代码包。" : usesNativeCodexTools ? "Skill 与 MCP 将锁定版本与摘要；工具由 Codex Runtime 提供。" : "Skill、MCP 和 Tool 将锁定版本与摘要。"}</p></div>
                 </div>
                 </div>
               </StudioDrawer>

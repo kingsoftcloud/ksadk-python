@@ -11,8 +11,11 @@ import yaml
 from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
+from ksadk.studio.authoring import AgentAuthoringService
 from ksadk.studio.contracts import (
+    AgentBindings,
     AgentSpec,
+    CapabilityBinding,
     Instructions,
     MCPServerRef,
     ModelSpec,
@@ -47,6 +50,14 @@ def _register_model(studio: StudioService) -> None:
             model="glm-5.1",
             endpoint_url="https://api.openai.com/v1/chat/completions",
             credential_ref="env://AGENTKIT_MODEL_API_KEY",
+            metadata={
+                "pricing": {"prompt": "1.0元", "completion": "2.0元"},
+                "limits": {"rpm": 500},
+            },
+            discovery={
+                "source": "provider",
+                "endpoint": "https://api.openai.com/v1/models",
+            },
         ),
     )
 
@@ -55,9 +66,11 @@ class _AuthoringModelClient:
     def __init__(self, content: str) -> None:
         self.content = content
         self.messages: list[list[dict]] = []
+        self.calls: list[dict] = []
 
-    async def complete(self, _model, *, messages, **_kwargs):
+    async def complete(self, _model, *, messages, **kwargs):
         self.messages.append(messages)
+        self.calls.append(kwargs)
         return ModelResponse(
             content=self.content,
             finish_reason="stop",
@@ -72,8 +85,9 @@ class _SequencedAuthoringModelClient(_AuthoringModelClient):
         super().__init__(contents[0])
         self.contents = list(contents)
 
-    async def complete(self, _model, *, messages, **_kwargs):
+    async def complete(self, _model, *, messages, **kwargs):
         self.messages.append(messages)
+        self.calls.append(kwargs)
         content = self.contents.pop(0)
         return ModelResponse(
             content=content,
@@ -130,6 +144,25 @@ def test_quick_authoring_generates_local_id_when_slug_is_omitted(tmp_path: Path)
 
     assert re.fullmatch(r"agentkit-[0-9a-f]{8}", draft.metadata.id)
     assert draft.metadata.labels["agentkit.ksyun.com/slug"] == draft.metadata.id
+
+
+def test_codex_agent_provider_drops_ksadk_tool_bindings(tmp_path: Path) -> None:
+    studio = StudioService(tmp_path)
+
+    draft = studio.create_authored_agent(
+        name="Codex Provider Agent",
+        runtime_type="plugin",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref="plugin://io.ksadk.codex-provider@1.0.0",
+            ),
+            bindings=AgentBindings(tools=[CapabilityBinding(resource_id="tool:builtin:read-file")]),
+            instructions=Instructions(system="Use Codex native tools."),
+        ),
+    )
+
+    assert draft.spec.bindings.tools == []
 
 
 def test_generated_local_id_is_never_overwritten(tmp_path: Path) -> None:
@@ -306,21 +339,32 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
             {"role": "user", "content": "ADK，输出阻断项和证据"},
         ],
         model_profile_id=model_profile.resource_id,
+        runtime_type="adk",
     )
 
     assert proposal["proposal"]["runtimeType"] == "adk"
     spec = proposal["proposal"]["spec"]
     assert spec["instructions"]["system"] == "You review release evidence."
-    assert spec["runtime"]["entryPoint"] == "main.py"
-    assert spec["model"]["parameters"]["maxTokens"] == 8192
-    assert spec["bindings"]["tools"] == [
-        {"resourceId": "tool-release-check", "enabled": True, "approval": "policy", "config": {}}
-    ]
-    assert spec["execution"]["strategy"] == "plan-act-observe"
-    assert spec["context"]["maxInputTokens"] == 64000
-    assert spec["memory"]["providerRef"] == "memory-release"
-    assert spec["security"]["allowedPermissions"] == ["repo:read"]
-    assert spec["evaluation"]["suiteRefs"] == ["release-gate"]
+    assert spec.get("runtime") is None
+    # Model connection and resource bindings are not LLM output.  The request
+    # selected this single Profile and no capability resources.
+    # The Profile binding is authoritative.  A Draft Patch must not copy the
+    # provider catalogue contract (pricing, discovery endpoints or limits)
+    # into persistent Agent content; build/run materialise it from the binding.
+    assert spec.get("model") is None
+    assert spec["bindings"]["modelProfileId"] == model_profile.resource_id
+    assert spec["bindings"]["modelProfileIds"] == [model_profile.resource_id]
+    assert spec["bindings"]["tools"] == []
+    assert spec["bindings"]["mcpServers"] == []
+    assert spec["bindings"]["skills"] == []
+    # Runtime infrastructure and execution policy remain Studio defaults;
+    # the model response cannot smuggle an incompatible framework source or
+    # mutable platform policy into the Draft Patch.
+    assert spec["execution"]["strategy"] == "direct"
+    assert spec["context"]["maxInputTokens"] == 32000
+    assert spec["memory"]["providerRef"] == "local-default"
+    assert spec["security"]["allowedPermissions"] == []
+    assert spec["evaluation"]["suiteRefs"] == []
     assert proposal["requiresConfirmation"] is True
     assert proposal["usage"]["reported"] is False
     assert studio.list_agents() == []
@@ -358,9 +402,7 @@ async def test_conversation_authoring_merges_a_partial_follow_up_patch(
         + json.dumps(
             {
                 "description": "Checks release readiness and rollback safety.",
-                "spec": {
-                    "instructions": {"task": "Return blockers, proof, and rollback steps."}
-                },
+                "spec": {"instructions": {"task": "Return blockers, proof, and rollback steps."}},
             }
         )
         + "\n```"
@@ -376,46 +418,52 @@ async def test_conversation_authoring_merges_a_partial_follow_up_patch(
             {"role": "user", "content": "再补充回滚安全检查"},
         ],
         model_profile_id=model_profile.resource_id,
+        runtime_type="adk",
     )
 
     result = proposal["proposal"]
     assert result["name"] == "Release Reviewer"
     assert result["runtimeType"] == "adk"
     assert result["description"] == "Checks release readiness and rollback safety."
-    assert result["spec"]["runtime"]["entryPoint"] == "main.py"
-    assert result["spec"]["bindings"]["skills"] == [
-        {
-            "resourceId": "skill-release",
-            "enabled": True,
-            "approval": None,
-            "config": {},
-        }
-    ]
+    assert result["spec"].get("runtime") is None
+    # A previous assistant patch cannot smuggle a binding into a later turn.
+    assert result["spec"]["bindings"]["skills"] == []
     assert result["spec"]["instructions"] == {
         "system": "You review release evidence.",
         "task": "Return blockers, proof, and rollback steps.",
     }
 
 
+def test_conversation_parser_keeps_only_semantic_fields_when_runtime_is_studio_owned() -> None:
+    proposal = AgentAuthoringService.parse_conversation_proposal(
+        json.dumps(
+            {
+                "name": "销售日报",
+                "slug": "sales-daily-report",
+                "runtimeType": "langgraph",
+                "spec": {
+                    "runtime": {"type": "langgraph"},
+                    "instructions": {"system": "生成日报", "task": "按天汇总"},
+                    "execution": {"mode": "workflow"},
+                    "security": {"level": "standard"},
+                },
+            }
+        ),
+        runtime_type="codex",
+    )
+
+    assert proposal.runtimeType == "codex"
+    assert proposal.spec.runtime is None
+    assert proposal.spec.instructions.system == "生成日报"
+    assert proposal.spec.instructions.task == "按天汇总"
+    assert proposal.spec.execution.strategy == "direct"
+
+
 @pytest.mark.asyncio
-async def test_conversation_authoring_retries_one_invalid_model_patch(
+async def test_conversation_authoring_returns_local_fallback_for_invalid_model_patch(
     tmp_path: Path,
 ) -> None:
-    valid = json.dumps(
-        {
-            "name": "Release Reviewer",
-            "slug": "release-reviewer",
-            "runtimeType": "codex",
-            "description": "Checks releases.",
-            "spec": {
-                "instructions": {
-                    "system": "Review releases.",
-                    "task": "Return evidence.",
-                }
-            },
-        }
-    )
-    model_client = _SequencedAuthoringModelClient(["not-json", valid])
+    model_client = _SequencedAuthoringModelClient(["not-json"])
     studio = StudioService(tmp_path, model_client=model_client)
     _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
@@ -425,21 +473,29 @@ async def test_conversation_authoring_retries_one_invalid_model_patch(
         model_profile_id=model_profile.resource_id,
     )
 
-    assert proposal["proposal"]["name"] == "Release Reviewer"
-    assert len(model_client.messages) == 2
-    assert "上一次输出未通过 Agent Draft Patch 校验" in model_client.messages[1][-1]["content"]
+    assert proposal["authoringMode"] == "local-fallback"
+    assert proposal["fallback"]["active"] is True
+    assert proposal["proposal"]["runtimeType"] == "codex"
+    assert proposal["proposal"]["spec"]["instructions"]["task"] == "做一个发布评审 Agent"
+    # An invalid draft is not worth another slow, probabilistic correction
+    # request.  The user receives a transparent, editable local fallback.
+    assert len(model_client.messages) == 1
 
 
 def test_conversation_prompt_only_response_is_migrated_to_complete_spec(tmp_path: Path) -> None:
     from ksadk.studio.authoring import AgentAuthoringService
 
-    proposal = AgentAuthoringService.parse_conversation_proposal(json.dumps({
-        "name": "Legacy Helper",
-        "slug": "legacy-helper",
-        "runtimeType": "codex",
-        "description": "Legacy response",
-        "instructions": {"system": "Keep this prompt.", "task": "Keep this task."},
-    }))
+    proposal = AgentAuthoringService.parse_conversation_proposal(
+        json.dumps(
+            {
+                "name": "Legacy Helper",
+                "slug": "legacy-helper",
+                "runtimeType": "codex",
+                "description": "Legacy response",
+                "instructions": {"system": "Keep this prompt.", "task": "Keep this task."},
+            }
+        )
+    )
 
     assert proposal.spec.description == "Legacy response"
     assert proposal.spec.instructions == Instructions(
@@ -593,14 +649,18 @@ def test_project_import_reports_unresolved_bindings_instead_of_dropping_them(
     project = tmp_path / "projects/unresolved-adk"
     project.mkdir(parents=True)
     (project / "agent.py").write_text("root_agent = object()\n")
-    (project / "ksadk.yaml").write_text(yaml.safe_dump({
-        "name": "unresolved-adk",
-        "framework": "adk",
-        "entry_point": "agent.py",
-        "agent_variable": "root_agent",
-        "tools": [{"legacy": "opaque-tool-config"}],
-        "skills": ["skill-not-installed"],
-    }))
+    (project / "ksadk.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "unresolved-adk",
+                "framework": "adk",
+                "entry_point": "agent.py",
+                "agent_variable": "root_agent",
+                "tools": [{"legacy": "opaque-tool-config"}],
+                "skills": ["skill-not-installed"],
+            }
+        )
+    )
 
     inspection = studio.inspect_agent_project("projects/unresolved-adk")
 
@@ -718,3 +778,290 @@ def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:
             json={"name": "API Import", "slug": "api-import"},
         )
         assert imported.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_requests_json_object_response(
+    tmp_path: Path,
+) -> None:
+    valid = json.dumps(
+        {
+            "name": "Release Reviewer",
+            "slug": "release-reviewer",
+            "runtimeType": "codex",
+            "description": "Checks releases.",
+            "spec": {"instructions": {"system": "Review releases.", "task": "Return evidence."}},
+        }
+    )
+    model_client = _AuthoringModelClient(valid)
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert model_client.calls[0]["response_format"] == {"type": "json_object"}
+    assert model_client.calls[0]["timeout_seconds"] <= 30
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_falls_back_when_model_request_fails(
+    tmp_path: Path,
+) -> None:
+    class FailingClient:
+        async def complete(self, *_args, **_kwargs):
+            raise StudioError("MODEL_REQUEST_FAILED", "模型请求网络失败", status_code=502)
+
+    model_client = FailingClient()
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    proposal = await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert proposal["authoringMode"] == "local-fallback"
+    assert proposal["fallback"]["reason"] == "model-request-failed"
+    assert proposal["usage"]["source"] == "local-fallback"
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_invalid_output_is_not_a_terminal_error(
+    tmp_path: Path,
+) -> None:
+    model_client = _SequencedAuthoringModelClient(["not-json"])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    proposal = await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert proposal["authoringMode"] == "local-fallback"
+    assert proposal["fallback"]["reason"] == "invalid-model-output"
+
+
+def _valid_conversation_proposal() -> str:
+    return json.dumps(
+        {
+            "name": "Stage Agent",
+            "slug": "stage-agent",
+            "runtimeType": "codex",
+            "description": "Tracks authoring stages.",
+            "instructions": {"system": "Help reliably.", "task": "Answer."},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_records_stage_progress(tmp_path: Path) -> None:
+    model_client = _SequencedAuthoringModelClient([_valid_conversation_proposal()])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    assert studio.conversation_authoring_status("req-stages") is None
+
+    await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个阶段跟踪 Agent"}],
+        model_profile_id=model_profile.resource_id,
+        request_id="req-stages",
+    )
+
+    status = studio.conversation_authoring_status("req-stages")
+    assert status is not None
+    assert status["requestId"] == "req-stages"
+    assert status["stage"] == "done"
+    assert status["updatedAt"] > 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_records_failed_stage(tmp_path: Path) -> None:
+    model_client = _SequencedAuthoringModelClient(["not-json"])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    result = await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个 Agent"}],
+        model_profile_id=model_profile.resource_id,
+        request_id="req-failed",
+    )
+
+    status = studio.conversation_authoring_status("req-failed")
+    assert status is not None
+    assert status["stage"] == "done"
+    assert result["authoringMode"] == "local-fallback"
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_emits_start_and_finish_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    model_client = _AuthoringModelClient(_valid_conversation_proposal())
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    with caplog.at_level(logging.INFO, logger="ksadk.studio.authoring_coordinator"):
+        await studio.compose_agent_conversation(
+            messages=[{"role": "user", "content": "做一个日志 Agent"}],
+            model_profile_id=model_profile.resource_id,
+            request_id="req-logs",
+        )
+
+    messages = [record.message for record in caplog.records]
+    assert any(message.startswith("conversation authoring started") for message in messages)
+    assert any(message.startswith("conversation authoring finished") for message in messages)
+    assert any(message.startswith("conversation authoring model resolved") for message in messages)
+
+
+def test_conversation_authoring_status_endpoint(tmp_path: Path) -> None:
+    model_client = _AuthoringModelClient(_valid_conversation_proposal())
+    service = StudioService(tmp_path, model_client=model_client)
+    _register_model(service)
+    model_profile = service.catalog.list(kind="model")[0]
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+    with TestClient(app) as client:
+        unknown = client.get("/api/v1/authoring/conversations:status/req-missing")
+        assert unknown.status_code == 404
+        assert unknown.json()["error"]["code"] == "AUTHORING_STATUS_NOT_FOUND"
+
+        composed = client.post(
+            "/api/v1/authoring/conversations:compose",
+            json={
+                "modelProfileId": model_profile.resource_id,
+                "requestId": "req-endpoint",
+                "messages": [{"role": "user", "content": "做一个问答 Agent"}],
+            },
+        )
+        assert composed.status_code == 200
+
+        status = client.get("/api/v1/authoring/conversations:status/req-endpoint")
+        assert status.status_code == 200
+        payload = status.json()
+        assert payload["requestId"] == "req-endpoint"
+        assert payload["stage"] == "done"
+        assert payload["updatedAt"] > 0
+
+
+def test_parse_conversation_proposal_coerces_invalid_credential_ref():
+    """模型把 credentialRef 写成对象时自动收敛，不浪费纠错重试。"""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "新闻摘要",
+            "slug": "news-digest",
+            "runtimeType": "codex",
+            "description": "摘要",
+            "spec": {
+                "instructions": {"system": "s", "task": "t"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": {},
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    assert proposal.spec.model.credential_ref == "env://AGENTKIT_MODEL_API_KEY"
+
+
+def test_parse_conversation_proposal_coerces_nested_credential_ref():
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "新闻摘要",
+            "slug": "news-digest",
+            "runtimeType": "codex",
+            "description": "摘要",
+            "spec": {
+                "instructions": {"system": "s", "task": "t"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": {"ref": "keychain://ksadk-model"},
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    assert proposal.spec.model.credential_ref == "keychain://ksadk-model"
+
+
+def test_parse_conversation_proposal_coerces_runtime_provider_field():
+    """模型把 spec.runtime.type 写成 provider 时自动迁移。"""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "新闻摘要",
+            "slug": "news-digest",
+            "runtimeType": "codex",
+            "description": "摘要",
+            "spec": {
+                "runtime": {"provider": "codex"},
+                "instructions": {"system": "s", "task": "t"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": "env://AGENTKIT_MODEL_API_KEY",
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    assert proposal.spec.runtime.type == "codex"
+
+
+def test_parse_conversation_proposal_strips_placeholder_model_url():
+    """模型照抄示例里的 example.com URL 时删除，交 Profile 注入真实 endpoint。"""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "日报助手",
+            "slug": "daily-report-agent",
+            "runtimeType": "codex",
+            "description": "日报",
+            "spec": {
+                "instructions": {"system": "s", "task": "t"},
+                "runtime": {"type": "codex"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": "env://AGENTKIT_MODEL_API_KEY",
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    # 占位 URL 被 sanitize 层替换为 marker，coordinator 会用 Profile 真实 endpoint 覆写
+    assert proposal.spec.model.base_url == "https://model-profile.invalid/placeholder"
+
+
+def test_model_url_sanitizer_does_not_match_placeholder_substrings_outside_hostname():
+    """Only placeholder hostnames are removed; URL text is not a trust boundary."""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    for value in (
+        "https://example.com.attacker.test/v1",
+        "https://example.com@models.vendor.test/v1",
+        "https://models.vendor.test/v1/placeholder",
+    ):
+        payload = {"spec": {"model": {"baseUrl": value}}}
+        AgentAuthoringService._sanitize_model_block(payload)
+        assert payload["spec"]["model"]["baseUrl"] == value

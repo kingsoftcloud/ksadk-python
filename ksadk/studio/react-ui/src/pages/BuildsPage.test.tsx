@@ -5,8 +5,28 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 let buildStatus = "SUCCEEDED";
 let runtimeType = "langgraph";
 let artifactType = "Code";
+let operationMode = false;
+let resolveOperation: ((response: Response) => void) | null = null;
 
 apiFetch.mockImplementation(async (path: string) => {
+  if (operationMode && path === "/api/v1/agents/demo-agent/builds") {
+    return new Response(JSON.stringify({ id: "op-build" }));
+  }
+  if (operationMode && path === "/api/v1/operations/op-build/events?after=0") {
+    return new Response([
+      "id: 1",
+      "event: operation.queued",
+      'data: {"kind":"BUILD"}',
+      "",
+      "id: 2",
+      "event: operation.succeeded",
+      'data: {"resourceId":"build-4"}',
+      "",
+    ].join("\n"));
+  }
+  if (operationMode && path === "/api/v1/operations/op-build") {
+    return new Promise<Response>(resolve => { resolveOperation = resolve; });
+  }
   if (path === "/api/v1/agents/demo-agent") {
     return new Response(JSON.stringify({
       draft: {
@@ -39,6 +59,8 @@ describe("BuildsPage", () => {
     buildStatus = "SUCCEEDED";
     runtimeType = "langgraph";
     artifactType = "Code";
+    operationMode = false;
+    resolveOperation = null;
     window.location.hash = "#/builds";
   });
 
@@ -94,5 +116,28 @@ describe("BuildsPage", () => {
     expect(await screen.findByRole("heading", { name: "ManagedRuntime 声明" })).toBeInTheDocument();
     expect(screen.getByText(/托管运行时制品/)).toBeInTheDocument();
     expect(screen.queryByText(/不上传代码包/)).not.toBeInTheDocument();
+  });
+
+  it("renders SSE event ids and types in the YAML validation log", async () => {
+    runtimeType = "codex";
+    artifactType = "ManagedRuntime";
+    operationMode = true;
+
+    render(
+      <BuildsPage
+        currentAgentId="demo-agent"
+        agents={[{ metadata: { id: "demo-agent", name: "Demo Agent", revision: 3 } }]}
+        onSelectAgent={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "校验 YAML 声明" }));
+
+    expect(await screen.findByText(/01\s+operation\.queued/)).toBeInTheDocument();
+    expect(screen.getByText(/02\s+operation\.succeeded/)).toBeInTheDocument();
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+
+    resolveOperation?.(new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "build-4" })));
   });
 });

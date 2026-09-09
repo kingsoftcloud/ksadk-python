@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from ksadk.skills.events import SkillEvent, SkillInvocationPlan
+from ksadk.skills.package_store import SkillPackage
 
 _SANDBOX_OBSERVABILITY_ENV_PREFIXES = ("OTEL_", "LANGFUSE_")
 _SANDBOX_TRACE_ENV_NAMES = {"BAGGAGE", "TRACEPARENT", "TRACESTATE"}
@@ -44,6 +45,9 @@ class SkillRuntimeResult:
     output_text: str = ""
     output_text_truncated: bool = False
     skill_events: list[SkillEvent] = field(default_factory=list)
+    workflow_status: str = ""
+    executed_skill: str = ""
+    instructions: str = ""
 
     @property
     def ok(self) -> bool:
@@ -60,6 +64,9 @@ class SkillRuntimeResult:
             "error_type": self.error_type,
             "error_message": self.error_message,
             "output_files": list(self.output_files),
+            "workflow_status": self.workflow_status,
+            "executed_skill": self.executed_skill,
+            "instructions": self.instructions,
         }
         if self.output_text:
             result["output_text"] = self.output_text
@@ -81,6 +88,7 @@ class SkillRuntimeBackend(Protocol):
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
         invocation_plan: SkillInvocationPlan | None = None,
+        pinned_packages: list[SkillPackage] | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult: ...
 
@@ -90,9 +98,13 @@ class ParsedWorkflowResult:
     output_files: tuple[str, ...] = ()
     output_text: str = ""
     output_text_truncated: bool = False
+    workflow_status: str = ""
+    executed_skill: str = ""
+    instructions: str = ""
 
 
 def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
+    """Parse the workflow_result= JSON line from agent.py stdout."""
     for line in stdout.splitlines():
         if not line.startswith("workflow_result="):
             continue
@@ -103,21 +115,22 @@ def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
             return ParsedWorkflowResult()
         if not isinstance(payload, dict):
             return ParsedWorkflowResult()
-        output_files = payload.get("output_files") if isinstance(payload, dict) else None
-        output_text = payload.get("output_text")
+        output_files = payload.get("output_files")
         return ParsedWorkflowResult(
             output_files=(
                 tuple(str(item) for item in output_files) if isinstance(output_files, list) else ()
             ),
-            output_text=output_text if isinstance(output_text, str) else "",
+            output_text=payload.get("output_text") if isinstance(payload.get("output_text"), str) else "",
             output_text_truncated=payload.get("output_text_truncated") is True,
+            workflow_status=str(payload.get("status") or ""),
+            executed_skill=str(payload.get("executed_skill") or ""),
+            instructions=str(payload.get("instructions") or ""),
         )
     return ParsedWorkflowResult()
 
 
 def parse_output_files(stdout: str) -> list[str]:
     """Compatibility helper for callers that only need artifact paths."""
-
     return list(parse_workflow_result(stdout).output_files)
 
 

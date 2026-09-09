@@ -182,6 +182,38 @@ async def test_bad_session_quarantined_and_others_still_served():
         await runtime.close()
 
 
+async def test_terminal_command_failure_is_logged_and_quarantined_without_spin(
+    caplog,
+):
+    """坏命令只能执行一次；同一 activation 不得无间隔重试拖死进程。"""
+
+    stack, runtime = await _build(sessions=("s1", "s2"))
+    stack.adapter.start_error = RuntimeError("poison command")
+    await stack.kernel.submit(
+        command(idempotency_key="bad-command", session_id="s1"),
+        permit=stack.permit("enqueue", session_id="s1"),
+    )
+
+    try:
+        with caplog.at_level("WARNING"):
+            await runtime.start()
+            await _wait_until(lambda: "s1" in runtime.quarantined_sessions())
+        attempts = [call for call in stack.adapter.calls if call == ("start", "s1")]
+        assert len(attempts) == 1
+        await asyncio.sleep(0.1)
+        assert [call for call in stack.adapter.calls if call == ("start", "s1")] == attempts
+        assert any(
+            "quarantined after command execution failed" in record.message
+            and "poison command" in record.message
+            for record in caplog.records
+        )
+        health = await runtime.readiness.check()
+        assert health["quarantined_session_ids"] == ["s1"]
+        assert health["degraded"] is False
+    finally:
+        await runtime.close()
+
+
 async def test_all_sessions_bad_degrades_process():
     """恢复失败扩散到阈值个不同 session（默认 5）→ 进程级 degraded。"""
 

@@ -106,7 +106,7 @@ export function StudioDataTable<TData extends RowData>({
 
   return (
     <div className="studio-data-table" aria-busy={loading || undefined} data-state={loading ? "loading" : error ? "error" : data.length ? "ready" : "empty"}>
-      <div className="studio-data-table-scroll">
+      <div className="studio-data-table-scroll data-scroll-region">
         {!loading && !error && (
           <table style={{ minWidth: cssSize(minWidth) }}>
             {caption && <caption className="sr-only">{caption}</caption>}

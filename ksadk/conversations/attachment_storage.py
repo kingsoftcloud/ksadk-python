@@ -103,8 +103,11 @@ def _region() -> str:
 
 
 class AttachmentStorageService:
-    def __init__(self, *, root_dir: Path | None = None):
+    def __init__(self, *, root_dir: Path | None = None, owner_scope_ref: str | None = None):
         self.root_dir = root_dir or uploads_dir()
+        self.owner_scope_ref = str(owner_scope_ref or "").strip()
+        if root_dir is None and self.owner_scope_ref:
+            self.root_dir = self.root_dir / "identities" / self.owner_scope_ref
 
     async def store(
         self,
@@ -149,6 +152,7 @@ class AttachmentStorageService:
             "mime_type": resolved_mime,
             "size_bytes": len(data),
             "fallback_reason": "",
+            "owner_scope_ref": self.owner_scope_ref,
         }
         try:
             self._run_async_sync(
@@ -363,11 +367,14 @@ class AttachmentStorageService:
         local_path.write_bytes(data)
         return local_path
 
-    @staticmethod
-    def _object_key(*, file_id: str, display_name: str) -> str:
+    def _object_key(self, *, file_id: str, display_name: str) -> str:
         suffix = Path(display_name).suffix
         stored_name = file_id if suffix and file_id.endswith(suffix) else f"{file_id}{suffix}"
         day = datetime.utcnow().strftime("%Y/%m/%d")
+        if self.owner_scope_ref:
+            return (
+                f"agents/_runtime/identities/{self.owner_scope_ref}/attachments/{day}/{stored_name}"
+            )
         return f"agents/_runtime/attachments/{day}/{stored_name}"
 
     @staticmethod

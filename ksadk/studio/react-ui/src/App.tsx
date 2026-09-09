@@ -8,13 +8,14 @@ import { DeploymentsPage } from "./pages/DeploymentsPage";
 import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
+import { PluginsPage } from "./pages/PluginsPage";
 import { OrchestrationPage } from "./pages/OrchestrationPage";
+import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
-import { CloudChatWorkspace } from "./components/CloudChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
 import { ToastRegion } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
@@ -23,6 +24,7 @@ import { useStudioTheme } from "./useStudioTheme";
 import {
   mergeCloudChatTargets,
   resolveCloudChatRoute,
+  isCloudChatTargetSelectable,
   type AccountCloudAgentSummary,
   type CloudDeploymentSummary,
 } from "./cloudDeployments";
@@ -47,12 +49,33 @@ const VIEW_TITLE: Record<View, string> = {
   observability: "可观测",
   evaluations: "评测",
   "runtime-resources": "运行资源",
+  plugins: "已安装插件",
+  automations: "自动化",
   orchestration: "任务编排",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
-const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
-const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "orchestration"]);
+const RESOURCE_KINDS: ResourceKind[] = [
+  "model", "tool", "mcp", "skill", "knowledge-base", "memory-instance", "skill-space",
+];
+const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "automations", "orchestration"]);
+const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
+
+function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
+  try {
+    return parseChatTargetValue(window.localStorage.getItem(CHAT_TARGET_STORAGE_KEY) || "");
+  } catch {
+    return { kind: "", id: "" };
+  }
+}
+
+function rememberChatTarget(value: string): void {
+  try {
+    window.localStorage.setItem(CHAT_TARGET_STORAGE_KEY, value);
+  } catch {
+    // Studio remains usable when storage is disabled by the embedding shell.
+  }
+}
 
 export function parseStudioLocationHash(hash: string): {
   view: View;
@@ -60,8 +83,11 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
+  conversationAgentId?: string;
+  sessionId?: string;
 } {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const [pathname, search = ""] = hash.replace(/^#\/?/, "").split("?");
+  const parts = pathname.split("/").filter(Boolean);
   const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
     ? decodeURIComponent(parts[1])
     : "";
@@ -82,7 +108,8 @@ export function parseStudioLocationHash(hash: string): {
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId };
+  const params = new URLSearchParams(search);
+  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}) };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -106,12 +133,22 @@ export default function App() {
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
   const initialRoute = parseStudioLocationHash(window.location.hash);
+  const [initialChatTarget] = useState(storedChatTarget);
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId || "");
+  const [currentAgentId, setCurrentAgentId] = useState(
+    initialRoute.detailAgentId
+      || initialRoute.editingAgentId
+      || initialRoute.conversationAgentId
+      || (initialRoute.view === "conversations" && initialChatTarget.kind === "local"
+        ? initialChatTarget.id
+        : ""),
+  );
+  const [automationAgentScopeId, setAutomationAgentScopeId] = useState("");
+  const [requestedSessionId, setRequestedSessionId] = useState(initialRoute.sessionId || "");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
@@ -121,11 +158,14 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
-  const [cloudDeploymentId, setCloudDeploymentId] = useState("");
+  const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
+  const [cloudDeploymentId, setCloudDeploymentId] = useState(
+    !initialRoute.conversationAgentId && initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
+  );
   const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
-
   useEffect(() => {
     document.body.classList.toggle("create-mode", view === "create");
     return () => document.body.classList.remove("create-mode");
@@ -139,6 +179,11 @@ export default function App() {
       setEditingAgentId(route.editingAgentId);
       setDetailAgentId(route.detailAgentId);
       setEvaluationRunId(route.evaluationRunId);
+      if (route.conversationAgentId) {
+        setCurrentAgentId(route.conversationAgentId);
+        setCloudDeploymentId("");
+      }
+      setRequestedSessionId(route.sessionId || "");
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -235,10 +280,14 @@ export default function App() {
       );
       setCloudDeployments(items);
       setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => (
-        item.id === previous && resolveCloudChatRoute(item).kind === "studio-session-events"
+        item.id === previous
+        && resolveCloudChatRoute(item).kind === "studio-session-events"
+        && isCloudChatTargetSelectable(item)
       )) ? previous : "");
     } catch {
       // Deployment receipts are optional for a local-only workspace.
+    } finally {
+      setCloudDeploymentsLoaded(true);
     }
   }, []);
 
@@ -258,14 +307,61 @@ export default function App() {
   function switchAgent(id: string) {
     if (!id) return;
     setCurrentAgentId(id);
+    if (view === "automations" && automationAgentScopeId) setAutomationAgentScopeId(id);
     if (view === "conversations") setChatMounted(true);
   }
 
   const studioCloudDeployments = cloudDeployments.filter(
-    item => resolveCloudChatRoute(item).kind === "studio-session-events",
+    item => resolveCloudChatRoute(item).kind === "studio-session-events"
+      && isCloudChatTargetSelectable(item),
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
+
+  useEffect(() => {
+    if (view !== "conversations" || !agentsLoaded || !cloudDeploymentsLoaded) return;
+    if (selectedCloudDeployment) {
+      rememberChatTarget(`cloud:${selectedCloudDeployment.id}`);
+    } else if (currentAgent) {
+      rememberChatTarget(`local:${currentAgent.metadata.id}`);
+    }
+  }, [
+    agentsLoaded,
+    cloudDeploymentsLoaded,
+    currentAgent,
+    selectedCloudDeployment,
+    view,
+  ]);
+
+  useEffect(() => {
+    if (
+      view !== "conversations"
+      || !chatMounted
+      || !agentsLoaded
+      || !cloudDeploymentsLoaded
+      // A newly created local Agent is selected before the asynchronous
+      // directory refresh has returned it.  Do not mistake that short window
+      // for "no local target" and replace the explicit selection with the
+      // remembered cloud target.
+      || Boolean(currentAgentId)
+      || currentAgent
+      || selectedCloudDeployment
+    ) return;
+    const fallback = studioCloudDeployments[0];
+    if (!fallback) return;
+    setCloudDeploymentId(fallback.id);
+    setRunPanelOpen(false);
+  }, [
+    agentsLoaded,
+    chatMounted,
+    cloudDeploymentsLoaded,
+    currentAgentId,
+    currentAgent,
+    selectedCloudDeployment,
+    studioCloudDeployments,
+    view,
+  ]);
+
   const chatTargetOptions = [
     ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: `本地 · ${agent.metadata.name}` })),
     ...studioCloudDeployments.map(deployment => ({
@@ -295,17 +391,40 @@ export default function App() {
   }
 
   function enterChat(agentId?: string) {
-    const id = agentId || currentAgentId || agents[0]?.metadata.id || "";
-    if (!id) { openCreate(); return; }
-    setCloudDeploymentId("");
-    setCurrentAgentId(id);
+    const localTarget = currentAgent || agents[0];
+    const cloudTarget = selectedCloudDeployment || studioCloudDeployments[0];
+    if (agentId) {
+      setCloudDeploymentId("");
+      setCurrentAgentId(agentId);
+    } else if (!agentId && selectedCloudDeployment) {
+      setCurrentAgentId("");
+    } else if (localTarget) {
+      setCloudDeploymentId("");
+      setCurrentAgentId(localTarget.metadata.id);
+    } else if (cloudTarget) {
+      setCurrentAgentId("");
+      setCloudDeploymentId(cloudTarget.id);
+      setRunPanelOpen(false);
+    } else {
+      setCurrentAgentId("");
+      setCloudDeploymentId("");
+    }
     setChatMounted(true);
     setView("conversations");
   }
 
-  function enterCloudChat(deploymentId: string) {
-    if (!studioCloudDeployments.some(item => item.id === deploymentId)) return;
-    setCloudDeploymentId(deploymentId);
+  function enterCloudChat(target: CloudDeploymentSummary) {
+    if (resolveCloudChatRoute(target).kind !== "studio-session-events") return;
+    // DeploymentsPage already owns a live target projection.  Do not discard a
+    // click merely because this App-level directory is still in flight: with a
+    // large cloud directory that race used to leave the user in the local
+    // empty-state, which looks like being redirected to Create Agent.
+    setCloudDeployments(current => (
+      current.some(item => item.id === target.id)
+        ? current
+        : [...current, target]
+    ));
+    setCloudDeploymentId(target.id);
     setRunPanelOpen(false);
     setChatMounted(true);
     setView("conversations");
@@ -361,7 +480,10 @@ export default function App() {
   function navigateFromRail(nextView: NavigationView, kind?: ResourceKind) {
     if (nextView === "conversations") enterChat();
     else if (nextView === "resources") openResources(kind || "model");
-    else setView(nextView);
+    else {
+      if (nextView === "automations") setAutomationAgentScopeId("");
+      setView(nextView);
+    }
   }
 
   return (
@@ -461,9 +583,8 @@ export default function App() {
           <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
               {chatMounted && isCloudChat && selectedCloudDeployment && (
-                <CloudChatWorkspace
+                <ChatWorkspace
                   key={selectedCloudDeployment.id}
-                  deploymentId={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   active={view === "conversations"}
@@ -474,10 +595,12 @@ export default function App() {
                 <ChatWorkspace
                   key={currentAgentId}
                   agentId={currentAgentId}
+                  requestedSessionId={requestedSessionId}
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
+                  onSessionChanged={setConversationSessionId}
                   onConfigureAgent={() => openEdit(currentAgentId)}
                   onOpenSettings={() => {
                     setSettingsSection("credentials");
@@ -486,16 +609,26 @@ export default function App() {
                 />
               )}
               {chatMounted && !isCloudChat && !currentAgentId && (
-                <div className="empty-state chat-agent-empty" role="status">
-                  <span className="empty-icon"><Bot /></span>
-                  <h2>{agentsLoaded ? "先创建 Agent 才能开始会话" : "正在载入 Agent"}</h2>
-                  <p>{agentsLoaded ? "会话会使用当前 Agent 的模型、工具与运行时配置。" : "正在同步本地工作区…"}</p>
-                  {agentsLoaded && <button className="primary-button" type="button" onClick={openCreate}>创建 Agent</button>}
-                </div>
+                agentsLoaded && cloudDeploymentsLoaded ? (
+                  <div className="empty-state chat-agent-empty" role="status">
+                    <span className="empty-icon"><Bot /></span>
+                    <h2>还没有可用的会话目标</h2>
+                    <p>可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。</p>
+                    <div className="empty-actions">
+                      <button className="primary-button" type="button" onClick={openCreate}>创建本地 Agent</button>
+                      <button className="button secondary" type="button" onClick={() => setView("deployments")}>查看云端 Agent</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="chat-target-loading" role="status" aria-label="正在同步会话目标">
+                    <i />
+                    <span>正在同步会话目标…</span>
+                  </div>
+                )
               )}
             </div>
             {runPanelOpen && chatMounted && currentAgentId && !isCloudChat && (
-              <ChatRunPanel agentId={currentAgentId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
+              <ChatRunPanel agentId={currentAgentId} sessionId={conversationSessionId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
             )}
           </div>
 
@@ -557,6 +690,8 @@ export default function App() {
               <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} />
             )}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
+            {view === "plugins" && <PluginsPage />}
+            {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
           </div>
         </main>

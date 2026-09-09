@@ -43,10 +43,37 @@ class Instructions(ContractModel):
     task: str = Field(default="", max_length=32768)
 
 
+class SoulDocument(ContractModel):
+    """Reviewed identity/boundary source that compiles ahead of task prompts.
+
+    This is deliberately an immutable revision input, not a mutable memory
+    file.  Runtime may read the compiled snapshot but cannot promote a new
+    SoulDocument from a conversation.
+    """
+
+    schema_version: Literal["agentkit.soul/v1"] = "agentkit.soul/v1"
+    identity: str = Field(min_length=1, max_length=4096)
+    principles: list[str] = Field(default_factory=list, max_length=64)
+    boundaries: list[str] = Field(default_factory=list, max_length=64)
+    tone: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("principles", "boundaries")
+    @classmethod
+    def validate_nonempty_items(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("soul principles and boundaries must not contain empty items")
+        return value
+
+
 class ModelParameters(ContractModel):
-    temperature: float = Field(default=0.2, ge=0, le=2)
-    max_tokens: int = Field(default=2048, ge=1, le=131072)
+    # 三者 None=未配置：请求 payload 一律不携带该字段，使用服务端默认，
+    # 规避各模型族对 temperature/max_tokens 的硬约束（如 kimi 只接受默认温度）。
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1, le=131072)
     top_p: float | None = Field(default=None, gt=0, le=1)
+    # 是否允许在 chat 请求中携带 response_format（json_object 结构化输出）。
+    # 关闭后 compose 等结构化调用退回纯文本输出，兼容不支持该字段的网关。
+    allow_json_response_format: bool = Field(default=True)
 
 
 class ModelSpec(ContractModel):
@@ -80,9 +107,40 @@ class MCPServerRef(CapabilityRef):
     args: list[str] = Field(default_factory=list)
     endpoint_url: str | None = None
     env_refs: dict[str, str] = Field(default_factory=dict)
+    # ``dsh-profile`` is resolved at PluginHost activation time.  Only the
+    # immutable profile/inventory identity is allowed into an Agent Build;
+    # the loopback endpoint and bearer token remain process-scoped lease data.
+    materialization: Literal["dsh-profile"] | None = None
+    profile: str | None = None
+    profile_digest: str | None = None
+    descriptor_digest: str | None = None
+    inventory_digest: str | None = None
 
     @model_validator(mode="after")
     def validate_transport(self) -> "MCPServerRef":
+        dynamic_fields = (
+            self.profile,
+            self.profile_digest,
+            self.descriptor_digest,
+            self.inventory_digest,
+        )
+        if self.materialization == "dsh-profile":
+            if self.transport != "http":
+                raise ValueError("DSH Profile MCP 必须使用运行时 HTTP 租约")
+            if self.endpoint_url or self.command or self.args or self.env_refs:
+                raise ValueError("DSH Profile MCP 不能持久化 endpoint、命令或环境变量")
+            if not all(dynamic_fields):
+                raise ValueError("DSH Profile MCP 必须锁定 Profile 与能力摘要")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.profile or ""):
+                raise ValueError("DSH Profile 名称无效")
+            if any(
+                not re.fullmatch(r"sha256:[0-9a-f]{64}", value or "")
+                for value in dynamic_fields[1:]
+            ):
+                raise ValueError("DSH Profile MCP 摘要无效")
+            return self
+        if any(value is not None for value in dynamic_fields):
+            raise ValueError("静态 MCP 不能声明 DSH Profile 运行时字段")
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP 必须配置 command")
         if self.transport in {"http", "sse"} and not self.endpoint_url:
@@ -171,6 +229,53 @@ class CapabilityBinding(ContractModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class NativePluginBinding(ContractModel):
+    """Immutable component selection from a host-managed native plugin."""
+
+    ecosystem: Literal["codex", "dsh"]
+    plugin_ref: str = Field(min_length=12, max_length=256)
+    snapshot_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    components: list[str] = Field(min_length=1, max_length=128)
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("plugin_ref")
+    @classmethod
+    def validate_plugin_ref(cls, value: str) -> str:
+        if not re.fullmatch(
+            r"plugin://[a-z0-9]+(?:[._-][a-z0-9]+)*@"
+            r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            value,
+        ):
+            raise ValueError("插件绑定必须使用 plugin://<id>@<exact-version>")
+        return value
+
+    @field_validator("components")
+    @classmethod
+    def validate_components(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("插件组件不能重复")
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", component)
+            for component in value
+        ):
+            raise ValueError("插件组件 ID 无效")
+        return value
+
+    @field_validator("config")
+    @classmethod
+    def validate_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _reject_clear_runtime_secrets(value, path="pluginBinding.config")
+        return value
+
+    @model_validator(mode="after")
+    def validate_platform_resource_config(self) -> "NativePluginBinding":
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+        resource_plugin_config(self.plugin_ref, self.ecosystem, self.config, enabled=self.enabled)
+        return self
+
+
 class AgentBindings(ContractModel):
     model_profile_id: str | None = None
     model_profile_ids: list[str] = Field(default_factory=list)
@@ -179,6 +284,7 @@ class AgentBindings(ContractModel):
     tools: list[CapabilityBinding] = Field(default_factory=list)
     mcp_servers: list[CapabilityBinding] = Field(default_factory=list)
     skills: list[CapabilityBinding] = Field(default_factory=list)
+    plugins: list[NativePluginBinding] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_model_profiles(self) -> "AgentBindings":
@@ -192,6 +298,12 @@ class AgentBindings(ContractModel):
             and self.model_profile_id not in self.model_profile_ids
         ):
             raise ValueError("默认 modelProfileId 必须包含在 modelProfileIds 中")
+        plugin_refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
+        if len(plugin_refs) != len(set(plugin_refs)):
+            raise ValueError("启用的插件绑定不能重复 pluginRef")
+        from ksadk.resource_runtime.plugin_config import validate_resource_plugin_bindings
+
+        validate_resource_plugin_bindings(self.plugins)
         return self
 
 
@@ -287,6 +399,13 @@ class MemoryWriteSpec(ContractModel):
     flush_before_compaction: bool = True
 
 
+MemoryScope = Literal["tenant", "workspace", "agent", "user"]
+
+
+def _default_memory_scopes() -> list[MemoryScope]:
+    return ["workspace", "agent", "user"]
+
+
 class MemorySpec(ContractModel):
     """AgentVersion 级 Memory 策略（方案 §5.1 / §10）。Build 只存 providerRef，不存凭证。"""
 
@@ -294,9 +413,7 @@ class MemorySpec(ContractModel):
     provider_ref: str = Field(default="local-default", max_length=128)
     recall: MemoryRecallSpec = Field(default_factory=MemoryRecallSpec)
     write: MemoryWriteSpec = Field(default_factory=MemoryWriteSpec)
-    scopes: list[Literal["tenant", "workspace", "agent", "user"]] = Field(
-        default_factory=lambda: ["workspace", "agent", "user"]
-    )
+    scopes: list[MemoryScope] = Field(default_factory=_default_memory_scopes)
 
 
 class NetworkPolicy(ContractModel):
@@ -324,12 +441,17 @@ class RuntimeRef(ContractModel):
     project entrypoint that is snapshotted by its Build.
     """
 
-    type: Literal["codex", "adk", "langgraph"]
+    type: Literal["codex", "adk", "langgraph", "harness", "plugin"]
     project_path: str | None = Field(default=None, min_length=1, max_length=1024)
     entry_point: str | None = Field(default=None, min_length=1, max_length=1024)
     agent_variable: str = Field(default="root_agent", min_length=1, max_length=256)
     version: str | None = Field(default=None, min_length=1, max_length=64)
     detection: Literal["declared", "auto"] = "declared"
+    provider_ref: str | None = Field(default=None, min_length=12, max_length=256)
+    provider_config: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
 
     @field_validator("project_path", "entry_point")
     @classmethod
@@ -347,8 +469,32 @@ class RuntimeRef(ContractModel):
             raise ValueError("Runtime 路径必须是工作区内的相对路径")
         return normalized
 
+    @field_validator("provider_ref")
+    @classmethod
+    def validate_provider_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.fullmatch(
+            r"plugin://[a-z0-9]+(?:[._-][a-z0-9]+)*@"
+            r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            value,
+        ):
+            raise ValueError("Provider 引用必须固定为 plugin://<id>@<exact-version>")
+        return value
+
+    @field_validator("provider_config")
+    @classmethod
+    def validate_provider_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _reject_clear_runtime_secrets(value)
+        return value
+
     @model_validator(mode="after")
     def validate_framework_source(self) -> "RuntimeRef":
+        if self.type == "plugin":
+            if not self.provider_ref:
+                raise ValueError("plugin Runtime 必须配置 providerRef")
+        elif self.provider_ref is not None or self.provider_config:
+            raise ValueError("只有 plugin Runtime 可以配置 providerRef/providerConfig")
         if self.type in {"adk", "langgraph"}:
             if not self.project_path:
                 raise ValueError(f"{self.type} Runtime 必须配置 projectPath")
@@ -357,10 +503,35 @@ class RuntimeRef(ContractModel):
         return self
 
 
+_RUNTIME_SECRET_KEY = re.compile(r"(?:secret|password|token|api[_-]?key)", re.IGNORECASE)
+_RUNTIME_SECRET_REF_PREFIXES = (
+    "secret://",
+    "env://",
+    "credential://",
+    "vault://",
+)
+
+
+def _reject_clear_runtime_secrets(value: Any, *, path: str = "providerConfig") -> None:
+    """Provider config is revision data: it may only retain secret references."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if _RUNTIME_SECRET_KEY.search(str(key)) and child is not None:
+                if not isinstance(child, str) or not child.startswith(_RUNTIME_SECRET_REF_PREFIXES):
+                    raise ValueError(f"{child_path} 必须保存 Secret 引用，不能保存明文")
+            _reject_clear_runtime_secrets(child, path=child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_clear_runtime_secrets(child, path=f"{path}[{index}]")
+
+
 class AgentSpec(ContractModel):
     description: str = Field(default="", max_length=1024)
     runtime: RuntimeRef | None = None
     instructions: Instructions = Field(default_factory=Instructions)
+    soul: SoulDocument | None = None
     model: ModelSpec | None = None
     capabilities: CapabilitiesSpec = Field(default_factory=CapabilitiesSpec)
     bindings: AgentBindings = Field(default_factory=AgentBindings)
@@ -369,6 +540,27 @@ class AgentSpec(ContractModel):
     memory: MemorySpec = Field(default_factory=MemorySpec)
     security: SecuritySpec = Field(default_factory=SecuritySpec)
     evaluation: EvaluationSpec = Field(default_factory=EvaluationSpec)
+
+    @model_validator(mode="after")
+    def validate_memory_resource_reference(self) -> "AgentSpec":
+        if not self.memory.enabled or not self.memory.provider_ref.startswith("binding://"):
+            return self
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+        binding_id = self.memory.provider_ref.removeprefix("binding://")
+        for binding in self.bindings.plugins:
+            if not binding.enabled:
+                continue
+            resource = resource_plugin_config(
+                binding.plugin_ref, binding.ecosystem, binding.config, enabled=True
+            )
+            if resource is not None and resource.binding.id == binding_id:
+                if resource.binding.resource.kind != "memory-instance":
+                    raise ValueError("Memory providerRef must reference a memory-instance binding")
+                if self.memory.scopes != ["user"]:
+                    raise ValueError("Platform memory requires explicit scopes: [user]")
+                return self
+        raise ValueError("Memory providerRef references a missing or disabled resource binding")
 
 
 _AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
@@ -493,6 +685,7 @@ class ResolvedAgentSpec(ContractModel):
     source_revision: int
     compiler_version: str = "1"
     instructions: Instructions
+    soul: SoulDocument | None = None
     model: ResolvedModel
     capabilities: ResolvedCapabilities
     execution: ExecutionSpec
@@ -540,10 +733,55 @@ class BundleManifest(ContractModel):
     source_digest: str = ""
     runtime_contract: Literal["agentkit.runtime/v1"] = "agentkit.runtime/v1"
     plugin_lock_digest: str = ""
+    # A v0.8.2 bundle already used the v2 envelope without a composition.
+    # Keep that wire shape readable as the explicit legacy execution profile;
+    # newly built bundles write ``composition_mode`` so consumers never need
+    # to infer whether PluginHost admission is required from missing files.
+    composition_mode: Literal["legacy", "composed"] | None = None
+    composition_profile_digest: str | None = None
     hosted_kernel_requirement_digest: str = ""
+    resource_build_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    resource_snapshot_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
     bundle_digest: str = ""
+
+    @model_validator(mode="after")
+    def validate_composition_mode(self) -> "BundleManifest":
+        if self.composition_mode == "composed" and not self.composition_profile_digest:
+            raise ValueError("composed Bundle v2 requires compositionProfileDigest")
+        if self.composition_mode == "legacy" and self.composition_profile_digest:
+            raise ValueError("legacy Bundle v2 cannot declare compositionProfileDigest")
+        if bool(self.resource_build_digest) != bool(self.resource_snapshot_digest):
+            raise ValueError(
+                "resourceBuildDigest and resourceSnapshotDigest must be declared together"
+            )
+        return self
+
+    @property
+    def execution_profile(self) -> Literal["legacy", "composed"]:
+        """Normalize historical v2 manifests without rewriting their bytes.
+
+        ``compositionMode`` was added after the v0.8.2 envelope.  Its absence
+        remains a backward-compatible projection: an embedded composition
+        digest is composed; its absence selects the established runtime path.
+        """
+
+        if self.composition_mode is not None:
+            return self.composition_mode
+        return "composed" if self.composition_profile_digest else "legacy"
+
+
+# ``BundleManifest`` is the existing, installed source type.  The explicit
+# name documents that its ``agentkit.bundle/v2`` branch is the Phase 2
+# AgentBundleManifest/v2 contract; it is an alias, not a parallel manifest.
+AgentBundleManifest = BundleManifest
 
 
 class BuildRecord(ContractModel):
@@ -556,6 +794,14 @@ class BuildRecord(ContractModel):
     source_digest: str = ""
     runtime_lock: dict[str, Any] = Field(default_factory=dict)
     bundle_digest: str = ""
+    resource_build_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    resource_snapshot_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     artifact_path: str | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -730,6 +976,10 @@ class DeploymentRequest(ContractModel):
 
 
 class DeploymentRecord(ContractModel):
+    # Identity observed when the cloud Agent was created, never inferred from
+    # whichever credentials happen to be configured when history is read.
+    created_by_name: str | None = None
+    created_by_user_id: str | None = None
     id: str
     build_id: str
     bundle_digest: str

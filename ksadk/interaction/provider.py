@@ -44,6 +44,7 @@ class InteractionResolveContext:
     handle: RunHandle
     activation_id: str
     fencing_token: int
+    session_context: dict | None = None
 
 
 @runtime_checkable

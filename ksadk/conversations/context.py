@@ -5,6 +5,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Iterable, List
 
+from ksadk.events.canonical import ItemCompleted, parse_runtime_event
+from ksadk.events.content import TextContent
 from ksadk.sessions.base import SessionEvent
 from ksadk.tools.result_budget import (
     ToolResultBudget,
@@ -96,6 +98,60 @@ def extract_event_text(event: SessionEvent) -> str:
 
     return sanitize_event_text_for_context(
         extract_text_from_event_parts(content.get("parts") or [])
+    )
+
+
+def _canonical_completed_message(
+    event: SessionEvent,
+) -> tuple[str, str, tuple[str, str]] | None:
+    """Return one canonical assistant message without flattening its identity.
+
+    Canonical RuntimeEvents are persisted inside the existing ``SessionEvent``
+    carrier.  Legacy transcript projection only inspects carrier-level fields,
+    so an ``item.completed`` message otherwise disappears from the next turn's
+    history.  The canonical event id and ``(scope_id, item_id)`` are both kept:
+    replays are idempotent, while equal text from different items remains
+    distinct.
+    """
+
+    raw = (event.content or {}).get("runtime_event")
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        canonical = parse_runtime_event(dict(raw))
+    except (TypeError, ValueError):
+        return None
+    if (
+        not isinstance(canonical, ItemCompleted)
+        or canonical.item_kind != "message"
+        or event.event_type != canonical.event_type
+    ):
+        return None
+    text = sanitize_event_text_for_context(
+        "".join(
+            part.text for part in canonical.snapshot.parts if isinstance(part, TextContent)
+        )
+    )
+    if not text:
+        return None
+    return canonical.event_id, text, (canonical.scope_id, canonical.item_id)
+
+
+def _transcript_event_projection(
+    event: SessionEvent,
+) -> tuple[str, str, tuple[str, tuple[str, str]] | None]:
+    canonical_message = _canonical_completed_message(event)
+    if canonical_message is not None:
+        event_id, text, item_identity = canonical_message
+        return "assistant_message", text, (event_id, item_identity)
+    return (
+        canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        ),
+        extract_event_text(event),
+        None,
     )
 
 
@@ -276,6 +332,8 @@ def summarize_event_groups(
     因此跨消息提取修正，并在预算上限内保留最新长指令首尾（方案 §9.4）。
     """
     lines: List[str] = []
+    seen_canonical_event_ids: set[str] = set()
+    seen_canonical_items: set[tuple[str, str]] = set()
     if previous_summary:
         lines.append(previous_summary)
     lines.append("Earlier conversation summary:")
@@ -284,14 +342,18 @@ def summarize_event_groups(
     for group in groups:
         snippets: List[str] = []
         for event in group:
-            event_type = canonical_event_type(
-                event.event_type,
-                author=event.author,
-                role=str((event.content or {}).get("role") or ""),
-            )
+            event_type, text, canonical_identity = _transcript_event_projection(event)
+            if canonical_identity is not None:
+                event_id, item_identity = canonical_identity
+                if (
+                    event_id in seen_canonical_event_ids
+                    or item_identity in seen_canonical_items
+                ):
+                    continue
+                seen_canonical_event_ids.add(event_id)
+                seen_canonical_items.add(item_identity)
             if event_type not in TRANSCRIPT_EVENT_TYPES or event_type == "context_checkpoint":
                 continue
-            text = extract_event_text(event)
             if not text:
                 continue
             if event_type in {"assistant_message", "tool_call"}:
@@ -343,6 +405,9 @@ def project_model_messages(
     """
     projected: List[Dict[str, str]] = []
     placeholder_flags: list[bool] = []
+    identity_boundary_flags: list[bool] = []
+    seen_canonical_event_ids: set[str] = set()
+    seen_canonical_items: set[tuple[str, str]] = set()
     compacted_until = compacted_until_seq_id(events)
     checkpoint = next(
         (
@@ -362,21 +427,26 @@ def project_model_messages(
                 }
             )
             placeholder_flags.append(False)
+            identity_boundary_flags.append(False)
 
     for event in events:
-        event_type = canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
+        event_type, text, canonical_identity = _transcript_event_projection(event)
         if event.seq_id <= compacted_until and event_type != "context_checkpoint":
             continue
         if event_type not in TRANSCRIPT_EVENT_TYPES:
             continue
         if event_type in {"context_checkpoint", "compaction_boundary"}:
             continue
+        if canonical_identity is not None:
+            event_id, item_identity = canonical_identity
+            if (
+                event_id in seen_canonical_event_ids
+                or item_identity in seen_canonical_items
+            ):
+                continue
+            seen_canonical_event_ids.add(event_id)
+            seen_canonical_items.add(item_identity)
 
-        text = extract_event_text(event)
         if not text:
             continue
 
@@ -405,12 +475,15 @@ def project_model_messages(
             projected
             and projected[-1]["role"] == role
             and not placeholder_flags[-1]
+            and not identity_boundary_flags[-1]
             and not is_placeholder
+            and canonical_identity is None
         ):
             projected[-1]["content"] = f"{projected[-1]['content']}\n{text}".strip()
         else:
             projected.append({"role": role, "content": text})
             placeholder_flags.append(is_placeholder)
+            identity_boundary_flags.append(canonical_identity is not None)
 
     return projected
 
@@ -553,6 +626,8 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
     """
     projected: List[dict[str, Any]] = []
     projected_call_ids: set[str] = set()
+    seen_canonical_event_ids: set[str] = set()
+    seen_canonical_items: set[tuple[str, str]] = set()
     compacted_until = compacted_until_seq_id(events)
     checkpoint = next(
         (
@@ -568,17 +643,22 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
             projected.append(summary_message)
 
     for event in events:
-        event_type = canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
+        event_type, text, canonical_identity = _transcript_event_projection(event)
         if event.seq_id <= compacted_until and event_type != "context_checkpoint":
             continue
         if event_type not in TRANSCRIPT_EVENT_TYPES:
             continue
         if event_type in {"context_checkpoint", "compaction_boundary"}:
             continue
+        if canonical_identity is not None:
+            event_id, item_identity = canonical_identity
+            if (
+                event_id in seen_canonical_event_ids
+                or item_identity in seen_canonical_items
+            ):
+                continue
+            seen_canonical_event_ids.add(event_id)
+            seen_canonical_items.add(item_identity)
 
         if event_type == "tool_call":
             item = _response_tool_call_item(event)
@@ -586,25 +666,25 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
                 projected.append(item)
                 projected_call_ids.add(str(item["call_id"]))
                 continue
-            message = _responses_message("assistant", f"[tool_call] {extract_event_text(event)}")
+            message = _responses_message("assistant", f"[tool_call] {text}")
         elif event_type == "tool_result":
             item = _response_tool_output_item(event)
             if item and str(item["call_id"]) in projected_call_ids:
                 projected.append(item)
                 continue
-            message = _responses_message("user", f"[tool_result] {extract_event_text(event)}")
+            message = _responses_message("user", f"[tool_result] {text}")
         elif event_type == "assistant_message":
-            message = _responses_message("assistant", extract_event_text(event))
+            message = _responses_message("assistant", text)
         elif event_type == "approval_request":
             message = _responses_message(
-                "assistant", f"[approval_request] {extract_event_text(event)}"
+                "assistant", f"[approval_request] {text}"
             )
         elif event_type == "approval_response":
-            message = _responses_message("user", f"[approval_response] {extract_event_text(event)}")
+            message = _responses_message("user", f"[approval_response] {text}")
         elif event_type == "attachment_ref":
-            message = _responses_message("user", f"[attachment] {extract_event_text(event)}")
+            message = _responses_message("user", f"[attachment] {text}")
         else:
-            message = _responses_message("user", extract_event_text(event))
+            message = _responses_message("user", text)
         if message:
             projected.append(message)
 

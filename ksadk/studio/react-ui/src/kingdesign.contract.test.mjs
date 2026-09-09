@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [entry, foundation, tokens, responsive, finalLayer] = await Promise.all([
+const [entry, foundation, tokens, responsive, finalLayer, resourcesPage] = await Promise.all([
   readFile(new URL("./main.tsx", import.meta.url), "utf8"),
   readFile(new URL("./soft-block.css", import.meta.url), "utf8"),
   readFile(new URL("./studio.css", import.meta.url), "utf8"),
   readFile(new URL("./responsive.css", import.meta.url), "utf8"),
   readFile(new URL("./kingdesign.css", import.meta.url), "utf8"),
+  readFile(new URL("./pages/ResourcesPage.tsx", import.meta.url), "utf8"),
 ]);
 
 test("loads the company design layer after the legacy Studio styles", () => {
@@ -37,6 +38,12 @@ test("keeps browser zoom, AI message states, and scrollbars in the shared contra
   assert.match(finalLayer, /::-webkit-scrollbar-thumb/);
 });
 
+test("keeps the resource catalogue inside the bounded data-page scroll contract", () => {
+  assert.match(resourcesPage, /className="page-container resources-page" data-layout="data" data-scroll-mode="data"/);
+  assert.match(responsive, /\.app-shell \.page-container\[data-layout="data"\]\[data-scroll-mode="data"\]\s*\{[\s\S]*?height:\s*calc\(100dvh - 64px\);[\s\S]*?overflow:\s*hidden;/);
+  assert.match(responsive, /\.app-shell \.table-data-body \.data-scroll-region\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
+});
+
 test("derives interactive AI surfaces from tokens in both light and dark themes", () => {
   assert.match(finalLayer, /:root:not\(\.dark\)\s*\{/);
   assert.match(finalLayer, /:root\.dark\s*\{/);
@@ -50,18 +57,18 @@ test("uses soft borders for the creation workbench and blue only for selection",
   // obsolete literal from the reference branch.
   assert.match(tokens, /--border-card:\s*#[0-9a-f]{6};/i);
   assert.match(tokens, /--border-strong:\s*#[0-9a-f]{6};/i);
-  assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.create-shell \.template-card\.selected\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.authoring-mode-tabs button\.active,[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.wizard-step \.step-number\s*\{[\s\S]*?border:\s*1px solid var\(--border-strong\)/);
-  assert.match(finalLayer, /\.global-header \.crumb\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.global-header \.crumb\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
 });
 
 test("resets browser button chrome and gives shared selection controls soft borders", () => {
   assert.match(finalLayer, /button\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?border:\s*0;/);
   assert.match(finalLayer, /\.page-tabs button,[\s\S]*?\.segmented-control button\s*\{[\s\S]*?border:\s*1px solid transparent;/);
   assert.match(finalLayer, /\.page-tabs button\[aria-selected="true"\],[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
-  assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.chat-session-main\s*\{[\s\S]*?border:\s*1px solid transparent;/);
 });
 
@@ -70,6 +77,12 @@ test("keeps Agent editor icons and shared form grids geometrically aligned", () 
   assert.match(finalLayer, /\.quick-runtime-strip \.runtime-logo,[\s\S]*?display:\s*inline-grid;[\s\S]*?line-height:\s*0;/);
   assert.match(finalLayer, /\.runtime-logo > svg,[\s\S]*?display:\s*block;[\s\S]*?margin:\s*auto;/);
   assert.match(finalLayer, /\.agent-edit-nav button\.active\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
+});
+
+test("keeps conversation configuration aligned and avoids an empty full-height Draft column", () => {
+  assert.match(finalLayer, /\.conversation-settings-body\s*>\s*\.studio-form-field\s*\{[\s\S]*?min-width:\s*0;/);
+  assert.match(finalLayer, /\.conversation-authoring-layout\[data-draft-state="empty"\][\s\S]*?grid-template-columns:/);
+  assert.match(finalLayer, /\.conversation-draft-rail\.is-empty\s*\{[\s\S]*?height:\s*fit-content(?:\s*!important)?;/);
 });
 
 test("keeps Lucide geometry square instead of overriding component dimensions globally", () => {
@@ -82,8 +95,10 @@ test("keeps Lucide geometry square instead of overriding component dimensions gl
 
 test("keeps cloud versions in a bounded compact grid instead of native radio geometry", () => {
   assert.match(foundation, /\.deployment-version-list\s*\{[\s\S]*?max-height:\s*430px;[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;/);
-  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:/);
+  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:\s*minmax\(160px, 1fr\) minmax\(112px, max-content\) minmax\(180px, 216px\) minmax\(136px, max-content\);/);
   assert.match(foundation, /\.deployment-version-name\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(foundation, /\.deployment-version-state,[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(foundation, /\.deployment-version-option\s*>\s*code\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
   assert.doesNotMatch(foundation, /\.deployment-version-option\s*>\s*input/);
 });
 

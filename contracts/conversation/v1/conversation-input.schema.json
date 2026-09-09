@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ConversationAttachmentPart": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "attachment", "default": "attachment", "type": "string"},
+        "attachmentRef": {"maxLength": 2048, "minLength": 1, "type": "string"},
+        "mediaType": {"maxLength": 256, "minLength": 1, "type": "string"},
+        "name": {
+          "anyOf": [{"maxLength": 1024, "type": "string"}, {"type": "null"}],
+          "default": null
+        }
+      },
+      "required": ["attachmentRef", "mediaType"],
+      "type": "object"
+    },
+    "ConversationTextPart": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "text", "default": "text", "type": "string"},
+        "text": {"maxLength": 131072, "minLength": 1, "type": "string"}
+      },
+      "required": ["text"],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "conversation.ksadk.io/v1",
+      "default": "conversation.ksadk.io/v1",
+      "type": "string"
+    },
+    "kind": {"const": "ConversationInput", "default": "ConversationInput", "type": "string"},
+    "inputId": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "sessionId": {"maxLength": 256, "minLength": 1, "type": "string"},
+    "idempotencyKey": {"maxLength": 512, "minLength": 1, "type": "string"},
+    "parts": {
+      "items": {
+        "anyOf": [
+          {"$ref": "#/$defs/ConversationTextPart"},
+          {"$ref": "#/$defs/ConversationAttachmentPart"}
+        ]
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "modelRef": {
+      "anyOf": [{"maxLength": 256, "minLength": 1, "type": "string"}, {"type": "null"}],
+      "default": null
+    },
+    "reasoning": {
+      "anyOf": [{"maxLength": 64, "minLength": 1, "type": "string"}, {"type": "null"}],
+      "default": null
+    },
+    "extensions": {"additionalProperties": true, "type": "object"}
+  },
+  "required": ["inputId", "sessionId", "idempotencyKey", "parts"],
+  "title": "ConversationInput",
+  "type": "object"
+}

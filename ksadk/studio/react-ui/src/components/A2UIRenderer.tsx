@@ -7,7 +7,7 @@ import { StudioSelect } from "./ui/StudioSelect";
 interface A2UIRendererProps {
   surface: A2UISurface;
   busy?: boolean;
-  onSubmit: (interactionId: string, name: string, data: Record<string, unknown>) => void | Promise<void>;
+  onSubmit: (interactionId: string, revision: number, name: string, data: Record<string, unknown>) => void | Promise<void>;
 }
 
 function optionsOf(value: unknown): Array<{ label: string; value: string; description: string }> {
@@ -65,7 +65,7 @@ export function A2UIRenderer({ surface, busy = false, onSubmit }: A2UIRendererPr
         ? [...current.filter(value => String(value) !== trimmed), trimmed]
         : trimmed;
     }
-    void onSubmit(surface.interaction.id, name, { ...data, ...extra });
+    void onSubmit(surface.interaction.id, surface.interaction.revision, name, { ...data, ...extra });
   };
 
   const renderChoiceGroup = (

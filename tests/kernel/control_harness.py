@@ -190,6 +190,7 @@ def default_matrix() -> RuntimeCapabilityMatrix:
         inject=unavailable("runtime_no_native_inject"),
         checkpoint=unavailable(),
         durable_restore=unavailable(),
+        interaction_mode="unavailable",
     )
 
 

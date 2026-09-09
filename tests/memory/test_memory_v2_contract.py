@@ -68,6 +68,17 @@ def provider():
     p.close()
 
 
+def test_sqlite_provider_creates_a_fresh_parent_directory(tmp_path):
+    db_path = tmp_path / "new-workspace" / ".agentengine" / "ui" / "memory.db"
+
+    local = SqliteMemoryProvider(db_path=db_path)
+    try:
+        assert db_path.is_file()
+        assert local.capabilities().versioned_update is True
+    finally:
+        local.close()
+
+
 # ---- Provider 契约（方案 §17.4）----
 
 

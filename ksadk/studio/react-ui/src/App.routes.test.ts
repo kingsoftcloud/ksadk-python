@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseChatTargetValue, parseStudioLocationHash } from "./App";
+import {
+  parseChatTargetValue,
+  parseStudioLocationHash,
+} from "./App";
 
 describe("Studio route parsing", () => {
   it("preserves Agent detail, edit and resource deep links", () => {
@@ -18,6 +21,13 @@ describe("Studio route parsing", () => {
     expect(parseStudioLocationHash("#/deployments/new?buildId=build-1&agentId=demo-agent")).toMatchObject({
       view: "deployments",
     });
+    expect(parseStudioLocationHash("#/plugins")).toMatchObject({
+      view: "plugins",
+    });
+  });
+
+  it("falls back from retired in-process extension routes", () => {
+    expect(parseStudioLocationHash("#/extensions/tasks")).toMatchObject({ view: "agents" });
   });
 
   it("preserves an account-scoped CLI Agent id when selecting a cloud chat target", () => {

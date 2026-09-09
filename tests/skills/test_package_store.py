@@ -78,8 +78,10 @@ def test_package_store_rejects_zip_slip(tmp_path: Path):
     digest = hashlib.sha256(payload).hexdigest()
     store = PackageStore(cache_dir=tmp_path)
 
-    with pytest.raises(SkillPackageError, match="unsafe zip member"):
+    with pytest.raises(SkillPackageError, match="could not be safely materialized"):
         store.store_archive(_ref(digest), payload)
+    assert not (tmp_path / "escape.txt").exists()
+    assert not list(tmp_path.glob("*/extracted"))
 
 
 def test_package_store_returns_none_for_corrupted_cache(tmp_path: Path):

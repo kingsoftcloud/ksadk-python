@@ -127,6 +127,12 @@ ADK 与 LangGraph 的恢复语义本质不同，ksadk 不抹平这个差异：
 控制面按 `ResumeMode` 分支即可。ADK 的 checkpoint 只是一个"最新恢复点"标记，
 不携带独立的回档语义。
 
+跨 Pod 恢复还要求 `KSADK_SESSION_BACKEND=postgres` 与 ADK
+`DatabaseSessionService` 同时可用。Runtime bootstrap 会真实探测数据库连接和 schema create
+权限；仅设置环境变量不会点亮能力。数据库 ready 且 `google-adk>=1.16.0` 时返回
+`ResumeMode=invocation_id`，版本不足返回 `ADK_VERSION_UNSUPPORTED`，ADK session 初始化
+回退到内存则返回 `CHECKPOINTER_NOT_DURABLE`。配置仅对更新完成后的新会话和新运行生效。
+
 ### 2.7 限制
 
 1. **工具调用至少执行一次，恢复时可能执行多次**：开发者需自行保证幂等

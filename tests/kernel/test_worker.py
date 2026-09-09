@@ -7,6 +7,7 @@ import asyncio
 
 import pytest
 
+from ksadk.kernel.contracts import ControlSource
 from ksadk.kernel.errors import (
     AgentKernelError,
     InvalidCommandError,
@@ -57,6 +58,77 @@ async def test_fifo_order_is_stable_within_session():
     assert len(starts) == 3
     for message in await stack.store.list_messages(AGENT, "s1"):
         assert message.status == InboxState.COMPLETED
+
+
+async def test_worker_preserves_admitted_command_identity_on_run_transition():
+    """A scheduler reconciles by identity, never by prompt text or timestamp."""
+
+    stack = await kernel_stack()
+    lease = await stack.lease()
+    submitted = command(idempotency_key="schedule-occurrence", content="write report").model_copy(
+        update={
+            "source": ControlSource(kind="scheduler", ref="occ_12345678"),
+            "correlation_id": "occ_12345678",
+        }
+    )
+    await stack.kernel.submit(submitted, permit=stack.permit("enqueue"))
+
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    result = await AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter).run_once(
+        AGENT, lease
+    )
+
+    assert result.run_id is not None
+    run = await stack.store.load_run(result.run_id)
+    assert run is not None
+    assert run.metadata["command_id"] == str(submitted.command_id)
+    assert run.metadata["source_kind"] == "scheduler"
+    transitions = [
+        event
+        for event in await stack.events.read("s1", 0, 30)
+        if event.event_type == "control.run_transition" and event.run_id == result.run_id
+    ]
+    assert transitions
+    assert {event.causation_id for event in transitions} == {str(submitted.command_id)}
+
+
+async def test_worker_projects_verified_business_identity_into_runtime_start():
+    from ksadk.kernel.worker import AgentKernelWorker
+    from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
+    from ksadk.sessions.in_memory import InMemorySessionService
+    from ksadk.sessions.invocation_identity import identity_native_user_id
+
+    stack = await kernel_stack()
+    lease = await stack.lease()
+    identity = {
+        "identity_namespace": "customer-crm",
+        "tenant_id": "enterprise-a",
+        "subject_type": "user",
+        "subject_id": "user-7",
+    }
+    await stack.kernel.submit(
+        command(
+            idempotency_key="verified-identity",
+            payload={"content": "hello", "invocation_identity": identity},
+        ),
+        permit=stack.permit("enqueue"),
+    )
+    session_service = InMemorySessionService()
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_service=session_service,
+        start_request_defaults={"agent_id": AGENT},
+    )
+
+    assert (await worker.run_once(AGENT, lease)).outcome == "completed"
+    request = stack.adapter.start_requests[-1]
+    assert request.user_id == identity_native_user_id(identity)
+    assert request.metadata[TRUSTED_IDENTITY_METADATA_KEY] == identity
+    session = await session_service.get_session("s1")
+    assert session is not None
+    assert session.user_id == request.user_id
 
 
 @pytest.mark.parametrize(
@@ -130,9 +202,7 @@ async def test_enqueue_stays_queued_while_run_is_active():
         run.model_copy(update={"state": RunState.RUNNING}),
         expected_fence=lease.fencing_token,
     )
-    await stack.kernel.submit(
-        command(idempotency_key="wait-1"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="wait-1"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter)
@@ -152,9 +222,7 @@ async def test_enqueue_stays_queued_while_run_is_active():
 
 
 async def test_control_verb_acts_on_active_run_with_live_handle():
-    stack = await kernel_stack(
-        adapter=FakeAdapter(matrix=matrix_with(cancel=native()))
-    )
+    stack = await kernel_stack(adapter=FakeAdapter(matrix=matrix_with(cancel=native())))
     lease = await stack.lease()
     seeded = await stack.store.save_run_transition(
         RunRecord(
@@ -184,9 +252,7 @@ async def test_control_verb_acts_on_active_run_with_live_handle():
 
 
 async def test_control_verb_without_active_run_is_typed_rejection():
-    stack = await kernel_stack(
-        adapter=FakeAdapter(matrix=matrix_with(cancel=native()))
-    )
+    stack = await kernel_stack(adapter=FakeAdapter(matrix=matrix_with(cancel=native())))
     lease = await stack.lease()
     await stack.kernel.submit(
         command("interrupt", idempotency_key="stop-2"), permit=stack.permit("interrupt")
@@ -208,9 +274,7 @@ async def test_retryable_failure_keeps_claim_open():
     stack.adapter.start_error = AgentKernelError(
         "persistence_uncertain", "flush failed", retryable=True
     )
-    await stack.kernel.submit(
-        command(idempotency_key="retry-1"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="retry-1"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter)
@@ -229,9 +293,7 @@ async def test_unknown_exception_is_terminal_and_never_acked():
     stack = await kernel_stack()
     lease = await stack.lease()
     stack.adapter.start_error = RuntimeError("boom")
-    await stack.kernel.submit(
-        command(idempotency_key="bad-1"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="bad-1"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter)
@@ -320,9 +382,7 @@ async def test_same_session_reentrant_ticks_are_serialized():
 
 async def test_worker_requires_lease_to_claim():
     stack = await kernel_stack()
-    await stack.kernel.submit(
-        command(idempotency_key="lease-1"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="lease-1"), permit=stack.permit("enqueue"))
     stale = await stack.lease("s1", "act-stale")
     from ksadk.kernel.contracts import ActivationLease
     from ksadk.kernel.worker import AgentKernelWorker
@@ -384,9 +444,7 @@ async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
     stack.adapter.handle_run_id = "adapter-run-9"
     stack.adapter.stream_events = _stream_events("adapter-run-9")
     lease = await stack.lease()
-    await stack.kernel.submit(
-        command(idempotency_key="evt-1"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="evt-1"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(
@@ -502,9 +560,7 @@ async def test_follow_up_enqueue_resumes_native_thread_from_session_log():
 async def test_control_uses_durable_run_id_when_adapter_returns_a_different_id():
     """Adapter 的 runtime run_id 不能让 interrupt 丢失 live handle。"""
 
-    stack = await kernel_stack(
-        adapter=FakeAdapter(matrix=matrix_with(cancel=native()))
-    )
+    stack = await kernel_stack(adapter=FakeAdapter(matrix=matrix_with(cancel=native())))
     stack.adapter.handle_run_id = "runtime-private-run"
     stack.adapter.stream_error = AgentKernelError(
         "persistence_uncertain", "keep run open", retryable=True
@@ -536,9 +592,7 @@ async def test_stream_completes_only_after_natural_end():
     stack = await kernel_stack()
     stack.adapter.stream_events = _stream_events("any")
     lease = await stack.lease()
-    await stack.kernel.submit(
-        command(idempotency_key="evt-2"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="evt-2"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(
@@ -602,9 +656,7 @@ async def test_stream_retryable_error_keeps_run_open():
         "persistence_uncertain", "flush failed", retryable=True
     )
     lease = await stack.lease()
-    await stack.kernel.submit(
-        command(idempotency_key="evt-3"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="evt-3"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(
@@ -628,9 +680,7 @@ async def test_stream_typed_rejection_is_discarded():
     stack = await kernel_stack()
     stack.adapter.stream_error = InvalidCommandError("stream payload invalid")
     lease = await stack.lease()
-    await stack.kernel.submit(
-        command(idempotency_key="evt-4"), permit=stack.permit("enqueue")
-    )
+    await stack.kernel.submit(command(idempotency_key="evt-4"), permit=stack.permit("enqueue"))
     from ksadk.kernel.worker import AgentKernelWorker
 
     worker = AgentKernelWorker(

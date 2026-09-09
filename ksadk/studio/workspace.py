@@ -32,6 +32,7 @@ class Workspace:
             ".agentkit/runs",
             ".agentkit/traces",
             ".agentkit/assets/agent-avatars",
+            ".agentkit/assets/conversation-attachments",
             ".agentkit/cache",
             ".agentkit/trash",
             "dist",
@@ -59,9 +60,8 @@ class Workspace:
     def resolve(self, relative: Path | str, *, must_exist: bool = False) -> Path:
         raw = Path(relative)
         # Reject lexical traversal before asking the filesystem to resolve any
-        # symlink.  The post-resolution relative_to check below is still needed
-        # because a path that is lexically inside the workspace may contain a
-        # symlink that escapes it.
+        # symlink.  The real-path prefix check below also catches a path that is
+        # lexically inside the workspace but escapes through a symlink.
         if ".." in raw.parts:
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
@@ -69,28 +69,25 @@ class Workspace:
                 status_code=403,
                 details={"path": str(relative)},
             )
-        if raw.is_absolute():
-            try:
-                raw.relative_to(self.root)
-            except ValueError as exc:
-                raise StudioError(
-                    "WORKSPACE_PATH_FORBIDDEN",
-                    "路径不在当前工作区内",
-                    status_code=403,
-                    details={"path": str(relative)},
-                ) from exc
-            candidate = raw.resolve(strict=must_exist)  # lgtm[py/path-injection]
-        else:
-            candidate = (self.root / raw).resolve(strict=must_exist)  # lgtm[py/path-injection]
-        try:
-            candidate.relative_to(self.root)
-        except ValueError as exc:
+
+        root_text = os.path.realpath(os.fspath(self.root))
+        candidate_input = raw if raw.is_absolute() else self.root / raw
+        candidate_text = os.path.realpath(os.fspath(candidate_input))
+        if candidate_text == root_text:
+            if must_exist and not self.root.exists():
+                raise FileNotFoundError(self.root)
+            return self.root
+        root_prefix = root_text.rstrip(os.sep) + os.sep
+        if not candidate_text.startswith(root_prefix):
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
                 "路径不在当前工作区内",
                 status_code=403,
                 details={"path": str(relative)},
-            ) from exc
+            )
+        candidate = Path(candidate_text)
+        if must_exist and not candidate.exists():
+            raise FileNotFoundError(candidate)
         return candidate
 
     def relative(self, path: Path | str) -> str:

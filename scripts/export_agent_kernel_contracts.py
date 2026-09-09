@@ -28,7 +28,7 @@ def iter_contract_files(contract_dir: Path) -> list[Path]:
     )
 
 
-def build_manifest(contract_dir: Path) -> dict:
+def build_manifest(contract_dir: Path, *, contract_set: str = "agent-kernel/v1") -> dict:
     aggregate = hashlib.sha256()
     files = []
     for path in iter_contract_files(contract_dir):
@@ -38,7 +38,7 @@ def build_manifest(contract_dir: Path) -> dict:
         files.append({"path": rel, "sha256": digest, "bytes": len(canonical)})
         aggregate.update(rel.encode("utf-8") + b"\0" + canonical)
     return {
-        "contract_set": "agent-kernel/v1",
+        "contract_set": contract_set,
         "digest_algorithm": "sha256",
         "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
         "aggregate_digest": aggregate.hexdigest(),
@@ -54,12 +54,12 @@ def contract_digest(contract_dir: Path) -> str:
     return aggregate.hexdigest()
 
 
-def check(contract_dir: Path) -> int:
+def check(contract_dir: Path, *, contract_set: str = "agent-kernel/v1") -> int:
     manifest_path = contract_dir / "manifest.json"
     if not manifest_path.exists():
         print("manifest.json missing; run without --check to generate", file=sys.stderr)
         return 1
-    current = build_manifest(contract_dir)
+    current = build_manifest(contract_dir, contract_set=contract_set)
     recorded = json.loads(manifest_path.read_text(encoding="utf-8"))
     if current != recorded:
         print("manifest out of date: contract files changed", file=sys.stderr)
@@ -73,12 +73,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="校验磁盘内容与 manifest 一致")
     parser.add_argument("--contract-dir", type=Path, default=CONTRACT_DIR)
+    parser.add_argument(
+        "--contract-set",
+        default="agent-kernel/v1",
+        help="写入 manifest 的版本化合同集合标识",
+    )
     args = parser.parse_args(argv)
 
     if args.check:
-        return check(args.contract_dir)
+        return check(args.contract_dir, contract_set=args.contract_set)
 
-    manifest = build_manifest(args.contract_dir)
+    manifest = build_manifest(args.contract_dir, contract_set=args.contract_set)
     (args.contract_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

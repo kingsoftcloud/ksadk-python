@@ -91,6 +91,19 @@ class _AttachableRunner(_FakeRunner):
         return True
 
 
+class _LoadAwareAttachRunner(_FakeRunner):
+    def __init__(self) -> None:
+        super().__init__(checkpoint=True, durable=True, shared_across_pods=True)
+        self.loaded = False
+
+    def load_agent(self) -> None:
+        self.loaded = True
+
+    def attach_runtime_handle(self, handle: RunHandle) -> bool:
+        del handle
+        return self.loaded
+
+
 class _MinimalRuntime(BaseRuntime):
     runtime_type = "minimal"
 
@@ -185,6 +198,18 @@ def test_codex_capability_matrix_distinguishes_controls_from_internal_loop() -> 
     assert matrix.loop.supported is False
     assert matrix.loop.mode == "unavailable"
     assert matrix.loop.reason == "codex_loop_requires_run_control_spec"
+    assert matrix.interaction_mode == "live_submit"
+
+
+def test_interaction_mode_tracks_real_provider_delivery_path() -> None:
+    """Provider delivery must not be inferred from the submit verb alone."""
+
+    assert ADKRuntimeAdapter(_FakeRunner()).capabilities().interaction_mode == "unavailable"
+    assert LangGraphRuntimeAdapter(_FakeRunner()).capabilities().interaction_mode == "unavailable"
+    assert (
+        LangGraphRuntimeAdapter(_FakeRunner(checkpoint=True)).capabilities().interaction_mode
+        == "durable_resume"
+    )
 
 
 _CAPABILITY_METHODS = {
@@ -331,6 +356,18 @@ async def test_runner_adapter_checkpoint_runner_matrix() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_adapter_loads_runner_before_durable_attach() -> None:
+    runner = _LoadAwareAttachRunner()
+    adapter = RunnerRuntimeAdapter(runner, runtime_type="langgraph")
+    handle = _handle("langgraph")
+
+    restored = await adapter.attach(handle)
+
+    assert restored is handle
+    assert runner.loaded is True
+
+
+@pytest.mark.asyncio
 async def test_runner_adapter_in_memory_checkpoint_is_not_durable() -> None:
     # durable=False 的 checkpoint 不允许声明 durable_restore。
     adapter = RunnerRuntimeAdapter(
@@ -339,6 +376,8 @@ async def test_runner_adapter_in_memory_checkpoint_is_not_durable() -> None:
     )
     matrix = adapter.capabilities()
     assert matrix.checkpoint.supported is True
+    assert matrix.attach.supported is False
+    assert matrix.attach.reason == "attach_requires_cross_process_checkpoint"
     assert matrix.durable_restore.supported is False
     assert matrix.durable_restore.reason == "durable_restore_requires_cross_process_checkpoint"
 

@@ -1,0 +1,3 @@
+- insert:
+    - id: ksadk-test-agent-provider
+      name: '@ksadk-test/dsh-node-agent-provider'

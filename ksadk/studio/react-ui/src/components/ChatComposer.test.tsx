@@ -70,4 +70,78 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("menuitemradio", { name: /高/ })).toBeInTheDocument();
     expect(screen.queryByRole("menuitemradio", { name: /中/ })).not.toBeInTheDocument();
   });
+
+  it("hides optional controls that the active conversation surface does not declare", () => {
+    render(
+      <ChatComposer
+        input="/"
+        placeholder="输入消息"
+        disabled={false}
+        active
+        attachments={[]}
+        mode="default"
+        approvalMode="risk"
+        models={[{ id: "qwen3.7-flash", label: "qwen3.7-flash", reasoningEfforts: ["high"] }]}
+        model="qwen3.7-flash"
+        reasoningEffort=""
+        canSend
+        allowAttachments={false}
+        allowPlan={false}
+        allowGoal={false}
+        allowApproval={false}
+        allowModelSelection={false}
+        allowReasoning={false}
+        onInputChange={vi.fn()}
+        onFiles={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+        onSetMode={vi.fn()}
+        onStartGoal={vi.fn()}
+        onApprovalModeChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningEffortChange={vi.fn()}
+        onCommandSelect={vi.fn()}
+        onSend={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "添加附件或运行控制" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /批准模式/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /模型|推理强度/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("斜杠命令")).not.toBeInTheDocument();
+  });
+
+  it("can expose reasoning without exposing model selection", async () => {
+    const user = userEvent.setup();
+    render(
+      <ChatComposer
+        input=""
+        placeholder="输入消息"
+        disabled={false}
+        active
+        attachments={[]}
+        mode="default"
+        approvalMode="risk"
+        models={[{ id: "reasoning-model", label: "Reasoning Model", reasoningEfforts: ["low", "high"] }]}
+        model="reasoning-model"
+        reasoningEffort=""
+        canSend={false}
+        allowModelSelection={false}
+        allowReasoning
+        onInputChange={vi.fn()}
+        onFiles={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+        onSetMode={vi.fn()}
+        onStartGoal={vi.fn()}
+        onApprovalModeChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningEffortChange={vi.fn()}
+        onCommandSelect={vi.fn()}
+        onSend={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "推理强度 自动" }));
+    expect(screen.queryByRole("menuitem", { name: /模型/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /推理强度.*自动/ })).toBeInTheDocument();
+  });
 });

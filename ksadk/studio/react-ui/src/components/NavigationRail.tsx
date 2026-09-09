@@ -4,11 +4,13 @@ import {
   Bot,
   Boxes,
   ChartSpline,
+  Clock3,
   ClipboardCheck,
   CloudUpload,
   Folder,
   MessagesSquare,
   PackageCheck,
+  Plug,
   ServerCog,
   Settings,
   Workflow,
@@ -29,6 +31,8 @@ export type NavigationView =
   | "observability"
   | "evaluations"
   | "runtime-resources"
+  | "plugins"
+  | "automations"
   | "orchestration";
 
 interface NavigationItem {
@@ -36,6 +40,7 @@ interface NavigationItem {
   label: string;
   icon: LucideIcon;
   kind?: ResourceKind;
+  beta?: boolean;
 }
 
 const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
@@ -51,6 +56,7 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
     items: [
       { id: "resources", label: "工程资源", icon: Boxes },
       { id: "runtime-resources", label: "运行资源", icon: ServerCog },
+      { id: "plugins", label: "插件", icon: Plug, beta: true },
     ],
   },
   {
@@ -58,9 +64,10 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
     items: [
       { id: "builds", label: "构建", icon: PackageCheck },
       { id: "deployments", label: "部署", icon: CloudUpload },
-      { id: "orchestration", label: "任务编排", icon: Workflow },
+      { id: "automations", label: "自动化", icon: Clock3, beta: true },
+      { id: "orchestration", label: "编排", icon: Workflow, beta: true },
       { id: "observability", label: "可观测", icon: ChartSpline },
-      { id: "evaluations", label: "评测", icon: ClipboardCheck },
+      { id: "evaluations", label: "评测", icon: ClipboardCheck, beta: true },
     ],
   },
 ];
@@ -172,6 +179,7 @@ export function NavigationRail({
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>
+                    {item.beta && <span className="nav-beta-badge" title="Beta">Beta</span>}
                   </button>
                 );
                 return expanded ? button : (

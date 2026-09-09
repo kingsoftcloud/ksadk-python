@@ -1,0 +1,59 @@
+{
+  "contractFormat": "ksadk.context-contributor/v1",
+  "capabilities": {
+    "contributorId": "workspace_rules",
+    "trustLevel": "developer",
+    "maxTokens": 12000,
+    "timeoutMs": 3000,
+    "cacheability": "turn",
+    "failureMode": "skip"
+  },
+  "request": {
+    "requestFormat": "ksadk.context-request/v1",
+    "scope": {
+      "authenticated": true,
+      "actorId": "user-fixture-01",
+      "agentId": "agent-fixture-01",
+      "sessionId": "session-fixture-01",
+      "turnId": "turn-fixture-01"
+    },
+    "invocationId": "invocation-fixture-01",
+    "userInput": "Summarize the repository rules.",
+    "workspaceRoot": "/workspace",
+    "policyRef": "policy://context/default@1",
+    "remainingBudget": 4000,
+    "allowedClassifications": ["internal"],
+    "metadata": {
+      "locale": "en-US"
+    }
+  },
+  "response": {
+    "responseFormat": "ksadk.context-response/v1",
+    "fragments": [
+      {
+        "fragmentFormat": "ksadk.context-fragment/v1",
+        "itemId": "contrib:workspace_rules:resource_manifest",
+        "kind": "resource_manifest",
+        "content": "Follow the repository instructions.",
+        "sourceRefs": ["workspace://AGENTS.md"],
+        "classification": "internal",
+        "expiresAt": null,
+        "tokenEstimate": 8,
+        "trustLevel": "developer",
+        "priority": 0,
+        "required": false,
+        "droppable": true,
+        "truncatable": true,
+        "stable": false,
+        "groupId": null,
+        "seqStart": null,
+        "seqEnd": null,
+        "score": null,
+        "contentHash": null,
+        "metadata": {
+          "contributorId": "workspace_rules"
+        }
+      }
+    ]
+  }
+}

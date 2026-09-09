@@ -233,10 +233,40 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "1",
     ),
     EnvVarSpec(
+        "KSADK_DSH_BIN",
+        "plugins",
+        (
+            "Optional absolute path to the managed DSH command; must match the pinned "
+            "toolchain version."
+        ),
+    ),
+    EnvVarSpec(
+        "KSADK_DSH_HOME",
+        "plugins",
+        (
+            "Directory containing the isolated DSH Profile; defaults to .agentkit/dsh-home "
+            "in the workspace."
+        ),
+    ),
+    EnvVarSpec(
+        "KSADK_DSH_PROFILE",
+        "plugins",
+        "DSH Profile name used by Studio and the plugin bridge.",
+        "studio",
+    ),
+    EnvVarSpec(
         "KSADK_STUDIO_NO_SECURITY",
         "studio",
         "Disable Studio loopback session and CSRF checks for controlled tests only.",
         "0",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_AUTHORIZER",
+        "studio",
+        "Internal authoring backend selector; bounded chat is the default and the "
+        "filesystem-capable Codex authorizer requires an explicit opt-in.",
+        "chat",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_STUDIO_SESSION_TOKEN",
@@ -340,6 +370,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
+        "KSADK_CHECKPOINT_DSN",
+        "sessions",
+        "Framework-agnostic PostgreSQL checkpoint DSN.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
         "sessions",
         "LangGraph PostgreSQL checkpoint DSN.",
@@ -348,8 +384,16 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_LANGGRAPH_AUTO_CHECKPOINT",
         "sessions",
-        "Allow a hosted LangGraph runner to rebuild a factory-exported graph with the managed PostgreSQL saver.",
+        (
+            "Allow a hosted LangGraph runner to rebuild a factory-exported graph with the "
+            "managed PostgreSQL saver."
+        ),
         "false",
+    ),
+    EnvVarSpec(
+        "KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS",
+        "builders",
+        "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
     ),
     EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
@@ -428,6 +472,18 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "model_proxy",
         "Comma-separated model allowlist for the experimental model proxy.",
     ),
+    EnvVarSpec(
+        "KSADK_PERSISTENCE_PROBE_CACHE_TTL",
+        "sessions",
+        "PostgreSQL persistence readiness cache TTL seconds.",
+        "30",
+    ),
+    EnvVarSpec(
+        "KSADK_PERSISTENCE_PROBE_TIMEOUT",
+        "sessions",
+        "PostgreSQL persistence readiness timeout seconds.",
+        "2",
+    ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
     EnvVarSpec(
         "KSADK_PG_SESSIONS_TABLE", "sessions", "Internal PostgreSQL sessions table constant."
@@ -464,6 +520,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_PUBLIC_SKILL_SPACE_IDS",
         "skills",
         "Comma-separated public Skill Space ids appended after user spaces.",
+    ),
+    EnvVarSpec(
+        "KSADK_RESOURCE_IAM_ENDPOINT",
+        "platform_resources",
+        "Operator-owned IAM endpoint used to authorize Studio platform-resource bindings.",
     ),
     EnvVarSpec(
         "KSADK_RESPONSES_SESSION_HEADER",
@@ -632,7 +693,10 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_AGENT_KERNEL",
         "kernel",
-        "Opt in to Agent Kernel ingress locally; managed deployment may use AGENT_KERNEL_ENABLED instead.",
+        (
+            "Opt in to Agent Kernel ingress locally; managed deployment may use "
+            "AGENT_KERNEL_ENABLED instead."
+        ),
         "false",
     ),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
@@ -802,7 +866,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.2",
+        "0.3.7",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

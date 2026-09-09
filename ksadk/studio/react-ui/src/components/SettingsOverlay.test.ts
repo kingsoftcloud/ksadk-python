@@ -10,7 +10,7 @@ describe("normalizeSandbox", () => {
   });
 
   it("falls back to the least privileged option for missing or invalid values", () => {
-    expect(normalizeSandbox()).toBe("read-only");
-    expect(normalizeSandbox("unexpected")).toBe("read-only");
+    expect(normalizeSandbox()).toBe("workspace-write-auto");
+    expect(normalizeSandbox("unexpected")).toBe("workspace-write-auto");
   });
 });

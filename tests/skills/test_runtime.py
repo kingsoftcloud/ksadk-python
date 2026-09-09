@@ -156,6 +156,9 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
     assert result.output_files == ["/tmp/report.md"]
     assert result.output_text == "# Report\ncomplete"
     assert result.output_text_truncated is False
+    assert result.workflow_status == "ok"
+    assert result.executed_skill == ""
+    assert result.instructions == ""
     assert [event.event_type for event in result.skill_events] == [
         "sandbox.session.created",
         "sandbox.session.cleaned_up",
@@ -473,6 +476,9 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
     assert "OTEL_EXPORTER_OTLP_HEADERS" not in calls[0]["env"]
     assert result.output_files == ["/tmp/report.md"]
     assert result.output_text == "local report"
+    assert result.workflow_status == "ok"
+    assert result.executed_skill == ""
+    assert result.instructions == ""
 
 
 def test_local_process_backend_recovers_skill_event_sidecar(monkeypatch, tmp_path: Path):

@@ -544,29 +544,61 @@ workflow.add_edge("answer", END)
 root_agent = workflow.compile()
 ```
 
-## 14. 常见反模式
+## 14. 托管 PostgreSQL checkpoint 接入
 
-### 14.1 在业务代码里猜是否 resume
+动态开启 PostgreSQL 持久化时，KsADK 不会改写已经 compiled graph 的私有属性。项目如需让
+平台安全注入 `AsyncPostgresSaver`，必须在 `entry_point` 模块顶层导出唯一 factory：
+
+```python
+workflow = StateGraph(AgentState)
+# add_node / add_edge ...
+
+root_agent = workflow.compile()
+
+
+def ksadk_graph_factory(*, checkpointer):
+    return workflow.compile(checkpointer=checkpointer)
+```
+
+运行时规则：
+
+- `root_agent` 已携带持久化 Postgres saver 时直接复用，不重新编译。
+- 设置 `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1` 且提供 PostgreSQL DSN 时，Runner 创建连接池、
+  执行 saver `setup()`，再调用 factory，并使用稳定 Agent namespace。
+- graph 没有持久化 saver 且没有 factory 时继续运行原 graph，但 bootstrap 返回
+  `LANGGRAPH_FACTORY_REQUIRED`，不宣称支持 `time_travel`。
+- memory saver 和内存 SQLite 返回 `CHECKPOINTER_NOT_DURABLE`。
+- factory、依赖或数据库初始化失败时不替换原 graph；Runtime 关闭时释放连接池。
+
+托管 Code Runtime 会包含 `langgraph-checkpoint-postgres`、`psycopg` 和 pool 依赖。自定义
+Container 不会在启动时执行 `pip install`，镜像需要自行预装这些依赖。
+
+该能力只对配置完成后的新运行生效；不迁移已有内存 checkpoint，也不保证非幂等外部工具在
+恢复后不会重复执行。
+
+## 15. 常见反模式
+
+### 15.1 在业务代码里猜是否 resume
 
 不要通过读取数据库、检查上一轮输出文本、解析 event store 来判断是否恢复。平台会把恢复请求转成 `resume=True`。
 
-### 14.2 让客户端直接传 LangGraph Command
+### 15.2 让客户端直接传 LangGraph Command
 
 外部协议应该是 JSON。`Command(resume=...)` 是 Python / LangGraph runner 内部调用形态，不应该暴露给客户端。
 
-### 14.3 依赖 LangGraph 内部状态结构
+### 15.3 依赖 LangGraph 内部状态结构
 
 不要依赖 `state.tasks[*].interrupts` 这类内部结构做业务判断。LangGraph 版本升级后这些结构可能变化。
 
-### 14.4 把 `HumanMessage.content` 当成永远是字符串
+### 15.4 把 `HumanMessage.content` 当成永远是字符串
 
 多模态模型下它可能是 content block 列表。除非你明确在做 messages-native agent，否则优先使用 `payload / session_context`。
 
-### 14.5 用 attachments 判断当前轮是否传文件
+### 15.5 用 attachments 判断当前轮是否传文件
 
 `attachments` 是最近有效附件上下文，可能来自历史 fallback。当前轮是否传文件看 `has_current_files`，当前轮附件列表看 `current_attachments`；OCR、文档抽取、压缩包摘要仍优先看对应的 `current_attachment_results` 或 `attachment_results`。
 
-## 15. 检查清单
+## 16. 检查清单
 
 上线前建议确认：
 
@@ -580,3 +612,4 @@ root_agent = workflow.compile()
 - 多模态分支读取 `model_metadata.capabilities`
 - interrupt 恢复只依赖 resume payload，不依赖平台内部事件结构
 - `/v1/responses` 恢复调用传同一个 `session_id`
+- 托管 PostgreSQL 模式在 `entry_point` 顶层导出 `ksadk_graph_factory(*, checkpointer)`

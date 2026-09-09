@@ -114,6 +114,8 @@ class ResumePayload(BaseModel):
     call_id: Optional[str] = None
     """对应的 ``approval.requested`` / ``tool.call`` 的 id(如有)。"""
     data: Any = None
+    session_context: dict[str, Any] | None = None
+    """Platform-owned snapshot for a new resume invocation; never model input."""
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +419,7 @@ class RuntimeAdapter(ABC):
             inject=_unavailable("runtime_no_native_inject"),
             checkpoint=_unavailable(),
             durable_restore=_unavailable(),
+            interaction_mode="unavailable",
         )
 
     def native_capabilities(self) -> dict[str, object]:

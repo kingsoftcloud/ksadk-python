@@ -14,6 +14,7 @@ from ksadk.skills.models import SkillRef
 from ksadk.skills.package_store import PackageStore
 from ksadk.skills.runtime import loader as runtime_loader
 from ksadk.skills.runtime import registry as runtime_registry
+from ksadk.skills.runtime.artifact_delivery import export_artifacts
 from ksadk.skills.runtime.base import normalize_skill_names
 from ksadk.skills.runtime.executor import (
     WorkflowExecution,
@@ -37,11 +38,17 @@ from ksadk.skills.runtime.executor import (
 from ksadk.skills.runtime.executor import (
     _tail as _executor_tail,
 )
+from ksadk.skills.runtime.pinned import (
+    PINNED_PACKAGE_PROTOCOL_VERSION as PINNED_PACKAGE_PROTOCOL_VERSION,
+)
+from ksadk.skills.runtime.pinned import load_pinned_packages
 from ksadk.skills.runtime.request import (
     SkillWorkflowRequest,
     SkillWorkflowRequestError,
     parse_workflow_request,
 )
+
+ARTIFACT_DELIVERY_PROTOCOL_VERSION = 1
 
 
 def _skill_space_ids() -> list[str]:
@@ -131,27 +138,49 @@ def run_agent(
         return 1
 
     prompt = request.workflow_prompt
-    selected_skill_names = request.skill_names or _selected_skill_names()
+    selected_skill_names = request.skill_names
     event_sink = SkillEventSink(os.environ.get(SKILL_EVENT_FILE_ENV))
     planned_invocations = {
         entry["skill_id"]: entry["skill_invocation_id"] for entry in request.invocation_plan
     }
-    load_result = _load_skills(
-        prompt=prompt,
-        skill_names=selected_skill_names,
-        service_transport=service_transport,
-        event_sink=event_sink,
-        planned_invocations=planned_invocations or None,
-    )
-    loaded_skills = load_result.skills
+    if request.pinned_packages is not None:
+        if request.package_directory is None:
+            raise SkillWorkflowRequestError("Pinned Skill delivery directory is missing")
+        loaded_skills = load_pinned_packages(request.pinned_packages, request.package_directory)
+        skill_refs = None
+        skill_invocation_ids = None
+    else:
+        selected_skill_names = selected_skill_names or _selected_skill_names()
+        load_result = _load_skills(
+            prompt=prompt,
+            skill_names=selected_skill_names,
+            service_transport=service_transport,
+            event_sink=event_sink,
+            planned_invocations=planned_invocations or None,
+        )
+        loaded_skills = load_result.skills
+        skill_refs = load_result.skill_refs
+        skill_invocation_ids = load_result.skill_invocation_ids
     execution = _execute_workflow(
         prompt,
         loaded_skills,
         selected_skill_names=selected_skill_names,
         event_sink=event_sink,
-        skill_refs=load_result.skill_refs,
-        skill_invocation_ids=load_result.skill_invocation_ids,
+        skill_refs=skill_refs,
+        skill_invocation_ids=skill_invocation_ids,
     )
+    if request.collect_artifacts and request.package_directory is not None:
+        try:
+            root = Path(os.environ.get("KSADK_SKILL_WORKDIR") or "/tmp/ksadk-skill-workflow")
+            receipt = export_artifacts(
+                execution.output_files, root, request.package_directory / "artifacts.zip"
+            )
+            execution.artifact_bundle = receipt.model_dump()
+        except Exception:
+            execution.status = "failed"
+            execution.error = "Skill artifact delivery failed"
+            execution.output_files = []
+            execution.artifacts = []
     print(f"workflow={prompt}")
     print(f"skill_spaces={','.join(_skill_space_ids())}")
     print(f"loaded_skills={','.join(skill.name for skill in loaded_skills)}")

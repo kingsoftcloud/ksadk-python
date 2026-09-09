@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 class _LangGraphStreamMixin:
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
+        await self.prepare_runtime_capabilities()
         payload = dict(input_data)
         payload.pop("_ksadk_force_graph_invoke", None)
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
@@ -42,7 +43,10 @@ class _LangGraphStreamMixin:
             payload["input"] = self._gateway_approval_follow_up_input()
             resume_value = payload["input"]
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
         if history:
@@ -54,12 +58,13 @@ class _LangGraphStreamMixin:
             invoke_payload["resume_payload_provided"] = resume_payload_provided
             invoke_payload["resume_interrupt_id"] = resume_interrupt_id
 
-        config = self._get_config(session_id)
+        config = await self._get_session_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
                 config,
                 session_id=session_id,
                 checkpoint_ref=checkpoint_ref,
+                enforce_bound_thread=bool(self._invocation_identity_scope_ref()),
             )
 
         if is_checkpoint_resume:
@@ -67,7 +72,7 @@ class _LangGraphStreamMixin:
         elif is_resume and not is_gateway_approval_resume:
             # Keep the interrupt value intact for ``Command(resume=...)``;
             # prepare-state hooks only shape fresh user turns.
-            state = resume_value
+            state = self._unwrap_resume_value(resume_value)
         elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(
                 payload,
@@ -233,15 +238,10 @@ class _LangGraphStreamMixin:
                     if not chunk:
                         continue
                     model_call_id = str(event.get("run_id") or "")
-                    if (
-                        model_call_id in model_started_at
-                        and model_call_id not in first_token_seen
-                    ):
+                    if model_call_id in model_started_at and model_call_id not in first_token_seen:
                         reasoning_content = getattr(chunk, "reasoning_content", None)
                         if not reasoning_content and hasattr(chunk, "additional_kwargs"):
-                            reasoning_content = chunk.additional_kwargs.get(
-                                "reasoning_content"
-                            )
+                            reasoning_content = chunk.additional_kwargs.get("reasoning_content")
                         if getattr(chunk, "content", None) or reasoning_content:
                             first_token_seen.add(model_call_id)
                             yield {
@@ -249,8 +249,7 @@ class _LangGraphStreamMixin:
                                 "step_id": f"step_{model_call_id}",
                                 "model_call_id": model_call_id,
                                 "ttft_ms": int(
-                                    (time.monotonic() - model_started_at[model_call_id])
-                                    * 1000
+                                    (time.monotonic() - model_started_at[model_call_id]) * 1000
                                 ),
                             }
                     chunk_usage = self._extract_usage(chunk)
@@ -415,9 +414,28 @@ class _LangGraphStreamMixin:
                         final_output_timing = extract_timing(output)
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
+                        # __interrupt__ 是 LangGraph 原始 Interrupt 对象列表，
+                        # 直接 yield 会导致下游拿不到 tool_name/description（非 Mapping）。
+                        # 用 _get_interrupt_info 从 state 提取结构化 interrupt_info，
+                        # 与 406-412 的异常路径和 419-436 的 pending_approval 兜底一致。
+                        _interrupt_info = {}
+                        try:
+                            _get_state = getattr(self._agent, "aget_state", None) or getattr(
+                                self._agent, "get_state", None
+                            )
+                            if _get_state is not None:
+                                _maybe_state = _get_state(config)
+                                if inspect.isawaitable(_maybe_state):
+                                    _maybe_state = await _maybe_state
+                                _interrupt_info = self._get_interrupt_info(_maybe_state)
+                        except Exception:
+                            _interrupt_info = {}
+                        if not _interrupt_info:
+                            # 取不到 state 时 fallback 到原始 __interrupt__（兼容旧行为）。
+                            _interrupt_info = output["__interrupt__"]
                         yield {
                             "type": "interrupt",
-                            "interrupt_info": output["__interrupt__"],
+                            "interrupt_info": _interrupt_info,
                             "session_id": session_id,
                         }
                         return
@@ -585,21 +603,25 @@ class _LangGraphStreamMixin:
         resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
         resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
+        native_context = self.build_native_context(
+            payload.get("platform_context"),
+            context_schema=getattr(self._agent, "context_schema", None),
+        )
 
-        config = self._get_config(session_id)
+        config = await self._get_session_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
                 config,
                 session_id=session_id,
                 checkpoint_ref=checkpoint_ref,
+                enforce_bound_thread=bool(self._invocation_identity_scope_ref()),
             )
 
         # --- build state (same logic as stream()) ---
         if is_checkpoint_resume:
             state = resume_value
         elif is_resume:
-            state = resume_value
+            state = self._unwrap_resume_value(resume_value)
         elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history)
         else:
@@ -738,6 +760,47 @@ class _LangGraphStreamMixin:
                             (ckpt_config.get("configurable") or {}).get("checkpoint_id", "") or ""
                         )
                         if ckpt_id:
+                            # Extract next_node from graph state so the
+                            # projection layer can surface it in the REST
+                            # checkpoint payload.
+                            next_nodes_raw = (
+                                ckpt_state.get("next")
+                                if isinstance(ckpt_state, dict)
+                                else getattr(ckpt_state, "next", None)
+                            )
+                            ckpt_next_node = ""
+                            if isinstance(next_nodes_raw, str):
+                                ckpt_next_node = next_nodes_raw.strip()
+                            elif isinstance(next_nodes_raw, (list, tuple, set)):
+                                ckpt_next_node = str(next(iter(next_nodes_raw)) or "").strip()
+                            # Enrich source metadata with checkpoint
+                            # capability (backend/scope/durable) so the
+                            # projection layer does not fall back to unknown.
+                            ckpt_capability = self.describe_checkpoint_capability()
+                            ckpt_source_metadata: dict[str, Any] = {"checkpoint": True}
+                            if isinstance(ckpt_capability, dict):
+                                ckpt_is_terminal = not bool(ckpt_next_node)
+                                ckpt_is_resumable = bool(
+                                    ckpt_capability.get("Supported")
+                                    and ckpt_next_node
+                                    and ckpt_capability.get("Scope") != "process_local"
+                                )
+                                ckpt_source_metadata["capability"] = {
+                                    "backend": str(ckpt_capability.get("Backend") or "unknown"),
+                                    "scope": str(ckpt_capability.get("Scope") or "unknown"),
+                                    "durable": bool(ckpt_capability.get("Durable", False)),
+                                    "is_terminal": ckpt_is_terminal,
+                                    "is_resumable": ckpt_is_resumable,
+                                    "resume_status": (
+                                        "resumable" if ckpt_is_resumable else "disabled"
+                                    ),
+                                    "resume_disabled_reason": (
+                                        "该 checkpoint 已是终态；可选择更早恢复点重跑"
+                                        if ckpt_is_terminal
+                                        else str(ckpt_capability.get("Reason") or "")
+                                    ),
+                                    **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
+                                }
                             ckpt_ref = {
                                 "thread_id": str(
                                     (ckpt_config.get("configurable") or {}).get(
@@ -746,6 +809,7 @@ class _LangGraphStreamMixin:
                                 ),
                                 "checkpoint_ns": "",
                                 "checkpoint_id": ckpt_id,
+                                **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
                             }
                             continuation_id = stable_item_id(
                                 "langgraph",
@@ -774,7 +838,7 @@ class _LangGraphStreamMixin:
                                 source=SourceRef(
                                     framework="langgraph",
                                     native_run_id=run_id,
-                                    metadata={"checkpoint": True},
+                                    metadata=ckpt_source_metadata,
                                 ),
                                 continuation_id=continuation_id,
                                 continuation_kind="graph_checkpoint",

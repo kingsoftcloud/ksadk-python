@@ -35,6 +35,8 @@ interface Deployment {
     | "native-runtime-without-session-event-chat-capability"
     | "studio-compatible-framework";
   updatedAt?: string;
+  creatorName?: string | null;
+  createdByName?: string;
 }
 
 interface StudioCloudAgentSummary extends AccountCloudAgentSummary {
@@ -51,6 +53,7 @@ interface BuildCandidate {
   runtimeName?: string;
   runtimeVersion?: string;
   artifactType?: string;
+  isCurrent?: boolean;
 }
 
 interface CloudVersion {
@@ -146,6 +149,7 @@ function mergeCloudProjection(
     chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
     versionId: account.versionId || deployment.versionId,
     updatedAt: account.updatedAt || deployment.updatedAt,
+    creatorName: account.creatorName !== undefined ? account.creatorName : deployment.creatorName,
   };
 }
 
@@ -305,7 +309,16 @@ async function submitOrResumeOperation(
         // 5xx may be an ambiguous response after the Server accepted the write.
         // Keep its key so the next retry asks the Server for the same operation.
         if (response.status < 500) clearOperationAttempt(storageKey, current);
-        throw new Error(`${operationLabel}提交失败（${response.status}）`);
+        // Surface the server's structured error message (e.g. BUILD_NOT_CURRENT)
+        // instead of a generic status code so the user knows what to fix.
+        let serverMessage = "";
+        try {
+          const errorBody = await response.clone().json();
+          serverMessage = errorBody?.error?.message || "";
+        } catch {
+          // response body wasn't JSON; fall through to generic message
+        }
+        throw new Error(serverMessage || `${operationLabel}提交失败（${response.status}）`);
       }
       const operation = await response.json();
       const operationId = String(operation?.id || "").trim();
@@ -385,10 +398,11 @@ function formatUpdatedAt(value?: string): string {
 
 export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   onCreate: () => void;
-  onOpenChat: (deploymentId: string) => void;
+  onOpenChat: (deployment: CloudDeploymentSummary) => void;
   onSelectBuild: () => void;
 }) {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [credentialUserName, setCredentialUserName] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
@@ -433,6 +447,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       ]);
       if (!receiptResponse.ok) throw new Error(`读取部署记录失败（${receiptResponse.status}）`);
       const receiptPayload = await receiptResponse.json();
+      if (!signal?.aborted) setCredentialUserName(String(receiptPayload.currentIdentity?.userName || ""));
       const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
       const receipts: Deployment[] = Array.isArray(receiptPayload.items) ? receiptPayload.items : [];
       const receiptAgentIds = [...new Set(receipts.flatMap(item => (
@@ -457,7 +472,15 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         item.agentId ? [[item.agentId, item] as const] : []
       )));
       for (const detail of accountDetails) {
-        if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
+        if (detail?.agentId) {
+          const listed = accountByAgentId.get(detail.agentId);
+          accountByAgentId.set(detail.agentId, {
+            ...listed, ...detail,
+            // Older GetAgent responses substitute the owning account ID for
+            // a missing creator. ListAgents preserves the recorded value.
+            creatorName: listed?.creatorName !== undefined ? listed.creatorName : detail.creatorName,
+          });
+        }
       }
       const accountItems = [...accountByAgentId.values()];
       const receiptById = new Map(receipts.map(item => [item.id, item]));
@@ -488,6 +511,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           chatTransport: target.chatTransport || account?.chatTransport,
           chatRoutingReason: target.chatRoutingReason || account?.chatRoutingReason,
           updatedAt: String(target.updatedAt || account?.updatedAt || ""),
+          creatorName: target.creatorName || account?.creatorName,
           source: "account" as const,
         };
       });
@@ -547,7 +571,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         const agentPayload = await agentsResponse.json();
         const settings = settingsResponse.ok ? await settingsResponse.json() : {};
         const agents = Array.isArray(agentPayload.items) ? agentPayload.items : [];
-        const details = await Promise.all(agents.map(async (summary: any) => {
+        const routeAgents = createSelection.agentId
+          ? agents.filter((summary: any) => (
+              String(summary?.metadata?.id || "").trim() === createSelection.agentId
+            ))
+          : agents;
+        const details = await Promise.all(routeAgents.map(async (summary: any) => {
           const agentId = String(summary?.metadata?.id || "").trim();
           if (!agentId) return null;
           const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`);
@@ -580,6 +609,9 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           if (buildResponse.ok) {
             const build = await buildResponse.json();
             const agentId = String(build.agentId || createSelection.agentId || "").trim();
+            if (createSelection.agentId && agentId !== createSelection.agentId) {
+              throw new Error(`Build ${createSelection.buildId} 不属于当前 Agent`);
+            }
             const agentResponse = agentId
               ? await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`)
               : null;
@@ -599,16 +631,32 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             }
           }
         }
+        if (createSelection.agentId) {
+          candidates = candidates.filter(build => build.agentId === createSelection.agentId);
+        }
         if (cancelled) return;
         setCloudRegion(String(settings.cloudRegion || "").trim());
         setDeployableBuilds(candidates);
+        const firstCurrent = candidates.find((b: BuildCandidate) => b.isCurrent !== false);
         if (createSelection.buildId) {
-          if (!candidates.some((build: BuildCandidate) => build.id === createSelection.buildId)) {
+          const requested = candidates.find((build: BuildCandidate) => build.id === createSelection.buildId);
+          if (!requested) {
             throw new Error(`Build ${createSelection.buildId} 不存在或尚未成功`);
           }
-          setSelectedBuildId(createSelection.buildId);
+          // If the URL-pinned build is stale (isCurrent===false), prefer the most
+          // recent current build so the user doesn't silently deploy a stale
+          // revision and hit 409 BUILD_NOT_CURRENT.
+          if (requested.isCurrent === false && firstCurrent) {
+            setSelectedBuildId(firstCurrent.id);
+          } else {
+            setSelectedBuildId(createSelection.buildId);
+          }
         } else {
-          setSelectedBuildId(current => candidates.some((build: BuildCandidate) => build.id === current) ? current : "");
+          // Prefer the most recent current build; fall back to current selection or first candidate.
+          setSelectedBuildId(current => {
+            if (candidates.some((build: BuildCandidate) => build.id === current)) return current;
+            return (firstCurrent || candidates[0])?.id || "";
+          });
         }
       } catch (caught: any) {
         if (!cancelled) setCreateError(caught?.message || "可部署 Build 不可用");
@@ -741,6 +789,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
           versionId: account.versionId || deployment.versionId,
           updatedAt: account.updatedAt || deployment.updatedAt,
+          creatorName: account.creatorName !== undefined ? account.creatorName : deployment.creatorName,
         };
         const versions = await versionsPromise;
         if (signal?.aborted) return;
@@ -985,6 +1034,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
   if (createSelection) {
     const selectedBuild = deployableBuilds.find(build => build.id === selectedBuildId);
+    const routeAgentName = selectedBuild?.agentName || deployableBuilds[0]?.agentName;
     return (
       <div className="delivery-page deployment-create-page" data-layout="document">
         <PageHeaderActions>
@@ -996,7 +1046,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           </button>
         </PageHeaderActions>
         <div className="delivery-intro">
-          <div><h2>部署到云端</h2><p>选择一个已成功的 Build，由 Studio 提交统一云端部署操作。</p></div>
+          <div>
+            <h2>{routeAgentName ? `部署 ${routeAgentName}` : "部署到云端"}</h2>
+            <p>{createSelection.agentId
+              ? "选择当前 Agent 已成功的 Build，由 Studio 提交统一云端部署操作。"
+              : "选择一个已成功的 Build，由 Studio 提交统一云端部署操作。"}</p>
+          </div>
         </div>
         {createError && <div className="form-error" role="alert">{createError}</div>}
         <section className="delivery-block" aria-label="选择部署 Build">
@@ -1009,13 +1064,14 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   type="button"
                   role="radio"
                   aria-checked={build.id === selectedBuildId}
-                  aria-label={`${build.agentName || build.agentId || "Agent"} ${build.id}`}
+                  aria-label={`${build.agentName || build.agentId || "Agent"} ${build.id}${build.isCurrent === false ? " (声明已变更)" : ""}`}
                   className="deployment-version-option"
                   data-selected={build.id === selectedBuildId}
+                  data-stale={build.isCurrent === false}
                   onClick={() => setSelectedBuildId(build.id)}
                 >
                   <strong className="deployment-version-name">{build.agentName || build.agentId || "未命名 Agent"}</strong>
-                  <span className="deployment-version-state" data-state="available">{build.artifactType === "ManagedRuntime" ? "托管声明" : "代码 Bundle"}</span>
+                  <span className="deployment-version-state" data-state={build.isCurrent === false ? "stale" : "available"}>{build.artifactType === "ManagedRuntime" ? "托管声明" : "代码 Bundle"}{build.isCurrent === false ? " · 声明已变更" : ""}</span>
                   <code title={build.id}>{shortId(build.id, 24)}</code>
                   <time className="deployment-version-time" dateTime={build.createdAt || undefined}>{formatUpdatedAt(build.createdAt)}</time>
                 </button>
@@ -1084,11 +1140,11 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
               type="button"
               onClick={() => chatRoute.kind === "official-dashboard"
                 ? void openHostedUi(detail.deployment)
-                : onOpenChat(detail.deployment.id)}
+                : onOpenChat(detail.deployment)}
               disabled={updating}
             >
               {chatRoute.kind === "official-dashboard"
-                ? <><ExternalLink size={15} />打开官方 Dashboard</>
+                ? <><ExternalLink size={15} />链接</>
                 : <><MessagesSquare size={15} />进入会话</>}
             </button>
           )}
@@ -1109,6 +1165,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <div className="api-contract" aria-label="云端部署事实">
             <div><span>名称</span><strong>{detail.deployment.agentName || detail.sourceAgentName}</strong></div>
             <div><span>来源</span><strong>{hasReceipt ? "Studio 部署记录" : "账号云端 Agent"}</strong></div>
+            <div><span>创建子账号</span><strong>{detail.deployment.creatorName || "创建人未记录"}</strong></div>
             <div><span>状态</span><strong>{deploymentLabel(detail.deployment.status)}</strong></div>
             <div><span>云端 Agent</span><code>{detail.deployment.agentId || "尚未返回"}</code></div>
             <div><span>类型</span><code>{detail.deployment.framework || detail.deployment.artifactId || "尚未返回"}</code></div>
@@ -1207,7 +1264,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <div className="delivery-section-heading"><h2>Agent 列表</h2><span>{deployments.length} 个</span></div>
           <div className="delivery-table-scroll">
             <table className="delivery-table">
-              <thead><tr><th>Agent</th><th>状态</th><th>类型</th><th>版本</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th>Agent</th><th>状态</th><th>类型</th><th>创建子账号</th><th>版本</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead>
               <tbody>{deployments.map(deployment => {
                 const refreshingThis = refreshing.has(deployment.id);
                 const chatRoute = resolveCloudChatRoute(deployment);
@@ -1225,9 +1282,16 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
                   <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong>{deployment.source === "receipt" && <small>Studio 部署记录</small>}</td>
+                  <td>{deployment.creatorName || deployment.createdByName || (
+                    deployment.source === "receipt" && credentialUserName
+                      ? <span title="当前工作区 AK/SK 对应的身份；历史创建人未记录">
+                        {credentialUserName}<small>当前凭证</small>
+                      </span>
+                      : "创建人未记录"
+                  )}</td>
                   <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
                   <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
-                  <td className="delivery-row-actions">
+                  <td><div className="delivery-row-actions">
                     {deploymentState(deployment.status) === "ready" && deployment.agentId && (
                       <button
                         className="button secondary compact"
@@ -1237,10 +1301,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           : "打开云端 Agent 会话"}
                         onClick={() => chatRoute.kind === "official-dashboard"
                           ? void openHostedUi(deployment)
-                          : onOpenChat(deployment.id)}
+                          : onOpenChat(deployment)}
                       >
                         {chatRoute.kind === "official-dashboard"
-                          ? <><ExternalLink size={15} /><span>Dashboard</span></>
+                          ? <><ExternalLink size={15} /><span>链接</span></>
                           : <><MessagesSquare size={15} /><span>会话</span></>}
                       </button>
                     )}
@@ -1259,7 +1323,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           : []),
                       ]}
                     />
-                  </td>
+                  </div></td>
                 </tr>;
               })}</tbody>
             </table>

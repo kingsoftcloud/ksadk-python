@@ -29,7 +29,13 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     assert result.exit_code == 0
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8899
-    assert captured["access_log"] is False
+    # Access log 必须开启（历史上被 access_log=False 关闭过），且日志格式带
+    # filename:lineno（veadk 风格），便于本地排障定位代码。
+    assert "access_log" not in captured or captured["access_log"] is not False
+    log_config = captured["log_config"]
+    assert log_config["loggers"]["uvicorn.access"]["level"] == "INFO"
+    assert "%(filename)s:%(lineno)d" in log_config["formatters"]["access"]["format"]
+    assert "%(filename)s:%(lineno)d" in log_config["formatters"]["default"]["format"]
     assert captured["app"].state.studio_service.runtime_executor.registered_runtime_types() == [
         "adk",
         "codex",

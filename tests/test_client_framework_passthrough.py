@@ -67,7 +67,7 @@ async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch
 
     monkeypatch.setattr(client, "_action", fake_action)
     checksum = "a" * 64
-    command = ["ksadk", "web", "/app/code/runtime", "--port", "8080"]
+    command = ["ksadk", "web", "/app/code", "--port", "8080"]
     await client.create_agent(
         {
             **_build_create_payload(),
@@ -117,8 +117,8 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
     )
 
     payload = calls[0][1]
-    assert calls[0][0] == "CreateAgent"
-    assert isinstance(payload["InstanceId"], str) and payload["InstanceId"]
+    assert calls[0][0] == "CreateAgentProduct"
+    assert "InstanceId" not in payload
     assert payload["DeploymentType"] == "ManagedRuntime"
     assert "CodeConfig" not in payload
     assert payload["ManagedRuntimeConfig"] == {
@@ -181,7 +181,11 @@ async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monk
     monkeypatch.setattr(client, "_action", fake_action)
 
     await client.list_session_events(
-        agent_id="ar-cloud", session_id="sess-cloud", after_seq_id=7, limit=200
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        after_seq_id=7,
+        offset=400,
+        limit=200,
     )
     await client.submit_interaction(
         agent_id="ar-cloud",
@@ -201,6 +205,7 @@ async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monk
                 "AgentId": "ar-cloud",
                 "SessionId": "sess-cloud",
                 "AfterSeqId": 7,
+                "Offset": 400,
                 "Limit": 200,
             },
         ),
@@ -221,11 +226,8 @@ async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monk
 
 
 @pytest.mark.asyncio
-async def test_submit_interaction_falls_back_to_authenticated_agent_gateway_when_kop_is_unpublished(
-    monkeypatch,
-):
+async def test_submit_interaction_does_not_bypass_unpublished_kop_action(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
-    calls: list[tuple[str, dict]] = []
 
     async def unpublished(action: str, params: dict):
         raise AgentEngineAPIError(
@@ -233,40 +235,19 @@ async def test_submit_interaction_falls_back_to_authenticated_agent_gateway_when
             "The action SubmitInteraction or version 2024-06-12 is not valid for this web service",
         )
 
-    async def runtime_action(**kwargs):
-        calls.append((str(kwargs["action"]), dict(kwargs["params"])))
-        return {"receipt_status": "accepted"}
-
     monkeypatch.setattr(client, "_action_async", unpublished)
-    monkeypatch.setattr(client, "_runtime_action_for_agent", runtime_action)
 
-    result = await client.submit_interaction(
-        agent_id="ar-cloud",
-        session_id="sess-cloud",
-        run_id="run-cloud",
-        interaction_id="int-cloud",
-        expected_revision=1,
-        action="reject",
-        response={"decision": "reject"},
-        idempotency_key="idem-runtime-fallback",
-    )
-
-    assert result == {"receipt_status": "accepted"}
-    assert calls == [
-        (
-            "SubmitInteraction",
-            {
-                "AgentId": "ar-cloud",
-                "SessionId": "sess-cloud",
-                "RunId": "run-cloud",
-                "InteractionId": "int-cloud",
-                "ExpectedRevision": 1,
-                "InteractionAction": "reject",
-                "Response": {"decision": "reject"},
-                "IdempotencyKey": "idem-runtime-fallback",
-            },
+    with pytest.raises(AgentEngineAPIError, match="not valid for this web service"):
+        await client.submit_interaction(
+            agent_id="ar-cloud",
+            session_id="sess-cloud",
+            run_id="run-cloud",
+            interaction_id="int-cloud",
+            expected_revision=1,
+            action="reject",
+            response={"decision": "reject"},
+            idempotency_key="idem-runtime-fallback",
         )
-    ]
 
 
 @pytest.mark.asyncio

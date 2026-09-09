@@ -72,6 +72,19 @@ class _HarnessRun:
     done: bool = False
 
 
+@dataclass
+class _HarnessSession:
+    """Process-local transcript and serialization boundary for one Session.
+
+    The public capability matrix deliberately advertises process-scoped,
+    non-durable continuity.  Keeping this state on the adapter makes that
+    declaration true without pretending that a restart can recover it.
+    """
+
+    messages: list[dict[str, Any]]
+    lock: asyncio.Lock
+
+
 class HarnessRuntimeAdapter(RuntimeAdapter):
     """Execute a YAML Harness config directly as RuntimeEvent streams."""
 
@@ -95,6 +108,9 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         self._tools: tuple[HarnessTool, ...] | None = None
         self._tool_lock = asyncio.Lock()
         self._mcp_toolsets: list[Any] = []
+        self._sessions: dict[tuple[str, str, str], _HarnessSession] = {}
+        self._lifecycle_lock = asyncio.Lock()
+        self._closed = False
 
     @property
     def harness_config(self) -> HarnessConfig:
@@ -109,10 +125,13 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         return self._sandbox.workspace_root
 
     async def start(self, request: StartRequest) -> RunHandle:
-        run_id = str(request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}")
-        if run_id in self._runs:
-            raise ValueError(f"duplicate Harness invocation: {run_id}")
-        self._runs[run_id] = _HarnessRun(request=request)
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Harness runtime adapter is closed")
+            run_id = str(request.metadata.get("invocation_id") or f"harness_{uuid.uuid4().hex}")
+            if run_id in self._runs:
+                raise ValueError(f"duplicate Harness invocation: {run_id}")
+            self._runs[run_id] = _HarnessRun(request=request)
         return RunHandle(
             run_id=run_id,
             session_id=request.session_id,
@@ -160,23 +179,51 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
         )
 
     async def close(self, handle: RunHandle) -> None:
-        run = self._runs.pop(handle.run_id, None)
+        async with self._lifecycle_lock:
+            run = self._runs.pop(handle.run_id, None)
+            has_runs = bool(self._runs)
         if run is not None and run.task is not None and not run.task.done():
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
-        if not self._runs:
+        if not has_runs:
             await self._close_tools()
+
+    async def close_all(self) -> None:
+        """Dispose every process-local run owned by this adapter instance."""
+
+        async with self._lifecycle_lock:
+            self._closed = True
+            runs = tuple(self._runs.values())
+            self._runs.clear()
+            self._sessions.clear()
+        tasks = [run.task for run in runs if run.task is not None and not run.task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._close_tools()
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         return handle.run_id in self._runs
 
     async def execute_request(self, request: StartRequest) -> dict[str, Any]:
+        session = self._session_for(request)
+        async with session.lock:
+            return await self._execute_session_request(request, session)
+
+    async def _execute_session_request(
+        self,
+        request: StartRequest,
+        session: _HarnessSession,
+    ) -> dict[str, Any]:
         tools = await self._ensure_tools()
         model, prompt = self._effective(request)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": str(request.input or "")},
+            *[dict(message) for message in session.messages],
         ]
+        user_message = {"role": "user", "content": str(request.input or "")}
+        messages.append(user_message)
         execution_log: list[dict[str, Any]] = []
 
         for _turn_number in range(_MAX_REASONING_TURNS):
@@ -235,6 +282,12 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 raise RuntimeError(
                     "Harness reasoner returned neither a final response nor a tool call"
                 )
+            final_message = {"role": "assistant", "content": turn.final_text}
+            messages.append(final_message)
+            # Failed or cancelled turns never commit a partial transcript.
+            # A successful turn atomically replaces the process-local history
+            # while the per-session lock is still held.
+            session.messages[:] = [dict(message) for message in messages[1:]]
             return {
                 "output": turn.final_text,
                 "model": model,
@@ -244,11 +297,21 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
             }
         raise RuntimeError(f"Harness reasoning exceeded {_MAX_REASONING_TURNS} turns")
 
+    def _session_for(self, request: StartRequest) -> _HarnessSession:
+        key = (
+            str(request.agent_id or self._agent_name),
+            str(request.user_id),
+            str(request.session_id),
+        )
+        session = self._sessions.get(key)
+        if session is None:
+            session = _HarnessSession(messages=[], lock=asyncio.Lock())
+            self._sessions[key] = session
+        return session
+
     def _effective(self, request: StartRequest) -> tuple[str, str]:
         metadata = request.metadata or {}
-        model = str(
-            metadata.get("model_override") or request.model or self._config.model
-        ).strip()
+        model = str(metadata.get("model_override") or request.model or self._config.model).strip()
         prompt = str(
             metadata.get("prompt_override")
             or request.config.get("base_instructions")
@@ -285,9 +348,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 },
             )
 
-        def env_kwargs(
-            item_id: str, event_type: str, part_id: str
-        ) -> dict[str, Any]:
+        def env_kwargs(item_id: str, event_type: str, part_id: str) -> dict[str, Any]:
             n = next_seq()
             return {
                 "schema_version": 2,
@@ -386,9 +447,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 **env_kwargs(message_item_id, "item.completed", "text-0"),
                 item_id=message_item_id,
                 item_kind="message",
-                snapshot=ContentSnapshot(
-                    parts=(TextContent(part_id="text-0", text=text),)
-                ),
+                snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text=text),)),
             )
             run.done = True
             yield RunCompleted(

@@ -4,11 +4,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from ksadk.studio.codex_builder import CodexStudioBuilder
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
 from ksadk.studio.codex_run import CodexRunSpecResolver
+from ksadk.studio.contracts import AgentSpec, Instructions, RuntimeRef, SoulDocument
 from ksadk.studio.errors import StudioError
+from ksadk.studio.service import StudioService
+from ksadk.studio.soul import render_soul_markdown, soul_digest
 from ksadk.studio.workspace import Workspace
 
 
@@ -34,6 +38,28 @@ def _inspector(_runtime) -> tuple[str, str, str]:
     return "0.8.0", "0.144.4", "codex-cli 0.144.4"
 
 
+def test_resolve_run_spec_does_not_mask_nested_codex_404(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    studio = StudioService(tmp_path)
+    build_id = "build_0123456789abcdef0123"
+    monkeypatch.setattr(studio.codex_builds, "get", lambda _build_id: object())
+
+    def fail_resolution(_build_id: str, **_kwargs):
+        raise StudioError(
+            "CODEX_PLUGIN_SNAPSHOT_NOT_FOUND",
+            "Codex 插件快照不存在",
+            status_code=404,
+        )
+
+    monkeypatch.setattr(studio.codex_runs, "resolve", fail_resolution)
+
+    with pytest.raises(StudioError) as raised:
+        studio.resolve_run_spec(build_id)
+
+    assert raised.value.code == "CODEX_PLUGIN_SNAPSHOT_NOT_FOUND"
+
+
 def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
     workspace = Workspace(tmp_path)
     workspace.initialize()
@@ -55,9 +81,9 @@ def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
         "agent_task": "",
         "cwd": str(tmp_path),
         "skills": [],
-        "sandbox": "read-only",
-        "sandbox_read_only": True,
-        "approval_mode": "deny_all",
+        "sandbox": "workspace-write",
+        "sandbox_read_only": False,
+        "approval_mode": "auto_review",
         "summary": "auto",
         "ephemeral": False,
         "max_input_tokens": None,
@@ -92,6 +118,63 @@ def test_resolver_merges_codex_input_but_preserves_prompt_sources(tmp_path: Path
     )
     assert spec.request_config["agent_system"] == "你是代码审查助手。"
     assert spec.request_config["agent_task"] == "只报告有证据的问题。"
+
+
+def test_editor_soul_update_reaches_managed_runtime_build_and_launch(
+    tmp_path: Path,
+) -> None:
+    """Break caught: Studio retained Soul only in Draft, not deployed Codex input."""
+
+    studio = StudioService(tmp_path, codex_runtime_inspector=_inspector)
+    # This test validates Soul projection into the retained direct-runtime
+    # compatibility artifact. Formal Provider Build coverage lives in
+    # test_codex_provider_build.py and installs an explicit provider fixture.
+    studio.codex_builder.provider_build = None
+    draft = studio.create_studio_agent(
+        agent_id="soul-reviewer",
+        name="Soul Reviewer",
+        spec=AgentSpec(
+            runtime=RuntimeRef(type="codex", version="0.144.4"),
+            instructions=Instructions(
+                system="Review only verified evidence.",
+                task="Return one concise finding.",
+            ),
+        ),
+    )
+    candidate = draft.spec.model_copy(deep=True)
+    candidate.soul = SoulDocument(
+        identity="You are the release evidence reviewer.",
+        principles=["Cite evidence before conclusions."],
+        boundaries=["Never invent a passing result."],
+        tone="Clear and concise.",
+    )
+    updated = studio.update_studio_agent(
+        draft.metadata.id,
+        candidate,
+        expected_revision=draft.metadata.revision,
+    )
+
+    build = studio.codex_builder.build(
+        draft.metadata.id,
+        source_revision=updated.metadata.revision,
+    )
+    artifact = yaml.safe_load(studio.codex_builds.manifest_text(build))
+    run_spec = studio.resolve_run_spec(build.id)
+    soul = candidate.soul
+    assert soul is not None
+    expected_digest = soul_digest(soul)
+    expected_system = f"{render_soul_markdown(soul).rstrip()}\n\nReview only verified evidence."
+
+    assert artifact["prompt"] == "Review only verified evidence."
+    assert artifact["soul"]["identity"] == "You are the release evidence reviewer."
+    assert artifact["soul_source"] == "AgentSpec.soul"
+    assert artifact["soul_digest"] == expected_digest
+    assert run_spec.request_config["agent_system"] == expected_system
+    assert run_spec.request_config["base_instructions"] == (
+        f"{expected_system}\n\nReturn one concise finding."
+    )
+    assert run_spec.request_config["soul_source"] == "AgentSpec.soul"
+    assert run_spec.request_config["soul_digest"] == expected_digest
 
 
 def test_resolver_injects_workspace_model_credentials_into_codex(
@@ -226,7 +309,28 @@ def test_resolver_keeps_selected_model_profile_endpoint_and_credential(
         "OPENAI_BASE_URL": "https://kimi.example.com/v1",
         "OPENAI_API_BASE": "https://kimi.example.com/v1",
         "OPENAI_MODEL_NAME": "kimi-k2-code",
+        "KSADK_CODEX_USE_PROXY": "1",
     }
+
+
+def test_resolver_skips_capability_probe_for_legacy_kspmas_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    workspace.atomic_write_text(
+        ".agentkit/secrets.env",
+        "AGENTKIT_MODEL_API_KEY=workspace-model-key\n",
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
+    CodexManifestRepository(workspace).save(_manifest())
+    build = CodexStudioBuilder(workspace, runtime_inspector=_inspector).build()
+
+    spec = CodexRunSpecResolver(workspace).resolve(build.id, model="glm-5.2")
+
+    assert spec.launch_context.config["env"]["KSADK_CODEX_USE_PROXY"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -286,3 +390,71 @@ def test_resolver_rejects_stale_build_after_manifest_edit(tmp_path: Path) -> Non
         CodexRunSpecResolver(workspace).resolve(build.id)
 
     assert captured.value.code == "CODEX_BUILD_STALE"
+
+
+def test_rebuild_preserves_only_bound_same_agent_mcp_oauth(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import stat
+
+    monkeypatch.delenv("KSADK_CODEX_HOME", raising=False)
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    manifests = CodexManifestRepository(workspace)
+    builder = CodexStudioBuilder(workspace, runtime_inspector=_inspector)
+    manifests.save(_manifest())
+    original = builder.build()
+    old_home = tmp_path / ".agentkit/codex-homes" / original.id
+    old_home.mkdir(parents=True)
+    grant = {
+        "server_name": "design",
+        "server_url": "https://design.example/mcp",
+        "access_token": "fake-token",
+    }
+    (old_home / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "design|hash": grant,
+                "unbound|hash": {**grant, "server_name": "unbound"},
+                "changed|hash": {**grant, "server_url": "https://other.example/mcp"},
+            }
+        )
+    )
+    (old_home / "auth.json").write_text('{"never_copy": true}')
+    updated = _manifest().model_copy(
+        update={
+            "mcp_servers": [
+                {"name": "design", "transport": "http", "url": "https://design.example/mcp"},
+            ]
+        }
+    )
+    manifests.save(updated)
+    build = builder.build()
+    resolver = CodexRunSpecResolver(workspace)
+    foreign = original.model_copy(update={"id": "build_abcdef01", "agent_name": "other-agent"})
+    foreign_home = old_home.parent / foreign.id
+    foreign_home.mkdir()
+    (foreign_home / ".credentials.json").write_text(json.dumps({"foreign|hash": grant}))
+    monkeypatch.setattr(resolver.builds, "list", lambda: [original, build, foreign])
+    resolver.resolve(build.id)
+    target = tmp_path / ".agentkit/codex-homes" / build.id / ".credentials.json"
+    assert target.exists(), "OAuth grant disappeared when the MCP binding changed the build"
+    assert json.loads(target.read_text()) == {"design|hash": grant}
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not (target.parent / "auth.json").exists()
+    # A refreshed token in the current build must not be overwritten by old state.
+    fresh = {**grant, "access_token": "fake-refreshed"}
+    target.write_text(json.dumps({"design|hash": fresh}))
+    resolver.resolve(build.id)
+    assert json.loads(target.read_text()) == {"design|hash": fresh}
+
+    # Logging out in this build must not recover a stale grant on the next run.
+    target.unlink()
+    resolver.resolve(build.id)
+    assert not target.exists()
+    # A subsequent build must not search past this logged-out predecessor.
+    manifests.save(updated.model_copy(update={"prompt": "Next revision"}))
+    next_build = builder.build()
+    monkeypatch.setattr(resolver.builds, "list", lambda: [original, build, next_build, foreign])
+    resolver.resolve(next_build.id)
+    next_target = target.parent.parent / next_build.id / ".credentials.json"
+    assert not next_target.exists()

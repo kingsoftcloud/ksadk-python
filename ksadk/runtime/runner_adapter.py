@@ -55,6 +55,10 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
 from ksadk.runtime.timing import normalize_timing
+from ksadk.runtime_context import (
+    TRUSTED_IDENTITY_METADATA_KEY,
+    session_invocation_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +143,10 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
 
     # ---- 框架钩子(子类按需 override) ----
 
+    def _requires_stable_stream_context(self) -> bool:
+        """Whether one Task must own the runner generator for its lifetime."""
+        return self._runtime_type == "adk"
+
     def capabilities(self) -> RuntimeCapabilityMatrix:
         """诚实矩阵:cancel 经 asyncio 任务打断(emulated,过 conformance);
         resume/checkpoint 依赖 runner 声明的原生 checkpoint;attach/durable_restore
@@ -171,8 +179,12 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             submit_interaction=_unavailable("runtime_no_live_interaction_channel"),
             attach=(
                 RuntimeCapability(supported=True, mode="native")
-                if attach_seam
-                else _unavailable("runner_no_durable_attach_seam")
+                if durable_supported
+                else _unavailable(
+                    "runner_no_durable_attach_seam"
+                    if not attach_seam
+                    else "attach_requires_cross_process_checkpoint"
+                )
             ),
             steer=_unavailable("runtime_no_native_steer"),
             inject=_unavailable("runtime_no_native_inject"),
@@ -186,6 +198,11 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 if durable_supported
                 else _unavailable("durable_restore_requires_cross_process_checkpoint")
             ),
+            # A generic Runner cannot claim interaction delivery merely from a
+            # checkpoint capability.  ADK is forward-only and only the
+            # LangGraph specialization below binds a checkpoint to the
+            # original interrupt identity.
+            interaction_mode="unavailable",
         )
 
     async def durable_restore(self, handle: RunHandle) -> RunHandle:
@@ -268,6 +285,17 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._active_runs[run_id] = _ActiveRun(invocation_id=run_id, session_id=request.session_id)
         # 暂存 start 输入,供 stream() 使用。
         self._active_runs[run_id].__dict__["_start_request"] = request
+        snapshot = request.metadata.get("session_context")
+        invocation_identity = request.metadata.get(TRUSTED_IDENTITY_METADATA_KEY)
+        if snapshot is not None or invocation_identity is not None:
+            self._active_runs[run_id].__dict__["_tag_context"] = session_invocation_context(
+                snapshot,
+                agent_id=request.agent_id or "",
+                user_id=request.user_id,
+                session_id=request.session_id,
+                runner_type=self._runtime_type,
+                identity=invocation_identity,
+            )
         if prepared_start is not None:
             self._active_runs[run_id].__dict__["_prepared_start"] = prepared_start
         return handle
@@ -300,9 +328,9 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         attach = getattr(self._runner, "attach_runtime_handle", None)
         if not callable(attach):
             raise UnsupportedControlError(
-                f"runner for {self._runtime_type!r} has no durable "
-                "attach_runtime_handle capability"
+                f"runner for {self._runtime_type!r} has no durable attach_runtime_handle capability"
             )
+        ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
         restored = attach(handle)
         if inspect.isawaitable(restored):
             restored = await restored
@@ -361,11 +389,14 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self._require_native_checkpoint_capability()
         self._known_runs.add(handle.run_id)
         prepared_start: PreparedRuntimeStart | None = None
+        resume_invocation_id = handle.run_id
         raw_start_request = handle.native_ref.pop(RESUME_START_REQUEST_NATIVE_KEY, None)
         if isinstance(raw_start_request, Mapping):
-            prepared_start = await prepare_runtime_start(
-                StartRequest.model_validate(raw_start_request), self._runner
+            resume_request = StartRequest.model_validate(raw_start_request)
+            resume_invocation_id = str(
+                resume_request.metadata.get("invocation_id") or handle.run_id
             )
+            prepared_start = await prepare_runtime_start(resume_request, self._runner)
         # _resume_native 返回的 runner_input 覆盖存到 run 上,下一次 stream() 经
         # _build_runner_input 消费,以框架原生方式真驱动恢复。
         override = await self._resume_native(handle, target, payload)
@@ -388,7 +419,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 return handle
             if resume_key in self._consumed_resumes:
                 self._active_runs[handle.run_id] = _ActiveRun(
-                    invocation_id=handle.run_id,
+                    invocation_id=resume_invocation_id,
                     session_id=handle.session_id,
                     resume_key=resume_key,
                     resume_fingerprint=resume_fingerprint,
@@ -405,11 +436,19 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             raise ValueError(f"run {handle.run_id!r} already has an active or pending resume")
 
         run = _ActiveRun(
-            invocation_id=handle.run_id,
+            invocation_id=resume_invocation_id,
             session_id=handle.session_id,
             resume_key=resume_key,
             resume_fingerprint=resume_fingerprint,
         )
+        if payload is not None and payload.session_context is not None:
+            run.__dict__["_tag_context"] = session_invocation_context(
+                payload.session_context,
+                agent_id=str(handle.native_ref.get("agent_id") or ""),
+                user_id=str(handle.native_ref.get("user_id") or ""),
+                session_id=handle.session_id,
+                runner_type=self._runtime_type,
+            )
         if prepared_start is not None:
             run.__dict__["_prepared_start"] = prepared_start
         if override:
@@ -423,8 +462,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         checkpoint_id = str(handle.native_ref.get("checkpoint_id") or "").strip()
         if not checkpoint_id:
             raise UnsupportedControlError(
-                f"{self._runtime_type} runner has no native checkpoint for run "
-                f"{handle.run_id!r}"
+                f"{self._runtime_type} runner has no native checkpoint for run {handle.run_id!r}"
             )
         return CheckpointDescriptor(
             checkpoint_id=checkpoint_id,
@@ -505,23 +543,30 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         if run is None:
             run = _ActiveRun(invocation_id=handle.run_id, session_id=handle.session_id)
             self._active_runs[handle.run_id] = run
+        event_handle = (
+            handle
+            if run.invocation_id == handle.run_id
+            else handle.model_copy(update={"run_id": run.invocation_id})
+        )
 
         # 消费 pending cancel:start 时若已记 pending,立即中断该 turn。
         if handle.run_id in self._pending_cancels:
             self._pending_cancels.discard(handle.run_id)
-            yield self._make_run_canceled(handle, reason=CancelResult.PENDING_CANCEL_RECORDED.value)
+            yield self._make_run_canceled(
+                event_handle, reason=CancelResult.PENDING_CANCEL_RECORDED.value
+            )
             return
 
         if run.skip_runner:
             run.done = True
             self._active_runs.pop(handle.run_id, None)
-            yield self._make_run_completed(handle)
+            yield self._make_run_completed(event_handle)
             return
 
         if run.resume_key is not None:
             self._consumed_resumes.add(run.resume_key)
 
-        yield self._make_run_started(handle)
+        yield self._make_run_started(event_handle)
 
         request = run.__dict__.get("_start_request")
         runner_input = self._build_runner_input(handle, request)
@@ -537,7 +582,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         terminal_event_seen = False
         approval_interrupted = False
         try:
-            gen = self._map_runner_stream(handle, runner_input)
+            gen = self._map_runner_stream(event_handle, runner_input, active_run=run)
             run.stream = gen
             async for event in gen:
                 if event.event_type in {
@@ -583,18 +628,38 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             record_timing()
             if run.interrupt_event.is_set() and not terminal_event_seen:
                 yield self._make_run_canceled(
-                    handle, reason=CancelResult.INTERRUPTED_ACTIVE_TURN.value
+                    event_handle, reason=CancelResult.INTERRUPTED_ACTIVE_TURN.value
                 )
             elif approval_interrupted and not terminal_event_seen:
-                yield self._make_run_interrupted(handle, reason="input_required")
+                yield self._make_run_interrupted(event_handle, reason="input_required")
             elif not terminal_event_seen:
-                yield self._make_run_completed(handle, run=run, metrics=run.completion_metrics)
+                yield self._make_run_completed(
+                    event_handle, run=run, metrics=run.completion_metrics
+                )
         finally:
             run.stream = None
             run.done = True
             self._active_runs.pop(handle.run_id, None)
 
     def _build_runner_input(self, handle: RunHandle, request: Optional[StartRequest]) -> dict:
+        result = self._build_base_runner_input(handle, request)
+        run = self._active_runs.get(handle.run_id)
+        context = run.__dict__.get("_tag_context") if run is not None else None
+        if context is not None:
+            existing_context = result.get("platform_context")
+            result["platform_context"] = (
+                {**existing_context, "session": context.session.to_payload()}
+                if isinstance(existing_context, dict)
+                else context.to_payload()
+            )
+            result["metadata"] = {
+                key: value
+                for key, value in dict(result.get("metadata") or {}).items()
+                if key != "session_context"
+            }
+        return result
+
+    def _build_base_runner_input(self, handle: RunHandle, request: Optional[StartRequest]) -> dict:
         # resume 覆盖优先:_resume_native 注入的 checkpoint_resume + framework_ref
         # 直接作为 runner 输入,驱动框架原生恢复。
         run = self._active_runs.get(handle.run_id)
@@ -611,7 +676,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 {
                     "input": override.get("input"),
                     "session_id": handle.session_id,
-                    "invocation_id": handle.run_id,
+                    "invocation_id": str(merged.get("invocation_id") or handle.run_id),
                     "metadata": {
                         **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
                         **dict(override.get("metadata") or {}),

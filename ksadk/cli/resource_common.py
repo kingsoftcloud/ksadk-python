@@ -26,6 +26,32 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 _CONSOLE = get_console()
 
 
+def build_component_config(
+    *,
+    skill_space_ids: Sequence[str] = (),
+    sandbox_template_id: str | None = None,
+    sandbox_api_key: str | None = None,
+) -> dict[str, dict[str, str]] | None:
+    """Build component_config payload for skill center + sandbox injection.
+
+    When the CLI passes this dict in the deploy/update payload, the server-side
+    build_component_runtime_env injects SKILL_SPACE_ID, KSADK_SKILL_RUNTIME_BACKEND,
+    KSADK_SANDBOX_* and E2B_* environment variables into the runtime pod.
+    """
+    # Keys MUST be PascalCase to match the server-side ComponentConfigSchema
+    # (Pydantic v2 is case-sensitive; snake_case keys are silently ignored).
+    component_config: dict[str, dict[str, str]] = {}
+    resolved = [sid.strip() for sid in skill_space_ids if sid and sid.strip()]
+    if resolved:
+        component_config["SkillWorkspace"] = {"Id": ",".join(resolved)}
+    if sandbox_template_id:
+        sandbox: dict[str, str] = {"Id": sandbox_template_id}
+        if sandbox_api_key:
+            sandbox["ApiKey"] = sandbox_api_key
+        component_config["Sandbox"] = sandbox
+    return component_config or None
+
+
 @dataclass(frozen=True)
 class ResourceActionDescriptor:
     """Explicit resource action metadata shared by help, hints and JSON output."""

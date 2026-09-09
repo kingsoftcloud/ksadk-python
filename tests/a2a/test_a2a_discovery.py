@@ -47,6 +47,27 @@ HOSTED_AGENT_ID = "a2a-agent-00000000000040008000000000000012"
 EXTERNAL_AGENT_ID = "a2a-agent-00000000000040008000000000000013"
 VPC_AGENT_ID = "a2a-agent-00000000000040008000000000000014"
 TASK_ID = "a2a-task-00000000000040008000000000000015"
+_TEST_CLIENTS: list[tuple[A2ASpaceClient, httpx.AsyncClient | None]] = []
+
+
+@pytest.fixture(autouse=True)
+async def _close_test_space_clients():
+    """Do not leak dispatcher/httpx tasks into the next asyncio test loop."""
+
+    yield
+    while _TEST_CLIENTS:
+        client, http = _TEST_CLIENTS.pop()
+        await client.aclose(flush_timeout_seconds=0)
+        if http is not None:
+            await http.aclose()
+
+
+def _track_client(
+    client: A2ASpaceClient,
+    http: httpx.AsyncClient | None = None,
+) -> A2ASpaceClient:
+    _TEST_CLIENTS.append((client, http))
+    return client
 
 
 class _EchoRunner:
@@ -217,13 +238,14 @@ def _client_for_app(app: FastAPI, agents, *, egress: bool) -> A2ASpaceClient:
     """构造 SpaceClient,其 httpx_client 指到 echo app(经 ASGI)。"""
     transport = httpx.ASGITransport(app=app)
     httpx_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
-    return A2ASpaceClient(
+    client = A2ASpaceClient(
         SPACE_ID,
         _MockDiscoveryBackend(agents),
         egress_enabled=egress,
         httpx_client=httpx_client,
         external_transport=_StaticExternalTransport(httpx_client),
     )
+    return _track_client(client, httpx_client)
 
 
 def test_from_env_requires_space_selection(monkeypatch):
@@ -416,7 +438,7 @@ def _task_operation_client(monkeypatch):  # noqa: ANN001, ANN201
         return wire_client
 
     monkeypatch.setattr("ksadk.a2a.space_client.create_client", create_fake_client)
-    return A2ASpaceClient(SPACE_ID, backend), backend, wire_client
+    return _track_client(A2ASpaceClient(SPACE_ID, backend)), backend, wire_client
 
 
 @pytest.mark.asyncio
@@ -529,7 +551,7 @@ async def test_direct_message_completes_without_remote_task_binding(monkeypatch)
         return wire_client
 
     monkeypatch.setattr("ksadk.a2a.space_client.create_client", create_fake_client)
-    client = A2ASpaceClient(SPACE_ID, backend)
+    client = _track_client(A2ASpaceClient(SPACE_ID, backend))
     await client.discover()
 
     result = await client.send_message(HOSTED_AGENT_ID, "ping")
@@ -598,11 +620,11 @@ async def test_external_blocked_when_egress_disabled(tmp_path):
 @pytest.mark.asyncio
 async def test_external_fails_closed_without_guarded_transport():
     agent = _agent(EXTERNAL_AGENT_ID, "external")
-    client = A2ASpaceClient(
+    client = _track_client(A2ASpaceClient(
         SPACE_ID,
         _MockDiscoveryBackend([agent]),
         egress_enabled=True,
-    )
+    ))
     await client.discover()
 
     with pytest.raises(RuntimeError, match="A2A_EGRESS_TRANSPORT_REQUIRED"):
@@ -666,13 +688,13 @@ async def test_external_broker_injection_is_request_scoped(tmp_path):
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
     )
-    client = A2ASpaceClient(
+    client = _track_client(A2ASpaceClient(
         SPACE_ID,
         backend,
         egress_enabled=True,
         httpx_client=http,
         external_transport=_StaticExternalTransport(http),
-    )
+    ))
     try:
         await client.discover()
         await client.send_message(agent.agent_id, "ping", return_immediately=True)
