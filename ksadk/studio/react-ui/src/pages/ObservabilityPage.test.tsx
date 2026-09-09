@@ -178,6 +178,7 @@ describe("ObservabilityPage trajectory integration", () => {
 
     render(<ObservabilityPage refreshTick={0} />);
 
+    expect(document.querySelector("#traceExplorer")).toHaveAttribute("data-scroll-mode", "workbench");
     expect(await screen.findByText("第 1 页 · 1–1 / 11 条")).toBeVisible();
     expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/traces\?.*limit=10/));
     await user.click(screen.getByRole("button", { name: "下一页" }));
