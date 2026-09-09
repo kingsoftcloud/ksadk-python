@@ -51,7 +51,8 @@ def _codex_provider_manifest() -> PluginManifest:
             "metadata": {"id": "io.ksadk.codex-provider", "version": "1.0.0"},
             "spec": {
                 "domain": "runtime-native",
-                "runtime": "native",
+                "runtime": "process",
+                "entrypoint": "deepseek-harness:profile-agent-provider",
                 "provides": [
                     {
                         "definition": "agent.provider/v1",
@@ -59,7 +60,8 @@ def _codex_provider_manifest() -> PluginManifest:
                         "mode": "unique",
                     }
                 ],
-                "isolation": "native",
+                "permissions": ["process:host-user"],
+                "isolation": "sidecar",
                 "compatibility": {
                     "kernelApi": ">=1,<2",
                     "runtimeProtocols": ["AgentControlChannel/v1"],
@@ -852,7 +854,10 @@ def test_cold_build_discovers_provider_model_before_submit(tmp_path, monkeypatch
     assert not studio.catalog._provider_models
 
     with TestClient(create_studio_app(tmp_path, service=studio, security_enabled=False)) as client:
-        studio._active_provider_manifests[CODEX_PROVIDER_REF] = _codex_provider_manifest()
+        provider_manifest = _codex_provider_manifest()
+        provider_manifests = {CODEX_PROVIDER_REF: provider_manifest}
+        studio._active_provider_manifests.update(provider_manifests)
+        studio.plugin_compositions.replace_provider_registrations(provider_manifests)
         submitted = client.post(
             "/api/v1/agents/cold-build/builds",
             headers={"Idempotency-Key": "cold-build-r1"},
