@@ -94,9 +94,22 @@ def get_agent_kernel() -> Any | None:
 
 
 def kernel_route_active() -> bool:
-    """当前请求是否走 kernel ingress（开关开 且 kernel 已注册）。"""
+    """Whether public compatibility routes may self-admit through the kernel.
 
-    return kernel_ingress_enabled() and get_agent_kernel() is not None
+    A hosted Runtime accepts AgentControl commands only with a permit issued by
+    Server.  The public ``/v1/responses`` / legacy ``RunAgent`` routes do not
+    carry that permit, so routing them through ``trusted_context`` would create
+    a process-local signature that the hosted verifier must reject.  Keep those
+    authenticated compatibility routes on their established executor path;
+    Server continues to use the dedicated ``/agent-kernel/v1/*`` ingress, which
+    validates the Server-issued permit independently of this selector.
+    """
+
+    return (
+        kernel_ingress_enabled()
+        and get_agent_kernel() is not None
+        and authority_mode() != _AUTHORITY_HOSTED
+    )
 
 
 # ---------------------------------------------------------------------------
