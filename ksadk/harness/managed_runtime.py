@@ -402,7 +402,11 @@ def _project_event(event: HarnessEvent) -> list[Any]:
             content = ToolResultContent(
                 part_id=part_id,
                 call_id=call_id,
-                result=payload.get("result"),
+                result=(
+                    {"error": payload["error"]}
+                    if payload.get("error")
+                    else payload.get("result", {})
+                ),
                 is_error=bool(payload.get("error")),
             )
             item_kind = "tool_result"

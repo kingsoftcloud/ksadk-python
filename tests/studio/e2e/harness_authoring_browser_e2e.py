@@ -60,6 +60,7 @@ def main() -> None:
                 page.goto(f"{url}/#/create")
                 page.get_by_role("combobox", name="Runtime", exact=True).click()
                 page.get_by_role("option", name="KsADK Harness", exact=True).click()
+                page.get_by_text("本地运行：已授权 · 高级权限", exact=True).click()
                 page.get_by_role("checkbox", name="允许 KsADK Harness", exact=False).check()
                 page.locator("#quickAgentName").fill("Harness Browser Acceptance")
                 page.locator("#quickPrompt").fill("Answer concisely using verified evidence.")
@@ -84,6 +85,7 @@ def main() -> None:
                 page.goto(f"{url}/#/agents/{agent_id}/edit")
                 expect(page.get_by_role("button", name="保存修改")).to_be_visible()
                 expect(page.get_by_text("KsADK Harness", exact=True).first).to_be_visible()
+                page.get_by_text("本地运行：已授权 · 高级权限", exact=True).click()
                 expect(page.get_by_role("checkbox", name="允许 KsADK Harness",
                                         exact=False)).to_be_checked()
                 page.get_by_role("button", name="能力绑定", exact=True).click()

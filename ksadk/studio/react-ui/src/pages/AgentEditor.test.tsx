@@ -444,6 +444,7 @@ describe("AgentEditor form", () => {
     render(<AgentEditor agentId="agentkit-a1b2c3d4" catalog={catalog} onSaved={vi.fn()} />);
 
     if (runtimeType === "harness") {
+      fireEvent.click(await screen.findByText("本地运行：未授权 · 高级权限"));
       const consent = await screen.findByRole("checkbox", { name: /允许 KsADK Harness/ });
       expect(consent).not.toBeChecked();
       fireEvent.click(consent);

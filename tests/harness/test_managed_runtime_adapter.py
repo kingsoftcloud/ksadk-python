@@ -10,6 +10,27 @@ from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 from ksadk.runtime import StartRequest
 
 
+def test_tool_error_projection_preserves_result_and_error():
+    from ksadk.harness.events import EventType, RuntimeEvent
+    from ksadk.harness.managed_runtime import _project_event
+
+    event = RuntimeEvent(
+        event_id="event",
+        timestamp=1.0,
+        user_id="user",
+        seq_id=1,
+        event_type=EventType.TOOL_CALL_END,
+        agent_id="agent",
+        session_id="session",
+        invocation_id="run",
+        payload={"call_id": "call", "error": "server not bound"},
+    )
+    projected = _project_event(event)
+    first = projected[0].model_dump(mode="json", exclude_none=True)
+    assert first["initial"]["parts"][0]["result"] == {"error": "server not bound"}
+    assert first["initial"]["parts"][0]["is_error"] is True
+
+
 class _Reasoner:
     def __init__(self) -> None:
         self.messages: list[list[dict]] = []
@@ -142,7 +163,8 @@ async def test_managed_adapter_emits_reasoning_item_events(tmp_path):
     events = [event async for event in adapter.stream(handle)]
 
     reasoning = [
-        event for event in events
+        event
+        for event in events
         if isinstance(event, ItemCompleted) and event.item_kind == "reasoning"
     ]
     assert reasoning, "managed adapter did not emit reasoning item events"

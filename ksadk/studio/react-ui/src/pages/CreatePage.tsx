@@ -85,10 +85,12 @@ const POLICY_META: Record<string, { title: string; description: string }> = {
 const RUNTIME_OPTIONS = BUILTIN_RUNTIME_OPTIONS;
 
 function HarnessPermission({ approved, onChange }: { approved: boolean; onChange: (value: boolean) => void }) {
-  return <label className="helper"><input type="checkbox" checked={approved}
-    onChange={event => onChange(event.target.checked)} />
-    允许 KsADK Harness 在本机执行（process:host-user）
-  </label>;
+  return <details className="template-specific"><summary>本地运行：{approved ? "已授权" : "未授权"} · 高级权限</summary><label className="post-create-option">
+    <input type="checkbox" checked={approved} onChange={event => onChange(event.target.checked)} />
+    <span><strong>允许 KsADK Harness 在本机运行</strong>
+      <small>默认开启，用于启动本地执行引擎；可取消。工具调用仍受权限与审批策略约束。</small>
+    </span>
+  </label></details>;
 }
 
 function approveHarness(spec: any, approved: boolean) {
@@ -258,8 +260,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   } = quickForm.watch();
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
-  const [harnessApproved, setHarnessApproved] = useState(false);
-  const [convHarnessApproved, setConvHarnessApproved] = useState(false);
+  const [harnessApproved, setHarnessApproved] = useState(true);
+  const [convHarnessApproved, setConvHarnessApproved] = useState(true);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedPlatformResources, setSelectedPlatformResources] = useState<NativePluginBinding[]>([]);

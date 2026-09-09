@@ -43,6 +43,7 @@ _HISTORY_ENVELOPE_PREFIX = "agentkit.conversation-history/v1:"
 class HarnessSkillContribution:
     name: str
     instructions: str
+    resource_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -328,11 +329,6 @@ class KsADKHarnessProviderRuntime:
                 )
 
             model, prompt = _bundle_model_and_prompt(bundle)
-            if skills:
-                prompt = _append_prompt_sections(
-                    prompt,
-                    [f"Skill {item.name}:\n{item.instructions}" for item in skills],
-                )
             config = HarnessConfig(
                 model=model,
                 prompt=prompt,
@@ -468,7 +464,13 @@ class KsADKHarnessActivation:
         ]
         config = replace(
             self._config,
-            prompt=_append_prompt_sections(self._config.prompt, context_sections),
+            prompt=_append_prompt_sections(
+                self._config.prompt,
+                [
+                    *[f"Skill {item.name}:\n{item.instructions}" for item in self._skills],
+                    *context_sections,
+                ],
+            ),
         )
         executor, launch_context = _build_direct_backend(
             config,
@@ -524,12 +526,12 @@ class KsADKHarnessActivation:
                 reasoner=self._reasoner,
                 workspace_root=self._workspace_root,
                 skills=self._skills,
+                tool_contracts=dict(self._bundle.resolved_agent_spec),
+                bundle_root=self._bundle.root,
                 state_dir=self._state_dir,
                 checkpoint_dsn=self._checkpoint_dsn,
             )
-            self._checkpoint_stack = getattr(
-                self._kernel_adapter, "_checkpoint_stack", None
-            )
+            self._checkpoint_stack = getattr(self._kernel_adapter, "_checkpoint_stack", None)
         return self._kernel_adapter
 
     async def drain(self) -> None:

@@ -88,6 +88,10 @@ describe("CreatePage quick authoring", () => {
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: "KsADK Harness" }));
+    expect(screen.getByText("本地运行：已授权 · 高级权限").closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getByText("本地运行：已授权 · 高级权限"));
+    expect(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ })).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
     await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "你是一个本地验证助手，请简洁回答。");
     await user.click(screen.getByRole("button", { name: "继续" }));
     expect(await screen.findByText("请先确认 KsADK Harness 本机执行权限")).toBeVisible();

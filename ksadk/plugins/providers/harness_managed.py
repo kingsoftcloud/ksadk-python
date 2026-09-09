@@ -7,6 +7,7 @@ objects consumed by the LangGraph-based Managed Agent Loop.
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -44,6 +45,8 @@ async def build_managed_provider_adapter(
     skills: Sequence[Any] = (),
     state_dir: str | Path | None = None,
     checkpoint_dsn: str | None = None,
+    tool_contracts: dict[str, Any] | None = None,
+    bundle_root: Path | None = None,
 ) -> ManagedHarnessRuntimeAdapter:
     """Assemble the DSH contributions behind the canonical Harness adapter.
 
@@ -56,6 +59,9 @@ async def build_managed_provider_adapter(
     skill_source = _ProviderSkillSource(skills)
     skill_runtime = SkillRuntime(skill_source) if skill_source.refs else None
     mcp_runtime, transports, mcp_bindings = _mcp_runtime(config.mcp_tools)
+    from ksadk.plugins.providers.harness_tools import assemble_python_tools
+
+    tools, approvals = assemble_python_tools(bundle_root or workspace_root, tool_contracts or {})
     spec = HarnessSpec(
         agent_revision_ref=f"agent-revision://{agent_id}@1",
         model=ModelBinding(profile_ref=f"model-profile://{model_name}@1"),
@@ -78,16 +84,17 @@ async def build_managed_provider_adapter(
     else:
         from ksadk.harness.runtime_server import assemble_checkpoint_stack
 
-        stack = await assemble_checkpoint_stack(
-            state_dir=state_dir, dsn=checkpoint_dsn
-        )
+        stack = await assemble_checkpoint_stack(state_dir=state_dir, dsn=checkpoint_dsn)
         checkpointer = stack.checkpointer
     engine = ManagedLangGraphEngine(
-        reasoner=reasoner,
+        reasoner=_BoundModelReasoner(reasoner, spec.model.profile_ref, config.model),
         checkpointer=checkpointer,
         context_engine=HarnessContextEngine(),
         skill_runtime=skill_runtime,
         mcp_runtime=mcp_runtime,
+        tools=tools,
+        approval_required=approvals,
+        max_reasoning_turns=int((tool_contracts or {}).get("execution", {}).get("maxSteps", 8)),
     )
     adapter = _PluginManagedHarnessRuntimeAdapter(
         spec,
@@ -101,6 +108,26 @@ async def build_managed_provider_adapter(
     adapter._checkpoint_stack = stack  # noqa: SLF001 - 生命周期由激活层托管
     adapter._run_store = stack.run_store if stack is not None else None  # noqa: SLF001
     return adapter
+
+
+class _BoundModelReasoner:
+    """Resolve only this provider's locked model reference, never arbitrary aliases."""
+
+    def __init__(self, delegate: HarnessReasoner, profile_ref: str, model: str) -> None:
+        self._delegate = delegate
+        self._profile_ref = profile_ref
+        self._model = model
+
+    async def complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
+        if model != self._profile_ref:
+            raise ValueError(f"Unbound model profile: {model}")
+        kwargs = dict(model=self._model, prompt=prompt, messages=messages, tools=tools)
+        parameters = inspect.signature(self._delegate.complete).parameters
+        if "max_output_tokens" in parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        ):
+            kwargs["max_output_tokens"] = max_output_tokens
+        return await self._delegate.complete(**kwargs)
 
 
 class _PluginManagedHarnessRuntimeAdapter(ManagedHarnessRuntimeAdapter):
@@ -147,10 +174,19 @@ class _ProviderSkillSource:
         return str(self._require(skill_id).instructions)
 
     def resource(self, skill_id: str, resource_ref: str) -> bytes:
-        self._require(skill_id)
-        raise FileNotFoundError(
-            f"DSH inline Skill {skill_id} has no packaged resource {resource_ref!r}"
-        )
+        contribution = self._require(skill_id)
+        root = getattr(contribution, "resource_root", None)
+        if root is None:
+            raise FileNotFoundError(
+                f"DSH inline Skill {skill_id} has no packaged resource {resource_ref!r}"
+            )
+        root = Path(root).resolve()
+        candidate = (root / resource_ref).resolve()
+        if Path(resource_ref).is_absolute() or not candidate.is_relative_to(root):
+            raise ValueError("Skill resource path escapes locked Bundle directory")
+        if not candidate.is_file():
+            raise FileNotFoundError(resource_ref)
+        return candidate.read_bytes()
 
     def _require(self, skill_id: str) -> Any:
         try:

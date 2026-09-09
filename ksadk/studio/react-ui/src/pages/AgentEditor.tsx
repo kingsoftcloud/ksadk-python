@@ -914,12 +914,16 @@ export function AgentEditor({
           <CodexProviderPermissions provider={codexProvider} approved={providerPermissionsApproved}
             onChange={setProviderPermissionsApproved} />
         )}
-        {runtime === "harness" && <label className="post-create-option">
+        {runtime === "harness" && <details className="template-specific">
+          <summary>本地运行：{harnessPermission ? "已授权" : "未授权"} · 高级权限</summary>
+          <label className="post-create-option">
           <input type="checkbox" checked={harnessPermission} onChange={event => {
             setHarnessPermission(event.target.checked); setHarnessPermissionTouched(true);
           }} />
-          <span>允许 KsADK Harness 在本机执行（process:host-user）；修改后保存到新版本。</span>
-        </label>}
+          <span><strong>允许 KsADK Harness 在本机运行</strong>
+            <small>仅授权本地执行引擎启动；工具仍受权限与审批策略约束。撤销后保存到新版本，该版本将无法使用本地 Harness。</small>
+          </span>
+        </label></details>}
         <fieldset className="agent-policy-editor soul-editor" aria-describedby="soulPolicyHint">
           <legend>Soul · 稳定人格</legend>
           <label className="pcm-memory-toggle soul-enable-toggle">
