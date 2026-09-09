@@ -177,6 +177,36 @@ class _RejectedCloudGateway(_ScriptedCloudGateway):
         )
 
 
+class _ApprovalContinuationGateway(_ScriptedCloudGateway):
+    async def list_deployment_chat_events(
+        self, deployment: AccountCloudAgentReference, *, session_id: str, **query: Any
+    ) -> dict[str, Any]:
+        self.last_event_query = query
+        return {
+            "events": [
+                {
+                    "SeqId": 22,
+                    "EventId": "evt-tool-completed",
+                    "EventType": "tool.completed",
+                    "InvocationId": "run-approval",
+                    "Content": {"name": "list_skills"},
+                    "Timestamp": "2026-09-09T00:00:00Z",
+                },
+                {
+                    "SeqId": 23,
+                    "EventId": "evt-run-completed",
+                    "EventType": "run.completed",
+                    "InvocationId": "run-approval",
+                    "Content": {"status": "completed"},
+                    "Timestamp": "2026-09-09T00:00:01Z",
+                },
+            ],
+            "total": 2,
+            "offset": query.get("offset") or 0,
+            "limit": query.get("limit") or 200,
+        }
+
+
 def _client(
     tmp_path: Path,
     gateway: _ScriptedCloudGateway | None = None,
@@ -209,6 +239,7 @@ def test_cloud_bootstrap_projects_agent_metadata(tmp_path: Path) -> None:
     assert agent["Name"] == "0611agent-e2e"
     assert agent["Framework"] == "langgraph"
     assert data["Data"]["Capabilities"]["HostedChat"]["Enabled"] is True
+    assert data["Data"]["Capabilities"]["interaction_v1"]["enabled"] is True
 
 
 def test_cloud_sessions_models_messages_events_roundtrip(tmp_path: Path) -> None:
@@ -379,3 +410,31 @@ def test_cloud_interaction_submit_and_session_delete(tmp_path: Path) -> None:
 
         deleted = _post(client, "DeleteSession", {"SessionId": "sess-e2e-1"})
         assert deleted["Code"] == 0
+
+
+def test_cloud_subscribe_run_events_continues_after_interaction_receipt(tmp_path: Path) -> None:
+    gateway = _ApprovalContinuationGateway()
+    with _client(tmp_path, gateway) as client:
+        with client.stream(
+            "GET",
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "AgentId": CLOUD_AGENT_ID,
+                "SessionId": "sess-e2e-1",
+                "InvocationId": "run-approval",
+                "AfterSeqId": 21,
+            },
+            cookies={"agentkit_studio_chat_agent": "local-agent-that-must-not-win"},
+        ) as response:
+            body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"EventType": "tool.completed"' in body
+    assert '"EventType": "run.completed"' in body
+    assert "event: done" in body
+    assert "data: [DONE]" in body
+    assert gateway.last_event_query == {
+        "after_seq_id": 21,
+        "offset": None,
+        "limit": 500,
+    }

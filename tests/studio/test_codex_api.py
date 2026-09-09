@@ -24,11 +24,25 @@ from ksadk.studio.api import RunRequest, create_studio_app
 from ksadk.studio.cloud import InMemoryCloudGateway
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import CapabilityBinding, MCPServerRef, ModelSpec, RunStatus
-from ksadk.studio.service import StudioService
+from ksadk.studio.service import StudioService as BaseStudioService
 from tests.studio.runtime_adapter_fixtures import (
     RuntimeFixture,
     standard_codex_events,
 )
+
+
+class StudioService(BaseStudioService):
+    """Keep this module on its deterministic direct-runtime fixture path.
+
+    Formal AgentProvider admission and execution have dedicated coverage in
+    ``test_codex_provider_build.py``.  These API compatibility tests inject a
+    synthetic RuntimeExecutor, so they must explicitly exercise the retained
+    legacy Build path instead of depending on a machine-local DSH install.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.codex_builder.provider_build = None
 
 
 def _manifest(prompt: str = "检查 src/demo.py，只报告确定的问题。\n") -> dict:
@@ -1139,6 +1153,25 @@ def test_codex_agent_can_be_edited_then_recoverably_deleted_with_local_state(
         assert declarations[0].with_suffix(".lock.json").is_file()
         assert not list(trash[0].rglob("*.zip"))
         assert client.delete("/api/v1/agents/delete-helper").status_code == 404
+
+
+def test_missing_build_is_rejected_before_deployment_operation(tmp_path: Path) -> None:
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=RuntimeFixture(standard_codex_events).executor,
+    )
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/builds/build_deadbeef/deployments",
+            headers={"Idempotency-Key": "deploy-missing-build"},
+            json={"target": {"region": "cn-beijing-6", "environment": "cloud"}},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "BUILD_NOT_FOUND"
 
 
 def test_codex_agent_preserves_display_metadata_and_real_revision(tmp_path: Path) -> None:

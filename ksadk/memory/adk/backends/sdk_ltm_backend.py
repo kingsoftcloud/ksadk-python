@@ -52,7 +52,8 @@ DEFAULT_SCENE_ID = "_sys_general"
 # "记忆不存在"识别模式（方案 §17.4：准确错误码待真实 fixture 固化，
 # 首版按保守中英文模式匹配，fixture 到位后收敛为精确匹配）。
 _NOT_EXIST_RE = re.compile(
-    r"not[ _]?exist|does not exist|memory.*不存在|记忆不存在|记忆已被删除|resourcenotfound|notfound",
+    r"not[ _]?exist|does not exist|memory.*不存在|记忆不存在|记忆已被删除|"
+    r"resourcenotfound|notfound",
     re.IGNORECASE,
 )
 
@@ -98,6 +99,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     agent_id: str = ""
     scene_id: str = DEFAULT_SCENE_ID
     last_error: str = ""
+    last_http_status: int | None = None
     last_create_response: dict[str, Any] = Field(default_factory=dict)
     last_session_status: dict[str, Any] = Field(default_factory=dict)
 
@@ -176,7 +178,16 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         client_profile = ClientProfile()
         client_profile.httpProfile = http_profile
 
-        self._aicp_client = aicp_module.AicpClient(cred, self.region, profile=client_profile)
+        owner = self
+
+        class ObservedAicpClient(aicp_module.AicpClient):
+            def _check_status(self, response):
+                # Preserve the status that the upstream SDK's generic exception
+                # otherwise discards. No response content is used as authority.
+                owner.last_http_status = response.status
+                return super()._check_status(response)
+
+        self._aicp_client = ObservedAicpClient(cred, self.region, profile=client_profile)
 
         # 强制覆写 API 版本为记忆库 API 所需的 2025-11-14
         self._aicp_client._apiVersion = "2025-11-14"
@@ -246,6 +257,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
         try:
             self.last_error = ""
+            self.last_create_response = {}
             conversation = self._build_conversation(event_strings)
             if not conversation:
                 logger.info("No valid conversation items to save")
@@ -278,6 +290,11 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
             response = client.call("CreateMemorySdk", params, options={"IsPostJson": True})
             self.last_create_response = self._parse_json_response(response) or {}
+            if kwargs.get("strict", False):
+                data = self.last_create_response
+                if not self._confirmed_mutation_response(data):
+                    self.last_error = "MEMORY_WRITE_RESPONSE_UNKNOWN"
+                    return False
             self.last_session_status = {
                 "SessionId": session_id,
                 "AgentUserId": user_id,
@@ -290,8 +307,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             return True
 
         except Exception as e:
-            self.last_error = str(e)
-            logger.error(f"CreateMemorySdk failed: {e}")
+            self.last_error = "MEMORY_WRITE_UNKNOWN" if kwargs.get("strict", False) else str(e)
+            logger.error("CreateMemorySdk did not return a confirmed acknowledgment")
             return False
 
     def search_memory(self, user_id: str, query: str, top_k: int = 5, **kwargs) -> list[str]:
@@ -379,7 +396,9 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             "SceneId": self._effective_scene_id(),
         }
         response = client.call("QueryMemorySdk", params, options={"IsPostJson": True})
-        records = self._parse_query_records_response(response, user_id=user_id)
+        records = self._parse_query_records_response(
+            response, user_id=user_id, strict=kwargs.get("strict", False)
+        )
         logger.info(
             f"QueryMemorySdk structured: user={user_id}, records={len(records)}"
         )
@@ -452,9 +471,16 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             )
 
         data = self._parse_json_response(response)
+        if kwargs.get("strict", False) and not self._confirmed_mutation_response(data):
+            return MemoryMutationResult(
+                ok=False, memory_id=memory_id, status="failed",
+                message="记忆更新结果未确认",
+            )
         response_memory_id = self._parse_new_memory_id(data)
         new_memory_id = response_memory_id
-        if not response_memory_id or response_memory_id == memory_id:
+        if not kwargs.get("strict", False) and (
+            not response_memory_id or response_memory_id == memory_id
+        ):
             # The service can merge an edited memory into another record while
             # returning no new ID (or echoing the old one).  Do not expose that
             # stale handle to callers: confirm the current handle by listing
@@ -512,7 +538,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             "AgentUserId": user_id,
         }
         try:
-            client.call("DeleteMemory", params, options={"IsPostJson": True})
+            response = client.call("DeleteMemory", params, options={"IsPostJson": True})
         except Exception as exc:
             if self._is_not_exist_error(exc):
                 return MemoryMutationResult(
@@ -529,11 +555,31 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 status="failed",
                 message="记忆删除失败",
             )
+        if kwargs.get("strict", False) and not self._confirmed_mutation_response(
+            self._parse_json_response(response)
+        ):
+            return MemoryMutationResult(
+                ok=False, memory_id=memory_id, status="failed",
+                message="记忆删除结果未确认",
+            )
         return MemoryMutationResult(
             ok=True,
             memory_id=memory_id,
             status="deleted",
             message="已删除",
+        )
+
+    @staticmethod
+    def _confirmed_mutation_response(data: Any) -> bool:
+        metadata = data.get("ResponseMetadata", {}) if isinstance(data, dict) else {}
+        return bool(
+            isinstance(data, dict) and isinstance(metadata, dict)
+            and not data.get("Error") and not metadata.get("Error")
+            and ("Success" not in data or data["Success"] is True)
+            and type(data.get("Code")) is not bool
+            and data.get("Code") in (None, 0, "0", 200, "200")
+            and isinstance(data.get("RequestId", metadata.get("RequestId")), str)
+            and data.get("RequestId", metadata.get("RequestId"))
         )
 
     def get_extraction_status(
@@ -547,16 +593,21 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         State 映射 0/50/100/-50/-100；未找到 Session 返回 unknown。
         searchable 需 Service 层结合 ListMemories 确认后置位。
         """
-        item = self.get_session_status(user_id=user_id, session_id=session_id)
+        item, error_code = self._lookup_session_status(user_id=user_id, session_id=session_id)
         if not isinstance(item, dict):
             return MemoryExtractionStatus(
                 session_id=session_id,
                 state=None,
                 status="unknown",
-                message="Session 状态未知",
+                message="Session 状态查询未完成" if error_code else "Session 状态未知",
+                error_code=error_code,
             )
         state = item.get("State")
-        state_int = int(state) if isinstance(state, (int, float, str)) and str(state).lstrip("-").isdigit() else None
+        state_int = (
+            int(state)
+            if isinstance(state, (int, float, str)) and str(state).lstrip("-").isdigit()
+            else None
+        )
         status = map_session_state(state_int)
         message = {
             "queued": "排队中",
@@ -617,19 +668,29 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         return ""
 
     def _parse_query_records_response(
-        self, response: Any, *, user_id: str
+        self, response: Any, *, user_id: str, strict: bool = False
     ) -> List[LongTermMemoryRecord]:
         """严格解析 QueryMemorySdk 结构化响应：Data[].Memories[]。"""
         try:
             data = self._parse_json_response(response)
         except (json.JSONDecodeError, TypeError):
+            if strict:
+                raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID") from None
             logger.error("QueryMemorySdk records: invalid JSON response")
             return []
         if not isinstance(data, dict):
+            if strict:
+                raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID")
             logger.error("QueryMemorySdk records: unexpected payload type")
             return []
         items = data.get("Data")
+        if strict and (
+            data.get("Error") or data.get("Code") not in (None, 0, "0", 200, "200")
+        ):
+            raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID")
         if not isinstance(items, list):
+            if strict:
+                raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID")
             logger.warning(
                 "QueryMemorySdk records: unknown schema, keys=%s; fail closed",
                 list(data.keys()),
@@ -639,11 +700,15 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         for item in items:
             memories = item.get("Memories") if isinstance(item, dict) else None
             if not isinstance(memories, list):
+                if strict:
+                    raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID")
                 continue
             for memory in memories:
                 record = self._record_from_item(memory, user_id=user_id)
                 if record is not None:
                     records.append(record)
+                elif strict:
+                    raise ValueError("MEMORY_SEARCH_RESPONSE_INVALID")
         return records
 
     def _parse_list_memories_response(
@@ -717,38 +782,93 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         user_id: str,
         session_id: str,
         page_size: int = 20,
+        max_pages: int = 20,
     ) -> dict[str, Any] | None:
-        """Return raw AICP session status for a recently submitted memory session."""
-        if not session_id:
-            return None
+        """Look up a session across bounded pages; preserve legacy raw return shape."""
+        item, error_code = self._lookup_session_status(
+            user_id=user_id, session_id=session_id, page_size=page_size, max_pages=max_pages
+        )
+        self.last_error = error_code
+        self.last_session_status = dict(item or {})
+        return item
 
-        client = self._get_client()
-        memory_collection_id = self._effective_memory_collection_id()
-        params = {
-            "MemoryCollectionId": memory_collection_id,
-            "AgentUserId": user_id,
-            "Page": 1,
-            "PageSize": page_size,
-        }
-
+    def _lookup_session_status(
+        self, *, user_id: str, session_id: str, page_size: int = 20, max_pages: int = 20
+    ) -> tuple[dict[str, Any] | None, str]:
+        if (type(page_size) is not int or not 1 <= page_size <= 100
+                or type(max_pages) is not int or not 1 <= max_pages <= 1000):
+            raise ValueError("Invalid memory status pagination budget")
+        if not user_id or not session_id:
+            return None, "MEMORY_STATUS_IDENTITY_REQUIRED"
+        seen: set[str] = set()
+        previous_total = None
         try:
-            response = client.call("ListSessions", params, options={"IsPostJson": True})
-            data = self._parse_json_response(response)
-        except Exception as e:
-            self.last_error = str(e)
-            logger.warning(f"ListSessions failed while checking memory status: {e}")
-            return None
-
-        payload = data.get("Data") if isinstance(data, dict) else None
-        items = payload.get("Items") if isinstance(payload, dict) else None
-        if not isinstance(items, list):
-            return None
-
-        for item in items:
-            if isinstance(item, dict) and item.get("SessionId") == session_id:
-                self.last_session_status = item
-                return item
-        return None
+            client = self._get_client()
+            collection = self._effective_memory_collection_id()
+            for page in range(1, max_pages + 1):
+                response = client.call("ListSessions", {
+                    "MemoryCollectionId": collection, "AgentUserId": user_id,
+                    "Page": page, "PageSize": page_size,
+                }, options={"IsPostJson": True})
+                data = self._parse_json_response(response)
+                metadata = data.get("ResponseMetadata", {}) if isinstance(data, dict) else {}
+                if (
+                    not isinstance(data, dict) or data.get("Error")
+                    or not isinstance(metadata, dict) or metadata.get("Error")
+                    or type(data.get("Code")) is bool
+                    or data.get("Code") not in (None, 0, "0", 200, "200")
+                ):
+                    return None, "MEMORY_STATUS_QUERY_FAILED"
+                payload = data.get("Data")
+                items = payload.get("Items") if isinstance(payload, dict) else None
+                if not isinstance(items, list) or len(items) > page_size or any(
+                    not isinstance(item, dict) or not isinstance(item.get("SessionId"), str)
+                    or not item["SessionId"] for item in items
+                ):
+                    return None, "MEMORY_STATUS_RESPONSE_INVALID"
+                total_count = payload.get("TotalCount")
+                total_alias = payload.get("Total")
+                if total_count is not None and total_alias is not None:
+                    normalized_count = (
+                        int(total_count)
+                        if isinstance(total_count, str) and total_count.isdigit()
+                        else total_count
+                    )
+                    normalized_alias = (
+                        int(total_alias)
+                        if isinstance(total_alias, str) and total_alias.isdigit()
+                        else total_alias
+                    )
+                    if normalized_count != normalized_alias:
+                        return None, "MEMORY_STATUS_RESPONSE_INVALID"
+                total = total_count if total_count is not None else total_alias
+                if isinstance(total, str) and total.isdigit():
+                    total = int(total)
+                if total is not None and (type(total) is not int or total < 0):
+                    return None, "MEMORY_STATUS_RESPONSE_INVALID"
+                if page > 1 and total != previous_total:
+                    return None, "MEMORY_STATUS_DIRECTORY_CHANGED"
+                previous_total = total
+                ids = [item["SessionId"] for item in items]
+                if len(set(ids)) != len(ids) or seen.intersection(ids):
+                    return None, "MEMORY_STATUS_PAGINATION_REPEATED"
+                seen.update(ids)
+                for item in items:
+                    if item["SessionId"] == session_id:
+                        if (
+                            item.get("AgentUserId", user_id) != user_id
+                            or item.get("MemoryCollectionId", collection) != collection
+                        ):
+                            return None, "MEMORY_STATUS_SCOPE_MISMATCH"
+                        return dict(item), ""
+                if total is not None and len(seen) >= total:
+                    return None, "" if len(seen) == total else "MEMORY_STATUS_DIRECTORY_CHANGED"
+                if len(items) < page_size:
+                    return None, "" if total is None else "MEMORY_STATUS_DIRECTORY_INCOMPLETE"
+            return None, "MEMORY_STATUS_PAGE_BUDGET_EXHAUSTED"
+        except Exception:
+            logger.warning("ListSessions status query failed")
+            return None, "MEMORY_STATUS_QUERY_FAILED"
 
     def _parse_query_response(self, response: str) -> list[str]:
         """解析 QueryMemorySdk 响应

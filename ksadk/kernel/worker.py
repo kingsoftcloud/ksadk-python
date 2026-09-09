@@ -111,6 +111,7 @@ class WorkResult:
     message_id: str | None = None
     run_id: str | None = None
     last_seq: int | None = None
+    error: Exception | None = None
 
 
 class AgentKernelWorker:
@@ -298,8 +299,10 @@ class AgentKernelWorker:
             )
             await self._store.discard_claim(message_id, expected_fence=fence)
             return WorkResult(outcome="completed", message_id=message_id)
-        except StaleFenceError:
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+        except StaleFenceError as error:
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
         except AgentKernelError as error:
             if error.code == RUNTIME_INTERACTION_UNAVAILABLE:
                 # typed rejection：provider 诚实声明无法原生送达回包，
@@ -320,16 +323,46 @@ class AgentKernelWorker:
                 await self._store.discard_claim(message_id, expected_fence=fence)
                 return WorkResult(outcome="completed", message_id=message_id)
             if error.retryable:
-                return WorkResult(outcome="retryable_failure", message_id=message_id)
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
-        except Exception:
+                return WorkResult(
+                    outcome="retryable_failure", message_id=message_id, error=error
+                )
+            logger.error(
+                "agent kernel command failed permanently: "
+                "agent_instance_id=%s session_id=%s command_id=%s "
+                "command_type=%s error=%s: %s",
+                command.agent_instance_id,
+                command.session_id,
+                command.command_id,
+                command.command_type,
+                type(error).__name__,
+                error,
+            )
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
+        except Exception as error:
             # 未知异常绝不 ack 为成功：消息保持 claimed。
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+            logger.exception(
+                "agent kernel command raised an unexpected exception: "
+                "agent_instance_id=%s session_id=%s command_id=%s "
+                "command_type=%s error=%s: %s",
+                command.agent_instance_id,
+                command.session_id,
+                command.command_id,
+                command.command_type,
+                type(error).__name__,
+                error,
+            )
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
 
         try:
             await self._store.complete_claim(message_id, expected_fence=fence)
-        except StaleFenceError:
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+        except StaleFenceError as error:
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
         return WorkResult(outcome="completed", message_id=message_id, run_id=run_id)
 
     async def _message_id_for(self, command: AgentControlCommand) -> str:
@@ -766,7 +799,17 @@ class AgentKernelWorker:
             )
         else:
             request_schema = dict(event.request.schema_)
-            native_target = {"call_id": event.interaction_id}
+            # Codex maps the native JSON-RPC request id to a stable canonical
+            # interaction id for replay.  The live client, however, indexes its
+            # pending callback by the original request id.  Preserve that id as
+            # the provider target or SubmitInteraction can find the durable
+            # record but cannot wake the blocked Codex callback.
+            native_call_id = (
+                event.source.native_event_id
+                or event.source.native_item_id
+                or event.interaction_id
+            )
+            native_target = {"call_id": native_call_id}
         for key in ("checkpoint_id", "thread_id"):
             value = execution.handle.native_ref.get(key)
             if value is not None:

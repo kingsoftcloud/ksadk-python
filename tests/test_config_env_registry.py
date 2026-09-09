@@ -40,11 +40,18 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
         "KSADK_DSH_CORDIS_MODULE",
         "KSADK_DSH_CORE_TOKEN",
         "KSADK_DSH_PROFILE_DIGEST",
-        "KSADK_DSH_VERSION",
-        # Generated per-model secret references passed only to the DSH child.
-        "KSADK_STUDIO_MODEL_",
-        "KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID",
-    }
+            "KSADK_DSH_VERSION",
+            # Generated per-model secret references passed only to the DSH child.
+            "KSADK_STUDIO_MODEL_",
+            "KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID",
+            # Activation and managed-resource values generated for one child
+            # process. They are capability leases, not user configuration.
+            "KSADK_ACTIVATION_MCP_TOKEN_",
+            "KSADK_PLATFORM_RESOURCE_AGENT_ID",
+            "KSADK_PLATFORM_RESOURCE_KINDS",
+            "KSADK_PLATFORM_RESOURCE_MEMORY_WRITE",
+            "KSADK_PLATFORM_RESOURCE_SUBJECT",
+        }
     assert _source_ksadk_env_names() - non_environment_symbols <= registry_names
 
 
@@ -74,7 +81,7 @@ def test_internal_env_registry_items_do_not_expand_the_public_reference():
 def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "0.3.5"
+    assert specs["KSADK_WEB_VERSION"].default == "0.3.7"
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

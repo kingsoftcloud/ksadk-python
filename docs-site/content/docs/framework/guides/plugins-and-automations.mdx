@@ -3,14 +3,14 @@ title: 插件与自动化
 status: experimental
 ---
 
-Phase 2 提供本地优先的插件生命周期、生态宿主桥接、Scheduler Lite 和统一会话表面。当前能力仍处于未发布门禁阶段；已发布 Agent 和精确识别的历史 Bundle 继续使用原路径，不要求重建或升级 Runtime。
+KsADK 0.8.4 提供本地优先的插件生命周期、生态宿主桥接、平台资源插件、Scheduler Lite 和统一会话表面。已发布 Agent 和精确识别的历史 Bundle 继续使用原路径，不要求重建或升级 Runtime。
 
-Studio 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.5` 的版本化
-Conversation v1 headless 模块。候选源码、独立浏览器及真实部署的新/历史 Agent
-两轮会话已经验证；正式发布仍要求从公开 npm 制品重建并通过最终制品审计。
+Studio 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.7` 的版本化
+Conversation v1 headless 模块。发布制品从公开 npm 包重建，并通过源码、浏览器和制品审计；
+具体云环境仍需按下方边界验证控制面、资源授权与 Runtime 镜像。
 
-<Callout type="warning" title="未发布预览">
-  本页不代表稳定版已经发布。云端 PluginHost、云端 24×7 调度、P2-06 DSH Codex Bundle/child Provider、Claude Code 和游戏插件执行均不在当前支持声明中。一个参考 DSH AgentProvider 的 E2E 通过不等于任意第三方 Provider 自动受支持。
+<Callout type="warning" title="支持边界">
+  云端通用 PluginHost、云端 24×7 调度、P2-06 DSH Codex Bundle/child Provider、Claude Code 和游戏插件执行均不在 0.8.4 支持声明中。一个参考 DSH AgentProvider 的 E2E 通过不等于任意第三方 Provider 自动受支持。
 </Callout>
 
 ## 0.8.4 交付与安装边界
@@ -19,7 +19,9 @@ Studio 使用受管理的完整 DSH Core/Profile，并在自身界面中展示�
 
 Codex 云端交付把插件字节与准入引用冻结为 Agent 版本关联的不可变制品，需要控制面制品接口与存储支持。接口不可用时会阻断部署，不会静默丢弃插件。桌面 OAuth 凭证不会随制品复制；云端 MCP OAuth 和凭证管理在后续版本完善。发现 Skill 不等于其 MCP 已连接或已授权。
 
-通用 Python wheel 包含 Web 0.3.5 与编译后的 Studio 页面，不含 Python 依赖、Node/Codex/DSH 二进制、社区插件或凭证。基础安装声明共享框架依赖，额外能力按需安装 extra；完全断网安装还需准备依赖 wheelhouse 及原生工具链。既有云端 Agent 只有显式重新构建、更新部署后才变化。
+知识库、长期记忆和 Skill Center 通过官方平台资源插件接入同一 Build/Activation 链路。Studio 只保存资源连接标识，不把 AK/SK 或运行时 token 写入 Agent spec；Build 固化连接引用、资源类型与插件摘要，Runtime 再按账号、区域和平台注入的凭证解析连接。知识库以只读检索工具提供，记忆库按 Agent 策略启用召回和写入，Skill Center 提供技能发现与加载。界面显示“已绑定”只说明配置已经进入 Agent Revision，不表示调用方已经获得服务端权限，也不表示目标网络当前可达。
+
+通用 Python wheel 包含 Web 0.3.7 与编译后的 Studio 页面，不含 Python 依赖、Node/Codex/DSH 二进制、社区插件或凭证。基础安装声明共享框架依赖，额外能力按需安装 extra；完全断网安装还需准备依赖 wheelhouse 及原生工具链。既有云端 Agent 只有显式重新构建、更新部署后才变化。
 
 DSH 插件管理的已验证环境为 Node.js 22 与 PATH 中的 `pnpm@10.33.2`。受管工具链安装器通过 Corepack 使用自己的固定 pnpm 版本；DSH 的 Profile 增删包命令使用 PATH 中的 pnpm。暂不使用 pnpm 11.7.0 执行 Profile 操作：卸载官方 Codex Bundle 时可出现输出已完成但进程不退出的问题。
 

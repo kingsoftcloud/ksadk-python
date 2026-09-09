@@ -96,9 +96,9 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
         "文档与样例",
         "相关项目",
         "参与贡献",
-        "ksadk-runtime-platform-hero-wide.png",
-        "ksadk-web-ui-screenshot.png",
-        "ksadk-local-debugging-demo.gif",
+        "agentkit-studio-overview.png",
+        "agentkit-studio-platform-resources.png",
+        "agentkit-studio-demo.gif",
         "ksadk-runtime-architecture.png",
     ):
         assert expected in readme
@@ -109,6 +109,8 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "发布版本：" not in readme
     assert "## 0.6." not in readme
     assert "0.8.0" not in readme
+    assert "0.8.4" not in readme
+    assert "0.3.7" not in readme
     assert "评审候选" not in readme
 
 
@@ -119,24 +121,28 @@ def test_public_readme_language_variants_keep_homepage_shape():
 
     for text in (root_readme, zh_readme):
         assert "Kingsoft Cloud Agent Development Kit" in text
-        assert "ksadk-runtime-platform-hero-wide.png" in text
-        assert "ksadk-web-ui-screenshot.png" in text
-        assert "ksadk-local-debugging-demo.gif" in text
+        assert "agentkit-studio-overview.png" in text
+        assert "agentkit-studio-platform-resources.png" in text
+        assert "agentkit-studio-demo.gif" in text
         assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
         assert "0.8.0" not in text
+        assert "0.8.4" not in text
+        assert "0.3.7" not in text
         assert "评审候选" not in text
 
     assert "Kingsoft Cloud Agent Development Kit" in en_readme
-    assert "ksadk-runtime-platform-hero-wide.png" in en_readme
-    assert "ksadk-web-ui-screenshot.png" in en_readme
-    assert "ksadk-local-debugging-demo.gif" in en_readme
+    assert "agentkit-studio-overview.png" in en_readme
+    assert "agentkit-studio-platform-resources.png" in en_readme
+    assert "agentkit-studio-demo.gif" in en_readme
     assert "ksadk-runtime-architecture.en.png" in en_readme
     assert "ksadk-runtime-architecture.png" not in en_readme
     assert "发布版本：" not in en_readme
     assert "## 0.6." not in en_readme
     assert "0.8.0" not in en_readme
+    assert "0.8.4" not in en_readme
+    assert "0.3.7" not in en_readme
     assert "Review Candidate" not in en_readme
 
     assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
@@ -295,12 +301,12 @@ def test_docs_navigation_exposes_the_083_user_journeys():
     assert "/cn/docs/framework/guides/plugins-and-automations" in landing
 
 
-def test_docs_versioned_facts_match_083_source():
+def test_docs_versioned_facts_match_084_source():
     makefile = _read("Makefile")
     web_version_match = re.search(r"^KSADK_WEB_VERSION \?= (\S+)$", makefile, re.MULTILINE)
     assert web_version_match is not None
     web_version = web_version_match.group(1)
-    assert web_version == "0.3.5"
+    assert web_version == "0.3.7"
 
     versioned_docs = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx"))
@@ -498,10 +504,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.5"' in workflow
+    assert 'default: "0.3.7"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.5' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.7' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -519,9 +525,9 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.5"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.7"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.5" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.7" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/studio/test_shared_web.py tests/test_public_release_positioning.py "
         "tests/test_docs_site_output_audit.py tests/test_config_env_registry.py "
@@ -565,7 +571,7 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         '"$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)")' in makefile
     )
     assert 'npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"' not in makefile
-    assert "KSADK_WEB_VERSION ?= 0.3.5" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.7" in makefile
 
     sync_dry_run = subprocess.run(
         [
@@ -580,8 +586,8 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         text=True,
         stdout=subprocess.PIPE,
     ).stdout
-    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.5"' in sync_dry_run
-    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.5"' in sync_dry_run
+    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.7"' in sync_dry_run
+    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.7"' in sync_dry_run
 
     studio_dry_run = subprocess.run(
         ["make", "-n", "build-studio-static", f"KSADK_WEB_REGISTRY={registry}"],
@@ -616,11 +622,18 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Branch protection and publish environment are configured" in approval_record
 
 
-def test_historical_public_release_approval_is_not_reused_for_unpublished_candidate():
+def test_public_release_approval_is_current_or_explicitly_historical():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.8.3 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.3" in approval_record
+    current_version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
+    current_approval = f"| Python package version | {current_version} |"
+    historical_approval = "| Python package version | 0.8.3 |"
+    if current_approval in approval_record:
+        assert "This is the historical" not in approval_record
+        assert "Approved | 2026-09-09" in approval_record
+    else:
+        assert historical_approval in approval_record
+        assert "does not authorize PyPI publication" in approval_record
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():

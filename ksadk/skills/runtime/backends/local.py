@@ -8,14 +8,18 @@ import tempfile
 import time
 from pathlib import Path
 
+from ksadk.skills.package_store import SkillPackage
+from ksadk.skills.runtime.artifact_delivery import export_artifacts, import_artifacts
 from ksadk.skills.runtime.base import (
     SandboxInputFile,
+    SkillRuntimeError,
     SkillRuntimeResult,
     format_skill_names_env,
     normalize_skill_names,
     parse_output_files,
     parse_workflow_result,
 )
+from ksadk.skills.runtime.pinned import stage_packages
 
 
 def _coerce_output(value: str | bytes | None) -> str:
@@ -46,14 +50,29 @@ class LocalProcessSkillRuntimeBackend:
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        pinned_packages: list[SkillPackage] | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult:
         started = time.monotonic()
-        runtime_env = os.environ.copy()
+        if pinned_packages is not None and self.agent_path.resolve() != (
+            Path(__file__).resolve().parents[1] / "agent.py"
+        ):
+            raise ValueError("Pinned Skill execution requires the bundled runtime agent")
+        runtime_env = (
+            {
+                key: value
+                for key, value in os.environ.items()
+                if key in {"PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT"}
+            }
+            if pinned_packages is not None
+            else os.environ.copy()
+        )
         runtime_env.update(env or {})
         runtime_env["KSADK_SKILL_SPACE_IDS"] = ",".join(skill_space_ids)
         runtime_env["SKILL_SPACE_ID"] = skill_space_ids[0] if skill_space_ids else ""
-        if public_spaces := os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS"):
+        if pinned_packages is None and (
+            public_spaces := os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS")
+        ):
             runtime_env["KSADK_PUBLIC_SKILL_SPACE_IDS"] = public_spaces
         selected_skill_names = format_skill_names_env(skill_names)
         if selected_skill_names:
@@ -63,12 +82,27 @@ class LocalProcessSkillRuntimeBackend:
         try:
             with tempfile.TemporaryDirectory(prefix="ksadk-skill-runtime-") as tmp_dir:
                 request_path = Path(tmp_dir) / "workflow-request.json"
+                request = {
+                    "workflow_prompt": workflow_prompt,
+                    "skill_names": normalize_skill_names(skill_names),
+                }
+                if pinned_packages is not None:
+                    entries = stage_packages(pinned_packages, Path(tmp_dir))
+                    request["pinned_packages"] = [entry.model_dump() for entry in entries]
+                    request["pinned_protocol_version"] = 1
+                    if not runtime_env.get("KSADK_SKILL_WORKDIR"):
+                        # Artifacts outlive the temporary archive delivery directory.
+                        runtime_env["KSADK_SKILL_WORKDIR"] = tempfile.mkdtemp(
+                            prefix="ksadk-pinned-artifacts-"
+                        )
+                    # Use the same canonical root in the child and host validator
+                    # (macOS temporary directories may be reached through /var).
+                    runtime_env["KSADK_SKILL_WORKDIR"] = str(
+                        Path(runtime_env["KSADK_SKILL_WORKDIR"]).resolve()
+                    )
                 request_path.write_text(
                     json.dumps(
-                        {
-                            "workflow_prompt": workflow_prompt,
-                            "skill_names": normalize_skill_names(skill_names),
-                        },
+                        request,
                         ensure_ascii=False,
                     ),
                     encoding="utf-8",
@@ -76,6 +110,7 @@ class LocalProcessSkillRuntimeBackend:
                 completed = subprocess.run(
                     [
                         sys.executable,
+                        *(["-I"] if pinned_packages is not None else []),
                         "-u",
                         str(self.agent_path),
                         "--request-file",
@@ -87,26 +122,4 @@ class LocalProcessSkillRuntimeBackend:
                     env=runtime_env,
                     check=False,
                 )
-            wf = parse_workflow_result(completed.stdout)
-            return SkillRuntimeResult(
-                runtime_id=f"local:{session_id}",
-                exit_code=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                output_files=parse_output_files(completed.stdout),
-                workflow_status=str(wf.get("status", "")),
-                executed_skill=str(wf.get("executed_skill", "")),
-                instructions=str(wf.get("instructions", "")),
-            )
-        except subprocess.TimeoutExpired as exc:
-            return SkillRuntimeResult(
-                runtime_id=f"local:{session_id}",
-                exit_code=None,
-                stdout=_coerce_output(exc.stdout),
-                stderr=_coerce_output(exc.stderr),
-                duration_ms=int((time.monotonic() - started) * 1000),
-                timed_out=True,
-                error_type="TimeoutExpired",
-                error_message=f"Skill workflow timed out after {timeout or self.timeout}s",
-            )
+                output_files=output_files,

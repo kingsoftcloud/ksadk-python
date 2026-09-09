@@ -317,6 +317,23 @@ async def test_kernel_disabled_by_default(monkeypatch):
     assert not ingress.kernel_route_active()
 
 
+def test_hosted_runtime_keeps_public_compatibility_routes_off_local_permits(
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    monkeypatch.setenv(
+        "AGENT_CONTROL_JWKS_URL",
+        "https://server.internal/agent-control/jwks",
+    )
+    ingress.set_agent_kernel(object())
+    try:
+        assert ingress.kernel_ingress_enabled()
+        assert not ingress.kernel_route_active()
+    finally:
+        ingress.clear_agent_kernel()
+
+
 def test_map_run_request_carries_runtime_options_model():
     """RunAgent 的 Model 覆盖必须进入 command payload(透传链第一跳)。"""
     from ksadk.kernel import ingress

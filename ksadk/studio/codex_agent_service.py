@@ -20,6 +20,7 @@ from typing import Any, Callable, cast
 from pydantic import ValidationError
 
 from ksadk.managed_runtime import installed_runtime_version
+from ksadk.plugins.providers.dsh import DSH_HOST_USER_PERMISSION
 from ksadk.studio.codex_builder import CodexBuildRecord
 from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
@@ -168,6 +169,11 @@ class CodexAgentService:
             )
         resolved = (spec or default_agent_spec("blank")).model_copy(deep=True)
         resolved.runtime = RuntimeRef(type="codex", version=self._runtime_version(resolved))
+        # Selecting the wheel-owned Codex Runtime also selects its shipped Provider.
+        # Grant only that Provider's required host permission on first creation;
+        # third-party plugins still require explicit Agent-level authorization.
+        if DSH_HOST_USER_PERMISSION not in resolved.security.allowed_permissions:
+            resolved.security.allowed_permissions.append(DSH_HOST_USER_PERMISSION)
         self.ensure_bindings_supported(resolved)
         manifest = self._manifest(agent_id, resolved)
         snapshot = self.studio.codex_manifests.save(manifest)
@@ -465,6 +471,9 @@ class CodexAgentService:
             "manifestSha256": record.manifest_sha256,
             "runtimeLock": record.runtime_lock,
             "runtimeName": record.runtime_name,
+            "localExecution": record.local_execution,
+            "providerBundle": (record.provider_bundle.model_dump(by_alias=True)
+                               if record.provider_bundle else None),
             "runtimeVersion": record.runtime_version,
             "proxyMode": record.proxy_mode,
         }
@@ -497,6 +506,7 @@ class CodexAgentService:
         revision = self._project(self.studio.codex_manifests.load(resolved_id)).metadata.revision
 
         async def runner(_operation_id: str):
+            await self.studio.start()
             return await asyncio.to_thread(
                 self.studio.codex_builder.build,
                 resolved_id,

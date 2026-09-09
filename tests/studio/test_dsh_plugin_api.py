@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -8,7 +10,12 @@ from typing import Any
 import httpx
 import pytest
 
-from ksadk.plugins.bridges.dsh import DshBridgeHost, DshPluginInventory, DshProfileProjection
+from ksadk.plugins.bridges.dsh import (
+    DshBridgeHost,
+    DshPluginInventory,
+    DshProfileProjection,
+    DshProfileRecoveryError,
+)
 from ksadk.plugins.providers.dsh_capabilities import (
     DshCapabilityTool,
     DshMcpConnectorLease,
@@ -164,6 +171,98 @@ def studio_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore
         csrf_token="csrf-token",
     )
     return app, capabilities
+
+
+@pytest.mark.asyncio
+async def test_layout_recovery_failure_keeps_studio_admission_suspended(studio_app, monkeypatch):
+    app, _ = studio_app
+    studio = app.state.studio_service
+    events = []
+
+    async def suspend():
+        events.append("suspend")
+
+    async def resume():
+        events.append("resume")
+
+    def migrate(_self, **_kwargs):
+        raise DshProfileRecoveryError("fixture recovery failure")
+
+    monkeypatch.setattr(studio.plugin_runs, "suspend_admission", suspend)
+    monkeypatch.setattr(studio.plugin_runs, "resume_admission", resume)
+    monkeypatch.setattr(_FakeBridge, "migrate_to_isolated_layout", migrate, raising=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/v1/plugin-ecosystems/dsh/profile:migrate-layout",
+            headers=_headers(write=True), json={"acceptHostPermissions": True},
+        )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DSH_PROFILE_RECOVERY_REQUIRED"
+    assert events == ["suspend"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_request", [False, True])
+async def test_layout_migration_holds_reconfiguration_fence(
+    studio_app, monkeypatch, cancel_request,
+):
+    app, capabilities = studio_app
+    studio = app.state.studio_service
+    started = threading.Event()
+    release = threading.Event()
+    events = []
+
+    def migrate(_self, *, accept_host_permissions):
+        assert accept_host_permissions
+        assert capabilities.refresh_count == 1
+        events.append("migration")
+        started.set()
+        assert release.wait(5)
+
+    async def reconfigure(operation):
+        events.append("suspend")
+        await studio.reset_dsh_capability_state()
+        try:
+            return await operation()
+        finally:
+            events.append("resume")
+
+    monkeypatch.setattr(_FakeBridge, "migrate_to_isolated_layout", migrate, raising=False)
+    monkeypatch.setattr(studio, "reconfigure_dsh_profile", reconfigure)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+    ) as client:
+        denied = await client.post(
+            "/api/v1/plugin-ecosystems/dsh/profile:migrate-layout",
+            headers=_headers(write=True), json={"acceptHostPermissions": False},
+        )
+        assert denied.status_code >= 400
+        assert events == []
+        request = asyncio.create_task(client.post(
+            "/api/v1/plugin-ecosystems/dsh/profile:migrate-layout",
+            headers=_headers(write=True), json={"acceptHostPermissions": True},
+        ))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            if cancel_request:
+                for _ in range(2):
+                    request.cancel()
+                    await asyncio.sleep(0)
+                assert events == ["suspend", "migration"]
+                assert not request.done()
+            release.set()
+            if cancel_request:
+                with pytest.raises(asyncio.CancelledError):
+                    await request
+            else:
+                response = await request
+                assert response.status_code == 200
+                assert response.json()["nodeLinker"] == "isolated"
+            assert events == ["suspend", "migration", "resume"]
+        finally:
+            release.set()
 
 
 @pytest.mark.asyncio

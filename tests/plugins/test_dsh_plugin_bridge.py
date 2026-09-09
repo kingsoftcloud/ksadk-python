@@ -176,6 +176,8 @@ def test_bridge_projects_inventory_and_digest_without_raw_profile(tmp_path: Path
         "requestedSpec": "1.2.3",
         "sourceDigest": None,
         "sourceKind": None,
+        "clientExtension": False,
+        "settingsIntegration": False,
         "installed": True,
         "enabled": True,
         "permissionsDeclared": False,
@@ -189,6 +191,30 @@ def test_bridge_projects_inventory_and_digest_without_raw_profile(tmp_path: Path
     assert projection.config_digest.startswith("sha256:")
     assert projection.config_bytes > 0
     assert not hasattr(projection, "config")
+
+
+def test_bridge_reports_client_and_settings_contributions(tmp_path: Path) -> None:
+    home = tmp_path / "dsh-home"
+    root = _profile(home)
+    package_path = root / "node_modules" / "@example" / "dsh-plugin" / "package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["dsh"]["client"] = {
+        "platform": "web",
+        "inject": ["@deepseek-ai/dsh-client-ui-settings"],
+    }
+    _write_json(package_path, package)
+    bridge = DshProfilePluginBridge(
+        dsh_home=home,
+        profile="test-profile",
+        dsh_command=("dsh-fixture",),
+        command_runner=Runner(),
+    )
+
+    bridge.start()
+    item = bridge.list_plugins()[0]
+
+    assert item.client_extension is True
+    assert item.settings_integration is True
 
 
 def test_local_source_receipt_fails_closed_when_immutable_archive_changes(

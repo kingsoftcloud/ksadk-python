@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -52,12 +52,49 @@ describe("PluginsPage", () => {
   }
 
   it('lists plugins and opens an explicitly chosen detail', async () => {
-    catalog([], [{ ecosystem: 'dsh', pluginId: '@example/im', displayName: 'IM', enabled: true }]);
+    catalog([], [{ ecosystem: 'dsh', pluginId: '@example/im', displayName: 'IM', enabled: true, clientExtension: true, settingsIntegration: true }]);
     render(<PluginsPage/>);
     await userEvent.click(await screen.findByRole('button', { name: 'IM' }));
     expect(screen.getByRole('article', { name: '插件详情' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '打开插件设置' })).toBeInTheDocument();
     expect(screen.getByText('已启用')).toBeInTheDocument();
+  });
+
+  it('explains client overlays without inventing an empty settings tab', async () => {
+    catalog([], [{
+      ecosystem: 'dsh', pluginId: '@huanlin/dsh-plugin-d399', displayName: 'D399', enabled: true,
+      clientExtension: true, settingsIntegration: false,
+    }]);
+    render(<PluginsPage/>);
+    await userEvent.click(await screen.findByRole('button', { name: 'D399' }));
+    expect(screen.getByText(/不会新增左侧设置标签/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '打开插件设置' })).not.toBeInTheDocument();
+    expect(screen.getByText('界面扩展')).toBeInTheDocument();
+  });
+
+  it('filters installed plugins by KsADK, DSH, and Codex ownership', async () => {
+    catalog(
+      [{ ecosystem: 'codex', pluginId: 'figma', displayName: 'Figma', installed: true }],
+      [
+        { ecosystem: 'dsh', pluginId: '@kingsoftcloud/dsh-memory', displayName: 'KsADK Memory', enabled: true },
+        { ecosystem: 'dsh', pluginId: '@huanlin/dsh-plugin-d399', displayName: 'Game Studio', enabled: true },
+      ],
+    );
+    render(<PluginsPage/>);
+    await screen.findByRole('button', { name: 'Game Studio' });
+    const filters = within(screen.getByRole('tablist', { name: '筛选已安装插件' }));
+
+    await userEvent.click(filters.getByRole('tab', { name: 'DSH 插件' }));
+    expect(screen.getByRole('button', { name: 'Game Studio' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'KsADK Memory' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Figma' })).not.toBeInTheDocument();
+
+    await userEvent.click(filters.getByRole('tab', { name: 'KsADK 官方' }));
+    expect(screen.getByRole('button', { name: 'KsADK Memory' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Game Studio' })).not.toBeInTheDocument();
+
+    await userEvent.click(filters.getByRole('tab', { name: 'Codex 插件' }));
+    expect(screen.getByRole('button', { name: 'Figma' })).toBeInTheDocument();
   });
 
   it('does not render a provider as a DSH UI plugin', async () => {

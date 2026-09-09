@@ -15,6 +15,7 @@ import { FileDropzone } from "../components/ui/FileDropzone";
 import { FormField } from "../components/ui/FormField";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { PythonToolExample } from "../components/PythonToolExample";
+import { PlatformResourcesPage } from "../components/PlatformResourceBindings";
 import {
   StudioDataTable,
   type StudioDataColumn,
@@ -38,7 +39,8 @@ import {
   type SkillImportSummary,
 } from "../skillBatchImport";
 
-export type ResourceKind = "model" | "tool" | "mcp" | "skill";
+export type ResourceKind = "model" | "tool" | "mcp" | "skill" | "knowledge-base" | "memory-instance" | "skill-space";
+type CatalogResourceKind = Exclude<ResourceKind, "knowledge-base" | "memory-instance" | "skill-space">;
 
 export interface ResItem {
   resourceId: string;
@@ -60,6 +62,9 @@ const KIND_META: Record<ResourceKind, { title: string; description: string; addL
   tool: { title: "Tool", description: "管理结构化 Tool Contract、权限和审批策略。", addLabel: "添加 Python Tool", headings: ["来源", "Tool 分组", "权限 / 边界"], icon: Wrench },
   mcp: { title: "MCP", description: "连接、探测并复用 MCP Server。", addLabel: "添加资源", headings: ["来源", "版本", "说明"], icon: Network },
   skill: { title: "Skill", description: "安装版本化 Skill，并在构建时锁定内容摘要。", addLabel: "发现 Skill", headings: ["来源", "版本", "说明"], icon: Sparkles },
+  "knowledge-base": { title: "知识库", description: "管理可绑定到 Agent Revision 的云端知识库。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Database },
+  "memory-instance": { title: "记忆库", description: "管理长期记忆实例。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Database },
+  "skill-space": { title: "Skill Center", description: "管理云端 Skill Space。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Sparkles },
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -88,7 +93,7 @@ function formatByteCount(value: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: CatalogResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
   const [catalog, setCatalog] = useState<ResItem[]>([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -371,6 +376,19 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
       )}
     </div>
   );
+}
+
+const PLATFORM_RESOURCE_KINDS = new Set<ResourceKind>(["knowledge-base", "memory-instance", "skill-space"]);
+
+export function ResourcesPage(props: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+  if (PLATFORM_RESOURCE_KINDS.has(props.kind)) {
+    return <PlatformResourcesPage
+      kind={props.kind as "knowledge-base" | "memory-instance" | "skill-space"}
+      onKindChange={props.onKindChange}
+      refreshTick={props.refreshTick}
+    />;
+  }
+  return <CatalogResourcesPage {...props} kind={props.kind as CatalogResourceKind} />;
 }
 
 /* ================= 资源表格单元格 ================= */

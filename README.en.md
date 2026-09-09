@@ -15,7 +15,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
 </p>
 
-<p align="center"><a href="docs-site/public/assets/ksadk-runtime-platform-hero.png"><img alt="Real KsADK CLI screenshot: agentengine -h" src="docs-site/public/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
+<p align="center"><a href="docs-site/public/assets/agentkit-studio-overview.png"><img alt="Real KsADK AgentKit Studio Agent workspace" src="docs-site/public/assets/agentkit-studio-overview.png" width="860" /></a></p>
 
 ## 30 Seconds Quick Start
 
@@ -36,26 +36,27 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
-## 0.8.4 Runtime Architecture
+## Runtime Architecture
 
-KsADK 0.8.4 converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:
+KsADK converges framework adaptation into stable runtime layers while preserving each framework's native execution semantics:
 
 - **Trusted kernel**: owns concurrency, cancellation, recovery, state consistency, and runtime safety boundaries.
 - **Harness execution layer**: owns composition, Activation, lifecycle, and shared-capability injection; each Activation selects exactly one Provider.
 - **Pluggable Providers**: Codex, KsADK Harness, DSH/Cordis, and Subagent run behind one Harness contract while retaining native thread, checkpoint, and event semantics.
 - **Unified events**: `RuntimeEvent(schema_version=2)` is the event source of truth for storage, replay, APIs, Studio, and hosted surfaces; v1 is read-only compatibility projection only.
 - **Controlled plugins**: DSH Bundle/Profile uses a pinned toolchain, immutable source digests, and rollback on failed upgrades; official Codex plugins remain owned by Codex App Server.
-- **Local development loop**: Studio covers authoring, builds, debugging, evaluation, and Scheduler Lite; the bundled UI is pinned to `@kingsoftcloud/ksadk-web@0.3.5`.
+- **Platform resource plugins**: Studio can bind knowledge bases, long-term memory, and Skill Center. The Agent Revision stores the selection, the Build freezes connection references and plugin digests, and Runtime resolves platform authorization during Activation.
+- **Local development loop**: Studio covers authoring, builds, debugging, evaluation, and Scheduler Lite and reuses the independently released `@kingsoftcloud/ksadk-web` conversation package.
 
-Start with the [0.8.4 runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See the [changelog](CHANGELOG.md) and PyPI badge for version history and publication status.
+Start with the [runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases) for version notes and artifact verification details.
 
 ### RuntimeEvent Schema v2 Contract
 
 The event path is canonical `RuntimeEvent(schema_version=2)`. Its capability descriptor is `RuntimeEventVersions=[1,2]`, `RuntimeEventDefault=2`, `RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`, and `RuntimeEventV1ProjectionDefault="snapshot_only"`. Version 1 is a read-only compatibility projection.
 
-<p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
+<p align="center"><img alt="Real KsADK Studio knowledge, memory, and Skill Center bindings" src="docs-site/public/assets/agentkit-studio-platform-resources.png" width="860" /></p>
 
-<p align="center"><img alt="Real local Web UI demo" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
+<p align="center"><img alt="Real KsADK Studio Agent, resource binding, and plugin demo" src="docs-site/public/assets/agentkit-studio-demo.gif" width="860" /></p>
 
 ## Why KsADK
 

@@ -38,6 +38,28 @@ def _inspector(_runtime) -> tuple[str, str, str]:
     return "0.8.0", "0.144.4", "codex-cli 0.144.4"
 
 
+def test_resolve_run_spec_does_not_mask_nested_codex_404(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    studio = StudioService(tmp_path)
+    build_id = "build_0123456789abcdef0123"
+    monkeypatch.setattr(studio.codex_builds, "get", lambda _build_id: object())
+
+    def fail_resolution(_build_id: str, **_kwargs):
+        raise StudioError(
+            "CODEX_PLUGIN_SNAPSHOT_NOT_FOUND",
+            "Codex 插件快照不存在",
+            status_code=404,
+        )
+
+    monkeypatch.setattr(studio.codex_runs, "resolve", fail_resolution)
+
+    with pytest.raises(StudioError) as raised:
+        studio.resolve_run_spec(build_id)
+
+    assert raised.value.code == "CODEX_PLUGIN_SNAPSHOT_NOT_FOUND"
+
+
 def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
     workspace = Workspace(tmp_path)
     workspace.initialize()
@@ -104,6 +126,10 @@ def test_editor_soul_update_reaches_managed_runtime_build_and_launch(
     """Break caught: Studio retained Soul only in Draft, not deployed Codex input."""
 
     studio = StudioService(tmp_path, codex_runtime_inspector=_inspector)
+    # This test validates Soul projection into the retained direct-runtime
+    # compatibility artifact. Formal Provider Build coverage lives in
+    # test_codex_provider_build.py and installs an explicit provider fixture.
+    studio.codex_builder.provider_build = None
     draft = studio.create_studio_agent(
         agent_id="soul-reviewer",
         name="Soul Reviewer",

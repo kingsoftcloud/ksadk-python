@@ -38,6 +38,7 @@ class CodexRunSpecResolver:
         resource_catalog: Any = None,
         draft_repository: Any = None,
         plugin_snapshot_store: CodexPluginSnapshotStore | None = None,
+        provider_bundle_resolver: Any = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository or CodexBuildRepository(workspace)
@@ -46,6 +47,7 @@ class CodexRunSpecResolver:
         self.catalog = resource_catalog
         self.drafts = draft_repository
         self.plugin_snapshots = plugin_snapshot_store or CodexPluginSnapshotStore(workspace)
+        self.provider_bundle_resolver = provider_bundle_resolver
 
     def resolve(
         self,
@@ -56,6 +58,16 @@ class CodexRunSpecResolver:
         approval_mode: str | None = None,
     ) -> StudioRunSpec:
         build = self.builds.get(build_id)
+        provider_root = None
+        if build.local_execution == "provider":
+            if self.provider_bundle_resolver is None:
+                raise StudioError("CODEX_PROVIDER_REQUIRED", "此 Build 必须通过 Provider 运行",
+                                  status_code=409)
+            provider_root = self.provider_bundle_resolver(build)
+            if provider_root is None:
+                raise StudioError(
+                    "CODEX_PROVIDER_REQUIRED", "Provider Bundle 不可用", status_code=409,
+                )
         current = self.manifests.load(build.agent_name)
         if build.manifest_sha256 != current.manifest_sha256:
             raise StudioError(
@@ -89,6 +101,8 @@ class CodexRunSpecResolver:
             # workspace-write 默认断网；原生搜索和 MCP 都需要显式放行网络。
             codex_overrides = [*codex_overrides, "sandbox_workspace_write.network_access=true"]
         launch_config: dict[str, Any] = {
+            "model": selected_model,
+            "models": list(manifest.allowed_models),
             "sandbox_read_only": sandbox == "read-only",
             "sandbox": sandbox,
             "approval_mode": approval,
@@ -176,6 +190,7 @@ class CodexRunSpecResolver:
             model=selected_model,
             request_config=request_config,
             manifest_sha256=build.manifest_sha256,
+            plugin_bundle_root=provider_root,
         )
 
     def _plugin_bootstrap(
@@ -183,7 +198,14 @@ class CodexRunSpecResolver:
         build: Any,
         manifest: CodexAgentManifest,
     ) -> dict[str, Any] | None:
-        bindings = [item for item in (manifest.plugins or []) if item.enabled]
+        # Only Codex-native bindings belong to the App Server bootstrap. DSH
+        # bindings are materialized by the Provider Bundle and intentionally do
+        # not have entries in the Codex plugin snapshot store.
+        bindings = [
+            item
+            for item in (manifest.plugins or [])
+            if item.enabled and item.ecosystem == "codex"
+        ]
         lock = getattr(build, "plugin_lock", None)
         lock_digest = getattr(build, "plugin_lock_digest", None)
         marketplace = getattr(build, "plugin_marketplace", None)

@@ -379,7 +379,9 @@ class DshToolchainManager:
 
         if explicit is not None and str(explicit).strip():
             executable = self._resolve_program(str(explicit))
-            actual = self._command_version((executable,), cwd=self._root)
+            # An explicit installation does not require the managed default root
+            # to exist (for example in a fresh Studio HOME).
+            actual = self._command_version((executable,), cwd=Path(executable).parent)
             if actual != DSH_VERSION:
                 raise DshToolchainVersionMismatchError(
                     f"expected DSH {DSH_VERSION}, got {actual}"

@@ -10,9 +10,13 @@
 .plugin-installed-strip { margin: 28px 0; }
 .plugin-installed-strip > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .plugin-installed-strip h3 small { font-size: 12px; font-weight: 400; color: var(--studio-text-secondary); margin-left: 6px; }
-.plugin-installed-strip > div { display: flex; flex-wrap: wrap; gap: 14px; }
-.plugin-installed-strip > div > button { background: none; border: 0; padding: 0; display: flex; align-items: center; gap: 8px; max-width: 190px; }
-.plugin-installed-strip > div > button > span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.plugin-installed-strip > .plugin-installed-items { display: flex; flex-wrap: wrap; gap: 14px; }
+.plugin-installed-strip > .plugin-installed-items > button { background: none; border: 0; padding: 0; display: flex; align-items: center; gap: 8px; max-width: 190px; }
+.plugin-installed-strip > .plugin-installed-items > button > span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.plugin-installed-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 14px; }
+.plugin-installed-tabs button { min-height: 30px; padding: 4px 11px; border: 0; border-radius: 16px; color: var(--studio-text-secondary); background: transparent; font-size: 12px; }
+.plugin-installed-tabs button[aria-selected="true"] { color: var(--text); background: var(--surface-subtle); }
+.plugin-installed-empty { margin: 2px 0 0; font-size: 12px; }
 .plugin-store-icon { width: 40px; height: 40px; border: 1px solid var(--studio-border); border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; background: var(--studio-surface); flex: 0 0 auto; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; }
 .plugin-store-icon img { width: 80%; height: 80%; object-fit: contain; }
 .plugin-store-icon.large { width: 64px; height: 64px; border-radius: 16px; margin-bottom: 18px; }

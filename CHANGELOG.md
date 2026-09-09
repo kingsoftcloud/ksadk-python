@@ -5,11 +5,11 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.8.4] - 2026-09-07
+## [0.8.4] - 2026-09-09
 
 ### Studio 与共享会话
 
-- Studio 使用 `@kingsoftcloud/ksadk-web@0.3.5` 的共享会话控制器、时间线和输入框；细分入口可供其他应用复用，并支持宿主自己的欢迎页面与样式。
+- Studio 使用 `@kingsoftcloud/ksadk-web@0.3.7` 的共享会话控制器、时间线和输入框；细分入口可供其他应用复用，并支持宿主自己的欢迎页面与样式。
 - 修复会话历史分页、刷新后的工具结果与提问回放，统一思考流光、取消提示和审批交互；上下文入口支持悬停、点击固定、外部点击关闭和手动压缩进度。用量来自运行时，窗口容量可回退到模型目录；冷启动直接进入对话也会加载模型目录，不再依赖先打开工程资源页；未知用量不会伪造百分比。
 - 统一 Studio 页面配色、Agent 表单和部署表格；复用本地身份缓存展示当前凭证身份，新部署记录保存创建人快照，历史创建人缺失时不冒充其他用户。
 - 纳入社区贡献的 Studio UI 改进（PR #66，by @aibuilder-leo），保留其配色方向。
@@ -20,8 +20,11 @@
 
 - 使用完整受管 DSH Core/Profile 和官方客户端运行时承载插件；Studio 直接展示插件设置入口，移除不完整的 mini runtime 与嵌套聊天页面。插件详情支持描述、图标和多插件选择。
 - npm 插件名可解析到具体版本后安装；实际准入和构建仍冻结版本与摘要。Codex 官方插件通过原生宿主安装，Agent 使用已选择的插件绑定。
+- 新建官方 Codex Agent 默认写入其固定的本地进程权限，快速创建与对话创建不再因空权限被拒绝；第三方 Provider 仍需逐项确认，显式撤销后的 Build 继续拒绝。
 - 修复 Codex 代理调用参数、跨回合 thread 恢复、运行句柄回收和 MCP 配置传递，保留原生工具授权边界。
 - 增加 Codex 插件不可变制品交付与运行时恢复：插件字节和依赖引用随版本交付，启动不再按市场最新版本重新安装。该路径需要控制面支持相应制品接口；接口不可用时明确阻断，不静默丢弃绑定。
+- 新增知识库、长期记忆与 Skill Center 的官方平台资源插件：Studio 把资源连接写入 Agent Revision，Build 固化连接引用与插件摘要，Runtime 在 Activation 时按账号、区域和凭证策略装配；“已绑定”只表示配置进入版本，不替代服务端授权与运行时连通性检查。
+- 修复托管 Runtime 把公开 `/v1/responses`、`/v1/chat/completions` 和兼容 RunAgent 请求误送入只接受 Server 签发 permit 的 Kernel 入口而返回 `unknown_signing_key`；专用 `/agent-kernel/v1/*` 入口继续执行 Server JWKS 校验。
 
 ### 构建与兼容性
 

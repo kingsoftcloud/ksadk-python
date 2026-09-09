@@ -22,7 +22,7 @@ from ksadk.detection import DetectionResult, FrameworkType
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _build_wheel_in_isolated_source(tmp_path: Path) -> Path:
+def _build_wheel_in_isolated_source(tmp_path: Path, *, include_static: bool = False) -> Path:
     source_dir = tmp_path / "source"
     wheel_dir = tmp_path / "wheel"
     source_dir.mkdir()
@@ -39,7 +39,7 @@ def _build_wheel_in_isolated_source(tmp_path: Path) -> Path:
             or name.endswith(".egg-info")
             or name.endswith((".pyc", ".pyo"))
         }
-        if Path(directory) == REPO_ROOT / "ksadk" / "server":
+        if not include_static and Path(directory) == REPO_ROOT / "ksadk" / "server":
             ignored.add("static")
         return ignored
 

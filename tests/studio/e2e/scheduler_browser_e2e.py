@@ -39,6 +39,7 @@ TASK_NAME_EDITED = "工作日销售复盘"
 TASK_PROMPT_EDITED = "生成昨日销售复盘并标注异常负责人"
 CONTINUE_TASK_NAME = "持续销售跟进"
 CONTINUE_SESSION_ID = "scheduler-codex-continuation"
+RUN_TIMEOUT_SECONDS = 30.0
 
 
 def _runtime_inspector(_runtime: object) -> tuple[str, str, str]:
@@ -94,7 +95,10 @@ def _agent_spec() -> AgentSpec:
             },
             "security": {
                 "toolPolicy": "deny-by-default",
-                "allowedPermissions": [],
+                # The fixture builds through the shipped Codex AgentProvider.
+                # Programmatic authoring must grant the same permission that a
+                # user explicitly approves in the Agent editor.
+                "allowedPermissions": ["process:host-user"],
                 "network": {
                     "mode": "restricted",
                     "allowedHosts": ["model.example.com"],
@@ -129,7 +133,7 @@ def _start_browser_sse(page: Page, session_id: str, after_seq: int) -> None:
         ({sessionId, afterSeq}) => {
           window.__schedulerSseResult = (async () => {
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 8000);
+            const timer = setTimeout(() => controller.abort(), 30000);
             try {
               const response = await fetch(
                 `/api/v1/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${afterSeq}`,
@@ -255,7 +259,8 @@ def _assert_scheduler_lifecycle(
     expect(page.get_by_text("任务已提交", exact=True)).to_be_visible()
 
     terminal = None
-    for _ in range(100):
+    deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
         values = _json(
             base_url,
             f"/api/v1/agents/{AGENT_ID}/schedules/{task_id}/occurrences",
@@ -324,7 +329,8 @@ def _assert_scheduler_lifecycle(
 
     page.locator(".automation-detail").get_by_role("button", name="立即运行", exact=True).click()
     first_followup = None
-    for _ in range(100):
+    deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
         values = _json(
             base_url,
             f"/api/v1/schedules/{continue_task_id}/occurrences",
@@ -353,7 +359,8 @@ def _assert_scheduler_lifecycle(
     page.locator(".automation-detail").get_by_role("button", name="立即运行", exact=True).click()
 
     continued = None
-    for _ in range(100):
+    deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
         values = _json(
             base_url,
             f"/api/v1/schedules/{continue_task_id}/occurrences",

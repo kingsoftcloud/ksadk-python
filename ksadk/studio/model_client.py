@@ -220,9 +220,9 @@ class CredentialResolver:
             "persistence": source,
         }
 
-    def resolve(self, reference: str) -> str:
+    def resolve(self, reference: str, *, allow_aliases: bool = True) -> str:
         name = self._environment_name(reference)
-        fallback = self._fallback_name(name)
+        fallback = self._fallback_name(name) if allow_aliases else None
         aliases = [name, *([fallback] if fallback else [])]
         for candidate in aliases:
             value = self._session_value(candidate)

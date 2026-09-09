@@ -72,6 +72,57 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("defaults the shipped Codex permission and saves it with the Agent", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input) === "/api/v1/agent-providers"
+      ? Promise.resolve(response({ items: [{
+        providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider",
+        resolvedVersion: "1.0.0", displayName: "Codex", state: "enabled",
+        compatible: true, selectable: true, permissions: ["process:host-user"], isolation: "sidecar",
+        configSchemaDeclared: false, secretFields: [],
+      }] })) : base(input, init));
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
+    expect(consent).toBeChecked();
+    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "你是一个本地验证助手，请简洁回答。");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(await screen.findByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByRole("button", { name: "一键优化 Prompt" });
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.runtimeType).toBe("codex");
+      expect(request.spec.security.allowedPermissions).toEqual(["process:host-user"]);
+    });
+  });
+
+  it("does not reuse native Codex consent when switching to a different runtime Provider", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    const common = { resolvedVersion: "1.0.0", state: "enabled", compatible: true, selectable: true,
+      isolation: "sidecar", configSchemaDeclared: false, secretFields: [] };
+    mockedFetch.mockImplementation((input, init) => String(input) === "/api/v1/agent-providers"
+      ? Promise.resolve(response({ items: [
+        { ...common, providerRef: "plugin://io.example.remote@1.0.0", pluginId: "io.example.remote", displayName: "Remote", permissions: ["network:private"] },
+        { ...common, providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider", displayName: "Codex", permissions: ["process:host-user"] },
+      ] })) : base(input, init));
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "Answer with evidence.");
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: /DSH AgentProvider/ }));
+    expect(screen.getByRole("checkbox", { name: /确认 Provider 请求/ })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    expect(await screen.findByText("请先确认 AgentProvider 请求的权限。")).toBeVisible();
+    expect(mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick")).toBeUndefined();
+  });
+
   it('disables incompatible DSH MCP choices and explains why', async () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation((input, init) => String(input).includes('/catalog/resources')
@@ -484,6 +535,12 @@ describe("CreatePage quick authoring", () => {
       const path = String(input);
       if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model] });
       if (path === "/api/v1/catalog/models") return response({ items: [] });
+      if (path === "/api/v1/agent-providers") return response({ items: [{
+        providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider",
+        resolvedVersion: "1.0.0", displayName: "Codex", state: "enabled",
+        compatible: true, selectable: true, permissions: ["process:host-user"], isolation: "sidecar",
+        configSchemaDeclared: false, secretFields: [],
+      }] });
       if (path === "/api/v1/credentials/OPENAI_API_KEY") return response({ configured: true });
       if (path === "/api/v1/authoring/conversations:compose") {
         return response({ proposal, requiresConfirmation: true });
@@ -514,6 +571,7 @@ describe("CreatePage quick authoring", () => {
     await screen.findByDisplayValue("Review releases.");
     expect(screen.queryByText(/1\.0元/)).not.toBeInTheDocument();
     expect(screen.queryByText(/models\.example\.test\/v1\/models/)).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
     await user.click(screen.getByRole("button", { name: "确认并创建 Revision" }));
 
     await waitFor(() => {
@@ -532,7 +590,7 @@ describe("CreatePage quick authoring", () => {
       expect(request.spec.execution.maxSteps).toBe(24);
       expect(request.spec.context.maxInputTokens).toBe(64000);
       expect(request.spec.memory.providerRef).toBe("memory-release");
-      expect(request.spec.security.allowedPermissions).toEqual(["repo:read"]);
+      expect(request.spec.security.allowedPermissions).toEqual(["process:host-user", "repo:read"]);
       expect(request.spec.evaluation.suiteRefs).toEqual(["release-suite"]);
       expect(onCreated).toHaveBeenCalledWith("release-agent-created");
     });

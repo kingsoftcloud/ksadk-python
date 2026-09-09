@@ -38,12 +38,20 @@ from ksadk.plugins.providers.legacy import (
     LegacyHarnessSource,
 )
 from ksadk.plugins.providers.legacy_catalog import (
+    CODEX_AGENT_PROVIDER_PLUGIN_ID,
     KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID,
     builtin_agent_provider_manifests,
     legacy_harness_agent_provider_manifest,
 )
+from ksadk.plugins.providers.platform_resources import (
+    PLATFORM_RESOURCE_MCP_PLUGIN_ID,
+    PLATFORM_RESOURCE_MCP_REF,
+    PlatformResourceMCPFactory,
+    platform_resource_mcp_manifest,
+)
 from ksadk.plugins.resolver import PluginRegistry
-from ksadk.runtime import RuntimeLaunchContext
+from ksadk.resource_runtime.policy_authorization import FullAccessResourceWriteAuthorizer
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext
 from ksadk.sessions.base import BaseSessionService
 from ksadk.studio.contracts import (
     BuildRecord,
@@ -56,6 +64,7 @@ from ksadk.studio.plugin_kernel_adapter import StudioPluginKernelAdapter
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.run_service import StudioRunSpec
 from ksadk.studio.workspace import Workspace
+from ksadk.tools.gateway import normalize_tool_approval_mode
 
 _COMPOSED_RUNTIME_TYPES = frozenset({"harness", "plugin"})
 
@@ -165,6 +174,12 @@ class StudioPluginRuntime:
         provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_capability_service: Any | None = None,
+        resource_dsh_capability_service: Any | None = None,
+        resource_authority: Any | None = None,
+        resource_connections: Any | None = None,
+        resource_actor_ref: str = "local-user",
+        codex_local_launch_resolver: Any = None,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository
@@ -175,9 +190,18 @@ class StudioPluginRuntime:
         self._provider_manifests = dict(provider_manifests or {})
         self._provider_factories = dict(provider_factories or {})
         self._dsh_capability_service = dsh_capability_service
+        self._resource_dsh_capability_service = (
+            resource_dsh_capability_service or dsh_capability_service
+        )
+        self._resource_authority = resource_authority
+        self._resource_connections = resource_connections
+        self._resource_actor_ref = resource_actor_ref
+        self._codex_local_launch_resolver = codex_local_launch_resolver
+        self._runtime_executor = runtime_executor
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
         self._lock = asyncio.Lock()
         self._hosts: dict[str, _HostEntry] = {}
+        self._resource_write_modes: dict[str, str] = {}
         self._admission_open = True
         self._closed = False
 
@@ -205,7 +229,13 @@ class StudioPluginRuntime:
     def active_activation_count(self) -> int:
         return sum(entry.host.activation_count for entry in self._hosts.values())
 
-    def resolve(self, build_id: str, *, model: str | None = None) -> StudioRunSpec:
+    def resolve(
+        self,
+        build_id: str,
+        *,
+        model: str | None = None,
+        approval_mode: str | None = None,
+    ) -> StudioRunSpec:
         build = self.builds.get(build_id)
         runtime_type = build.runtime_type.strip().lower()
         if runtime_type not in _COMPOSED_RUNTIME_TYPES:
@@ -223,6 +253,13 @@ class StudioPluginRuntime:
         resolved = bundle.resolved_agent_spec
         instructions = resolved.get("instructions")
         instructions = instructions if isinstance(instructions, Mapping) else {}
+        provider_id, _provider_version = _parse_plugin_ref(
+            bundle.composition.profile.agent_provider.ref
+        )
+        provider_runtime_type = {
+            CODEX_AGENT_PROVIDER_PLUGIN_ID: "codex",
+            KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID: "harness",
+        }.get(provider_id)
         return StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type=runtime_type,
@@ -237,6 +274,14 @@ class StudioPluginRuntime:
                 "agent_task": str(instructions.get("task") or ""),
                 "plugin_bundle_digest": bundle.bundle_digest,
                 "dynamic_dsh_mcp": dynamic_dsh_mcp,
+                "provider_runtime_adapter": provider_runtime_type is not None,
+                "provider_runtime_type": provider_runtime_type or "",
+                "provider_ref": bundle.composition.profile.agent_provider.ref,
+                **(
+                    {"tool_approval_mode": normalize_tool_approval_mode(approval_mode)}
+                    if approval_mode
+                    else {}
+                ),
             },
             manifest_sha256=build.resolved_digest,
             plugin_bundle_root=bundle_root,
@@ -259,10 +304,17 @@ class StudioPluginRuntime:
                 "plugin_bundle_agent_mismatch",
                 "Studio run Agent does not match its immutable PluginHost Bundle",
             )
-        activation = await entry.host.open_activation(
-            entry.bundle,
-            activation_key=session_id,
+        self._resource_write_modes[session_id] = str(
+            spec.request_config.get("tool_approval_mode") or ""
         )
+        try:
+            activation = await entry.host.open_activation(
+                entry.bundle,
+                activation_key=session_id,
+            )
+        except BaseException:
+            self._resource_write_modes.pop(session_id, None)
+            raise
         try:
             raw = await activation.execute(dict(request))
             return _normalize_result(raw, session_id=session_id)
@@ -271,7 +323,10 @@ class StudioPluginRuntime:
             # activation per turn guarantees a restarted sidecar never leaves
             # a session pinned to an expired port or scoped token.
             if self._bundle_uses_dynamic_dsh(entry.bundle):
-                await activation.close()
+                try:
+                    await activation.close()
+                finally:
+                    self._resource_write_modes.pop(session_id, None)
 
     def kernel_adapter_provider(self, spec: StudioRunSpec):  # type: ignore[no-untyped-def]
         """Return a lazy, Build-pinned adapter factory for Scheduler Kernel."""
@@ -304,17 +359,34 @@ class StudioPluginRuntime:
                 "plugin_bundle_agent_mismatch",
                 "Studio run Agent does not match its immutable PluginHost Bundle",
             )
-        activation = await entry.host.open_activation(
-            entry.bundle,
-            activation_key=session_id,
+        self._resource_write_modes[session_id] = str(
+            spec.request_config.get("tool_approval_mode") or ""
         )
-        return await activation.runtime_adapter()
+        try:
+            activation = await entry.host.open_activation(
+                entry.bundle,
+                activation_key=session_id,
+            )
+        except BaseException:
+            self._resource_write_modes.pop(session_id, None)
+            raise
+        try:
+            return await activation.runtime_adapter()
+        except BaseException:
+            try:
+                await activation.close()
+            finally:
+                self._resource_write_modes.pop(session_id, None)
+            raise
 
     async def close_session(self, session_id: str) -> None:
         async with self._lock:
             entries = tuple(self._hosts.values())
-        for entry in entries:
-            await entry.host.close_activation(session_id)
+        try:
+            for entry in entries:
+                await entry.host.close_activation(session_id)
+        finally:
+            self._resource_write_modes.pop(session_id, None)
 
     async def close_session_if_dynamic(self, spec: StudioRunSpec, session_id: str) -> None:
         if bool(spec.request_config.get("dynamic_dsh_mcp")):
@@ -409,6 +481,13 @@ class StudioPluginRuntime:
                 # Providers resolve credential *references* at activation time.
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
+                "codex_local_launch_resolver": self._codex_local_launch_resolver,
+                "runtime_executor": self._runtime_executor,
+                "dsh_capability_service": self._resource_dsh_capability_service,
+                "resource_authority": self._resource_authority,
+                "resource_connections": self._resource_connections,
+                "resource_actor_ref": self._resource_actor_ref,
+                "resource_write_authorizer_factory": self._resource_write_authorizer,
             }
             provider_id, _provider_version = _parse_plugin_ref(
                 verified.composition.profile.agent_provider.ref
@@ -444,13 +523,24 @@ class StudioPluginRuntime:
                 await entry.host.dispose()
             return candidate
 
+    def _resource_write_authorizer(
+        self,
+        activation_key: str,
+        _bundle: ResolvedPluginBundle,
+    ) -> FullAccessResourceWriteAuthorizer | None:
+        if self._resource_write_modes.get(activation_key) != "full":
+            return None
+        return FullAccessResourceWriteAuthorizer(activation_key=activation_key)
+
     @staticmethod
     def _bundle_uses_dynamic_dsh(bundle: ResolvedPluginBundle) -> bool:
         reference = (
             f"plugin://{DSH_PROFILE_MCP_PLUGIN_ID}@{dsh_profile_mcp_manifest().metadata.version}"
         )
+        dynamic_refs = {reference, PLATFORM_RESOURCE_MCP_REF}
         return any(
-            capability.ref == reference for capability in bundle.composition.profile.capabilities
+            capability.ref in dynamic_refs
+            for capability in bundle.composition.profile.capabilities
         )
 
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:
@@ -514,6 +604,7 @@ class StudioPluginRuntime:
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
             dsh_profile_mcp_manifest(),
+            platform_resource_mcp_manifest(),
         ]
         external = self._external_manifest(profile)
         if external is not None:
@@ -536,12 +627,14 @@ class StudioPluginRuntime:
             *builtin_agent_provider_manifests(),
             *builtin_capability_manifests(),
             dsh_profile_mcp_manifest(),
+            platform_resource_mcp_manifest(),
         ]
         factories = builtin_capability_factories(
             state_root=self.workspace.resolve(".agentkit/plugin-runtime/state"),
             secret_resolver=self._secret_resolver.resolve,
         )
         factories[DSH_PROFILE_MCP_PLUGIN_ID] = DshProfileMCPFactory(self._dsh_capability_service)
+        factories[PLATFORM_RESOURCE_MCP_PLUGIN_ID] = PlatformResourceMCPFactory()
         provider_id, provider_version = _parse_plugin_ref(
             bundle.composition.profile.agent_provider.ref
         )
@@ -569,6 +662,7 @@ class StudioPluginRuntime:
                 *builtin_agent_provider_manifests(),
                 *builtin_capability_manifests(),
                 dsh_profile_mcp_manifest(),
+                platform_resource_mcp_manifest(),
             )
         }
         builtin_ids.discard(DSH_PROFILE_MCP_PLUGIN_ID)

@@ -51,14 +51,23 @@ class ResilientSessionService(BaseSessionService):
         self._probe_task: asyncio.Task[None] | None = None
 
     @property
+    def canonical_event_service(self) -> BaseSessionService:
+        """Return the single durable authority for canonical runtime facts.
+
+        Legacy session state remains live-first. Canonical event sequences cannot
+        fail over to the independently sequenced fallback without splitting one
+        logical log, so RuntimeEventStore binds directly to the primary service.
+        """
+
+        return self.primary
+
+    @property
     def degraded(self) -> bool:
         return not self._primary_enabled
 
     # This service is intentionally live-first and writes two independently
-    # sequenced stores.  Even when both children can atomically bind a local
-    # seq, the wrapper cannot guarantee one shared physical seq/fact across
-    # both writes, so it inherits BaseSessionService's empty canonical storage
-    # capabilities and RuntimeEventStore fails closed before either write.
+    # sequenced stores, so the wrapper itself does not claim canonical storage
+    # capabilities.
 
     async def _call_primary(self, method_name: str, *args: Any, **kwargs: Any) -> tuple[bool, Any]:
         if not self._primary_enabled:

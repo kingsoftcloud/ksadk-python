@@ -88,6 +88,14 @@ describe("ChatWorkspace shared conversation composition", () => {
     mocks.chat.isLoadingSessions = false;
     mocks.chat.isStreaming = false;
     mocks.chat.currentSessionId = "session-1";
+    mocks.chat.sessions = [
+      {
+        SessionId: "session-1",
+        Title: "已有会话",
+        UpdatedAt: "2026-09-04T00:00:00Z",
+        ActiveRunStatus: "",
+      },
+    ];
     mocks.useAgentChat.mockClear();
     mocks.facadeOptions.length = 0;
     mocks.timelineProps = null;
@@ -95,6 +103,34 @@ describe("ChatWorkspace shared conversation composition", () => {
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
+  });
+
+  it("shows a product title for an empty session instead of its internal id", () => {
+    mocks.chat.sessions = [{
+      SessionId: "ses_internal_id",
+      Title: "ses_internal_id",
+      UpdatedAt: "2026-09-04T00:00:00Z",
+      ActiveRunStatus: "",
+    }];
+    mocks.chat.currentSessionId = "ses_internal_id";
+
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+
+    expect(screen.getByText("新会话")).toBeInTheDocument();
+    expect(screen.queryByText("ses_internal_id")).not.toBeInTheDocument();
+  });
+
+  it("reports the selected session so the host inspector follows it", async () => {
+    const onSessionChanged = vi.fn();
+    render(
+      <ChatWorkspace
+        agentId="local-1"
+        agentName="Agent"
+        onSessionChanged={onSessionChanged}
+      />,
+    );
+
+    await waitFor(() => expect(onSessionChanged).toHaveBeenCalledWith("session-1"));
   });
 
   it("opens a scheduled result only after bootstrap and session loading settle", async () => {

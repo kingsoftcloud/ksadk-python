@@ -23,7 +23,11 @@ from typing import Any, Literal, cast
 import httpx
 from pydantic import ValidationError
 
-from ksadk.plugins.bridges.dsh import DshProfilePluginBridge, DshProfileProjection
+from ksadk.plugins.bridges.dsh import (
+    DshProfileBuildSnapshot,
+    DshProfilePluginBridge,
+    DshProfileProjection,
+)
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.host import PluginHostError
 from ksadk.plugins.providers.dsh_capabilities import (
@@ -36,6 +40,14 @@ from ksadk.plugins.providers.dsh_capabilities import (
     DshProfileCapabilityHost,
     DshProfileCapabilityInventory,
 )
+from ksadk.resource_runtime.broker import ResourceWriteAuthorizer
+from ksadk.resource_runtime.operation_ledger import OperationLedger
+from ksadk.resource_runtime.supervisor import (
+    ActiveResources,
+    ResourceRevalidator,
+    ResourceSupervisor,
+)
+from ksadk.resource_runtime.worker import WorkerInitialization
 from ksadk.studio.errors import StudioError
 
 _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -116,6 +128,7 @@ class StudioDshCapabilityService:
         dsh_command: Sequence[str] | None = None,
         bridge_factory: BridgeFactory = DshProfilePluginBridge,
         host_factory: HostFactory = DshProfileCapabilityHost,
+        mount_studio_app: bool = True,
         max_argument_bytes: int = _MAX_ARGUMENT_BYTES,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
     ) -> None:
@@ -130,6 +143,7 @@ class StudioDshCapabilityService:
         self._explicit_dsh_executable = normalized_command[0] if normalized_command else None
         self._bridge_factory = bridge_factory
         self._host_factory = host_factory
+        self._mount_studio_app = mount_studio_app
         if (
             isinstance(max_argument_bytes, bool)
             or max_argument_bytes < 1
@@ -147,6 +161,8 @@ class StudioDshCapabilityService:
         self._lease: DshMcpConnectorLease | None = None
         self._projection: DshProfileProjection | None = None
         self._generation_id: str | None = None
+        self._resource_supervisor: ResourceSupervisor | None = None
+        self._resource_generation_snapshot: DshProfileBuildSnapshot | None = None
         self._active_calls: dict[str, _ActiveCall] = {}
         self._closed = False
         self.model_projection = None
@@ -168,6 +184,21 @@ class StudioDshCapabilityService:
             dsh_home=dsh_home,
             profile=profile,
             dsh_command=command,
+        )
+
+    @classmethod
+    def create_workspace_resource_default(cls, workspace: Path) -> "StudioDshCapabilityService":
+        """Create the closed execution Profile used by platform resources."""
+
+        root = workspace.resolve()
+        configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
+        command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
+        return cls(
+            root,
+            dsh_home=root / ".agentkit" / "dsh-home",
+            profile="agentkit-resources",
+            dsh_command=command,
+            mount_studio_app=False,
         )
 
     @property
@@ -196,6 +227,34 @@ class StudioDshCapabilityService:
                 )
             command = await asyncio.to_thread(self._resolve_command)
             return await asyncio.to_thread(self._profile_has_enabled_plugins, command)
+
+    def capture_resource_build_snapshot(self) -> DshProfileBuildSnapshot:
+        """Capture immutable Profile inputs for a caller-owned Build staging area.
+
+        The bridge uses the cross-process Profile transaction lock, so this
+        synchronous method is safe to call from Studio's existing Build worker
+        thread without starting or mutating the live Core generation.
+        """
+
+        if self._closed:
+            raise StudioError(
+                "DSH_CAPABILITY_SERVICE_CLOSED",
+                "DSH capability service 已关闭",
+                status_code=503,
+            )
+        command = self._resolve_command()
+        try:
+            with self._bridge_factory(
+                dsh_home=self._dsh_home,
+                profile=self._profile,
+                dsh_command=command,
+                cwd=self._workspace,
+            ) as bridge:
+                return bridge.snapshot_for_build()
+        except StudioError:
+            raise
+        except Exception as error:
+            raise self._unavailable(error) from error
 
     async def describe(self) -> DshProfileCapabilityDescriptor:
         host, _lease = await self._ready_generation()
@@ -502,7 +561,11 @@ class StudioDshCapabilityService:
                 projection=projection,
                 dsh_home=self._dsh_home,
                 cwd=self._workspace,
-                studio_index=Path(__file__).with_name("static") / "index.html",
+                studio_index=(
+                    Path(__file__).with_name("static") / "index.html"
+                    if self._mount_studio_app
+                    else None
+                ),
                 studio_models=self.model_projection() if self.model_projection else None,
                 max_argument_bytes=self._max_argument_bytes,
                 max_result_bytes=self._max_result_bytes,
@@ -525,7 +588,21 @@ class StudioDshCapabilityService:
         host: DshProfileCapabilityHost,
         projection: DshProfileProjection,
     ) -> tuple[DshProfileCapabilityHost, DshMcpConnectorLease]:
+        # A restarted Core must never inherit workers or resource handles from
+        # the previous generation, including when the restart subsequently fails.
+        self._resource_generation_snapshot = None
+        await self._close_resource_supervisor_locked()
+        generation_id = f"dshgen_{secrets.token_urlsafe(24)}"
         try:
+            if "@kingsoftcloud/dsh-platform-resources" in projection.bundles:
+                ledger = await asyncio.to_thread(
+                    OperationLedger, self._workspace / ".agentkit" / "resource-operations"
+                )
+                self._resource_supervisor = ResourceSupervisor(
+                    generation_id, operation_ledger=ledger,
+                )
+                socket_path = await self._resource_supervisor.start_broker()
+                await host.configure_resource_socket(socket_path)
             lease = await host.lease()
             descriptor = host.descriptor
             if (
@@ -537,15 +614,194 @@ class StudioDshCapabilityService:
             await self._initialize_lease(lease)
         except StudioError as error:
             self._lease = None
+            await self._close_resource_supervisor_locked()
             if error.code == "DSH_CAPABILITY_PROTOCOL_INVALID":
                 await self._dispose_generation_locked()
             raise
         except (PluginHostError, OSError, ValueError) as error:
             self._lease = None
+            await self._close_resource_supervisor_locked()
             raise self._unavailable(error) from error
+        except BaseException:
+            self._lease = None
+            await self._close_resource_supervisor_locked()
+            raise
         self._lease = lease
-        self._generation_id = f"dshgen_{secrets.token_urlsafe(24)}"
+        self._generation_id = generation_id
         return host, lease
+
+    async def prepare_resource_generation(
+        self, expected: DshProfileBuildSnapshot
+    ) -> tuple[DshProfileCapabilityDescriptor, str]:
+        """Admit a cold Core or share an already attested, identical installation.
+
+        A same-Profile Core started for Studio UI contributions has no resource
+        Build owner yet. Restart it under the frozen snapshot so loading a client
+        plugin cannot make platform-resource Agents impossible to run. A generation
+        already owned by another resource Build is never replaced implicitly.
+        """
+        expected = DshProfileBuildSnapshot.model_validate_json(expected.model_dump_json())
+        async with self._lock:
+            if (
+                self._host is not None and self._resource_generation_snapshot != expected
+            ):
+                if (
+                    self._resource_generation_snapshot is not None
+                    or self._projection != expected.projection
+                ):
+                    raise StudioError(
+                        "RESOURCE_PROFILE_IN_USE",
+                        "当前 DSH generation 已由其他配置占用；请停止对应运行或选择独立 profile",
+                        status_code=409,
+                    )
+                if self._lease is not None:
+                    # The live Core only serves the exact same Profile projection
+                    # and has not activated resources. Replace it so the process
+                    # itself starts between the two immutable-installation checks
+                    # below. A Host retained after a failed start has no live
+                    # generation and remains the circuit-breaker owner for retry.
+                    await self._dispose_generation_locked()
+            command = await asyncio.to_thread(self._resolve_command)
+            try:
+                await asyncio.to_thread(self._verify_resource_build_snapshot, command, expected)
+            except BaseException:
+                await self._dispose_generation_locked()
+                raise
+            host, _ = await self._ensure_ready_locked()
+            try:
+                if self._projection != expected.projection:
+                    raise StudioError(
+                        "RESOURCE_BUILD_PROFILE_MISMATCH",
+                        "DSH Core 与 Build 配置不匹配",
+                        status_code=409,
+                    )
+                await asyncio.to_thread(self._verify_resource_build_snapshot, command, expected)
+            except BaseException:
+                await self._dispose_generation_locked()
+                raise
+            self._resource_generation_snapshot = expected
+            return host.descriptor, self._require_generation_id()
+
+    async def activate_resources(
+        self, initialization: WorkerInitialization, *, expected: DshProfileBuildSnapshot,
+        write_authorizer: ResourceWriteAuthorizer | None = None,
+    ) -> ActiveResources:
+        """Trusted execution adapter entry after Build and upstream admission.
+
+        This does not install bundles or expose a resource MCP token. It owns
+        worker lifetime alongside the matching existing Core generation.
+        """
+        initialization = WorkerInitialization.model_validate(initialization.pipe_payload())
+        async with self._lock:
+            if self._resource_generation_snapshot != expected:
+                raise StudioError(
+                    "RESOURCE_BUILD_NOT_PREPARED",
+                    "资源 Build 尚未准备对应的 DSH generation",
+                    status_code=409,
+                )
+            if initialization.resource_snapshot.dsh_profile != expected:
+                raise StudioError(
+                    "RESOURCE_BUILD_PROFILE_MISMATCH",
+                    "资源 Build 未锁定当前 DSH 安装快照，请重新构建",
+                    status_code=409,
+                )
+            command = await asyncio.to_thread(self._resolve_command)
+            try:
+                await asyncio.to_thread(self._verify_resource_build_snapshot, command, expected)
+            except BaseException:
+                await self._dispose_generation_locked()
+                raise
+            _, lease = await self._ensure_ready_locked()
+            if self._resource_generation_snapshot != expected:
+                raise StudioError(
+                    "RESOURCE_BUILD_NOT_PREPARED",
+                    "DSH 重启后需要重新准备资源 Build",
+                    status_code=409,
+                )
+            first = initialization.scopes[0]
+            if (
+                first.generation_id != self._generation_id
+                or first.profile_digest != lease.profile_digest
+            ):
+                raise StudioError(
+                    "RESOURCE_BUILD_PROFILE_MISMATCH",
+                    "资源运行实例与当前 DSH profile/generation 不匹配",
+                    status_code=409,
+                )
+            if self._resource_supervisor is None:
+                ledger = await asyncio.to_thread(
+                    OperationLedger, self._workspace / ".agentkit" / "resource-operations"
+                )
+                self._resource_supervisor = ResourceSupervisor(
+                    first.generation_id, operation_ledger=ledger,
+                )
+            return await self._resource_supervisor.activate(
+                initialization, write_authorizer=write_authorizer,
+            )
+
+    async def deactivate_resources(self, activation_id: str) -> None:
+        async with self._lock:
+            if self._resource_supervisor is not None:
+                await self._resource_supervisor.deactivate(activation_id)
+
+    async def resource_connector_lease(
+        self,
+        current: ActiveResources,
+    ) -> DshMcpConnectorLease:
+        """Return the matching Core lease only while the worker is still live."""
+
+        async with self._lock:
+            _host, lease = await self._ensure_ready_locked()
+            supervisor = self._resource_supervisor
+            if (
+                supervisor is None
+                or not current.leases
+                or current.leases[0].scope.generation_id != self._generation_id
+                or current.leases[0].scope.profile_digest != lease.profile_digest
+                or not await supervisor.owns(current)
+            ):
+                raise StudioError(
+                    "RESOURCE_ACTIVATION_STALE",
+                    "资源 worker 已失效，需要重新激活",
+                    status_code=409,
+                )
+            return lease
+
+    async def renew_resources(
+        self, current: ActiveResources, *, expected: DshProfileBuildSnapshot,
+        revalidate: ResourceRevalidator,
+    ) -> ActiveResources:
+        async with self._lock:
+            if self._resource_supervisor is None or self._resource_generation_snapshot != expected:
+                raise StudioError(
+                    "RESOURCE_BUILD_NOT_PREPARED", "资源 Build 尚未准备", status_code=409,
+                )
+            supervisor = self._resource_supervisor
+        try:
+            command = await asyncio.to_thread(self._resolve_command)
+            await asyncio.to_thread(self._verify_resource_build_snapshot, command, expected)
+        except BaseException:
+            async with self._lock:
+                if self._resource_supervisor is supervisor:
+                    await self._dispose_generation_locked()
+            raise
+        # Platform checks cannot hold the Studio lock and delay stop/revocation.
+        return await supervisor.renew(current, revalidate=revalidate)
+
+    async def resource_runtime_status(self, *, agent_id: str, activation_id: str) -> dict | None:
+        # Observations never start a Core or replace a generation.
+        async with self._lock:
+            if self._resource_supervisor is None:
+                return None
+            return await self._resource_supervisor.runtime_status(
+                agent_id=agent_id, activation_id=activation_id,
+            )
+
+    async def _close_resource_supervisor_locked(self) -> None:
+        supervisor = self._resource_supervisor
+        self._resource_supervisor = None
+        if supervisor is not None:
+            await self._finish_cleanup(supervisor.aclose())
 
     def _resolve_command(self) -> tuple[str, ...]:
         try:
@@ -580,6 +836,24 @@ class StudioDshCapabilityService:
                 return any(item.enabled for item in bridge.list_plugins())
         except Exception as error:
             raise self._unavailable(error) from error
+
+    def _verify_resource_build_snapshot(
+        self, command: Sequence[str], expected: DshProfileBuildSnapshot
+    ) -> None:
+        try:
+            with self._bridge_factory(
+                dsh_home=self._dsh_home,
+                profile=self._profile,
+                dsh_command=command,
+                cwd=self._workspace,
+            ) as bridge:
+                bridge.verify_build_snapshot(expected)
+        except Exception as error:
+            raise StudioError(
+                "RESOURCE_BUILD_INSTALLATION_MISMATCH",
+                "DSH 已安装内容与资源 Build 不一致",
+                status_code=409,
+            ) from error
 
     @staticmethod
     def _validate_expected_generation(
@@ -636,15 +910,19 @@ class StudioDshCapabilityService:
         self._host = None
         self._lease = None
         self._projection = None
+        self._resource_generation_snapshot = None
         self._generation_id = None
         self._active_calls.clear()
-        if active:
-            await asyncio.gather(
-                *(self._send_cancel(call.lease, call_id) for call_id, call in active),
-                return_exceptions=True,
-            )
-        if host is not None:
-            await host.dispose()
+        try:
+            await self._close_resource_supervisor_locked()
+        finally:
+            if active:
+                await asyncio.gather(
+                    *(self._send_cancel(call.lease, call_id) for call_id, call in active),
+                    return_exceptions=True,
+                )
+            if host is not None:
+                await host.dispose()
 
     @staticmethod
     async def _finish_cleanup(cleanup: Coroutine[Any, Any, None]) -> None:

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import tempfile
 import time
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ksadk.sandbox import (
@@ -12,6 +15,9 @@ from ksadk.sandbox import (
 from ksadk.sandbox import (
     SandboxInputFile as RuntimeSandboxInputFile,
 )
+from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
+from ksadk.skills.package_store import SkillPackage
+from ksadk.skills.runtime.artifact_delivery import ArtifactBundle, import_artifacts
 from ksadk.skills.runtime.base import (
     parse_workflow_result,
     SandboxInputFile,
@@ -21,6 +27,7 @@ from ksadk.skills.runtime.base import (
     normalize_skill_names,
     parse_output_files,
 )
+from ksadk.skills.runtime.pinned import read_archive, stage_packages
 
 
 def _bool_env(name: str, default: bool = True) -> bool:
@@ -49,6 +56,10 @@ def _redact(value: str) -> str:
 
 
 class E2BSkillRuntimeBackend:
+    def preflight(self) -> None:
+        """Read-only local dependency check; does not prove upstream authorization."""
+        self.sandbox_backend.check_available()
+
     def __init__(
         self,
         *,
@@ -56,6 +67,8 @@ class E2BSkillRuntimeBackend:
         template_id: str,
         timeout: int = 900,
         allow_internet_access: bool = True,
+        connection: ExplicitE2BConnection | None = None,
+        artifact_directory: Path | None = None,
     ):
         if not template_id:
             raise SkillRuntimeError(
@@ -65,6 +78,7 @@ class E2BSkillRuntimeBackend:
         self.template_id = template_id
         self.timeout = timeout
         self.allow_internet_access = allow_internet_access
+        self.artifact_directory = artifact_directory
         self.sandbox_backend = E2BSandboxBackend(
             spec=SandboxSpec(
                 template_id=template_id,
@@ -73,6 +87,7 @@ class E2BSkillRuntimeBackend:
                 metadata={"component": "skill-runtime"},
             ),
             sandbox_cls=sandbox_cls,
+            connection=connection,
         )
 
     @classmethod
@@ -110,17 +125,31 @@ class E2BSkillRuntimeBackend:
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        pinned_packages: list[SkillPackage] | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult:
         session = None
         started = time.monotonic()
         effective_timeout = timeout or self.timeout
         try:
+            if pinned_packages is not None:
+                for item in input_files or []:
+                    target = PurePosixPath(item.target_path)
+                    if (
+                        not target.is_relative_to("/workspace/inputs")
+                        or ".." in target.parts
+                        or "\\" in item.target_path
+                    ):
+                        raise SkillRuntimeError(
+                            "Pinned Skill inputs must be under /workspace/inputs"
+                        )
             sandbox_env = {
                 "KSADK_SKILL_SPACE_IDS": ",".join(skill_space_ids),
                 "SKILL_SPACE_ID": skill_space_ids[0] if skill_space_ids else "",
             }
-            if public_spaces := os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS"):
+            if pinned_packages is None and (
+                public_spaces := os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS")
+            ):
                 sandbox_env["KSADK_PUBLIC_SKILL_SPACE_IDS"] = public_spaces
             selected_skill_names = format_skill_names_env(skill_names)
             if selected_skill_names:
@@ -136,44 +165,52 @@ class E2BSkillRuntimeBackend:
             )
 
             request_path = "/tmp/ksadk-workflow-request.json"
+            request = {
+                "workflow_prompt": workflow_prompt,
+                "skill_names": normalize_skill_names(skill_names),
+            }
+            if pinned_packages is not None:
+                probe = session.run_command(
+                    "python -I -c 'from ksadk.skills.runtime.agent import "
+                    "PINNED_PACKAGE_PROTOCOL_VERSION, ARTIFACT_DELIVERY_PROTOCOL_VERSION; "
+                    'print(f"{PINNED_PACKAGE_PROTOCOL_VERSION}:{ARTIFACT_DELIVERY_PROTOCOL_VERSION}")\'',
+                    timeout=min(effective_timeout, 10),
+                    env=sandbox_env,
+                )
+                if probe.exit_code != 0 or probe.stdout.strip() != "1:1":
+                    raise SkillRuntimeError(
+                        "Sandbox runtime does not support pinned Skill protocol v1"
+                    )
+                delivery = "/tmp/ksadk-pinned-" + secrets.token_hex(16)
+                prepared = session.run_command(
+                    f"mkdir -m 700 {delivery}", timeout=min(effective_timeout, 10), env=sandbox_env
+                )
+                if prepared.exit_code != 0:
+                    raise SkillRuntimeError("Could not prepare pinned Skill delivery directory")
+                with tempfile.TemporaryDirectory(prefix="ksadk-skill-transfer-") as directory:
+                    entries = stage_packages(pinned_packages, Path(directory))
+                    for entry in entries:
+                        session.write_file(
+                            f"{delivery}/{entry.archive_name}",
+                            read_archive(Path(directory) / entry.archive_name),
+                        )
+                request["pinned_packages"] = [entry.model_dump() for entry in entries]
+                request["pinned_protocol_version"] = 1
+                request["collect_artifacts"] = True
+                sandbox_env["KSADK_SKILL_WORKDIR"] = f"{delivery}/work"
+                request_path = f"{delivery}/workflow-request.json"
             session.write_file(
                 request_path,
                 json.dumps(
-                    {
-                        "workflow_prompt": workflow_prompt,
-                        "skill_names": normalize_skill_names(skill_names),
-                    },
+                    request,
                     ensure_ascii=False,
                 ).encode("utf-8"),
             )
             command = f"python -u /home/ksadk/agent.py --request-file {request_path}"
+            if pinned_packages is not None:
+                command = (
+                    f"python -I -u -m ksadk.skills.runtime.agent --request-file {request_path}"
+                )
             result = session.run_command(command, timeout=effective_timeout, env=sandbox_env)
             stdout = result.stdout
-            wf = parse_workflow_result(stdout)
-            return SkillRuntimeResult(
-                runtime_id=session.sandbox_id,
-                exit_code=result.exit_code,
-                stdout=stdout,
-                stderr=result.stderr,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                output_files=parse_output_files(stdout),
-                workflow_status=str(wf.get("status", "")),
-                executed_skill=str(wf.get("executed_skill", "")),
-                instructions=str(wf.get("instructions", "")),
-            )
-        except Exception as exc:
-            error_type = type(exc).__name__
-            return SkillRuntimeResult(
-                runtime_id=session.sandbox_id if session is not None else "",
-                exit_code=None,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                timed_out="timeout" in error_type.lower(),
-                error_type=error_type,
-                error_message=_redact(str(exc)),
-            )
-        finally:
-            if session is not None:
-                try:
-                    session.kill()
-                except Exception:
-                    pass
+                output_files=output_files,

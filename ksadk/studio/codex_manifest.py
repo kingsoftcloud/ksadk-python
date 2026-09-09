@@ -129,6 +129,9 @@ class CodexAgentManifest(BaseModel):
             refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
             if len(refs) != len(set(refs)):
                 raise ValueError("plugins 不能包含重复的启用 pluginRef")
+            from ksadk.resource_runtime.plugin_config import validate_resource_plugin_bindings
+
+            validate_resource_plugin_bindings(self.plugins)
         if self.soul is None:
             if self.soul_source is not None or self.soul_digest is not None:
                 raise ValueError("soul source/digest require a SoulDocument")

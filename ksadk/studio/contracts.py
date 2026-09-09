@@ -268,6 +268,13 @@ class NativePluginBinding(ContractModel):
         _reject_clear_runtime_secrets(value, path="pluginBinding.config")
         return value
 
+    @model_validator(mode="after")
+    def validate_platform_resource_config(self) -> "NativePluginBinding":
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+        resource_plugin_config(self.plugin_ref, self.ecosystem, self.config, enabled=self.enabled)
+        return self
+
 
 class AgentBindings(ContractModel):
     model_profile_id: str | None = None
@@ -294,6 +301,9 @@ class AgentBindings(ContractModel):
         plugin_refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
         if len(plugin_refs) != len(set(plugin_refs)):
             raise ValueError("启用的插件绑定不能重复 pluginRef")
+        from ksadk.resource_runtime.plugin_config import validate_resource_plugin_bindings
+
+        validate_resource_plugin_bindings(self.plugins)
         return self
 
 
@@ -531,6 +541,27 @@ class AgentSpec(ContractModel):
     security: SecuritySpec = Field(default_factory=SecuritySpec)
     evaluation: EvaluationSpec = Field(default_factory=EvaluationSpec)
 
+    @model_validator(mode="after")
+    def validate_memory_resource_reference(self) -> "AgentSpec":
+        if not self.memory.enabled or not self.memory.provider_ref.startswith("binding://"):
+            return self
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+        binding_id = self.memory.provider_ref.removeprefix("binding://")
+        for binding in self.bindings.plugins:
+            if not binding.enabled:
+                continue
+            resource = resource_plugin_config(
+                binding.plugin_ref, binding.ecosystem, binding.config, enabled=True
+            )
+            if resource is not None and resource.binding.id == binding_id:
+                if resource.binding.resource.kind != "memory-instance":
+                    raise ValueError("Memory providerRef must reference a memory-instance binding")
+                if self.memory.scopes != ["user"]:
+                    raise ValueError("Platform memory requires explicit scopes: [user]")
+                return self
+        raise ValueError("Memory providerRef references a missing or disabled resource binding")
+
 
 _AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
 _AGENT_AVATAR_URL_PATTERN = re.compile(r"^/api/v1/assets/agent-avatars/[0-9a-f]{64}\.(?:png|webp)$")
@@ -709,6 +740,14 @@ class BundleManifest(ContractModel):
     composition_mode: Literal["legacy", "composed"] | None = None
     composition_profile_digest: str | None = None
     hosted_kernel_requirement_digest: str = ""
+    resource_build_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    resource_snapshot_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
     bundle_digest: str = ""
@@ -719,6 +758,10 @@ class BundleManifest(ContractModel):
             raise ValueError("composed Bundle v2 requires compositionProfileDigest")
         if self.composition_mode == "legacy" and self.composition_profile_digest:
             raise ValueError("legacy Bundle v2 cannot declare compositionProfileDigest")
+        if bool(self.resource_build_digest) != bool(self.resource_snapshot_digest):
+            raise ValueError(
+                "resourceBuildDigest and resourceSnapshotDigest must be declared together"
+            )
         return self
 
     @property
@@ -751,6 +794,14 @@ class BuildRecord(ContractModel):
     source_digest: str = ""
     runtime_lock: dict[str, Any] = Field(default_factory=dict)
     bundle_digest: str = ""
+    resource_build_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    resource_snapshot_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     artifact_path: str | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
