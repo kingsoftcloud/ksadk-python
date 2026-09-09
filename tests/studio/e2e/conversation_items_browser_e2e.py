@@ -72,7 +72,9 @@ def _seed_agent(service: StudioService) -> None:
                 credential_ref="env://MODEL_API_KEY",
             ),
             instructions=Instructions(system="Render every canonical item by identity."),
-            security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.com"])),
+            security=SecuritySpec(
+                network=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            ),
         ),
     )
     service.builder.build(draft)

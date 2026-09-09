@@ -408,7 +408,7 @@ def test_content_audit_blocks_private_doc_domains_and_secret_shapes(tmp_path):
     ]
 
 
-def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_services(tmp_path):
+def test_content_audit_allows_supported_internal_endpoints_but_blocks_other_services(tmp_path):
     audit = _load_audit_module()
     (tmp_path / "aicp.py").write_text(
         "\n".join(
@@ -416,6 +416,8 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
                 'AICP_PUBLIC = "aicp.api.ksyun.com"',
                 'AICP_INTERNAL = "aicp.internal.api.ksyun.com"',
                 'AICP_INNER = "aicp.inner.api.ksyun.com"',
+                'IAM_INTERNAL = "iam.internal.api.ksyun.com"',
+                'IAM_INNER = "iam.inner.api.ksyun.com"',
             ]
         ),
         encoding="utf-8",

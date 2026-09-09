@@ -168,6 +168,16 @@ PUBLIC_TEST_FILES = {
     "tests/studio/test_framework_bundle_integrity.py",
     "tests/studio/test_codex_plugin_store.py",
     "tests/studio/test_dsh_capability_service.py",
+    "tests/studio/test_resource_authority.py",
+    "tests/resource_runtime/test_activation_approvals.py",
+    "tests/resource_runtime/test_memory_worker.py",
+    "tests/resource_runtime/test_worker_process.py",
+    "tests/resource_runtime/test_studio_resource_config.py",
+    "tests/fixtures/resource_runtime/node_bridge.test.mjs",
+    "tests/fixtures/resource_runtime/node_bridge_probe.mjs",
+    "tests/fixtures/resource_runtime/node_core_probe.mjs",
+    "tests/fixtures/resource_runtime/node_mcp_host.mjs",
+    "tests/fixtures/resource_runtime/plain_status_plugin.mjs",
     "tests/studio/test_dsh_agent_binding.py",
     "tests/studio/test_dsh_plugin_api.py",
     "tests/studio/test_native_plugin_binding.py",
@@ -188,6 +198,10 @@ PUBLIC_TEST_FILES = {
     "tests/runners/test_adapter_contract.py",
     "tests/runners/test_codex_plugin_bootstrap.py",
     "tests/runners/test_codex_runner.py",
+    "tests/runners/test_hitl_resume_envelopes.py",
+    "tests/runtime/test_semantic_tool_scope.py",
+    "tests/studio/test_e2e_server_readiness.py",
+    "tests/test_resilient_canonical_authority.py",
 }
 
 EXCLUDED_PREFIXES = (

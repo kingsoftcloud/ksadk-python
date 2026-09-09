@@ -47,6 +47,7 @@ class LangGraphInteractionProvider:
             kind=payload_kind,
             call_id=str(native_target.get("call_id") or record.interaction_id),
             data=submission.response,
+            session_context=context.session_context,
         )
         return await context.adapter.resume(
             context.handle,

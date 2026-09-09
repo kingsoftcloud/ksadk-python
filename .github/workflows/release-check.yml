@@ -60,7 +60,7 @@ jobs:
 
       - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.5"
+          KSADK_WEB_VERSION: "0.3.7"
         run: make build-frontend
 
       - name: Verify clean release source

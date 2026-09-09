@@ -2,6 +2,7 @@
 KS3 上传模块 - 金山云对象存储上传
 """
 
+import logging
 import os
 import socket
 import time
@@ -27,7 +28,15 @@ class KS3Uploader:
     UPLOAD_TIMEOUT_PER_MB_SECONDS = 4.0
     UPLOAD_TIMEOUT_MAX_SECONDS = 3600
 
-    def __init__(self, region: str = "cn-beijing-6", bucket: Optional[str] = None):
+    def __init__(
+        self,
+        region: str = "cn-beijing-6",
+        bucket: Optional[str] = None,
+        *,
+        access_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+        public_read: bool = True,
+    ):
         """初始化 KS3 上传器
 
         Args:
@@ -37,7 +46,15 @@ class KS3Uploader:
                    - 如果未指定，优先从环境变量 KS3_BUCKET 读取
                    - 如果环境变量也未设置，默认使用 agentengine-{region}
         """
+        # ks3sdk logs the signed Authorization header at INFO. Studio uploads
+        # run inside a long-lived server process, so keep that transport logger
+        # above INFO before any request can be emitted.
+        logging.getLogger("ks3.http").setLevel(logging.WARNING)
+
         self.region = region
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.public_read = public_read
 
         # 确定 bucket 名称 (优先级: 参数 > 环境变量 > 默认值)
         if bucket:
@@ -260,8 +277,12 @@ class KS3Uploader:
     def _upload_via_host(self, file_path: Path, object_key: str, host: str) -> bool:
         from ks3.connection import Connection  # type: ignore[import-untyped]
 
-        ak = os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY")
-        sk = os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY")
+        ak = self.access_key or os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get(
+            "KS3_ACCESS_KEY"
+        )
+        sk = self.secret_key or os.environ.get("KSYUN_SECRET_KEY") or os.environ.get(
+            "KS3_SECRET_KEY"
+        )
 
         conn = Connection(
             ak,
@@ -291,10 +312,14 @@ class KS3Uploader:
                 resumable=True,
                 resumable_filename=str(resume_path),
             )
-            result = upload_task.upload(headers={"x-kss-acl": "public-read"})
+            headers = {"x-kss-acl": "public-read"} if self.public_read else {}
+            result = upload_task.upload(headers=headers)
         else:
             click.echo(f"   普通上传: {file_path.stat().st_size / (1024 * 1024):.2f} MB")
-            result = key.set_contents_from_filename(str(file_path), policy="public-read")
+            if self.public_read:
+                result = key.set_contents_from_filename(str(file_path), policy="public-read")
+            else:
+                result = key.set_contents_from_filename(str(file_path))
 
         status = getattr(result, "status", None)
         if status is None:
@@ -313,8 +338,12 @@ class KS3Uploader:
             成功返回 ks3:// URI, 失败返回 None
         """
         # 检查环境变量 (优先使用 KSYUN_* 金山云 IAM 凭证)
-        ak = os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY")
-        sk = os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY")
+        ak = self.access_key or os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get(
+            "KS3_ACCESS_KEY"
+        )
+        sk = self.secret_key or os.environ.get("KSYUN_SECRET_KEY") or os.environ.get(
+            "KS3_SECRET_KEY"
+        )
 
         if not ak or not sk:
             click.secho("❌ 请在 .env 文件中设置金山云 IAM 凭证:", fg="red")

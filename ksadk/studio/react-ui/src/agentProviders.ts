@@ -71,3 +71,8 @@ export function providerOptionDescription(item: AgentProviderCatalogItem): strin
   const state = item.selectable ? "已启用" : item.reason?.message || "不可用";
   return `${item.pluginId}@${item.resolvedVersion} · ${state}`;
 }
+
+// Consent belongs to an exact Provider and permission set, never a shared boolean.
+export function providerConsentKey(provider?: AgentProviderCatalogItem): string | null {
+  return provider ? JSON.stringify([provider.providerRef, [...new Set(provider.permissions)].sort()]) : null;
+}

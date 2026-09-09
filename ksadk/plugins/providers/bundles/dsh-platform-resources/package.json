@@ -1,0 +1,12 @@
+{
+  "name": "@kingsoftcloud/dsh-platform-resources",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Private development bundle for host-authorized platform resource IPC",
+  "exports": {".": "./index.mjs", "./client": "./client.mjs", "./cordis.patch.yml": "./cordis.patch.yml"},
+  "files": ["index.mjs", "client.mjs", "cordis.patch.yml"],
+  "engines": {"node": ">=22.19.0"},
+  "peerDependencies": {"@deepseek-ai/cordis": "^4.0.1"},
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}

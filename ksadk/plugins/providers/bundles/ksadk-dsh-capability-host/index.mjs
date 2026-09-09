@@ -109,6 +109,7 @@ function secureTokenEqual(actual, expected) {
 
 function parseScopedToken(presented, token, profileDigest, tools, allowExpired = false) {
   const parts = presented.split('.')
+  if (parts[0] === 'ks2') return parseResourceToken(parts, token, profileDigest, tools, allowExpired)
   if (parts.length !== 3 || parts[0] !== 'ks1') return null
   const [, payloadEncoded, signature] = parts
   const expected = createHmac('sha256', token).update(payloadEncoded).digest('base64url')
@@ -143,6 +144,40 @@ function parseScopedToken(presented, token, profileDigest, tools, allowExpired =
     !tools.some((tool) => tool.name === source)
   )) return null
   return { root: false, scopeId: signature, aliases, expiresAt: payload.exp }
+}
+
+function parseResourceToken(parts, token, profileDigest, tools, allowExpired) {
+  if (parts.length !== 3) return null
+  const [, encoded, signature] = parts
+  const expected = createHmac('sha256', token).update(`ks2.${encoded}`).digest('base64url')
+  if (!secureTokenEqual(signature, expected)) return null
+  let payload
+  try { payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) }
+  catch { return null }
+  const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+  const ref = value => typeof value === 'string' && /^\S{1,256}$/u.test(value)
+  const now = Math.floor(Date.now() / 1000)
+  if (!record(payload) || payload.v !== 2 || payload.profileDigest !== profileDigest ||
+      !ref(payload.generationId) || !ref(payload.activationId) ||
+      !DIGEST_PATTERN.test(payload.buildDigest ?? '') || !DIGEST_PATTERN.test(payload.bindingSnapshotDigest ?? '') ||
+      !Number.isSafeInteger(payload.issuedAt) || !Number.isSafeInteger(payload.expiresAt) ||
+      payload.issuedAt > now + 5 || payload.expiresAt <= payload.issuedAt ||
+      payload.expiresAt - payload.issuedAt > 600 || (!allowExpired && payload.expiresAt <= now) ||
+      typeof payload.jti !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(payload.jti) ||
+      !record(payload.identity) || !record(payload.aliases) || !record(payload.resources)) return null
+  const identityKeys = ['tenantRef', 'resourcePrincipalRef', 'actorRef', 'memorySubjectRef', 'agentId', 'sessionRef']
+  if (Object.keys(payload.identity).length !== identityKeys.length ||
+      identityKeys.some(key => !ref(payload.identity[key]))) return null
+  const aliases = new Map(Object.entries(payload.aliases))
+  if (!aliases.size || aliases.size > 32 || [...aliases].some(([alias, source]) =>
+    !/^[A-Za-z0-9_-]{1,64}$/.test(alias) || typeof source !== 'string' ||
+    !tools.some(tool => tool.name === source))) return null
+  const resources = new Map(Object.entries(payload.resources))
+  if (!resources.size || resources.size > 32 || [...resources].some(([source, item]) =>
+    ![...aliases.values()].includes(source) || !record(item) || !ref(item.bindingId) ||
+    item.operation !== source || typeof item.handle !== 'string' ||
+    !/^[A-Za-z0-9_-]{32,256}$/.test(item.handle))) return null
+  return { root: false, scopeId: signature, aliases, resources, expiresAt: payload.expiresAt }
 }
 
 function authorize(request, token, profileDigest, tools, revokedScopes) {
@@ -307,7 +342,7 @@ function toolFailure(message, code = 'DSH_TOOL_BRIDGE_ERROR') {
   }
 }
 
-function projectToolResult(result, maximumBytes) {
+function projectToolResult(result, maximumBytes, resourceInvocation = false) {
   if (result === null || typeof result !== 'object' || Array.isArray(result)) {
     return toolFailure('DSH returned an invalid tool result')
   }
@@ -332,6 +367,16 @@ function projectToolResult(result, maximumBytes) {
     !Array.isArray(result.value)
   ) {
     projected.structuredContent = result.value
+    // A successful Cordis invocation may carry a failed resource operation.
+    // Apply this domain contract only after authenticated resource admission;
+    // ordinary third-party values named "status" retain their existing meaning.
+    if (resourceInvocation && ['failed', 'unauthorized'].includes(result.value.status)) {
+      projected.isError = true
+      const code = typeof result.value.errorCode === 'string'
+        && /^(RESOURCE|MEMORY|KNOWLEDGE|SKILL)_[A-Z_]{1,96}$/.test(result.value.errorCode)
+        ? result.value.errorCode : 'RESOURCE_OPERATION_FAILED'
+      projected._meta = { 'io.ksadk/dsh': { code } }
+    }
   } else if (projected.content.length === 0 && result.value !== undefined) {
     projected.content.push(textContent(JSON.stringify(result.value)))
   }
@@ -410,6 +455,14 @@ export async function apply(ctx, config = {}) {
   let readyWritten = false
   let lastToolChange = Date.now()
   let tools = []
+  let resourceBridge = null
+  // A pending optional child does not add another Core or block ordinary tools.
+  // Its dependency lifecycle clears the reference when the resource plugin stops.
+  if (typeof ctx.inject === 'function') ctx.inject(['platformResources'], resourceCtx => {
+    const bridge = resourceCtx.platformResources
+    resourceBridge = bridge
+    resourceCtx.effect(() => () => { if (resourceBridge === bridge) resourceBridge = null })
+  })
   let inventoryDigest = digest(tools)
 
   let driftCheckTimer = null
@@ -594,12 +647,34 @@ export async function apply(ctx, config = {}) {
         writeJson(response, 200, jsonRpcError(message.id, -32602, 'cursor is not supported'))
         return
       }
-      const visibleTools = authorization.aliases === null
+      const candidates = authorization.aliases === null
         ? tools
-        : [...authorization.aliases].map(([alias, source]) => {
+        : [...authorization.aliases].filter(([, source]) =>
+          !resourceBridge?.operationForTool(source) || authorization.resources?.has(source)
+        ).map(([alias, source]) => {
           const tool = tools.find((item) => item.name === source)
           return { ...tool, name: alias }
         })
+      const checked = await Promise.all(candidates.map(async tool => {
+        const source = authorization.aliases?.get(tool.name)
+        const resource = authorization.resources?.get(source)
+        if (!resource) return tool
+        if (!resourceBridge || resourceBridge.operationForTool(source) !== resource.operation) return null
+        try {
+          const result = await resourceBridge.withInvocation({
+            handle: resource.handle,
+            deadline: Math.min(Date.now() + 3000, authorization.expiresAt * 1000),
+          }, () => resourceBridge.check(resource.operation))
+          return result.available === true ? tool : null
+        } catch { return null }
+      }))
+      if (!authorization.root && (revokedScopes.has(authorization.scopeId) ||
+          authorization.expiresAt * 1000 <= Date.now())) {
+        response.setHeader('WWW-Authenticate', 'Bearer')
+        writeJson(response, 401, { error: 'unauthorized' })
+        return
+      }
+      const visibleTools = checked.filter(Boolean)
       writeJson(response, 200, { jsonrpc: '2.0', id: message.id, result: { tools: visibleTools } })
       return
     }
@@ -628,6 +703,14 @@ export async function apply(ctx, config = {}) {
         id: message.id,
         result: toolFailure('unknown DSH tool', 'UNKNOWN_TOOL'),
       })
+      return
+    }
+    const resourceOperation = resourceBridge?.operationForTool(sourceToolName)
+    const resourceScope = authorization.resources?.get(sourceToolName)
+    if ((resourceOperation || resourceScope) &&
+        (!resourceBridge || !resourceScope || resourceScope.operation !== resourceOperation)) {
+      writeJson(response, 200, { jsonrpc: '2.0', id: message.id,
+        result: toolFailure('Resource invocation context is required', 'RESOURCE_CONTEXT_REQUIRED') })
       return
     }
     const argumentsValue = params.arguments ?? {}
@@ -661,12 +744,17 @@ export async function apply(ctx, config = {}) {
       controller.abort(error)
     }, callTimeoutMs)
     const completion = Promise.resolve()
-      .then(() => ctx.tools.execute({
-        callId: `mcp-${randomUUID()}`,
-        name: sourceToolName,
-        arguments: argumentsValue,
-        signal: controller.signal,
-      }))
+      .then(() => {
+        const invoke = () => ctx.tools.execute({
+          callId: `mcp-${randomUUID()}`, name: sourceToolName,
+          arguments: argumentsValue, signal: controller.signal,
+        })
+        return resourceScope ? resourceBridge.withInvocation({
+          handle: resourceScope.handle,
+          deadline: Math.min(Date.now() + callTimeoutMs, authorization.expiresAt * 1000),
+          signal: controller.signal,
+        }, invoke) : invoke()
+      })
       .then(
         (result) => ({ kind: 'result', result }),
         (error) => ({ kind: 'error', error }),
@@ -692,7 +780,7 @@ export async function apply(ctx, config = {}) {
         writeJson(response, 200, {
           jsonrpc: '2.0',
           id: message.id,
-          result: projectToolResult(outcome.result, maxResultBytes),
+          result: projectToolResult(outcome.result, maxResultBytes, Boolean(resourceScope)),
         })
       } else if (outcome.kind === 'aborted') {
         const messageText = outcome.code === 'DEADLINE_EXCEEDED'

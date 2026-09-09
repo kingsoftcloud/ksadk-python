@@ -27,6 +27,7 @@ class WorkflowExecution:
     artifacts: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: str = ""
+    artifact_bundle: dict[str, object] | None = None
 
 
 def execute_workflow(
@@ -136,6 +137,7 @@ def _run_generic_workflow(skill: LocalSkill, prompt: str) -> WorkflowExecution:
     workdir = _skill_workdir()
     workdir.mkdir(parents=True, exist_ok=True)
     output_dir = workdir / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
     timeout = _runtime_timeout()
     command = _run_command(
         ["bash", str(skill.root_dir / "scripts" / "run-workflow.sh")],

@@ -45,8 +45,34 @@ def build_hosted_kernel_requirement(
     entry_point: str | None,
     agent_variable: str | None,
     launch_config: bytes | None,
+    composition_profile_digest: str | None = None,
+    plugin_lock_digest: str | None = None,
+    provider_ref: str | None = None,
 ) -> dict[str, Any]:
     """Build the immutable local requirement embedded into every Studio ZIP."""
+
+    if runtime_type == "plugin":
+        if not composition_profile_digest or not plugin_lock_digest or not provider_ref:
+            raise ValueError("plugin runtime requires a resolved composition launch contract")
+        runtime_requirement = {
+            "type": runtime_type,
+            "launchMode": "plugin-host",
+            "compositionProfile": "composition-profile.json",
+            "compositionProfileDigest": composition_profile_digest,
+            "pluginLock": "plugin-lock.json",
+            "pluginLockDigest": plugin_lock_digest,
+            "providerRef": provider_ref,
+        }
+    else:
+        runtime_requirement = {
+            "type": runtime_type,
+            "entryPoint": entry_point or "",
+            "agentVariable": agent_variable or "",
+            "launchConfig": "runtime/agentengine.yaml" if launch_config is not None else "",
+            "launchConfigSha256": (
+                sha256_digest(launch_config) if launch_config is not None else ""
+            ),
+        }
 
     return {
         "format": HOSTED_KERNEL_REQUIREMENTS_FORMAT,
@@ -56,13 +82,7 @@ def build_hosted_kernel_requirement(
         },
         "bundleLayout": HOSTED_KERNEL_BUNDLE_FORMAT,
         "runtimeContract": HOSTED_KERNEL_RUNTIME_CONTRACT,
-        "runtime": {
-            "type": runtime_type,
-            "entryPoint": entry_point or "",
-            "agentVariable": agent_variable or "",
-            "launchConfig": "runtime/agentengine.yaml" if launch_config is not None else "",
-            "launchConfigSha256": sha256_digest(launch_config) if launch_config is not None else "",
-        },
+        "runtime": runtime_requirement,
     }
 
 
@@ -207,17 +227,24 @@ def _validate_requirement(
             "Bundle 缺少受支持的 runtime 启动 requirement", reason="missing_runtime"
         )
     runtime_type = str(runtime.get("type") or "").strip().lower()
-    entry_point = str(runtime.get("entryPoint") or "").strip()
-    agent_variable = str(runtime.get("agentVariable") or "").strip()
-    launch_path = str(runtime.get("launchConfig") or "").strip()
-    launch_digest = str(runtime.get("launchConfigSha256") or "").strip()
+    manifest_runtime_type = str(manifest.get("runtimeType") or "").strip().lower()
+    if runtime_type != manifest_runtime_type:
+        raise _incompatible_error(
+            "Bundle runtime requirement 与 manifest 不一致", reason="runtime_type"
+        )
+    if runtime_type == "plugin":
+        _validate_plugin_launch(manifest, runtime, entries)
+        return
     if runtime_type not in _RUNTIME_TYPES:
         raise _incompatible_error(
             "Bundle runtime 类型不受 Hosted Agent Kernel 支持", reason="runtime_type"
         )
+    entry_point = str(runtime.get("entryPoint") or "").strip()
+    agent_variable = str(runtime.get("agentVariable") or "").strip()
+    launch_path = str(runtime.get("launchConfig") or "").strip()
+    launch_digest = str(runtime.get("launchConfigSha256") or "").strip()
     if (
-        runtime_type != str(manifest.get("runtimeType") or "").strip().lower()
-        or not entry_point
+        not entry_point
         or not agent_variable
         or launch_path != "runtime/agentengine.yaml"
         or not launch_digest
@@ -246,6 +273,54 @@ def _validate_requirement(
     ):
         raise _incompatible_error(
             "Bundle runtime lock 与 requirement 不一致", reason="runtime_lock"
+        )
+
+
+def _validate_plugin_launch(
+    manifest: dict[str, Any],
+    runtime: dict[str, Any],
+    entries: dict[str, bytes],
+) -> None:
+    profile_path = str(runtime.get("compositionProfile") or "").strip()
+    profile_digest = str(runtime.get("compositionProfileDigest") or "").strip()
+    lock_path = str(runtime.get("pluginLock") or "").strip()
+    lock_digest = str(runtime.get("pluginLockDigest") or "").strip()
+    provider_ref = str(runtime.get("providerRef") or "").strip()
+    if (
+        runtime.get("launchMode") != "plugin-host"
+        or manifest.get("compositionMode") != "composed"
+        or profile_path != "composition-profile.json"
+        or lock_path != "plugin-lock.json"
+        or not profile_digest
+        or not lock_digest
+        or not provider_ref
+        or manifest.get("compositionProfileDigest") != profile_digest
+        or manifest.get("pluginLockDigest") != lock_digest
+    ):
+        raise _incompatible_error(
+            "Bundle 缺少可验证的 PluginHost 启动配置", reason="plugin_launch"
+        )
+    profile = _json_object(entries, profile_path)
+    lock = _json_object(entries, lock_path)
+    if sha256_digest(canonical_json(profile)) != profile_digest:
+        raise _incompatible_error(
+            "Bundle composition profile digest 不一致", reason="plugin_profile_digest"
+        )
+    if sha256_digest(canonical_json(lock)) != lock_digest:
+        raise _incompatible_error(
+            "Bundle plugin lock digest 不一致", reason="plugin_lock_digest"
+        )
+    agent_provider = profile.get("agentProvider")
+    if not isinstance(agent_provider, dict) or agent_provider.get("ref") != provider_ref:
+        raise _incompatible_error(
+            "Bundle Agent Provider 与 PluginHost requirement 不一致",
+            reason="plugin_provider",
+        )
+    runtime_lock = _json_object(entries, "runtime-lock.json")
+    if str(runtime_lock.get("type") or "").strip().lower() != "plugin":
+        raise _incompatible_error(
+            "Bundle runtime lock 与 PluginHost requirement 不一致",
+            reason="runtime_lock",
         )
 
 

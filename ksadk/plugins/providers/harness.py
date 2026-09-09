@@ -23,6 +23,7 @@ from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
+from ksadk.plugins.providers.mcp_projection import project_mcp_capabilities
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry, StartRequest
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.sessions import create_session_service
@@ -264,25 +265,10 @@ class KsADKHarnessProviderRuntime:
             raise PluginHostError("harness_provider_unavailable", "Harness provider is not ready")
 
         async with AsyncExitStack() as mcp_cleanup:
-            mcp_specs: list[McpToolSpec] = []
-            mcp_owners: list[str] = []
-            for binding in capabilities.all("mcp.connector/v1"):
-                if not isinstance(binding.runtime, HarnessMCPSource):
-                    raise PluginHostError(
-                        "harness_mcp_incompatible",
-                        f"plugin {binding.plugin_id} cannot project Harness MCP config",
-                    )
-                projected = binding.runtime.harness_mcp_specs(bundle)
-                if isinstance(projected, Awaitable):
-                    projected = await projected
-                projected_specs = tuple(projected)
-                if isinstance(binding.runtime, HarnessMCPActivationSource):
-                    mcp_cleanup.push_async_callback(
-                        binding.runtime.release_harness_mcp_specs,
-                        projected_specs,
-                    )
-                mcp_specs.extend(projected_specs)
-                mcp_owners.append(binding.plugin_id)
+            projection = await project_mcp_capabilities(capabilities, bundle)
+            mcp_cleanup.push_async_callback(projection.aclose)
+            mcp_specs = list(projection.specs)
+            mcp_owners = list(projection.owners)
 
             skills: list[HarnessSkillContribution] = []
             skill_owners: list[str] = []

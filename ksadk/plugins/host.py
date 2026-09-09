@@ -80,6 +80,9 @@ class PluginExecutionContext:
     profile_digest: str
     plugin_lock_digest: str
     bindings: tuple[PluginCapabilityBinding, ...]
+    # The host owns this key. Capability plugins may use it to bind ephemeral
+    # leases to the same provider activation without learning request payloads.
+    activation_key: str = ""
 
     def all(
         self,
@@ -371,7 +374,11 @@ class PluginHost:
                 await self._finish_cleanup(self._dispose_unpinned_retired_graphs())
 
             graph = self._require_bundle_graph(bundle)
-            runtime = await self._prepare_activation(graph, bundle)
+            runtime = await self._prepare_activation(
+                graph,
+                bundle,
+                activation_key=key,
+            )
             active = _ActiveActivation(
                 key=key,
                 graph=graph,
@@ -507,8 +514,10 @@ class PluginHost:
         self,
         graph: _ActiveGraph,
         bundle: ResolvedPluginBundle,
+        *,
+        activation_key: str,
     ) -> PreparedAgent:
-        capabilities = self._execution_context(graph)
+        capabilities = self._execution_context(graph, activation_key=activation_key)
         provider_binding = capabilities.require("agent.provider/v1", slot="agent.execution")
         provider = provider_binding.runtime
         if not isinstance(provider, ExecutableAgentProvider):
@@ -693,7 +702,11 @@ class PluginHost:
                 self._activations.pop(key, None)
 
     @staticmethod
-    def _execution_context(graph: _ActiveGraph) -> PluginExecutionContext:
+    def _execution_context(
+        graph: _ActiveGraph,
+        *,
+        activation_key: str = "",
+    ) -> PluginExecutionContext:
         bindings = tuple(
             PluginCapabilityBinding(
                 plugin_id=plugin.entry.id,
@@ -709,6 +722,7 @@ class PluginHost:
             profile_digest=graph.resolved.profile_digest,
             plugin_lock_digest=graph.resolved.plugin_lock_digest,
             bindings=bindings,
+            activation_key=activation_key,
         )
 
     @staticmethod

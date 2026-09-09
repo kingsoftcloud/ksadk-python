@@ -153,6 +153,39 @@ describe("ObservabilityPage trajectory integration", () => {
     expect(within(metrics).getByText("2 输入 · 3 输出")).toBeInTheDocument();
   });
 
+  it("pages trace results in readable ten-row batches", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiFetch).mockImplementation(input => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/agents")) return response({ items: [] });
+      if (url.startsWith("/api/v1/traces/overview")) return response({ buckets: [] });
+      if (url.startsWith("/api/v1/traces?")) {
+        const page = url.includes("cursor=page-2") ? 2 : 1;
+        return response({
+          items: [{
+            traceId: `trace-${page}`,
+            runId: `run-${page}`,
+            status: "completed",
+            startedAt: "2026-08-17T00:00:00Z",
+            spanCount: 1,
+          }],
+          total: 11,
+          nextCursor: page === 1 ? "page-2" : null,
+        });
+      }
+      return response({});
+    });
+
+    render(<ObservabilityPage refreshTick={0} />);
+
+    expect(document.querySelector("#traceExplorer")).toHaveAttribute("data-scroll-mode", "workbench");
+    expect(await screen.findByText("第 1 页 · 1–1 / 11 条")).toBeVisible();
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/traces\?.*limit=10/));
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 页 · 11–11 / 11 条")).toBeVisible();
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(expect.stringContaining("cursor=page-2"));
+  });
+
   it.each([
     {
       label: "input only",

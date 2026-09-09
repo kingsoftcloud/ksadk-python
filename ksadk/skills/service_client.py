@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -41,26 +42,44 @@ class SkillServiceClient:
         extra_headers: Mapping[str, str] | None = None,
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
+        allow_env_fallback: bool = True,
     ):
+        self.allow_env_fallback = allow_env_fallback
+        resolve_env = _env if allow_env_fallback else lambda *names: ""
         self.base_url = _normalize_base_url(base_url)
         self.token = token
-        self.access_key = access_key or _env(
+        self.access_key = access_key or resolve_env(
             "KSADK_SKILL_SERVICE_ACCESS_KEY", "KSYUN_ACCESS_KEY", "KS3_ACCESS_KEY"
         )
-        self.secret_key = secret_key or _env(
+        self.secret_key = secret_key or resolve_env(
             "KSADK_SKILL_SERVICE_SECRET_KEY", "KSYUN_SECRET_KEY", "KS3_SECRET_KEY"
         )
-        self.account_id = account_id or _env("KSADK_SKILL_SERVICE_ACCOUNT_ID", "KSYUN_ACCOUNT_ID")
+        self.account_id = account_id or resolve_env(
+            "KSADK_SKILL_SERVICE_ACCOUNT_ID", "KSYUN_ACCOUNT_ID"
+        )
         self.logical_region = (
-            region or _env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
+            region or resolve_env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
         )
-        self.region = _normalize_control_region(self.logical_region)
-        self.custom_source = _resolve_custom_source(self.logical_region)
-        self.api_version = api_version or os.environ.get(
-            "KSADK_SKILL_SERVICE_API_VERSION", "2024-06-12"
+        if not allow_env_fallback:
+            if not region or region.strip().lower() == "pre-online":
+                raise ValueError("Explicit Skill clients require a concrete region")
+            if token and (access_key or secret_key):
+                raise ValueError("Explicit Skill clients cannot mix token and signing credentials")
+            if bool(access_key) != bool(secret_key):
+                raise ValueError("Both signing credentials are required")
+        self.region = (
+            _normalize_control_region(self.logical_region)
+            if allow_env_fallback
+            else self.logical_region.strip()
         )
-        self.sign_service = sign_service or os.environ.get(
-            "KSADK_SKILL_SERVICE_SIGN_SERVICE", "aicp"
+        self.custom_source = (
+            _resolve_custom_source(self.logical_region) if allow_env_fallback else ""
+        )
+        self.api_version = (
+            api_version or resolve_env("KSADK_SKILL_SERVICE_API_VERSION") or "2024-06-12"
+        )
+        self.sign_service = (
+            sign_service or resolve_env("KSADK_SKILL_SERVICE_SIGN_SERVICE") or "aicp"
         )
         self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
@@ -71,6 +90,7 @@ class SkillServiceClient:
             secret_access_key=self.secret_key,
             region=self.region,
             service=self.sign_service,
+            allow_env_fallback=allow_env_fallback,
         )
 
     def action_url(self, action: str) -> str:
@@ -87,21 +107,113 @@ class SkillServiceClient:
             {"PageNumber": page_number, "PageSize": page_size},
         )
 
-    def list_skills_by_space_id(self, space_id: str) -> SkillListResponse:
-        if self._is_kop_mode():
-            payload = self._get_json(
-                "ListSkillsBySpaceId",
-                {"SpaceId": space_id, "PageNumber": 1, "PageSize": 100},
-            )
-        else:
+    def list_skills_by_space_id(self, space_id: str, *, max_pages: int = 20) -> SkillListResponse:
+        if type(max_pages) is not int or not 1 <= max_pages <= 1000:
+            raise ValueError("Skill directory page budget must be 1..1000")
+        if not self._is_kop_mode():
+            # Legacy REST endpoints do not advertise a paging contract. Preserve
+            # their request shape and report known incompleteness explicitly.
             payload = self._get_json("ListSkillsBySpaceId", {"SpaceId": space_id})
-        return SkillListResponse.from_payload(payload, space_id=space_id)
+            result = SkillListResponse.from_payload(payload, space_id=space_id)
+            if result.space_id != space_id:
+                raise ValueError("Skill directory does not match the requested space")
+            if result.total_count is not None and result.total_count > len(result.skills):
+                return replace(result, truncated=True, pagination_warning="pagination_unavailable")
+            return result
+        skills = []
+        seen = set()
+        total = None
+        for page_number in range(1, max_pages + 1):
+            result = self.list_skills_page(space_id, page_number=page_number)
+            if page_number > 1 and result.total_count != total:
+                return replace(
+                    result,
+                    skills=skills,
+                    truncated=True,
+                    next_page=None,
+                    pagination_warning="directory_changed",
+                )
+            total = result.total_count
+            identities = [(skill.skill_id, skill.version_id) for skill in result.skills]
+            if (
+                any(not identity[0] for identity in identities)
+                or len(set(identities)) != len(identities)
+                or any(identity in seen for identity in identities)
+            ):
+                return replace(
+                    result,
+                    skills=skills,
+                    truncated=True,
+                    next_page=None,
+                    pagination_warning="pagination_repeated",
+                )
+            seen.update(identities)
+            skills.extend(result.skills)
+            if total is not None and len(skills) > total:
+                return replace(
+                    result,
+                    skills=skills,
+                    truncated=True,
+                    next_page=None,
+                    pagination_warning="directory_changed",
+                )
+            if total is not None and len(skills) == total:
+                return replace(result, skills=skills, truncated=False, next_page=None)
+            if len(result.skills) < 100:
+                incomplete = total is not None and len(skills) < total
+                return replace(
+                    result,
+                    skills=skills,
+                    truncated=incomplete,
+                    next_page=None,
+                    pagination_warning="directory_incomplete" if incomplete else "",
+                )
+        return replace(
+            result,
+            skills=skills,
+            truncated=True,
+            next_page=max_pages + 1,
+            pagination_warning="page_budget_exhausted",
+        )
+
+    def list_skills_page(
+        self, space_id: str, *, page_number: int = 1, page_size: int = 100
+    ) -> SkillListResponse:
+        if not self._is_kop_mode():
+            raise ValueError("This Skill endpoint does not advertise pagination")
+        if (
+            type(page_number) is not int
+            or page_number < 1
+            or type(page_size) is not int
+            or not 1 <= page_size <= 100
+        ):
+            raise ValueError("Invalid Skill directory page parameters")
+        payload = self._get_json(
+            "ListSkillsBySpaceId",
+            {
+                "SpaceId": space_id,
+                "PageNumber": page_number,
+                "PageSize": page_size,
+            },
+        )
+        result = SkillListResponse.from_payload(payload, space_id=space_id)
+        if result.space_id != space_id or len(result.skills) > page_size:
+            raise ValueError("Skill directory page does not match the requested space or limit")
+        more = (
+            page_number * page_size < result.total_count
+            if result.total_count is not None
+            else len(result.skills) == page_size
+        )
+        return replace(result, truncated=more, next_page=page_number + 1 if more else None)
 
     def list_available_premade_skills(self) -> SkillListResponse:
         payload = self._get_json("ListAvailablePremadeSkills", {})
-        return SkillListResponse.from_payload(
+        result = SkillListResponse.from_payload(
             payload, space_id="public", space_name="Public Skills"
         )
+        if result.total_count is not None and result.total_count > len(result.skills):
+            return replace(result, truncated=True, pagination_warning="pagination_unavailable")
+        return result
 
     def get_skill_download_url(self, skill: SkillRef) -> str:
         action = "GetSkillDownloadUrl" if skill.version_id else "GetPremadeSkillDownloadUrl"
@@ -115,15 +227,33 @@ class SkillServiceClient:
         data = payload.get("Data") or payload.get("data") or {}
         return str(data.get("DownloadUrl") or data.get("download_url") or "")
 
-    def download_skill_archive(self, skill: SkillRef) -> bytes:
+    def download_skill_archive(
+        self, skill: SkillRef, *, max_bytes: int = 20 * 1024 * 1024
+    ) -> bytes:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise ValueError("Skill archive size limit must be a positive integer")
         download_url = self.get_skill_download_url(skill)
         if not download_url:
             raise ValueError(f"Skill Service did not return DownloadUrl for {skill.skill_id}")
-        download_url = _rewrite_ks3_to_internal(download_url)
-        with httpx.Client(**self._client_kwargs()) as client:
-            response = client.get(download_url)
-            response.raise_for_status()
-            return bytes(response.content)
+        if self.allow_env_fallback:
+            download_url = _rewrite_ks3_to_internal(download_url)
+        try:
+            with httpx.Client(**self._client_kwargs()) as client:
+                with client.stream("GET", download_url) as response:
+                    response.raise_for_status()
+                    length = response.headers.get("content-length", "")
+                    if length.isdigit() and int(length) > max_bytes:
+                        raise ValueError("Skill archive exceeds download limit")
+                    content = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                        if len(content) + len(chunk) > max_bytes:
+                            raise ValueError("Skill archive exceeds download limit")
+                        content.extend(chunk)
+                    return bytes(content)
+        except httpx.HTTPError:
+            # Download URLs can carry temporary credentials; do not expose the
+            # HTTP exception's URL through logs or the consumer's tool result.
+            raise ValueError("Skill archive download failed") from None
 
     def _get_json(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._is_kop_mode():
@@ -155,6 +285,8 @@ class SkillServiceClient:
 
     def _client_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"timeout": self.timeout}
+        if not self.allow_env_fallback:
+            kwargs["trust_env"] = False
         if self.transport is not None:
             kwargs["transport"] = self.transport
         return kwargs
@@ -201,6 +333,7 @@ class SkillServiceClient:
             headers=headers,
             auth=self._auth.get_auth(),
             timeout=self.timeout,
+            allow_redirects=False,
         )
         requests_response.raise_for_status()
         data = requests_response.json()
@@ -219,7 +352,15 @@ class SkillServiceClient:
     def _requests(self) -> requests.Session:
         if self._requests_session is None:
             self._requests_session = requests.Session()
+            if not self.allow_env_fallback:
+                self._requests_session.trust_env = False
         return self._requests_session
+
+    def close(self) -> None:
+        """Release the signing session when its owning activation ends."""
+        if self._requests_session is not None:
+            self._requests_session.close()
+            self._requests_session = None
 
     def _is_kop_mode(self) -> bool:
         """Match only exact AICP control-plane endpoints.
@@ -287,9 +428,7 @@ def _rewrite_ks3_to_internal(url: str) -> str:
 
         from ksadk.common.constants import get_ks3_endpoints
 
-        region = os.environ.get(
-            "KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION"
-        ) or "cn-beijing-6"
+        region = os.environ.get("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
         public_ep, internal_ep = get_ks3_endpoints(region)
         if not public_ep or not internal_ep:
             return url

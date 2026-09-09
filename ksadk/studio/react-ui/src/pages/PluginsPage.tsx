@@ -28,6 +28,8 @@ export interface InstalledPlugin {
   riskDisclosures: string[];
   host?: HostState;
   description?: string | null;
+  clientExtension?: boolean;
+  settingsIntegration?: boolean;
   capabilities?: Capabilities;
   interface?: PluginPresentation;
 }
@@ -82,6 +84,8 @@ export function normalizeInstalledPlugin(payload: any): InstalledPlugin {
     riskDisclosures: Array.isArray(item.riskDisclosures) ? item.riskDisclosures : [],
     host: item.host,
     description: payload?.description || item.description,
+    clientExtension: item.clientExtension === true,
+    settingsIntegration: item.settingsIntegration === true,
     capabilities: payload?.capabilities || item.capabilities,
     interface: item.interface || {},
   };
@@ -95,6 +99,8 @@ const keyOf = (item: InstalledPlugin) => [
 ].join(":");
 const isOfficialCodex = (item: InstalledPlugin) => item.ecosystem === 'codex' &&
   ['openai-curated', 'openai-curated-remote', 'openai-primary-runtime', 'openai-bundled'].includes(item.marketplaceName || '');
+const isKsADKOfficial = (item: InstalledPlugin) => item.pluginId.startsWith('@kingsoftcloud/');
+type InstalledPluginFilter = 'all' | 'ksadk' | 'dsh' | 'codex';
 
 /** A Profile mutation replaces Core's runtime and browser session together. */
 function reconnectCore() {
@@ -127,6 +133,7 @@ function pluginKind(item: InstalledPlugin) {
   const curated = curatedPluginIdentity[item.pluginId];
   if (curated) return curated.kind;
   if (item.providerRef) return "Agent Provider";
+  if (item.clientExtension) return "界面扩展";
   if ((item.capabilities?.apps || []).length) return "界面扩展";
   if ((item.capabilities?.skills || []).length || (item.capabilities?.mcpServers || []).length) return "Agent 能力";
   return item.ecosystem === "dsh" ? "Harness 扩展" : "工作台扩展";
@@ -185,7 +192,9 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
       <p className="plugin-detail-muted">{isReadyProvider ? "在创建或编辑 Agent 时从 Runtime 选择器使用。" : "Provider 尚未就绪，暂不能用于创建 Agent。"}</p>
       {isReadyProvider && <p><a className="button secondary" href="#/create">去创建 Agent</a></p>}
     </>}
-    {item.ecosystem === "dsh" && !item.providerRef && <p className="plugin-detail-muted">插件提供的设置页面直接在 Studio 中使用。</p>}
+    {item.ecosystem === "dsh" && !item.providerRef && item.settingsIntegration && <p className="plugin-detail-muted">插件提供的设置页面可直接在 Studio 的插件设置中使用。</p>}
+    {item.ecosystem === "dsh" && !item.providerRef && item.clientExtension && !item.settingsIntegration && <p className="plugin-detail-muted">这是 DSH Core 会话界面扩展，会在插件定义的交互状态下显示。插件未声明独立设置页，因此不会新增左侧设置标签。</p>}
+    {item.ecosystem === "dsh" && !item.providerRef && !item.clientExtension && <p className="plugin-detail-muted">此插件扩展 DSH Core 运行能力，未提供独立 Studio 设置页。</p>}
     {(bindableCapabilities.length > 0 || (item.ecosystem === "codex" && hasUiContribution)) && <>
       <p className="plugin-detail-muted">{item.ecosystem === "codex" ? "在 Agent 编辑页的「能力绑定 → 绑定插件」选择此插件，保存并生成配置快照后，在新会话中使用。" : "Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。"}</p>
       <p><a className="button secondary" href="#/agents">去 Agent 列表绑定</a></p>
@@ -215,6 +224,7 @@ export function PluginsPage() {
   const [accepted, setAccepted] = useState(false);
   const [codexAccepted, setCodexAccepted] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [installedFilter, setInstalledFilter] = useState<InstalledPluginFilter>('all');
   const [marketplaceTab, setMarketplaceTab] = useState<"codex" | "dsh">("codex");
   const [busy, setBusy] = useState("load");
   const [error, setError] = useState("");
@@ -262,6 +272,17 @@ export function PluginsPage() {
       .map(category => ({ category, items: filtered.filter(item => pluginCategory(item) === category) }))
       .filter(group => group.items.length > 0);
   }, [catalogQuery, codexCatalog]);
+  const installedItems = useMemo(() => {
+    const query = catalogQuery.trim().toLowerCase();
+    return items.filter(item => {
+      if (installedFilter === 'ksadk' && !isKsADKOfficial(item)) return false;
+      if (installedFilter === 'dsh' && (item.ecosystem !== 'dsh' || isKsADKOfficial(item))) return false;
+      if (installedFilter === 'codex' && item.ecosystem !== 'codex') return false;
+      return !query || [
+        pluginTitle(item), pluginPublisher(item), pluginSummary(item), item.pluginId,
+      ].some(value => value.toLowerCase().includes(query));
+    });
+  }, [catalogQuery, installedFilter, items]);
 
   async function installDsh() {
     if (!accepted || !source.trim()) return;
@@ -353,7 +374,7 @@ export function PluginsPage() {
       {!selected.installed && !isOfficialCodex(selected) && permissionChoice}
       {!!selected.interface?.defaultPrompt?.length && <div className="plugin-examples" aria-label="使用示例">{selected.interface.defaultPrompt.map(prompt => <p key={prompt}><span>{prompt}</span><ArrowUpRight size={16}/></p>)}</div>}
       {showDetailDescription && <p className="plugin-long-description">{detailDescription}</p>}
-      {selected.ecosystem === 'dsh' && selected.enabled && !selected.providerRef && <button className="button secondary" onClick={() => { setSettingsPluginId(selected.pluginId); setWorkspaceOpen(true); }}>打开插件设置<ArrowUpRight size={15}/></button>}
+      {selected.ecosystem === 'dsh' && selected.enabled && !selected.providerRef && selected.settingsIntegration && <button className="button secondary" onClick={() => { setSettingsPluginId(selected.pluginId); setWorkspaceOpen(true); }}>打开插件设置<ArrowUpRight size={15}/></button>}
       {selected.failed && <p className="form-error">{selected.errorCode || '插件当前不可用'}</p>}
       <PluginUsage item={selected}/>
       <section className="plugin-product-info"><h3>信息</h3><dl>
@@ -368,7 +389,13 @@ export function PluginsPage() {
       <header className="plugins-intro"><h2>插件</h2><p>为你的 Agent 添加工具、技能和应用。</p></header>
       <label className="plugin-store-search"><Search size={16}/><input aria-label="搜索插件" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>
       <section className="plugin-installed-strip"><header><h3>已安装 <small>{items.length}</small></h3><button className="plugin-text-button" onClick={() => { setSettingsPluginId(undefined); setWorkspaceOpen(true); }}>插件设置</button></header>
-        <div>{items.filter(item => !catalogQuery || [pluginTitle(item), pluginSummary(item)].some(value => value.toLowerCase().includes(catalogQuery.toLowerCase()))).map(item => <button key={keyOf(item)} aria-label={pluginTitle(item)} title={pluginTitle(item)} onClick={() => select(item)}><PluginIcon item={item}/><span>{pluginTitle(item)}</span></button>)}</div>
+        <div className="plugin-installed-tabs" role="tablist" aria-label="筛选已安装插件">
+          {([
+            ['all', '全部'], ['ksadk', 'KsADK 官方'], ['dsh', 'DSH 插件'], ['codex', 'Codex 插件'],
+          ] as const).map(([value, title]) => <button key={value} role="tab" aria-selected={installedFilter === value} onClick={() => setInstalledFilter(value)}>{title}</button>)}
+        </div>
+        <div className="plugin-installed-items">{installedItems.map(item => <button key={keyOf(item)} aria-label={pluginTitle(item)} title={pluginTitle(item)} onClick={() => select(item)}><PluginIcon item={item}/><span>{pluginTitle(item)}</span></button>)}</div>
+        {!installedItems.length && <p className="plugin-installed-empty">当前分类没有匹配的已安装插件。</p>}
       </section>
       <div className="plugin-marketplace-tabs" role="tablist" aria-label="插件市场"><button role="tab" aria-selected={marketplaceTab === 'codex'} onClick={() => setMarketplaceTab('codex')}>Codex 插件</button><button role="tab" aria-selected={marketplaceTab === 'dsh'} onClick={() => setMarketplaceTab('dsh')}>DeepSeek Harness 插件</button></div>
       {marketplaceTab === 'codex' ? <div className="plugin-category-list" aria-label="可安装 Codex 插件">

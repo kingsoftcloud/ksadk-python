@@ -32,6 +32,10 @@ from ksadk.studio.hosted_kernel import (
     hosted_kernel_requirement_digest,
 )
 from ksadk.studio.repository import BuildRepository
+from ksadk.studio.resource_build_admission import (
+    AdmittedResourceBuild,
+    resource_build_required,
+)
 from ksadk.studio.soul import render_soul_markdown
 from ksadk.studio.workspace import Workspace
 
@@ -57,12 +61,21 @@ class AgentBundleBuilder:
         draft: AgentDraft,
         *,
         composition: ResolvedComposition | None = None,
+        resource_build: AdmittedResourceBuild | None = None,
     ) -> BuildRecord:
         LOGGER.info(
             "bundle build started: agent=%s revision=%s",
             draft.metadata.id,
             draft.metadata.revision,
         )
+        requires_resource_build = resource_build_required(draft)
+        if requires_resource_build != (resource_build is not None):
+            raise StudioError(
+                "RESOURCE_BUILD_ADMISSION_REQUIRED",
+                "平台资源绑定必须通过可信准入后写入同一个 AgentBundle",
+                status_code=409,
+                field="spec.bindings.plugins",
+            )
         compiled = self.compiler.compile(draft)
         if composition is None and any(
             server.get("materialization") == "dsh-profile"
@@ -111,6 +124,8 @@ class AgentBundleBuilder:
         if composition is not None:
             resolved_digest_payload["compositionProfileDigest"] = composition_profile_digest_value
             resolved_digest_payload["pluginLockDigest"] = plugin_lock_digest_value
+        if resource_build is not None:
+            resolved_digest_payload["resourceSnapshotDigest"] = resource_build.snapshot.digest
         resolved_digest = sha256_digest(canonical_json(resolved_digest_payload))
         short_digest = resolved_digest.removeprefix("sha256:")[:20]
         build_id = f"build_{short_digest}"
@@ -124,15 +139,29 @@ class AgentBundleBuilder:
         )
         bundle_root = staging / "agent-bundle"
         bundle_root.mkdir(parents=True, exist_ok=False)
+        resource_reference = None
         try:
             self._copy_runtime_source(bundle_root, draft)
             self._write_runtime_launch_config(bundle_root, draft)
+            if resource_build is not None:
+                resource_reference = resource_build.materialize(
+                    bundle_root / "platform-resources"
+                )
+                if resource_reference.snapshot_digest != resource_build.snapshot.digest:
+                    raise ValueError("Resource Build reference does not match admitted snapshot")
             launch_config = bundle_root / "runtime" / "agentengine.yaml"
             hosted_kernel_requirement = build_hosted_kernel_requirement(
                 runtime_type=runtime_type,
                 entry_point=runtime_lock.get("entryPoint"),
                 agent_variable=runtime_lock.get("agentVariable"),
                 launch_config=launch_config.read_bytes() if launch_config.is_file() else None,
+                composition_profile_digest=composition_profile_digest_value,
+                plugin_lock_digest=plugin_lock_digest_value,
+                provider_ref=(
+                    composition_profile.agent_provider.ref
+                    if composition_profile is not None
+                    else None
+                ),
             )
             hosted_kernel_requirement_digest_value = hosted_kernel_requirement_digest(
                 hosted_kernel_requirement
@@ -149,6 +178,14 @@ class AgentBundleBuilder:
                 hosted_kernel_requirement=hosted_kernel_requirement,
                 hosted_kernel_requirement_digest_value=hosted_kernel_requirement_digest_value,
                 compatibility_facts_digest_value=compatibility_facts_digest_value,
+                resource_build_digest=(
+                    resource_reference.digest if resource_reference is not None else None
+                ),
+                resource_snapshot_digest=(
+                    resource_reference.snapshot_digest
+                    if resource_reference is not None
+                    else None
+                ),
             )
             self._write_json(
                 bundle_root / "compatibility-report.json",
@@ -187,6 +224,14 @@ class AgentBundleBuilder:
                 composition_mode="composed" if composition is not None else "legacy",
                 composition_profile_digest=composition_profile_digest_value,
                 hosted_kernel_requirement_digest=hosted_kernel_requirement_digest_value,
+                resource_build_digest=(
+                    resource_reference.digest if resource_reference is not None else None
+                ),
+                resource_snapshot_digest=(
+                    resource_reference.snapshot_digest
+                    if resource_reference is not None
+                    else None
+                ),
                 files=files,
             )
             manifest.bundle_digest = compute_bundle_digest(manifest)
@@ -218,6 +263,8 @@ class AgentBundleBuilder:
             source_digest=source_digest,
             runtime_lock=runtime_lock,
             bundle_digest=manifest.bundle_digest,
+            resource_build_digest=manifest.resource_build_digest,
+            resource_snapshot_digest=manifest.resource_snapshot_digest,
             artifact_path=self.workspace.relative(zip_path),
             created_at=now,
             completed_at=now,
@@ -245,6 +292,8 @@ class AgentBundleBuilder:
         hosted_kernel_requirement: dict,
         hosted_kernel_requirement_digest_value: str,
         compatibility_facts_digest_value: str,
+        resource_build_digest: str | None,
+        resource_snapshot_digest: str | None,
     ) -> None:
         definition_digest = compiled.resolved.resolved_digest
         resolved_payload = compiled.resolved.model_dump(
@@ -356,6 +405,12 @@ class AgentBundleBuilder:
                 "profilePath": "composition-profile.json",
                 "profileDigest": composition_profile_digest_value,
                 "pluginLockDigest": sha256_digest(canonical_json(plugin_lock)),
+            }
+        if resource_build_digest is not None and resource_snapshot_digest is not None:
+            provenance["platformResources"] = {
+                "manifestPath": "platform-resources/resource-build.json",
+                "resourceBuildDigest": resource_build_digest,
+                "resourceSnapshotDigest": resource_snapshot_digest,
             }
         self._write_json(root / "provenance.json", provenance)
 

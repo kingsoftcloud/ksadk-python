@@ -447,6 +447,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         region: str,
         client: Any | None = None,
         stream_client: Any | None = None,
+        managed_runtime_client: Any | None = None,
         uploader_factory: Callable[..., Any] = KS3Uploader,
         bucket: str | None = None,
         ks3_credentials: dict[str, str] | None = None,
@@ -485,7 +486,27 @@ class DirectAgentEngineCloudDeploymentGateway:
         # complete response body even when RunAgent returns SSE; both clients
         # still use the same process-only V4 credentials and Server admission.
         self.stream_client = stream_client or self.client
+        # Native ManagedRuntime and plugin-delivery actions may be available
+        # on Server before KOP publishes their Action names.  Studio composes
+        # this client explicitly from its environment instead of inferring the
+        # deployment environment from the physical Region selected in UI.
+        self._native_runtime_client = managed_runtime_client
         self._bundles: dict[str, dict[str, str]] = {}
+
+    def _managed_runtime_client(self) -> Any:
+        """Use the deployed Server ingress for pre-online native runtime actions.
+
+        KOP remains the ordinary control-plane entry point.  Pre-online may
+        publish a new ManagedRuntime or plugin-delivery action against a
+        different Server revision, while Studio's dedicated Server client is
+        already V4-signed and points at the deployment being validated.
+        """
+
+        if self._native_runtime_client is not None:
+            return self._native_runtime_client
+        if self.region.lower() == "pre-online":
+            return self.stream_client
+        return self.client
 
     def cached_identity(self) -> dict[str, str] | None:
         """Read the SDK's per-AK identity cache without making an IAM request."""
@@ -516,7 +537,12 @@ class DirectAgentEngineCloudDeploymentGateway:
                 status_code=422,
             )
         object_key = f"studio-bundles/{_safe_object_component(agent_id)}/{archive_sha}/bundle.zip"
-        uploader = self.uploader_factory(region=self.ks3_region, bucket=self.bucket)
+        uploader = self.uploader_factory(
+            region=self.ks3_region,
+            bucket=self.bucket,
+            access_key=self._ks3_credentials["access_key"],
+            secret_key=self._ks3_credentials["secret_key"],
+        )
         local_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -1261,17 +1287,50 @@ class DirectAgentEngineCloudDeploymentGateway:
         idempotency_key: str,
     ) -> dict[str, Any]:
         """Forward only Interaction/v1's caller-visible response fields."""
-
-        return await self.client.submit_interaction(
-            agent_id=self._chat_agent_id(deployment),
-            session_id=session_id,
-            run_id=run_id,
-            interaction_id=interaction_id,
-            expected_revision=expected_revision,
-            action=action,
-            response=response,
-            idempotency_key=idempotency_key,
-        )
+        try:
+            # Match the transport used by the active cloud run.  Pre-online
+            # uses the private Server ingress because its public KOP action
+            # catalog can lag the Server revision; production remains on the
+            # account-scoped KOP client.  Both are AgentEngineClient instances
+            # and therefore reuse the same AWS V4 and verified IAM identity
+            # header construction.
+            return await self.stream_client.submit_interaction(
+                agent_id=self._chat_agent_id(deployment),
+                session_id=session_id,
+                run_id=run_id,
+                interaction_id=interaction_id,
+                expected_revision=expected_revision,
+                action=action,
+                response=response,
+                idempotency_key=idempotency_key,
+            )
+        except AgentEngineAPIError as exc:
+            logger.warning(
+                "cloud interaction submit rejected: agent=%s session=%s run=%s "
+                "interaction=%s revision=%s action=%s reason=%s",
+                self._chat_agent_id(deployment),
+                session_id,
+                run_id,
+                interaction_id,
+                expected_revision,
+                action,
+                AgentEngineClient._safe_log_error_summary(
+                    details={"code": exc.raw_code, "message": exc.message}
+                ),
+            )
+            raise StudioError(
+                "CLOUD_INTERACTION_SUBMIT_FAILED",
+                exc.message,
+                status_code=502,
+                details={
+                    "serverCode": exc.raw_code,
+                    **{
+                        key: value
+                        for key, value in exc.details.items()
+                        if key in {"request_id", "action", "http_status"}
+                    },
+                },
+            ) from exc
 
     async def prepare_plugin_delivery(
         self, workspace: Workspace, build_id: str, manifest: str, runtime_version: str
@@ -1279,15 +1338,6 @@ class DirectAgentEngineCloudDeploymentGateway:
         from ksadk.plugins.delivery import PluginDelivery
         from ksadk.studio.codex_builder import CodexStudioBuilder
 
-        capabilities = await self.client.get_plugin_delivery_capabilities()
-        if not capabilities.get("deployment_admission") or runtime_version not in capabilities.get(
-            "codex_runtime_versions", []
-        ):
-            raise StudioError(
-                "NATIVE_PLUGIN_DELIVERY_UNAVAILABLE",
-                "云端运行时尚未通过插件恢复验收，未上传插件",
-                status_code=409,
-            )
         builder = CodexStudioBuilder(workspace)
         build = builder.repository.get(build_id)
         if (
@@ -1298,12 +1348,25 @@ class DirectAgentEngineCloudDeploymentGateway:
                 "PLUGIN_BUILD_MISMATCH", "部署声明与冻结 Build 不一致", status_code=409
             )
         receipt, archive = builder.export_plugin_artifact(build_id)
-        uploaded = await self.client.upload_plugin_artifact(archive, receipt.model_dump())
-        if uploaded.get("receipt") != receipt.model_dump():
-            raise StudioError("PLUGIN_UPLOAD_INVALID", "云端插件上传回执不匹配", status_code=502)
+        object_key = f"plugin-artifacts/v1/{receipt.artifact_digest[7:]}.zip"
+        uploader = self.uploader_factory(
+            region=self.ks3_region,
+            bucket=self.bucket,
+            access_key=self._ks3_credentials["access_key"],
+            secret_key=self._ks3_credentials["secret_key"],
+            public_read=False,
+        )
+        artifact_path = await uploader.upload(archive, object_key)
+        if not artifact_path:
+            raise StudioError(
+                "PLUGIN_UPLOAD_FAILED",
+                "插件归档上传到 Agent 代码包 KS3 桶失败",
+                status_code=502,
+            )
         pinned = build.plugin_marketplace
         delivery = PluginDelivery(
-            artifact_id=uploaded["artifact_id"],
+            artifact_path=str(artifact_path),
+            storage_region=self.ks3_region,
             receipt=receipt,
             build_id=build_id,
             manifest_sha256=build.manifest_sha256,
@@ -1311,7 +1374,9 @@ class DirectAgentEngineCloudDeploymentGateway:
             plugin_names=list(pinned.plugin_names),
             snapshot_digest=pinned.marketplace_digest,
             bindings=[
-                b for b in yaml.safe_load(manifest).get("plugins", []) if b.get("enabled", True)
+                b
+                for b in yaml.safe_load(manifest).get("plugins", [])
+                if b.get("enabled", True) and b.get("ecosystem") == "codex"
             ],
         )
         delivery.validate_manifest(yaml.safe_load(manifest))
@@ -1321,7 +1386,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         request: DeploymentRequest = kwargs["request"]
         digest = str(kwargs["manifest_digest"])
         runtime_environment = dict(kwargs.get("runtime_environment") or {})
-        result = await self.client.create_agent(
+        result = await self._managed_runtime_client().create_agent(
             self._managed_runtime_payload(
                 agent_name=str(kwargs["agent_name"]),
                 manifest=str(kwargs["manifest"]),
@@ -1385,7 +1450,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             # Re-resolve it for every immutable revision instead of relying on
             # the environment captured by the first CreateAgent call.
             update_payload["environment_variables"] = runtime_environment
-        await self.client.update_agent(
+        await self._managed_runtime_client().update_agent(
             deployment.agent_id,
             update_payload,
         )
@@ -1582,7 +1647,10 @@ class CloudDeploymentService:
             bindings = [
                 b
                 for b in declaration.get("plugins", [])
-                if not isinstance(b, dict) or b.get("enabled", True)
+                if (
+                    not isinstance(b, dict)
+                    or (b.get("enabled", True) and b.get("ecosystem") == "codex")
+                )
             ]
             if bindings:
                 prepare = getattr(self.gateway, "prepare_plugin_delivery", None)
@@ -1608,17 +1676,41 @@ class CloudDeploymentService:
                 plugin_artifacts=plugin_artifacts,
             )
         else:
-            record = await self.gateway.replace_managed_runtime_deployment(
-                replacing,
-                build_id=build_id,
-                manifest=manifest,
-                runtime_name=runtime_name,
-                runtime_version=runtime_version,
-                manifest_digest=manifest_digest,
-                request=request,
-                runtime_environment=runtime_environment,
-                plugin_artifacts=plugin_artifacts,
-            )
+            try:
+                record = await self.gateway.replace_managed_runtime_deployment(
+                    replacing,
+                    build_id=build_id,
+                    manifest=manifest,
+                    runtime_name=runtime_name,
+                    runtime_version=runtime_version,
+                    manifest_digest=manifest_digest,
+                    request=request,
+                    runtime_environment=runtime_environment,
+                    plugin_artifacts=plugin_artifacts,
+                )
+            except (AgentEngineAPIError, StudioError) as error:
+                status_code = (
+                    error.status_code
+                    if isinstance(error, StudioError)
+                    else error.details.get("http_status", error.code)
+                )
+                if status_code != 404:
+                    raise
+                # Local receipts may outlive an Agent removed through the
+                # console or another client. The authoritative 404 means this
+                # is a fresh create, while all other update failures remain
+                # fail-closed to avoid duplicate Agents.
+                record = await self.gateway.create_managed_runtime_deployment(
+                    build_id=build_id,
+                    agent_name=agent_name,
+                    manifest=manifest,
+                    runtime_name=runtime_name,
+                    runtime_version=runtime_version,
+                    manifest_digest=manifest_digest,
+                    request=request,
+                    runtime_environment=runtime_environment,
+                    plugin_artifacts=plugin_artifacts,
+                )
         record = self._capture_creator(record, replacing)
         self._save(record, request)
         return record

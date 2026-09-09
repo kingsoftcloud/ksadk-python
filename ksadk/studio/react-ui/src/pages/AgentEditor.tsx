@@ -1,3 +1,4 @@
+import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useEffect, useMemo, useState } from "react";
 import { Check, CircleAlert, Package } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -6,6 +7,7 @@ import { apiFetch } from "../api";
 import { showToast } from "../components/Toast";
 import { AgentAppearanceEditor } from "../components/AgentAppearanceEditor";
 import { NativePluginBindings, type NativePluginBinding } from "../components/NativePluginBindings";
+import { PlatformResourceBindings } from "../components/PlatformResourceBindings";
 import type { AgentAppearance } from "../components/AgentAvatar";
 import { FormField } from "../components/ui/FormField";
 import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
@@ -16,6 +18,7 @@ import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import { agentEditSchema, type AgentEditFormValues } from "../schemas/agentForms";
 import {
   parseProviderConfig,
+  providerConsentKey,
   providerOptionDescription,
   type AgentProviderCatalogItem,
 } from "../agentProviders";
@@ -235,7 +238,7 @@ export function AgentEditor({
   const [runtimeAgentVariable, setRuntimeAgentVariable] = useState("root_agent");
   const [providerRef, setProviderRef] = useState("");
   const [providerConfigText, setProviderConfigText] = useState("{}");
-  const [providerPermissionsApproved, setProviderPermissionsApproved] = useState(false);
+  const [providerConsent, setProviderConsent] = useState<{ key: string; approved: boolean } | null>(null);
   const [executionStrategy, setExecutionStrategy] = useState("direct");
   const [executionMaxSteps, setExecutionMaxSteps] = useState(12);
   const [executionTimeoutSeconds, setExecutionTimeoutSeconds] = useState(120);
@@ -292,6 +295,18 @@ export function AgentEditor({
     }, ...providers];
   }, [providerRef, providers]);
   const selectedProvider = visibleProviders.find(item => item.providerRef === providerRef);
+  const codexProvider = providers.find(item => item.providerRef === STUDIO_CODEX_PROVIDER_REF);
+  const permissionProvider = runtime === "codex" ? codexProvider : runtime === "plugin" ? selectedProvider : undefined;
+  const consentKey = JSON.stringify([agentId, runtime, providerConsentKey(permissionProvider)]);
+  const savedProviderRef = detail?.draft.spec.runtime?.type === "codex"
+    ? STUDIO_CODEX_PROVIDER_REF : detail?.draft.spec.runtime?.providerRef;
+  const savedPermissions = new Set(detail?.draft.spec.security?.allowedPermissions || []);
+  const providerPermissionsApproved = providerConsent?.key === consentKey
+    ? providerConsent.approved
+    : Boolean(detail?.draft.metadata.id === agentId && permissionProvider
+      && savedProviderRef === permissionProvider.providerRef
+      && permissionProvider.permissions.every(permission => savedPermissions.has(permission)));
+  const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent({ key: consentKey, approved });
   const providerOptions = visibleProviders.map(item => ({
     value: item.providerRef,
     label: item.displayName,
@@ -332,11 +347,6 @@ export function AgentEditor({
         setRuntimeAgentVariable(String(draft.spec?.runtime?.agentVariable || (draft.spec?.runtime?.type === "langgraph" ? "app" : "root_agent")));
         setProviderRef(String(draft.spec?.runtime?.providerRef || ""));
         setProviderConfigText(JSON.stringify(draft.spec?.runtime?.providerConfig || {}, null, 2));
-        const provider = providers.find(item => item.providerRef === draft.spec?.runtime?.providerRef);
-        const allowed = new Set(draft.spec?.security?.allowedPermissions || []);
-        setProviderPermissionsApproved(Boolean(
-          provider && provider.permissions.every(permission => allowed.has(permission)),
-        ));
         setExecutionStrategy(String(draft.spec?.execution?.strategy || "direct"));
         setExecutionMaxSteps(Number(draft.spec?.execution?.maxSteps ?? 12));
         setExecutionTimeoutSeconds(Number(draft.spec?.execution?.timeoutSeconds ?? 120));
@@ -503,6 +513,11 @@ export function AgentEditor({
       setSaveError("请完整填写项目相对路径、入口文件和 Agent 变量");
       return;
     }
+    if (values.runtimeType === "codex" && permissionProvider?.permissions.length && !providerPermissionsApproved) {
+      setSaveError("请先确认 Codex Provider 请求的 Agent 权限");
+      setVisibleSection(1);
+      return;
+    }
     let providerConfig: Record<string, unknown> = {};
     if (values.runtimeType === "plugin") {
       if (!selectedProvider?.selectable) {
@@ -569,12 +584,12 @@ export function AgentEditor({
           agentVariable: runtimeAgentVariable.trim(),
         } : {}),
       };
-      if (values.runtimeType === "plugin") {
+      if (permissionProvider) {
         spec.security = {
           ...(original.security || {}),
           allowedPermissions: [...new Set([
             ...(original.security?.allowedPermissions || []),
-            ...(selectedProvider?.permissions || []),
+            ...permissionProvider.permissions,
           ])].sort(),
         };
       }
@@ -622,16 +637,24 @@ export function AgentEditor({
         },
       };
       if (memoryTouched) {
+        const platformMemoryBindingId = String((
+          selectedPlugins.find(binding =>
+            (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+          )?.config as any
+        )?.binding?.id || "");
         spec.memory = {
           ...(original.memory || {}),
-          enabled: memoryEnabled,
-          providerRef: memoryProviderRef.trim(),
+          enabled: platformMemoryBindingId ? true : memoryEnabled,
+          providerRef: platformMemoryBindingId
+            ? `binding://${platformMemoryBindingId}`
+            : memoryProviderRef.trim(),
+          ...(platformMemoryBindingId ? { scopes: ["user"] } : {}),
           recall: {
             ...(original.memory?.recall || {}),
-            enabled: memoryRecallEnabled,
+            enabled: platformMemoryBindingId ? true : memoryRecallEnabled,
             maxTokens: memoryRecallMaxTokens,
             topK: memoryRecallTopK,
-            minScore: memoryRecallMinScore,
+            minScore: platformMemoryBindingId ? 0 : memoryRecallMinScore,
           },
           write: {
             ...(original.memory?.write || {}),
@@ -827,7 +850,6 @@ export function AgentEditor({
                 options={providerOptions}
                 onValueChange={value => {
                   setProviderRef(value);
-                  setProviderPermissionsApproved(false);
                 }}
               />
             </FormField>
@@ -868,6 +890,10 @@ export function AgentEditor({
               </label>
             ) : null}
           </div>
+        )}
+        {runtime === "codex" && (
+          <CodexProviderPermissions provider={codexProvider} approved={providerPermissionsApproved}
+            onChange={setProviderPermissionsApproved} />
         )}
         <fieldset className="agent-policy-editor soul-editor" aria-describedby="soulPolicyHint">
           <legend>Soul · 稳定人格</legend>
@@ -1019,7 +1045,39 @@ export function AgentEditor({
             />
           </div>
         </div>
-        {runtime === "codex" && visibleSection === 2 && <NativePluginBindings key={agentId} value={selectedPlugins} onChange={setSelectedPlugins} onPendingChange={setPluginsPending} />}
+        {runtime === "codex" && visibleSection === 2 && <NativePluginBindings
+          key={`${agentId}-codex-plugins`}
+          value={selectedPlugins.filter(binding => binding.ecosystem === "codex")}
+          onChange={bindings => setSelectedPlugins([
+            ...selectedPlugins.filter(binding => binding.ecosystem !== "codex"),
+            ...bindings,
+          ])}
+          onPendingChange={setPluginsPending}
+        />}
+        {visibleSection === 2 && <PlatformResourceBindings
+          key={`${agentId}-platform-resources`}
+          value={selectedPlugins}
+          onChange={bindings => {
+            setSelectedPlugins(bindings);
+            const platformMemory = bindings.find(binding =>
+              (binding.config as any)?.binding?.resource?.kind === "memory-instance"
+            );
+            const bindingId = String((platformMemory?.config as any)?.binding?.id || "");
+            if (bindingId) {
+              setMemoryEnabled(true);
+              setMemoryProviderRef(`binding://${bindingId}`);
+              setMemoryRecallEnabled(true);
+              setMemoryRecallMinScore(0);
+              setMemoryWriteMode("off");
+              setMemoryWriteRollout("off");
+            } else if (memoryProviderRef.startsWith("binding://platform-memory-instance")) {
+              setMemoryEnabled(false);
+              setMemoryProviderRef("local-default");
+            }
+            setMemoryTouched(true);
+          }}
+          onPendingChange={setPluginsPending}
+        />}
         {detail.bindingProjection?.unresolvedMcpServers?.length ? (
           <div className="inline-alert warning" role="status">
             <CircleAlert size={16} />
@@ -1029,21 +1087,21 @@ export function AgentEditor({
             </div>
           </div>
         ) : null}
-        <div className="field quick-model-binding-field">
+        {!['codex', 'plugin'].includes(runtime) && <div className="field quick-model-binding-field">
           <div className="field-heading"><label>绑定 Tool</label><span className="helper">{["codex", "plugin"].includes(runtime) ? "当前 Runtime 不支持新增 ksadk Tool；历史绑定仅保留，不能修改。" : "仅展示当前 Runtime 合同允许的 ksadk Tool。"}</span></div>
           <StudioMultiSelect
             ariaLabel="选择绑定 Tool"
-            items={["codex", "plugin"].includes(runtime) ? visibleTools.filter(item => selectedTools.includes(item.resourceId)) : visibleTools}
+            items={visibleTools}
             selectedIds={selectedTools}
             getId={item => item.resourceId}
             getLabel={item => item.displayName}
             getDescription={item => item.version}
-            onChange={["codex", "plugin"].includes(runtime) ? () => undefined : setSelectedTools}
-            disabledIds={["codex", "plugin"].includes(runtime) ? selectedTools : []}
+            onChange={setSelectedTools}
+            disabledIds={[]}
             searchPlaceholder="搜索 Tool"
-            emptyMessage={runtime === "codex" ? "Codex 使用原生工具" : runtime === "plugin" ? "外部 Provider 当前接收 MCP 与 Skill 能力" : "没有可绑定的 Tool"}
+            emptyMessage="没有可绑定的 Tool"
           />
-        </div>
+        </div>}
         </section>
 
         <section className="agent-edit-section" hidden={visibleSection !== 3} aria-label="运行策略">

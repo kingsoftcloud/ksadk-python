@@ -16,7 +16,7 @@ test("local and cloud targets mount the same shared conversation workspace", () 
   assert.match(appSource, /!isCloudChat && currentAgentId/);
 });
 
-test("Studio delegates conversation behavior to ksadk-web 0.3.5 entrypoints", () => {
+test("Studio delegates conversation behavior to ksadk-web 0.3.7 entrypoints", () => {
   assert.match(workspaceSource, /AgentConversationTimeline/);
   assert.match(workspaceSource, /AgentConversationComposer/);
   assert.match(workspaceSource, /useAgentChat/);

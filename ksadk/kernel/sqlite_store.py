@@ -1112,6 +1112,33 @@ class SQLiteAgentKernelStore:
             )
         return self._row_to_record(rows[0]) if rows else None
 
+    async def get_terminal_receipt(
+        self, interaction_id: str, *, tenant_id: str, agent_instance_id: str,
+        session_id: str, run_id: str,
+    ) -> InteractionReceipt | None:
+        """Read the committed outcome inside a complete trusted scope.
+
+        Resolved alone does not mean approved. Pending/resolving records never
+        yield an authorization receipt; callers must still match the request.
+        """
+        if not all(isinstance(value, str) and value for value in (
+            interaction_id, tenant_id, agent_instance_id, session_id, run_id
+        )):
+            raise InvalidCommandError("interaction receipt requires a complete trusted scope")
+        row = await self._fetchone(
+            await self._connect(),
+            "SELECT * FROM kernel_interactions WHERE interaction_id=? AND tenant_id=?"
+            " AND agent_instance_id=? AND session_id=? AND run_id=?",
+            (interaction_id, tenant_id, agent_instance_id, session_id, run_id),
+        )
+        if row is None or not is_terminal(row["status"]):
+            return None
+        return InteractionReceipt(
+            interaction_id=row["interaction_id"], revision=int(row["revision"]),
+            status=row["status"], outcome=row["outcome"], event_id=row["event_id"],
+            accepted_seq=row["accepted_seq"],
+        )
+
     async def list_pending_interactions(
         self, tenant_id: str, session_id: str
     ) -> list[InteractionRecord]:

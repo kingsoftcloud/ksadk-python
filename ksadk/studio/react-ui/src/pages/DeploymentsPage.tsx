@@ -35,7 +35,7 @@ interface Deployment {
     | "native-runtime-without-session-event-chat-capability"
     | "studio-compatible-framework";
   updatedAt?: string;
-  creatorName?: string;
+  creatorName?: string | null;
   createdByName?: string;
 }
 
@@ -571,7 +571,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         const agentPayload = await agentsResponse.json();
         const settings = settingsResponse.ok ? await settingsResponse.json() : {};
         const agents = Array.isArray(agentPayload.items) ? agentPayload.items : [];
-        const details = await Promise.all(agents.map(async (summary: any) => {
+        const routeAgents = createSelection.agentId
+          ? agents.filter((summary: any) => (
+              String(summary?.metadata?.id || "").trim() === createSelection.agentId
+            ))
+          : agents;
+        const details = await Promise.all(routeAgents.map(async (summary: any) => {
           const agentId = String(summary?.metadata?.id || "").trim();
           if (!agentId) return null;
           const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`);
@@ -604,6 +609,9 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           if (buildResponse.ok) {
             const build = await buildResponse.json();
             const agentId = String(build.agentId || createSelection.agentId || "").trim();
+            if (createSelection.agentId && agentId !== createSelection.agentId) {
+              throw new Error(`Build ${createSelection.buildId} 不属于当前 Agent`);
+            }
             const agentResponse = agentId
               ? await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`)
               : null;
@@ -622,6 +630,9 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
               }, ...candidates];
             }
           }
+        }
+        if (createSelection.agentId) {
+          candidates = candidates.filter(build => build.agentId === createSelection.agentId);
         }
         if (cancelled) return;
         setCloudRegion(String(settings.cloudRegion || "").trim());
@@ -1023,6 +1034,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
   if (createSelection) {
     const selectedBuild = deployableBuilds.find(build => build.id === selectedBuildId);
+    const routeAgentName = selectedBuild?.agentName || deployableBuilds[0]?.agentName;
     return (
       <div className="delivery-page deployment-create-page" data-layout="document">
         <PageHeaderActions>
@@ -1034,7 +1046,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           </button>
         </PageHeaderActions>
         <div className="delivery-intro">
-          <div><h2>部署到云端</h2><p>选择一个已成功的 Build，由 Studio 提交统一云端部署操作。</p></div>
+          <div>
+            <h2>{routeAgentName ? `部署 ${routeAgentName}` : "部署到云端"}</h2>
+            <p>{createSelection.agentId
+              ? "选择当前 Agent 已成功的 Build，由 Studio 提交统一云端部署操作。"
+              : "选择一个已成功的 Build，由 Studio 提交统一云端部署操作。"}</p>
+          </div>
         </div>
         {createError && <div className="form-error" role="alert">{createError}</div>}
         <section className="delivery-block" aria-label="选择部署 Build">

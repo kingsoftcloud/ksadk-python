@@ -226,7 +226,10 @@ async def _iter_conversation_turn_events(
         user_input=prepared.user_input,
     )
     prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
+    from ksadk.session_context import SessionContext
+
     runtime_context = PlatformInvocationContext(
+        session=SessionContext.from_payload(prepared.session_context),
         agent_id=agent_id,
         user_id=user_id,
         account_id=str(account_id or ""),

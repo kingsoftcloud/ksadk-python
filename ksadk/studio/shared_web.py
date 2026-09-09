@@ -18,9 +18,13 @@ from ksadk.conversations.contracts import (
     ConversationTextPart,
     validate_conversation_input,
 )
+from ksadk.conversations.message_projection import project_session_messages
+from ksadk.events.canonical import parse_runtime_event
+from ksadk.events.canonical_store import session_event_to_runtime_event
 from ksadk.sessions.base import Session
 from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus
 from ksadk.studio.errors import StudioError, not_found
+from ksadk.studio.run_service import project_runtime_event
 from ksadk.studio.service import StudioService
 from ksadk.tools.gateway import tool_approval_capability
 
@@ -249,6 +253,16 @@ class StudioSharedWebBridge:
                 }
             )
 
+        extra_events = await self._untracked_runtime_events(session_id, runs)
+        if extra_events:
+            messages.extend(project_session_messages(extra_events))
+            messages.sort(key=lambda item: self._timestamp_value(item["Timestamp"]))
+            for sequence, message in enumerate(messages, 1):
+                message["SeqId"] = sequence
+                if isinstance(message["Timestamp"], (int, float)):
+                    message["Timestamp"] = self._timestamp(message["Timestamp"])
+                message.pop("StartSeqId", None)
+
         latest_seq_id = sequence
         if after_seq_id is not None:
             messages = [item for item in messages if item["SeqId"] > after_seq_id]
@@ -280,12 +294,72 @@ class StudioSharedWebBridge:
                         "Timestamp": self._timestamp(event.created_at),
                     }
                 )
+        extra_events = await self._untracked_runtime_events(session_id, runs)
+        for event in extra_events:
+            native = event["Content"]["runtime_event"]
+            event_type, content = project_runtime_event(
+                parse_runtime_event(native), session_id=session_id
+            )
+            events.append(
+                {
+                    "SeqId": 0,
+                    "EventType": self._shared_event_type(event_type, content),
+                    "InvocationId": event["InvocationId"],
+                    "Content": content,
+                    "Timestamp": self._timestamp(event["Timestamp"]),
+                }
+            )
+        if extra_events:
+            events.sort(key=lambda item: self._timestamp_value(item["Timestamp"]))
+        for sequence, event in enumerate(events, 1):
+            event["SeqId"] = sequence
         return {
             "Events": events,
             "Total": len(events),
             "Offset": 0,
             "Limit": len(events),
         }
+
+    async def _untracked_runtime_events(
+        self, session_id: str, runs: list[RunRecord]
+    ) -> list[dict[str, Any]]:
+        """Read Kernel-owned runs absent from Studio's foreground run index.
+
+        Scheduled runs already have a durable canonical transcript. Project
+        that log through the shared message contract, including in sessions
+        that also contain foreground turns, without manufacturing RunRecords.
+        """
+        tracked = {run.id for run in runs}
+        for run in runs:
+            tracked.add(str(run.runtime_handle.get("run_id") or ""))
+            for event in await self.studio.run_service.events(run.id):
+                native = event.data.get("runtimeEvent")
+                if isinstance(native, dict):
+                    tracked.add(str(native.get("run_id") or ""))
+        result = []
+        for row in await self.studio.session_service.get_events(session_id):
+            native = session_event_to_runtime_event(row)
+            if native is None or native.run_id in tracked:
+                continue
+            result.append(
+                {
+                    "EventId": native.event_id,
+                    "SessionId": session_id,
+                    "SeqId": row.seq_id,
+                    "EventType": native.event_type,
+                    "InvocationId": native.run_id,
+                    "Timestamp": row.timestamp,
+                    "Content": {"runtime_event": native.model_dump(mode="json")},
+                    "Metadata": {"ksadk_canonical_runtime_event": True},
+                }
+            )
+        return result
+
+    @staticmethod
+    def _timestamp_value(value: str | float) -> float:
+        if isinstance(value, (float, int)):
+            return value
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else 0
 
     @staticmethod
     def _shared_event_type(event_type: str, data: dict[str, Any]) -> str:
@@ -312,12 +386,22 @@ class StudioSharedWebBridge:
             return data
         return {**data, "runtimeEvent": {**native, "run_id": run_id}}
 
-    def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
+    async def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
         run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
-        record = self.studio.event_store.get(run_id)
-        if record.session_id != session_id:
-            raise not_found("run", invocation_id)
-        return run_id
+        try:
+            run = self.studio.event_store.get(run_id)
+        except StudioError as error:
+            if error.code != "RUN_NOT_FOUND":
+                raise
+        else:
+            if run.session_id != session_id:
+                raise not_found("run", invocation_id)
+            return run_id
+        for row in await self.studio.session_service.get_events(session_id):
+            native = session_event_to_runtime_event(row)
+            if native is not None and native.run_id == run_id:
+                return run_id
+        raise not_found("run", invocation_id)
 
     async def subscribe_run_events(
         self,
@@ -326,7 +410,28 @@ class StudioSharedWebBridge:
         *,
         after_seq_id: int = 0,
     ) -> AsyncIterator[str]:
-        run_id = self.subscription_run_id(session_id, invocation_id)
+        run_id = await self.subscription_run_id(session_id, invocation_id)
+        runs = self.studio.event_store.list_runs(session_id=session_id)
+        if await self._untracked_runtime_events(session_id, runs):
+            cursor = after_seq_id
+            while True:
+                history = await self.list_session_events(session_id)
+                run_events = [
+                    event for event in history["Events"] if event["InvocationId"] == run_id
+                ]
+                for event in run_events:
+                    if event["SeqId"] > cursor:
+                        yield self._sse("message", {**event, "SessionId": session_id})
+                        cursor = event["SeqId"]
+                if any(
+                    event["EventType"]
+                    in {"run.completed", "run.failed", "run.cancelled", "run.interrupted"}
+                    for event in run_events
+                ):
+                    yield "event: done\ndata: [DONE]\n\n"
+                    return
+                yield ": ping\n\n"
+                await asyncio.sleep(0.25)
         # Match ListSessionEvents' session cursor without rereading every old
         # run on every live poll. Only the subscribed run can still grow.
         offset = 0
@@ -976,9 +1081,12 @@ class StudioSharedWebBridge:
     async def _sessions(self, agent_id: str) -> list[dict[str, Any]]:
         persisted = await self.studio.session_service.list_session_metadata(
             agent_id=agent_id,
-            user_id="local-user",
         )
-        records = {session.id: self._session_metadata_record(session) for session in persisted}
+        records = {
+            session.id: self._session_metadata_record(session)
+            for session in persisted
+            if session.user_id in {"local-user", "local-studio"}
+        }
         grouped: dict[str, list[RunRecord]] = {}
         for run in self.studio.event_store.list_runs():
             if run.agent_id != agent_id:

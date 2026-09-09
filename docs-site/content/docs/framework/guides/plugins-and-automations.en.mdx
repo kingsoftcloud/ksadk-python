@@ -3,16 +3,16 @@ title: Plugins and automations
 status: experimental
 ---
 
-Phase 2 adds local-first plugin lifecycle operations, ecosystem host bridges, Scheduler Lite, and a shared conversation surface. These features are still behind unreleased gates. Released Agents and precisely identified historical Bundles remain on their original paths and do not require a Runtime rebuild or upgrade.
+KsADK 0.8.4 provides local-first plugin lifecycle operations, ecosystem host bridges, platform resource plugins, Scheduler Lite, and a shared conversation surface. Released Agents and precisely identified historical Bundles remain on their original paths and do not require a Runtime rebuild or upgrade.
 
 Studio and Hosted UI pin the versioned Conversation v1 headless module from
-`@kingsoftcloud/ksadk-web@0.3.5`. Candidate source, independent browser, and
-deployed two-turn checks for both a new and a historical Agent are green;
-the stable release still requires a rebuild from the public npm artifact and
-the final artifact audit.
+`@kingsoftcloud/ksadk-web@0.3.7`. Release artifacts are rebuilt from the public
+npm package and pass source, browser, and artifact audits. Each cloud environment
+still needs its control plane, resource authorization, and Runtime image verified
+against the boundaries below.
 
-<Callout type="warning" title="Unreleased preview">
-  This page is not a stable-release announcement. Cloud PluginHost, cloud 24x7 scheduling, the P2-06 DSH Codex Bundle/child Provider, Claude Code, and game-plugin execution are outside the current support claim. One passing reference DSH AgentProvider E2E does not make arbitrary third-party Providers supported.
+<Callout type="warning" title="Support boundaries">
+  A general cloud PluginHost, cloud 24x7 scheduling, the P2-06 DSH Codex Bundle/child Provider, Claude Code, and game-plugin execution are outside the 0.8.4 support claim. One passing reference DSH AgentProvider E2E does not make arbitrary third-party Providers supported.
 </Callout>
 
 ## 0.8.4 delivery and installation boundaries
@@ -21,7 +21,9 @@ Studio uses a managed full DSH Core/Profile and renders plugin settings in its o
 
 Codex cloud delivery freezes plugin bytes and admitted references into immutable artifacts associated with the Agent version. It requires compatible control-plane artifact APIs and storage; an unsupported endpoint blocks deployment instead of silently dropping plugins. It does not copy desktop OAuth credentials. Cloud MCP OAuth and credential management are deferred. A skill being present does not prove its MCP server is connected or authenticated.
 
-The universal Python wheel includes Web 0.3.5 and built Studio pages. It does not include Python dependencies, Node/Codex/DSH binaries, community plugins or credentials. The base package declares shared framework dependencies, with extras for additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and any native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
+Knowledge bases, long-term memory, and Skill Center enter the same Build/Activation path through official platform resource plugins. Studio stores resource connection identifiers without writing AK/SK values or runtime tokens into the Agent spec. The Build freezes the connection reference, resource type, and plugin digest; Runtime resolves the connection using account, region, and platform-injected credentials. Knowledge is exposed as read-only retrieval tools, memory recall and writes follow the Agent policy, and Skill Center supplies skill discovery and loading. A visible bound state means that configuration entered the Agent Revision; it does not grant server-side authorization or prove current network reachability.
+
+The universal Python wheel includes Web 0.3.7 and built Studio pages. It does not include Python dependencies, Node/Codex/DSH binaries, community plugins or credentials. The base package declares shared framework dependencies, with extras for additional capabilities; a fully disconnected installation also requires a prepared dependency wheelhouse and any native toolchains. Existing cloud Agents are unchanged until explicitly rebuilt and redeployed.
 
 The verified DSH plugin environment uses Node.js 22 and `pnpm@10.33.2` on PATH. The managed toolchain installer uses its own pinned pnpm through Corepack; DSH profile add/remove commands use pnpm from PATH. Avoid pnpm 11.7.0 for profile operations for now: removing the official Codex bundle can print completion without terminating the process.
 

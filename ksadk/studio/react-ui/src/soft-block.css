@@ -2888,7 +2888,7 @@ details.build-log > pre {
   display: grid;
   width: 100%;
   min-width: 0;
-  grid-template-columns: minmax(96px, 1fr) 88px 64px minmax(136px, auto);
+  grid-template-columns: minmax(160px, 1fr) minmax(112px, max-content) minmax(180px, 216px) minmax(136px, max-content);
   align-items: center;
   column-gap: 16px;
   padding: 8px 12px;
@@ -2935,9 +2935,17 @@ details.build-log > pre {
 .deployment-version-state,
 .deployment-version-traffic,
 .deployment-version-time {
+  overflow: hidden;
   min-width: 0;
   color: var(--text-tertiary);
   font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deployment-version-option > code {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .deployment-version-state[data-state="current"] { color: var(--success-deep); }

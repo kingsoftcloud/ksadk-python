@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ksadk.plugins.bridges.dsh import DshProfileProjection
+from ksadk.plugins.bridges.dsh import DshProfileBuildSnapshot, DshProfileProjection
 from ksadk.plugins.host import PluginHostError
 from ksadk.plugins.providers.dsh_capabilities import (
     DSH_CAPABILITY_BUNDLE_PACKAGE,
@@ -23,6 +23,7 @@ from ksadk.plugins.providers.dsh_capabilities import (
 from ksadk.studio import dsh_capability_service as capability_module
 from ksadk.studio.dsh_capability_service import StudioDshCapabilityService
 from ksadk.studio.errors import StudioError
+from tests.resource_runtime.test_memory_worker import memory_upstream as memory_upstream
 
 
 def _tool() -> DshCapabilityTool:
@@ -31,6 +32,47 @@ def _tool() -> DshCapabilityTool:
         description="Echo one value",
         input_schema={"type": "object", "additionalProperties": False},
     )
+
+
+@pytest.mark.parametrize("action", ["refresh", "close", "restart"])
+async def test_resource_workers_are_closed_with_core_generation(
+    tmp_path: Path, action: str
+) -> None:
+    service = _RecordingService(tmp_path)
+    await service.inventory()
+    closed = []
+
+    class Resources:
+        async def aclose(self):
+            closed.append(True)
+
+    service._resource_supervisor = Resources()
+    try:
+        if action == "refresh":
+            await service.refresh()
+        elif action == "close":
+            await service.aclose()
+        else:
+            service.hosts[0].healthy = False
+            await service.inventory()
+        assert closed == [True]
+        assert service._resource_supervisor is None
+    finally:
+        await service.aclose()
+
+
+async def test_resource_cleanup_failure_still_disposes_core(tmp_path: Path) -> None:
+    service = _RecordingService(tmp_path)
+    await service.inventory()
+
+    class Resources:
+        async def aclose(self):
+            raise RuntimeError("fixture cleanup failed")
+
+    service._resource_supervisor = Resources()
+    with pytest.raises(RuntimeError, match="fixture cleanup failed"):
+        await service.aclose()
+    assert service.hosts[0].disposed is True
 
 
 def _descriptor() -> DshProfileCapabilityDescriptor:
@@ -62,6 +104,10 @@ class _FakeHost:
         self.lease_count += 1
         self.healthy = True
         return self.lease_value
+
+    async def configure_resource_socket(self, path):
+        assert path.is_socket()
+        self.resource_socket = path
 
     async def health(self) -> bool:
         return self.healthy
@@ -195,6 +241,16 @@ async def test_service_initializes_once_and_exposes_only_public_facts(tmp_path: 
     with pytest.raises(StudioError) as closed:
         await service.describe()
     assert closed.value.code == "DSH_CAPABILITY_SERVICE_CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_resource_service_does_not_mount_studio_web_app(tmp_path: Path) -> None:
+    service = _RecordingService(tmp_path, mount_studio_app=False)
+
+    await service.inventory()
+
+    assert service.host_kwargs[0]["studio_index"] is None
+    await service.aclose()
 
 
 @pytest.mark.asyncio
@@ -483,3 +539,291 @@ async def test_result_limit_reserves_json_rpc_envelope_bytes(
     await service_with_host.describe()
     assert service_with_host.host_kwargs[0]["max_result_bytes"] == result_limit
     assert service_with_host._max_wire_response_bytes == result_limit + 16 * 1024  # noqa: SLF001
+
+
+def _resource_snapshot(service):
+    return DshProfileBuildSnapshot(
+        projection=service._project_profile(("/pinned/dsh",)),
+        dependency_lock_digest="sha256:" + "b" * 64,
+        installation_digest="sha256:" + "c" * 64,
+    )
+
+
+def _bind_resource_profile(payload, expected):
+    from ksadk.resource_runtime.snapshots import ResourceSnapshot
+    from ksadk.resource_runtime.worker import WorkerInitialization
+
+    payload["resourceSnapshot"]["dshProfile"] = expected.model_dump(by_alias=True)
+    digest = ResourceSnapshot.model_validate(payload["resourceSnapshot"]).digest
+    for scope in payload["scopes"]:
+        scope["bindingSnapshotDigest"] = digest
+    return WorkerInitialization.model_validate(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_resource_activation_approval_and_receipt_survive_service_restart(
+    tmp_path, monkeypatch, memory_upstream, authorized,
+):
+    from tests.resource_runtime.test_activation_approvals import (
+        Approval,
+        request,
+        write_initialization,
+    )
+
+    endpoint, calls = memory_upstream
+    operation_id = None
+    for _ in range(2):
+        service = _RecordingService(tmp_path)
+        expected = _resource_snapshot(service)
+        monkeypatch.setattr(service, "_verify_resource_build_snapshot", lambda *args: None)
+        try:
+            descriptor, generation = await service.prepare_resource_generation(expected)
+            payload = write_initialization(endpoint).pipe_payload()
+            payload["scopes"][0]["generationId"] = generation
+            payload["scopes"][0]["profileDigest"] = descriptor.profile_digest
+            active = await service.activate_resources(
+                _bind_resource_profile(payload, expected), expected=expected,
+                write_authorizer=Approval("user-a") if authorized else None,
+            )
+            reply = await service._resource_supervisor._broker.dispatch(request(active))
+            if authorized:
+                assert reply["result"]["status"] == "accepted_pending"
+                current = reply["result"]["operationId"]
+                assert operation_id is None or current == operation_id
+                operation_id = current
+            else:
+                assert reply["error"]["code"] == "RESOURCE_APPROVAL_REQUIRED"
+        finally:
+            await service.aclose()
+    assert len(calls) == (1 if authorized else 0)
+
+
+@pytest.mark.asyncio
+async def test_resource_generation_preparation_and_actual_worker_lifetime(tmp_path, monkeypatch):
+    from tests.resource_runtime.test_worker_process import initialization
+
+    service = _RecordingService(tmp_path)
+    expected = _resource_snapshot(service)
+    checks = []
+    monkeypatch.setattr(
+        service,
+        "_verify_resource_build_snapshot",
+        lambda command, snapshot: checks.append(snapshot),
+    )
+    try:
+        descriptor, generation = await service.prepare_resource_generation(expected)
+        assert checks == [expected, expected]
+        payload = initialization("https://resources.example.test").pipe_payload()
+        payload["scopes"][0]["generationId"] = generation
+        payload["scopes"][0]["profileDigest"] = descriptor.profile_digest
+        active = await service.activate_resources(
+            _bind_resource_profile(payload, expected), expected=expected
+        )
+        assert active.worker_pid > 0
+        assert active.socket_path.exists()
+        assert len(checks) == 3
+        async def revalidate(scopes):
+            assert scopes == (active.leases[0].scope,)
+            return True
+
+        renewed = await service.renew_resources(active, expected=expected, revalidate=revalidate)
+        assert len(checks) == 4
+        assert renewed.worker_pid == active.worker_pid
+        assert renewed.leases[0].handle != active.leases[0].handle
+        await service.aclose()
+        assert not active.socket_path.exists()
+        assert service._resource_generation_snapshot is None
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resource_preparation_restarts_unattested_same_profile_core(
+    tmp_path, monkeypatch
+):
+    service = _RecordingService(tmp_path)
+    await service.describe()
+    original = service.hosts[0]
+    expected = _resource_snapshot(service)
+    checks = []
+    monkeypatch.setattr(
+        service,
+        "_verify_resource_build_snapshot",
+        lambda command, snapshot: checks.append(snapshot),
+    )
+
+    _descriptor, generation = await service.prepare_resource_generation(expected)
+
+    assert original.disposed
+    assert len(service.hosts) == 2
+    assert checks == [expected, expected]
+    assert service._resource_generation_snapshot == expected
+    assert generation == service._generation_id
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resource_preparation_does_not_replace_incompatible_active_core(tmp_path):
+    service = _RecordingService(tmp_path)
+    await service.describe()
+    host = service.hosts[0]
+    expected = _resource_snapshot(service)
+    expected = expected.model_copy(
+        update={
+            "projection": expected.projection.model_copy(
+                update={"config_digest": "sha256:" + "d" * 64}
+            )
+        }
+    )
+
+    with pytest.raises(StudioError) as rejected:
+        await service.prepare_resource_generation(expected)
+
+    assert rejected.value.code == "RESOURCE_PROFILE_IN_USE"
+    assert not host.disposed
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_changed_installation_revokes_prepared_generation_before_worker(
+    tmp_path, monkeypatch
+):
+    from tests.resource_runtime.test_worker_process import initialization
+
+    service = _RecordingService(tmp_path)
+    expected = _resource_snapshot(service)
+    monkeypatch.setattr(service, "_verify_resource_build_snapshot", lambda *args: None)
+    await service.prepare_resource_generation(expected)
+    host = service.hosts[0]
+
+    def reject(*args):
+        raise StudioError(
+            "RESOURCE_BUILD_INSTALLATION_MISMATCH", "fixture changed", status_code=409
+        )
+
+    monkeypatch.setattr(service, "_verify_resource_build_snapshot", reject)
+    with pytest.raises(StudioError) as rejected:
+        await service.activate_resources(
+            _bind_resource_profile(
+                initialization("https://resources.example.test").pipe_payload(), expected
+            ), expected=expected,
+        )
+    assert rejected.value.code == "RESOURCE_BUILD_INSTALLATION_MISMATCH"
+    assert host.disposed
+    assert service._resource_supervisor is None
+    assert service._resource_generation_snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_resource_activation_requires_prepared_build(tmp_path):
+    from tests.resource_runtime.test_worker_process import initialization
+
+    service = _RecordingService(tmp_path)
+    with pytest.raises(StudioError) as rejected:
+        await service.activate_resources(
+            initialization("https://resources.example.test"), expected=_resource_snapshot(service)
+        )
+    assert rejected.value.code == "RESOURCE_BUILD_NOT_PREPARED"
+    assert not service.hosts
+    assert service._resource_supervisor is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["missing", "config", "lock", "installation"])
+async def test_resource_activation_cannot_mix_build_and_core_snapshots(
+    tmp_path, monkeypatch, change,
+):
+    from ksadk.resource_runtime.worker import WorkerInitialization
+    from tests.resource_runtime.test_worker_process import initialization
+
+    service = _RecordingService(tmp_path)
+    expected = _resource_snapshot(service)
+    monkeypatch.setattr(service, "_verify_resource_build_snapshot", lambda *args: None)
+    try:
+        descriptor, generation = await service.prepare_resource_generation(expected)
+        payload = initialization("https://resources.example.test").pipe_payload()
+        payload["scopes"][0]["generationId"] = generation
+        payload["scopes"][0]["profileDigest"] = descriptor.profile_digest
+        admitted = _bind_resource_profile(payload, expected)
+        active = await service.activate_resources(admitted, expected=expected)
+        supervisor = service._resource_supervisor
+        altered = expected.model_dump(by_alias=True)
+        if change == "config":
+            altered["projection"]["configDigest"] = "sha256:" + "d" * 64
+        elif change == "lock":
+            altered["dependencyLockDigest"] = "sha256:" + "d" * 64
+        elif change == "installation":
+            altered["installationDigest"] = "sha256:" + "d" * 64
+        payload["scopes"][0]["activationId"] = "different-activation"
+        candidate = _bind_resource_profile(
+            payload, DshProfileBuildSnapshot.model_validate(altered)
+        )
+        if change == "missing":
+            from ksadk.resource_runtime.snapshots import ResourceSnapshot
+
+            payload = candidate.pipe_payload()
+            payload["resourceSnapshot"].pop("dshProfile")
+            payload["scopes"][0]["bindingSnapshotDigest"] = ResourceSnapshot.model_validate(
+                payload["resourceSnapshot"]
+            ).digest
+            candidate = WorkerInitialization.model_validate(payload)
+        with pytest.raises(StudioError) as rejected:
+            await service.activate_resources(candidate, expected=expected)
+        assert rejected.value.code == "RESOURCE_BUILD_PROFILE_MISMATCH"
+        assert service._resource_supervisor is supervisor
+        assert active.socket_path.exists()
+        assert not service.hosts[0].disposed
+        assert service._resource_generation_snapshot == expected
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["lease", "initialize"])
+async def test_resource_core_startup_failure_cleans_socket_and_can_retry_same_build(
+    tmp_path, monkeypatch, stage,
+):
+    class ResourceService(_RecordingService):
+        def _project_profile(self, command):
+            return super()._project_profile(command).model_copy(update={
+                "bundles": ("@kingsoftcloud/dsh-platform-resources",),
+            })
+
+    service = ResourceService(tmp_path)
+    expected = _resource_snapshot(service)
+    monkeypatch.setattr(service, "_verify_resource_build_snapshot", lambda *args: None)
+    paths = []
+    original = _FakeHost.lease
+    initialize = service._initialize_lease
+    fail = [True]
+
+    async def lease(host):
+        paths.append(host.resource_socket)
+        assert not service._resource_supervisor._running
+        assert not service._resource_supervisor._registry._leases
+        if fail[0] and stage == "lease":
+            raise PluginHostError("fixture_start_failed", "fixture")
+        return await original(host)
+
+    async def initialize_lease(value):
+        if fail[0] and stage == "initialize":
+            raise StudioError("FIXTURE_INITIALIZE_FAILED", "fixture", status_code=503)
+        return await initialize(value)
+
+    monkeypatch.setattr(_FakeHost, "lease", lease)
+    monkeypatch.setattr(service, "_initialize_lease", initialize_lease)
+    try:
+        with pytest.raises(StudioError):
+            await service.prepare_resource_generation(expected)
+        assert service._resource_supervisor is None
+        assert not paths[0].exists()
+        fail[0] = False
+        _, generation = await service.prepare_resource_generation(expected)
+        assert len(service.hosts) == 1  # retain the original host/circuit owner
+        assert paths[1].is_socket() and paths[0] != paths[1]
+        assert service._resource_supervisor.generation_id == generation
+        assert service._resource_generation_snapshot == expected
+    finally:
+        await service.aclose()
+    assert not paths[-1].exists()

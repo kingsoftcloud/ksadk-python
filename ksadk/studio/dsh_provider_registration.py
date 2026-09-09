@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import BaseModel, ConfigDict
 
 from ksadk.plugins.bridges.dsh import (
@@ -53,6 +54,14 @@ _PROFILE_FILES = ("package.json", "cordis.patch.yml", "index.mjs")
 _MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024
 _DSH_PLATFORM_BUNDLES = frozenset(DSH_CORE_PACKAGES)
 _SHIPPED_PROVIDER_PACKAGES = frozenset({SHIPPED_CODEX_DSH_PACKAGE, SHIPPED_HARNESS_DSH_PACKAGE})
+_SHIPPED_RESOURCE_PACKAGES = (
+    ("@kingsoftcloud/dsh-platform-resources", "dsh-platform-resources"),
+    ("@kingsoftcloud/dsh-knowledge", "dsh-knowledge"),
+    ("@kingsoftcloud/dsh-memory", "dsh-memory"),
+    ("@kingsoftcloud/dsh-skill-center", "dsh-skill-center"),
+)
+_SHIPPED_RESOURCE_VERSION = "0.1.0"
+_RESOURCE_RUNTIME_BUNDLE = "@deepseek-ai/dsh-web-app"
 
 
 class StudioDshProviderRegistrationError(RuntimeError):
@@ -154,6 +163,63 @@ class _FreshDshAgentProviderFactory:
             raise
 
 
+class _FreshShippedDshBridgeFactory:
+    """Bind a shipped provider to a host owned by the consuming PluginHost loop."""
+
+    def __init__(
+        self,
+        command: Sequence[str],
+        *,
+        projection: DshProfileProjection,
+        cwd: Path,
+        environment: Mapping[str, str],
+        registration: DshAgentProviderRegistration,
+        package_name: str,
+        host_factory: HostFactory,
+    ) -> None:
+        self._command = tuple(command)
+        self._projection = projection
+        self._cwd = cwd
+        self._environment = dict(environment)
+        self._registration = registration
+        self._package_name = package_name
+        self._host_factory = host_factory
+
+    async def stage(
+        self,
+        manifest: PluginManifest,
+        *,
+        profile: CompositionProfile,
+        services: Mapping[str, Any],
+    ) -> ManagedPlugin:
+        host = self._host_factory(
+            self._command,
+            projection=self._projection,
+            cwd=self._cwd,
+            environment=self._environment,
+        )
+        try:
+            current = await host.registration()
+            if current != self._registration:
+                raise PluginHostError(
+                    "dsh_provider_registration_changed",
+                    "DSH provider registration changed after Studio discovery",
+                )
+            if self._package_name == SHIPPED_CODEX_DSH_PACKAGE:
+                factory: Any = KsADKCodexDshBridgeFactory(host, current, owns_host=True)
+            elif self._package_name == SHIPPED_HARNESS_DSH_PACKAGE:
+                factory = KsADKHarnessDshBridgeFactory(host, current, owns_host=True)
+            else:  # guarded by _register_package
+                raise PluginHostError(
+                    "dsh_provider_package_unsupported",
+                    "shipped DSH provider package is unsupported",
+                )
+            return await factory.stage(manifest, profile=profile, services=services)
+        except BaseException:
+            await host.dispose()
+            raise
+
+
 class StudioDshProviderRegistrationManager:
     """Own Profile discovery, provider preflight, registration, and disposal."""
 
@@ -239,6 +305,32 @@ class StudioDshProviderRegistrationManager:
                 return None
         return cls(root, dsh_home=home, profile="web", dsh_command=command)
 
+    @classmethod
+    def create_workspace_resource_default(
+        cls, workspace: Path
+    ) -> "StudioDshProviderRegistrationManager | None":
+        """Own the official-only Profile frozen into resource Builds."""
+
+        if os.environ.get("KSADK_DSH_HOME", "").strip() or os.environ.get(
+            "KSADK_DSH_PROFILE", ""
+        ).strip():
+            return None
+        root = workspace.resolve()
+        configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
+        if configured_bin:
+            command: Sequence[str] | None = (str(Path(configured_bin).expanduser()),)
+        else:
+            try:
+                command = DshToolchainManager().require_command()
+            except Exception:
+                return None
+        return cls(
+            root,
+            dsh_home=root / ".agentkit" / "dsh-home",
+            profile="agentkit-resources",
+            dsh_command=command,
+        )
+
     @property
     def inventory(self) -> StudioDshProviderInventory:
         return self._inventory
@@ -251,7 +343,7 @@ class StudioDshProviderRegistrationManager:
         return (
             not configured_home
             and not configured_profile
-            and self._profile == "web"
+            and self._profile in {"web", "agentkit-resources"}
             and self._dsh_home == expected_home
         )
 
@@ -287,6 +379,7 @@ class StudioDshProviderRegistrationManager:
             dsh_command=command,
             cwd=self._workspace,
         ) as bridge:
+            self._repair_owned_profile_layout(bridge)
             installed = {item.name: item for item in bridge.list_plugins()}
             current = installed.get(SHIPPED_CODEX_DSH_PACKAGE)
             if current is None:
@@ -318,12 +411,173 @@ class StudioDshProviderRegistrationManager:
             self._write_default_marker(
                 marker,
                 {
+                    **marker_payload,
                     "version": 1,
                     "codexProviderApplied": True,
                     "codexProviderVersion": SHIPPED_CODEX_PROVIDER_VERSION,
                 },
             )
         return result
+
+    async def bootstrap_official_resource_plugins(
+        self,
+    ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+        """Apply the wheel-owned platform-resource stack once to Studio's Profile."""
+
+        if not self._owns_workspace_default_profile:
+            return "skipped"
+        async with self._lock:
+            return await asyncio.to_thread(self._bootstrap_official_resource_plugins_sync)
+
+    def _bootstrap_official_resource_plugins_sync(
+        self,
+    ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+        if not self._owns_workspace_default_profile:
+            return "skipped"
+        marker = self._default_marker_path
+        marker_payload = self._read_default_marker(marker)
+        command = self._dsh_command or DshToolchainManager().require_command()
+        installed_any = False
+        disabled = False
+        enable_defaults = marker_payload.get("platformResourcesEnabled") is not True
+        with self._bridge_factory(
+            dsh_home=self._dsh_home,
+            profile=self._profile,
+            dsh_command=command,
+            cwd=self._workspace,
+        ) as bridge:
+            self._repair_owned_profile_layout(bridge)
+            inventory = {item.name: item for item in bridge.list_plugins()}
+            for package_name, directory_name in _SHIPPED_RESOURCE_PACKAGES:
+                current = inventory.get(package_name)
+                if current is None:
+                    # A completed marker plus a missing package records a later,
+                    # explicit uninstall. Startup must preserve that choice.
+                    if marker_payload.get("platformResourcesApplied") is True:
+                        continue
+                    root = (
+                        Path(__file__).parents[1]
+                        / "plugins"
+                        / "providers"
+                        / "bundles"
+                        / directory_name
+                    )
+                    current = bridge.install_plugin(
+                        str(root), accept_host_permissions=True
+                    )
+                    if current.name != package_name:
+                        raise StudioDshProviderRegistrationError(
+                            "resource_dsh_package_mismatch",
+                            "an official resource install returned a different package",
+                        )
+                    installed_any = True
+                if current.version != _SHIPPED_RESOURCE_VERSION:
+                    raise StudioDshProviderRegistrationError(
+                        "resource_dsh_bundle_not_active",
+                        "an official platform resource Bundle version is not supported",
+                    )
+                if not current.enabled and enable_defaults:
+                    current = bridge.set_enabled(package_name, enabled=True)
+                    if not current.enabled:
+                        raise StudioDshProviderRegistrationError(
+                            "resource_dsh_enable_failed",
+                            "an official platform resource Bundle did not become enabled",
+                        )
+                disabled = disabled or not current.enabled
+                self._verify_shipped_resource_bundle_bytes(package_name, directory_name)
+        if self._profile == "agentkit-resources":
+            self._ensure_resource_runtime_bundle()
+        if marker_payload.get("platformResourcesApplied") is not True:
+            self._write_default_marker(
+                marker,
+                {
+                    **marker_payload,
+                    "version": 1,
+                    "platformResourcesApplied": True,
+                    "platformResourcesEnabled": True,
+                    "platformResourcesVersion": _SHIPPED_RESOURCE_VERSION,
+                },
+            )
+        elif enable_defaults:
+            self._write_default_marker(
+                marker,
+                {**marker_payload, "platformResourcesEnabled": True},
+            )
+        if disabled:
+            return "disabled"
+        return "installed" if installed_any else "already_enabled"
+
+    def _ensure_resource_runtime_bundle(self) -> None:
+        """Give the private resource Profile the official loopback transport.
+
+        The capability exporter uses DSH's authenticated ``webServer`` and
+        ``connection`` services even when no browser UI is mounted. Custom
+        Profiles start with only ``dsh-base``, so the Studio-owned execution
+        Profile must explicitly include DSH's official web runtime layer.
+        """
+
+        manifest_path = self._profile_root / "package.json"
+        try:
+            if manifest_path.stat().st_size > _MAX_PACKAGE_JSON_BYTES:
+                raise ValueError("package.json is too large")
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            dsh = payload.get("dsh")
+            profile = dsh.get("profile") if isinstance(dsh, dict) else None
+            bundles = profile.get("bundles") if isinstance(profile, dict) else None
+            if not isinstance(bundles, list) or any(
+                not isinstance(item, str) for item in bundles
+            ):
+                raise ValueError("bundle order is invalid")
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise StudioDshProviderRegistrationError(
+                "resource_dsh_profile_invalid",
+                "the official resource execution Profile is invalid",
+            ) from error
+        if _RESOURCE_RUNTIME_BUNDLE in bundles:
+            return
+        try:
+            base_index = bundles.index("@deepseek-ai/dsh-base")
+        except ValueError as error:
+            raise StudioDshProviderRegistrationError(
+                "resource_dsh_profile_invalid",
+                "the official resource execution Profile has no DSH base Bundle",
+            ) from error
+        bundles.insert(base_index + 1, _RESOURCE_RUNTIME_BUNDLE)
+        self._write_default_marker(manifest_path, payload)
+
+    def _repair_owned_profile_layout(self, bridge: DshProfilePluginBridge) -> None:
+        """Repair only Studio's default legacy Profile before projecting it.
+
+        Older Studio versions created the ``web`` Profile with pnpm's hoisted
+        linker. Some community dependency graphs then contained links to the
+        ambient pnpm store and could not form a closed Build snapshot. The
+        frozen lock remains the authority; the bridge keeps the original tree
+        as an atomic rollback point while reinstalling the isolated layout.
+        """
+
+        if not self._owns_workspace_default_profile:
+            return
+        settings_path = self._dsh_home / "profiles" / self._profile / "pnpm-workspace.yaml"
+        if not settings_path.is_file():
+            return
+        try:
+            settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            raise StudioDshProviderRegistrationError(
+                "dsh_profile_layout_invalid",
+                "the Studio-owned DSH Profile layout settings are unreadable",
+            ) from error
+        if not isinstance(settings, dict):
+            raise StudioDshProviderRegistrationError(
+                "dsh_profile_layout_invalid",
+                "the Studio-owned DSH Profile layout settings are invalid",
+            )
+        if settings.get("nodeLinker") not in {"hoisted", "isolated"}:
+            return
+        bridge.migrate_to_isolated_layout(
+            accept_host_permissions=True,
+            recover_external_dependency_links=True,
+        )
 
     @property
     def _default_marker_path(self) -> Path:
@@ -530,7 +784,12 @@ class StudioDshProviderRegistrationManager:
                 provider_packages[provider_ref] = package.name
                 manifests[provider_ref] = registration.manifest
                 factories[provider_ref] = factory
-                self._hosts[package.name] = host
+                # Discovery is a bounded admission probe. Keeping its process
+                # alive would bind Studio construction to that event loop and
+                # make later API or Scheduler loops reuse foreign transports.
+                # The fresh factory repeats the exact registration fence and
+                # owns its execution host in the consuming PluginHost loop.
+                await host.dispose()
                 statuses[index] = statuses[index].model_copy(
                     update={
                         "state": "ready",
@@ -622,10 +881,16 @@ class StudioDshProviderRegistrationManager:
                     "dsh_provider_inventory_not_ready",
                     "DSH AgentProvider inventory is not ready",
                 )
-            if package.name == SHIPPED_CODEX_DSH_PACKAGE:
-                factory: Any = KsADKCodexDshBridgeFactory(host, registration, owns_host=False)
-            elif package.name == SHIPPED_HARNESS_DSH_PACKAGE:
-                factory: Any = KsADKHarnessDshBridgeFactory(host, registration, owns_host=False)
+            if package.name in _SHIPPED_PROVIDER_PACKAGES:
+                factory: Any = _FreshShippedDshBridgeFactory(
+                    command,
+                    projection=projection,
+                    cwd=cwd,
+                    environment=environment,
+                    registration=registration,
+                    package_name=package.name,
+                    host_factory=self._host_factory,
+                )
             else:
                 factory = _FreshDshAgentProviderFactory(
                     command,
@@ -733,6 +998,43 @@ class StudioDshProviderRegistrationManager:
             raise StudioDshProviderRegistrationError(
                 f"{error_prefix}_bundle_digest_mismatch",
                 "the installed DSH AgentProvider Bundle differs from the wheel-owned Bundle",
+            )
+
+    def _verify_shipped_resource_bundle_bytes(
+        self, package_name: str, directory_name: str
+    ) -> None:
+        shipped = (
+            Path(__file__).parents[1]
+            / "plugins"
+            / "providers"
+            / "bundles"
+            / directory_name
+        )
+        installed = self._profile_root / "node_modules"
+        for segment in package_name.split("/"):
+            installed /= segment
+        names = ["package.json", "cordis.patch.yml", "index.mjs"]
+        if directory_name == "dsh-platform-resources":
+            names.append("client.mjs")
+        try:
+            package_matches = json.loads(
+                (installed / "package.json").read_text(encoding="utf-8")
+            ) == json.loads((shipped / "package.json").read_text(encoding="utf-8"))
+            matches = package_matches and all(
+                (installed / name).read_bytes().rstrip()
+                == (shipped / name).read_bytes().rstrip()
+                for name in names
+                if name != "package.json"
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise StudioDshProviderRegistrationError(
+                "resource_dsh_bundle_unreadable",
+                "an installed platform resource Bundle cannot be verified",
+            ) from error
+        if not matches:
+            raise StudioDshProviderRegistrationError(
+                "resource_dsh_bundle_digest_mismatch",
+                "an installed platform resource Bundle differs from the wheel-owned Bundle",
             )
 
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 
 from ksadk.builders.managed_runtime_builder import (
     ManagedRuntimeBuilder,
@@ -38,8 +38,11 @@ from ksadk.studio.codex_plugin_store import (
     CodexWorkspacePluginSnapshot,
     component_selector,
 )
+from ksadk.studio.codex_provider_build import CodexProviderBuildReference
 from ksadk.studio.contracts import ContractModel, ModelSpec
 from ksadk.studio.errors import StudioError, not_found
+from ksadk.studio.resource_binding_validation import resource_binding_diagnostics
+from ksadk.studio.resource_connections import ResourceConnectionRepository
 from ksadk.studio.workspace import Workspace
 from ksadk.version import VERSION as SDK_VERSION
 
@@ -77,7 +80,15 @@ class CodexBuildRecord(ContractModel):
     plugin_lock_digest: str | None = None
     plugin_marketplace: CodexPinnedMarketplace | None = None
     plugin_runtime_status: dict[str, dict[str, Any]] | None = None
+    local_execution: Literal["legacy", "provider"] = "legacy"
+    provider_bundle: CodexProviderBuildReference | None = None
     created_at: datetime
+
+    @model_validator(mode="after")
+    def local_execution_reference(self):
+        if (self.local_execution == "provider") != (self.provider_bundle is not None):
+            raise ValueError("Provider execution requires its complete local Bundle reference")
+        return self
 
 
 class CodexBuildRepository:
@@ -279,6 +290,9 @@ class CodexStudioBuilder:
         resource_catalog: Any = None,
         draft_repository: Any = None,
         plugin_snapshot_store: CodexPluginSnapshotStore | None = None,
+        resource_connections: ResourceConnectionRepository | None = None,
+        provider_build: Callable[..., CodexProviderBuildReference] | None = None,
+        provider_validate: Callable[[CodexBuildRecord], Any] | None = None,
     ) -> None:
         self.workspace = workspace
         self.manifests = manifest_repository or CodexManifestRepository(workspace)
@@ -287,6 +301,9 @@ class CodexStudioBuilder:
         self.catalog = resource_catalog
         self.drafts = draft_repository
         self.plugin_snapshots = plugin_snapshot_store or CodexPluginSnapshotStore(workspace)
+        self.resource_connections = resource_connections
+        self.provider_build = provider_build
+        self.provider_validate = provider_validate
 
     def build(
         self,
@@ -295,6 +312,19 @@ class CodexStudioBuilder:
         source_revision: int = 1,
     ) -> CodexBuildRecord:
         snapshot = self.manifests.load(agent_id)
+        if self.resource_connections is not None:
+            diagnostics = resource_binding_diagnostics(
+                snapshot.manifest.plugins or [], snapshot.manifest.memory,
+                self.resource_connections,
+            )
+            if any(item.severity == "error" for item in diagnostics):
+                raise StudioError(
+                    "RESOURCE_BINDING_VALIDATION_FAILED", "资源连接或策略校验失败",
+                    status_code=422,
+                    details={
+                        "diagnostics": [item.model_dump(by_alias=True) for item in diagnostics]
+                    },
+                )
         model_profiles = self._model_profile_snapshot(
             snapshot.manifest.name,
             allowed_models=snapshot.manifest.allowed_models,
@@ -309,11 +339,18 @@ class CodexStudioBuilder:
         native_plugin_lock_digest = (
             plugin_lock_digest(native_plugin_lock) if native_plugin_lock.plugins else None
         )
+        provider_bundle = (
+            self.provider_build(
+                snapshot, model_profiles, model_profile_ids, native_plugin_lock_digest,
+            )
+            if self.provider_build is not None else None
+        )
         build_id = self._build_id(
             snapshot.manifest_sha256,
             model_profiles,
             model_profile_ids=model_profile_ids,
             plugin_lock_digest_value=native_plugin_lock_digest,
+            provider_bundle_digest=provider_bundle.digest if provider_bundle else None,
         )
         try:
             existing = self.repository.get(build_id)
@@ -392,6 +429,8 @@ class CodexStudioBuilder:
             plugin_lock_digest=native_plugin_lock_digest,
             plugin_marketplace=pinned_marketplace,
             plugin_runtime_status=plugin_runtime_status or None,
+            local_execution="provider" if provider_bundle else "legacy",
+            provider_bundle=provider_bundle,
             created_at=datetime.now(timezone.utc),
         )
         return self.repository.save(record)
@@ -425,6 +464,13 @@ class CodexStudioBuilder:
         return receipt, archive
 
     def is_current(self, record: CodexBuildRecord) -> bool:
+        if record.local_execution == "provider":
+            if self.provider_validate is None:
+                return False
+            try:
+                self.provider_validate(record)
+            except StudioError:
+                return False
         snapshot = self.manifests.load(record.agent_name)
         if record.manifest_sha256 != snapshot.manifest_sha256:
             return False
@@ -478,14 +524,20 @@ class CodexStudioBuilder:
         *,
         model_profile_ids: list[str] | None = None,
         plugin_lock_digest_value: str | None = None,
+        provider_bundle_digest: str | None = None,
     ) -> str:
-        if not model_profiles and not model_profile_ids and plugin_lock_digest_value is None:
+        if (not model_profiles and not model_profile_ids
+                and plugin_lock_digest_value is None and provider_bundle_digest is None):
             return f"build_{manifest_sha256[:20]}"
         fingerprint = json.dumps(
             {
                 "profiles": model_profiles,
                 "resourceIds": sorted(model_profile_ids or []),
                 "pluginLockDigest": plugin_lock_digest_value,
+                **(
+                    {"providerBundleDigest": provider_bundle_digest}
+                    if provider_bundle_digest else {}
+                ),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -514,6 +566,18 @@ class CodexStudioBuilder:
             if not binding.enabled:
                 continue
             if binding.ecosystem != "codex":
+                from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+                # Official platform resources are DSH capabilities materialized by
+                # the Provider Bundle.  They belong in the resource Build lock,
+                # never in Codex's native marketplace lock.
+                if resource_plugin_config(
+                    binding.plugin_ref,
+                    binding.ecosystem,
+                    binding.config,
+                    enabled=True,
+                ) is not None:
+                    continue
                 raise StudioError(
                     "CODEX_PLUGIN_ECOSYSTEM_UNSUPPORTED",
                     "Codex Agent 目前只能运行 Codex 原生插件绑定",

@@ -49,10 +49,14 @@ def load_skills(
     seen_names: set[str] = {skill.name.lower() for skill in skills if skill.name}
     for space_id in registry.user_skill_space_ids():
         listing = client.list_skills_by_space_id(space_id)
+        if listing.truncated:
+            warnings.append(
+                "Skill directory is incomplete; selection covers only retrieved entries"
+            )
         selected_refs.extend(
             registry.dedupe_skill_refs(
                 registry.select_remote_skill_refs(
-                    listing.active_skills(),
+                    listing.active_skills(allow_partial=True),
                     prompt,
                     skill_names=skill_names,
                 ),
@@ -62,9 +66,13 @@ def load_skills(
 
     if registry.public_skill_space_ids():
         listing = client.list_available_premade_skills()
+        if listing.truncated:
+            warnings.append(
+                "Public Skill directory is incomplete; selection covers only retrieved entries"
+            )
         selected_refs.extend(
             registry.dedupe_skill_refs(
-                registry.select_public_skill_refs(listing.active_skills()),
+                registry.select_public_skill_refs(listing.active_skills(allow_partial=True)),
                 seen_names=seen_names,
             )
         )

@@ -307,7 +307,26 @@ select:hover:not(:disabled), select:focus {
   outline: none;
 }
 .search-field input:focus { outline: none; }
+.search-field > input:not([type="checkbox"]):not([type="radio"]) {
+  /* The shared form reset uses several :not() selectors and otherwise wins
+     the cascade, placing the placeholder under the absolute search icon. */
+  padding-inline: 38px 12px !important;
+}
 input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity: 1; }
+
+.platform-resource-bindings { display: grid; gap: 18px; }
+.platform-resource-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.platform-resource-heading > div { min-width: 0; display: grid; gap: 3px; }
+.platform-resource-heading strong { color: var(--text); font-size: var(--font-size-subtitle); }
+.platform-resource-heading span { color: var(--text-tertiary); font-size: var(--font-size-meta); }
+.platform-resource-field { display: grid; gap: 10px; padding-top: 16px; border-top: 1px solid var(--studio-border); }
+.platform-resource-field .text-button { width: fit-content; }
+.platform-resource-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.platform-resource-card { min-width: 0; display: grid; gap: 8px; padding: 16px; border: 1px solid var(--studio-border); border-radius: var(--radius-control); background: var(--studio-surface); }
+.platform-resource-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.platform-resource-card strong { overflow-wrap: anywhere; }
+.platform-resource-card p { margin: 0; color: var(--text-tertiary); font-size: var(--font-size-meta); }
+.platform-resource-card .mono { font-size: var(--font-size-caption); }
 /* Page navigation uses a blue underline; view toggles remain segmented. */
 .page-tabs {
   background: transparent;

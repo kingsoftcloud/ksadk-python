@@ -8,11 +8,12 @@ stream or transcript is created here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
@@ -20,11 +21,15 @@ from urllib.parse import urlparse
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
+from ksadk.plugins.providers.codex_native import codex_runtime_registry
+from ksadk.plugins.providers.mcp_projection import (
+    MCPProjectionLease,
+    project_mcp_capabilities,
+)
 from ksadk.runtime import (
     RuntimeExecutor,
     RuntimeLaunchContext,
     RuntimeServices,
-    build_default_runtime_registry,
 )
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.sessions import create_session_service
@@ -187,12 +192,16 @@ class CodexAgentProviderRuntime:
         codex_client_factory: Callable[..., Any] | None,
         credential_resolver: Any = None,
         runtime_state_root: Path | None = None,
+        local_launch_resolver: Callable[..., RuntimeLaunchContext | None] | None = None,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
         self._client_factory = codex_client_factory
         self._credentials = credential_resolver
         self._runtime_state_root = runtime_state_root
+        self._local_launch_resolver = local_launch_resolver
+        self._runtime_executor = runtime_executor
         self._ready = False
         self._disposed = False
         self._last_activation: CodexAgentActivation | None = None
@@ -229,18 +238,38 @@ class CodexAgentProviderRuntime:
         if not self._ready or self._disposed:
             raise PluginHostError("codex_provider_unavailable", "Codex provider is not ready")
         _reject_external_execution(bundle, capabilities)
-        config = _resolve_bundle_config(
+        projection = await project_mcp_capabilities(
+            capabilities,
             bundle,
-            plugin_id=self._plugin_id,
-            credential_resolver=self._credentials,
-            runtime_state_root=self._runtime_state_root,
+            activation_only=True,
         )
-        activation = CodexAgentActivation(
-            bundle=bundle,
-            config=config,
-            session_service=self._session_service,
-            codex_client_factory=self._client_factory,
-        )
+        marker = bundle.composition.profile.agent_provider.config.get("studioManifestDigest")
+        launch = self._local_launch_resolver(bundle) if self._local_launch_resolver else None
+        if marker is not None and launch is None:
+            await projection.aclose()
+            raise PluginHostError("codex_local_build_required", "Local Codex Build is unavailable")
+        try:
+            config = _with_projected_mcp(
+                _resolve_bundle_config(
+                    bundle,
+                    plugin_id=self._plugin_id,
+                    credential_resolver=self._credentials,
+                    runtime_state_root=self._runtime_state_root,
+                    local_launch=launch,
+                ),
+                projection,
+            )
+            activation = CodexAgentActivation(
+                bundle=bundle,
+                config=config,
+                session_service=self._session_service,
+                codex_client_factory=self._client_factory,
+                mcp_projection=projection,
+                runtime_executor=self._runtime_executor,
+            )
+        except BaseException:
+            await projection.aclose()
+            raise
         self._last_activation = activation
         return activation
 
@@ -280,12 +309,20 @@ class CodexAgentProviderFactory:
         runtime_state_root = (
             Path(str(raw_state_root)).expanduser().resolve() if raw_state_root is not None else None
         )
+        runtime_executor = services.get("runtime_executor")
+        if runtime_executor is not None and not isinstance(runtime_executor, RuntimeExecutor):
+            raise PluginHostError(
+                "codex_runtime_executor_invalid",
+                "Codex provider requires a RuntimeExecutor",
+            )
         self.runtime = CodexAgentProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
             codex_client_factory=client_factory,
             credential_resolver=credentials,
             runtime_state_root=runtime_state_root,
+            local_launch_resolver=services.get("codex_local_launch_resolver"),
+            runtime_executor=runtime_executor,
         )
         return self.runtime
 
@@ -298,11 +335,14 @@ class CodexAgentActivation:
         config: _CodexBundleConfig,
         session_service: BaseSessionService,
         codex_client_factory: Callable[..., Any] | None,
+        mcp_projection: MCPProjectionLease,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
         self._session_service = session_service
-        self._executor = RuntimeExecutor(build_default_runtime_registry())
+        self._mcp_projection = mcp_projection
+        self._executor = runtime_executor or RuntimeExecutor(codex_runtime_registry())
         self._launch_context = RuntimeLaunchContext(
             runtime_type="codex",
             project_dir=config.project_dir,
@@ -398,6 +438,9 @@ class CodexAgentActivation:
     async def drain(self) -> None:
         self._ready = False
 
+    async def abort(self) -> None:
+        await self._mcp_projection.aclose()
+
     async def dispose(self) -> None:
         self._ready = False
         first_error: BaseException | None = None
@@ -414,6 +457,11 @@ class CodexAgentActivation:
         try:
             await self._executor.close_all()
         except BaseException as error:  # cleanup must continue
+            if first_error is None:
+                first_error = error
+        try:
+            await self._mcp_projection.aclose()
+        except BaseException as error:  # security cleanup must still finish
             if first_error is None:
                 first_error = error
         self._disposed = True
@@ -433,13 +481,69 @@ def _reject_aliased_duplicates(
             )
 
 
+def _with_projected_mcp(
+    config: _CodexBundleConfig,
+    projection: MCPProjectionLease,
+) -> _CodexBundleConfig:
+    """Add activation-scoped connectors to Codex's generic launch config."""
+
+    launch = dict(config.launch_config)
+    servers = [dict(item) for item in launch.get("mcp_servers") or []]
+    environment = dict(launch.get("env") or {})
+    names = {str(item.get("name") or "") for item in servers}
+    for spec in projection.specs:
+        parsed = urlparse(spec.url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise PluginHostError(
+                "codex_mcp_projection_invalid",
+                f"projected MCP connector {spec.name!r} has an invalid endpoint",
+            )
+        if spec.name in names:
+            raise PluginHostError(
+                "codex_mcp_projection_ambiguous",
+                f"projected MCP connector {spec.name!r} conflicts with the Bundle",
+            )
+        server: dict[str, Any] = {
+            "name": spec.name,
+            "transport": "http",
+            "url": spec.url,
+        }
+        if spec.api_key is not None:
+            suffix = hashlib.sha256(spec.name.encode()).hexdigest()[:16].upper()
+            env_key = f"KSADK_ACTIVATION_MCP_TOKEN_{suffix}"
+            if env_key in environment:
+                raise PluginHostError(
+                    "codex_mcp_projection_ambiguous",
+                    f"projected MCP connector {spec.name!r} has an environment collision",
+                )
+            environment[env_key] = spec.api_key
+            server["env_key"] = env_key
+        servers.append(server)
+        names.add(spec.name)
+    launch["mcp_servers"] = servers
+    launch["env"] = environment
+    inventory = replace(
+        config.inventory,
+        mcp_servers=tuple(item["name"] for item in servers),
+    )
+    return replace(config, launch_config=launch, inventory=inventory)
+
+
 def _reject_external_execution(
     bundle: ResolvedPluginBundle,
     capabilities: PluginExecutionContext,
 ) -> None:
     del capabilities
     profile_config = bundle.composition.profile.agent_provider.config
-    allowed_config = {"runtimeType", "runtimeVersion"}
+    allowed_config = {
+        "runtimeType", "runtimeVersion", "studioManifestDigest", "studioBuildFingerprint",
+    }
     unsupported_config = sorted(set(profile_config) - allowed_config)
     execution = bundle.resolved_agent_spec.get("execution")
     strategy = (
@@ -466,6 +570,7 @@ def _resolve_bundle_config(
     plugin_id: str,
     credential_resolver: Any,
     runtime_state_root: Path | None,
+    local_launch: RuntimeLaunchContext | None = None,
 ) -> _CodexBundleConfig:
     spec = bundle.resolved_agent_spec
     raw_model = spec.get("model")
@@ -479,6 +584,13 @@ def _resolve_bundle_config(
             "codex_bundle_model_missing", "Bundle resolved Agent spec has no model"
         )
     allowed_models = _resolve_allowed_models(bundle, default_model=model)
+    if local_launch is not None:
+        # The trusted host verified the original Codex manifest referenced by
+        # this Bundle. YAML-only model names may have no Catalog profile IDs.
+        model = str(local_launch.config["model"])
+        allowed_models = tuple(local_launch.config["models"])
+        if not allowed_models or model not in allowed_models:
+            raise PluginHostError("codex_bundle_model_inventory_invalid", "Invalid local models")
     instructions = spec.get("instructions")
     if not isinstance(instructions, Mapping):
         raise PluginHostError(
@@ -510,16 +622,19 @@ def _resolve_bundle_config(
         capabilities.get("mcpServers") or capabilities.get("mcp_servers"),
         credential_resolver=credential_resolver,
     )
-    model_env = _resolve_model_env(
+    # Local Studio has already resolved its original Codex credential policy.
+    # A second, stricter generic Bundle lookup would reject native-auth builds
+    # before their approved launch environment can be applied below.
+    model_env = {} if local_launch is not None else _resolve_model_env(
         raw_model,
         model=model,
         credential_resolver=credential_resolver,
     )
     execution = spec.get("execution")
     execution = execution if isinstance(execution, Mapping) else {}
-    project_dir = _resolve_runtime_workspace(
-        bundle,
-        runtime_state_root=runtime_state_root,
+    project_dir = (
+        local_launch.project_dir if local_launch is not None
+        else _resolve_runtime_workspace(bundle, runtime_state_root=runtime_state_root)
     )
     launch_config: dict[str, Any] = {
         "model": model,
@@ -538,6 +653,11 @@ def _resolve_bundle_config(
         "skills": skills,
         "env": {**mcp_env, **model_env},
     }
+    if local_launch is not None:
+        launch_config.update(local_launch.config)
+    # Local launch compatibility never replaces immutable Bundle Skill bytes.
+    launch_config["skills"] = skills
+    launch_config["enforce_bound_skills"] = True
     return _CodexBundleConfig(
         model=model,
         allowed_models=allowed_models,

@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-memory
+      name: '@kingsoftcloud/dsh-memory'
