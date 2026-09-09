@@ -193,6 +193,7 @@ class CodexAgentProviderRuntime:
         credential_resolver: Any = None,
         runtime_state_root: Path | None = None,
         local_launch_resolver: Callable[..., RuntimeLaunchContext | None] | None = None,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
@@ -200,6 +201,7 @@ class CodexAgentProviderRuntime:
         self._credentials = credential_resolver
         self._runtime_state_root = runtime_state_root
         self._local_launch_resolver = local_launch_resolver
+        self._runtime_executor = runtime_executor
         self._ready = False
         self._disposed = False
         self._last_activation: CodexAgentActivation | None = None
@@ -263,6 +265,7 @@ class CodexAgentProviderRuntime:
                 session_service=self._session_service,
                 codex_client_factory=self._client_factory,
                 mcp_projection=projection,
+                runtime_executor=self._runtime_executor,
             )
         except BaseException:
             await projection.aclose()
@@ -306,6 +309,12 @@ class CodexAgentProviderFactory:
         runtime_state_root = (
             Path(str(raw_state_root)).expanduser().resolve() if raw_state_root is not None else None
         )
+        runtime_executor = services.get("runtime_executor")
+        if runtime_executor is not None and not isinstance(runtime_executor, RuntimeExecutor):
+            raise PluginHostError(
+                "codex_runtime_executor_invalid",
+                "Codex provider requires a RuntimeExecutor",
+            )
         self.runtime = CodexAgentProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
@@ -313,6 +322,7 @@ class CodexAgentProviderFactory:
             credential_resolver=credentials,
             runtime_state_root=runtime_state_root,
             local_launch_resolver=services.get("codex_local_launch_resolver"),
+            runtime_executor=runtime_executor,
         )
         return self.runtime
 
@@ -326,12 +336,13 @@ class CodexAgentActivation:
         session_service: BaseSessionService,
         codex_client_factory: Callable[..., Any] | None,
         mcp_projection: MCPProjectionLease,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
         self._session_service = session_service
         self._mcp_projection = mcp_projection
-        self._executor = RuntimeExecutor(codex_runtime_registry())
+        self._executor = runtime_executor or RuntimeExecutor(codex_runtime_registry())
         self._launch_context = RuntimeLaunchContext(
             runtime_type="codex",
             project_dir=config.project_dir,

@@ -51,7 +51,7 @@ from ksadk.plugins.providers.platform_resources import (
 )
 from ksadk.plugins.resolver import PluginRegistry
 from ksadk.resource_runtime.policy_authorization import FullAccessResourceWriteAuthorizer
-from ksadk.runtime import RuntimeLaunchContext
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext
 from ksadk.sessions.base import BaseSessionService
 from ksadk.studio.contracts import (
     BuildRecord,
@@ -179,6 +179,7 @@ class StudioPluginRuntime:
         resource_connections: Any | None = None,
         resource_actor_ref: str = "local-user",
         codex_local_launch_resolver: Any = None,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self.workspace = workspace
         self.builds = build_repository
@@ -196,6 +197,7 @@ class StudioPluginRuntime:
         self._resource_connections = resource_connections
         self._resource_actor_ref = resource_actor_ref
         self._codex_local_launch_resolver = codex_local_launch_resolver
+        self._runtime_executor = runtime_executor
         self._legacy_bundles = LegacyBundleAdapter(legacy_harness_sources)
         self._lock = asyncio.Lock()
         self._hosts: dict[str, _HostEntry] = {}
@@ -480,6 +482,7 @@ class StudioPluginRuntime:
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
                 "codex_local_launch_resolver": self._codex_local_launch_resolver,
+                "runtime_executor": self._runtime_executor,
                 "dsh_capability_service": self._resource_dsh_capability_service,
                 "resource_authority": self._resource_authority,
                 "resource_connections": self._resource_connections,

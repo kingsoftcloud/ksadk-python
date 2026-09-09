@@ -163,6 +163,63 @@ class _FreshDshAgentProviderFactory:
             raise
 
 
+class _FreshShippedDshBridgeFactory:
+    """Bind a shipped provider to a host owned by the consuming PluginHost loop."""
+
+    def __init__(
+        self,
+        command: Sequence[str],
+        *,
+        projection: DshProfileProjection,
+        cwd: Path,
+        environment: Mapping[str, str],
+        registration: DshAgentProviderRegistration,
+        package_name: str,
+        host_factory: HostFactory,
+    ) -> None:
+        self._command = tuple(command)
+        self._projection = projection
+        self._cwd = cwd
+        self._environment = dict(environment)
+        self._registration = registration
+        self._package_name = package_name
+        self._host_factory = host_factory
+
+    async def stage(
+        self,
+        manifest: PluginManifest,
+        *,
+        profile: CompositionProfile,
+        services: Mapping[str, Any],
+    ) -> ManagedPlugin:
+        host = self._host_factory(
+            self._command,
+            projection=self._projection,
+            cwd=self._cwd,
+            environment=self._environment,
+        )
+        try:
+            current = await host.registration()
+            if current != self._registration:
+                raise PluginHostError(
+                    "dsh_provider_registration_changed",
+                    "DSH provider registration changed after Studio discovery",
+                )
+            if self._package_name == SHIPPED_CODEX_DSH_PACKAGE:
+                factory: Any = KsADKCodexDshBridgeFactory(host, current, owns_host=True)
+            elif self._package_name == SHIPPED_HARNESS_DSH_PACKAGE:
+                factory = KsADKHarnessDshBridgeFactory(host, current, owns_host=True)
+            else:  # guarded by _register_package
+                raise PluginHostError(
+                    "dsh_provider_package_unsupported",
+                    "shipped DSH provider package is unsupported",
+                )
+            return await factory.stage(manifest, profile=profile, services=services)
+        except BaseException:
+            await host.dispose()
+            raise
+
+
 class StudioDshProviderRegistrationManager:
     """Own Profile discovery, provider preflight, registration, and disposal."""
 
@@ -727,7 +784,12 @@ class StudioDshProviderRegistrationManager:
                 provider_packages[provider_ref] = package.name
                 manifests[provider_ref] = registration.manifest
                 factories[provider_ref] = factory
-                self._hosts[package.name] = host
+                # Discovery is a bounded admission probe. Keeping its process
+                # alive would bind Studio construction to that event loop and
+                # make later API or Scheduler loops reuse foreign transports.
+                # The fresh factory repeats the exact registration fence and
+                # owns its execution host in the consuming PluginHost loop.
+                await host.dispose()
                 statuses[index] = statuses[index].model_copy(
                     update={
                         "state": "ready",
@@ -819,10 +881,16 @@ class StudioDshProviderRegistrationManager:
                     "dsh_provider_inventory_not_ready",
                     "DSH AgentProvider inventory is not ready",
                 )
-            if package.name == SHIPPED_CODEX_DSH_PACKAGE:
-                factory: Any = KsADKCodexDshBridgeFactory(host, registration, owns_host=False)
-            elif package.name == SHIPPED_HARNESS_DSH_PACKAGE:
-                factory: Any = KsADKHarnessDshBridgeFactory(host, registration, owns_host=False)
+            if package.name in _SHIPPED_PROVIDER_PACKAGES:
+                factory: Any = _FreshShippedDshBridgeFactory(
+                    command,
+                    projection=projection,
+                    cwd=cwd,
+                    environment=environment,
+                    registration=registration,
+                    package_name=package.name,
+                    host_factory=self._host_factory,
+                )
             else:
                 factory = _FreshDshAgentProviderFactory(
                     command,

@@ -324,6 +324,7 @@ class StudioService:
             model_client=self.model_client,
             secret_resolver=self.credentials,
             codex_local_launch_resolver=self.codex_provider_builds.native_launch,
+            runtime_executor=self.runtime_executor,
             harness_reasoner=harness_reasoner,
             provider_manifests=provider_manifests,
             provider_factories=provider_factories,

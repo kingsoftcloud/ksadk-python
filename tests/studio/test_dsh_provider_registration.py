@@ -122,7 +122,9 @@ async def test_normal_studio_discovers_binds_and_runs_managed_harness_two_turns(
     build = await studio.ensure_current_build("managed-harness")
     assert manager.inventory.state == "bound"
     assert manager.inventory.providers == ("plugin://io.ksadk.harness-provider@1.0.0",)
-    assert manager.host_pid is not None
+    # Registration discovery is bounded; the consuming PluginHost owns the
+    # independently fenced execution sidecar.
+    assert manager.host_pid is None
 
     first = await studio.run_build(build.id, "first", "managed-session")
     second = await studio.run_build(build.id, "second", "managed-session")
