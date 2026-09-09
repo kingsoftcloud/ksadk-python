@@ -133,6 +133,8 @@ function ModelReasoningMenu({
   reasoningEffort,
   disabled,
   active,
+  allowModelSelection,
+  allowReasoning,
   onModelChange,
   onReasoningEffortChange,
   onConfigure,
@@ -142,6 +144,8 @@ function ModelReasoningMenu({
   reasoningEffort: ReasoningEffort;
   disabled: boolean;
   active: boolean;
+  allowModelSelection: boolean;
+  allowReasoning: boolean;
   onModelChange: (value: string) => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   onConfigure?: () => void;
@@ -153,9 +157,10 @@ function ModelReasoningMenu({
   const selectedModel = models.find(item => item.id === model);
   const modelLabel = selectedModel?.label || model || "未绑定模型";
   const supportedReasoningEfforts = selectedModel?.reasoningEfforts || [];
-  const reasoningSupported = supportedReasoningEfforts.length > 0;
+  const reasoningSupported = allowReasoning && supportedReasoningEfforts.length > 0;
   const effortLabel = REASONING_OPTIONS.find(item => item.value === reasoningEffort)?.label || "自动";
-  if (models.length === 0) {
+  if (!allowModelSelection && !reasoningSupported) return null;
+  if (allowModelSelection && models.length === 0) {
     return (
       <button
         className="chat-model-trigger missing"
@@ -176,10 +181,12 @@ function ModelReasoningMenu({
           className="chat-model-trigger chat-model-summary-trigger"
           type="button"
           disabled={disabled}
-          aria-label={reasoningSupported ? `模型 ${modelLabel}，推理强度 ${effortLabel}` : `模型 ${modelLabel}`}
-          title="选择模型与推理强度；下一轮生效"
+          aria-label={allowModelSelection
+            ? reasoningSupported ? `模型 ${modelLabel}，推理强度 ${effortLabel}` : `模型 ${modelLabel}`
+            : `推理强度 ${effortLabel}`}
+          title={`${allowModelSelection ? "选择模型" : ""}${allowModelSelection && reasoningSupported ? "与" : ""}${reasoningSupported ? "推理强度" : ""}；下一轮生效`}
         >
-          <span>{modelLabel}</span>
+          <span>{allowModelSelection ? modelLabel : "推理强度"}</span>
           {reasoningSupported && <b>{effortLabel}</b>}
           <ChevronDown size={13} />
         </button>
@@ -192,30 +199,32 @@ function ModelReasoningMenu({
           align="end"
           collisionPadding={12}
         >
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger className="chat-model-settings-row">
-              <strong>模型</strong>
-              <span>{modelLabel}</span>
-              <ChevronRight size={16} />
-            </DropdownMenu.SubTrigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.SubContent
-                className="chat-model-menu chat-model-submenu"
-                sideOffset={8}
-                alignOffset={-6}
-                collisionPadding={12}
-              >
-                <DropdownMenu.RadioGroup value={model} onValueChange={onModelChange}>
-                  {models.map(item => (
-                    <DropdownMenu.RadioItem key={item.id} value={item.id} className="chat-model-option">
-                      <span>{item.label}</span>
-                      <DropdownMenu.ItemIndicator><Check size={15} /></DropdownMenu.ItemIndicator>
-                    </DropdownMenu.RadioItem>
-                  ))}
-                </DropdownMenu.RadioGroup>
-              </DropdownMenu.SubContent>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Sub>
+          {allowModelSelection && (
+            <DropdownMenu.Sub>
+              <DropdownMenu.SubTrigger className="chat-model-settings-row">
+                <strong>模型</strong>
+                <span>{modelLabel}</span>
+                <ChevronRight size={16} />
+              </DropdownMenu.SubTrigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.SubContent
+                  className="chat-model-menu chat-model-submenu"
+                  sideOffset={8}
+                  alignOffset={-6}
+                  collisionPadding={12}
+                >
+                  <DropdownMenu.RadioGroup value={model} onValueChange={onModelChange}>
+                    {models.map(item => (
+                      <DropdownMenu.RadioItem key={item.id} value={item.id} className="chat-model-option">
+                        <span>{item.label}</span>
+                        <DropdownMenu.ItemIndicator><Check size={15} /></DropdownMenu.ItemIndicator>
+                      </DropdownMenu.RadioItem>
+                    ))}
+                  </DropdownMenu.RadioGroup>
+                </DropdownMenu.SubContent>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Sub>
+          )}
           {reasoningSupported && (
             <DropdownMenu.Sub>
               <DropdownMenu.SubTrigger className="chat-model-settings-row">
@@ -285,6 +294,12 @@ export function ChatComposer({
   onCommandSelect,
   onCommandIndexChange,
   onSend,
+  allowAttachments = true,
+  allowPlan = true,
+  allowGoal = true,
+  allowApproval = true,
+  allowModelSelection = true,
+  allowReasoning = true,
   attachmentAccept,
   attachmentLimit = 4,
 }: {
@@ -315,12 +330,22 @@ export function ChatComposer({
   onCommandSelect: (command: ComposerCommand["id"]) => void;
   onCommandIndexChange?: (index: number) => void;
   onSend: () => void;
+  allowAttachments?: boolean;
+  allowPlan?: boolean;
+  allowGoal?: boolean;
+  allowApproval?: boolean;
+  allowModelSelection?: boolean;
+  allowReasoning?: boolean;
   attachmentAccept?: string;
   attachmentLimit?: number;
 }) {
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const resolvedRef = textareaRef || internalRef;
-  const commands = visibleComposerCommands(input);
+  const commands = visibleComposerCommands(input).filter(command => (
+    (command.id !== "plan" || allowPlan)
+    && (command.id !== "goal" || allowGoal)
+    && (command.id !== "default" || allowPlan)
+  ));
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (commands.length && ["ArrowDown", "ArrowUp"].includes(event.key)) {
@@ -346,8 +371,14 @@ export function ChatComposer({
 
   return (
     <div className="chat-composer" data-ui="sender">
-      <ComposerCommandMenu input={input} activeIndex={commandIndex} onSelect={onCommandSelect} />
-      {attachments.length > 0 && (
+      <ComposerCommandMenu
+        input={input}
+        activeIndex={commandIndex}
+        onSelect={onCommandSelect}
+        allowPlan={allowPlan}
+        allowGoal={allowGoal}
+      />
+      {allowAttachments && attachments.length > 0 && (
         <div className="chat-attachment-list" aria-label="本轮附件" role="list">
           {attachments.map(attachment => (
             <article key={attachment.id} className={`chat-attachment-chip ${attachment.kind}`} role="listitem">
@@ -379,19 +410,24 @@ export function ChatComposer({
         <ComposerActionMenu
           disabled={disabled}
           active={active}
+          allowAttachments={allowAttachments}
+          allowPlan={allowPlan}
+          allowGoal={allowGoal}
           onTogglePlan={() => onSetMode(mode === "plan" ? "default" : "plan")}
           onStartGoal={onStartGoal}
           onFiles={onFiles}
           attachmentAccept={attachmentAccept}
           attachmentLimit={attachmentLimit}
         />
-        {mode === "plan" && (
+        {allowPlan && mode === "plan" && (
           <button className="chat-mode-chip" type="button" title="点击返回默认模式" onClick={() => onSetMode("default")}>
             <ListTodo size={14} />
             <span>计划</span>
           </button>
         )}
-        <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} active={active} />
+        {allowApproval && (
+          <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} active={active} />
+        )}
         <span className="chat-composer-spacer" />
         {contextControl}
         <ModelReasoningMenu
@@ -400,6 +436,8 @@ export function ChatComposer({
           reasoningEffort={reasoningEffort}
           disabled={disabled}
           active={active}
+          allowModelSelection={allowModelSelection}
+          allowReasoning={allowReasoning}
           onModelChange={onModelChange}
           onReasoningEffortChange={onReasoningEffortChange}
           onConfigure={onConfigureModel}

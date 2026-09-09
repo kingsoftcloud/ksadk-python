@@ -90,6 +90,18 @@ def test_proxyserver_stop_idempotent():
     srv.stop()  # 重复 stop 不报错
 
 
+def test_proxyserver_stop_does_not_report_lifespan_cancelled_error(capfd):
+    """A completed turn must not make normal proxy cleanup look like a crash."""
+
+    srv = ProxyServer(_cfg())
+    srv.start()
+    srv.stop()
+
+    captured = capfd.readouterr()
+    assert "Traceback (most recent call last)" not in captured.err
+    assert "asyncio.exceptions.CancelledError" not in captured.err
+
+
 # ---- 凭证/监听安全 ----
 
 
@@ -301,7 +313,7 @@ class _HangSSEHandler(BaseHTTPRequestHandler):
         pass
 
 
-def test_stop_with_active_sse_reclaims_thread():
+def test_stop_with_active_sse_reclaims_thread(capfd):
     up = HTTPServer(("127.0.0.1", 0), _HangSSEHandler)
     threading.Thread(target=up.serve_forever, daemon=True).start()
     cfg = ProxyConfig(
@@ -333,12 +345,15 @@ def test_stop_with_active_sse_reclaims_thread():
     rt.start()
     time.sleep(0.6)  # 让活动 SSE 建立
     thread = srv._thread  # stop 前保存引用(stop 会把 _thread 置 None)
-    srv.stop()  # 活动 SSE 中 stop:force_exit 必须中断并回收线程(泄漏回归)
+    srv.stop()  # 活动 SSE 中 stop 必须中断并回收线程(泄漏回归)
     assert thread is not None and not thread.is_alive()
     stop_read.set()
     rt.join(timeout=3)
     up.shutdown()
     up.server_close()
+    captured = capfd.readouterr()
+    assert "Traceback (most recent call last)" not in captured.err
+    assert "asyncio.exceptions.CancelledError" not in captured.err
 
 
 # ---- E2E: codex 动态工具(additional_tools/namespace)全链路工具调用往返 ----

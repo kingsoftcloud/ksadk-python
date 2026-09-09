@@ -33,6 +33,17 @@ def test_workspace_rejects_parent_path_escape(workspace: Workspace):
     assert captured.value.code == "WORKSPACE_PATH_FORBIDDEN"
 
 
+def test_workspace_rejects_absolute_sibling_prefix_escape(
+    workspace: Workspace, tmp_path: Path
+):
+    sibling = tmp_path / f"{workspace.root.name}-outside"
+
+    with pytest.raises(StudioError) as captured:
+        workspace.resolve(sibling / "secret.txt")
+
+    assert captured.value.code == "WORKSPACE_PATH_FORBIDDEN"
+
+
 def test_workspace_rejects_symlink_escape(workspace: Workspace, tmp_path: Path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -42,6 +53,18 @@ def test_workspace_rejects_symlink_escape(workspace: Workspace, tmp_path: Path):
         workspace.resolve("linked/secret.txt")
 
     assert captured.value.code == "WORKSPACE_PATH_FORBIDDEN"
+
+
+def test_atomic_write_rejects_symlink_escape(workspace: Workspace, tmp_path: Path):
+    outside = tmp_path / "outside-write"
+    outside.mkdir()
+    (workspace.root / "linked-write").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(StudioError) as captured:
+        workspace.atomic_write_text("linked-write/secret.txt", "sensitive\n")
+
+    assert captured.value.code == "WORKSPACE_PATH_FORBIDDEN"
+    assert not (outside / "secret.txt").exists()
 
 
 def test_atomic_write_replaces_complete_file(workspace: Workspace):

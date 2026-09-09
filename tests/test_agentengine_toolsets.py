@@ -1,6 +1,7 @@
 import pytest
 
 from ksadk.runtime_context import (
+    PlatformIdentityContext,
     PlatformInvocationContext,
     platform_invocation_scope,
     tool_execution_scope,
@@ -17,6 +18,7 @@ from ksadk.toolsets import (
     search_workspace_files,
     tool_dispatcher,
     tool_search,
+    write_workspace_file,
 )
 from ksadk.toolsets.workspace_state import clear_read_state
 
@@ -491,3 +493,27 @@ def test_workspace_list_supports_glob_sort_and_include_dirs(monkeypatch, tmp_pat
 
     assert result["ok"] is True
     assert [entry["path"] for entry in result["entries"]] == ["b.py", "a.py"]
+
+
+def test_workspace_tools_use_the_current_verified_identity_root(monkeypatch, tmp_path):
+    monkeypatch.setattr("ksadk.toolsets.workspace.resolve_local_session_dir", lambda: tmp_path)
+
+    def context_for(tenant_id: str) -> PlatformInvocationContext:
+        context = _context()
+        context.identity = PlatformIdentityContext(
+            identity_namespace="customer-crm",
+            tenant_id=tenant_id,
+            subject_type="user",
+            subject_id="user-7",
+        )
+        return context
+
+    with platform_invocation_scope(context_for("tenant-a")):
+        assert write_workspace_file("shared.txt", "tenant-a")["ok"] is True
+    with platform_invocation_scope(context_for("tenant-b")):
+        assert read_workspace_file("shared.txt")["ok"] is False
+        assert write_workspace_file("shared.txt", "tenant-b")["ok"] is True
+    with platform_invocation_scope(context_for("tenant-a")):
+        assert read_workspace_file("shared.txt")["content"] == "1 | tenant-a"
+    with platform_invocation_scope(context_for("tenant-b")):
+        assert read_workspace_file("shared.txt")["content"] == "1 | tenant-b"

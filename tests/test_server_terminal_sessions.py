@@ -156,6 +156,36 @@ async def test_terminal_sessions_reuse_by_business_session_and_mode(server_app, 
 
 
 @pytest.mark.asyncio
+async def test_terminal_routes_fail_closed_for_isolated_identity(server_app, monkeypatch):
+    spawned: list[str] = []
+
+    def fake_spawn(session):
+        spawned.append(session.id)
+
+    monkeypatch.setattr(server_app.terminal_manager, "_spawn_session", fake_spawn)
+    headers = {
+        "X-AgentEngine-Identity-Namespace": "customer-iam",
+        "X-AgentEngine-Business-Tenant-Id": "tenant-a",
+        "X-AgentEngine-Subject-Type": "user",
+        "X-AgentEngine-Subject-Id": "user-a",
+    }
+    transport = httpx.ASGITransport(app=server_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        created = await client.post(
+            "/_ksadk/terminal/sessions",
+            headers=headers,
+            json={"session_id": "biz-a", "mode": "tui"},
+        )
+        listing = await client.get("/_ksadk/terminal/sessions", headers=headers)
+        deleted = await client.delete("/_ksadk/terminal/sessions/term-forged", headers=headers)
+
+    assert created.status_code == 403
+    assert listing.status_code == 403
+    assert deleted.status_code == 403
+    assert spawned == []
+
+
+@pytest.mark.asyncio
 async def test_terminal_session_delete_marks_deleted_and_removes_from_reuse(
     server_app, monkeypatch
 ):

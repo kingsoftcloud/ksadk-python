@@ -37,6 +37,7 @@
       "supported": true,
       "mode": "native"
     },
+    "interaction_mode": "live_submit",
     "goal": {
       "supported": true,
       "mode": "native"

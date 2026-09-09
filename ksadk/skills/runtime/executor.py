@@ -33,6 +33,8 @@ class WorkflowExecution:
     artifacts: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: str = ""
+    instructions: str = ""
+    artifact_bundle: dict[str, object] | None = None
 
 
 def execute_workflow(
@@ -73,6 +75,14 @@ def execute_workflow(
 
     for skill in _candidate_skills(skills, selected):
         invocation_id, skill_ref = _execution_identity(skill, skill_refs, skill_invocation_ids)
+        if _has_instructions(skill):
+            _emit_execution(
+                event_sink, "skill.execution.started", "running", skill_ref, invocation_id
+            )
+            result = _run_instruction_only(skill, prompt)
+            _attach_context(result, selected=selected, loaded=loaded)
+            _emit_execution_result(event_sink, result, skill_ref, invocation_id)
+            return result
         _emit_execution(
             event_sink, "skill.execution.completed", "skipped", skill_ref, invocation_id
         )
@@ -140,7 +150,7 @@ def _emit_execution_result(
     skill_ref: SkillRef | None,
     invocation_id: str,
 ) -> None:
-    status = "completed" if result.status == "ok" else "failed"
+    status = "failed" if result.status in ("failed", "error") else "completed"
     error_category = (
         "timeout" if any(command.get("timed_out") for command in result.commands) else ""
     )
@@ -189,6 +199,24 @@ def _can_run_generic_workflow(skill: LocalSkill) -> bool:
     return (skill.root_dir / "scripts" / "run-workflow.sh").exists()
 
 
+def _has_instructions(skill: LocalSkill) -> bool:
+    has_scripts = (skill.root_dir / "scripts").is_dir()
+    return not has_scripts and bool(skill.body and skill.body.strip())
+
+
+def _run_instruction_only(skill: LocalSkill, prompt: str) -> WorkflowExecution:
+    return WorkflowExecution(
+        status="instructions",
+        executed_skill=skill.name,
+        instructions=skill.body,
+        warnings=[
+            "This skill is instruction-only (no executable scripts). "
+            "Follow the instructions below using your available tools."
+        ],
+    )
+
+
+
 def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
     workdir = _skill_workdir()
     project_name = _safe_project_name(
@@ -233,6 +261,7 @@ def _run_generic_workflow(skill: LocalSkill, prompt: str) -> WorkflowExecution:
     workdir = _skill_workdir()
     workdir.mkdir(parents=True, exist_ok=True)
     output_dir = workdir / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
     timeout = _runtime_timeout()
     command = _run_command(
         ["bash", str(skill.root_dir / "scripts" / "run-workflow.sh")],

@@ -37,6 +37,7 @@ from ksadk.sandbox.registry import (
     bind_sandbox_registry,
     set_fallback_sandbox_registry,
 )
+from ksadk.server.persistence_capability import PersistenceCapabilityCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ class StreamRegistry:
         self.streams_by_invocation: dict[str, Any] = {}
         self.resume_keys_by_invocation: dict[str, tuple[str, str]] = {}
         self.active_resume_invocation_by_key: dict[tuple[str, str], str] = {}
+        self.resume_key_lock = asyncio.Lock()
 
     def clear(self) -> None:
         self.streams.clear()
@@ -130,6 +132,7 @@ class RuntimeAppState:
         # AG-UI endpoint 及其 app-owned RuntimeAdapter handle registry。
         self.agui_agent: Any = None
         self.agui_config: Any = None
+        self.persistence_capability = PersistenceCapabilityCoordinator()
 
     def resolve_session_service(self) -> Any:
         """Return this app's session service for the current execution loop."""
@@ -289,6 +292,8 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
         await asyncio.gather(*pending_streams, return_exceptions=True)
     registry.clear()
 
+    await state.persistence_capability.aclose()
+
     if state.executor is not None:
         try:
             await state.executor.close_all()
@@ -377,8 +382,20 @@ def create_runtime_app(
             runtime_executor=config.runtime_executor,
             launch_context=config.launch_context,
             start_request_defaults=request_defaults,
+            session_service=state.resolve_session_service(),
         )
         app.state.agent_kernel_runtime = kernel_runtime
+        if kernel_runtime is not None:
+            # Kernel canonical events are the replay authority for the normal
+            # Session APIs as well.  In memory/ephemeral mode bootstrap reuses
+            # the app-owned service above; in PostgreSQL mode it owns the
+            # durable service and the HTTP routes must adopt that exact one.
+            # Keeping two services made foreground SSE look correct while a
+            # later ListSessionEvents call returned an empty history forever.
+            kernel_session_service = kernel_runtime.config.session_service
+            if kernel_session_service is None:  # pragma: no cover - defensive
+                raise RuntimeError("agent kernel runtime has no Session service")
+            state.session_service = kernel_session_service
         try:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()

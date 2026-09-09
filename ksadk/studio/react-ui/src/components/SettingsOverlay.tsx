@@ -40,13 +40,14 @@ function credentialSourceLabel(source: string): string {
 }
 
 export function normalizeSandbox(value?: string): SettingsFormValues["sandbox"] {
-  const normalized = (value || "read-only").replaceAll("_", "-");
+  const normalized = (value || "workspace-write-auto").replaceAll("_", "-");
   if (
-    normalized === "workspace-write"
+    normalized === "read-only"
+    || normalized === "workspace-write"
     || normalized === "workspace-write-auto"
     || normalized === "full-access"
   ) return normalized;
-  return "read-only";
+  return "workspace-write-auto";
 }
 
 /** 工作区级设置抽屉。 */
@@ -60,7 +61,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
   const settingsForm = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsSchema) as Resolver<SettingsFormValues>,
     defaultValues: {
-      sandbox: "read-only",
+      sandbox: "workspace-write-auto",
       buildAfterCreate: true,
       codexProxy: "auto",
       cloudRegion: "",
@@ -232,7 +233,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
             options={[
               { value: "read-only", label: "只读沙箱（不可写）" },
               { value: "workspace-write", label: "请求批准（写工作区，每次询问）" },
-              { value: "workspace-write-auto", label: "替我审批（写工作区，仅风险询问）" },
+              { value: "workspace-write-auto", label: "风险操作需确认（写工作区）" },
               { value: "full-access", label: "完全访问（不受限读写）" },
             ]}
             onValueChange={value => settingsForm.setValue("sandbox", value as SettingsFormValues["sandbox"], { shouldDirty: true, shouldValidate: true })}

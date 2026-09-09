@@ -6,7 +6,8 @@ const agentSlug = z.string().trim()
   .max(63, "本地标识不能超过 63 个字符")
   .regex(/^[a-z][a-z0-9-]*$/, "本地标识只能包含小写字母、数字和连字符");
 const optionalAgentSlug = z.union([z.literal(""), agentSlug]);
-const runtimeType = z.enum(["codex", "adk", "langgraph"]);
+const studioRuntimeType = z.enum(["codex", "adk", "langgraph", "plugin"]);
+const conversationRuntimeType = z.enum(["codex", "adk", "langgraph"]);
 const agentPrompt = z.string().trim()
   .min(4, "系统提示词至少填写 4 个字符")
   .max(32768, "系统提示词不能超过 32768 个字符");
@@ -18,7 +19,7 @@ const description = z.string().trim().max(1024, "描述不能超过 1024 个字�
 export const quickAgentSchema = z.object({
   name: agentName,
   slug: agentSlug,
-  runtimeType,
+  runtimeType: studioRuntimeType,
   template: z.enum(["blank", "research"]).default("blank"),
   prompt: agentRequirement,
   description,
@@ -38,7 +39,7 @@ export const quickAgentSchema = z.object({
 export const agentEditSchema = z.object({
   name: agentName,
   slug: agentSlug,
-  runtimeType,
+  runtimeType: studioRuntimeType,
   prompt: agentPrompt,
   description,
 });
@@ -46,7 +47,7 @@ export const agentEditSchema = z.object({
 export const conversationCommitSchema = z.object({
   name: agentName,
   slug: agentSlug,
-  runtimeType,
+  runtimeType: conversationRuntimeType,
   prompt: agentPrompt,
   description: description.optional(),
   modelProfileId: z.string().trim().min(3, "请选择用于构建的模型").max(256).optional(),

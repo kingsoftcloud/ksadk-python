@@ -10,9 +10,15 @@ async function loadChatProtocol() {
   } catch (error) {
     assert.fail(`chatProtocol.ts must own the Responses stream: ${error.message}`);
   }
+  const conversationUrl = new URL("./conversationProtocol.node.test-bridge.mjs", import.meta.url).href;
+  source = source.replace('from "./conversationProtocol"', `from ${JSON.stringify(conversationUrl)}`);
   const transformed = await transformWithOxc(source, "chatProtocol.ts", { lang: "ts" });
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(transformed.code).toString("base64")}`;
   return import(moduleUrl);
+}
+
+async function loadConversationProtocol() {
+  return import(new URL("./conversationProtocol.node.test-bridge.mjs", import.meta.url).href);
 }
 
 test("decodes optional Runtime v2 goal loop and plan capabilities", async () => {
@@ -77,6 +83,207 @@ test("parses fragmented Responses SSE and accumulates reasoning plus output", as
   assert.deepEqual(state.activities.map(item => [item.kind, item.status, item.title]), [
     ["command", "completed", "rg TODO"],
   ]);
+});
+
+test("keeps Studio Conversation decoding aligned with the frozen defaults and safe projection", async () => {
+  const conversation = await loadConversationProtocol();
+  const minimalSurface = {
+    apiVersion: "conversation.ksadk.io/v1",
+    kind: "ConversationSurface",
+    surfaceId: "surface-1",
+    sessionId: "session-1",
+    providerRef: "provider-1",
+  };
+  assert.deepEqual(conversation.decodeConversationSurface(minimalSurface)?.inputs, []);
+  assert.equal(conversation.decodeConversationSurface({
+    ...minimalSurface,
+    inputs: [{ name: "goal", mode: "unavailable" }],
+  }), null);
+
+  const item = (itemId, sourceEventId, text, visibility = "public") => ({
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId,
+    sourceEventIds: [sourceEventId],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "assistant_text",
+    operation: "append",
+    lifecycle: "streaming",
+    visibility,
+    payloadSchemaRef: "conversation.item.assistant_text/v1",
+    payload: { text },
+  });
+  let state = conversation.createConversationItemState();
+  state = conversation.reduceConversationItem(state, conversation.decodeConversationItem(
+    item("item", "source\u0000tail", "first"),
+  ));
+  state = conversation.reduceConversationItem(state, conversation.decodeConversationItem(
+    item("item\u0000source", "tail", "second"),
+  ));
+  state = conversation.reduceConversationItem(state, conversation.decodeConversationItem(
+    item("internal", "internal-source", "secret", "internal"),
+  ));
+  assert.equal(conversation.projectConversationItems(state).output, "firstsecond");
+});
+
+test("resumes a typed Conversation stream by SSE cursor without replaying item side effects", async () => {
+  const chat = await loadChatProtocol();
+  const encoder = new TextEncoder();
+  const conversationItem = (sourceEventId, text, lifecycle = "streaming", operation = "append") => ({
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId: "answer-1",
+    sourceEventIds: [sourceEventId],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "assistant_text",
+    operation,
+    lifecycle,
+    visibility: "public",
+    payloadSchemaRef: "conversation.item.assistant_text/v1",
+    payload: { text },
+    nativeRef: {},
+  });
+  const frame = (id, type, payload) => `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  let emitted = false;
+  const disconnected = new Response(new ReadableStream({
+    pull(controller) {
+      if (!emitted) {
+        emitted = true;
+        controller.enqueue(encoder.encode(frame(1, "message.delta", {
+          conversationItem: conversationItem("source-1", "hello"),
+        })));
+        return;
+      }
+      return new Promise(resolve => globalThis.setTimeout(() => {
+        controller.error(new Error("connection reset"));
+        resolve();
+      }, 5));
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+
+  let state = chat.createChatStreamState("local", "session-1");
+  const replayCursors = [];
+  const cursor = await chat.consumeConversationStream({
+    initialResponse: disconnected,
+    signal: new AbortController().signal,
+    onEvent(event) { state = chat.reduceChatStreamEvent(state, event); },
+    getRunId: () => state.runId,
+    isTerminal: () => ["completed", "failed", "cancelled"].includes(state.status),
+    replay: async (_runId, after) => {
+      replayCursors.push(after);
+      return new Response([
+        // The server may replay the cursor boundary; item identity must ignore it.
+        frame(1, "message.delta", { conversationItem: conversationItem("source-1", "hello") }),
+        frame(2, "message.delta", { conversationItem: conversationItem("source-2", " world") }),
+        frame(3, "run.completed", {
+          conversationItem: {
+            ...conversationItem("source-3", "", "completed", "completed"),
+            itemId: "run-end",
+            kind: "progress",
+            payloadSchemaRef: "conversation.item.progress/v1",
+            payload: {},
+          },
+        }),
+      ].join(""), { headers: { "Content-Type": "text/event-stream" } });
+    },
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(replayCursors, [1]);
+  assert.equal(cursor, 3);
+  assert.equal(state.output, "hello world");
+  assert.equal(state.status, "completed");
+  assert.deepEqual(state.conversationItems.items.map(item => item.itemId), ["answer-1", "run-end"]);
+});
+
+test("uses the outer run event as terminal authority even when its item was replayed", async () => {
+  const chat = await loadChatProtocol();
+  const progressItem = {
+    apiVersion: "conversation.ksadk.io/v1",
+    kindVersion: 1,
+    itemId: "run-progress",
+    sourceEventIds: ["source-progress"],
+    sessionId: "session-1",
+    runId: "run-1",
+    kind: "progress",
+    operation: "completed",
+    lifecycle: "completed",
+    visibility: "public",
+    payloadSchemaRef: "conversation.item.progress/v1",
+    payload: {},
+    nativeRef: {},
+  };
+
+  let state = chat.createChatStreamState("local", "session-1");
+  state = chat.reduceChatStreamEvent(state, {
+    type: "message.completed",
+    conversationItem: progressItem,
+  });
+  assert.equal(state.status, "streaming");
+
+  state = chat.reduceChatStreamEvent(state, {
+    type: "run.completed",
+    conversationItem: progressItem,
+  });
+  assert.equal(state.status, "completed");
+});
+
+test("stops typed Conversation reconnect after the explicit retry limit", async () => {
+  const chat = await loadChatProtocol();
+  const initial = new Response(
+    'id: 1\nevent: message.delta\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"answer","sourceEventIds":["source-1"],"sessionId":"session","runId":"run-1","kind":"assistant_text","operation":"append","lifecycle":"streaming","visibility":"public","payloadSchemaRef":"conversation.item.assistant_text/v1","payload":{"text":"partial"},"nativeRef":{}}}\n\n',
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+  let state = chat.createChatStreamState("local", "session");
+  let replayCalls = 0;
+
+  await assert.rejects(
+    chat.consumeConversationStream({
+      initialResponse: initial,
+      signal: new AbortController().signal,
+      onEvent(event) { state = chat.reduceChatStreamEvent(state, event); },
+      getRunId: () => state.runId,
+      isTerminal: () => false,
+      replay: async () => {
+        replayCalls += 1;
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      },
+      maxReconnects: 2,
+      sleep: async () => {},
+    }),
+    /自动续流 2 次后仍未到达终态/,
+  );
+  assert.equal(replayCalls, 2);
+  assert.equal(state.output, "partial");
+});
+
+test("aborts a typed Conversation reconnect while waiting without another replay request", async () => {
+  const chat = await loadChatProtocol();
+  const controller = new AbortController();
+  const initial = new Response(
+    'id: 1\nevent: message.delta\ndata: {"conversationItem":{"apiVersion":"conversation.ksadk.io/v1","kindVersion":1,"itemId":"answer","sourceEventIds":["source-1"],"sessionId":"session","runId":"run-1","kind":"assistant_text","operation":"append","lifecycle":"streaming","visibility":"public","payloadSchemaRef":"conversation.item.assistant_text/v1","payload":{"text":"partial"},"nativeRef":{}}}\n\n',
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+  let state = chat.createChatStreamState("local", "session");
+  let replayCalls = 0;
+  const waiting = chat.consumeConversationStream({
+    initialResponse: initial,
+    signal: controller.signal,
+    onEvent(event) { state = chat.reduceChatStreamEvent(state, event); },
+    getRunId: () => state.runId,
+    isTerminal: () => false,
+    replay: async () => {
+      replayCalls += 1;
+      return new Response("");
+    },
+    retryDelayMs: () => 60_000,
+  });
+
+  controller.abort();
+  await assert.rejects(waiting, error => error?.name === "AbortError");
+  assert.equal(replayCalls, 0);
 });
 
 test("groups persisted runs into newest-first sessions for one agent", async () => {
@@ -167,6 +374,38 @@ test("reduces streamed A2UI operations and interaction state without React coupl
     name: "approve",
   });
   assert.equal(state.status, "streaming");
+  assert.equal(state.surfaces[0].interaction.status, "resolved");
+});
+
+test("does not let replayed A2UI actions reopen a terminal canonical run", async () => {
+  const chat = await loadChatProtocol();
+  let state = chat.createChatStreamState("resp-a2ui-terminal", "ses-a2ui-terminal");
+  state = chat.reduceChatStreamEvent(state, {
+    type: "a2ui.surface.begin",
+    runId: "run-a2ui-terminal",
+    surfaceId: "surface-1",
+    a2uiOperations: [
+      { version: "v0.9", createSurface: { surfaceId: "surface-1", catalogId: "catalog-1" } },
+    ],
+  });
+  state = chat.reduceChatStreamEvent(state, {
+    type: "a2ui.interaction",
+    runId: "run-a2ui-terminal",
+    surfaceId: "surface-1",
+    interactionId: "form-1",
+    kind: "form",
+  });
+  state = { ...state, status: "completed" };
+
+  state = chat.reduceChatStreamEvent(state, {
+    type: "a2ui.action",
+    runId: "run-a2ui-terminal",
+    surfaceId: "surface-1",
+    interactionId: "form-1",
+    name: "submit",
+  });
+
+  assert.equal(state.status, "completed");
   assert.equal(state.surfaces[0].interaction.status, "resolved");
 });
 

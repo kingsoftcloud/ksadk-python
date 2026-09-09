@@ -15,6 +15,7 @@ import { FileDropzone } from "../components/ui/FileDropzone";
 import { FormField } from "../components/ui/FormField";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { PythonToolExample } from "../components/PythonToolExample";
+import { PlatformResourcesPage } from "../components/PlatformResourceBindings";
 import {
   StudioDataTable,
   type StudioDataColumn,
@@ -38,7 +39,8 @@ import {
   type SkillImportSummary,
 } from "../skillBatchImport";
 
-export type ResourceKind = "model" | "tool" | "mcp" | "skill";
+export type ResourceKind = "model" | "tool" | "mcp" | "skill" | "knowledge-base" | "memory-instance" | "skill-space";
+type CatalogResourceKind = Exclude<ResourceKind, "knowledge-base" | "memory-instance" | "skill-space">;
 
 export interface ResItem {
   resourceId: string;
@@ -60,6 +62,9 @@ const KIND_META: Record<ResourceKind, { title: string; description: string; addL
   tool: { title: "Tool", description: "管理结构化 Tool Contract、权限和审批策略。", addLabel: "添加 Python Tool", headings: ["来源", "Tool 分组", "权限 / 边界"], icon: Wrench },
   mcp: { title: "MCP", description: "连接、探测并复用 MCP Server。", addLabel: "添加资源", headings: ["来源", "版本", "说明"], icon: Network },
   skill: { title: "Skill", description: "安装版本化 Skill，并在构建时锁定内容摘要。", addLabel: "发现 Skill", headings: ["来源", "版本", "说明"], icon: Sparkles },
+  "knowledge-base": { title: "知识库", description: "管理可绑定到 Agent Revision 的云端知识库。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Database },
+  "memory-instance": { title: "记忆库", description: "管理长期记忆实例。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Database },
+  "skill-space": { title: "Skill Center", description: "管理云端 Skill Space。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Sparkles },
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -88,7 +93,7 @@ function formatByteCount(value: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: CatalogResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
   const [catalog, setCatalog] = useState<ResItem[]>([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -203,17 +208,17 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
 
   const meta = KIND_META[kind];
   const columns = useMemo<StudioDataColumn<ResItem>[]>(() => [
-    { id: "name", header: "名称", minWidth: 250, cell: item => <ResourceNameCell item={item} /> },
-    { id: "source", header: meta.headings[0], minWidth: 170, cell: item => SOURCE_LABELS[item.source] || item.source },
-    { id: "detail", header: meta.headings[1], minWidth: 150, cell: item => <ResourceDetailCell item={item} /> },
-    { id: "capability", header: meta.headings[2], minWidth: 240, className: "capability-cell", cell: item => <ResourceCapabilityCell item={item} /> },
-    { id: "status", header: "状态", minWidth: 135, cell: item => <ResourceStatusCell item={item} /> },
+    { id: "name", header: "名称", minWidth: 190, className: "resource-name-column", headerClassName: "resource-name-column", cell: item => <ResourceNameCell item={item} /> },
+    { id: "source", header: meta.headings[0], minWidth: 120, className: "resource-source-column", headerClassName: "resource-source-column", cell: item => SOURCE_LABELS[item.source] || item.source },
+    { id: "detail", header: meta.headings[1], minWidth: 110, className: "resource-detail-column", headerClassName: "resource-detail-column", cell: item => <ResourceDetailCell item={item} /> },
+    { id: "capability", header: meta.headings[2], minWidth: 180, className: "capability-cell resource-capability-column", headerClassName: "resource-capability-column", cell: item => <ResourceCapabilityCell item={item} /> },
+    { id: "status", header: "状态", minWidth: 92, className: "resource-status-column", headerClassName: "resource-status-column", cell: item => <ResourceStatusCell item={item} /> },
     {
       id: "actions",
       header: "操作",
-      minWidth: 160,
-      className: "actions-column",
-      headerClassName: "actions-column",
+      minWidth: 108,
+      className: "actions-column resource-actions-column",
+      headerClassName: "actions-column resource-actions-column",
       cell: item => (
         <ResourceActionsCell
           item={item}
@@ -246,7 +251,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
   }, [loadPage, nextCursor, pageIndex]);
 
   return (
-    <div className="page-container" data-layout="document">
+    <div className="page-container resources-page" data-layout="data" data-scroll-mode="data">
       <PageHeaderActions>
         <button className="button accent" type="button" onClick={handleAdd}>
           <Plus size={15} /><span>{meta.addLabel}</span>
@@ -326,7 +331,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
           data={catalog}
           getRowId={item => item.resourceId}
           caption={`${meta.title}资源列表`}
-          minWidth={1180}
+          minWidth={0}
           loading={loading}
           error={loadError}
           onRetry={reloadCurrent}
@@ -371,6 +376,19 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
       )}
     </div>
   );
+}
+
+const PLATFORM_RESOURCE_KINDS = new Set<ResourceKind>(["knowledge-base", "memory-instance", "skill-space"]);
+
+export function ResourcesPage(props: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+  if (PLATFORM_RESOURCE_KINDS.has(props.kind)) {
+    return <PlatformResourcesPage
+      kind={props.kind as "knowledge-base" | "memory-instance" | "skill-space"}
+      onKindChange={props.onKindChange}
+      refreshTick={props.refreshTick}
+    />;
+  }
+  return <CatalogResourcesPage {...props} kind={props.kind as CatalogResourceKind} />;
 }
 
 /* ================= 资源表格单元格 ================= */
@@ -1045,7 +1063,7 @@ function ResourceDetailDrawer({ item, onClose }: { item: ResItem; onClose: () =>
         {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{String(v)}</dd></div>)}
       </dl>
       <div className="inspector-title inspector-title-spaced">说明</div>
-      <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
+      <p style={{ margin: 0, color: "var(--studio-text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
         {item.description || contract.description || "未提供说明"}
       </p>
       {item.kind === "skill" && item.source === "local" && (

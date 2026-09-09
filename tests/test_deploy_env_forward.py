@@ -22,6 +22,8 @@ def test_should_forward_process_env_prefixes():
     assert should_forward_process_env("OPENAI_API_KEY")
     assert should_forward_process_env("KSADK_SOME_KEY")
     assert should_forward_process_env("E2B_API_KEY")
+    assert should_forward_process_env("AGENTENGINE_CLUSTER")
+    assert should_forward_process_env("AGENTKIT_MODEL_API_KEY")
 
 
 def test_should_forward_process_env_rejects_unrelated_and_denylist():

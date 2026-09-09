@@ -158,6 +158,10 @@ Skill Runtime 执行入口是 `execute_skills`。它只用于 workflow 型任务
 - 未设置 backend 但存在 `KSADK_SANDBOX_TEMPLATE_ID`：自动走 E2B
 - 显式 `KSADK_SKILL_RUNTIME_BACKEND=disabled`：禁用隔离执行
 
+Hermes / OpenClaw 的 Skill Center MCP 同样提供 `load_skill` 与 `execute_skills` 两条路径：先加载完整指令，再根据 Skill 是否具有受支持的隔离 workflow 入口选择执行方式；包含 `scripts/` 目录不代表必须走隔离执行。`approval_required` 表示仍需宿主审批，重复调用不会自动获批。
+
+托管 Skill 目录刷新和清理会拒绝目录、所有权 marker 或 `SKILL.md` 的符号链接；移除绑定只清理生成的指令，保留用户添加的其他文件。`TOOLS.md` 只自动替换完整的成对托管标记区块；没有可靠结束标记的旧内容会保留，新规则写入独立区块。
+
 Workspace 内置工具只访问 AgentEngine UI workspace，不访问任意宿主机路径。`edit_workspace_file` 是 exact snippet replacement；匹配不到返回 `snippet_not_found`，匹配次数不符合预期返回 `ambiguous_edit`。`lint_workspace_file` 提供 Python AST、JSON parse 和通用文本轻量检查。
 
 Sandbox direct tools 只通过 configured isolated sandbox backend 执行。`run_command` / `run_code` 不会退化为宿主机 shell；未配置 sandbox 时会返回诊断。`execute_skills`、Workspace 写入/删除、sandbox command/code 等中高风险工具会经过 Tool Gateway；strict 模式下会返回 `approval_required`，由 UI 或调用方回传批准后继续。

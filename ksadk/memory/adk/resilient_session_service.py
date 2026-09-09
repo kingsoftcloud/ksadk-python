@@ -38,11 +38,11 @@ class ResilientADKSessionService(BaseSessionService):
             return
         self._primary_enabled = False
         logger.error(
-            "ADK session persistence degraded; using in-memory live session: %s",
-            exc,
+            "ADK session persistence degraded; using in-memory live session",
             extra={
                 "session_backend_state": "degraded",
                 "session_backend": type(self.primary).__name__,
+                "session_backend_reason_code": "SESSION_STORE_UNREACHABLE",
             },
         )
         self._start_probe()
@@ -63,22 +63,30 @@ class ResilientADKSessionService(BaseSessionService):
             await asyncio.sleep(self._probe_interval_seconds)
             if self._primary_enabled:
                 break
-            try:
-                await self.primary.get_session(
-                    app_name="__ksadk_probe__",
-                    user_id="__ksadk_probe__",
-                    session_id="__ksadk_probe__",
-                )
-            except Exception:
-                continue
-            self._primary_enabled = True
-            logger.info(
-                "ADK session persistence recovered; durable backend re-enabled",
-                extra={
-                    "session_backend_state": "recovered",
-                    "session_backend": type(self.primary).__name__,
-                },
+            await self.refresh_persistence_capability()
+
+    async def refresh_persistence_capability(self) -> bool:
+        """Probe a degraded ADK database service without rebuilding the runner."""
+        if self._primary_enabled:
+            return True
+        try:
+            await self.primary.get_session(
+                app_name="__ksadk_probe__",
+                user_id="__ksadk_probe__",
+                session_id="__ksadk_probe__",
             )
+        except Exception:
+            return False
+        self._primary_enabled = True
+        logger.info(
+            "ADK session persistence recovered; durable backend re-enabled",
+            extra={
+                "session_backend_state": "recovered",
+                "session_backend": type(self.primary).__name__,
+                "session_backend_reason_code": "READY",
+            },
+        )
+        return True
 
     @staticmethod
     def _key(app_name: str, user_id: str, session_id: str) -> tuple[str, str, str]:

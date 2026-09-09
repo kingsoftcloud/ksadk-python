@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from ksadk_runtime_common.workspace_files.bootstrap import (
@@ -70,6 +70,7 @@ def create_workspace_files_router(
     *,
     root_getter: Callable[[], Path],
     enabled_getter: Callable[[], bool] | None = None,
+    request_root_getter: Callable[[Request], Path] | None = None,
 ) -> APIRouter:
     """Create a workspace files router using the v1 contract."""
     router = APIRouter(prefix="/_ksadk/workspace/v1", tags=["workspace-files"])
@@ -79,10 +80,18 @@ def create_workspace_files_router(
         if not is_enabled():
             raise HTTPException(status_code=404, detail="workspace files are disabled")
 
+    def _request_root(request: Request) -> Path:
+        getter = (
+            (lambda: request_root_getter(request))
+            if request_root_getter is not None
+            else root_getter
+        )
+        return _resolve_workspace_root(getter)
+
     @router.get("/healthz")
-    async def workspace_healthz() -> HealthzResponse:
+    async def workspace_healthz(request: Request) -> HealthzResponse:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         return {
             "ok": True,
             "root": workspace_files_root_label(),
@@ -91,11 +100,12 @@ def create_workspace_files_router(
 
     @router.get("/entries")
     async def list_workspace_entries(
+        request: Request,
         path: str = Query(".", alias="path"),
         recursive: bool = Query(False, alias="recursive"),
     ) -> EntriesResponse:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         normalized, target = _resolve_workspace_target(root, path, allow_root=True)
         target = _trusted_workspace_path(root, target)
         if not target.exists():
@@ -115,9 +125,11 @@ def create_workspace_files_router(
         }
 
     @router.get("/export-zip")
-    async def export_workspace_zip(path: str = Query(".", alias="path")) -> StreamingResponse:
+    async def export_workspace_zip(
+        request: Request, path: str = Query(".", alias="path")
+    ) -> StreamingResponse:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         normalized, target = _resolve_workspace_target(root, path, allow_root=True)
         target = _trusted_workspace_path(root, target)
         if not target.exists():
@@ -151,9 +163,9 @@ def create_workspace_files_router(
         )
 
     @router.head("/files/{file_path:path}")
-    async def head_workspace_file(file_path: str) -> Response:
+    async def head_workspace_file(request: Request, file_path: str) -> Response:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
         target = _trusted_workspace_path(root, target)
         if not target.exists() or not target.is_file():
@@ -169,9 +181,9 @@ def create_workspace_files_router(
         )
 
     @router.get("/files/{file_path:path}")
-    async def download_workspace_file(file_path: str) -> Response:
+    async def download_workspace_file(request: Request, file_path: str) -> Response:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
         target = _trusted_workspace_path(root, target)
         if not target.exists() or not target.is_file():
@@ -201,11 +213,12 @@ def create_workspace_files_router(
 
     @router.post("/files/{file_path:path}")
     async def upload_workspace_file(
+        request: Request,
         file_path: str,
         file: Annotated[UploadFile, File(...)],
     ) -> UploadResponse:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
         target = _trusted_workspace_path(root, target)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -236,9 +249,9 @@ def create_workspace_files_router(
         return {"Entry": entry}
 
     @router.delete("/files/{file_path:path}")
-    async def delete_workspace_file(file_path: str) -> JSONResponse:
+    async def delete_workspace_file(request: Request, file_path: str) -> JSONResponse:
         _ensure_enabled()
-        root = _resolve_workspace_root(root_getter)
+        root = _request_root(request)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
         target = _trusted_workspace_path(root, target)
         if not target.exists():

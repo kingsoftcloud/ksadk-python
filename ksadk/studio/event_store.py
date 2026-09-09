@@ -43,16 +43,64 @@ class RunEventStore:
         stored in the run JSON so the Studio events timeline survives restarts.
         Runs that never call ``append`` keep ``set(run_payload) == {"record"}``.
         """
+        return self.append_many(run_id, [(event_type, data)])[0]
+
+    def append_many(
+        self,
+        run_id: str,
+        entries: list[tuple[str, dict[str, Any]]],
+    ) -> list[RunEvent]:
+        """Persist one logical Studio transition with a single file replace."""
         record, events = self._read(run_id)
-        event = RunEvent(
-            id=len(events) + 1,
+        appended: list[RunEvent] = []
+        for event_type, data in entries:
+            event = RunEvent(
+                id=len(events) + 1,
+                run_id=run_id,
+                type=event_type,
+                data=data,
+            )
+            events.append(event)
+            appended.append(event)
+        if appended:
+            self._write(record, events)
+        return appended
+
+    def append_interaction_resolution(
+        self,
+        run_id: str,
+        *,
+        resolved_type: str,
+        resolved_data: dict[str, Any],
+        action_data: dict[str, Any],
+    ) -> tuple[RunEvent, RunEvent, dict[str, Any]]:
+        """Atomically persist a terminal interaction and its replay receipt."""
+        record, events = self._read(run_id)
+        resolution_event_id = len(events) + 1
+        action_event_id = resolution_event_id + 1
+        receipt = {
+            "runId": run_id,
+            "interactionId": str(action_data.get("interactionId") or ""),
+            "status": "resolved",
+            "revision": int(action_data.get("revision") or 0),
+            "resolutionEventId": resolution_event_id,
+            "eventId": action_event_id,
+        }
+        resolved = RunEvent(
+            id=resolution_event_id,
             run_id=run_id,
-            type=event_type,
-            data=data,
+            type=resolved_type,
+            data=resolved_data,
         )
-        events.append(event)
+        action = RunEvent(
+            id=action_event_id,
+            run_id=run_id,
+            type="a2ui.action",
+            data={**action_data, "receipt": receipt},
+        )
+        events.extend((resolved, action))
         self._write(record, events)
-        return event
+        return resolved, action, receipt
 
     def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
         _, events = self._read(run_id)

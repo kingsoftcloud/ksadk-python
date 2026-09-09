@@ -19,6 +19,7 @@ from ksadk.studio.contracts import (
     MCPServerRef,
     ModelParameters,
     ModelSpec,
+    RuntimeRef,
     ToolContract,
 )
 from ksadk.studio.errors import StudioError
@@ -257,7 +258,7 @@ async def test_provider_models_reuse_ksadk_metadata_normalization(
     async def _provider_catalog(**_kwargs):
         return [
             {
-                "id": "vision-model",
+                "id": "deepseek-v4-vision",
                 "display_name": "Vision Model",
                 "context_window_tokens": 131072,
                 "max_output_tokens": 8192,
@@ -275,7 +276,7 @@ async def test_provider_models_reuse_ksadk_metadata_normalization(
                     "max_output_tokens": 8192,
                 },
                 "_provider_raw_model": {
-                    "id": "vision-model",
+                    "id": "deepseek-v4-vision",
                     "display_name": "Vision Model",
                     "context_length": 131072,
                     "architecture": {"input_modalities": ["文字", "图片"]},
@@ -291,17 +292,57 @@ async def test_provider_models_reuse_ksadk_metadata_normalization(
     actual, actual_source = await catalog.discover_provider_models(
         api_base="https://models.example.test/v1",
         api_key="secret",
-        current_model="vision-model",
+        current_model="deepseek-v4-vision",
     )
 
     assert actual_source == "provider"
-    assert [item.name for item in actual] == ["vision-model"]
+    assert [item.name for item in actual] == ["deepseek-v4-vision"]
     descriptor = actual[0]
     assert descriptor.source == "provider"
     assert descriptor.contract["metadata"]["context_window_tokens"] == 131072
     assert descriptor.contract["metadata"]["capabilities"]["multimodal_input_image"] is True
     assert descriptor.contract["discovery"]["contextWindow"] == "provider"
     assert descriptor.contract["discovery"]["inputModalities"] == "provider"
+
+
+@pytest.mark.asyncio
+async def test_provider_models_only_expose_proxy_validated_families_and_sort_newest_first(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def _provider_catalog(**_kwargs):
+        return [
+            {"id": "legacy-vision-1"},
+            {"id": "glm-5.2"},
+            {"id": "glm-5.3"},
+            {"id": "qwen3-max"},
+            {"id": "kimi-k2.7"},
+            {"id": "minimax-m2"},
+            {"id": "deepseek-v4-flash"},
+        ]
+
+    monkeypatch.setattr(
+        "ksadk.studio.resource_catalog.fetch_provider_model_catalog",
+        _provider_catalog,
+    )
+    catalog = _catalog(tmp_path)
+    actual, _ = await catalog.discover_provider_models(
+        api_base="https://models.example.test/v1",
+        api_key="secret",
+        current_model="deepseek-v4-flash",
+    )
+
+    # IDs are exactly what the upstream provider returned; only eligibility
+    # matching treats punctuation as equivalent.
+    assert [item.name for item in actual] == [
+        "deepseek-v4-flash",
+        "glm-5.3",
+        "glm-5.2",
+        "kimi-k2.7",
+        "minimax-m2",
+        "qwen3-max",
+    ]
+    assert all(item.name != "legacy-vision-1" for item in actual)
 
 
 def test_catalog_persists_model_mcp_and_custom_tool_resources(tmp_path: Path):
@@ -435,6 +476,83 @@ def test_compiler_materializes_bindings_into_immutable_dependencies(tmp_path: Pa
     ] == "always"
     assert "workspace:file:write" in result.resolved.security.allowed_permissions
     assert result.dependency_lock["model"]["model"] == "glm-5.1"
+
+
+def test_compiler_ignores_legacy_tool_bindings_for_codex_provider(tmp_path: Path):
+    catalog = _catalog(tmp_path)
+    _register_model(catalog)
+    model = catalog.list(kind="model")[0]
+    tool = next(item for item in catalog.list(kind="tool", limit=100))
+    draft = AgentDraft(
+        metadata=AgentMetadata(id="codex-provider-agent", name="Codex Provider Agent"),
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref="plugin://io.ksadk.codex-provider@1.0.0",
+            ),
+            instructions=Instructions(system="Use Codex native tools."),
+            bindings=AgentBindings(
+                model_profile_id=model.resource_id,
+                tools=[CapabilityBinding(resource_id=tool.resource_id)],
+            ),
+        ),
+    )
+
+    result = AgentCompiler(catalog.workspace, catalog=catalog).compile(draft)
+
+    assert result.resolved.capabilities.tools == []
+    assert result.dependency_lock["tools"] == []
+
+
+def test_compiler_keeps_codex_mcp_native_instead_of_expanding_discovered_tools(
+    tmp_path: Path,
+):
+    catalog = _catalog(tmp_path)
+    _register_model(catalog)
+    model = catalog.list(kind="model")[0]
+    mcp = catalog.create_mcp_server(
+        display_name="Search MCP",
+        description="Native Codex MCP server",
+        server=MCPServerRef(
+            name="search",
+            version="1.0.0",
+            transport="http",
+            endpoint_url="https://mcp.example.test/rpc",
+        ),
+    )
+    catalog.save_probe(
+        mcp.resource_id,
+        result={
+            "tools": [
+                ToolContract(
+                    name="web_search",
+                    version="1.0.0",
+                    executor="mcp",
+                    mcp_server="search",
+                ).model_dump(by_alias=True, exclude_none=True, mode="json")
+            ]
+        },
+    )
+    draft = AgentDraft(
+        metadata=AgentMetadata(id="codex-mcp-agent", name="Codex MCP Agent"),
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="plugin",
+                provider_ref="plugin://io.ksadk.codex-provider@1.0.0",
+            ),
+            instructions=Instructions(system="Use the native MCP server."),
+            bindings=AgentBindings(
+                model_profile_id=model.resource_id,
+                mcp_servers=[CapabilityBinding(resource_id=mcp.resource_id)],
+            ),
+        ),
+    )
+
+    result = AgentCompiler(catalog.workspace, catalog=catalog).compile(draft)
+
+    assert [server["name"] for server in result.resolved.capabilities.mcp_servers] == ["search"]
+    assert result.resolved.capabilities.tools == []
+    assert result.dependency_lock["tools"] == []
 
 
 def test_skill_zip_import_is_installed_and_content_addressed(tmp_path: Path):

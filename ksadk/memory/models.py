@@ -127,6 +127,8 @@ class MemoryExtractionStatus:
     status: str
     searchable: bool = False
     message: str = ""
+    # Query failure does not prove that the previously submitted write failed.
+    error_code: str = ""
 
 
 def map_session_state(state: int | None) -> str:
@@ -176,7 +178,7 @@ class MemoryConflictError(MemoryOperationError):
 MEMORY_MODEL_VERSION = "v1"
 
 MemoryScope = Literal["user", "agent", "workspace", "org"]
-MemoryType = Literal["profile", "fact", "episode"]
+MemoryType = Literal["profile", "fact", "episode", "unknown"]
 MemoryStatus = Literal["active", "superseded", "deleted", "expired"]
 MemoryOperation = Literal["add", "update", "delete", "ignore"]
 MemorySearchStatus = Literal["ok", "not_configured", "timeout", "unauthorized", "failed"]
@@ -206,8 +208,8 @@ class MemoryRecord:
     content: str
     summary: str
     status: MemoryStatus
-    confidence: float
-    importance: float
+    confidence: float | None
+    importance: float | None
     valid_from: str
     valid_to: str
     expires_at: str
@@ -215,7 +217,8 @@ class MemoryRecord:
     source_event_ids: list[str]
     source_seq_range: tuple[int, int] | None
     content_hash: str
-    version: int
+    # None means the provider has no record revision/CAS contract.
+    version: int | None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""

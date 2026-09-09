@@ -18,7 +18,12 @@ from ksadk.runtime.adapter import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     StartRequest,
 )
-from ksadk.runtime_context import PlatformInvocationContext
+from ksadk.runtime_context import (
+    TRUSTED_IDENTITY_METADATA_KEY,
+    PlatformIdentityContext,
+    PlatformInvocationContext,
+)
+from ksadk.session_context import split_session_context
 
 
 @dataclass
@@ -58,17 +63,23 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
     outer_metadata = {
         key: value
         for key, value in request.metadata.items()
-        if key != CONVERSATION_PREPROCESSING_METADATA_KEY
+        if key not in {CONVERSATION_PREPROCESSING_METADATA_KEY, "session_context"}
     }
     request_metadata = {**outer_metadata, **conversation.request_metadata}
+    identity_payload: Any = request_metadata.get(TRUSTED_IDENTITY_METADATA_KEY)
     messages = conversation.messages or _fallback_messages(request.input)
     raw_prepared = (conversation.model_extra or {}).get("prepared_turn")
     if isinstance(raw_prepared, Mapping):
         prepared = PreparedConversationTurn(**dict(raw_prepared))
-        prepared.request_metadata = {
+        merged_metadata = {
             **prepared.request_metadata,
             **request_metadata,
         }
+        identity_payload = merged_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, identity_payload)
+        snapshot, prepared.request_metadata = split_session_context(merged_metadata)
+        controls = merged_metadata.get("agentengine")
+        if isinstance(controls, Mapping) and "session_context" in controls:
+            prepared.session_context = snapshot.to_payload()
     else:
         prepared = await build_run_input(
             agent_id=str(request.agent_id or "agent"),
@@ -100,10 +111,11 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             flush_before_compaction=bool(request.config.get("flush_before_compaction", True)),
             provider_ref=str(request.config.get("provider_ref") or "local-default"),
         )
+        request_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, None)
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
-        user_id=request.user_id,
+        user_id=prepared.user_id or request.user_id,
         user_input=prepared.user_input,
     )
     # Studio/平台控制面可以按 AgentVersion 的 providerRef 提前完成召回；它比仅依赖
@@ -114,9 +126,12 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         ambient_contexts["memory_recall_events"] = list(prepared.memory_recall_events)
     else:
         prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
+    from ksadk.session_context import SessionContext
+
     runtime_context = PlatformInvocationContext(
+        session=SessionContext.from_payload(prepared.session_context),
         agent_id=str(request.agent_id or "agent"),
-        user_id=request.user_id,
+        user_id=prepared.user_id or request.user_id,
         account_id=str(conversation.account_id or ""),
         session_id=prepared.session_id,
         history=list(prepared.history),
@@ -135,6 +150,7 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
         tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
+        identity=PlatformIdentityContext.from_payload(identity_payload),
     )
     canonical_payload = _build_runner_request_payload(
         prepared=prepared,

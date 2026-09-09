@@ -11,20 +11,24 @@ from pathlib import PurePosixPath
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from ksadk.conversations.attachment_storage import AttachmentStorageService
+from ksadk.conversations.attachment_storage import AttachmentStorageService, is_hosted_upload_uri
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.conversations.runtime_persistence import require_conversation_session
 from ksadk.runtime.adapter import CancelResult
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.factory import get_runtime_execution, get_state
+from ksadk.sessions.invocation_identity import identity_scope_ref
 from ksadk_runtime_common.workspace_files.preview import (
     build_workspace_file_base_href,
     build_workspace_preview_csp,
     inject_workspace_html_preview,
 )
 
+from ..invocation_identity import resolve_trusted_invocation_identity
 from . import dependencies as deps
 from .common import (
     _action_response,
@@ -36,6 +40,7 @@ from .models import (
     CancelRunActionRequest,
     WorkspaceDeleteActionRequest,
     WorkspaceListActionRequest,
+    _runtime_agent_id,
 )
 from .projection import (
     _agent_contains_invocation,
@@ -48,10 +53,16 @@ logger = logging.getLogger(__name__)
 
 
 @workspace_router.post("/agentengine/api/v1/UploadFile")
-async def upload_file_action(file: UploadFile = File(...)):
+async def upload_file_action(
+    file: UploadFile = File(...),
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     file_id = uuid.uuid4().hex
     data = await file.read()
-    file_uri, _local_path = await AttachmentStorageService().store(
+    owner_scope_ref = (
+        identity_scope_ref(invocation_identity) if not invocation_identity.is_empty else None
+    )
+    file_uri, _local_path = await AttachmentStorageService(owner_scope_ref=owner_scope_ref).store(
         data=data,
         file_id=file_id,
         display_name=file.filename,
@@ -72,8 +83,66 @@ async def upload_file_action(file: UploadFile = File(...)):
 
 
 @workspace_router.get("/agentengine/api/v1/AttachmentContent", include_in_schema=False)
-async def attachment_content_action(FileUri: str = Query(...)):
-    loaded = AttachmentStorageService().read(FileUri)
+async def attachment_content_action(
+    FileUri: str = Query(...),
+    SessionId: str | None = Query(None),
+    AgentId: str | None = Query(None),
+    UserId: str | None = Query(None),
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    service = deps.resolve_session_service()
+    owner_scope_ref = (
+        identity_scope_ref(invocation_identity) if not invocation_identity.is_empty else None
+    )
+    resolved_agent_id = str(AgentId or "").strip()
+
+    async def resolve_attachment_agent_id() -> str:
+        if resolved_agent_id:
+            return resolved_agent_id
+        if str(SessionId or "").strip():
+            candidate = await service.get_session_metadata(str(SessionId))
+            if candidate is not None:
+                return str(candidate.agent_id or "").strip()
+        try:
+            _executor, launch_context = get_runtime_execution()
+        except HTTPException:
+            return ""
+        return _runtime_agent_id(launch_context)
+
+    if not invocation_identity.is_empty and is_hosted_upload_uri(FileUri):
+        # Hosted attachment bytes belong to AgentEngine Server.  Require the
+        # local session binding before asking that authenticated service for
+        # the object; a runtime-scoped cache is not proof of ownership.
+        if not str(SessionId or "").strip():
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        resolved_agent_id = await resolve_attachment_agent_id()
+        if not resolved_agent_id:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        await require_conversation_session(
+            agent_id=resolved_agent_id,
+            user_id=str(UserId or ""),
+            session_id=str(SessionId),
+            session_service_provider=lambda: service,
+            invocation_identity=invocation_identity,
+        )
+        loaded = AttachmentStorageService().read(FileUri)
+    else:
+        loaded = AttachmentStorageService(owner_scope_ref=owner_scope_ref).read(FileUri)
+    if loaded is None and not invocation_identity.is_empty:
+        # Historical runtime uploads live in the legacy directory.  A verified
+        # identity may use that compatibility path only through an authorized
+        # session; new uploads never fall back across identity roots.
+        resolved_agent_id = await resolve_attachment_agent_id()
+        if not str(SessionId or "").strip() or not resolved_agent_id:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        await require_conversation_session(
+            agent_id=resolved_agent_id,
+            user_id=str(UserId or ""),
+            session_id=str(SessionId),
+            session_service_provider=lambda: service,
+            invocation_identity=invocation_identity,
+        )
+        loaded = AttachmentStorageService().read(FileUri)
     if loaded is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
@@ -85,7 +154,10 @@ async def attachment_content_action(FileUri: str = Query(...)):
 
 
 @workspace_router.post("/agentengine/api/v1/ListWorkspaceFiles")
-async def list_workspace_files_action(request: WorkspaceListActionRequest):
+async def list_workspace_files_action(
+    request: WorkspaceListActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     response = await _workspace_runtime_request(
         "GET",
         "/_ksadk/workspace/v1/entries",
@@ -93,6 +165,7 @@ async def list_workspace_files_action(request: WorkspaceListActionRequest):
             "path": request.Path,
             "recursive": "true" if request.Recursive else "false",
         },
+        invocation_identity=invocation_identity,
     )
     return _action_response("ListWorkspaceFiles", response.json())
 
@@ -102,6 +175,7 @@ async def upload_workspace_file_action(
     file: UploadFile = File(...),
     AgentId: Optional[str] = Form(None),
     Path: str = Form(...),
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
 ):
     del AgentId
     try:
@@ -120,25 +194,35 @@ async def upload_workspace_file_action(
                 file.content_type or "application/octet-stream",
             )
         },
+        invocation_identity=invocation_identity,
     )
     return _action_response("AddWorkspaceFile", response.json())
 
 
 @workspace_router.post("/agentengine/api/v1/DeleteWorkspaceFile")
-async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
+async def delete_workspace_file_action(
+    request: WorkspaceDeleteActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     response = await _workspace_runtime_request(
         "DELETE",
         f"/_ksadk/workspace/v1/files/{quote(request.Path, safe='/')}",
+        invocation_identity=invocation_identity,
     )
     return _action_response("DeleteWorkspaceFile", response.json())
 
 
 @control_router.post("/agentengine/api/v1/CancelRun")
-async def cancel_run_action(request: CancelRunActionRequest):
+async def cancel_run_action(
+    request: CancelRunActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     executor, launch_context = get_runtime_execution()
     detached = get_state().stream_registry.streams_by_invocation.get(request.InvocationId)
     service = deps.resolve_session_service()
     scoped_session_id = str(request.SessionId or "").strip()
+    if not invocation_identity.is_empty and not scoped_session_id:
+        raise HTTPException(status_code=400, detail="SessionId is required")
     detached_session_id = str(detached.session_id or "").strip() if detached is not None else ""
     if scoped_session_id and detached_session_id and scoped_session_id != detached_session_id:
         raise HTTPException(
@@ -157,16 +241,31 @@ async def cancel_run_action(request: CancelRunActionRequest):
         else None
     )
     if scoped_session_id:
-        await _require_action_session(
-            service,
-            session_id=scoped_session_id,
-            agent_id=request.AgentId,
-            user_id=request.UserId,
-        )
-        if detached is None and handle is None and not await _session_contains_invocation(
-            service,
-            scoped_session_id,
-            request.InvocationId,
+        if invocation_identity.is_empty:
+            await _require_action_session(
+                service,
+                session_id=scoped_session_id,
+                agent_id=request.AgentId,
+                user_id=request.UserId,
+            )
+        else:
+            if not request.AgentId:
+                raise HTTPException(status_code=400, detail="AgentId is required")
+            await require_conversation_session(
+                agent_id=request.AgentId,
+                user_id=str(request.UserId or ""),
+                session_id=scoped_session_id,
+                session_service_provider=lambda: service,
+                invocation_identity=invocation_identity,
+            )
+        if (
+            detached is None
+            and handle is None
+            and not await _session_contains_invocation(
+                service,
+                scoped_session_id,
+                request.InvocationId,
+            )
         ):
             raise HTTPException(
                 status_code=409,
@@ -215,11 +314,13 @@ async def cancel_run_action(request: CancelRunActionRequest):
 async def get_workspace_file_content_action(
     FilePath: str = Query(...),
     AgentId: Optional[str] = Query(None),
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
 ):
     del AgentId
     response = await _workspace_runtime_request(
         "GET",
         f"/_ksadk/workspace/v1/files/{quote(FilePath, safe='/')}",
+        invocation_identity=invocation_identity,
     )
     headers = {}
     for key in ("content-disposition", "last-modified"):
@@ -235,10 +336,16 @@ async def get_workspace_file_content_action(
 
 
 @workspace_router.get("/agentengine/api/v1/ws/{agent_id}/{file_path:path}", include_in_schema=False)
-async def workspace_file_path_route(request: Request, agent_id: str, file_path: str):
+async def workspace_file_path_route(
+    request: Request,
+    agent_id: str,
+    file_path: str,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     response = await _workspace_runtime_request(
         "GET",
         f"/_ksadk/workspace/v1/files/{quote(file_path, safe='/')}",
+        invocation_identity=invocation_identity,
     )
     headers = {}
     for key in ("content-disposition", "last-modified"):
@@ -276,6 +383,7 @@ async def workspace_file_path_route(request: Request, agent_id: str, file_path: 
 async def export_workspace_zip(
     AgentId: Optional[str] = Query(None),
     Path: str = Query("."),
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
 ):
     del AgentId
     dir_path = Path.strip() or "."
@@ -283,10 +391,11 @@ async def export_workspace_zip(
         "GET",
         "/_ksadk/workspace/v1/entries",
         params={"path": dir_path, "recursive": "true"},
+        invocation_identity=invocation_identity,
     )
     data = response.json() if response.status_code == 200 else {}
     entries = data.get("Entries", []) if isinstance(data, dict) else []
-    root = _workspace_root_dir()
+    root = _workspace_root_dir(invocation_identity)
     root_resolved = root.resolve()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

@@ -22,15 +22,15 @@ def _request():
 
 
 class _OkContributor(ContextContributor):
-    def __init__(self, items):
+    def __init__(self, items, *, max_tokens=10000, trust_level="untrusted", failure_mode="skip"):
         self._items = items
         self.capabilities = ContributorCapabilities(
             contributor_id="ok",
-            trust_level="untrusted",
-            max_tokens=10000,
+            trust_level=trust_level,
+            max_tokens=max_tokens,
             timeout_ms=1000,
             cacheability="turn",
-            failure_mode="skip",
+            failure_mode=failure_mode,
         )
 
     async def contribute(self, request):
@@ -122,6 +122,64 @@ def test_contributors_trust_level_never_platform():
     for it in res.items:
         assert it.trust_level != "platform"
         assert not it.required  # Contributor 不得自行声明 required
+
+
+def test_contributor_budget_counts_tokens_instead_of_slicing_by_item_count():
+    items = [_item("too-large", 8), _item("fits", 3), _item("also-fits", 2)]
+
+    res = asyncio.run(
+        run_contributors([_OkContributor(items, max_tokens=5)], _request())
+    )
+
+    assert [item.item_id for item in res.items] == ["fits", "also-fits"]
+    assert sum(item.estimated_tokens for item in res.items) == 5
+    assert res.status["ok"] == "ok"
+    assert any("omitted 1" in warning for warning in res.warnings)
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [
+            ContextItem(
+                item_id="elevated",
+                kind="recalled_memory",
+                content="unsafe",
+                source="t",
+                trust_level="platform",
+                priority=0,
+                estimated_tokens=1,
+            )
+        ],
+        [
+            ContextItem(
+                item_id="required",
+                kind="recalled_memory",
+                content="unsafe",
+                source="t",
+                trust_level="untrusted",
+                priority=0,
+                estimated_tokens=1,
+                required=True,
+            )
+        ],
+        [_item("duplicate", 1), _item("duplicate", 1)],
+    ],
+)
+def test_contributor_invalid_or_privilege_elevating_output_fails_closed(items):
+    res = asyncio.run(run_contributors([_OkContributor(items)], _request()))
+
+    assert res.items == []
+    assert res.status["ok"] == "error"
+    assert res.warnings == ()
+
+
+def test_warn_failure_mode_exposes_a_bounded_diagnostic():
+    res = asyncio.run(run_contributors([_FailingContributor("warn")], _request()))
+
+    assert res.items == []
+    assert res.status["fail"] == "error"
+    assert res.warnings == ("fail: boom",)
 
 
 def test_default_hosted_contributors_include_memory_when_enabled(tmp_path, monkeypatch):

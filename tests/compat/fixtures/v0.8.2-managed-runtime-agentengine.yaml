@@ -1,0 +1,9 @@
+artifact_type: ManagedRuntime
+framework: codex
+model: fixture-codex-model
+name: release-082-managed
+prompt: Preserve the release 0.8.2 ManagedRuntime role.
+runtime:
+  name: codex
+  version: 0.147.0
+version: 1.0.0

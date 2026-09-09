@@ -1,0 +1,29 @@
+{
+  "name": "ksadk-bridge-e2e",
+  "version": "0.1.0",
+  "description": "Deterministic local plugin for the KsADK Codex bridge E2E.",
+  "author": {
+    "name": "KsADK"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "ksadk",
+    "e2e"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "KsADK Bridge E2E",
+    "shortDescription": "Exercises the real Codex plugin lifecycle.",
+    "longDescription": "A local fixture used only to verify that KsADK delegates plugin lifecycle operations to Codex App Server.",
+    "developerName": "KsADK",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Run the KsADK bridge check."
+    ],
+    "brandColor": "#2F6BFF"
+  },
+  "mcpServers": "./.mcp.json"
+}

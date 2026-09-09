@@ -31,6 +31,8 @@ def test_studio_serves_the_react_shell_and_resolvable_production_assets(
         r'<link rel="stylesheet"[^>]+href="/static/assets/[^"]+\.css"',
         page.text,
     )
+    assert "?v=" not in page.text
+    assert page.headers["cache-control"] == "no-store"
     assert assets
     assert {path: response.status_code for path, response in assets.items()} == {
         path: 200 for path in assets

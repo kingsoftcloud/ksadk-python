@@ -129,7 +129,7 @@ e2b==2.24.0
 1. **安装依赖**
 
 ```bash
-cd 0611agent-xiayu
+cd langgraph-toolsets-demo
 uv venv
 uv pip install -r requirements.txt
 ```
@@ -174,11 +174,11 @@ space 下有哪些 skill?
 ## 项目结构
 
 <Files>
-  <Folder name="0611agent-xiayu/" defaultOpen>
+  <Folder name="langgraph-toolsets-demo/" defaultOpen>
     <File name="agentengine.yaml" />
     <File name="requirements.txt" />
     <File name=".env.example" />
-    <Folder name="0611agent/">
+    <Folder name="toolsets_agent/">
       <File name="agent.py" />
       <File name="__init__.py" />
     </Folder>
@@ -194,10 +194,10 @@ space 下有哪些 skill?
 `agentengine.yaml` 声明框架与入口,AgentEngine 据此加载 `root_agent`:
 
 ```yaml title="agentengine.yaml"
-name: 0611agent-xiayu
+name: langgraph-toolsets-demo
 version: "1.0.0"
 framework: langgraph
-entry_point: 0611agent-xiayu/agent.py
+entry_point: toolsets_agent/agent.py
 agent_variable: root_agent
 ```
 
@@ -233,13 +233,13 @@ agent_variable: root_agent
   <Card title="ksadk-samples" href="https://github.com/kingsoftcloud/ksadk-samples">
     本 demo 的完整源码与更多示例(占位链接,以仓库实际地址为准)。
   </Card>
-  <Card title="构建 LangGraph 智能体" href="../langgraph-agent">
+  <Card title="构建 LangGraph 智能体" href="/cn/docs/framework/tutorials/langgraph-agent">
     从零开始的最小 LangGraph agent,适合先跑通基础链路。
   </Card>
-  <Card title="框架接入" href="../../guides/frameworks">
+  <Card title="框架接入" href="/cn/docs/framework/guides/frameworks">
     框架适配与 runner 加载边界的参考。
   </Card>
-  <Card title="会话与文件" href="../../../references/runtime-sessions-files">
+  <Card title="会话与文件" href="/cn/docs/references/runtime-sessions-files">
     session、上传和 workspace 文件的运行时语义。
   </Card>
 </Cards>

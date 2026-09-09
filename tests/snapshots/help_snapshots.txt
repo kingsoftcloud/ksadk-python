@@ -18,9 +18,11 @@ AgentEngine CLI
   agentengine hermes     Hermes Agent 资源管理
   agentengine init       创建新项目
   agentengine launch     一键构建+部署
+  agentengine managed-runtime 启动平台托管的 YAML Agent
   agentengine mcp        MCP 资源管理
   agentengine observe    导出本地 Agent 观测数据
   agentengine openclaw   OpenClaw 资源管理
+  agentengine plugin     插件验证、安装与启停管理
   agentengine run        运行 Agent
   agentengine studio     启动本地 Agent 构建控制台
   agentengine version    Agent 版本管理

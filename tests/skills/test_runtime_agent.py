@@ -75,9 +75,7 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     assert code == 0
     assert "workflow=使用 demo-skill build something" in out
     assert "loaded_skills=demo-skill" in out
-    assert (
-        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
     event_types = {
         json.loads(line)["event_type"]
         for line in event_path.read_text(encoding="utf-8").splitlines()
@@ -263,10 +261,8 @@ def test_runtime_agent_downloads_only_prompted_remote_skill(monkeypatch, tmp_pat
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/sk-demo.zip"]
-    assert (
-        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
-    assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    assert not list((tmp_path / "cache").glob("*/extracted/unused-skill/SKILL.md"))
 
 
 def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_name(
@@ -335,10 +331,8 @@ def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_na
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/sk-demo.zip"]
-    assert (
-        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
-    assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    assert not list((tmp_path / "cache").glob("*/extracted/unused-skill/SKILL.md"))
 
 
 def test_runtime_agent_loads_all_public_skills_without_allowlist(
@@ -404,17 +398,8 @@ def test_runtime_agent_loads_all_public_skills_without_allowlist(
         "https://download.example/premade-pdf.zip",
         "https://download.example/premade-weather.zip",
     ]
-    assert (
-        tmp_path / "cache" / f"premade-pdf__{pdf_digest}" / "extracted" / "pdf" / "SKILL.md"
-    ).exists()
-    assert (
-        tmp_path
-        / "cache"
-        / f"premade-weather__{weather_digest}"
-        / "extracted"
-        / "weather"
-        / "SKILL.md"
-    ).exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/pdf/SKILL.md"))) == 1
+    assert len(list((tmp_path / "cache").glob("*/extracted/weather/SKILL.md"))) == 1
 
 
 def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_path: Path, capsys):
@@ -476,15 +461,8 @@ def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_pat
     assert code == 0
     assert "loaded_skills=weather" in out
     assert download_urls == ["https://download.example/premade-weather.zip"]
-    assert not (tmp_path / "cache" / f"premade-pdf__{pdf_digest}").exists()
-    assert (
-        tmp_path
-        / "cache"
-        / f"premade-weather__{weather_digest}"
-        / "extracted"
-        / "weather"
-        / "SKILL.md"
-    ).exists()
+    assert not list((tmp_path / "cache").glob("*/extracted/pdf/SKILL.md"))
+    assert len(list((tmp_path / "cache").glob("*/extracted/weather/SKILL.md"))) == 1
 
 
 def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
@@ -567,10 +545,8 @@ def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/user.zip"]
-    assert (
-        tmp_path / "cache" / "sk-user-demo__sv-user-v1" / "extracted" / "demo-skill" / "SKILL.md"
-    ).exists()
-    assert not (tmp_path / "cache" / f"premade-demo__{public_digest}").exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    assert [p.read_bytes() for p in (tmp_path / "cache").glob("*/archive.zip")] == [user_archive]
 
 
 def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowed(
@@ -627,14 +603,7 @@ def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowe
     assert "skill_warnings=" in out
     assert "ContentHash mismatch for legacy-skill" in out
     assert download_urls == ["https://download.example/legacy.zip"]
-    assert (
-        tmp_path
-        / "cache"
-        / "unverified-sk-legacy__sv-legacy-v1"
-        / "extracted"
-        / "legacy-skill"
-        / "SKILL.md"
-    ).exists()
+    assert len(list((tmp_path / "cache").glob("*/extracted/legacy-skill/SKILL.md"))) == 1
 
 
 def test_runtime_agent_without_service_still_reports_workflow(monkeypatch, capsys):
@@ -816,7 +785,7 @@ def test_text_output_rejects_paths_outside_workdir_and_non_text_artifacts(tmp_pa
     assert truncated is False
 
 
-def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_path: Path):
+def test_runtime_agent_returns_instructions_for_instruction_only_skill(tmp_path: Path):
     skill_root = tmp_path / "skills" / "instruction-only"
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(
@@ -832,11 +801,12 @@ def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_pa
         event_sink=event_sink,
     )
 
-    assert result.status == "skipped"
+    assert result.status == "instructions"
     assert result.selected_skills == ["instruction-only"]
     assert result.loaded_skills == ["instruction-only"]
-    assert result.warnings == ["No loaded skill exposes an executable workflow entrypoint."]
-    assert event_sink.events[0].skill_ref is None
+    assert result.executed_skill == "instruction-only"
+    assert result.instructions == "# Demo\n"
+    assert any("instruction-only" in w for w in result.warnings)
 
 
 def test_runtime_executor_does_not_expose_event_envelope_to_skill_command(
@@ -892,3 +862,98 @@ def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypat
     assert result.executed_skill == "web-artifacts-builder"
     assert result.output_files == [str(workdir / "demo-artifact" / "bundle.html")]
     assert [command["exit_code"] for command in result.commands] == [0, 0]
+
+
+def test_parse_workflow_result_extracts_status_and_instructions():
+    """parse_workflow_result returns the full workflow_result= JSON payload."""
+    from ksadk.skills.runtime.base import parse_workflow_result
+
+    stdout = "some line\nworkflow_result=" + json.dumps({
+        "status": "ok",
+        "executed_skill": "demo-skill",
+        "instructions": "# Demo\n",
+        "output_files": ["result.txt"],
+    }) + "\nmore output\n"
+    result = parse_workflow_result(stdout)
+    assert result.workflow_status == "ok"
+    assert result.executed_skill == "demo-skill"
+    assert result.instructions == "# Demo\n"
+    assert list(result.output_files) == ["result.txt"]
+
+
+def test_parse_workflow_result_returns_empty_on_no_result_line():
+    """parse_workflow_result returns an empty result when no workflow_result= line."""
+    from ksadk.skills.runtime.base import parse_workflow_result
+
+    result = parse_workflow_result("just stdout\nno workflow result here\n")
+    assert result.output_files == ()
+    assert result.workflow_status == ""
+
+
+def test_parse_workflow_result_returns_empty_on_invalid_json():
+    """parse_workflow_result returns an empty result when JSON is malformed."""
+    from ksadk.skills.runtime.base import parse_workflow_result
+
+    result = parse_workflow_result("workflow_result={invalid json}\n")
+    assert result.output_files == ()
+    assert result.workflow_status == ""
+
+
+def test_parse_output_files_delegates_to_parse_workflow_result():
+    """parse_output_files extracts the output_files field from workflow_result."""
+    from ksadk.skills.runtime.base import parse_output_files
+
+    stdout = "workflow_result=" + json.dumps({
+        "output_files": ["a.txt", "b.txt"],
+    }) + "\n"
+    files = parse_output_files(stdout)
+    assert files == ["a.txt", "b.txt"]
+
+
+def test_skill_runtime_result_to_dict_includes_new_fields():
+    """SkillRuntimeResult.to_dict includes workflow_status, executed_skill, instructions."""
+    from ksadk.skills.runtime.base import SkillRuntimeResult
+
+    result = SkillRuntimeResult(
+        runtime_id="local:test",
+        exit_code=0,
+        stdout="ok",
+        stderr="",
+        workflow_status="ok",
+        executed_skill="demo-skill",
+        instructions="# Demo\n",
+    )
+    d = result.to_dict()
+    assert d["workflow_status"] == "ok"
+    assert d["executed_skill"] == "demo-skill"
+    assert d["instructions"] == "# Demo\n"
+    assert result.ok is True
+
+
+def test_has_instructions_detects_instruction_only_skill(tmp_path: Path):
+    """_has_instructions returns True for skills with body but no scripts dir."""
+    from ksadk.skills.runtime.executor import _has_instructions
+
+    skill_root = tmp_path / "skills" / "instruction-only"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: instruction-only\ndescription: Test\n---\n# Instructions\n",
+        encoding="utf-8",
+    )
+    skill = load_local_skill(skill_root)
+    assert _has_instructions(skill) is True
+
+
+def test_has_instructions_returns_false_for_skill_with_scripts(tmp_path: Path):
+    """_has_instructions returns False when a scripts/ dir exists."""
+    from ksadk.skills.runtime.executor import _has_instructions
+
+    skill_root = tmp_path / "skills" / "scripted"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: scripted\ndescription: Test\n---\n# Has scripts\n",
+        encoding="utf-8",
+    )
+    skill = load_local_skill(skill_root)
+    assert _has_instructions(skill) is False

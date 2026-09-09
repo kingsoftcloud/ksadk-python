@@ -844,6 +844,57 @@ async def test_real_tools_channel_maps_tool_result_with_native_call_id() -> None
 
 
 @pytest.mark.asyncio
+async def test_repeated_tool_call_id_creates_distinct_items_in_one_run() -> None:
+    """Break caught: resumed graph reuses a call id and fails canonical reduction."""
+
+    @tool
+    def lookup(q: str) -> str:
+        """Return a deterministic lookup result."""
+
+        return f"result:{q}"
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("tools", ToolNode([lookup]))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    graph = builder.compile(transformers=[ToolCallTransformer])
+    call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "lookup",
+                "args": {"q": "x"},
+                "id": "screen_evidence",
+                "type": "tool_call",
+            }
+        ],
+    )
+    first = [
+        event
+        for event in await _capture(graph, {"messages": [call]})
+        if event["method"] == "tools"
+    ]
+    repeated = copy.deepcopy(first)
+    for index, event in enumerate(repeated, start=100):
+        event["seq"] = index
+        event["event_id"] = f"resume-event-{index}"
+
+    mapped = _map_all([*first, *repeated])
+    reducer = StreamReducer()
+    for event in mapped:
+        reducer.apply(event)
+
+    completed = [
+        event
+        for event in mapped
+        if isinstance(event, ItemCompleted) and event.item_kind == "tool_result"
+    ]
+    assert len(completed) == 2
+    assert completed[0].item_id != completed[1].item_id
+    assert all(event.snapshot.parts[0].call_id == "screen_evidence" for event in completed)
+
+
+@pytest.mark.asyncio
 async def test_real_values_and_updates_channels_reduce_as_typed_data() -> None:
     """Break caught: graph state channels are flattened into message text."""
 

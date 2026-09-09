@@ -81,8 +81,67 @@ async def test_final_autoclose_preserves_stream_order_and_sequence_order() -> No
 
     assert [event.seq for event in events] == sorted(event.seq for event in events)
     completed = [event for event in events if isinstance(event, ItemCompleted)]
-    assert [event.item_kind for event in completed] == ["message", "reasoning", "message"]
+    assert [event.item_kind for event in completed] == ["reasoning", "message"]
     assert events[-1].event_type == "run.completed"
+
+
+@pytest.mark.asyncio
+async def test_text_deltas_and_final_snapshot_share_one_final_answer_item() -> None:
+    """Fallback runner output must stream and then complete the same answer item."""
+
+    _, events = await _events_for(
+        [
+            {"type": "reasoning_delta", "delta": "分析"},
+            {"type": "text_delta", "delta": "你"},
+            {"type": "text_delta", "delta": "好"},
+            {"type": "final", "output": "你好"},
+        ]
+    )
+
+    message_starts = [
+        event
+        for event in events
+        if isinstance(event, ItemStarted) and event.item_kind == "message"
+    ]
+    message_updates = [
+        event
+        for event in events
+        if isinstance(event, ItemUpdated) and event.item_kind == "message"
+    ]
+    message_completions = [
+        event
+        for event in events
+        if isinstance(event, ItemCompleted) and event.item_kind == "message"
+    ]
+
+    assert len(message_starts) == 1
+    assert message_starts[0].phase == "final_answer"
+    assert [event.update.text for event in message_updates] == ["你", "好"]
+    assert len(message_completions) == 1
+    assert message_completions[0].item_id == message_starts[0].item_id
+    assert message_completions[0].snapshot.parts == (
+        TextContent(part_id="text-0", text="你好"),
+    )
+    assert events[-1].output_refs[0].item_id == message_starts[0].item_id
+
+
+@pytest.mark.asyncio
+async def test_explicit_commentary_remains_distinct_from_final_answer() -> None:
+    _, events = await _events_for(
+        [
+            {"type": "commentary_delta", "delta": "先核对数据"},
+            {"type": "text_delta", "delta": "最终结论"},
+            {"type": "final", "output": "最终结论"},
+        ]
+    )
+
+    message_starts = [
+        event
+        for event in events
+        if isinstance(event, ItemStarted) and event.item_kind == "message"
+    ]
+    assert [event.phase for event in message_starts] == ["commentary", "final_answer"]
+    assert len({event.item_id for event in message_starts}) == 2
 
 
 @pytest.mark.asyncio
@@ -124,6 +183,39 @@ async def test_runner_projects_reasoning_tool_usage_and_message_as_v2_items() ->
 
 
 @pytest.mark.asyncio
+async def test_repeated_tool_call_id_creates_distinct_chunk_path_items() -> None:
+    """Break caught: resumed graph repeats a stage call id and fails reduction."""
+
+    _, events = await _events_for(
+        [
+            {"type": "tool_start", "call_id": "fetch_sources", "name": "web.fetch"},
+            {
+                "type": "tool_end",
+                "call_id": "fetch_sources",
+                "name": "web.fetch",
+                "output": {"attempt": 1},
+            },
+            {"type": "tool_start", "call_id": "fetch_sources", "name": "web.fetch"},
+            {
+                "type": "tool_end",
+                "call_id": "fetch_sources",
+                "name": "web.fetch",
+                "output": {"attempt": 2},
+            },
+            {"type": "final", "output": "done"},
+        ]
+    )
+
+    tool_items = [
+        event
+        for event in events
+        if isinstance(event, ItemCompleted) and event.item_kind in {"tool_call", "tool_result"}
+    ]
+    assert len(tool_items) == 4
+    assert len({event.item_id for event in tool_items}) == 4
+
+
+@pytest.mark.asyncio
 async def test_legacy_model_boundary_chunks_do_not_invent_v2_protocol_facts() -> None:
     """The v2 contract has items, not synthetic turn/step/model-call records."""
 
@@ -144,7 +236,7 @@ async def test_legacy_model_boundary_chunks_do_not_invent_v2_protocol_facts() ->
         if isinstance(event, (ItemStarted, ItemUpdated, ItemCompleted))
         and event.item_kind == "message"
     }
-    assert len(message_ids) == 2  # commentary + final answer, not fake model-call ids
+    assert len(message_ids) == 1  # one final-answer item, not fake model-call ids
     assert not any(
         event.event_type.startswith(("turn.", "step.", "model.call.")) for event in events
     )

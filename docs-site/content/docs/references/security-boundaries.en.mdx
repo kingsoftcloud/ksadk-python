@@ -73,9 +73,10 @@ preview document can exfiltrate local data or call private services.
 
 ## Static UI Boundary
 
-`ksadk-python` should include the static UI bundle required by `agentengine web`.
-Editable UI source belongs in the independent `ksadk-web` repository once the
-public import is approved.
+`ksadk-python` should include the reviewed static UI bundles required by
+`agentengine web` and Studio. Hosted/local Web UI source belongs in the
+independent `ksadk-web` repository; editable Studio React / TypeScript source
+does not enter the public repository or Python artifacts.
 
 The Python wheel should not include:
 
@@ -94,6 +95,9 @@ assets. See [Web UI Repository](/en/docs/framework/guides/web-ui-source).
     `tests/test_runtime_common_packaging.py` during `make public-build-check`.
   - The wheel must contain `ksadk/server/static/index.html`, written by
     `make sync-ksadk-web-static`; a missing file fails the build directly.
+  - The wheel must also contain `ksadk/studio/static/index.html`, while the
+    public repository, sdist, and wheel reject editable Studio React /
+    TypeScript source.
   - Real `.env` / `.env.local` does not enter Code / Container / MCP build
     contexts; only `.env.example` / `.env.sample` / `.env.template` are kept.
     Runtime env is passed into the deployment payload `env_vars` via
