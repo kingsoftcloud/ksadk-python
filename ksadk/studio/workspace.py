@@ -48,12 +48,27 @@ class Workspace:
                     "metadata": {"name": self.root.name or "agentkit-workspace"},
                 },
             )
-        gitignore = self.root / ".gitignore"
-        wanted = ".agentkit/secrets.env\n"
+        self.ignore_private_configuration()
+
+    def ignore_private_configuration(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        gitignore = self.resolve(".gitignore")
         existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-        if ".agentkit/secrets.env" not in existing.splitlines():
+        missing = [
+            name
+            for name in (
+                ".agentkit/config.yaml",
+                ".agentkit/settings.yaml",
+                ".agentkit/secrets.env",
+            )
+            if name not in existing.splitlines()
+        ]
+        if missing:
             gitignore.write_text(
-                (existing + ("\n" if existing and not existing.endswith("\n") else "") + wanted),
+                existing
+                + ("\n" if existing and not existing.endswith("\n") else "")
+                + "\n".join(missing)
+                + "\n",
                 encoding="utf-8",
             )
 

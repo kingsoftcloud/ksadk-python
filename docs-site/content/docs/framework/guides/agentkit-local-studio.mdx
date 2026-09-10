@@ -31,7 +31,11 @@ agentengine studio ./my-agent-workspace --port 8081 --no-open
 agentengine studio ./my-agent-workspace --env-file ./model.env
 ```
 
-`--env-file` 只读取 `OPENAI_API_BASE`、`OPENAI_API_KEY` 和 `OPENAI_MODEL_NAME`。已有的进程环境变量优先，不会被该文件覆盖。Codex 项目需要 Responses-to-Chat 兼容转换时，可使用 `--codex-proxy auto`；完整选项见[命令行参考](/cn/docs/cli#agentengine-studio)。
+直接运行 `ksadk studio` 后，在「设置 → 云端连接」填写控制面地址、区域和 AK/SK，模型凭证也在设置中管理。保存后立即用于后续运行，重启后保留；不需要另建 `studio.env`。正在运行时请先等待任务结束再保存，切换账号时同时填写对应 AK/SK。
+
+Studio 将设置与凭证统一保存到工作区 `.agentkit/config.yaml`（仅当前用户可读写，并自动加入 `.gitignore`）。旧 `settings.yaml` / `secrets.env` 首次读取时自动迁移，原文件保留但不再写入；已有 `.env` 不会被改写。普通 CLI 命令也会读取当前工作区的统一配置。
+
+优先级为：显式 `--env-file` > 工作区已保存配置 > 启动环境 > 工作区 `.env`。默认启动仍兼容当前目录 `.env`，设置页显示地址与账号来源。显式文件只覆盖本次进程，不自动持久化，允许模型 `OPENAI_*` 及云端 `KSYUN_*` / `KS3_*` / `AGENTENGINE_*` 白名单字段。显式 `--codex-proxy` 同样优先于已保存值。
 
 <Callout type="warning" title="本地控制端，不是多人 SaaS">
   Studio 的界面和凭证代理仍运行在本机。它支持云端生命周期管理，但不提供多人共享工作区；浏览器不会接触 AK/SK，所有云端请求由本地服务签名后发送给 AgentEngine Server。
@@ -98,3 +102,9 @@ Studio 的工作区数据和会话是本地开发状态，不是需要提交的�
 安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含经过审计的生产静态资源。公开仓保存 Studio 的 React / TypeScript 源码与依赖锁；构建门禁编译并审计静态资源。sdist 与 wheel 携带这些页面资源，生成文件不提交 Git。
 
 详见[构建与打包](./build-and-package.mdx)和[Web UI 源码与发布契约](./web-ui-source.mdx)。
+
+### 开发安装与页面版本核对
+
+`pip install -e` 只关联 Python 源码，不会自动编译前端。在 SDK 仓库执行 `make build-frontend` 后再重启 `ksadk studio`。wheel 用户无需执行前端构建。
+
+「设置 → 关于」显示当前服务提供的 JS/CSS 入口文件名，可以用文件名中的构建哈希核对包和页面。升级后先停止旧 Studio 进程，在激活的环境中执行 `uv pip install -U --no-cache --reinstall-package ksadk 'ksadk[all]'`，再用该环境的 `ksadk studio` 启动；浏览器使用强制刷新（macOS：Cmd+Shift+R，Windows/Linux：Ctrl+Shift+R）。如果仍旧，核对 `uv pip show ksadk`、CLI 路径与入口文件名，不能仅凭背景颜色判断安装失败。

@@ -25,5 +25,5 @@ test("settings schema accepts cloud account fields with bounded length", () => {
 test("settings save only submits non-empty cloud account values", () => {
   // 留空字段不进 payload(后端按增量合并,空提交会清掉已存值)
   assert.match(overlay, /if \(values\.cloudAccessKey\.trim\(\)\) payload\.cloudAccessKey/);
-  assert.match(overlay, /if \(values\.cloudAccountId\.trim\(\)\) payload\.cloudAccountId/);
+  assert.match(overlay, /values\.cloudAccountId\.trim\(\) && \(!payload\.cloudAccessKey \|\| settingsForm\.formState\.dirtyFields\.cloudAccountId\)/);
 });

@@ -103,7 +103,7 @@ def register_resource_connection_routes(app: FastAPI, studio: Any) -> None:
         if authority is None or not access_key or not secret_key:
             raise StudioError(
                 "RESOURCE_CONNECTION_BOOTSTRAP_UNAVAILABLE",
-                "请先通过 Studio env-file 配置云端签名凭证和控制面地址",
+                "请先在设置的云端连接中填写账号凭据和控制面地址",
                 status_code=503,
             )
         tenant_ref, principal_ref = await asyncio.to_thread(
