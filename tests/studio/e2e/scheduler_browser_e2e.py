@@ -180,7 +180,7 @@ def _assert_scheduler_lifecycle(
     # Create and edit from the global Scheduler product surface first. This is
     # intentionally a browser route, not repository setup hidden in the test.
     page.goto(f"{base_url}/#/automations", wait_until="domcontentloaded")
-    expect(page.get_by_role("heading", name="让重复的工作，按时完成")).to_be_visible()
+    expect(page.get_by_role("heading", name="自动化", exact=True, level=1)).to_be_visible()
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
 
     page.get_by_role("button", name="新建定时任务", exact=True).click()

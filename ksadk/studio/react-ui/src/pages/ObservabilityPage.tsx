@@ -5,13 +5,14 @@ import {
 } from "lucide-react";
 import { allExpanded, collapseAllNested, JsonView } from "react-json-view-lite";
 import { showToast } from "../components/Toast";
+import { MoreActionsMenu } from "../components/MoreActionsMenu";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
 import {
   StudioDataTable,
   type StudioDataColumn,
 } from "../components/ui/StudioDataTable";
 import { StudioSelect } from "../components/ui/StudioSelect";
-import { PageHeaderActions, PageHeaderTools } from "../components/PageHeaderPortal";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
 import { TrajectoryDetail, TrajectoryView } from "./TrajectoryView";
 import type { TrajectoryRecord } from "./trajectory";
@@ -366,12 +367,12 @@ function KvList({ values }: { values: Record<string, any> }) {
 
 type DetailTab = "spans" | "trajectory" | "attributes" | "events" | "resource" | "raw";
 const DETAIL_TABS: Array<{ id: DetailTab; label: string }> = [
-  { id: "spans", label: "Spans" },
+  { id: "spans", label: "概览" },
   { id: "trajectory", label: "轨迹" },
-  { id: "attributes", label: "Attributes" },
-  { id: "events", label: "Events" },
-  { id: "resource", label: "Resource" },
-  { id: "raw", label: "Raw OTLP" },
+  { id: "attributes", label: "属性" },
+  { id: "events", label: "事件" },
+  { id: "resource", label: "资源" },
+  { id: "raw", label: "原始数据" },
 ];
 
 const TRACE_PAGE_SIZE = 10;
@@ -399,8 +400,10 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const [traceTotal, setTraceTotal] = useState(0);
   const [traceLoading, setTraceLoading] = useState(true);
   const [traceError, setTraceError] = useState("");
+  const [detailError, setDetailError] = useState("");
   const requestSeq = useRef(0);
   const listRequestSeq = useRef(0);
+  const previousRefreshTick = useRef(refreshTick);
 
   useEffect(() => {
     apiFetch("/api/v1/agents?limit=100").then(r => r.json()).then(d => {
@@ -408,21 +411,34 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     }).catch(() => {});
   }, [refreshTick]);
 
-  const openTrace = useCallback(async (traceId: string) => {
+  const openTrace = useCallback(async (traceId: string, preserveSelection = false) => {
     const seq = ++requestSeq.current;
     try {
-      const trace: TraceDetail = await apiFetch(`/api/v1/traces/${encodeURIComponent(traceId)}`).then(r => r.json());
+      const response = await apiFetch(`/api/v1/traces/${encodeURIComponent(traceId)}`);
+      if (!response.ok) throw new Error(`调用详情加载失败（${response.status}），请重试。`);
+      const trace: TraceDetail = await response.json();
       if (requestSeq.current !== seq) return;
+      setDetailError("");
       setActiveTrace(trace);
-      setActiveSpanId(trace.rootSpanId || trace.spans?.[0]?.spanId || null);
-      setTab("spans");
-      setSelectedTrajectory(null);
+      setActiveSpanId(current => preserveSelection && trace.spans?.some(span => span.spanId === current) ? current : trace.rootSpanId || trace.spans?.[0]?.spanId || null);
       setRawOtlp(null);
-      setRawExpanded(true);
-      setExpanded(false);
-      setDetailCollapsed(false);
-    } catch { /* 保持当前选择 */ }
+      if (!preserveSelection) {
+        setTab("spans");
+        setSelectedTrajectory(null);
+        setRawExpanded(true);
+        setExpanded(false);
+        setDetailCollapsed(false);
+      }
+    } catch (error) {
+      if (requestSeq.current === seq) setDetailError(error instanceof Error ? error.message : "调用详情加载失败，请重试。");
+    }
   }, []);
+
+  useEffect(() => {
+    if (previousRefreshTick.current === refreshTick) return;
+    previousRefreshTick.current = refreshTick;
+    if (activeTrace?.traceId) void openTrace(activeTrace.traceId, true);
+  }, [activeTrace?.traceId, openTrace, refreshTick]);
 
   const loadTracePage = useCallback(async (cursor: string | null) => {
     const seq = ++listRequestSeq.current;
@@ -473,11 +489,13 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   useEffect(() => {
     if (tab !== "raw" || !activeTrace || rawOtlp) return;
     const traceId = activeTrace.traceId;
+    let cancelled = false;
     setRawLoading(true);
     apiFetch(`/api/v1/traces/${encodeURIComponent(traceId)}/otlp`)
-      .then(r => r.json())
-      .then(d => { setRawOtlp(d); setRawLoading(false); })
-      .catch(() => setRawLoading(false));
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(d => { if (!cancelled) { setRawOtlp(d); setRawLoading(false); } })
+      .catch(() => { if (!cancelled) setRawLoading(false); });
+    return () => { cancelled = true; };
   }, [tab, activeTrace, rawOtlp]);
 
   const activeSpan = activeTrace?.spans?.find(s => s.spanId === activeSpanId) || null;
@@ -530,12 +548,14 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const traceColumns = useMemo<StudioDataColumn<TraceSummary>[]>(() => [
     {
       id: "status",
+      className: "trace-column--status",
       header: "状态",
       width: 130,
       cell: trace => <span className={`trace-table-status ${trace.status}`} title={trace.status}><span className={`trace-list-status ${trace.status}`} />{statusLabel(trace.status)}</span>,
     },
     {
       id: "identity",
+      className: "trace-column--identity",
       header: "Agent / Run",
       minWidth: 270,
       cell: trace => {
@@ -549,11 +569,11 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         );
       },
     },
-    { id: "startedAt", header: "开始时间", minWidth: 140, cell: trace => formatDate(trace.startedAt) },
-    { id: "duration", header: "耗时", width: 110, cell: trace => formatDuration(trace.durationMs) },
-    { id: "model", header: "模型", minWidth: 140, cell: trace => trace.model || "-" },
-    { id: "tokens", header: "Token", width: 110, cell: trace => tokenUsageListLabel(trace) },
-    { id: "spans", header: "Span", width: 80, cell: trace => trace.spanCount || 0 },
+    { id: "startedAt", className: "trace-column--startedAt", header: "开始时间", minWidth: 140, cell: trace => formatDate(trace.startedAt) },
+    { id: "duration", className: "trace-column--duration", header: "耗时", width: 110, cell: trace => formatDuration(trace.durationMs) },
+    { id: "model", className: "trace-column--model", header: "模型", minWidth: 140, cell: trace => trace.model || "-" },
+    { id: "tokens", className: "trace-column--tokens", header: "Token", width: 110, cell: trace => tokenUsageListLabel(trace) },
+    { id: "spans", className: "trace-column--spans", header: "Span", width: 80, cell: trace => trace.spanCount || 0 },
     {
       id: "actions",
       header: <span className="sr-only">操作</span>,
@@ -665,7 +685,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       data-layout="workbench"
       data-scroll-mode="workbench"
     >
-      <PageHeaderTools>
+      {!activeTrace && <div className="trace-query-tools">
         <div className="search-field header-search-field">
           <Search size={14} />
           <input type="search" aria-label="搜索 Trace、Run 或 Session" placeholder="搜索 Trace、Run 或 Session" value={search} onChange={e => setSearch(e.target.value)} />
@@ -674,7 +694,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
           <button type="button" className={range === "24h" ? "selected" : ""} onClick={() => setRange("24h")}>24 小时</button>
           <button type="button" className={range === "7d" ? "selected" : ""} onClick={() => setRange("7d")}>7 天</button>
         </div>
-      </PageHeaderTools>
+      </div>}
       {activeTrace && <PageHeaderActions>
         <button className="button tertiary" type="button" onClick={() => void exportSessionLog()}>
           <Archive size={15} /><span>导出 Session Log</span>
@@ -682,16 +702,22 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         <button className="button tertiary" type="button" onClick={() => {
           requestSeq.current += 1;
           setActiveTrace(null);
+          setDetailError("");
           setActiveSpanId(null);
           setExpanded(false);
           setDetailCollapsed(false);
         }}>
           <ArrowLeft size={15} /><span>返回 Trace 列表</span>
         </button>
+        <MoreActionsMenu label="调用详情操作" items={[
+          { label: "复制 traceparent", onSelect: () => void copyTraceparent() },
+          { label: "复制 Raw OTLP", onSelect: () => void copyRawOtlp() },
+        ]} />
       </PageHeaderActions>}
 
       <div className="data-page-body observability-body">
-        <OverviewSection overview={overview} range={range} />
+        {detailError && <p className="studio-field-error" role="alert">{detailError}</p>}
+        {!activeTrace && <OverviewSection overview={overview} range={range} />}
 
         {!activeTrace && <div className="trace-toolbar" aria-label="Trace 筛选">
         <StudioSelect
@@ -718,7 +744,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         />
         </div>}
 
-        {activeTrace && <section className="stat-strip" aria-label="Trace 指标">
+        {activeTrace && <section className="stat-strip compact-summary" aria-label="Trace 指标">
         <div>
           <span>Trace 状态</span>
           <strong>{activeTrace ? statusLabel(activeTrace.status) : "未选择"}</strong>
@@ -802,9 +828,6 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
               <strong>{activeTrace ? `${activeTraceAgent?.name || activeTrace.agentId || "Agent"} · ${activeTrace.runId || "Run"}` : "选择一条 Trace"}</strong>
               <span className="mono">{activeTrace?.traceId || "-"}</span>
             </div>
-            <button className="button tertiary small" type="button" disabled={!activeTrace} onClick={copyTraceparent}>
-              <Copy size={14} /><span>复制 traceparent</span>
-            </button>
             {detailCollapsed && (
               <button className="button secondary small trace-detail-reopen" type="button" onClick={() => setDetailCollapsed(false)}>
                 <ChevronUp size={14} /><span>展开右侧详情</span>
@@ -860,9 +883,6 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
             <div className="trace-detail-actions">
               {!detailCollapsed && (
                 <>
-                  <button className="button tertiary small" type="button" disabled={!activeTrace} onClick={copyRawOtlp}>
-                    <Copy size={14} /><span>复制 Raw OTLP</span>
-                  </button>
                   <button
                     className="button tertiary small trace-detail-expand"
                     type="button"

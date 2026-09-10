@@ -23,5 +23,5 @@ test("the Studio shell retains responsive session navigation", () => {
   assert.match(source, /chat-session-mobile-trigger/);
   assert.match(source, /chat-session-mobile-close/);
   assert.match(source, /aria-expanded=\{sessionPanelOpen\}/);
-  assert.match(source, /<h1>\{agentName\}<\/h1>/);
+  assert.match(source, /<h1>\{conversationTitle\}<\/h1>/);
 });

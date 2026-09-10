@@ -89,7 +89,7 @@ function OccurrenceHistory({ items, taskNames, agentNames }: {
               <div><dt>Command</dt><dd>{item.commandId || "尚未接收"}</dd></div>
               <div><dt>Session</dt><dd>{item.sessionId}</dd></div>
               <div><dt>Run</dt><dd>{item.runId || "尚未绑定"}</dd></div>
-            </dl></details>
+            </dl>
             {transitions.length > 0 && (
               <ol className="automation-timeline" aria-label={`${item.occurrenceId} 状态时间线`}>
                 {transitions.map((transition, index) => (
@@ -101,7 +101,9 @@ function OccurrenceHistory({ items, taskNames, agentNames }: {
                 ))}
               </ol>
             )}
-            {(item.errorCode || item.detail) && <div className="automation-diagnosis"><strong>{diagnosticTitle(item)}</strong><span>{diagnosticText(item.detail) || "—"}</span></div>}
+            {item.detail && !item.errorCode && item.state === "succeeded" && <p className="automation-execution-note">{diagnosticText(item.detail)}</p>}
+            </details>
+            {(item.errorCode || (item.detail && item.state !== "succeeded")) && <div className="automation-diagnosis" data-state={occurrenceStateTone(item.state)}><strong>{diagnosticTitle(item)}</strong><span>{diagnosticText(item.detail) || "—"}</span></div>}
           </article>
         );
       })}
@@ -109,13 +111,14 @@ function OccurrenceHistory({ items, taskNames, agentNames }: {
   );
 }
 
-export function AutomationsPage({ currentAgentId, agents, scopedAgentId = "", embedded = false, onTaskCountChanged }: {
+export function AutomationsPage({ currentAgentId, agents, scopedAgentId = "", embedded = false, onTaskCountChanged, refreshTick = 0 }: {
   currentAgentId: string;
   agents: AgentSummary[];
   onSelectAgent: (agentId: string) => void;
   scopedAgentId?: string;
   embedded?: boolean;
   onTaskCountChanged?: (count: number) => void;
+  refreshTick?: number;
 }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [allOccurrences, setAllOccurrences] = useState<ScheduleOccurrence[]>([]);
@@ -184,7 +187,7 @@ export function AutomationsPage({ currentAgentId, agents, scopedAgentId = "", em
     void loadTasks();
     const timer = window.setInterval(() => { if (!document.hidden) void loadTasks(true); }, 5000);
     return () => { window.clearInterval(timer); taskRequest.current++; occurrenceRequest.current++; };
-  }, [loadTasks]);
+  }, [loadTasks, refreshTick]);
   useEffect(() => { setAgentFilter(scopedAgentId); setSelected(null); occurrenceRequest.current++; }, [scopedAgentId]);
   useEffect(() => {
     if (!selected) return;
@@ -332,7 +335,7 @@ export function AutomationsPage({ currentAgentId, agents, scopedAgentId = "", em
     <div className={`${embedded ? "automation-page-embedded" : "page-container"} automation-page`} data-layout={embedded ? "embedded" : "document"}>
       {!embedded && <PageHeaderActions>{createButton}</PageHeaderActions>}
       <div className="automation-intro">
-        <div><h2>{embedded ? "该 Agent 的自动化" : "让重复的工作，按时完成"}</h2><p>安排任务、跟进进度，在每次执行后查看结果。</p></div>
+        {embedded && <h2>该 Agent 的自动化</h2>}
         {embedded && createButton}
       </div>
       {error && !editorOpen && !selected && <div className="form-error" role="alert">{error}</div>}

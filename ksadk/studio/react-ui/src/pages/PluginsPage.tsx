@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, RefreshCw, Search, Trash2, Plus, ArrowUpRight } from "lucide-react";
+import { ArrowLeft, AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, Search, Trash2, Plus, ArrowUpRight } from "lucide-react";
 import { apiFetch } from "../api";
-import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { DshPluginWorkspace } from "../components/DshPluginWorkspace";
 import { showToast } from "../components/Toast";
 
@@ -212,7 +211,7 @@ function PluginIcon({ item, large = false }: { item: InstalledPlugin; large?: bo
   </span>;
 }
 
-export function PluginsPage() {
+export function PluginsPage({ refreshTick = 0 }: { refreshTick?: number }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(() => new URLSearchParams(window.location.search).has('pluginSettings'));
   const [settingsPluginId, setSettingsPluginId] = useState<string | undefined>(() => new URLSearchParams(window.location.search).get('pluginSettings') || undefined);
   const [items, setItems] = useState<InstalledPlugin[]>([]);
@@ -246,7 +245,7 @@ export function PluginsPage() {
     finally { setBusy(""); }
   }, []);
 
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [load, refreshTick]);
   const selectedSummary = useMemo(() => [...items, ...codexCatalog].find(item => keyOf(item) === selectedKey) || null, [items, codexCatalog, selectedKey]);
   const selected = detail?.key === selectedKey && selectedSummary
     ? { ...detail.item, ...selectedSummary, capabilities: detail.item.capabilities, interface: { ...selectedSummary.interface, ...detail.item.interface } }
@@ -360,7 +359,6 @@ export function PluginsPage() {
   const detailDescription = (selected?.interface?.longDescription || selected?.description || '').trim();
   const showDetailDescription = selected && detailDescription && detailDescription.replace(/\s+/g, ' ') !== pluginSummary(selected).replace(/\s+/g, ' ');
   return <div className="page-container plugins-page plugin-store" data-layout="document">
-    <PageHeaderActions><button className="icon-button tertiary" aria-label="刷新插件" onClick={() => void load()}><RefreshCw size={16}/></button></PageHeaderActions>
     {error && <p className="form-error" role="alert">{error}</p>}
     {selected ? <article className="plugin-product" aria-label="插件详情">
       <button className="plugin-back" onClick={() => { setSelectedKey(''); setCodexAccepted(false); }}><ArrowLeft size={15}/>插件</button>
@@ -386,7 +384,7 @@ export function PluginsPage() {
         {([['websiteUrl', '网站'], ['privacyPolicyUrl', '隐私政策'], ['termsOfServiceUrl', '服务条款']] as const).map(([key, title]) => selected.interface?.[key] && <div key={key}><dt>{title}</dt><dd><a href={selected.interface[key]} target="_blank" rel="noreferrer"><ArrowUpRight size={15}/><span className="sr-only">{title}</span></a></dd></div>)}
       </dl></section>
     </article> : <>
-      <header className="plugins-intro"><h2>插件</h2><p>为你的 Agent 添加工具、技能和应用。</p></header>
+      <header className="plugins-intro"><p>为 Agent 添加工具、技能和应用。</p></header>
       <label className="plugin-store-search"><Search size={16}/><input aria-label="搜索插件" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>
       <section className="plugin-installed-strip"><header><h3>已安装 <small>{items.length}</small></h3><button className="plugin-text-button" onClick={() => { setSettingsPluginId(undefined); setWorkspaceOpen(true); }}>插件设置</button></header>
         <div className="plugin-installed-tabs" role="tablist" aria-label="筛选已安装插件">

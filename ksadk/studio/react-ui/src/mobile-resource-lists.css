@@ -1,0 +1,102 @@
+/* On small screens, keep names readable and actions reachable without
+ * squeezing a desktop catalogue into narrow fixed-width columns. Secondary
+ * metadata remains available in each Agent page or resource detail drawer. */
+@media (max-width: 768px) {
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table table,
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table thead {
+    display: none;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    height: auto;
+    padding: 16px 12px;
+    border-bottom: 1px solid var(--studio-border);
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table td {
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .app-shell .agents-page :is(.agent-runtime-column, .agent-capabilities-column, .agent-revision-column),
+  .app-shell .resources-page :is(.resource-source-column, .resource-detail-column, .resource-capability-column) {
+    display: none;
+  }
+
+  .app-shell .agents-page .agent-name-column,
+  .app-shell .resources-page .resource-name-column {
+    grid-column: 1 / -1;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .agent-cell {
+    align-items: flex-start;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .agent-cell-copy {
+    flex: 1;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .agent-cell-copy :is(strong, span) {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    text-overflow: clip;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .agent-cell-copy strong {
+    line-height: 1.5;
+  }
+
+  .app-shell .agents-page .agent-build-column,
+  .app-shell .resources-page .resource-status-column {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .badge {
+    white-space: nowrap;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .actions-column {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .row-actions :is(.button, .icon-button) {
+    min-height: 40px;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .more-actions-trigger {
+    min-width: 40px;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table-pagination {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 10px 12px;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table-pagination > span {
+    white-space: nowrap;
+  }
+
+  .app-shell :is(.agents-page, .resources-page) .studio-data-table-pagination > div {
+    margin-left: auto;
+  }
+}

@@ -256,7 +256,7 @@ def _assert_harness_vertical(
     model: DeterministicChatCompletionsStub,
 ) -> None:
     page.goto(f"{base_url}/#/automations", wait_until="networkidle")
-    expect(page.get_by_role("heading", name="让重复的工作，按时完成")).to_be_visible()
+    expect(page.get_by_role("heading", name="自动化", exact=True, level=1)).to_be_visible()
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
 
     new_task = _create_task(

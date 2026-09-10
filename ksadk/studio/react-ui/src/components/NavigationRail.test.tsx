@@ -1,128 +1,131 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NavigationRail,
   readNavigationRailPreference,
   writeNavigationRailPreference,
+  type NavigationRailProps,
 } from "./NavigationRail";
-
 const storedPreferences = new Map<string, string>();
+const props: NavigationRailProps = {
+  view: "agents",
+  resourceKind: "mcp",
+  expanded: true,
+  workspaceName: "studio-test",
+  workspacePath: "/workspace/studio-test",
+  runtimeReady: true,
+  onNavigate: vi.fn(),
+  onOpenSettings: vi.fn(),
+};
 
 describe("NavigationRail", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     storedPreferences.clear();
     Object.defineProperty(window, "localStorage", {
       configurable: true,
       value: {
         getItem: (key: string) => storedPreferences.get(key) ?? null,
-        setItem: (key: string, value: string) => storedPreferences.set(key, value),
+        setItem: (key: string, value: string) =>
+          storedPreferences.set(key, value),
       },
     });
   });
-
-  it("keeps compact state as the default and restores an explicit preference", () => {
+  it("persists an explicit rail preference", () => {
     expect(readNavigationRailPreference()).toBeNull();
     writeNavigationRailPreference(true);
     expect(readNavigationRailPreference()).toBe(true);
     writeNavigationRailPreference(false);
     expect(readNavigationRailPreference()).toBe(false);
   });
-
-  it("removes redundant product/user copy and exposes the full workspace path in a tooltip", async () => {
+  it("keeps specialist routes behind four primary destinations and preserves every route", async () => {
     const user = userEvent.setup();
-    render(
-      <NavigationRail
-        view="agents"
-        resourceKind="model"
-        expanded
-        workspaceName="studio-test"
-        workspacePath="/Users/rain/projects/studio-test"
-        runtimeReady
-        onNavigate={() => undefined}
-        onOpenSettings={() => undefined}
-      />,
+    render(<NavigationRail {...props} />);
+    const nav = within(screen.getByRole("navigation", { name: "产品导航" }));
+    expect(
+      nav.getAllByRole("button").map((button) => button.textContent),
+    ).toEqual(["新对话", "Agent", "资源库", "运行中心"]);
+    await user.click(nav.getByRole("button", { name: "资源库" }));
+    for (const [name, route] of [
+      ["模型与工具", "resources"],
+      ["运行资源", "runtime-resources"],
+      ["插件", "plugins"],
+    ]) {
+      await user.click(nav.getByRole("button", { name }));
+      expect(props.onNavigate).toHaveBeenLastCalledWith(
+        route,
+        route === "resources" ? "mcp" : undefined,
+      );
+    }
+    await user.click(nav.getByRole("button", { name: "运行中心" }));
+    expect(nav.queryByRole("button", { name: "插件" })).not.toBeInTheDocument();
+    for (const [name, route] of [
+      ["构建", "builds"],
+      ["部署", "deployments"],
+      ["自动化", "automations"],
+      ["编排", "orchestration"],
+      ["可观测", "observability"],
+      ["评测", "evaluations"],
+    ]) {
+      await user.click(nav.getByRole("button", { name }));
+      expect(props.onNavigate).toHaveBeenLastCalledWith(route, undefined);
+    }
+  });
+  it("reveals the current nested destination after a deep link or route change", () => {
+    const { rerender } = render(
+      <NavigationRail {...props} view="evaluations" />,
     );
-
-    expect(screen.queryByText("Preview")).not.toBeInTheDocument();
-    expect(screen.queryByText("Local User")).not.toBeInTheDocument();
-    expect(screen.queryByText("/Users/rain/projects/studio-test")).not.toBeInTheDocument();
-    await user.hover(screen.getByRole("button", { name: "studio-test 工作区" }));
+    expect(screen.getByRole("button", { name: "评测" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    rerender(<NavigationRail {...props} view="runtime-resources" />);
+    expect(
+      screen.queryByRole("button", { name: "评测" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "运行资源" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+  it("expands a compact rail when accessing grouped destinations", async () => {
+    const onExpand = vi.fn();
+    render(<NavigationRail {...props} expanded={false} onExpand={onExpand} />);
+    await userEvent.click(screen.getByRole("button", { name: "运行中心" }));
+    expect(onExpand).toHaveBeenCalledOnce();
+  });
+  it("shows workspace information without an inert fake button", async () => {
+    render(<NavigationRail {...props} />);
+    expect(
+      screen.queryByRole("button", { name: "studio-test 工作区" }),
+    ).not.toBeInTheDocument();
+    await userEvent.hover(screen.getByLabelText("studio-test 工作区"));
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "/Users/rain/projects/studio-test",
+      "/workspace/studio-test",
     );
   });
-
-  it("merges resource destinations and returns to the active resource kind", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    const onOpenSettings = vi.fn();
-    render(
+  it("unmounts the closed mobile navigation and closes via Escape", async () => {
+    const onMobileOpenChange = vi.fn();
+    const { rerender } = render(
       <NavigationRail
-        view="resources"
-        resourceKind="mcp"
-        expanded={false}
-        workspaceName="studio-test"
-        workspacePath="/workspace/studio-test"
-        runtimeReady
-        onNavigate={onNavigate}
-        onOpenSettings={onOpenSettings}
+        {...props}
+        mobile
+        mobileOpen={false}
+        onMobileOpenChange={onMobileOpenChange}
       />,
     );
-
-    expect(screen.getByRole("complementary")).toHaveAttribute("data-state", "compact");
-    expect(screen.queryByRole("button", { name: "模型" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Tool" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "MCP" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Skill" })).not.toBeInTheDocument();
-
-    const resourcesButton = screen.getByRole("button", { name: "工程资源" });
-    expect(resourcesButton).toHaveAttribute("aria-current", "page");
-    await user.click(resourcesButton);
-    expect(onNavigate).toHaveBeenCalledWith("resources", "mcp");
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    expect(onOpenSettings).toHaveBeenCalledOnce();
-  });
-
-  it("adds evaluation as an isolated governance destination", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    render(
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    rerender(
       <NavigationRail
-        view="agents"
-        resourceKind="model"
-        expanded
-        workspaceName="studio-test"
-        workspacePath="/workspace/studio-test"
-        runtimeReady
-        onNavigate={onNavigate}
-        onOpenSettings={() => undefined}
+        {...props}
+        mobile
+        mobileOpen
+        onMobileOpenChange={onMobileOpenChange}
       />,
     );
-
-    await user.click(screen.getByRole("button", { name: "评测" }));
-    expect(onNavigate).toHaveBeenCalledWith("evaluations", undefined);
-  });
-
-  it("uses distinct semantic icons for consolidated resources and delivery stages", () => {
-    render(
-      <NavigationRail
-        view="agents"
-        resourceKind="model"
-        expanded
-        workspaceName="studio-test"
-        workspacePath="/workspace/studio-test"
-        runtimeReady
-        onNavigate={() => undefined}
-        onOpenSettings={() => undefined}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "工程资源" }).querySelector("svg")).toHaveClass("lucide-boxes");
-    expect(screen.getByRole("button", { name: "运行资源" }).querySelector("svg")).toHaveClass("lucide-server-cog");
-    expect(screen.getByRole("button", { name: "插件" }).querySelector("svg")).toHaveClass("lucide-plug");
-    expect(screen.getByRole("button", { name: "自动化" }).querySelector("svg")).toHaveClass("lucide-clock-3");
-    expect(screen.getByRole("button", { name: "可观测" }).querySelector("svg")).toHaveClass("lucide-chart-spline");
-    expect(screen.getByRole("button", { name: "评测" }).querySelector("svg")).toHaveClass("lucide-clipboard-check");
+    expect(screen.getByRole("dialog", { name: "工作区导航" })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    expect(onMobileOpenChange).toHaveBeenCalledWith(false);
   });
 });

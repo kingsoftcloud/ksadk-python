@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
@@ -64,6 +64,18 @@ describe("BuildsPage", () => {
     window.location.hash = "#/builds";
   });
 
+  it("refreshes build facts without starting another build", async () => {
+    const props = { currentAgentId: "demo-agent", agents: [{ metadata: { id: "demo-agent", name: "Demo Agent" } }], onSelectAgent: vi.fn(), onCreate: vi.fn() };
+    const view = render(<BuildsPage {...props} refreshTick={0} />);
+    expect(await screen.findByRole("button", { name: "部署到云端" })).toBeInTheDocument();
+    apiFetch.mockClear();
+    buildStatus = "FAILED";
+    view.rerender(<BuildsPage {...props} refreshTick={1} />);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "部署到云端" })).not.toBeInTheDocument());
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch).toHaveBeenCalledWith("/api/v1/agents/demo-agent");
+  });
+
   it("shows immutable Bundle facts rather than an inferred cloud status", async () => {
     const onSelectAgent = vi.fn();
     render(
@@ -96,7 +108,7 @@ describe("BuildsPage", () => {
       />,
     );
 
-    expect(await screen.findByText("等待构建完成")).toBeInTheDocument();
+    expect(await screen.findByText("点击右上角开始校验或构建")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "部署到云端" })).not.toBeInTheDocument();
   });
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -297,6 +297,32 @@ describe("DeploymentsPage", () => {
     <DeploymentsPage onCreate={vi.fn()} onOpenChat={onOpenChat} onSelectBuild={onSelectBuild} />,
   );
 
+  it("refreshes cloud facts without clearing the pending rollback choice or submitting changes", async () => {
+    const user = userEvent.setup();
+    const props = { onCreate: vi.fn(), onOpenChat: vi.fn(), onSelectBuild: vi.fn() };
+    const view = render(<DeploymentsPage {...props} refreshTick={0} />);
+    await user.click(await screen.findByRole("button", { name: "查看 Managed YAML Agent 详情" }));
+    await user.click(await screen.findByRole("radio", { name: /可回滚版本.*v2/ }));
+    apiFetch.mockClear();
+    view.rerender(<DeploymentsPage {...props} refreshTick={1} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui/versions?page=1&size=100", expect.objectContaining({ signal: expect.any(AbortSignal) })));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /可回滚版本.*v2/ })).toHaveAttribute("aria-checked", "true"));
+    expect(apiFetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
+  it("refreshes deployable Builds while preserving the user's choice", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/deployments/new?buildId=build-current&agentId=demo-agent");
+    const props = { onCreate: vi.fn(), onOpenChat: vi.fn(), onSelectBuild: vi.fn() };
+    const view = render(<DeploymentsPage {...props} refreshTick={0} />);
+    await user.click(await screen.findByRole("radio", { name: /build-previous/ }));
+    apiFetch.mockClear();
+    view.rerender(<DeploymentsPage {...props} refreshTick={1} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/agents?limit=100"));
+    expect(await screen.findByRole("radio", { name: /build-previous/ })).toHaveAttribute("aria-checked", "true");
+    expect(apiFetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
   it("labels credential fallback only for local receipts without a recorded creator", async () => {
     accountAgentItems = [
       { agentId: "ar-cloud-ui", name: "Managed YAML Agent", status: "RUNNING", creatorName: null },
@@ -396,8 +422,13 @@ describe("DeploymentsPage", () => {
     expect(screen.queryByRole("button", { name: "详情" })).not.toBeInTheDocument();
     expect(screen.getByTitle("cloud-agent-1")).toHaveTextContent("v3");
     expect(screen.getAllByText("ar-cloud-ui").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("http://ar-cloud-ui.example.test")).toBeInTheDocument();
-    expect(screen.getByText("运行中")).toBeInTheDocument();
+    const configuration = screen.getByText("部署配置与标识");
+    expect(configuration.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("region", { name: "云端版本历史" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "返回云端 Agent" })).toHaveLength(1);
+    await user.click(configuration);
+    expect(screen.getByText("http://ar-cloud-ui.example.test")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "当前部署摘要" })).getByText("运行中")).toBeVisible();
     expect(screen.queryByText("部署中")).not.toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "云端版本历史" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toHaveTextContent("当前");

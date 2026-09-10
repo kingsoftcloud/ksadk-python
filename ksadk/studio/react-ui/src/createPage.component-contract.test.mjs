@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("./pages/CreatePage.tsx", import.meta.url), "utf8");
+const inspectionSource = readFileSync(new URL("./components/AuthoringInspectionSummary.tsx", import.meta.url), "utf8");
 const editorSource = readFileSync(new URL("./pages/AgentEditor.tsx", import.meta.url), "utf8");
 const detailSource = readFileSync(new URL("./pages/AgentDetailPage.tsx", import.meta.url), "utf8");
 
@@ -16,7 +17,8 @@ test("Harness uses one runtime list and no source-graph or ADK context fallback"
 });
 
 test("create page uses shared React primitives for previews and summary overlay", () => {
-  assert.match(source, /<CodeViewer/);
+  assert.match(source, /<AuthoringInspectionSummary/);
+  assert.match(inspectionSource, /<CodeViewer/);
   assert.match(source, /<StudioDrawer[\s\S]*title="配置摘要"/);
   assert.doesNotMatch(source, /authoring-inspection-json/);
   assert.doesNotMatch(source, /manifest-preview-header/);
