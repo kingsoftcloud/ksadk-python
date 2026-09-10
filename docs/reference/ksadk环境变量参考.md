@@ -165,6 +165,16 @@
 | `COZE_INTEGRATION_MODEL_BASE_URL` | Coze 导出项目兼容 | 条件必传 | 未设置 | 未设置时可由 `OPENAI_BASE_URL` 自动补齐 | 否 | 开发者 / 平台 | 否 | Coze model endpoint。 |
 | `COZE_MODEL_NAME` | Coze 导出项目兼容 | 条件必传 | 未设置 | 通常跟随业务导出项目 | 否 | 开发者 / 平台 | 否 | Coze 导出项目模型名。 |
 
+### 3.1 Harness 模型配置
+
+以下变量由 Harness 模型调用层读取，其他框架的模型配置仍按各自接口生效。
+
+| 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `KSADK_MODEL_PROFILE_MAP` | Harness / 模型标识解析 | 否 | 未设置；使用 Profile 名称 | 无 | 是 | 开发者 / 部署配置 | 否 | JSON 对象，将完整的 `model-profile://<name>@<version>` 引用映射为供应商模型标识；未命中映射时使用 Profile 名称，无供应商前缀的标识补为 `openai/<name>`。映射不应包含凭证；模型地址和密钥仍通过 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 等连接配置提供。该变量按敏感配置处理。 |
+| `KSADK_MODEL_STREAMING` | Harness / 模型调用 | 否 | 未设置；无能力声明时默认非流式 | 无 | 否 | 开发者 / 部署配置 | 否 | `1/true/yes/on` 请求流式，其他非空值显式关闭；Reasoner 构造参数优先。未显式设置时，可根据能力声明切换为受支持的流式模式；声明不支持流式或流式工具调用时会降级为非流式。 |
+| `KSADK_MODEL_CAPABILITY_FILE` | Harness / 模型能力声明 | 否 | 未设置；不加载文件声明 | 无 | 否 | 开发者 / 部署配置 | 否 | 指向包含 `declarations` 列表的模型能力 JSON 文件，供运行时选择受支持的调用模式。文件首次使用时加载并在进程内缓存；路径不存在或不是文件时不加载声明，文件读取失败或 JSON 无效时会报错。声明文件不得包含密钥或敏感连接信息。 |
+
 ## 4. 金山云账号、KOP、KS3 与镜像仓库
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
@@ -271,6 +281,7 @@
 | `KSADK_PERSISTENCE_PROBE_TIMEOUT` | Sessions | 否 | `2` | 无 | 否 | 开发者 / 平台 | 否 | PostgreSQL 持久化 readiness 探测的超时秒数。 |
 | `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
 | `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
+| `KSADK_HARNESS_STATE_DIR` | Harness / Runtime server | 否 | 未设置；无默认持久目录 | 无；CLI `--state-dir` 优先 | 否 | 开发者 / 部署配置 | 否 | 保存 Run 索引与工具回执，并在未配置 `KSADK_CHECKPOINT_DSN` 时使用目录内的 SQLite checkpoint。目录与 checkpoint DSN 均未设置时，checkpoint 回退到内存，不提供重启恢复。目录应按部署隔离并配置持久存储，不应打入 Agent Bundle。 |
 | `KSADK_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 框架无关的 PostgreSQL checkpoint DSN。 |
 | `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | `KSADK_CHECKPOINT_BACKEND=postgres` 时的 LangGraph checkpointer PostgreSQL DSN。 |
 | `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | Operator / 平台 | 否 | 为 `true` 时，托管 LangGraph runner 仅对导出 `ksadk_graph_factory(*, checkpointer)` 的图注入受控 PostgreSQL saver；失败不回退到内存 checkpoint。 |
