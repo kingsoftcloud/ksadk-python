@@ -45,8 +45,9 @@ def test_real_codex_builder_checks_resource_configuration_before_runtime(tmp_pat
     configure(studio)
     with pytest.raises(StudioError) as unsupported:
         studio.codex_builder.build("resource-agent")
-    # Static checks do not remove the unimplemented DSH Build/Run delivery gate.
-    assert unsupported.value.code == "CODEX_PLUGIN_ECOSYSTEM_UNSUPPORTED"
+    # Resource validation succeeds, then Provider admission fails because this
+    # fixture deliberately installs no Codex Provider. Runtime is never inspected.
+    assert unsupported.value.code == "AGENT_PROVIDER_NOT_REGISTERED"
 
 
 def test_memory_score_policy_is_checked_from_agent_spec(tmp_path):

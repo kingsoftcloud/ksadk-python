@@ -83,6 +83,33 @@ def test_execute_skills_tool_passes_explicit_skill_names_to_runtime():
     assert backend.calls[0][1]["skill_names"] == ["demo-skill"]
 
 
+def test_execute_skills_tool_passes_pinned_packages_to_runtime(monkeypatch):
+    package = object()
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_SECRET_KEY", "must-not-enter-sandbox")
+
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            self.calls.append((workflow_prompt, kwargs))
+            return SkillRuntimeResult(exit_code=0)
+
+    backend = Backend()
+    tool = build_execute_skills_tool(
+        backend=backend,
+        skill_space_ids=["selection-space"],
+        session_id="sess-1",
+        pinned_packages=[package],
+    )
+
+    tool("build a page", skill_names=["demo-skill"])
+
+    assert backend.calls[0][1]["pinned_packages"] == [package]
+    assert backend.calls[0][1]["skill_space_ids"] == []
+    assert backend.calls[0][1]["env"] == {}
+
+
 def test_execute_skills_tool_adds_trusted_context_events_without_public_arguments():
     skill_ref = SkillRef(
         "skill-1",
@@ -106,6 +133,10 @@ def test_execute_skills_tool_adds_trusted_context_events_without_public_argument
             assert invocation.skill_ref == skill_ref
             return SkillRuntimeResult(
                 exit_code=0,
+                workflow_status="ok",
+                executed_skill="report",
+                instructions="Use the pinned script.",
+                sandbox={"backend": "e2b", "cleanup_status": "completed"},
                 skill_events=[
                     SkillEvent.create(
                         "skill.load.completed",
@@ -131,6 +162,10 @@ def test_execute_skills_tool_adds_trusted_context_events_without_public_argument
     ]
     assert result["skill_events"][-1]["binding_snapshot_id"] == "binding-1"
     assert result["skill_events"][-1]["run_id"] == "run-1"
+    assert result["workflow_status"] == "ok"
+    assert result["executed_skill"] == "report"
+    assert result["instructions"] == "Use the pinned script."
+    assert result["sandbox"] == {"backend": "e2b", "cleanup_status": "completed"}
 
 
 def test_execute_skills_tool_rejects_unbound_events_and_overwrites_untrusted_correlation():

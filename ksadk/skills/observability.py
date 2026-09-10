@@ -82,7 +82,7 @@ def _project_span(
     span = tracer.start_span(event.event_type, start_time=_nanoseconds(started_at))
     for key, value in attributes.items():
         span.set_attribute(key, value)
-    if event.status in {"failed", "timed_out", "cleanup_failed"}:
+    if event.status in {"failed", "timeout", "timed_out", "cleanup_failed"}:
         span.set_status(Status(StatusCode.ERROR, event.error_category or event.status))
     span.end(end_time=_nanoseconds(ended_at))
 

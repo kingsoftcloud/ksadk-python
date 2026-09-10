@@ -48,6 +48,7 @@ class SkillRuntimeResult:
     workflow_status: str = ""
     executed_skill: str = ""
     instructions: str = ""
+    sandbox: dict[str, object] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -74,6 +75,8 @@ class SkillRuntimeResult:
             result["output_text_truncated"] = True
         if self.skill_events:
             result["skill_events"] = [event.to_dict() for event in self.skill_events]
+        if self.sandbox:
+            result["sandbox"] = dict(self.sandbox)
         return result
 
 
@@ -116,11 +119,12 @@ def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
         if not isinstance(payload, dict):
             return ParsedWorkflowResult()
         output_files = payload.get("output_files")
+        output_text = payload.get("output_text")
         return ParsedWorkflowResult(
             output_files=(
                 tuple(str(item) for item in output_files) if isinstance(output_files, list) else ()
             ),
-            output_text=payload.get("output_text") if isinstance(payload.get("output_text"), str) else "",
+            output_text=output_text if isinstance(output_text, str) else "",
             output_text_truncated=payload.get("output_text_truncated") is True,
             workflow_status=str(payload.get("status") or ""),
             executed_skill=str(payload.get("executed_skill") or ""),

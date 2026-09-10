@@ -30,6 +30,9 @@ _EVENT_TYPES = frozenset(
         "sandbox.session.created",
         "sandbox.session.cleaned_up",
         "sandbox.session.cleanup_failed",
+        "skill.workflow.started",
+        "skill.workflow.completed",
+        "skill.workflow.failed",
         "skill.execution.started",
         "skill.execution.completed",
         "skill.execution.failed",
@@ -47,6 +50,9 @@ _INVOCATION_EVENTS = frozenset(
 )
 _ALLOWED_ATTRIBUTE_KEYS = frozenset(
     {
+        "source",
+        "scope",
+        "requested_skill",
         "artifact_name",
         "artifact_ref",
         "agent_step_id",
@@ -277,12 +283,9 @@ class SandboxSkillEventEnvelope:
         event = self.event
         if expected_invocation_id and event.skill_invocation_id != expected_invocation_id:
             raise ValueError("sandbox envelope skill_invocation_id does not match outer invocation")
-        if (
-            expected_skill_ref is not None
-            and (
-                event.skill_ref is None
-                or not expected_skill_ref.matches_execution_identity(event.skill_ref)
-            )
+        if expected_skill_ref is not None and (
+            event.skill_ref is None
+            or not expected_skill_ref.matches_execution_identity(event.skill_ref)
         ):
             raise ValueError("sandbox envelope SkillRef does not match outer invocation")
         return replace(event, skill_ref=expected_skill_ref) if expected_skill_ref else event
@@ -392,6 +395,8 @@ def parse_sandbox_skill_event_lines(
             continue
         try:
             event = SandboxSkillEventEnvelope.from_dict(json.loads(line)).event
+            if event.event_type.startswith("skill.workflow."):
+                raise ValueError("workflow call events are host-owned")
             if expected_invocations is not None and event.event_type in _INVOCATION_EVENTS:
                 expected_ref = expected_invocations.get(event.skill_invocation_id)
                 if expected_ref is None:

@@ -39,6 +39,7 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     assert captured["app"].state.studio_service.runtime_executor.registered_runtime_types() == [
         "adk",
         "codex",
+        "harness",
         "langgraph",
     ]
     assert opened[0].startswith("http://127.0.0.1:8899/#session=")

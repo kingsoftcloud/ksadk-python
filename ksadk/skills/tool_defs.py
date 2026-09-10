@@ -14,6 +14,7 @@ from ksadk.skills.events import (
 from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.observability import project_skill_events
+from ksadk.skills.package_store import SkillPackage
 from ksadk.skills.runtime.base import SkillRuntimeBackend, SkillRuntimeResult, normalize_skill_names
 from ksadk.skills.service_client import SkillServiceClient
 from ksadk.skills.service_env import (
@@ -97,21 +98,25 @@ def build_execute_skills_tool(
     skill_space_ids: list[str] | None = None,
     session_id: str | None = None,
     execution_context: SkillExecutionContext | None = None,
+    pinned_packages: list[SkillPackage] | None = None,
 ):
     spaces = list(skill_space_ids or resolve_user_skill_space_ids())
     default_session_id = session_id or f"ksadk-{uuid4().hex}"
+    packages = list(pinned_packages) if pinned_packages is not None else None
 
     def execute_skills(workflow_prompt: str, skill_names: list[str] | str | None = None) -> dict:
         """Execute a workflow with the configured Skill Runtime."""
 
         invocation_plan = _invocation_plan(execution_context)
+        runtime_spaces = [] if packages is not None else spaces
         result = backend.run_workflow(
             workflow_prompt,
-            skill_space_ids=spaces,
+            skill_space_ids=runtime_spaces,
             skill_names=normalize_skill_names(skill_names),
             session_id=default_session_id,
-            env=runtime_agent_env_from_process(spaces),
+            env={} if packages is not None else runtime_agent_env_from_process(runtime_spaces),
             invocation_plan=invocation_plan,
+            pinned_packages=packages,
             timeout=int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900")),
         )
         if execution_context is not None:
@@ -204,23 +209,7 @@ def _with_execution_context(
                 continue
             event = replace(event, skill_ref=canonical_ref)
         accepted_events.append(apply_execution_context(event, context))
-    return SkillRuntimeResult(
-        runtime_id=result.runtime_id,
-        exit_code=result.exit_code,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        duration_ms=result.duration_ms,
-        timed_out=result.timed_out,
-        error_type=result.error_type,
-        error_message=result.error_message,
-        output_files=result.output_files,
-        output_text=result.output_text,
-        output_text_truncated=result.output_text_truncated,
-        skill_events=[
-            *context_events,
-            *accepted_events,
-        ],
-    )
+    return replace(result, skill_events=[*context_events, *accepted_events])
 
 
 def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> list[dict[str, str]]:

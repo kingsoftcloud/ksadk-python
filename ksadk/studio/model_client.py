@@ -38,6 +38,24 @@ class ToolCall:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+def _reasoning_from_responses_output(output: Any) -> str:
+    """从 Responses wire 的 output 数组提取 reasoning 项文本（无则空串）。"""
+
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+        for block in item.get("summary") or []:
+            if isinstance(block, dict) and block.get("type") in {"summary_text", "text"}:
+                parts.append(str(block.get("text") or ""))
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and part.get("type") in {"reasoning_text", "text"}:
+                parts.append(str(part.get("text") or ""))
+    return "".join(parts)
+
+
 @dataclass(frozen=True)
 class ModelResponse:
     content: str
@@ -45,6 +63,8 @@ class ModelResponse:
     usage: Usage
     tool_calls: list[ToolCall]
     raw_message: dict[str, Any]
+    #: 推理文本（chat wire 的 reasoning_content / Responses wire 的 reasoning 项）。
+    reasoning: str = ""
 
 
 class CredentialResolver:
@@ -566,6 +586,7 @@ class OpenAICompatibleModelClient:
             usage=usage,
             tool_calls=[],
             raw_message={"output": payload.get("output")},
+            reasoning=_reasoning_from_responses_output(payload.get("output")),
         )
 
     @staticmethod
@@ -626,4 +647,5 @@ class OpenAICompatibleModelClient:
             usage=usage,
             tool_calls=calls,
             raw_message=message,
+            reasoning=str(message.get("reasoning_content") or message.get("reasoning") or ""),
         )

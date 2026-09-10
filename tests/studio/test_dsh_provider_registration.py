@@ -38,7 +38,7 @@ class _Reasoner:
 
     async def complete(self, *, model, prompt, messages, tools):  # noqa: ANN001
         del prompt, tools
-        assert model == "fixture-model"
+        assert model == "fixture-model"  # Provider resolves its locked profile before invocation.
         snapshot = [dict(item) for item in messages]
         self.turns.append(snapshot)
         prior = [item.get("content") for item in snapshot if item.get("role") == "assistant"]

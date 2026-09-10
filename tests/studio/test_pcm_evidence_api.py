@@ -35,6 +35,8 @@ def _setup(tmp_path: Path):
         codex_runtime_inspector=_inspector,
         runtime_executor=RuntimeFixture(standard_codex_events).executor,
     )
+    # The fixture exercises direct-runtime evidence, not real DSH admission.
+    service.codex_builder.provider_build = None
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
 
     def payload(agent_id: str, prompt: str) -> dict:

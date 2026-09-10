@@ -139,6 +139,7 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
             calls.append(("run", command))
             calls.append(("run_kwargs", kwargs))
             if command.startswith("printenv "):
+
                 class EnvResult:
                     stdout = "1\n"
                     stderr = ""
@@ -202,6 +203,65 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
     assert ("run", "python -V") in calls
     assert ("run_kwargs", {"timeout": 30, "envs": {"REQUEST_ENV": "command"}}) in calls
     assert calls[-1] == ("kill", "sbx-123")
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_e2b_sandbox_backend_reconnects_existing_session(explicit, monkeypatch):
+    from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
+
+    options = {"api_url": "https://sandbox.example", "api_key": "fixture-only"}
+    monkeypatch.setattr(ExplicitE2BConnection, "sdk_options", lambda self: options)
+    calls: list[tuple[str, object]] = []
+
+    class FakeResult:
+        stdout = ""
+        stderr = ""
+        exit_code = 0
+
+    class FakeCommands:
+        def run(self, command: str, **_kwargs):
+            calls.append(("run", command))
+            return FakeResult()
+
+    class FakeFiles:
+        def read(self, _path):
+            return ""
+
+        def write(self, _path, _data):
+            return None
+
+    class FakeSandbox:
+        def __init__(self, sandbox_id: str):
+            self.sandbox_id = sandbox_id
+            self.commands = FakeCommands()
+            self.files = FakeFiles()
+
+        @classmethod
+        def connect(cls, sandbox_id: str, *, timeout: int, **kwargs):
+            calls.append(("connect", {"sandbox_id": sandbox_id, "timeout": timeout, **kwargs}))
+            return cls(sandbox_id)
+
+        def kill(self):
+            return None
+
+    backend = E2BSandboxBackend(
+        spec=SandboxSpec(template_id="tpl-aio", timeout=321),
+        sandbox_cls=FakeSandbox,
+        connection=ExplicitE2BConnection(
+            api_url="https://sandbox.example", domain="sandbox.example", api_key="fixture-only"
+        ) if explicit else None,
+    )
+
+    session = backend.reconnect_session(session_locator="sbx-existing")
+
+    assert session.sandbox_id == "sbx-existing"
+    assert calls == [
+        (
+            "connect",
+            {"sandbox_id": "sbx-existing", "timeout": 321, **(options if explicit else {})},
+        ),
+        ("run", "true"),
+    ]
 
 
 def test_e2b_sandbox_backend_waits_for_startup_command_readiness(monkeypatch):

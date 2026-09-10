@@ -195,6 +195,26 @@ class AgentKernelStore(Protocol):
         self, agent_instance_id: str, session_id: str, fencing_token: int
     ) -> InboxMessage | None: ...
 
+    async def list_messages(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> list[InboxMessage]: ...
+
+    async def list_pending(
+        self,
+        agent_instance_id: str,
+        session_id: str | None = None,
+        *,
+        fencing_token: int | None = None,
+    ) -> list[InboxMessage]: ...
+
+    async def claim_message(
+        self, message_id: str, fencing_token: int
+    ) -> InboxMessage: ...
+
+    async def discard_claim(
+        self, message_id: str, *, expected_fence: int
+    ) -> None: ...
+
     async def complete_claim(self, message_id: str, *, expected_fence: int) -> None: ...
 
     async def acquire_activation(self, request: ActivationLeaseRequest) -> ActivationLease: ...
@@ -220,6 +240,32 @@ class AgentKernelStore(Protocol):
     ) -> RunRecord: ...
 
     async def load_message(self, message_id: str) -> InboxMessage | None: ...
+
+    async def load_by_idempotency(
+        self, session_id: str, idempotency_key: str
+    ) -> InboxMessage | None: ...
+
+    async def reject_command(
+        self,
+        command: AgentControlCommand,
+        *,
+        status: str,
+        code: str,
+        message: str,
+        retryable: bool = False,
+    ) -> AgentControlReceipt: ...
+
+    async def inbox_depth(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> int: ...
+
+    async def find_active_run(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> RunRecord | None: ...
+
+    async def current_lease(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> ActivationLease | None: ...
 
 
 __all__ = [

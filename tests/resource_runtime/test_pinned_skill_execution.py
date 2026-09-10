@@ -171,6 +171,10 @@ class SandboxTransportDouble:
 
     def run_command(self, command, **kwargs):
         self.commands.append(command)
+        if 'importlib.metadata.version("ksadk")' in command:
+            return SandboxCommandResult(
+                stdout=json.dumps({"ksadk_version": "0.8.4", "pinned_protocol": None}), exit_code=0
+            )
         if "PINNED_PACKAGE_PROTOCOL_VERSION" in command:
             return SandboxCommandResult(stdout=self.version, exit_code=0)
         if command.startswith("mkdir -m 700 "):
@@ -226,7 +230,18 @@ def test_remote_transport_delivers_exact_archive_to_real_consumer(tmp_path):
     )
     assert request["pinned_protocol_version"] == 1
     assert request["pinned_packages"][0]["content_hash"] == pinned.ref.content_hash.render()
+    workflow_payload = json.loads(
+        next(
+            line.split("=", 1)[1]
+            for line in result.stdout.splitlines()
+            if line.startswith("workflow_result=")
+        )
+    )
+    assert workflow_payload["output_files"] == result.output_files
     assert Path(result.output_files[0]).read_text() == "locked-version-one"
+    assert result.sandbox["creation_status"] == "completed"
+    assert result.sandbox["instance_status"] == "created"
+    assert result.sandbox["cleanup_status"] == "completed"
     assert not session.directory.exists()
     shutil.rmtree(Path(result.output_files[0]).parents[1])
 
@@ -242,7 +257,9 @@ def test_remote_old_runtime_refused_before_upload_or_execution(tmp_path, version
     )
     assert not result.ok
     assert "protocol v1" in result.error_message
-    assert len(session.commands) == 1
+    assert len(session.commands) == 2
+    assert 'importlib.metadata.version("ksadk")' in session.commands[1]
+    assert all(command.startswith("python -I -c ") for command in session.commands)
     assert session.writes == {}
     assert session.killed
 

@@ -35,6 +35,8 @@ def client(tmp_path):
         codex_runtime_inspector=_inspector,
         runtime_executor=RuntimeFixture(standard_codex_events).executor,
     )
+    # Keep this synthetic RuntimeExecutor test on the legacy build seam.
+    service.codex_builder.provider_build = None
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
     with TestClient(app) as c:
         yield c

@@ -159,6 +159,15 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
     assert result.workflow_status == "ok"
     assert result.executed_skill == ""
     assert result.instructions == ""
+    assert result.sandbox == {
+        "backend": "e2b",
+        "runtime_id": "sbx-123",
+        "creation_status": "completed",
+        "instance_status": "created",
+        "cleanup_status": "completed",
+        "cleanup_error": None,
+        "cleanup_scope": "sandbox_instance",
+    }
     assert [event.event_type for event in result.skill_events] == [
         "sandbox.session.created",
         "sandbox.session.cleaned_up",
@@ -339,6 +348,87 @@ def test_e2b_backend_reports_cleanup_failure_without_changing_result():
         "sandbox.session.cleanup_failed",
     ]
     assert result.skill_events[-1].error_category == "cleanup_failed"
+    assert result.sandbox["cleanup_status"] == "failed"
+    assert result.sandbox["failure_stage"] == "cleanup"
+
+
+def test_e2b_backend_reports_initialization_failure_after_cleanup():
+    killed = []
+
+    class FakeFiles:
+        def write(self, path, data):
+            pass
+
+    class FakeCommands:
+        def run(self, command: str, **kwargs):
+            raise RuntimeError("startup unavailable")
+
+    class FakeSandbox:
+        sandbox_id = "sbx-init"
+
+        def __init__(self):
+            self.files = FakeFiles()
+            self.commands = FakeCommands()
+
+        @classmethod
+        def create(cls, **kwargs):
+            return cls()
+
+        def kill(self):
+            killed.append(self.sandbox_id)
+
+    result = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1").run_workflow(
+        "build", skill_space_ids=[], session_id="sess-1"
+    )
+
+    assert not result.ok
+    assert result.error_type == "RuntimeError"
+    assert result.sandbox["creation_status"] == "completed"
+    assert result.sandbox["instance_status"] == "created"
+    assert result.sandbox["failure_stage"] == "initialize"
+    assert result.sandbox["cleanup_status"] == "completed"
+    assert [event.event_type for event in result.skill_events] == ["sandbox.session.cleaned_up"]
+    assert killed == ["sbx-init"]
+
+
+def test_e2b_backend_recovers_partial_output_before_timeout_cleanup():
+    class TimeoutException(Exception):
+        pass
+
+    class Session:
+        sandbox_id = "sbx-timeout"
+        killed = False
+
+        def write_file(self, path, data):
+            pass
+
+        def run_command(self, command: str, **kwargs):
+            raise TimeoutException("command timed out")
+
+        def read_file(self, path: str):
+            if path.endswith(".stdout"):
+                return "partial output\n"
+            if path.endswith(".stderr"):
+                return "partial error\n"
+            raise FileNotFoundError(path)
+
+        def kill(self):
+            self.killed = True
+
+    session = Session()
+    backend = E2BSkillRuntimeBackend(template_id="tpl-1")
+    backend.sandbox_backend = type(
+        "Provider", (), {"create_session": staticmethod(lambda **kwargs: session)}
+    )()
+
+    result = backend.run_workflow("build", skill_space_ids=[], session_id="sess-1", timeout=1)
+
+    assert result.timed_out is True
+    assert result.stdout == "partial output\n"
+    assert result.stderr == "partial error\n"
+    assert result.sandbox["failure_stage"] == "execute"
+    assert result.sandbox["cleanup_status"] == "completed"
+    assert session.killed is True
 
 
 def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
@@ -363,6 +453,9 @@ def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
     assert "skill-service-token" not in result.error_message
     assert "skill-service-secret" not in result.error_message
     assert "[REDACTED]" in result.error_message
+    assert result.sandbox["creation_status"] == "failed"
+    assert result.sandbox["instance_status"] == "unknown"
+    assert result.sandbox["failure_stage"] == "create"
 
 
 def test_e2b_backend_writes_request_file_instead_of_shell_quoting_long_prompt():
@@ -419,10 +512,11 @@ def test_e2b_backend_writes_request_file_instead_of_shell_quoting_long_prompt():
     run_command = next(
         value for name, value in calls if name == "run" and "/home/ksadk/agent.py" in value
     )
-    assert (
-        run_command
-        == "python -u /home/ksadk/agent.py --request-file /tmp/ksadk-workflow-request.json"
+    assert run_command.startswith(
+        "python -u /home/ksadk/agent.py --request-file /tmp/ksadk-workflow-request.json"
     )
+    assert " > /tmp/ksadk-workflow-output-" in run_command
+    assert " 2> /tmp/ksadk-workflow-output-" in run_command
 
 
 def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_path: Path):

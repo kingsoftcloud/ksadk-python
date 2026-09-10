@@ -149,6 +149,7 @@ from ksadk.studio.templates import (
     compose_research_agent,
     default_agent_spec,
     list_agent_templates,
+    with_harness_provider_permissions,
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
@@ -341,6 +342,7 @@ class StudioService:
             resolve_adapter_provider=self._scheduler_adapter_provider,
             session_service=self.session_service,
             runtime_executor=self.runtime_executor,
+            state_dir=self.workspace.resolve(".agentkit/plugin-runtime/state"),
         )
         self.scheduler = StudioSchedulerService(
             self.workspace,
@@ -1251,6 +1253,9 @@ class StudioService:
                 raise asyncio.CancelledError
 
     async def _close_owned_plugin_services(self) -> None:
+        from ksadk.studio.provider_recovery import detach_recovered_runs
+
+        await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
         owned = [self.plugin_runs.aclose, self.dsh_capabilities.aclose]
         if self.resource_dsh_capabilities is not self.dsh_capabilities:
@@ -1850,6 +1855,8 @@ class StudioService:
         )
         selected = runtime or resolved_spec.runtime
         resolved_spec.runtime = selected
+        if selected is not None and selected.type == "harness" and spec is None:
+            resolved_spec = with_harness_provider_permissions(resolved_spec)
         if selected is not None and selected.type == "codex":
             return cast(
                 AgentDraft,

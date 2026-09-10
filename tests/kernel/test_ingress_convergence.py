@@ -183,7 +183,10 @@ class Harness:
             deps.resolve_session_service = self._orig_resolve_session_service
 
     async def _invoke_agui(self, session_id: str, idempotency_key: str) -> Any:
-        from ag_ui.core import RunAgentInput
+        agui_core = pytest.importorskip(
+            "ag_ui.core", reason="AG-UI optional dependency is not installed"
+        )
+        RunAgentInput = agui_core.RunAgentInput
 
         from ksadk.agui.agent import KsadkAGUIAgent
 

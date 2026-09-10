@@ -63,6 +63,11 @@ def resolve_memory_provider(provider_ref: str) -> MemoryProviderLike:
 
         return LongTermMemoryService.from_env()
 
+    if ref in ("local-postgres", "postgres"):
+        from ksadk.memory.providers.local_postgres import PostgresMemoryProvider
+
+        return PostgresMemoryProvider()
+
     # 默认：持久 SQLite（local-default / local-sqlite / 未知 ref）
     from ksadk.memory.providers.local_sqlite import (
         resolve_default_memory_provider,

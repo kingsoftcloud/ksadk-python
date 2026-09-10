@@ -61,6 +61,8 @@ async def test_mcp_memory_failure_pending_and_unknown_are_distinct(tmp_path, mem
         )
         await node.stdin.drain()
         token_line = await asyncio.wait_for(node.stdout.readline(), 10)
+        browser_line = await asyncio.wait_for(node.stdout.readline(), 10)
+        assert browser_line.startswith(b"@@KSADK_DSH_CORE_TOKEN@@")
         ready_line = await asyncio.wait_for(node.stdout.readline(), 10)
         token_prefix, ready_prefix = (
             b"@@KSADK_DSH_CAPABILITY_TOKEN@@",

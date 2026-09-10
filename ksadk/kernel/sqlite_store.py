@@ -22,8 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from uuid import uuid4
-
 import aiosqlite
 
 from ksadk.events.session_event import (
@@ -35,15 +33,15 @@ from ksadk.events.session_event import (
     validate_write_guard,
 )
 from ksadk.interaction.contracts import (
-    InteractionRecord,
     InteractionReceipt,
+    InteractionRecord,
     InteractionSubmission,
     is_terminal,
 )
 from ksadk.interaction.ledger import (
     ALREADY_RESOLVED,
-    REVISION_MISMATCH,
     REQUEST_CONFLICT,
+    REVISION_MISMATCH,
     interaction_event,
     request_digest,
     requested_event_payload,
@@ -456,6 +454,232 @@ class SQLiteAgentKernelStore:
             command=AgentControlCommand.model_validate_json(row["payload_json"]),
         )
 
+    async def load_by_idempotency(
+        self, session_id: str, idempotency_key: str
+    ) -> InboxMessage | None:
+        connection = await self._connect()
+        row = await self._fetchone(
+            connection,
+            "SELECT message_id FROM kernel_inbox "
+            "WHERE session_id=? AND idempotency_key=?",
+            (session_id, idempotency_key),
+        )
+        return await self.load_message(row["message_id"]) if row is not None else None
+
+    async def reject_command(
+        self,
+        command: AgentControlCommand,
+        *,
+        status: str,
+        code: str,
+        message: str,
+        retryable: bool = False,
+    ) -> AgentControlReceipt:
+        """Persist a redacted admission rejection without creating Inbox work."""
+
+        await self._emit_admission(
+            control_event(
+                session_id=command.session_id,
+                event_type="control.command_rejected",
+                payload={
+                    "command_id": str(command.command_id),
+                    "status": status,
+                    "reason": code,
+                },
+                causation_id=str(command.command_id),
+            ),
+            command,
+        )
+        return self._receipt(
+            command,
+            status,
+            error=ControlError(code=code, message=message, retryable=retryable),
+        )
+
+    async def list_messages(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> list[InboxMessage]:
+        connection = await self._connect()
+        sql = "SELECT message_id FROM kernel_inbox WHERE agent_instance_id=?"
+        params: tuple[Any, ...] = (agent_instance_id,)
+        if session_id is not None:
+            sql += " AND session_id=?"
+            params += (session_id,)
+        sql += " ORDER BY accepted_seq"
+        cursor = await connection.execute(sql, params)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        messages = [await self.load_message(row["message_id"]) for row in rows]
+        return [message for message in messages if message is not None]
+
+    async def list_pending(
+        self,
+        agent_instance_id: str,
+        session_id: str | None = None,
+        *,
+        fencing_token: int | None = None,
+    ) -> list[InboxMessage]:
+        """Return FIFO-visible Inbox rows for the current activation.
+
+        ``accepted`` rows are always pending.  When a fence is supplied,
+        ``claimed`` rows are included as well so the same owner can retry and
+        a takeover owner can reclaim work left by an older process.
+        """
+
+        connection = await self._connect()
+        sql = "SELECT message_id FROM kernel_inbox WHERE agent_instance_id=?"
+        params: tuple[Any, ...] = (agent_instance_id,)
+        if session_id is not None:
+            sql += " AND session_id=?"
+            params += (session_id,)
+        if fencing_token is None:
+            sql += " AND status='accepted'"
+        else:
+            sql += " AND status IN ('accepted','claimed')"
+        sql += " ORDER BY accepted_seq"
+        cursor = await connection.execute(sql, params)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        messages = [await self.load_message(row["message_id"]) for row in rows]
+        return [message for message in messages if message is not None]
+
+    async def claim_message(
+        self, message_id: str, fencing_token: int
+    ) -> InboxMessage:
+        """Claim one selected message, idempotently for the same fence."""
+
+        message_id = str(message_id)
+        async with self._write_lock:
+            connection = await self._begin()
+            try:
+                row = await self._fetchone(
+                    connection,
+                    "SELECT * FROM kernel_inbox WHERE message_id=?",
+                    (message_id,),
+                )
+                if row is None:
+                    raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                if (
+                    row["status"] == InboxState.CLAIMED.value
+                    and row["claimed_fence"] == int(fencing_token)
+                ):
+                    await connection.commit()
+                    message = await self.load_message(message_id)
+                    assert message is not None
+                    return message
+                activation = await self._check_fence(
+                    connection,
+                    row["agent_instance_id"],
+                    row["session_id"],
+                    fencing_token,
+                )
+                if row["status"] not in (
+                    InboxState.ACCEPTED.value,
+                    InboxState.CLAIMED.value,
+                ):
+                    raise InvalidCommandError(
+                        f"message {message_id!r} is not claimable at status "
+                        f"{row['status']}"
+                    )
+                if row["status"] == InboxState.ACCEPTED.value:
+                    assert_inbox_transition(
+                        InboxState(row["status"]), InboxState.CLAIMED
+                    )
+                await connection.execute(
+                    "UPDATE kernel_inbox SET status='claimed', claimed_fence=? "
+                    "WHERE message_id=?",
+                    (int(fencing_token), message_id),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+        await self._emit_activation(
+            control_event(
+                session_id=row["session_id"],
+                event_type="control.message_claimed",
+                payload={
+                    "message_id": message_id,
+                    "accepted_seq": int(row["accepted_seq"]),
+                    "fencing_token": int(fencing_token),
+                },
+            ),
+            activation,
+            fencing_token,
+        )
+        message = await self.load_message(message_id)
+        assert message is not None
+        return message
+
+    async def discard_claim(
+        self, message_id: str, *, expected_fence: int
+    ) -> None:
+        """Settle a typed rejection as ``claimed -> discarded``."""
+
+        message_id = str(message_id)
+        async with self._write_lock:
+            connection = await self._begin()
+            try:
+                row = await self._fetchone(
+                    connection,
+                    "SELECT * FROM kernel_inbox WHERE message_id=?",
+                    (message_id,),
+                )
+                if row is None:
+                    raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                activation = await self._check_fence(
+                    connection,
+                    row["agent_instance_id"],
+                    row["session_id"],
+                    expected_fence,
+                )
+                if (
+                    row["status"] != InboxState.CLAIMED.value
+                    or row["claimed_fence"] != int(expected_fence)
+                ):
+                    raise StaleFenceError(
+                        f"message {message_id!r} is not claimed at fence "
+                        f"{expected_fence}"
+                    )
+                assert_inbox_transition(
+                    InboxState(row["status"]), InboxState.DISCARDED
+                )
+                await connection.execute(
+                    "UPDATE kernel_inbox SET status='discarded' WHERE message_id=?",
+                    (message_id,),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+        await self._emit_activation(
+            control_event(
+                session_id=row["session_id"],
+                event_type="control.message_discarded",
+                payload={
+                    "message_id": message_id,
+                    "fencing_token": int(expected_fence),
+                },
+            ),
+            activation,
+            expected_fence,
+        )
+
+    async def inbox_depth(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> int:
+        connection = await self._connect()
+        sql = (
+            "SELECT COUNT(*) AS depth FROM kernel_inbox "
+            "WHERE agent_instance_id=? AND status='accepted'"
+        )
+        params: tuple[Any, ...] = (agent_instance_id,)
+        if session_id is not None:
+            sql += " AND session_id=?"
+            params += (session_id,)
+        row = await self._fetchone(connection, sql, params)
+        return int(row["depth"] if row is not None else 0)
+
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int
     ) -> InboxMessage | None:
@@ -598,7 +822,10 @@ class SQLiteAgentKernelStore:
             if isinstance(self._events, SessionServiceEventStore)
             else None
         )
-        if not isinstance(service, LocalSessionService) or service.db_path != self.db_path.resolve():
+        if (
+            not isinstance(service, LocalSessionService)
+            or service.db_path != self.db_path.resolve()
+        ):
             raise RuntimeError(
                 "SQLite InteractionLedger requires SessionEventStore backed by the "
                 "same SQLite database"
@@ -1286,6 +1513,32 @@ class SQLiteAgentKernelStore:
                 await connection.rollback()
                 raise
 
+    async def current_lease(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> ActivationLease | None:
+        connection = await self._connect()
+        sql = (
+            "SELECT * FROM kernel_activations WHERE agent_instance_id=? "
+            "AND released=0 AND lease_expires_at>?"
+        )
+        params: tuple[Any, ...] = (agent_instance_id, time.time())
+        if session_id is not None:
+            sql += " AND session_id=?"
+            params += (session_id,)
+        sql += " ORDER BY lease_expires_at DESC LIMIT 1"
+        row = await self._fetchone(connection, sql, params)
+        if row is None:
+            return None
+        return ActivationLease(
+            agent_instance_id=row["agent_instance_id"],
+            activation_id=row["activation_id"],
+            fencing_token=int(row["fencing_token"]),
+            lease_expires_at=row["lease_expires_at_iso"],
+            bundle_digest=row["bundle_digest"],
+            runtime_type=row["runtime_type"],
+            capability_digest=row["capability_digest"],
+        )
+
     # ------------------------------------------------------------------ events
 
     async def append_event(
@@ -1358,6 +1611,22 @@ class SQLiteAgentKernelStore:
             updated_at=row["updated_at"],
             metadata=json.loads(row["metadata_json"]),
         )
+
+    async def find_active_run(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> RunRecord | None:
+        connection = await self._connect()
+        sql = (
+            "SELECT run_id FROM kernel_runs WHERE agent_instance_id=? "
+            "AND state IN ('running','paused','waiting')"
+        )
+        params: tuple[Any, ...] = (agent_instance_id,)
+        if session_id is not None:
+            sql += " AND session_id=?"
+            params += (session_id,)
+        sql += " ORDER BY created_at LIMIT 1"
+        row = await self._fetchone(connection, sql, params)
+        return await self.load_run(row["run_id"]) if row is not None else None
 
     async def save_run_transition(
         self, run: RunRecord, *, expected_fence: int
