@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from conversation_items_browser_e2e import (
+    AGENT_ID,
     CanonicalConversationEvents,
     RuntimeFixture,
     _runtime_inspector,
@@ -29,6 +31,9 @@ def run(output: Path) -> list[dict]:
             workspace, codex_runtime_inspector=_runtime_inspector, runtime_executor=fixture.executor
         )
         _seed_agent(service)
+        asyncio.run(service.session_service.create_session(
+            AGENT_ID, "local-user", "existing-before-new-chat"
+        ))
         with studio_server(workspace, service=service) as base, sync_playwright() as pw:
             browser = pw.chromium.launch()
             for width, theme in [(1440, "light"), (1024, "dark"), (768, "light"), (390, "dark")]:
@@ -97,7 +102,14 @@ def run(output: Path) -> list[dict]:
                                 page.get_by_role("dialog", name="工作区导航")
                             ).not_to_be_visible()
                         capture("destination-" + route)
-                open_navigation().get_by_role("button", name="新对话", exact=True).click()
+                with page.expect_response(
+                    lambda response: response.url.endswith("/CreateSession")
+                ) as created:
+                    open_navigation().get_by_role("button", name="新对话", exact=True).click()
+                assert created.value.ok
+                assert created.value.json()["Code"] == 0
+                session_id = created.value.json()["Data"]["Session"]["SessionId"]
+                assert session_id != "existing-before-new-chat"
                 expect(page.get_by_role("heading", name="有什么可以帮你？")).to_be_visible()
                 expect(page.get_by_role("heading", name="新对话", exact=True)).to_have_count(1)
                 expect(

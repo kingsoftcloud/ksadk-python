@@ -48,6 +48,16 @@ beforeEach(() => {
 });
 
 describe("workspace-scoped quick drafts", () => {
+  it("restores and saves a Harness draft from the master runtime catalog", async () => {
+    const draft = savedDraft();
+    values.set(key, JSON.stringify({ ...draft, fields: { ...draft.fields, runtimeType: "harness" } }));
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /角色与系统提示词/ })).toHaveValue(fields.systemPrompt));
+    await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    expect(JSON.parse(values.get(key)!).fields.runtimeType).toBe("harness");
+    expect(showToast).toHaveBeenCalledWith("草稿已保存", expect.any(String));
+  });
+
   it("saves an incomplete form and restores it after mounting again", async () => {
     const user = userEvent.setup();
     const view = renderPage();

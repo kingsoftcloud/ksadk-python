@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, Response
 
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.runtime_state import load_state as load_runtime_state
 from ksadk.server.factory import (
     RuntimeAppState,
@@ -28,6 +29,7 @@ from ksadk.server.terminal_sessions import (
     register_terminal_routes,
 )
 from ksadk.sessions import Session
+from ksadk.sessions.invocation_identity import identity_scope_ref
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.ui_config import UI_PROFILE_CUSTOM, resolve_ui_config
 from ksadk_runtime_common.workspace_files import (
@@ -35,6 +37,10 @@ from ksadk_runtime_common.workspace_files import (
     workspace_files_enabled,
 )
 
+from ..invocation_identity import (
+    trusted_invocation_identity_from_headers,
+    trusted_invocation_identity_headers,
+)
 from . import dependencies as deps
 from .routers import health_meta_router
 
@@ -92,8 +98,17 @@ _MAX_REFERENCE_TEXT_BYTES = 3_000_000
 _UPLOAD_URI_SCHEME = "ksadk-upload://"
 
 
-def _workspace_root_dir() -> Path:
-    return Path(resolve_local_session_dir()) / "workspace"
+def _workspace_root_dir(
+    invocation_identity: PlatformIdentityContext | None = None,
+) -> Path:
+    root = Path(resolve_local_session_dir()) / "workspace"
+    if invocation_identity is not None and not invocation_identity.is_empty:
+        root = root / "identities" / identity_scope_ref(invocation_identity)
+    return root
+
+
+def _workspace_request_root(request: Request) -> Path:
+    return _workspace_root_dir(trusted_invocation_identity_from_headers(request.headers))
 
 
 _NATIVE_TUI_FRAMEWORKS = {"hermes", "openclaw"}
@@ -104,10 +119,18 @@ def _current_framework() -> str:
     return str(context.runtime_type if context is not None else "").strip().lower()
 
 
-def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
+def _build_native_terminal_capability(
+    framework: str,
+    invocation_identity: PlatformIdentityContext | None = None,
+) -> dict[str, Any]:
+    isolated_identity = (
+        isinstance(invocation_identity, PlatformIdentityContext)
+        and not invocation_identity.is_empty
+    )
     enabled = (
         native_terminal_supported()
         and str(framework or "").strip().lower() in _NATIVE_TUI_FRAMEWORKS
+        and not isolated_identity
     )
     return {
         "Enabled": enabled,
@@ -127,6 +150,7 @@ def _register_integrated_routers(app: FastAPI, state: RuntimeAppState) -> None:
         create_workspace_files_router(
             root_getter=_workspace_root_dir,
             enabled_getter=lambda: workspace_files_enabled(default=True),
+            request_root_getter=_workspace_request_root,
         )
     )
     state.terminal_manager = TerminalSessionManager(
@@ -137,6 +161,9 @@ def _register_integrated_routers(app: FastAPI, state: RuntimeAppState) -> None:
         app,
         state.terminal_manager,
         bind_context=lambda: bind_runtime_state(state),
+        identity_access_allowed=lambda headers: (
+            trusted_invocation_identity_from_headers(headers).is_empty
+        ),
     )
 
 
@@ -631,6 +658,7 @@ async def _workspace_runtime_request(
     *,
     params: Optional[Dict[str, Any]] = None,
     files: Optional[Dict[str, Any]] = None,
+    invocation_identity: PlatformIdentityContext | None = None,
 ) -> httpx.Response:
     runtime_app = get_state().app
     if runtime_app is None:
@@ -640,6 +668,7 @@ async def _workspace_runtime_request(
         response = await client.request(
             method,
             runtime_path,
+            headers=trusted_invocation_identity_headers(invocation_identity),
             params=params,
             files=files,
         )

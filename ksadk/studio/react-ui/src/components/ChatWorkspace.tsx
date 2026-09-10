@@ -13,6 +13,8 @@ export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
 interface ChatWorkspaceProps {
   ref?: Ref<ChatWorkspaceHandle>;
+  newChatRequest?: number;
+  onNewChatStarted?: () => void;
   integratedHistory?: boolean;
   onStreamingChange?: (streaming: boolean) => void;
   historyHost?: HTMLElement | null;
@@ -66,10 +68,19 @@ export function ChatWorkspace({
   refreshTick = 0,
   requestedSessionId = "",
   onSessionChanged,
+  newChatRequest = 0, onNewChatStarted,
   ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
+  const startedNewChatRequest = useRef(0);
+  useEffect(() => {
+    if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
+    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
+      || chat.isLoadingSessions || chat.isStreaming || startedNewChatRequest.current === newChatRequest) return;
+    startedNewChatRequest.current = newChatRequest;
+    void Promise.resolve(chat.createNewSession()).finally(() => onNewChatStarted?.());
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.isStreaming, chat.createNewSession]);
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
@@ -275,7 +286,7 @@ export function ChatWorkspace({
       <section className="chat-conversation" aria-label={`与 ${agentName} 对话`}>
         {headerHost ? (active ? createPortal(conversationHeader, headerHost) : null) : conversationHeader}
 
-        {chat.bootstrapStatus === "loading" ? (
+        {chat.bootstrapStatus === "loading" || newChatRequest !== 0 ? (
           <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent">
             <i />
           </div>

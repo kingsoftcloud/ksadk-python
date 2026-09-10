@@ -62,6 +62,7 @@ from ksadk.kernel.store import (
     control_event,
     new_message_id,
 )
+from ksadk.kernel.worker_identity import prepare_worker_identity
 from ksadk.runtime.adapter import (
     CancelResult,
     PauseResult,
@@ -75,6 +76,7 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.adapter import (
     ResumeTarget as AdapterResumeTarget,
 )
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +123,14 @@ class AgentKernelWorker:
         session_events: object | None = None,
         interaction_providers: Mapping[str, InteractionProvider] | None = None,
         start_request_defaults: Mapping[str, object] | None = None,
+        session_service: object | None = None,
     ) -> None:
         self._store = store
         self._adapter_factory = adapter_factory
         # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
         # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
         self._session_events = session_events
+        self._session_service = session_service
         # Deployment-owned defaults (model, prompt and sandbox) come from the
         # admitted immutable manifest. Server may attach a bounded per-turn
         # model/approval selector to the signed command; the worker validates
@@ -429,10 +433,16 @@ class AgentKernelWorker:
         }
         if approval_mode in approval_overrides:
             request_config["approval_mode"] = approval_overrides[approval_mode]
+        effective_user_id, invocation_identity = await prepare_worker_identity(
+            command=command,
+            defaults=defaults,
+            session_service=self._session_service,
+        )
+
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
-                user_id=str(command.tenant_id or "agent-kernel"),
+                user_id=effective_user_id,
                 session_id=command.session_id,
                 agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
                 model=selected_model,
@@ -447,6 +457,11 @@ class AgentKernelWorker:
                     ),
                     "command_id": str(command.command_id),
                     "run_id": run_id,
+                    **(
+                        {TRUSTED_IDENTITY_METADATA_KEY: dict(invocation_identity)}
+                        if isinstance(invocation_identity, Mapping)
+                        else {}
+                    ),
                     **continuation_metadata,
                 },
             )
@@ -933,10 +948,7 @@ class AgentKernelWorker:
         # e.g. calling LangGraph checkpoint resume with a Codex live handle
         # would acknowledge a response that can never reach the original run.
         provider = execution.interaction_provider
-        if (
-            provider.provider_id != record.provider_id
-            or provider.mode == "unavailable"
-        ):
+        if provider.provider_id != record.provider_id or provider.mode == "unavailable":
             raise AgentKernelError(
                 RUNTIME_INTERACTION_UNAVAILABLE,
                 f"interaction provider {record.provider_id!r} cannot deliver "

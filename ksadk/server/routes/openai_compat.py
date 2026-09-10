@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -17,14 +17,22 @@ from ksadk.conversations.runtime_payloads import (
     build_responses_payload,
     extract_responses_resume_input,
 )
+from ksadk.conversations.runtime_persistence import ensure_conversation_session
 from ksadk.conversations.runtime_streaming import (
     stream_runtime_conversation_turn,
     stream_runtime_responses_conversation_turn,
 )
 from ksadk.kernel.ingress import kernel_route_active
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.factory import get_runtime_execution
+from ksadk.sessions.invocation_identity import identity_scope_ref
 
+from ..invocation_identity import (
+    coerce_trusted_invocation_identity,
+    inject_trusted_invocation_identity,
+    resolve_trusted_invocation_identity,
+)
 from . import dependencies as deps
 from .checkpoint_resolution import _resolve_checkpoint_resume_input_from_session
 from .kernel_ingress import (
@@ -97,13 +105,26 @@ async def list_openai_models():
 
 
 @openai_compat_router.post("/v1/responses")
-async def responses(request: ResponsesRequest):
+async def responses(
+    request: ResponsesRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """OpenAI Responses 兼容接口。"""
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     executor, launch_context = get_runtime_execution()
     if kernel_route_active():
-        return await _kernel_responses(request, launch_context)
+        return await _kernel_responses(request, launch_context, invocation_identity)
     resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
     agent_id = _runtime_agent_id(launch_context)
+    authorized_session = await ensure_conversation_session(
+        agent_id=agent_id,
+        user_id=resolved_user_id,
+        session_id=resolved_session_id,
+        session_service_provider=deps.resolve_session_service,
+        invocation_identity=invocation_identity,
+    )
+    resolved_session_id = authorized_session.id
+    resolved_user_id = authorized_session.user_id
 
     resume_input = extract_responses_resume_input(request.input)
     resume_input = await _resolve_checkpoint_resume_input_from_session(
@@ -112,8 +133,20 @@ async def responses(request: ResponsesRequest):
         session_id=resolved_session_id,
         resume_input=resume_input,
     )
-    messages = [] if resume_input is not None else normalize_responses_input(request.input)
+    messages = (
+        []
+        if resume_input is not None
+        else normalize_responses_input(
+            request.input,
+            owner_scope_ref=(
+                identity_scope_ref(invocation_identity)
+                if not invocation_identity.is_empty
+                else None
+            ),
+        )
+    )
     custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
+    request_metadata = inject_trusted_invocation_identity(request_metadata, invocation_identity)
     if request.previous_response_id:
         request_metadata["previous_response_id"] = request.previous_response_id
     if request.prompt_cache_key:
@@ -193,10 +226,12 @@ async def responses(request: ResponsesRequest):
     )
 
 
-async def _kernel_responses(request: ResponsesRequest, launch_context):
+async def _kernel_responses(
+    request: ResponsesRequest,
+    launch_context,
+    invocation_identity: PlatformIdentityContext,
+):
     """kernel 路径（灰度 opt-in）：Responses -> AgentControlCommand -> receipt。"""
-
-    from ksadk.conversations.runtime_persistence import ensure_conversation_session
 
     resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
     session = await ensure_conversation_session(
@@ -204,6 +239,7 @@ async def _kernel_responses(request: ResponsesRequest, launch_context):
         user_id=resolved_user_id,
         session_id=resolved_session_id,
         session_service_provider=deps.resolve_session_service,
+        invocation_identity=invocation_identity,
     )
     session_id = session.id
     metadata = request.metadata if isinstance(request.metadata, dict) else {}
@@ -212,7 +248,12 @@ async def _kernel_responses(request: ResponsesRequest, launch_context):
         or _metadata_invocation_id(metadata)
         or f"resp_{uuid.uuid4().hex}"
     )
-    messages = normalize_responses_input(request.input)
+    messages = normalize_responses_input(
+        request.input,
+        owner_scope_ref=(
+            identity_scope_ref(invocation_identity) if not invocation_identity.is_empty else None
+        ),
+    )
     response_id = f"resp_{uuid.uuid4().hex}"
     receipt, trusted = await _kernel_submit(
         mapper="map_responses_request",
@@ -221,6 +262,7 @@ async def _kernel_responses(request: ResponsesRequest, launch_context):
         content=messages,
         correlation_ref=response_id,
         source_kind="responses",
+        invocation_identity=invocation_identity,
     )
     if receipt.status not in ("accepted", "duplicate"):
         return _kernel_error_response(receipt)
@@ -250,14 +292,33 @@ async def _kernel_responses(request: ResponsesRequest, launch_context):
 
 
 @openai_compat_router.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(
+    request: ChatCompletionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
+    invocation_identity = coerce_trusted_invocation_identity(invocation_identity)
     executor, launch_context = get_runtime_execution()
-    messages = normalize_kop_messages(request.messages)
     agent_id = _runtime_agent_id(launch_context)
-    resolved_user_id = _clean_optional_string(request.user) or "user"
+    requested_user_id = _clean_optional_string(request.user) or "user"
+    authorized_session = await ensure_conversation_session(
+        agent_id=agent_id,
+        user_id=requested_user_id,
+        session_id=request.session_id,
+        session_service_provider=deps.resolve_session_service,
+        invocation_identity=invocation_identity,
+    )
+    resolved_user_id = authorized_session.user_id
+    resolved_session_id = authorized_session.id
+    messages = normalize_kop_messages(
+        request.messages,
+        owner_scope_ref=(
+            identity_scope_ref(invocation_identity) if not invocation_identity.is_empty else None
+        ),
+    )
     account_id = _clean_optional_string(request.account_id)
     custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
+    request_metadata = inject_trusted_invocation_identity(request_metadata, invocation_identity)
     invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
@@ -269,7 +330,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 agent_id=agent_id,
                 user_id=resolved_user_id,
                 messages=messages,
-                session_id=request.session_id,
+                session_id=resolved_session_id,
                 model=request.model,
                 model_metadata=request.model_metadata,
                 model_options=request.model_options,
@@ -290,7 +351,7 @@ async def chat_completions(request: ChatCompletionRequest):
         agent_id=agent_id,
         user_id=resolved_user_id,
         messages=messages,
-        session_id=request.session_id,
+        session_id=resolved_session_id,
         model=request.model,
         model_metadata=request.model_metadata,
         model_options=request.model_options,

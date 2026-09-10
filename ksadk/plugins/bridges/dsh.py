@@ -998,6 +998,17 @@ class DshProfilePluginBridge:
     def _prepare_source(self, source: str) -> _PreparedSource:
         value = source.strip()
         candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            # dsh CLI 以 Profile 目录为 cwd 解析 add 的源参数；相对当前工作目录
+            # 存在的本地源必须先绝对化，否则会被写成指向不存在位置的 link: 依赖。
+            workspace_relative = self._cwd / candidate
+            if workspace_relative.exists():
+                candidate = workspace_relative
+            elif value.endswith(".tgz"):
+                raise DshPluginMutationError(
+                    f"local DSH plugin source does not exist: {value} "
+                    f"(resolved against {self._cwd})"
+                )
         if not candidate.is_absolute() or not candidate.exists():
             return _PreparedSource(value, "", "tgz", "")
         local = candidate.resolve()

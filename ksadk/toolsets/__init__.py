@@ -33,6 +33,7 @@ from ksadk.toolsets.skills import (
     list_skill_spaces,
     list_skills,
     load_skill,
+    preview_skill,
     search_skills,
 )
 from ksadk.toolsets.web import _WEB_TOOL_POLICIES, get_web_tools, web_fetch, web_search
@@ -94,6 +95,7 @@ _TOOLSET_DESCRIPTORS: dict[
         (list_skill_spaces, _SKILL_TOOL_POLICIES["list_skill_spaces"], {}),
         (search_skills, _SKILL_TOOL_POLICIES["search_skills"], {}),
         (load_skill, _SKILL_TOOL_POLICIES["load_skill"], {}),
+        (preview_skill, _SKILL_TOOL_POLICIES["load_skill"], {}),
         (
             execute_skills,
             _SKILL_TOOL_POLICIES["execute_skills"],
@@ -969,6 +971,7 @@ __all__ = [
     "get_platform_tools",
     "get_sandbox_tools",
     "get_skill_tools",
+    "preview_skill",
     "get_workspace_tools",
     "get_web_tools",
     "multi_edit_workspace_file",

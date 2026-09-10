@@ -460,6 +460,31 @@ def _main():
     except ImportError:
         pass
 
+    # Studio and ordinary CLI commands consume the same saved workspace values.
+    from pathlib import Path
+
+    from ksadk.studio.configuration import WorkspaceConfiguration
+    from ksadk.studio.workspace import Workspace
+
+    try:
+        root = Path.cwd()
+        if any(
+            (root / ".agentkit" / name).is_file()
+            for name in ("config.yaml", "settings.yaml", "secrets.env")
+        ):
+            configuration = WorkspaceConfiguration(Workspace(root))
+            effective = configuration.environment()
+            os.environ.update(effective)
+            if (
+                "codexProxy" in configuration.settings()
+                and "KSADK_CODEX_USE_PROXY" not in effective
+            ):
+                os.environ.pop("KSADK_CODEX_USE_PROXY", None)
+    except Exception as error:
+        cli_error = cli_error_from_exception(error, show_help=False)
+        emit_cli_error(cli_error)
+        raise SystemExit(cli_error.exit_code) from None
+
     # 全局配置回退: .env 未设置的变量从 ~/.agentengine/settings.json 补充
     try:
         from ksadk.configs.global_config import get_env_from_global_config

@@ -129,6 +129,11 @@ class MemoryCoordinator:
                 latency_ms=0,
                 accounting_accuracy="opaque",
             )
+        # TTL / 状态过滤（长任务方案 §7.2）：过期与已 supersede 的记录不进召回。
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        active = [r for r in result.records if r.is_active_now(now_iso=now_iso)]
+        if len(active) != len(result.records):
+            result = replace(result, records=active)
         return result
 
     def list_core(self, request: CoreMemoryRequest) -> list[MemoryRecord]:
@@ -270,6 +275,11 @@ class MemoryCoordinator:
                 by_id[record.memory_id] = record
         return list(by_id.values())
 
+    def find_existing_for_candidate(self, candidate: MemoryCandidate) -> MemoryRecord | None:
+        """Return the active fact occupying the candidate's logical slot."""
+        records = self._find_active_slot_records(candidate)
+        return records[0] if records else None
+
     def propose_and_commit(
         self,
         candidate: MemoryCandidate,
@@ -346,7 +356,7 @@ class MemoryCoordinator:
             importance=candidate.importance,
             valid_from=now_iso,
             valid_to="",
-            expires_at="",
+            expires_at=candidate.expires_at,
             source_session_id="",
             source_event_ids=list(candidate.source_event_ids),
             source_seq_range=None,
@@ -359,17 +369,23 @@ class MemoryCoordinator:
                 "operation": evaluation.operation,
                 **({"slot_key": candidate.slot_key} if candidate.slot_key else {}),
                 **(
-                    {
-                        "supersedes": [
-                            item.memory_id for item in conflicting_records or [existing]
-                        ]
-                    }
+                    {"supersedes": [item.memory_id for item in conflicting_records or [existing]]}
                     if evaluation.operation == "update" and existing is not None
                     else {}
                 ),
             },
             created_at=now_iso,
             updated_at=now_iso,
+            # 长任务方案 §7.2：来源 Artifact / 敏感级别 / 写策略 / TTL / supersede 链。
+            source_artifact_refs=tuple(candidate.source_artifact_refs),
+            source_artifacts=tuple(candidate.source_artifacts),
+            sensitivity=candidate.sensitivity,
+            write_policy=candidate.write_policy,
+            supersedes=tuple(
+                item.memory_id for item in (conflicting_records or [existing]) if item is not None
+            )
+            if evaluation.operation == "update" and existing is not None
+            else (),
         )
         self._provider.upsert(
             record,

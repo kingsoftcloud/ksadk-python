@@ -72,6 +72,49 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("creates Harness through the manual wizard and preserves composed Tool bindings", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation(async (input, init) => {
+      const result = await base(input, init);
+      if (String(input) === "/api/v1/agent-templates/blank:compose") {
+        const payload = await result.json();
+        payload.spec.bindings.tools = [{ resourceId: "tool-review" }];
+        payload.spec.capabilities = { tools: ["tool-review"] };
+        return response(payload);
+      }
+      return result;
+    });
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: "KsADK Harness" }));
+    expect(screen.getByText("本地运行：已授权 · 高级权限").closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getByText("本地运行：已授权 · 高级权限"));
+    expect(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ })).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    expect(await screen.findByText("请先确认 KsADK Harness 本机执行权限")).toBeVisible();
+    expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
+    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(await screen.findByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByRole("button", { name: "一键优化 Prompt" });
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.runtimeType).toBe("harness");
+      expect(request.spec.security.allowedPermissions).toContain("process:host-user");
+      expect(request.spec.bindings.tools).toEqual([{ resourceId: "tool-review" }]);
+      expect(request.spec.capabilities.tools).toEqual(["tool-review"]);
+    });
+  });
+
   it("defaults the shipped Codex permission and saves it with the Agent", async () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation((input, init) => String(input) === "/api/v1/agent-providers"

@@ -20,6 +20,7 @@ mutation 统一收敛到 ``AgentKernel.submit``：
 kernel 路径下命令的实际执行由 ``AgentWorker``（Task 6/7 交付）认领并驱动
 RuntimeAdapter；ingress 只 submit + 订阅投影，不直接触碰 RuntimeExecutor。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -220,15 +221,11 @@ def trusted_context(
     # mode the local signature remains unverifiable against Server JWKS, so
     # this does not create a Server-admission bypass.
     if agent_instance_id == "local-agent":
-        agent_instance_id = (
-            os.environ.get("AGENT_INSTANCE_ID", "").strip() or agent_instance_id
-        )
+        agent_instance_id = os.environ.get("AGENT_INSTANCE_ID", "").strip() or agent_instance_id
     if launch_context is not None:
         config = getattr(launch_context, "config", None) or {}
         tenant_id = str(config.get("tenant_id") or tenant_id)
-        agent_instance_id = str(
-            config.get("agent_instance_id") or agent_instance_id
-        )
+        agent_instance_id = str(config.get("agent_instance_id") or agent_instance_id)
     issuer = issuer or _default_issuer()
     permit = issuer.issue(
         tenant_id=tenant_id,
@@ -530,9 +527,7 @@ async def subscribe_projected(
         subscribe_kwargs["should_stop"] = should_stop
     if "timeout" in _params:
         subscribe_kwargs["timeout"] = timeout
-    async for envelope in kernel.subscribe(
-        subscription, permit=trusted.permit, **subscribe_kwargs
-    ):
+    async for envelope in kernel.subscribe(subscription, permit=trusted.permit, **subscribe_kwargs):
         projected = envelope if projector is None else projector(envelope)
         if projected is None:
             continue
@@ -746,6 +741,7 @@ def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
     jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
     if jwks_url:
         from ksadk.kernel.authorization import AgentControlPermitVerifier
+
         source = _remote_jwks_source(jwks_url)
         if _is_hosted():
             # hosted 模式：server JWKS 是唯一信任源，绝不合并本地公钥。
@@ -783,12 +779,17 @@ async def _ensure_shared_log_session(command: Any) -> None:
     if service is None:
         return
     try:
-        if await service.get_session(session_id) is None:
-            await service.create_session(
-                agent_id=str(getattr(command, "agent_instance_id", "") or "runtime"),
-                user_id=str(getattr(command, "tenant_id", "") or "tenant"),
-                session_id=session_id,
-            )
+        from ksadk.conversations.runtime_persistence import ensure_conversation_session
+
+        payload = getattr(command, "payload", {})
+        identity = payload.get("invocation_identity") if isinstance(payload, Mapping) else None
+        await ensure_conversation_session(
+            agent_id=str(getattr(command, "agent_instance_id", "") or "runtime"),
+            user_id=str(getattr(command, "tenant_id", "") or "tenant"),
+            session_id=session_id,
+            session_service_provider=lambda: service,
+            invocation_identity=identity,
+        )
     except Exception:
         pass
 
@@ -949,9 +950,7 @@ def _build_kernel_router() -> Any:
             )
             # local 仅为开发便利自签，query 的 authorization_ref 必须同 permit
             # 本体一致，避免错误地用 caller 自报值触发恒 fail-closed。
-            query = query.model_copy(
-                update={"authorization_ref": trusted.permit.permit_id}
-            )
+            query = query.model_copy(update={"authorization_ref": trusted.permit.permit_id})
             permit = trusted.permit
         snapshot = await kernel.status(query, permit=permit)
         return JSONResponse(json.loads(snapshot.model_dump_json()))
@@ -981,10 +980,7 @@ def _build_kernel_router() -> Any:
                 content={
                     "error": {
                         "Code": "missing_resource_identity",
-                        "Message": (
-                            "hosted subscription requires tenant_id and "
-                            "agent_instance_id"
-                        ),
+                        "Message": ("hosted subscription requires tenant_id and agent_instance_id"),
                     }
                 },
             )
@@ -1048,9 +1044,7 @@ def _build_kernel_router() -> Any:
                 frame.setdefault("seq", seq)
                 if not isinstance(envelope, dict):
                     frame.setdefault("family", getattr(envelope, "family", None))
-                    frame.setdefault(
-                        "family_version", getattr(envelope, "family_version", None)
-                    )
+                    frame.setdefault("family_version", getattr(envelope, "family_version", None))
                     frame.setdefault("event_type", getattr(envelope, "event_type", None))
                     if getattr(envelope, "run_id", None):
                         frame.setdefault("run_id", envelope.run_id)

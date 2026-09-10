@@ -80,7 +80,7 @@ class MessageInput(ContractModel):
 class QuickAuthoringRequest(ContractModel):
     name: str = Field(min_length=1, max_length=128)
     slug: str | None = Field(default=None, min_length=1, max_length=63)
-    runtime_type: Literal["codex", "adk", "langgraph", "plugin"]
+    runtime_type: Literal["harness", "codex", "adk", "langgraph", "plugin"]
     template: Literal["blank", "research"] = "blank"
     description: str = Field(default="", max_length=1024)
     spec: AgentSpec | None = None
@@ -100,7 +100,7 @@ class ConversationAuthoringRequest(ContractModel):
     # Runtime is a Studio-owned deployment choice.  The authoring model only
     # supplies semantic intent and must not choose an incompatible framework
     # source contract on its own.
-    runtime_type: Literal["codex", "adk", "langgraph"] = "codex"
+    runtime_type: Literal["harness", "codex", "adk", "langgraph"] = "codex"
     agent_model_profile_ids: list[str] = Field(default_factory=list, max_length=100)
     agent_default_model_profile_id: str | None = Field(
         default=None,

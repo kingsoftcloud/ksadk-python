@@ -24,6 +24,7 @@ from ksadk.cli.error_utils import remote_error, resolution_error
 from ksadk.cli.model_catalog import fetch_provider_model_metadata
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
 from ksadk.cli.resource_common import (
+    build_component_config,
     CONTEXT_SETTINGS,
     ResourceActionSet,
     ResourceDescriptor,
@@ -163,6 +164,8 @@ def _build_hermes_update_payload(
         update_payload["storage"] = storage_config
     if network_payload:
         update_payload["network"] = network_payload
+    if payload.get("component_config"):
+        update_payload["component_config"] = payload["component_config"]
     return update_payload
 
 
@@ -428,6 +431,9 @@ def _render_hermes_dry_run(
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.hermes）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@click.option("--skill-space-id", "skill_space_ids", multiple=True, help="Skill 中心空间 ID（可重复传入多个）")
+@click.option("--sandbox-template-id", default=None, help="沙箱模板 ID（启用 E2B 沙箱执行 execute_skills）")
+@click.option("--sandbox-api-key", default=None, help="沙箱 API Key（可选，默认从服务端注入）")
 @env_options
 @click.option(
     "--observability/--no-observability",
@@ -468,6 +474,9 @@ def deploy(
     subnet_id: Optional[str],
     security_group_id: Optional[str],
     availability_zone: Optional[str],
+    skill_space_ids: tuple[str, ...],
+    sandbox_template_id: Optional[str],
+    sandbox_api_key: Optional[str],
     dry_run: bool,
     output_mode: str | None,
 ):
@@ -510,6 +519,9 @@ def deploy(
             include_storage_on_update=include_storage_on_update,
             extra_env=extra_env,
             env_file=env_file,
+            skill_space_ids=skill_space_ids,
+            sandbox_template_id=sandbox_template_id,
+            sandbox_api_key=sandbox_api_key,
             **network_cli_kwargs(
                 enable_public_access=enable_public_access,
                 enable_vpc_access=enable_vpc_access,
@@ -551,6 +563,9 @@ async def _deploy_hermes(
     subnet_id: str | None = None,
     security_group_id: str | None = None,
     availability_zone: str | None = None,
+    skill_space_ids: tuple[str, ...] = (),
+    sandbox_template_id: str | None = None,
+    sandbox_api_key: str | None = None,
     dry_run: bool = False,
 ) -> None:
     project_dir = Path(".").resolve()
@@ -606,6 +621,11 @@ async def _deploy_hermes(
         auto_dotenv=auto_dotenv,
         shell_keys=shell_keys,
     )
+    component_config = build_component_config(
+        skill_space_ids=skill_space_ids,
+        sandbox_template_id=sandbox_template_id,
+        sandbox_api_key=sandbox_api_key,
+    )
     payload = {
         "name": agent_name,
         "description": "Hermes Agent (managed by AgentEngine)",
@@ -619,6 +639,8 @@ async def _deploy_hermes(
         "env_vars": env_vars,
         "ui_config": {"profile": "hermes", "path": "/", "url": None},
     }
+    if component_config:
+        payload["component_config"] = component_config
     storage_config = build_storage_config(
         "hermes",
         no_storage=no_storage,

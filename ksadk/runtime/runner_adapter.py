@@ -54,7 +54,10 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
-from ksadk.runtime_context import session_invocation_context
+from ksadk.runtime_context import (
+    TRUSTED_IDENTITY_METADATA_KEY,
+    session_invocation_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,13 +285,15 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         # 暂存 start 输入,供 stream() 使用。
         self._active_runs[run_id].__dict__["_start_request"] = request
         snapshot = request.metadata.get("session_context")
-        if snapshot is not None:
+        invocation_identity = request.metadata.get(TRUSTED_IDENTITY_METADATA_KEY)
+        if snapshot is not None or invocation_identity is not None:
             self._active_runs[run_id].__dict__["_tag_context"] = session_invocation_context(
                 snapshot,
                 agent_id=request.agent_id or "",
                 user_id=request.user_id,
                 session_id=request.session_id,
                 runner_type=self._runtime_type,
+                identity=invocation_identity,
             )
         if prepared_start is not None:
             self._active_runs[run_id].__dict__["_prepared_start"] = prepared_start
@@ -322,8 +327,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         attach = getattr(self._runner, "attach_runtime_handle", None)
         if not callable(attach):
             raise UnsupportedControlError(
-                f"runner for {self._runtime_type!r} has no durable "
-                "attach_runtime_handle capability"
+                f"runner for {self._runtime_type!r} has no durable attach_runtime_handle capability"
             )
         ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
         restored = attach(handle)
@@ -457,8 +461,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         checkpoint_id = str(handle.native_ref.get("checkpoint_id") or "").strip()
         if not checkpoint_id:
             raise UnsupportedControlError(
-                f"{self._runtime_type} runner has no native checkpoint for run "
-                f"{handle.run_id!r}"
+                f"{self._runtime_type} runner has no native checkpoint for run {handle.run_id!r}"
             )
         return CheckpointDescriptor(
             checkpoint_id=checkpoint_id,
@@ -645,9 +648,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 {
                     "input": override.get("input"),
                     "session_id": handle.session_id,
-                    "invocation_id": str(
-                        merged.get("invocation_id") or handle.run_id
-                    ),
+                    "invocation_id": str(merged.get("invocation_id") or handle.run_id),
                     "metadata": {
                         **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
                         **dict(override.get("metadata") or {}),

@@ -73,6 +73,8 @@ from ksadk.conversations.runtime_resume import (
 )
 from ksadk.ids import new_run_id
 from ksadk.model_policy import model_policy_options_for_model
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY, PlatformIdentityContext
+from ksadk.session_context import split_session_context
 from ksadk.sessions import SessionEvent, resolve_session_service
 
 logger = logging.getLogger(__name__)
@@ -122,25 +124,25 @@ async def build_run_input(
     caller_run_trigger = trigger_from_resume_input(resume_input)
     provider = session_service_provider or resolve_session_service
     service = provider()
-    resolved_user_id = user_id
-    if session_id:
-        existing_session = await service.get_session(session_id)
-        if existing_session and existing_session.user_id:
-            resolved_user_id = existing_session.user_id
+    private_request_metadata = dict(request_metadata or {})
+    identity_payload = private_request_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, None)
+    invocation_identity = PlatformIdentityContext.from_payload(identity_payload)
 
     session = await ensure_conversation_session(
         agent_id=agent_id,
-        user_id=resolved_user_id,
+        user_id=user_id,
         session_id=session_id,
         session_service_provider=provider,
+        invocation_identity=invocation_identity,
     )
+    resolved_user_id = session.user_id
     resolved_session_id = session.id
     resolved_invocation_id = str(invocation_id or new_run_id(resolved_session_id))
     resolved_model_metadata = await _resolve_runtime_model_metadata(
         model,
         model_metadata=model_metadata,
     )
-    session_context, normalized_request_metadata = split_session_context(request_metadata)
+    session_context, normalized_request_metadata = split_session_context(private_request_metadata)
     normalized_custom_metadata = dict(custom_metadata or {})
     policy_model = model or os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
     normalized_model_options = {
@@ -205,6 +207,8 @@ async def build_run_input(
                 session_context=session_context.to_payload(),
                 session_id=resolved_session_id,
                 invocation_id=resolved_invocation_id,
+                user_id=resolved_user_id,
+                agent_id=agent_id,
                 user_input="",
                 user_display_input="",
                 history=history,
@@ -323,6 +327,8 @@ async def build_run_input(
             session_context=session_context.to_payload(),
             session_id=resolved_session_id,
             invocation_id=resolved_invocation_id,
+            user_id=resolved_user_id,
+            agent_id=agent_id,
             user_input=resume_text,
             user_display_input=resume_text,
             history=history,

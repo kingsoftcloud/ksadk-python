@@ -86,7 +86,7 @@ def _canonical_endpoint(
 
 
 class ResourceAuthorityPolicy(PluginContractModel):
-    """Trusted host configuration; it is never populated from a Studio request."""
+    """Trusted local connection policy, not resource-binding claims or caller identity."""
 
     iam_endpoint: str
     iam_region: Identifier = "cn-beijing-6"
@@ -586,25 +586,26 @@ def resource_allowed_operations(config: ResourceConfig) -> tuple[ResourceOperati
     return ("list_skills", "search_skills", "load_skill", "read_skill_resource")
 
 
-def resource_authority_policy_from_environment() -> ResourceAuthorityPolicy | None:
+def resource_authority_policy_from_environment(environment=None) -> ResourceAuthorityPolicy | None:
     """Build a trusted policy from operator-owned local Studio environment."""
 
-    access_key = os.environ.get("KSYUN_ACCESS_KEY", "").strip()
-    secret_key = os.environ.get("KSYUN_SECRET_KEY", "").strip()
-    endpoint = os.environ.get("AGENTENGINE_SERVER_URL", "").strip()
+    environment = os.environ if environment is None else environment
+    access_key = environment.get("KSYUN_ACCESS_KEY", "").strip()
+    secret_key = environment.get("KSYUN_SECRET_KEY", "").strip()
+    endpoint = environment.get("AGENTENGINE_SERVER_URL", "").strip()
     if not access_key or not secret_key or not endpoint:
         return None
     logical_region = (
-        os.environ.get("AGENTENGINE_REGION")
-        or os.environ.get("KSYUN_REGION")
+        environment.get("AGENTENGINE_REGION")
+        or environment.get("KSYUN_REGION")
         or "cn-beijing-6"
     ).strip()
     region = (
-        os.environ.get("AGENTENGINE_PRE_CONTROL_REGION", "cn-beijing-6").strip()
+        environment.get("AGENTENGINE_PRE_CONTROL_REGION", "cn-beijing-6").strip()
         if logical_region.lower() == "pre-online"
         else logical_region
     )
-    iam_endpoint = os.environ.get("KSADK_RESOURCE_IAM_ENDPOINT", "").strip()
+    iam_endpoint = environment.get("KSADK_RESOURCE_IAM_ENDPOINT", "").strip()
     if not iam_endpoint:
         try:
             endpoint_host = (

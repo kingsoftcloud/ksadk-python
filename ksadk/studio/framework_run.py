@@ -110,10 +110,10 @@ class FrameworkRunSpecResolver:
     ) -> StudioRunSpec:
         build = self.builds.get(build_id)
         runtime_type = build.runtime_type.strip().lower()
-        if runtime_type not in {"adk", "langgraph"}:
+        if runtime_type not in {"harness", "adk", "langgraph"}:
             raise StudioError(
                 "BUILD_RUNTIME_UNSUPPORTED",
-                "Build 没有可由 RuntimeAdapter 启动的 ADK/LangGraph Runtime",
+                "Build 没有可由 RuntimeAdapter 启动的 KsADK Harness/ADK/LangGraph Runtime",
                 status_code=422,
                 details={"buildId": build_id, "runtimeType": runtime_type},
             )
@@ -127,27 +127,36 @@ class FrameworkRunSpecResolver:
         # execution, including an externally restored but integrity-valid ZIP.
         self._verify_bundle_security(bundle_root)
         project_dir = bundle_root / "runtime"
-        if not project_dir.is_dir():
+        if runtime_type != "harness" and not project_dir.is_dir():
             raise StudioError(
                 "BUILD_RUNTIME_SOURCE_MISSING",
                 "Build 缺少不可变 Runtime 源码快照",
                 status_code=500,
             )
-        detection = FrameworkDetector(str(project_dir)).detect()
-        if not detection.is_valid or detection.type.value != runtime_type:
+        detection = (
+            None if runtime_type == "harness" else FrameworkDetector(str(project_dir)).detect()
+        )
+        if runtime_type != "harness" and (
+            not detection.is_valid or detection.type.value != runtime_type
+        ):
             raise StudioError(
                 "BUILD_RUNTIME_DETECTION_MISMATCH",
                 "Build 中的 Runtime 源码与 Runtime Lock 不一致",
                 status_code=422,
                 details={
                     "expected": runtime_type,
-                    "detected": detection.type.value,
+                    "detected": detection.type.value if detection is not None else "",
                 },
             )
         selected_model = self._select_model(build.runtime_lock, model)
         resolved_path = bundle_root / "resolved-agent-spec.json"
         resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
         instructions = resolved.get("instructions") if isinstance(resolved, dict) else {}
+        model_spec = resolved.get("model") if isinstance(resolved, dict) else {}
+        endpoint_url = str((model_spec or {}).get("endpointUrl") or "").strip()
+        base_url = str((model_spec or {}).get("baseUrl") or "").strip()
+        if not base_url and endpoint_url.endswith("/chat/completions"):
+            base_url = endpoint_url[: -len("/chat/completions")]
         request_config = {
             "base_instructions": str((instructions or {}).get("system") or ""),
             # Preserve system/task as separate PCM sources while keeping the
@@ -166,8 +175,8 @@ class FrameworkRunSpecResolver:
             "memory_write_mode": _resolved_memory_write_mode(resolved),
             "flush_before_compaction": _resolved_memory_flush_before_compaction(resolved),
             "provider_ref": _resolved_memory_provider_ref(resolved),
-            "entry_point": detection.entry_point,
-            "agent_variable": detection.agent_variable,
+            "entry_point": detection.entry_point if detection is not None else "",
+            "agent_variable": detection.agent_variable if detection is not None else "",
         }
         # AgentVersion 的 ContextSpec 预算传到 Planner（方案 §8.2）
         context_spec = resolved.get("context") if isinstance(resolved, dict) else {}
@@ -185,9 +194,22 @@ class FrameworkRunSpecResolver:
         return StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type=runtime_type,
-                project_dir=project_dir,
+                project_dir=project_dir if project_dir.is_dir() else bundle_root,
                 detection=detection,
-                config=dict(detection.raw_config or {}),
+                config={
+                    **(dict(detection.raw_config or {}) if detection is not None else {}),
+                    "model": selected_model,
+                    "base_url": base_url,
+                    "prompt": "\n\n".join(
+                        value
+                        for value in (
+                            str((instructions or {}).get("system") or "").strip(),
+                            str((instructions or {}).get("task") or "").strip(),
+                        )
+                        if value
+                    ),
+                    "agent_id": build.agent_id,
+                },
             ),
             build_id=build.id,
             agent_id=build.agent_id,

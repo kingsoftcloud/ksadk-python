@@ -1615,6 +1615,9 @@ class AgentEngineClient:
             "EnableObservability": enable_observability,
             "EnvironmentVariables": env_vars,
         }
+        component_config = data.get("component_config")
+        if component_config:
+            advanced["ComponentConfig"] = component_config
         inbound_identity_auth = data.get("inbound_identity_auth")
         if inbound_identity_auth is not None:
             advanced["InboundIdentityAuth"] = inbound_identity_auth
@@ -1966,6 +1969,9 @@ class AgentEngineClient:
         inbound_identity_auth = data.get("inbound_identity_auth")
         if inbound_identity_auth is not None:
             advanced["InboundIdentityAuth"] = inbound_identity_auth
+        component_config = data.get("component_config")
+        if component_config:
+            advanced["ComponentConfig"] = component_config
         project_id = data.get("project_id")
         if project_id:
             advanced["ProjectId"] = project_id

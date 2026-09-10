@@ -131,11 +131,36 @@ class RecoveryCoordinator:
             capabilities.attach.supported
             and capabilities.durable_restore.supported
             and handle_digest_valid
-            and self._executor is not None
-            and self._launch_context is not None
+            and (
+                self._adapter_factory is not None
+                or (self._executor is not None and self._launch_context is not None)
+            )
         ):
             try:
-                handle = await self._executor.attach_record(run, self._launch_context)
+                from ksadk.runtime.adapter import RunHandle
+
+                persisted_handle = RunHandle.model_validate(handle_dump)
+                if self._adapter_factory is not None:
+                    # PluginHost/DSH builds must recover through their pinned
+                    # provider adapter. Going through the global RuntimeExecutor
+                    # would create a different direct runtime and bypass the
+                    # provider's checkpoint, capabilities and resources.
+                    adapter = self._adapter_factory()
+                    handle = await adapter.durable_restore(persisted_handle)
+                    if handle != persisted_handle:
+                        raise ValueError(
+                            "adapter durable_restore must preserve persisted handle identity"
+                        )
+                    stream_owner = adapter
+                else:
+                    assert self._executor is not None
+                    assert self._launch_context is not None
+                    handle = await self._executor.attach_record(run, self._launch_context)
+                    adapter = getattr(self._executor, "adapter", None)
+                    stream_owner = self._executor
+
+                def stream():  # type: ignore[no-untyped-def]
+                    return stream_owner.stream(handle)
             except Exception as error:
                 return await self._decide(
                     agent_instance_id,
@@ -150,13 +175,26 @@ class RecoveryCoordinator:
             self._register_execution(
                 run.run_id,
                 handle.run_id,
-                getattr(self._executor, "adapter", None),
+                adapter,
                 handle,
             )
+            if run.state is RunState.WAITING:
+                # A durable interaction checkpoint has no remaining events
+                # until a user/approver replies.  Empty stream output here is
+                # not completion: retain WAITING and the attached execution so
+                # submit_interaction reaches the same provider instance.
+                return await self._decide(
+                    agent_instance_id,
+                    activation,
+                    run,
+                    outcome="attached",
+                    reason="durable_interaction_attached",
+                    guard=guard,
+                )
             # attach 成功后重新消费剩余 stream：事实继续落库，自然结束收口。
             try:
                 await self._consume_remaining_stream(
-                    lambda: self._executor.stream(handle),  # type: ignore[union-attr]
+                    stream,
                     run,
                     guard,
                 )

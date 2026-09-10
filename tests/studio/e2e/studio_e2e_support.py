@@ -67,3 +67,25 @@ def studio_server(
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def open_navigation(page):
+    navigation = page.get_by_role("navigation", name="产品导航")
+    if not navigation.is_visible():
+        page.get_by_role("button", name="展开导航", exact=True).click()
+    return navigation
+
+
+def navigate(page, label: str) -> None:
+    navigation = open_navigation(page)
+    if label in {"模型与工具", "运行资源", "插件"}:
+        group = "资源库"
+    elif label in {"构建", "部署", "自动化", "编排", "可观测", "评测"}:
+        group = "运行中心"
+    else:
+        group = ""
+    if group:
+        button = navigation.get_by_role("button", name=group, exact=True)
+        if button.get_attribute("aria-expanded") != "true":
+            button.click()
+    navigation.get_by_role("button", name=label, exact=True).click()
