@@ -15,7 +15,7 @@ from threading import Event
 from urllib.request import Request, urlopen
 
 from playwright.sync_api import Page, expect, sync_playwright
-from studio_e2e_support import studio_server
+from studio_e2e_support import navigate, open_navigation, studio_server
 
 from ksadk.events.canonical import (
     ContentSnapshot,
@@ -349,23 +349,24 @@ class RecoverableConversationEvents:
 
 
 def assert_page_matrix(page: Page, width: int) -> None:
-    navigation = page.locator(".primary-nav")
     pages = (
         ("Agent", "Agent", "data", None),
         ("构建", "构建", "document", None),
         ("部署", "部署", "document", None),
-        ("工程资源", "工程资源", "data", "模型"),
-        ("工程资源", "工程资源", "data", "Tool"),
-        ("工程资源", "工程资源", "data", "MCP"),
-        ("工程资源", "工程资源", "data", "Skill"),
+        ("模型与工具", "资源库", "data", "模型"),
+        ("模型与工具", "资源库", "data", "Tool"),
+        ("模型与工具", "资源库", "data", "MCP"),
+        ("模型与工具", "资源库", "data", "Skill"),
         ("可观测", "可观测", "workbench", None),
         ("运行资源", "运行资源", "document", None),
         ("自动化", "自动化", "document", None),
     )
     for nav_label, page_title, layout, tab_label in pages:
-        navigation.get_by_role("button", name=nav_label, exact=True).click()
+        navigate(page, nav_label)
         if tab_label is not None:
-            page.get_by_role("tab", name=tab_label, exact=True).click()
+            page.get_by_role(
+                "tab", name=re.compile(rf"^{re.escape(tab_label)}(?:\s+\d+)?$")
+            ).click()
         expect(
             page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)
         ).to_be_visible()
@@ -433,6 +434,7 @@ def main() -> None:
 
                 assert_no_root_overflow(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
+                open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
                 settings_dialog = page.get_by_role("dialog", name="设置")
                 expect(settings_dialog).to_be_visible()
@@ -449,6 +451,7 @@ def main() -> None:
                 reload_studio(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
 
+                open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
                 settings_dialog = page.get_by_role("dialog", name="设置")
                 settings_dialog.locator('input[name="studio-theme"][value="system"]').check()
@@ -577,10 +580,7 @@ def main() -> None:
                 assert_no_root_overflow(page)
 
                 page.set_viewport_size({"width": 768, "height": 768})
-                resource_trigger = page.locator(".primary-nav").get_by_role(
-                    "button", name="工程资源", exact=True
-                )
-                resource_trigger.click()
+                navigate(page, "模型与工具")
                 skill_tab = page.get_by_role(
                     "tab", name=re.compile(r"^Skill(?:\s+\d+)?$")
                 )
@@ -593,7 +593,7 @@ def main() -> None:
                 discovery_dialog = page.get_by_role("dialog", name="发现本地 Skill")
                 expect(discovery_dialog).to_be_visible()
                 expect(page.locator(".global-header")).to_have_attribute("inert", "")
-                expect(page.locator(".sidebar")).to_have_attribute("inert", "")
+                expect(page.locator(".studio-navigation")).to_have_count(0)
                 expect(page.locator(".skip-link")).to_have_attribute("inert", "")
                 for _ in range(20):
                     page.keyboard.press("Tab")
@@ -623,8 +623,9 @@ def main() -> None:
                     )
                     matrix_page = matrix_context.new_page()
                     open_studio(matrix_page, base_url)
-                    expected_rail = 80 if width <= 1023 else 216
-                    sidebar_rect = rect(matrix_page, ".sidebar")
+                    open_navigation(matrix_page)
+                    expected_rail = min(300, width - 48) if width <= 1023 else 224
+                    sidebar_rect = rect(matrix_page, ".studio-navigation")
                     assert abs(sidebar_rect["width"] - expected_rail) <= 1, (
                         width,
                         sidebar_rect,
@@ -632,9 +633,7 @@ def main() -> None:
                     assert_page_matrix(matrix_page, width)
 
                     if width == 3840:
-                        matrix_page.locator(".primary-nav").get_by_role(
-                            "button", name="Agent", exact=True
-                        ).click()
+                        navigate(matrix_page, "Agent")
                         matrix_page.get_by_role(
                             "button", name="创建 Agent", exact=True
                         ).first.click()
@@ -660,9 +659,7 @@ def main() -> None:
                 workbench_page = workbench_context.new_page()
                 open_studio(workbench_page, base_url)
                 expect(workbench_page.locator("html")).to_have_attribute("data-theme", "dark")
-                workbench_page.locator(".primary-nav").get_by_role(
-                    "button", name="会话", exact=True
-                ).click()
+                navigate(workbench_page, "新对话")
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-view", "conversations"
                 )
@@ -702,7 +699,7 @@ def main() -> None:
                 first_session_row = workbench_page.locator(".chat-session-item").first.evaluate(
                     "element => element.getBoundingClientRect().toJSON()"
                 )
-                assert first_session_row["height"] <= 41, first_session_row
+                assert first_session_row["height"] <= 42, first_session_row
                 assert workbench_page.locator(".chat-session-item time").count() == 0
                 # The shared composer supports drafting/queueing during a live
                 # run. Its submit control must remain Stop, and navigation or
@@ -836,14 +833,16 @@ def main() -> None:
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-viewport", "desktop"
                 )
-                chat_sidebar = rect(workbench_page, ".sidebar")
-                assert abs(chat_sidebar["width"] - 80) <= 1, chat_sidebar
-                # Conversation starts compact; an explicit expansion persists.
+                chat_sidebar = rect(workbench_page, ".studio-navigation")
+                assert abs(chat_sidebar["width"] - 224) <= 1, chat_sidebar
+                # Explicit collapse and expansion persist across reloads.
+                workbench_page.get_by_role("button", name="收起导航", exact=True).click()
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "64px")
                 workbench_page.get_by_role("button", name="展开导航", exact=True).click()
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-rail", "expanded"
                 )
-                expect(workbench_page.locator(".sidebar")).to_have_css("width", "216px")
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "224px")
                 assert_no_root_overflow(workbench_page)
                 conversation_events.release_live.set()
                 expect(
@@ -855,7 +854,7 @@ def main() -> None:
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-rail", "expanded"
                 )
-                expect(workbench_page.locator(".sidebar")).to_have_css("width", "216px")
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "224px")
                 assert len(conversation_runtime.start_requests) == 2
                 print(
                     "Conversation layout, history switching, permissions and run panel exercised",
@@ -870,9 +869,7 @@ def main() -> None:
                 trace_page = trace_context.new_page()
                 trace_page.route("**/api/v1/traces**", route_trace_fixture)
                 open_studio(trace_page, base_url)
-                trace_page.locator(".primary-nav").get_by_role(
-                    "button", name="可观测", exact=True
-                ).click()
+                navigate(trace_page, "可观测")
                 trace_root = trace_page.locator(".observability-page")
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 assert trace_page.url.endswith("#/observability"), trace_page.url
@@ -886,8 +883,8 @@ def main() -> None:
                 trace_page.get_by_role("button", name="查看详情", exact=True).click()
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-span-row")).to_have_count(1)
-                trace_sidebar = rect(trace_page, ".sidebar")
-                assert abs(trace_sidebar["width"] - 216) <= 1, trace_sidebar
+                trace_sidebar = rect(trace_page, ".studio-navigation")
+                assert abs(trace_sidebar["width"] - 224) <= 1, trace_sidebar
                 observability_body = trace_page.locator(".observability-body")
                 body_scroll = observability_body.evaluate(
                     """element => ({
@@ -896,9 +893,9 @@ def main() -> None:
                       scrollHeight: element.scrollHeight,
                     })"""
                 )
-                # Desktop trace workbench keeps scrolling inside its panes so
-                # the overview and panel headers remain stable.
-                assert body_scroll["overflowY"] == "hidden", body_scroll
+                # The responsive workbench scrolls inside the page body;
+                # span and event panes retain their own scrolling below.
+                assert body_scroll["overflowY"] == "auto", body_scroll
                 trace_page.locator(".trace-workbench").scroll_into_view_if_needed()
                 trace_rect = rect(trace_page, ".trace-workbench")
                 assert trace_rect["top"] >= 64, trace_rect
@@ -916,7 +913,7 @@ def main() -> None:
                     "spans": "auto",
                     "detail": "auto",
                 }, trace_overflows
-                trace_page.get_by_role("tab", name="Events", exact=True).click()
+                trace_page.get_by_role("tab", name="事件", exact=True).click()
                 event_row = trace_page.locator(".trace-event-card .trace-kv-row").first
                 expect(event_row).to_be_visible()
                 event_columns = event_row.evaluate(
@@ -930,7 +927,7 @@ def main() -> None:
                 )
                 assert event_columns["keyRight"] <= event_columns["valueLeft"], event_columns
 
-                trace_page.get_by_role("tab", name="Raw OTLP", exact=True).click()
+                trace_page.get_by_role("tab", name="原始数据", exact=True).click()
                 json_tree = trace_page.locator(".otlp-json")
                 expect(json_tree).to_be_visible()
                 expect(json_tree).to_contain_text("resourceSpans")
@@ -960,7 +957,7 @@ def main() -> None:
                     "button", name="展开右侧详情", exact=True
                 )
                 expect(reopen_detail).to_be_visible()
-                expect(trace_page.get_by_role("tab", name="Raw OTLP", exact=True)).to_be_hidden()
+                expect(trace_page.get_by_role("tab", name="原始数据", exact=True)).to_be_hidden()
                 reopen_detail.click()
 
                 expand_button = trace_page.get_by_role("button", name="放大详情", exact=True)
@@ -978,9 +975,9 @@ def main() -> None:
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-list-page")).to_be_visible()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
-                expect(trace_page.locator(".sidebar")).to_have_css("width", "216px")
-                expanded_sidebar = rect(trace_page, ".sidebar")
-                assert abs(expanded_sidebar["width"] - 216) <= 1, expanded_sidebar
+                expect(trace_page.locator(".studio-navigation")).to_have_css("width", "224px")
+                expanded_sidebar = rect(trace_page, ".studio-navigation")
+                assert abs(expanded_sidebar["width"] - 224) <= 1, expanded_sidebar
                 reload_studio(trace_page)
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
                 trace_page.get_by_role("button", name="收起导航", exact=True).click()

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect, sync_playwright
-from studio_e2e_support import studio_server, write_skill
+from studio_e2e_support import navigate, studio_server, write_skill
 
 
 def _candidate(page: Page, name: str):
@@ -17,7 +17,7 @@ def _candidate(page: Page, name: str):
 
 
 def _open_skill_discovery(page: Page) -> None:
-    page.get_by_role("button", name="工程资源", exact=True).click()
+    navigate(page, "模型与工具")
     # Resource kinds now live behind one navigation entry. Select the Skill
     # tab using its accessible role instead of relying on the former sidebar.
     # The selected tab appends its resource count to the accessible name.
@@ -89,7 +89,7 @@ def _assert_core_navigation(page: Page) -> None:
         "运行资源",
         "自动化",
     ):
-        page.get_by_role("button", name=label, exact=True).click()
+        navigate(page, label)
         expect(
             page.get_by_role("banner", name="当前页面").get_by_text(label, exact=True)
         ).to_be_visible()

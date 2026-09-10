@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "./api";
 import { AgentsPage } from "./pages/AgentsPage";
 import { CreatePage } from "./pages/CreatePage";
@@ -16,7 +16,7 @@ import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
-import { ChatWorkspace, type ChatWorkspaceHandle } from "./components/ChatWorkspace";
+import { ChatWorkspace } from "./components/ChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
 import { ToastRegion } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
@@ -166,7 +166,8 @@ export default function App() {
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
-  const chatWorkspaceRef = useRef<ChatWorkspaceHandle>(null);
+  const [newChatRequest, setNewChatRequest] = useState(0);
+  const onNewChatStarted = useCallback(() => setNewChatRequest(0), []);
   const [conversationHeaderHost, setConversationHeaderHost] = useState<HTMLDivElement | null>(null);
   const [chatStreaming, setChatStreaming] = useState(false);
   const [historyHost, setHistoryHost] = useState<HTMLDivElement | null>(null);
@@ -507,8 +508,8 @@ export default function App() {
         onMobileOpenChange={setMobileNavOpen}
         onExpand={() => { setRailExpandedPreference(true); writeNavigationRailPreference(true); }}
         onHistoryHostChange={setHistoryHost}
-        chatStreaming={chatStreaming}
-        onStartChat={() => { chatWorkspaceRef.current?.startNewChat(); enterChat(); setMobileNavOpen(false); }}
+        chatStreaming={chatStreaming || newChatRequest !== 0}
+        onStartChat={() => { setRequestedSessionId(""); setNewChatRequest(request => request + 1); enterChat(); setMobileNavOpen(false); }}
         workspaceName={workspaceName}
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
@@ -602,7 +603,8 @@ export default function App() {
             <div className="chat-host">
               {chatMounted && isCloudChat && selectedCloudDeployment && (
                 <ChatWorkspace
-                  ref={chatWorkspaceRef}
+                  newChatRequest={newChatRequest}
+                  onNewChatStarted={onNewChatStarted}
                   onStreamingChange={setChatStreaming}
                   integratedHistory
                   historyHost={historyHost}
@@ -617,7 +619,8 @@ export default function App() {
               )}
               {chatMounted && !isCloudChat && currentAgentId && (
                 <ChatWorkspace
-                  ref={chatWorkspaceRef}
+                  newChatRequest={newChatRequest}
+                  onNewChatStarted={onNewChatStarted}
                   onStreamingChange={setChatStreaming}
                   integratedHistory
                   historyHost={historyHost}

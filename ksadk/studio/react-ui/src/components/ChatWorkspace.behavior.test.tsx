@@ -170,6 +170,24 @@ describe("ChatWorkspace shared conversation composition", () => {
     unmount(); historyHost.remove(); headerHost.remove();
   });
 
+  it("fulfills a new-chat request after mounting and bootstrap instead of restoring history", async () => {
+    mocks.chat.bootstrapStatus = "loading";
+    const onNewChatStarted = vi.fn();
+    const props = { agentId: "local-1", agentName: "Agent", newChatRequest: 1, onNewChatStarted };
+    const { rerender } = render(<ChatWorkspace {...props}/>);
+    expect(mocks.chat.createNewSession).not.toHaveBeenCalled();
+    mocks.chat.bootstrapStatus = "ready";
+    mocks.chat.isLoadingSessions = true;
+    rerender(<ChatWorkspace {...props}/>);
+    expect(mocks.chat.createNewSession).not.toHaveBeenCalled();
+    mocks.chat.isLoadingSessions = false;
+    rerender(<ChatWorkspace {...props}/>);
+    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    await waitFor(() => expect(onNewChatStarted).toHaveBeenCalledOnce());
+    rerender(<ChatWorkspace {...props} refreshTick={1}/>);
+    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+  });
+
   it("starts new conversations through the product rail without interrupting a stream", () => {
     const ref = createRef<ChatWorkspaceHandle>();
     const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
