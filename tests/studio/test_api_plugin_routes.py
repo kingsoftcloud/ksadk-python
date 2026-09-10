@@ -75,6 +75,11 @@ def test_dsh_options_keep_explicit_binary_above_managed_toolchain(
 def test_plugin_page_uses_ready_managed_dsh_without_manual_binary_env(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from unittest.mock import AsyncMock
+
+    # This case tests an empty profile, not first-launch installation. Keep it
+    # independent of the developer machine's real managed DSH toolchain.
+    monkeypatch.setattr(StudioService, "_bootstrap_official_dsh_defaults", AsyncMock())
     managed = tmp_path / "managed-dsh"
     managed.write_text(
         "#!/bin/sh\n"
@@ -107,10 +112,9 @@ def test_plugin_page_uses_ready_managed_dsh_without_manual_binary_env(
         "homeMode": "workspace-isolated",
     }
     items = response.json()["items"]
-    assert len(items) == 1
-    assert items[0]["pluginId"] == "@kingsoftcloud/ksadk-codex-provider"
-    assert items[0]["displayName"] == "@kingsoftcloud/ksadk-codex-provider"
-    assert items[0]["enabled"] is True
+    # An available Core binary does not imply an installed Provider. This
+    # fixture exposes --version only and intentionally has no profile lock.
+    assert items == []
 
 
 def test_dsh_options_fall_back_to_bridge_path_lookup_when_managed_is_unavailable(

@@ -13,6 +13,8 @@ import uvicorn
 
 from ksadk.cli.env_options import load_env_file
 from ksadk.cli.ui import print_info, print_kv, print_success, print_title
+from ksadk.studio.api import create_studio_app
+from ksadk.studio.service import StudioService
 
 # veadk 风格：日志行带模块名与行号（filename:lineno），本地排障时能直接定位代码。
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d %(message)s"
@@ -44,8 +46,6 @@ _STUDIO_LOG_CONFIG = {
     "root": {"handlers": ["default"], "level": "INFO"},
 }
 
-from ksadk.studio.api import create_studio_app
-from ksadk.studio.service import StudioService
 
 # 模型环境变量白名单。OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名，两者都接受；
 # 加载时做别名归一（见 studio()），运行时统一 OPENAI_BASE_URL 优先（与 cmd_config/cmd_model
@@ -56,12 +56,12 @@ _MODEL_ENV_KEYS = (
     "OPENAI_API_KEY",
     "OPENAI_MODEL_NAME",
 )
-# Cloud-control credentials are intentionally process-only as well.  Studio
-# needs them to use the Server Action API for a deployed Agent, but they must
-# never become browser settings, workspace files, or runtime environment.
+# Explicit env-file credentials are process-only overrides. They are never
+# copied into the workspace store or exposed as browser settings.
 _CLOUD_CONTROL_ENV_KEYS = (
     "KSYUN_ACCESS_KEY",
     "KSYUN_SECRET_KEY",
+    "KSYUN_ACCOUNT_ID",
     "KSYUN_REGION",
     "AGENTENGINE_REGION",
     "AGENTENGINE_SERVER_URL",
@@ -83,10 +83,7 @@ _MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 @click.option(
     "--env-file",
     type=click.Path(exists=True, dir_okay=False),
-    help=(
-        "本地模型与云端控制环境文件；只读取允许的 OPENAI/KSYUN/KS3 "
-        "字段，且仅保留在 Studio 进程"
-    ),
+    help=("本地模型与云端控制环境文件；只读取允许的 OPENAI/KSYUN/KS3 字段，且仅保留在 Studio 进程"),
 )
 @click.option(
     "--codex-proxy",
@@ -112,6 +109,7 @@ def studio(
     managed_keys = (*_STUDIO_ENV_FILE_KEYS, "KSADK_CODEX_USE_PROXY")
     previous = {key: os.environ.get(key) for key in managed_keys}
     previously_present = {key for key in managed_keys if key in os.environ}
+    configuration_overrides: dict[str, str] = {}
     try:
         if env_file:
             try:
@@ -128,19 +126,25 @@ def studio(
                 else:
                     loaded_cloud_control += 1
                 # An explicit --env-file is the operator's selected cloud
-                # identity.  Do not silently reuse inherited AK/SK from the
-                # shell, which can point Studio at another tenant.  Model
-                # values keep their historical shell-first precedence.
-                if key in _CLOUD_CONTROL_ENV_KEYS or key not in os.environ:
-                    os.environ[key] = value
+                # identity and model configuration; it overrides inherited
+                # and saved values consistently for this process.
+                os.environ[key] = value
+                configuration_overrides[key] = os.environ[key]
             # 别名归一（方案 §2.4 第 5 点）：OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名。
             # 加载后任一有值则把另一个也设上，保证下游无论读哪个都命中；OPENAI_BASE_URL 优先。
-            resolved_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get(
-                "OPENAI_API_BASE"
+            resolved_base_url = (
+                configuration_overrides.get("OPENAI_BASE_URL")
+                or configuration_overrides.get("OPENAI_API_BASE")
+                or os.environ.get("OPENAI_BASE_URL")
+                or os.environ.get("OPENAI_API_BASE")
             )
             if resolved_base_url:
                 os.environ["OPENAI_BASE_URL"] = resolved_base_url
                 os.environ["OPENAI_API_BASE"] = resolved_base_url
+                if any(key in configuration_overrides for key in _MODEL_BASE_URL_ALIASES):
+                    configuration_overrides.update(
+                        dict.fromkeys(_MODEL_BASE_URL_ALIASES, resolved_base_url)
+                    )
                 # base_url 至少算一次，避免显示 0/4 误导。
                 loaded_models = max(loaded_models, 2)
             print_kv(
@@ -160,9 +164,15 @@ def studio(
             os.environ["KSADK_CODEX_USE_PROXY"] = "0"
         elif codex_proxy == "auto":
             os.environ.pop("KSADK_CODEX_USE_PROXY", None)
+        if codex_proxy != "inherit":
+            configuration_overrides["KSADK_CODEX_USE_PROXY"] = {
+                "forced": "1",
+                "direct": "0",
+                "auto": "",
+            }[codex_proxy]
         session_token = os.environ.get("KSADK_STUDIO_SESSION_TOKEN") or secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(24)
-        service = StudioService(root)
+        service = StudioService(root, configuration_overrides=configuration_overrides)
         app = create_studio_app(
             root,
             service=service,

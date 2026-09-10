@@ -152,9 +152,19 @@ class _StudioHarnessReasoner:
                     arguments=arguments,
                 )
             )
+        reported_usage = response.usage if response.usage.reported else None
         return HarnessReasoningTurn(
             final_text=response.content or None,
             tool_calls=tuple(calls),
+            reasoning=response.reasoning or None,
+            usage=None
+            if reported_usage is None
+            else {
+                "input_tokens": max(0, int(reported_usage.input_tokens)),
+                "output_tokens": max(0, int(reported_usage.output_tokens)),
+                "cached_tokens": max(0, int(reported_usage.cached_input_tokens)),
+                "reasoning_tokens": max(0, int(reported_usage.reasoning_output_tokens)),
+            },
         )
 
 
@@ -392,6 +402,16 @@ class StudioPluginRuntime:
         if bool(spec.request_config.get("dynamic_dsh_mcp")):
             await self.close_session(session_id)
 
+    def check_configuration_mutable(self) -> None:
+        if self._hosts:
+            raise StudioError(
+                "SETTINGS_RUNTIME_BUSY", "请通过设置接口刷新运行配置", status_code=409
+            )
+
+    def replace_resource_authority(self, authority: Any) -> None:
+        self.check_configuration_mutable()
+        self._resource_authority = authority
+
     async def suspend_admission(self) -> None:
         """Stop new activations and drain every currently owned host."""
 
@@ -453,6 +473,15 @@ class StudioPluginRuntime:
         # Re-resolve every turn. This deliberately rechecks enabled receipts and
         # package digests rather than trusting a previously healthy child.
         bundle = self._resolve_bundle(bundle_root)
+        if any(
+            item.ref == PLATFORM_RESOURCE_MCP_REF
+            for item in bundle.composition.profile.capabilities
+        ) and not callable(getattr(self._resource_authority, "admit_runtime", None)):
+            raise StudioError(
+                "PLATFORM_RESOURCE_CONFIGURATION_REQUIRED",
+                "平台资源连接尚未配置，请在设置的云端连接中填写账号凭据和控制面地址",
+                status_code=422,
+            )
         key = bundle.bundle_digest
         async with self._lock:
             if self._closed:
@@ -481,6 +510,9 @@ class StudioPluginRuntime:
                 # Providers resolve credential *references* at activation time.
                 # The DSH discovery host never receives this service.
                 "credential_resolver": self._secret_resolver,
+                # Harness Provider 持久 Checkpoint/RunStore/Receipt 的状态根
+                # （与 builtin capability factories 同一 Workspace 命名空间）。
+                "harness_state_dir": str(self.workspace.resolve(".agentkit/plugin-runtime/state")),
                 "codex_local_launch_resolver": self._codex_local_launch_resolver,
                 "runtime_executor": self._runtime_executor,
                 "dsh_capability_service": self._resource_dsh_capability_service,
@@ -539,8 +571,7 @@ class StudioPluginRuntime:
         )
         dynamic_refs = {reference, PLATFORM_RESOURCE_MCP_REF}
         return any(
-            capability.ref in dynamic_refs
-            for capability in bundle.composition.profile.capabilities
+            capability.ref in dynamic_refs for capability in bundle.composition.profile.capabilities
         )
 
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:
@@ -697,6 +728,13 @@ class StudioPluginRuntime:
         try:
             host.preflight(bundle.composition.profile)
         except PluginHostError as error:
+            if error.code == "plugin_permission_denied":
+                raise StudioError(
+                    "PLUGIN_PERMISSION_DENIED",
+                    "Agent 插件组合未通过运行前检查",
+                    status_code=409,
+                    details=_permission_denial_details(error),
+                ) from error
             code = (
                 "PLUGIN_PERMISSION_DENIED"
                 if error.code == "plugin_permission_denied"
@@ -799,6 +837,28 @@ class StudioPluginRuntime:
 def _parse_plugin_ref(value: str) -> tuple[str, str]:
     plugin_id, version = value.removeprefix("plugin://").rsplit("@", 1)
     return plugin_id, version
+
+
+_PERMISSION_DENIAL_MARKER = "requests unapproved permissions:"
+
+
+def _permission_denial_details(error: PluginHostError) -> dict[str, Any]:
+    """把权限拒绝错误转成可自助修复的 details（缺失权限 + 修复指引）。"""
+
+    message = str(error)
+    missing: list[str] = []
+    if _PERMISSION_DENIAL_MARKER in message:
+        tail = message.split(_PERMISSION_DENIAL_MARKER, 1)[1]
+        missing = [item.strip() for item in tail.split(",") if item.strip()]
+    return {
+        "reason": error.code,
+        "missingPermissions": missing,
+        "hint": (
+            "在 Agent 安全设置的允许权限中加入缺失权限后重新构建并运行"
+            if missing
+            else "在 Agent 安全设置中调整允许权限后重新构建并运行"
+        ),
+    }
 
 
 def _normalize_result(raw: Any, *, session_id: str) -> StudioPluginTurnResult:

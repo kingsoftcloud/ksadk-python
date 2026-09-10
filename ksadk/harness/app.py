@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional, Protocol, Sequence
 from fastapi import FastAPI
 
 from ksadk.harness.config import HarnessConfig
+from ksadk.harness.insights import HarnessInsightsRegistry, mount_insights
 from ksadk.harness.reasoner import HarnessReasoner
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime import (
@@ -88,6 +89,8 @@ class HarnessApp:
         registry = RuntimeRegistry()
         registry.register(self._runtime_type, lambda _context: self.adapter())
         self._executor = RuntimeExecutor(registry)
+        # P3 补强：长任务洞察登记处（Studio 经 /insights API 消费）。
+        self._insights = HarnessInsightsRegistry()
 
         from ksadk.sessions import create_session_service
 
@@ -119,6 +122,11 @@ class HarnessApp:
     @property
     def executor(self) -> RuntimeExecutor:
         return self._executor
+
+    @property
+    def insights(self) -> HarnessInsightsRegistry:
+        """长任务洞察登记处（context-trace / token-report 的数据源）。"""
+        return self._insights
 
     @property
     def launch_context(self) -> RuntimeLaunchContext:
@@ -260,6 +268,9 @@ class HarnessApp:
         )
         app.state.runtime.session_service = self._session_service
         app.state.runtime.harness_capabilities = self._capabilities
+        # P3 补强：Studio 消费端（长任务方案 §3.2）——/insights/runs/...
+        # 的 context-trace / token-report / compaction-trace 纯 dict 投影。
+        mount_insights(app, self._insights)
         for plugin in self._plugins:
             plugin.after_build(app, self._config)
         self._fastapi_app = app

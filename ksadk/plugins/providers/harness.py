@@ -24,7 +24,14 @@ from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
 from ksadk.plugins.host import PluginExecutionContext, PluginHostError
 from ksadk.plugins.providers.mcp_projection import project_mcp_capabilities
-from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry, StartRequest
+from ksadk.runtime import (
+    CONVERSATION_PREPROCESSING_METADATA_KEY,
+    RuntimeAdapter,
+    RuntimeExecutor,
+    RuntimeLaunchContext,
+    RuntimeRegistry,
+    StartRequest,
+)
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.sessions import create_session_service
 from ksadk.sessions.base import BaseSessionService
@@ -36,6 +43,7 @@ _HISTORY_ENVELOPE_PREFIX = "agentkit.conversation-history/v1:"
 class HarnessSkillContribution:
     name: str
     instructions: str
+    resource_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +195,11 @@ class _ConversationHistoryHarnessAdapter(HarnessRuntimeAdapter):
     async def start(self, request: StartRequest):  # type: ignore[no-untyped-def]
         preprocessing = request.conversation_preprocessing()
         if preprocessing is not None and preprocessing.messages:
+            metadata = {
+                key: value
+                for key, value in request.metadata.items()
+                if key != CONVERSATION_PREPROCESSING_METADATA_KEY
+            }
             request = request.model_copy(
                 update={
                     "input": _HISTORY_ENVELOPE_PREFIX
@@ -195,7 +208,8 @@ class _ConversationHistoryHarnessAdapter(HarnessRuntimeAdapter):
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),
-                    )
+                    ),
+                    "metadata": metadata,
                 }
             )
         return await super().start(request)
@@ -224,10 +238,14 @@ class KsADKHarnessProviderRuntime:
         plugin_id: str,
         session_service: BaseSessionService,
         reasoner: HarnessReasoner,
+        state_dir: str | None = None,
+        checkpoint_dsn: str | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
         self._reasoner = reasoner
+        self._state_dir = state_dir
+        self._checkpoint_dsn = checkpoint_dsn
         self._ready = False
         self._disposed = False
         self._last_inventory: HarnessProviderInventory | None = None
@@ -311,11 +329,6 @@ class KsADKHarnessProviderRuntime:
                 )
 
             model, prompt = _bundle_model_and_prompt(bundle)
-            if skills:
-                prompt = _append_prompt_sections(
-                    prompt,
-                    [f"Skill {item.name}:\n{item.instructions}" for item in skills],
-                )
             config = HarnessConfig(
                 model=model,
                 prompt=prompt,
@@ -342,10 +355,13 @@ class KsADKHarnessProviderRuntime:
                 agent_name=bundle.manifest.agent_id,
                 workspace_root=workspace_root,
                 reasoner=self._reasoner,
+                skills=tuple(skills),
                 context_sources=tuple(context_sources),
                 session_service=self._session_service,
                 inventory=inventory,
                 mcp_cleanup=mcp_cleanup.pop_all(),
+                state_dir=self._state_dir,
+                checkpoint_dsn=self._checkpoint_dsn,
             )
 
 
@@ -379,10 +395,14 @@ class KsADKHarnessProviderFactory:
         reasoner = self._reasoner or services.get("harness_reasoner")
         if reasoner is None:
             reasoner = LiteLLMHarnessReasoner()
+        state_dir = services.get("harness_state_dir")
+        checkpoint_dsn = services.get("checkpoint_dsn")
         self.runtime = KsADKHarnessProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
             reasoner=reasoner,
+            state_dir=str(state_dir) if state_dir else None,
+            checkpoint_dsn=str(checkpoint_dsn) if checkpoint_dsn else None,
         )
         return self.runtime
 
@@ -396,9 +416,12 @@ class KsADKHarnessActivation:
         agent_name: str,
         workspace_root: Path,
         reasoner: HarnessReasoner,
+        skills: tuple[HarnessSkillContribution, ...],
         context_sources: tuple[HarnessContextSource, ...],
         session_service: BaseSessionService,
         inventory: HarnessProviderInventory,
+        state_dir: str | None = None,
+        checkpoint_dsn: str | None = None,
         mcp_cleanup: AsyncExitStack | None = None,
     ) -> None:
         self._bundle = bundle
@@ -406,15 +429,19 @@ class KsADKHarnessActivation:
         self._agent_name = agent_name
         self._workspace_root = workspace_root
         self._reasoner = reasoner
+        self._skills = skills
         self._context_sources = context_sources
         self._session_service = session_service
         self._inventory = inventory
+        self._state_dir = state_dir
+        self._checkpoint_dsn = checkpoint_dsn
+        self._checkpoint_stack: Any | None = None
         self._mcp_cleanup = mcp_cleanup
         self._mcp_cleanup_lock = asyncio.Lock()
         self._ready = False
         self._disposed = False
         self._executors: list[RuntimeExecutor] = []
-        self._kernel_adapter: HarnessRuntimeAdapter | None = None
+        self._kernel_adapter: RuntimeAdapter | None = None
 
     async def start(self) -> None:
         if self._disposed:
@@ -437,7 +464,13 @@ class KsADKHarnessActivation:
         ]
         config = replace(
             self._config,
-            prompt=_append_prompt_sections(self._config.prompt, context_sections),
+            prompt=_append_prompt_sections(
+                self._config.prompt,
+                [
+                    *[f"Skill {item.name}:\n{item.instructions}" for item in self._skills],
+                    *context_sections,
+                ],
+            ),
         )
         executor, launch_context = _build_direct_backend(
             config,
@@ -469,7 +502,7 @@ class KsADKHarnessActivation:
             inventory=self._inventory,
         )
 
-    def runtime_adapter(self) -> HarnessRuntimeAdapter:
+    async def runtime_adapter(self) -> RuntimeAdapter:
         """Return the activation-owned adapter used by AgentKernel Scheduler.
 
         The immutable profile has already assembled model instructions, MCP,
@@ -483,12 +516,22 @@ class KsADKHarnessActivation:
                 "harness_activation_unavailable", "Harness activation is not ready"
             )
         if self._kernel_adapter is None:
-            self._kernel_adapter = HarnessRuntimeAdapter(
+            from ksadk.plugins.providers.harness_managed import (
+                build_managed_provider_adapter,
+            )
+
+            self._kernel_adapter = await build_managed_provider_adapter(
                 self._config,
                 agent_name=self._agent_name,
                 reasoner=self._reasoner,
                 workspace_root=self._workspace_root,
+                skills=self._skills,
+                tool_contracts=dict(self._bundle.resolved_agent_spec),
+                bundle_root=self._bundle.root,
+                state_dir=self._state_dir,
+                checkpoint_dsn=self._checkpoint_dsn,
             )
+            self._checkpoint_stack = getattr(self._kernel_adapter, "_checkpoint_stack", None)
         return self._kernel_adapter
 
     async def drain(self) -> None:
@@ -502,6 +545,12 @@ class KsADKHarnessActivation:
     async def dispose(self) -> None:
         self._ready = False
         first_error: BaseException | None = None
+        if self._checkpoint_stack is not None:
+            try:
+                await self._checkpoint_stack.aclose()
+            except BaseException as error:  # cleanup must continue
+                first_error = error
+            self._checkpoint_stack = None
         try:
             await self._release_mcp_credentials()
         except BaseException as error:  # cleanup must continue

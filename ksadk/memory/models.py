@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 __all__ = [
     "LongTermMemoryRecord",
@@ -195,6 +195,50 @@ SensitiveLabel = Literal[
     "binary",
     "none",
 ]
+#: 敏感级别（长任务方案 §7.2）：none=可跨作用域；low=限同作用域；high=禁止入长期 Memory。
+SensitivityLevel = Literal["none", "low", "high"]
+#: 写策略（长任务方案 §7.2）：auto=管线自动提交；user_confirm=需用户确认；locked=只读。
+WritePolicy = Literal["auto", "user_confirm", "locked"]
+MemoryArtifactModality = Literal[
+    "text", "image", "audio", "video", "document", "binary"
+]
+
+
+@dataclass(frozen=True)
+class MemoryArtifactRef:
+    """长期记忆引用的多模态 Artifact 元数据。
+
+    这里只保存可审计的引用与内容指纹，绝不保存 base64、文件字节或签名下载
+    URL。真正的内容仍由 Artifact Store 按权限读取，默认不会进入 Prompt。
+    """
+
+    uri: str
+    mime_type: str
+    content_hash: str
+    size_bytes: int
+    modality: MemoryArtifactModality = "binary"
+
+    def __post_init__(self) -> None:
+        if not self.uri.startswith("artifact://"):
+            raise ValueError("Memory Artifact 必须使用 artifact:// 稳定引用")
+        if not self.mime_type or "/" not in self.mime_type:
+            raise ValueError("Memory Artifact 必须声明合法 MIME type")
+        if not self.content_hash or len(self.content_hash) < 16:
+            raise ValueError("Memory Artifact 必须携带内容哈希")
+        if self.size_bytes < 0:
+            raise ValueError("Memory Artifact size_bytes 不能为负数")
+
+    @classmethod
+    def from_value(cls, value: MemoryArtifactRef | Mapping[str, Any]) -> MemoryArtifactRef:
+        if isinstance(value, cls):
+            return value
+        return cls(
+            uri=str(value.get("uri") or ""),
+            mime_type=str(value.get("mime_type") or ""),
+            content_hash=str(value.get("content_hash") or ""),
+            size_bytes=int(value.get("size_bytes") or 0),
+            modality=str(value.get("modality") or "binary"),  # type: ignore[arg-type]
+        )
 
 
 @dataclass(frozen=True)
@@ -222,6 +266,21 @@ class MemoryRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
+    # ---- 长任务方案 §7.2 兼容扩展（全部带默认值，additive） ----
+    #: 来源 Artifact 引用（大 Tool Result / 摘要正文不进正文，只留引用）。
+    source_artifact_refs: tuple[str, ...] = field(default=())
+    #: 多模态来源的结构化元数据。只含稳定引用，不含媒体正文或临时下载 URL。
+    source_artifacts: tuple[MemoryArtifactRef, ...] = field(default=())
+    #: 敏感级别：high 禁止入长期 Memory（须先脱敏）；low 限同作用域。
+    sensitivity: SensitivityLevel = "none"
+    #: 写策略：locked 记录只能显式解锁后更新；user_confirm 需用户确认。
+    write_policy: WritePolicy = "auto"
+    #: 本记录 supersede 的旧记录（审计链）。
+    supersedes: tuple[str, ...] = field(default=())
+
+    def __post_init__(self) -> None:
+        normalized = tuple(MemoryArtifactRef.from_value(item) for item in self.source_artifacts)
+        object.__setattr__(self, "source_artifacts", normalized)
 
     def is_active_now(self, *, now_iso: str = "") -> bool:
         if self.status != "active":
@@ -248,6 +307,17 @@ class MemoryCandidate:
     sensitive_labels: list[SensitiveLabel] = field(default_factory=list)
     reason: str = ""
     slot_key: str = ""
+    # ---- 长任务方案 §7.2 兼容扩展（additive） ----
+    source_artifact_refs: tuple[str, ...] = field(default=())
+    source_artifacts: tuple[MemoryArtifactRef, ...] = field(default=())
+    sensitivity: SensitivityLevel = "none"
+    write_policy: WritePolicy = "auto"
+    #: TTL（ISO 日期字符串；空 = 不过期）。时效数据必须有来源和 TTL（§7.3）。
+    expires_at: str = ""
+
+    def __post_init__(self) -> None:
+        normalized = tuple(MemoryArtifactRef.from_value(item) for item in self.source_artifacts)
+        object.__setattr__(self, "source_artifacts", normalized)
 
     def is_hard_rejected(self) -> bool:
         return any(label != "none" for label in self.sensitive_labels)
@@ -274,6 +344,12 @@ class MemorySearchResult:
     latency_ms: int
     accounting_accuracy: str
     truncated_by_budget: bool = False
+    #: Harness-side retrieval projection. Additive fields keep Provider contracts
+    #: stable while making semantic fallback visible to Studio/observability.
+    retrieval_strategy: str = "provider"
+    reranker_status: str = "not_configured"
+    semantic_scorer_status: str = "not_configured"
+    dedicated_reranker_status: str = "not_configured"
 
 
 @dataclass(frozen=True)

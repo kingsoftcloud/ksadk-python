@@ -19,8 +19,8 @@ from ksadk.studio.service import StudioService
 class _Reasoner:
     async def complete(self, *, model, prompt, messages, tools):  # noqa: ANN001
         del tools
-        assert model == "fixture-model"
-        assert prompt == "Preserve the historical Harness role."
+        assert model == "fixture-model"  # Provider resolves its locked profile before invocation.
+        assert "Preserve the historical Harness role." in prompt
         return HarnessReasoningTurn(final_text=f"legacy:{messages[-1]['content']}")
 
 

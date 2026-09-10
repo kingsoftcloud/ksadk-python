@@ -13,6 +13,7 @@ import pytest
 import ksadk.runtime as runtime_api
 from ksadk.codex.client import CodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
+from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime import factory as runtime_factory
@@ -61,6 +62,7 @@ class _FactoryRunner(BaseRunner):
     ("runtime_type", "adapter_type"),
     [
         ("codex", CodexRuntimeAdapter),
+        ("harness", ManagedHarnessRuntimeAdapter),
         ("adk", ADKRuntimeAdapter),
         ("langgraph", LangGraphRuntimeAdapter),
     ],
@@ -88,7 +90,7 @@ def test_default_registry_creates_expected_adapter_from_launch_context(
         runtime_type=runtime_type,
         project_dir=tmp_path,
         detection=detection,
-        config={"model": "model-a"},
+        config={"model": "model-a", "prompt": "You are a test agent."},
         services=services,
     )
 
@@ -99,8 +101,10 @@ def test_default_registry_creates_expected_adapter_from_launch_context(
     if runtime_type == "codex":
         assert adapter._client is client
         assert runner_calls == []
-    else:
+    elif runtime_type != "harness":
         assert runner_calls == [(detection, str(tmp_path))]
+    else:
+        assert runner_calls == []
 
 
 def test_create_runtime_adapter_uses_canonical_default_registry(tmp_path: Path) -> None:

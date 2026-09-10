@@ -28,6 +28,7 @@ from a2a.types import (
     SendMessageConfiguration,
     SendMessageRequest,
     Task,
+    TaskState,
 )
 from fastapi import FastAPI
 from google.protobuf.json_format import MessageToDict
@@ -43,6 +44,7 @@ from ksadk.events.canonical import (
     ItemCompleted,
     RunCompleted,
     RunInterrupted,
+    RuntimeEvent,
     SourceRef,
 )
 from ksadk.events.content import TextContent
@@ -271,7 +273,10 @@ async def _run(args: argparse.Namespace) -> None:
     adapter = _DurableProcessAdapter()
     resume_path = Path(tempfile.gettempdir()) / (
         "ksadk-a2a-process-resume-"
-        + hashlib.sha256(f"{args.dsn}\x1f{args.task_id}".encode()).hexdigest()
+        # A2A assigns its own task ID after the write worker starts. Hashing
+        # the initial seed ID made the recovery worker open a different store.
+        # Records inside this test-database-scoped store retain owner/task keys.
+        + hashlib.sha256(args.dsn.encode()).hexdigest()
         + ".sqlite3"
     )
     protocol = add_a2a_protocol_routes(
@@ -392,6 +397,12 @@ async def _run(args: argparse.Namespace) -> None:
         async for _ in client.send_message(request, context=call_context):
             pass
         after = await client.get_task(GetTaskRequest(id=args.task_id), context=call_context)
+        # Stream delivery and the TaskStore consumer settle asynchronously.
+        # Wait for durable terminal state rather than reading a stale snapshot.
+        async with asyncio.timeout(10):
+            while after.status.state != TaskState.TASK_STATE_COMPLETED:
+                await asyncio.sleep(0.05)
+                after = await client.get_task(GetTaskRequest(id=args.task_id), context=call_context)
         print(
             json.dumps(
                 {

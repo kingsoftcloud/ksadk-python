@@ -24,5 +24,13 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
             release_binding=release_binding,
         )
 
+    def capabilities(self):  # type: ignore[no-untyped-def]
+        # Studio wires a durable Workspace store before activating Harness.
+        if self._delegate is None and self._runtime_type == "harness":
+            from ksadk.harness.managed_runtime import managed_harness_capabilities
+
+            return managed_harness_capabilities(durable=True)
+        return super().capabilities()
+
 
 __all__ = ["StudioPluginKernelAdapter"]

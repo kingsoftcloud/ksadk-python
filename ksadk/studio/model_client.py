@@ -38,6 +38,24 @@ class ToolCall:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+def _reasoning_from_responses_output(output: Any) -> str:
+    """从 Responses wire 的 output 数组提取 reasoning 项文本（无则空串）。"""
+
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+        for block in item.get("summary") or []:
+            if isinstance(block, dict) and block.get("type") in {"summary_text", "text"}:
+                parts.append(str(block.get("text") or ""))
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and part.get("type") in {"reasoning_text", "text"}:
+                parts.append(str(part.get("text") or ""))
+    return "".join(parts)
+
+
 @dataclass(frozen=True)
 class ModelResponse:
     content: str
@@ -45,13 +63,15 @@ class ModelResponse:
     usage: Usage
     tool_calls: list[ToolCall]
     raw_message: dict[str, Any]
+    #: 推理文本（chat wire 的 reasoning_content / Responses wire 的 reasoning 项）。
+    reasoning: str = ""
 
 
 class CredentialResolver:
-    """Resolve immutable Secret references with a workspace-persisted overlay.
+    """Resolve Secret references through the shared workspace configuration.
 
-    Resolution order: in-memory session values → workspace secrets file
-    (``.agentkit/secrets.env``) → process environment (with paired fallback).
+    Workspace credentials use ``.agentkit/config.yaml`` with explicit imports
+    and legacy migration. Standalone instances retain process/session behavior.
     """
 
     _FALLBACK_PAIRS: tuple[tuple[str, str], ...] = (
@@ -59,52 +79,19 @@ class CredentialResolver:
         ("OPENAI_API_KEY", "AGENTKIT_MODEL_API_KEY"),
     )
 
-    def __init__(self, workspace: Any = None) -> None:
+    def __init__(self, workspace: Any = None, *, configuration: Any = None) -> None:
         self._session_values: dict[str, bytearray] = {}
         self._lock = RLock()
         self._workspace = workspace
+        from ksadk.studio.configuration import WorkspaceConfiguration
+
+        self.configuration = configuration or (
+            WorkspaceConfiguration(workspace) if workspace is not None else None
+        )
         self._persisted: dict[str, str] | None = None
 
-    def _secrets_path(self) -> Any | None:
-        if self._workspace is None:
-            return None
-        try:
-            return self._workspace.resolve(".agentkit/secrets.env")
-        except Exception:
-            return None
-
     def _load_persisted(self) -> dict[str, str]:
-        if self._persisted is not None:
-            return self._persisted
-        self._persisted = {}
-        path = self._secrets_path()
-        if path is not None and path.is_file():
-            try:
-                for line in path.read_text(encoding="utf-8").splitlines():
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    if key:
-                        self._persisted[key] = value
-            except Exception:
-                pass
-        return self._persisted
-
-    def _write_persisted(self) -> None:
-        path = self._secrets_path()
-        if path is None:
-            return
-        lines = [f"{k}={v}" for k, v in sorted(self._persisted.items())]
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-            try:
-                path.chmod(0o600)
-            except Exception:
-                pass
-        except Exception:
-            pass
+        return self.configuration.secrets() if self.configuration is not None else {}
 
     @staticmethod
     def _validate_name(name: str) -> str:
@@ -153,11 +140,8 @@ class CredentialResolver:
             previous = self._session_values.get(name)
             self._session_values[name] = encoded
             self._zero(previous)
-            if self._secrets_path() is not None:
-                persisted = self._load_persisted()
-                if persisted.get(name) != value:
-                    persisted[name] = value
-                    self._write_persisted()
+            if self.configuration is not None:
+                self.configuration.put_secret(name, value)
         return self.status(f"env://{name}")
 
     def delete_session(self, name: str) -> dict[str, str | bool]:
@@ -165,11 +149,8 @@ class CredentialResolver:
         with self._lock:
             previous = self._session_values.pop(name, None)
             self._zero(previous)
-            if self._secrets_path() is not None:
-                persisted = self._load_persisted()
-                if name in persisted:
-                    persisted.pop(name, None)
-                    self._write_persisted()
+            if self.configuration is not None:
+                self.configuration.put_secret(name, None)
         return self.status(f"env://{name}")
 
     def clear_session(self) -> None:
@@ -188,6 +169,11 @@ class CredentialResolver:
     def _resolve_source(self, name: str) -> tuple[bool, str]:
         """Return (configured, source) considering session, persisted file, env, and fallback."""
         fallback = self._fallback_name(name)
+        if self.configuration is not None:
+            value, source = self.configuration.resolve_candidates(
+                [name, *([fallback] if fallback else [])]
+            )
+            return bool(value), source
         with self._lock:
             if name in self._session_values:
                 return True, "session"
@@ -224,6 +210,16 @@ class CredentialResolver:
         name = self._environment_name(reference)
         fallback = self._fallback_name(name) if allow_aliases else None
         aliases = [name, *([fallback] if fallback else [])]
+        if self.configuration is not None:
+            value, _source = self.configuration.resolve_candidates(aliases)
+            if value:
+                return value
+            raise StudioError(
+                "SECRET_NOT_FOUND",
+                "凭证尚未配置，请在设置中填写",
+                status_code=422,
+                details={"reference": reference},
+            )
         for candidate in aliases:
             value = self._session_value(candidate)
             if value is not None:
@@ -566,6 +562,7 @@ class OpenAICompatibleModelClient:
             usage=usage,
             tool_calls=[],
             raw_message={"output": payload.get("output")},
+            reasoning=_reasoning_from_responses_output(payload.get("output")),
         )
 
     @staticmethod
@@ -626,4 +623,5 @@ class OpenAICompatibleModelClient:
             usage=usage,
             tool_calls=calls,
             raw_message=message,
+            reasoning=str(message.get("reasoning_content") or message.get("reasoning") or ""),
         )

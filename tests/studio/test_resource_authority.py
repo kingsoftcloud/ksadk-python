@@ -502,3 +502,45 @@ def test_studio_validation_only_reports_verified_after_real_authority_calls(
         "diagnostics": [],
     }
     assert len(state["calls"]) == 3
+
+
+def test_settings_api_saved_credentials_reach_signed_resource_admission(
+    tmp_path, authority_upstream, monkeypatch
+):
+    from fastapi.testclient import TestClient
+
+    from ksadk.studio.api import create_studio_app
+    from ksadk.studio.cloud import UnavailableCloudGateway
+    from ksadk.studio.service import StudioService
+
+    origin, state = authority_upstream
+    _, connections, fixture_authority, config = _setup(tmp_path, origin)
+    declaration = connections.get("connection-a").model_dump(by_alias=True, exclude={"revision"})
+    declaration["credentials"] = {
+        "accessKeyRef": "env://KSYUN_ACCESS_KEY",
+        "secretKeyRef": "env://KSYUN_SECRET_KEY",
+    }
+    connections.save(ResourceConnectionDeclaration.model_validate(declaration), expected_revision=1)
+    for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "AGENTENGINE_SERVER_URL"):
+        monkeypatch.delenv(key, raising=False)
+    studio = StudioService(
+        tmp_path,
+        resource_authority_policy=fixture_authority.policy,
+        cloud_gateway=UnavailableCloudGateway(),
+    )
+    app = create_studio_app(tmp_path, service=studio, security_enabled=False)
+    client = TestClient(app)
+    response = client.put(
+        "/api/v1/system/settings",
+        json={
+            "cloudAccessKey": "fixture-current-ak",
+            "cloudSecretKey": "fixture-current-sk",
+            "cloudServerUrl": "https://control.example.test",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert "fixture-current-ak" not in response.text
+    access = studio.resource_authority.admit_runtime(config, expected_connection_revision=2)
+    assert access.authority.tenant_ref == "fixture-account"
+    assert access.credentials.access_key.get_secret_value() == "fixture-current-ak"
+    assert [urlsplit(item[0]).path for item in state["calls"]] == ["/iam", "/iam", "/aicp"]

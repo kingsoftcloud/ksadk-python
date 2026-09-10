@@ -64,7 +64,7 @@ def test_update_settings_writes_yaml_and_env(tmp_path: Path, monkeypatch) -> Non
 
     assert settings["sandbox"] == "full-access"
     assert os.environ["KSADK_CODEX_SANDBOX"] == "full-access"
-    assert "full-access" in (tmp_path / "ws" / ".agentkit" / "settings.yaml").read_text(
+    assert "full-access" in (tmp_path / "ws" / ".agentkit" / "config.yaml").read_text(
         encoding="utf-8"
     )
 
@@ -99,7 +99,7 @@ def test_cloud_settings_use_existing_signed_account_without_persisting_credentia
 
     assert settings["cloudSignedAccountConfigured"] is True
     assert isinstance(studio.cloud.gateway, DirectAgentEngineCloudDeploymentGateway)
-    persisted = (tmp_path / "ws" / ".agentkit" / "settings.yaml").read_text(encoding="utf-8")
+    persisted = (tmp_path / "ws" / ".agentkit" / "config.yaml").read_text(encoding="utf-8")
     assert "test-access-key" not in persisted
     assert "test-secret-key" not in persisted
 

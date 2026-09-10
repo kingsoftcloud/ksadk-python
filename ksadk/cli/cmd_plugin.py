@@ -141,6 +141,19 @@ def _call_dsh(operation):
         raise
     except Exception as err:
         name = type(err).__name__
+        if name == "DshToolchainUnavailableError":
+            abort_with_cli_error(
+                CLIError(
+                    code="dsh_toolchain_unavailable",
+                    message="DSH 插件开发工具链不可用",
+                    exit_code=EXIT_CODE_VALIDATION,
+                    details={
+                        "hint": "运行 `agentengine plugin toolchain install` 安装受管理 DSH 工具链",
+                        "reason": str(err),
+                    },
+                ),
+                context="Plugin",
+            )
         code = (
             "dsh_plugin_not_found"
             if name == "DshPluginNotFoundError"
@@ -165,6 +178,7 @@ def _call_dsh(operation):
                 exit_code=(
                     EXIT_CODE_RESOLUTION if code == "dsh_plugin_not_found" else EXIT_CODE_VALIDATION
                 ),
+                details={"reason": str(err)},
             ),
             context="Plugin",
         )
@@ -172,6 +186,8 @@ def _call_dsh(operation):
 
 def _call_dsh_developer(operation):
     """Run one bounded standard DSH bundle development operation."""
+
+    import re
 
     from ksadk.plugins.dsh_toolchain import (
         DshPluginPackError,
@@ -182,8 +198,28 @@ def _call_dsh_developer(operation):
         DshToolchainVersionMismatchError,
     )
 
+    _VERSION_PAIR = re.compile(
+        r"expected (?:pnpm|DSH) (?P<expected>[0-9A-Za-z.\-]+), got (?P<actual>[0-9A-Za-z.\-]+)"
+    )
+
+    def _toolchain_error_details(err: Exception) -> dict:
+        details: dict = {}
+        if isinstance(err, DshToolchainVersionMismatchError):
+            match = _VERSION_PAIR.search(str(err))
+            if match:
+                details["expected"] = match.group("expected")
+                details["actual"] = match.group("actual")
+            details["hint"] = (
+                "使用 corepack 启用固定版本 pnpm（corepack enable 后重试），"
+                "或安装 pnpm 11.7.0 并设置 AGENTENGINE_PNPM_BIN 指向该可执行文件"
+            )
+        elif isinstance(err, DshToolchainUnavailableError):
+            details["hint"] = "运行 `agentengine plugin toolchain install` 安装受管理 DSH 工具链"
+        return details
+
     try:
         return operation()
+
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as err:
@@ -211,6 +247,7 @@ def _call_dsh_developer(operation):
         stage = getattr(err, "stage", None)
         if isinstance(stage, str) and stage:
             details["stage"] = stage
+        details.update(_toolchain_error_details(err))
         diagnostic = getattr(err, "diagnostic", None)
         if isinstance(err, DshPluginSourceError):
             diagnostic = str(err)

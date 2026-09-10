@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from ksadk.kernel.bootstrap import (
@@ -85,6 +86,7 @@ class StudioScheduledKernelRegistry:
         resolve_adapter_provider: ResolveAdapterProvider,
         session_service: BaseSessionService,
         runtime_executor: object | None = None,
+        state_dir: str | Path | None = None,
         tenant_id: str = "local-studio",
         workspace_id: str = "studio-scheduler",
         poll_interval: float = 0.05,
@@ -94,6 +96,7 @@ class StudioScheduledKernelRegistry:
         self._resolve_adapter_provider = resolve_adapter_provider
         self._session_service = session_service
         self._runtime_executor = runtime_executor
+        self._state_dir = Path(state_dir).resolve() if state_dir is not None else None
         self._tenant_id = tenant_id
         self._workspace_id = workspace_id
         self._poll_interval = poll_interval
@@ -190,11 +193,17 @@ class StudioScheduledKernelRegistry:
                 return adapter
 
             instance_id = self._instance_id(normalized)
+            kernel_db = (
+                self._state_dir / "kernel" / f"{instance_id}.sqlite"
+                if self._state_dir is not None
+                else None
+            )
             config = AgentKernelRuntimeConfig(
                 agent_instance_id=instance_id,
                 authority_mode="local",
-                driver="memory",
-                durability_tier="ephemeral",
+                driver="sqlite" if kernel_db is not None else "memory",
+                durability_tier="durable" if kernel_db is not None else "ephemeral",
+                dsn=str(kernel_db) if kernel_db is not None else "",
                 adapter_provider=checked_adapter_provider,
                 session_service=self._session_service,
                 runtime_executor=self._runtime_executor,

@@ -88,6 +88,7 @@ from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
 from ksadk.studio.codex_provider_build import CodexProviderBuildManager
 from ksadk.studio.codex_run import CodexRunSpecResolver
 from ksadk.studio.compiler import AgentCompiler
+from ksadk.studio.configuration import SETTINGS_ENV, WorkspaceConfiguration
 from ksadk.studio.contracts import (
     AgentAppearance,
     AgentBindings,
@@ -123,7 +124,7 @@ from ksadk.studio.model_profile_service import test_model_profile_connection
 from ksadk.studio.operations import OperationManager
 from ksadk.studio.plugin_composition import StudioPluginCompositionCompiler
 from ksadk.studio.plugin_runtime import StudioPluginRuntime
-from ksadk.studio.repository import AgentDraftRepository, BuildRepository, load_yaml_file
+from ksadk.studio.repository import AgentDraftRepository, BuildRepository
 from ksadk.studio.resource_authority import (
     ResourceAuthorityPolicy,
     SignedKnowledgeResourceAuthority,
@@ -149,6 +150,7 @@ from ksadk.studio.templates import (
     compose_research_agent,
     default_agent_spec,
     list_agent_templates,
+    with_harness_provider_permissions,
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
@@ -186,6 +188,7 @@ class StudioService:
         dsh_provider_registration_manager: StudioDshProviderRegistrationManager | None = None,
         dsh_capability_service: StudioDshCapabilityService | None = None,
         resource_authority_policy: ResourceAuthorityPolicy | None = None,
+        configuration_overrides: dict[str, str] | None = None,
     ) -> None:
         provider_manifests = dict(plugin_provider_manifests or {})
         provider_factories = dict(plugin_provider_factories or {})
@@ -208,9 +211,11 @@ class StudioService:
             dsh_capability_service
             or StudioDshCapabilityService.discover_or_create_workspace_default(self.workspace.root)
         )
-        if dsh_capability_service is not None or os.environ.get(
-            "KSADK_DSH_HOME", ""
-        ).strip() or os.environ.get("KSADK_DSH_PROFILE", "").strip():
+        if (
+            dsh_capability_service is not None
+            or os.environ.get("KSADK_DSH_HOME", "").strip()
+            or os.environ.get("KSADK_DSH_PROFILE", "").strip()
+        ):
             self._resource_dsh_provider_registration_manager = None
             self.resource_dsh_capabilities = self.dsh_capabilities
         else:
@@ -220,13 +225,15 @@ class StudioService:
                 )
             )
             self.resource_dsh_capabilities = (
-                StudioDshCapabilityService.create_workspace_resource_default(
-                    self.workspace.root
-                )
+                StudioDshCapabilityService.create_workspace_resource_default(self.workspace.root)
             )
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False
+        self.configuration = WorkspaceConfiguration(
+            self.workspace, overrides=configuration_overrides
+        )
+        self._resource_authority_policy_override = resource_authority_policy
         self._apply_persisted_settings()
         self.avatar_assets = AgentAvatarAssetStore(self.workspace)
         self.conversation_attachments = ConversationAttachmentStore(self.workspace)
@@ -236,18 +243,16 @@ class StudioService:
         self.credentials = (
             credential_resolver
             or getattr(model_client, "credential_resolver", None)
-            or CredentialResolver(self.workspace)
+            or CredentialResolver(self.workspace, configuration=self.configuration)
         )
         self.resource_connections = ResourceConnectionRepository(self.workspace, self.credentials)
         effective_resource_policy = (
             resource_authority_policy
             if resource_authority_policy is not None
-            else resource_authority_policy_from_environment()
+            else resource_authority_policy_from_environment(self.configuration.environment())
         )
         self.resource_authority = (
-            SignedKnowledgeResourceAuthority(
-                self.resource_connections, effective_resource_policy
-            )
+            SignedKnowledgeResourceAuthority(self.resource_connections, effective_resource_policy)
             if effective_resource_policy is not None
             else None
         )
@@ -341,6 +346,7 @@ class StudioService:
             resolve_adapter_provider=self._scheduler_adapter_provider,
             session_service=self.session_service,
             runtime_executor=self.runtime_executor,
+            state_dir=self.workspace.resolve(".agentkit/plugin-runtime/state"),
         )
         self.scheduler = StudioSchedulerService(
             self.workspace,
@@ -1251,6 +1257,9 @@ class StudioService:
                 raise asyncio.CancelledError
 
     async def _close_owned_plugin_services(self) -> None:
+        from ksadk.studio.provider_recovery import detach_recovered_runs
+
+        await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
         owned = [self.plugin_runs.aclose, self.dsh_capabilities.aclose]
         if self.resource_dsh_capabilities is not self.dsh_capabilities:
@@ -1850,6 +1859,8 @@ class StudioService:
         )
         selected = runtime or resolved_spec.runtime
         resolved_spec.runtime = selected
+        if selected is not None and selected.type == "harness" and spec is None:
+            resolved_spec = with_harness_provider_permissions(resolved_spec)
         if selected is not None and selected.type == "codex":
             return cast(
                 AgentDraft,
@@ -1979,11 +1990,13 @@ class StudioService:
         # Check workspace ownership, but never project the mutable draft as runtime state.
         await asyncio.to_thread(self.agent_detail, agent_id)
         status = await self.dsh_capabilities.resource_runtime_status(
-            agent_id=agent_id, activation_id=activation_id,
+            agent_id=agent_id,
+            activation_id=activation_id,
         )
         if status is None:
             raise StudioError(
-                "RESOURCE_ACTIVATION_NOT_FOUND", "未找到此 Agent 的资源运行实例",
+                "RESOURCE_ACTIVATION_NOT_FOUND",
+                "未找到此 Agent 的资源运行实例",
                 status_code=404,
             )
         return status
@@ -1995,10 +2008,14 @@ class StudioService:
         draft = self.agent_detail(agent_id)["draft"]
         if draft.metadata.revision != expected_revision:
             raise StudioError(
-                "AGENT_REVISION_CONFLICT", "资源校验版本与当前 Agent 不一致", status_code=409,
+                "AGENT_REVISION_CONFLICT",
+                "资源校验版本与当前 Agent 不一致",
+                status_code=409,
             )
         diagnostics = resource_binding_diagnostics(
-            draft.spec.bindings.plugins, draft.spec.memory, self.resource_connections,
+            draft.spec.bindings.plugins,
+            draft.spec.memory,
+            self.resource_connections,
         )
         configs = [
             (index, config)
@@ -2029,8 +2046,7 @@ class StudioService:
                             severity=DiagnosticSeverity.ERROR,
                             code=error.code,
                             message=error.message,
-                            field=error.field
-                            or f"spec.bindings.plugins[{index}].config.binding",
+                            field=error.field or f"spec.bindings.plugins[{index}].config.binding",
                         )
                     )
             current = self.agent_detail(agent_id)["draft"]
@@ -3081,41 +3097,68 @@ class StudioService:
             "cloudCredential": opaque(f"{region}\0{access_key}"),
         }
 
+    @staticmethod
+    def frontend_assets() -> dict[str, Any]:
+        import re
+
+        entry = Path(__file__).with_name("static") / "index.html"
+        if not entry.is_file():
+            return {"entryAssets": []}
+        assets = re.findall(
+            r'(?:src|href)="(/static/assets/[^"<>]+\.(?:js|css))"',
+            entry.read_text(encoding="utf-8"),
+        )
+        return {"entryAssets": [Path(asset).name for asset in assets]}
+
     def get_settings(self) -> dict[str, Any]:
-        path = self.workspace.resolve(".agentkit/settings.yaml")
-        data: dict[str, Any] = {}
-        if path.is_file():
-            try:
-                data = load_yaml_file(path) or {}
-            except Exception:
-                data = {}
+        data = self.configuration.settings()
+        environment = self.configuration.environment()
         defaults = {
-            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
+            "sandbox": environment.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
             "buildAfterCreate": True,
             "codexProxy": current_proxy_mode(),
-            "cloudRegion": os.environ.get(
-                "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "cn-beijing-6")
+            "cloudRegion": environment.get(
+                "AGENTENGINE_REGION", environment.get("KSYUN_REGION", "cn-beijing-6")
             ),
-            "cloudBucket": os.environ.get("KS3_BUCKET", ""),
-            "cloudAccountId": (os.environ.get("KSYUN_ACCOUNT_ID", "").strip()),
+            "cloudServerUrl": environment.get("AGENTENGINE_SERVER_URL", ""),
+            "cloudBucket": environment.get("KS3_BUCKET", ""),
+            "cloudAccountId": (environment.get("KSYUN_ACCOUNT_ID", "").strip()),
             # AK/SK 不回显(避免本地 UI 回传 secret);只暴露配置状态。
             # 已配置 = 启动环境或已持久化 settings 里 AK+SK 齐全。
             "cloudAccountConfigured": bool(
-                (os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")).strip()
+                (
+                    environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
+                ).strip()
                 and (
-                    os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+                    environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
                 ).strip()
             ),
             "cloudSignedAccountConfigured": bool(
-                (os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")).strip()
+                (
+                    environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
+                ).strip()
                 and (
-                    os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+                    environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
                 ).strip()
             ),
-            "traceContent": os.environ.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
+            "traceContent": environment.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
         }
         defaults.update({k: v for k, v in data.items() if k in defaults and v is not None})
-        defaults["codexProxy"] = normalize_proxy_mode(defaults.get("codexProxy"))
+        for key, name in SETTINGS_ENV.items():
+            if key in defaults:
+                value, _source = self.configuration.resolve(name)
+                if value is not None:
+                    defaults[key] = value
+        defaults["configurationSources"] = {
+            key: self.configuration.resolve(name)[1] for key, name in SETTINGS_ENV.items()
+        }
+        defaults["platformResourceMissingFields"] = [
+            key
+            for key in ("cloudAccessKey", "cloudSecretKey", "cloudServerUrl")
+            if not self.configuration.resolve(SETTINGS_ENV[key])[0]
+        ]
+        defaults["platformResourcesConfigured"] = self.resource_authority is not None
+        defaults["codexProxy"] = normalize_proxy_mode(environment.get("KSADK_CODEX_USE_PROXY"))
         return defaults
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3125,6 +3168,7 @@ class StudioService:
             "codexProxy",
             "cloudRegion",
             "cloudBucket",
+            "cloudServerUrl",
             "traceContent",
             # 云账号:AK/SK 留空 = 不修改(保留已存值);AccountID 可单独更新。
             "cloudAccessKey",
@@ -3153,35 +3197,102 @@ class StudioService:
             raise StudioError("SETTINGS_INVALID", "sandbox 取值非法", status_code=422)
         if "codexProxy" in data and data["codexProxy"] not in {"auto", "forced", "direct"}:
             raise StudioError("SETTINGS_INVALID", "codexProxy 取值非法", status_code=422)
-        path = self.workspace.resolve(".agentkit/settings.yaml")
-        self.workspace.atomic_write_yaml(path, data)
-        # env 桥接用落盘后的全量数据:局部更新(只改 AccountID)时,
-        # 已持久化的 AK/SK 也要继续桥接,否则签名凭证丢失。
+        for key in (
+            "cloudAccessKey",
+            "cloudSecretKey",
+            "cloudAccountId",
+            "cloudRegion",
+            "cloudBucket",
+            "cloudServerUrl",
+        ):
+            if key in data:
+                if (
+                    not isinstance(data[key], str)
+                    or len(data[key]) > 2048
+                    or any(ord(c) < 32 for c in data[key])
+                ):
+                    raise StudioError(
+                        "SETTINGS_INVALID", "配置值格式无效", status_code=422, field=key
+                    )
+                data[key] = data[key].strip()
+        if data.get("cloudServerUrl"):
+            from ksadk.studio.resource_authority import _canonical_endpoint
+
+            try:
+                data["cloudServerUrl"] = _canonical_endpoint(
+                    data["cloudServerUrl"],
+                    allow_loopback_http=False,
+                    allow_ksyun_internal_http=True,
+                )
+            except ValueError as error:
+                raise StudioError(
+                    "SETTINGS_INVALID",
+                    "控制面地址必须是有效的 HTTPS 服务地址",
+                    status_code=422,
+                    field="cloudServerUrl",
+                ) from error
+        if (
+            "cloudAccessKey" in data
+            and data["cloudAccessKey"] != self.configuration.resolve("KSYUN_ACCESS_KEY")[0]
+        ):
+            if not data.get("cloudSecretKey"):
+                raise StudioError(
+                    "SETTINGS_INVALID",
+                    "切换 Access Key 时请同时填写对应的 Secret Key",
+                    status_code=422,
+                    field="cloudSecretKey",
+                )
+            data.setdefault("cloudAccountId", "")
+        candidate_environment = self.configuration.environment()
+        for key, name in SETTINGS_ENV.items():
+            if key in data and name not in self.configuration.overrides:
+                candidate_environment[name] = str(data[key])
         try:
-            persisted = load_yaml_file(path) or {}
-        except Exception:
-            persisted = data
-        self._apply_settings_to_env(persisted if isinstance(persisted, dict) else data)
+            candidate_policy = (
+                self._resource_authority_policy_override
+                or resource_authority_policy_from_environment(candidate_environment)
+            )
+        except ValueError as error:
+            raise StudioError(
+                "SETTINGS_INVALID", "云端连接配置无效，请检查控制面地址和区域", status_code=422
+            ) from error
+        self.plugin_runs.check_configuration_mutable()
+        self.configuration.update_settings(data)
+        self._apply_persisted_settings()
+        self.resource_authority = (
+            SignedKnowledgeResourceAuthority(self.resource_connections, candidate_policy)
+            if candidate_policy is not None
+            else None
+        )
+        self.plugin_runs.replace_resource_authority(self.resource_authority)
         if self._cloud_gateway_override is None:
             self.cloud.gateway = self._configured_cloud_gateway()
         return self.get_settings()
 
-    def _apply_persisted_settings(self) -> None:
-        """启动时把 settings.yaml 回填到进程环境。
+    async def apply_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Drain old credentials/leases before making a new account visible."""
+        async with self._start_lock:
+            if self.run_service.has_active_runs():
+                raise StudioError(
+                    "SETTINGS_RUNTIME_BUSY", "请等待当前运行结束后再保存设置", status_code=409
+                )
+            try:
+                await self.plugin_runs.suspend_admission()
+                return self.update_settings(payload)
+            finally:
+                await self.plugin_runs.resume_admission()
 
-        update_settings 只在 PUT 时桥接 env;重启后 env 丢失,运行解析
-        (如 _resolve_sandbox 读 KSADK_CODEX_SANDBOX)会回落默认,表现为
-        「设置页显示 workspace-write-auto,实际运行 read-only」。
-        """
-        path = self.workspace.resolve(".agentkit/settings.yaml")
-        if not path.is_file():
-            return
-        try:
-            data = load_yaml_file(path) or {}
-        except Exception:
-            return
-        if isinstance(data, dict):
-            self._apply_settings_to_env(data)
+    def _apply_persisted_settings(self) -> None:
+        data = self.configuration.settings()
+        environment = self.configuration.environment()
+        self._apply_settings_to_env(data)
+        for name in (
+            *SETTINGS_ENV.values(),
+            *self.configuration.dotenv,
+            *self.configuration.overrides,
+        ):
+            if name in environment:
+                os.environ[name] = environment[name]
 
     @staticmethod
     def _apply_settings_to_env(data: dict[str, Any]) -> None:
@@ -3208,34 +3319,33 @@ class StudioService:
         if data.get("cloudAccountId"):
             os.environ["KSYUN_ACCOUNT_ID"] = str(data["cloudAccountId"])
 
-    @staticmethod
-    def _configured_cloud_gateway() -> CloudDeploymentGateway:
+    def _configured_cloud_gateway(self) -> CloudDeploymentGateway:
         """Compose the existing signed Code deployment path from process-only credentials."""
 
+        environment = self.configuration.environment()
         access_key = (
-            os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")
+            environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
         ).strip()
         secret_key = (
-            os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+            environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
         ).strip()
-        configured_region = os.environ.get(
-            "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "")
+        configured_region = environment.get(
+            "AGENTENGINE_REGION", environment.get("KSYUN_REGION", "")
         ).strip()
-        environment_region = os.environ.get("KSYUN_REGION", "").strip()
+        environment_region = environment.get("KSYUN_REGION", "").strip()
         logical_region = (
-            "pre-online"
-            if environment_region.lower() == "pre-online"
-            else configured_region
+            "pre-online" if environment_region.lower() == "pre-online" else configured_region
         )
         if not all((access_key, secret_key, logical_region)):
             return UnavailableCloudGateway()
         control_client = AgentEngineClient(
+            base_url=environment.get("AGENTENGINE_SERVER_URL") or None,
             region=logical_region,
             access_key=access_key,
             secret_key=secret_key,
         )
         is_preonline = logical_region.lower() == "pre-online"
-        stream_base_url = os.environ.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
+        stream_base_url = environment.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
         if not stream_base_url and is_preonline:
             # The pre-online KOP response path currently buffers SSE until
             # EOF, and KOP may not yet publish newly deployed native Action
@@ -3257,7 +3367,7 @@ class StudioService:
             client=control_client,
             stream_client=stream_client,
             managed_runtime_client=stream_client if is_preonline else None,
-            bucket=os.environ.get("KS3_BUCKET", "").strip() or None,
+            bucket=environment.get("KS3_BUCKET", "").strip() or None,
             ks3_credentials={
                 "access_key": access_key,
                 "secret_key": secret_key,

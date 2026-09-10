@@ -182,7 +182,9 @@ def test_process_b_recovers_and_continues_task_after_process_a_is_killed(
     assert written_task == before
     assert before["id"] == evidence["task_id"]
     assert before["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
-    assert before["artifacts"][0]["parts"] == [{"text": "durable draft"}]
+    assert before["artifacts"][0]["parts"] == [{
+        "text": "durable draft", "metadata": {"ksadk_output_snapshot": True},
+    }]
     assert "run_handle" not in before.get("metadata", {})
     assert "checkpoint_id" not in before.get("metadata", {})
     assert "resume_target" not in before.get("metadata", {})
@@ -191,7 +193,9 @@ def test_process_b_recovers_and_continues_task_after_process_a_is_killed(
     assert after["id"] == evidence["task_id"]
     assert after["context_id"] == before["context_id"]
     assert after["status"]["state"] == "TASK_STATE_COMPLETED"
-    assert after["artifacts"][0]["parts"] == [{"text": "continued by process B"}]
+    assert after["artifacts"][0]["parts"] == [{
+        "text": "continued by process B", "metadata": {"ksadk_output_snapshot": True},
+    }]
     assert evidence["recovered"]["attach_calls"] == [evidence["task_id"]]
     assert evidence["recovered"]["resume_calls"] == [evidence["task_id"]]
 

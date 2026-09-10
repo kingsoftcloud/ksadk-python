@@ -57,6 +57,7 @@ interface ResItem {
 const DRAFT_PREFIX = "agentkit.studio.agentDraft.v1";
 const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
 const BUILTIN_RUNTIME_OPTIONS = [
+  { value: "harness", label: "KsADK Harness" },
   { value: "codex", label: "Codex · ManagedRuntime" },
   { value: "adk", label: "Google ADK · Python source" },
   { value: "langgraph", label: "LangGraph · Python graph" },
@@ -81,11 +82,23 @@ const POLICY_META: Record<string, { title: string; description: string }> = {
   custom: { title: "自定义权限策略", description: "沿用每个 Tool Contract 中配置的审批策略。" },
 };
 
-const RUNTIME_OPTIONS = [
-  { value: "codex", label: "Codex · ManagedRuntime" },
-  { value: "adk", label: "Google ADK · Python source" },
-  { value: "langgraph", label: "LangGraph · Python graph" },
-];
+const RUNTIME_OPTIONS = BUILTIN_RUNTIME_OPTIONS;
+
+function HarnessPermission({ approved, onChange }: { approved: boolean; onChange: (value: boolean) => void }) {
+  return <details className="template-specific"><summary>本地运行：{approved ? "已授权" : "未授权"} · 高级权限</summary><label className="post-create-option">
+    <input type="checkbox" checked={approved} onChange={event => onChange(event.target.checked)} />
+    <span><strong>允许 KsADK Harness 在本机运行</strong>
+      <small>默认开启，用于启动本地执行引擎；可取消。工具调用仍受权限与审批策略约束。</small>
+    </span>
+  </label></details>;
+}
+
+function approveHarness(spec: any, approved: boolean) {
+  if (!approved) throw new Error("请先确认 KsADK Harness 本机执行权限");
+  spec.security = { ...spec.security, allowedPermissions: [...new Set([
+    ...(spec.security?.allowedPermissions || []), "process:host-user",
+  ])] };
+}
 const WIZARD_STEP_META = [
   ["定义 Agent", "模板与系统提示词"],
   ["绑定能力", "Model · Tool · MCP · Skill"],
@@ -247,6 +260,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   } = quickForm.watch();
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [harnessApproved, setHarnessApproved] = useState(true);
+  const [convHarnessApproved, setConvHarnessApproved] = useState(true);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedPlatformResources, setSelectedPlatformResources] = useState<NativePluginBinding[]>([]);
@@ -271,6 +286,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           description: "由 Codex 等原生 Runtime 管理最终上下文",
         },
       ];
+    }
+    if (runtime === "harness") {
+      return [automatic, { value: "ksadk", label: "KsADK 管理", description: "统一规划、压缩和保护上下文" }];
     }
     if (runtime === "langgraph") {
       return [
@@ -422,7 +440,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }, [codexConsentKey]);
   const usesNativeCodexTools = runtime === "codex"
     || (runtime === "plugin" && isCodexAgentProvider(selectedProviderRef));
-  const supportsKsAdkTools = runtime === "adk" || runtime === "langgraph";
+  const supportsKsAdkTools = runtime === "harness" || runtime === "adk" || runtime === "langgraph";
   const effectiveSelectedTools = supportsKsAdkTools ? selectedTools : [];
   const providerOptions = useMemo(() => effectiveAgentProviders.map(item => ({
     value: item.providerRef,
@@ -704,6 +722,10 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         setCreateError("请至少选择一个模型后继续。");
         return;
       }
+      if (step === 1 && runtime === "harness" && !harnessApproved) {
+        setCreateError("请先确认 KsADK Harness 本机执行权限");
+        return;
+      }
     }
     setCreateError("");
     if (next === 3 && promptStatus === "idle") composeAgent({ preservePrompt: true });
@@ -716,6 +738,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     setCreateError("");
     setSubmitting(true);
     try {
+      if (values.runtimeType === "harness" && !harnessApproved) {
+        throw new Error("请先确认 KsADK Harness 本机执行权限");
+      }
       if (!compositionRef.current) await composeAgent({ preservePrompt: false });
       if (!compositionRef.current) {
         throw new Error("未能生成 Agent 配置，请检查模板和能力绑定后重试。");
@@ -797,6 +822,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
         spec.bindings = { ...(spec.bindings || {}), tools: [] };
         spec.capabilities = { ...(spec.capabilities || {}), tools: [] };
       }
+      if (values.runtimeType === "harness") approveHarness(spec, harnessApproved);
       spec.bindings = {
         ...(spec.bindings || {}),
         plugins: selectedPlatformResources,
@@ -964,6 +990,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     setConvBusy(true);
     setConvError("");
     try {
+      if (values.runtimeType === "harness" && !convHarnessApproved) {
+        throw new Error("请先确认 KsADK Harness 本机执行权限");
+      }
       if (values.runtimeType === "codex" && codexProvider?.permissions.length && !convCodexPermissionsApproved) {
         throw new Error("请在部署配置中确认 Codex Provider 请求的 Agent 权限");
       }
@@ -997,6 +1026,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
           skills: convSkills.map(resourceId => ({ resourceId })),
         },
       });
+      if (values.runtimeType === "harness") approveHarness(spec, convHarnessApproved);
       if (values.runtimeType === "codex" && codexProvider?.permissions.length) {
         spec.security = {
           ...(spec.security || {}),
@@ -1116,7 +1146,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }
 
   const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
-  const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
+  const runtimeLabel = ({ harness: "KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
@@ -1128,7 +1158,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const selectedModelNeedsCredential = selectedModelItems.some(
     item => !hasConfiguredCredential(item),
   );
-  const isManagedRuntime = runtime === "codex";
+  const isManagedRuntime = runtime === "codex" || runtime === "harness";
   const wizardStepMeta = isManagedRuntime
     ? [...WIZARD_STEP_META.slice(0, 3), ["检查并创建", "校验声明与打开会话"]]
     : WIZARD_STEP_META;
@@ -1361,6 +1391,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                         <CodexProviderPermissions provider={codexProvider} approved={convCodexPermissionsApproved}
                           onChange={setConvCodexPermissionsApproved} />
                       )}
+                      {conversationRuntime === "harness" && <HarnessPermission approved={convHarnessApproved} onChange={setConvHarnessApproved} />}
                       <FormField
                         label="Agent 可用模型"
                         className="authoring-model-field"
@@ -1677,6 +1708,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <CodexProviderPermissions provider={codexProvider} approved={codexPermissionsApproved}
                       onChange={approved => { setCodexPermissionsApproved(approved); markDirty(); }} />
                   )}
+                  {runtime === "harness" && <HarnessPermission approved={harnessApproved} onChange={setHarnessApproved} />}
                   {runtime === "plugin" && (
                     <div className="template-specific" data-testid="external-provider-config">
                       <FormField
@@ -2061,11 +2093,11 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div className="wizard-flow-actions">
                     <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
                     {step < 4 ? (
-                      <button className="button accent" type="button" disabled={platformResourcesPending} onClick={() => gotoStep(step + 1)}>
+                      <button key="continue" className="button accent" type="button" disabled={platformResourcesPending} onClick={() => gotoStep(step + 1)}>
                         <span>继续</span><ArrowRight size={16} />
                       </button>
                     ) : (
-                      <button className="button accent" type="submit" disabled={submitting || platformResourcesPending}>
+                      <button key="create" className="button accent" type="submit" disabled={submitting || platformResourcesPending}>
                         <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
                       </button>
                     )}

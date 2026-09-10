@@ -22,10 +22,24 @@ _EXPORTS = {
     "HarnessReasoningTurn": ("ksadk.harness.reasoner", "HarnessReasoningTurn"),
     "HarnessToolCall": ("ksadk.harness.reasoner", "HarnessToolCall"),
     "LiteLLMHarnessReasoner": ("ksadk.harness.reasoner", "LiteLLMHarnessReasoner"),
+    "AcceptanceCheck": ("ksadk.harness.run_control", "AcceptanceCheck"),
+    "MilestoneSpec": ("ksadk.harness.run_control", "MilestoneSpec"),
+    "RunControlSpec": ("ksadk.harness.run_control", "RunControlSpec"),
+    "RunLimits": ("ksadk.harness.run_control", "RunLimits"),
+    "StagnationPolicy": ("ksadk.harness.run_control", "StagnationPolicy"),
     "HarnessRuntime": ("ksadk.harness.runtime", "HarnessRuntime"),
     "HarnessRuntimeAdapter": ("ksadk.harness.runtime", "HarnessRuntimeAdapter"),
     "HarnessSandboxExecutor": ("ksadk.harness.sandbox", "HarnessSandboxExecutor"),
     "SandboxPolicyDenied": ("ksadk.harness.sandbox", "SandboxPolicyDenied"),
+    "ToolDeliverySemantics": (
+        "ksadk.harness.tool_reliability",
+        "ToolDeliverySemantics",
+    ),
+    "ToolReliability": ("ksadk.harness.tool_reliability", "ToolReliability"),
+    "classify_tool_reliability": (
+        "ksadk.harness.tool_reliability",
+        "classify_tool_reliability",
+    ),
 }
 
 __all__ = list(_EXPORTS)

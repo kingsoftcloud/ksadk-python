@@ -37,6 +37,40 @@ from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntime
 from ksadk.runtime.launch import RuntimeLaunchContext
 
 
+def _create_harness(context: RuntimeLaunchContext) -> RuntimeAdapter:
+    """Create the managed KsADK Harness adapter from an immutable launch manifest."""
+
+    import re
+
+    from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
+    from ksadk.harness.reasoner import LiteLLMHarnessReasoner
+    from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
+
+    config = dict(context.config)
+    prompt = str(config.get("prompt") or config.get("base_instructions") or "").strip()
+    model = str(config.get("model") or "").strip()
+    if not prompt:
+        raise ValueError("harness runtime requires prompt/base_instructions")
+    if not model:
+        raise ValueError("harness runtime requires model")
+    model_ref_name = re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "studio-model"
+    agent_ref_name = re.sub(
+        r"[^A-Za-z0-9._-]+", "-", str(config.get("agent_id") or "studio-agent")
+    ).strip("-") or "studio-agent"
+    spec = HarnessSpec(
+        agent_revision_ref=f"agent-revision://{agent_ref_name}@1",
+        model=ModelBinding(profile_ref=f"model-profile://{model_ref_name}@1"),
+        prompt=PromptSpec(instructions=prompt),
+    )
+    return ManagedHarnessRuntimeAdapter(
+        spec,
+        reasoner=LiteLLMHarnessReasoner(
+            base_url=str(config.get("base_url") or ""),
+        ),
+        workspace_root=context.project_dir,
+    )
+
+
 def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, Any]:
     """Project an admitted launch manifest into immutable Kernel turn defaults.
 
@@ -149,10 +183,11 @@ def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:
 
 
 def build_default_runtime_registry() -> RuntimeRegistry:
-    """注册内置 Codex、ADK 和 LangGraph Runtime Factory。"""
+    """注册内置 KsADK Harness、Codex、ADK 和 LangGraph Runtime Factory。"""
 
     registry = RuntimeRegistry()
     registry.register("codex", _create_codex)
+    registry.register("harness", _create_harness)
     registry.register("adk", _create_adk)
     registry.register("langgraph", _create_langgraph)
     return registry

@@ -96,7 +96,7 @@ def test_worker_does_not_report_ready_when_sdk_is_missing(tmp_path, frozen, monk
     assert worker.main() == 1
     output.seek(0)
     assert read_frame(output) == {"error": {"code": "RESOURCE_WORKER_INITIALIZATION_FAILED"}}
-    assert "fake-execution-secret" not in output.getvalue().decode()
+    assert b"fake-execution-secret" not in output.getvalue()
 
 
 def test_worker_executes_real_pinned_script_with_sandbox_transport_double(
@@ -145,4 +145,4 @@ def test_worker_executes_real_pinned_script_with_sandbox_transport_double(
     assert path.is_relative_to((tmp_path / "out").resolve())
     assert path.read_text() == "version-one"
     assert remote.killed
-    assert "fake-execution-secret" not in output.getvalue().decode()
+    assert b"fake-execution-secret" not in output.getvalue()

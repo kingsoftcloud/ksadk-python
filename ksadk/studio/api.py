@@ -224,7 +224,7 @@ def create_studio_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             await studio.start()
-            await studio.run_service.recover_interrupted()
+            await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
         finally:
@@ -903,11 +903,12 @@ def create_studio_app(
                 "path": str(studio.workspace.root),
             },
             "operationScope": studio.deployment_operation_scope(),
+            "frontend": studio.frontend_assets(),
             "features": {
                 "build": True,
                 "run": True,
                 "runtimeRegistry": True,
-                "runtimeTypes": ["codex", "adk", "langgraph"],
+                "runtimeTypes": ["harness", "codex", "adk", "langgraph"],
                 "evaluation": True,
                 "deployment": True,
                 "cloudRebuild": False,
@@ -924,7 +925,7 @@ def create_studio_app(
 
     @app.put("/api/v1/system/settings")
     async def update_settings(payload: dict[str, Any]):
-        return studio.update_settings(payload)
+        return await studio.apply_settings(payload)
 
     @app.get("/api/v1/schedules")
     async def list_schedules():
