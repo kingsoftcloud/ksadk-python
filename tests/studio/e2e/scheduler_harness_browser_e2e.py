@@ -313,7 +313,13 @@ def _assert_harness_vertical(
     assert all(item.path == "/v1/chat/completions" for item in requests)
     assert all(item.authorization == "Bearer harness-fixture-key" for item in requests)
     assert len(requests[0].payload["messages"]) == 2
-    assert requests[2].payload["messages"] == [
+    # LiteLLM may serialize an unset optional name as null. Preserve exact
+    # message count, order, roles, content and every other wire field.
+    messages = [
+        {key: value for key, value in message.items() if key != "name" or value is not None}
+        for message in requests[2].payload["messages"]
+    ]
+    assert messages == [
         {
             "role": "system",
             "content": (

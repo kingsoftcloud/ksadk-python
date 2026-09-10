@@ -64,6 +64,7 @@ from ksadk.kernel.store import (
 )
 from ksadk.kernel.worker_identity import prepare_worker_identity
 from ksadk.runtime.adapter import (
+    CONVERSATION_PREPROCESSING_METADATA_KEY,
     CancelResult,
     PauseResult,
     RunHandle,
@@ -439,6 +440,16 @@ class AgentKernelWorker:
             session_service=self._session_service,
         )
 
+        conversation_metadata = {}
+        if adapter.runtime.runtime_type == "harness" and self._session_events is not None:
+            from ksadk.kernel.worker_history import harness_conversation_messages
+
+            conversation_metadata[CONVERSATION_PREPROCESSING_METADATA_KEY] = {
+                "messages": await harness_conversation_messages(
+                    command, store=self._store, session_events=self._session_events,
+                ),
+            }
+
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
@@ -463,6 +474,7 @@ class AgentKernelWorker:
                         else {}
                     ),
                     **continuation_metadata,
+                    **conversation_metadata,
                 },
             )
         )
