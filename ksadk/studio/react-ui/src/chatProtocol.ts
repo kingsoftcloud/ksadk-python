@@ -884,12 +884,13 @@ export function projectRunActivities(events: RunEvent[]): RunActivityProjection 
   for (const event of events) {
     const data = event.data || {};
     const isThinking = event.type === "thinking.delta" || event.type === "thinking.completed";
-    const isMessage = event.type === "message.delta" || event.type === "message.completed";
+    const isMessage = event.type === "message.delta" || event.type === "message.completed"
+      || event.type === "text.delta" || event.type === "text.completed";
     if (isThinking || isMessage) {
       const kind: RuntimeTextItem["kind"] = isThinking ? "thinking" : "message";
       const completed = event.type.endsWith(".completed");
       const operation = completed ? "complete" : String(data.operation || "append");
-      const text = String(data.text || data.delta || "");
+      const text = String(data.text || data.delta || recordOf(data.payload).text || recordOf(data.payload).delta || "");
       const key = `${kind}:${textItemKey(data)}`;
       const existingIndex = textByKey.get(key);
       const runtimeEvent = recordOf(data.runtimeEvent);
@@ -1066,7 +1067,7 @@ export function projectRunInspectorTimeline(events: RunEvent[]): RunInspectorTim
       const key = `stream:${kind}`;
       const previousIndex = indexes.get(key);
       const previous = previousIndex === undefined ? null : timeline[previousIndex];
-      const text = String(data.text || data.delta || "");
+      const text = String(data.text || data.delta || recordOf(data.payload).text || recordOf(data.payload).delta || "");
       const completed = type.endsWith(".completed");
       const detail = completed && text ? text : `${previous?.detail || ""}${text}`;
       upsert(key, {

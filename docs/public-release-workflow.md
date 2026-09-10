@@ -139,6 +139,14 @@ cd .worktrees/public-main
 make public-preflight
 ```
 
+仅同步源码、不创建 tag / Release、不发布 PyPI 或 Pages 时，显式运行：
+
+```bash
+make public-preflight PUBLIC_PREFLIGHT_MODE=source-sync
+```
+
+该模式允许保留当前已发布版本，仍拒绝降版；其余公开测试、文档、浏览器、构建和制品审计不变。默认 `release` 模式仍要求版本高于已发布版本。源码同步结果不是发布授权或发布证据。
+
 该门禁至少覆盖：
 
 - PyPI 版本未重复发布。

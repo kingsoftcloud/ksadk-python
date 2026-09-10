@@ -78,7 +78,8 @@ def describe_session_backend() -> dict[str, Any]:
 async def get_persistence_status(
     *, framework: str | None = None, use_cache: bool = True
 ) -> dict[str, Any]:
-    provider = current().get_persistence_status
+    # App-scoped session routes also run without the legacy global app.
+    provider = _dependencies.get_persistence_status if _dependencies is not None else None
     if provider is None:
         from ksadk.sessions.persistence import get_persistence_status as provider
     try:

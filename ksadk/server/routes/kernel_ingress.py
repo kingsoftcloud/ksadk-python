@@ -18,6 +18,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ksadk.kernel import ingress
 from ksadk.kernel.contracts import AgentControlReceipt
+from ksadk.runtime_context import PlatformIdentityContext
+from ksadk.sessions.invocation_identity import identity_owner_payload
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ async def _kernel_submit(
     correlation_ref: str | None,
     source_kind: str,
     runtime_options: dict[str, Any] | None = None,
+    invocation_identity: PlatformIdentityContext | None = None,
 ) -> tuple[AgentControlReceipt, ingress.TrustedRuntimeContext]:
     trusted = ingress.trusted_context(
         source_kind=source_kind,
@@ -60,6 +63,11 @@ async def _kernel_submit(
         **({correlation_kwarg: correlation_ref} if correlation_ref else {}),
         **({"runtime_options": runtime_options} if runtime_options else {}),
     )
+    owner = identity_owner_payload(invocation_identity)
+    if owner:
+        command = command.model_copy(
+            update={"payload": {**dict(command.payload), "invocation_identity": owner}}
+        )
     receipt = await ingress.submit_command(command, permit=trusted.permit)
     return receipt, trusted
 

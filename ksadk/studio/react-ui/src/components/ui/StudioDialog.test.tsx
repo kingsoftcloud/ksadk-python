@@ -5,6 +5,15 @@ import { describe, expect, it } from "vitest";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Drawer } from "../Drawer";
 import { StudioDrawer } from "./StudioDialog";
+import { MoreActionsMenu } from "../MoreActionsMenu";
+
+function MenuDialogHarness() {
+  const [open, setOpen] = useState(false);
+  return <>
+    <main id="mainContent"><MoreActionsMenu items={[{ label: "删除", onSelect: () => setOpen(true), danger: true }]} /></main>
+    {open && <ConfirmDialog title="删除 Agent？" onConfirm={() => undefined} onCancel={() => setOpen(false)} />}
+  </>;
+}
 
 function NestedModalHarness() {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -34,6 +43,17 @@ function NestedModalHarness() {
 }
 
 describe("Studio modal primitives", () => {
+  it("returns focus to the menu trigger after cancelling a menu-launched confirmation", async () => {
+    const user = userEvent.setup();
+    render(<MenuDialogHarness />);
+    const trigger = screen.getByRole("button", { name: "更多操作" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("menuitem", { name: "删除" }));
+    expect(await screen.findByRole("alertdialog", { name: "删除 Agent？" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(document.querySelector("#mainContent")).not.toHaveAttribute("inert");
+  });
   it("does not inert the application while a controlled drawer is closed", () => {
     render(
       <>

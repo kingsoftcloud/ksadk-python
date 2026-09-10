@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from ksadk.conversations.run_kinds import RUN_MODE_UNKNOWN, RUN_TRIGGER_UNKNOWN
 from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
 from ksadk.runtime.launch import RuntimeLaunchContext
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
 from ksadk.sessions import SessionEvent
 
 _RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
@@ -89,9 +90,7 @@ class ListSessionEventsActionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_cursor_scope(self):
-        if self.SessionId is None and (
-            self.AfterSeqId is not None or self.BeforeSeqId is not None
-        ):
+        if self.SessionId is None and (self.AfterSeqId is not None or self.BeforeSeqId is not None):
             raise ValueError("Seq cursors require SessionId")
         return self
 
@@ -321,6 +320,7 @@ def _split_custom_metadata(
     metadata: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     public_metadata = dict(metadata or {})
+    public_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, None)
     runtime_metadata: dict[str, Any] = {}
     agentengine_metadata = public_metadata.get("agentengine")
     public_metadata.pop("agentengine", None)

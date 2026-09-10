@@ -106,6 +106,8 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/studio/test_scheduler_runtime.py",
+    "tests/test_check_release_version.py",
     "tests/studio/test_shared_web.py",
     "tests/studio/test_dsh_application.py",
     "tests/__init__.py",
@@ -188,6 +190,10 @@ PUBLIC_TEST_FILES = {
     "tests/studio/e2e/scheduler_fault_matrix_browser_e2e.py",
     "tests/studio/e2e/scheduler_harness_browser_e2e.py",
     "tests/studio/e2e/studio_browser_smoke.py",
+    "tests/studio/e2e/studio_workspace_navigation_smoke.py",
+    "tests/studio/e2e/studio_layout_smoke.py",
+    "tests/studio/e2e/studio_resource_forms_smoke.py",
+    "tests/studio/e2e/studio_workflow_layout_smoke.py",
     "tests/studio/e2e/studio_e2e_support.py",
     "tests/studio/e2e/studio_responsive_smoke.py",
     "tests/test_managed_runtime_builder.py",

@@ -28,7 +28,7 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.identifiers import generate_agent_slug, is_generated_agent_slug
-from ksadk.studio.templates import default_agent_spec
+from ksadk.studio.templates import default_agent_spec, with_harness_provider_permissions
 
 LOGGER = logging.getLogger(__name__)
 
@@ -319,6 +319,8 @@ class StudioAuthoringCoordinator:
                     canonical_runtime.version = proposed_runtime.version
                     canonical_runtime.detection = proposed_runtime.detection
             resolved.runtime = canonical_runtime
+            if runtime_type == "harness" and spec is None:
+                resolved = with_harness_provider_permissions(resolved)
             if _uses_codex_native_tools(canonical_runtime):
                 resolved.bindings = resolved.bindings.model_copy(update={"tools": []})
                 resolved.capabilities = resolved.capabilities.model_copy(update={"tools": []})
@@ -609,7 +611,7 @@ class StudioAuthoringCoordinator:
             getattr(model, "endpoint_url", "-"),
         )
         normalized_runtime_type = str(runtime_type or "").strip().lower()
-        if normalized_runtime_type not in {"codex", "adk", "langgraph"}:
+        if normalized_runtime_type not in {"harness", "codex", "adk", "langgraph"}:
             raise StudioError(
                 "AGENT_RUNTIME_INVALID",
                 "对话构建 Runtime 仅支持 Codex、ADK 或 LangGraph",

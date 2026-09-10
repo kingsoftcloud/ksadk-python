@@ -8,11 +8,23 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, cast
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
+from ksadk.conversations.runtime_persistence import (
+    ensure_conversation_session,
+    require_conversation_session,
+)
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.sessions import SessionEvent
+from ksadk.sessions.invocation_identity import (
+    bind_or_validate_session_identity,
+    identity_can_adopt_any_legacy_user,
+    identity_native_user_id,
+    session_identity_binding_matches,
+)
 from ksadk.tracing import get_memory_exporter
 
+from ..invocation_identity import resolve_trusted_invocation_identity
 from . import dependencies as deps
 from .common import (
     _action_response,
@@ -30,6 +42,27 @@ from .routers import (
     sessions_adk_compat_router,
 )
 from .workspace import ListAgentModelsRequest, _build_models_payload
+
+
+async def _require_misc_session(
+    *,
+    session_id: str,
+    agent_id: str,
+    invocation_identity: PlatformIdentityContext,
+):
+    service = deps.resolve_session_service()
+    if invocation_identity.is_empty:
+        session = await service.get_session(session_id)
+        if not session or session.agent_id != agent_id:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return session
+    return await require_conversation_session(
+        agent_id=agent_id,
+        user_id="",
+        session_id=session_id,
+        session_service_provider=lambda: service,
+        invocation_identity=invocation_identity,
+    )
 
 
 @health_meta_router.get("/{requested_path:path}", include_in_schema=False)
@@ -86,8 +119,21 @@ async def list_agent_models_action(_request: ListAgentModelsRequest):
 
 
 @debug_router.get("/debug/trace/session/{session_id}")
-async def get_session_trace(session_id: str):
+async def get_session_trace(
+    session_id: str,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Get traces for a session - returns array of Span objects"""
+    service = deps.resolve_session_service()
+    if not invocation_identity.is_empty:
+        candidate = await service.get_session_metadata(session_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        await _require_misc_session(
+            session_id=session_id,
+            agent_id=candidate.agent_id,
+            invocation_identity=invocation_identity,
+        )
     exporter = get_memory_exporter()
     if not exporter:
         return []  # Return empty array, not object
@@ -96,7 +142,6 @@ async def get_session_trace(session_id: str):
     raw_spans = exporter.get_finished_spans()
 
     # Get session events for invocation mapping
-    service = deps.resolve_session_service()
     events = await service.get_events(session_id)
 
     # Build invocation ID mapping from session events
@@ -161,8 +206,13 @@ async def get_session_trace(session_id: str):
 
 
 @debug_router.get("/debug/trace/{event_id}")
-async def get_event_trace(event_id: str):
+async def get_event_trace(
+    event_id: str,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Get trace for a specific event - returns array of Span objects"""
+    if not invocation_identity.is_empty:
+        raise HTTPException(status_code=404, detail="Trace not found")
     exporter = get_memory_exporter()
     if not exporter:
         return []
@@ -174,8 +224,13 @@ async def get_event_trace(event_id: str):
 
 
 @debug_router.get("/traces")
-async def get_traces(limit: int = 50):
+async def get_traces(
+    limit: int = 50,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Get recent traces (OpenTelemetry)"""
+    if not invocation_identity.is_empty:
+        raise HTTPException(status_code=404, detail="Trace not found")
     exporter = get_memory_exporter()
     if not exporter:
         return {"traces": []}
@@ -251,10 +306,20 @@ async def _find_feedback_assistant_event(
 
 
 @feedback_router.post("/agentengine/api/v1/GetResponseFeedback")
-async def get_response_feedback_action(request: ResponseFeedbackRefActionRequest):
-    session = await deps.resolve_session_service().get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        return _action_response("GetResponseFeedback", {"Feedback": None})
+async def get_response_feedback_action(
+    request: ResponseFeedbackRefActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    try:
+        session = await _require_misc_session(
+            session_id=request.SessionId,
+            agent_id=request.AgentId,
+            invocation_identity=invocation_identity,
+        )
+    except HTTPException:
+        if invocation_identity.is_empty:
+            return _action_response("GetResponseFeedback", {"Feedback": None})
+        raise
     feedbacks = session.state.get("__ksadk_response_feedback__")
     feedback = None
     if isinstance(feedbacks, Mapping):
@@ -265,15 +330,20 @@ async def get_response_feedback_action(request: ResponseFeedbackRefActionRequest
 
 
 @feedback_router.post("/agentengine/api/v1/UpsertResponseFeedback")
-async def upsert_response_feedback_action(request: UpsertResponseFeedbackActionRequest):
+async def upsert_response_feedback_action(
+    request: UpsertResponseFeedbackActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     rating = str(request.Rating or "").strip().lower()
     if rating not in {"up", "down"}:
         raise HTTPException(status_code=400, detail="Feedback rating must be up or down")
 
     service = deps.resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = await _require_misc_session(
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        invocation_identity=invocation_identity,
+    )
 
     assistant_event = await _find_feedback_assistant_event(
         session_id=request.SessionId,
@@ -314,11 +384,21 @@ async def upsert_response_feedback_action(request: UpsertResponseFeedbackActionR
 
 
 @feedback_router.post("/agentengine/api/v1/DeleteResponseFeedback")
-async def delete_response_feedback_action(request: ResponseFeedbackRefActionRequest):
+async def delete_response_feedback_action(
+    request: ResponseFeedbackRefActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     service = deps.resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        return _action_response("DeleteResponseFeedback", {"Deleted": False})
+    try:
+        session = await _require_misc_session(
+            session_id=request.SessionId,
+            agent_id=request.AgentId,
+            invocation_identity=invocation_identity,
+        )
+    except HTTPException:
+        if invocation_identity.is_empty:
+            return _action_response("DeleteResponseFeedback", {"Deleted": False})
+        raise
     existing_feedbacks = session.state.get("__ksadk_response_feedback__")
     feedbacks = dict(existing_feedbacks) if isinstance(existing_feedbacks, Mapping) else {}
     deleted = feedbacks.pop(_feedback_state_key(request.ResponseId), None) is not None
@@ -337,7 +417,12 @@ async def delete_response_feedback_action(request: ResponseFeedbackRefActionRequ
 
 
 @sessions_adk_compat_router.post("/apps/{app_name}/users/{user_id}/sessions")
-async def create_session(app_name: str, user_id: str, request: Request):
+async def create_session(
+    app_name: str,
+    user_id: str,
+    request: Request,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Create a new session"""
     # Check if importing existing events
     body = {}
@@ -347,7 +432,38 @@ async def create_session(app_name: str, user_id: str, request: Request):
         pass
 
     service = deps.resolve_session_service()
-    session = await _ensure_session(app_name, user_id, body.get("sessionId") or body.get("id"))
+    requested_session_id = body.get("sessionId") or body.get("id")
+    existing = (
+        await service.get_session_metadata(str(requested_session_id))
+        if requested_session_id
+        else None
+    )
+    if not invocation_identity.is_empty and existing is not None:
+        session = existing
+        matches = existing.agent_id == app_name and await session_identity_binding_matches(
+            service=service, session=existing, identity=invocation_identity
+        )
+        if not matches and existing.agent_id == app_name:
+            session = await ensure_conversation_session(
+                agent_id=app_name,
+                user_id=existing.user_id,
+                session_id=existing.id,
+                session_service_provider=lambda: service,
+                invocation_identity=invocation_identity,
+            )
+            matches = True
+        if not matches:
+            raise HTTPException(status_code=404, detail="Session not found")
+    elif invocation_identity.is_empty:
+        session = await _ensure_session(app_name, user_id, requested_session_id)
+    else:
+        session = await ensure_conversation_session(
+            agent_id=app_name,
+            user_id=user_id,
+            session_id=requested_session_id,
+            session_service_provider=lambda: service,
+            invocation_identity=invocation_identity,
+        )
 
     for raw_event in body.get("events", []):
         session_event = SessionEvent.from_dict(raw_event, session_id=session.id)
@@ -358,10 +474,50 @@ async def create_session(app_name: str, user_id: str, request: Request):
 
 
 @sessions_adk_compat_router.get("/apps/{app_name}/users/{user_id}/sessions")
-async def list_sessions(app_name: str, user_id: str):
+async def list_sessions(
+    app_name: str,
+    user_id: str,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """List all sessions for a user"""
     service = deps.resolve_session_service()
-    sessions = await service.list_sessions(app_name, user_id)
+    if invocation_identity.is_empty:
+        sessions = await service.list_sessions(app_name, user_id)
+    else:
+        sessions = []
+        seen: set[str] = set()
+        candidate_users: set[str | None] = {identity_native_user_id(invocation_identity)}
+        if identity_can_adopt_any_legacy_user(invocation_identity):
+            candidate_users.add(None)
+        elif (
+            invocation_identity.identity_namespace == "kscloud-iam"
+            and invocation_identity.subject_type == "user"
+        ):
+            candidate_users.add(invocation_identity.subject_id)
+        for candidate_user in candidate_users:
+            for candidate in await service.list_session_metadata(app_name, candidate_user):
+                if candidate.id in seen:
+                    continue
+                matches = await session_identity_binding_matches(
+                    service=service,
+                    session=candidate,
+                    identity=invocation_identity,
+                )
+                if not matches:
+                    try:
+                        await bind_or_validate_session_identity(
+                            service=service,
+                            session=candidate,
+                            identity=invocation_identity,
+                            requested_user_id=candidate.user_id,
+                        )
+                    except HTTPException:
+                        matches = False
+                    else:
+                        matches = True
+                if matches:
+                    sessions.append(candidate)
+                    seen.add(candidate.id)
     hydrated: List[Dict[str, Any]] = []
     for session in sessions:
         session.events = await service.get_events(session.id)
@@ -370,19 +526,71 @@ async def list_sessions(app_name: str, user_id: str):
 
 
 @sessions_adk_compat_router.get("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-async def get_session(app_name: str, user_id: str, session_id: str):
+async def get_session(
+    app_name: str,
+    user_id: str,
+    session_id: str,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Get a specific session with its events"""
     service = deps.resolve_session_service()
-    session = await _hydrate_session(await service.get_session(session_id))
+    if invocation_identity.is_empty:
+        session = await _hydrate_session(await service.get_session(session_id))
+    else:
+        existing = await service.get_session_metadata(session_id)
+        if existing is None or existing.agent_id != app_name:
+            raise HTTPException(status_code=404, detail="Session not found")
+        matches = await session_identity_binding_matches(
+            service=service,
+            session=existing,
+            identity=invocation_identity,
+        )
+        if not matches:
+            existing = await ensure_conversation_session(
+                agent_id=app_name,
+                user_id=existing.user_id,
+                session_id=session_id,
+                session_service_provider=lambda: service,
+                invocation_identity=invocation_identity,
+            )
+            matches = True
+        if not matches:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = await _hydrate_session(existing)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_legacy_dict()
 
 
 @sessions_adk_compat_router.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-async def delete_session(app_name: str, user_id: str, session_id: str):
+async def delete_session(
+    app_name: str,
+    user_id: str,
+    session_id: str,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     """Delete a session"""
     service = deps.resolve_session_service()
+    if not invocation_identity.is_empty:
+        existing = await service.get_session_metadata(session_id)
+        if existing is None or existing.agent_id != app_name:
+            raise HTTPException(status_code=404, detail="Session not found")
+        matches = await session_identity_binding_matches(
+            service=service,
+            session=existing,
+            identity=invocation_identity,
+        )
+        if not matches:
+            await ensure_conversation_session(
+                agent_id=app_name,
+                user_id=existing.user_id,
+                session_id=session_id,
+                session_service_provider=lambda: service,
+                invocation_identity=invocation_identity,
+            )
+            matches = True
+        if not matches:
+            raise HTTPException(status_code=404, detail="Session not found")
     if await service.delete_session(session_id):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Session not found")

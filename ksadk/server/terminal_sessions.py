@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, ContextManager
+from typing import Any, Callable, ContextManager, Mapping
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -538,9 +538,25 @@ def register_terminal_routes(
     manager: TerminalSessionManager,
     *,
     bind_context: Callable[[], ContextManager[Any]] | None = None,
+    identity_access_allowed: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> None:
+    def access_allowed(headers: Mapping[str, Any]) -> bool:
+        if identity_access_allowed is None:
+            return True
+        try:
+            return bool(identity_access_allowed(headers))
+        except Exception:
+            # Malformed or incomplete trusted carriers must never reopen the
+            # unscoped terminal surface.
+            return False
+
     @app.post("/_ksadk/terminal/sessions")
     async def create_terminal_session(request: Request) -> JSONResponse:
+        if not access_allowed(request.headers):
+            return JSONResponse(
+                {"error": "terminal_unavailable_for_isolated_identity"},
+                status_code=403,
+            )
         payload = await request.json()
         try:
             session = await manager.create_or_reuse(payload if isinstance(payload, dict) else {})
@@ -550,6 +566,11 @@ def register_terminal_routes(
 
     @app.get("/_ksadk/terminal/sessions")
     async def list_terminal_sessions(request: Request) -> JSONResponse:
+        if not access_allowed(request.headers):
+            return JSONResponse(
+                {"error": "terminal_unavailable_for_isolated_identity"},
+                status_code=403,
+            )
         sessions = await manager.list_sessions(
             session_id=str(request.query_params.get("session_id") or ""),
             mode=str(request.query_params.get("mode") or ""),
@@ -557,7 +578,12 @@ def register_terminal_routes(
         return JSONResponse({"sessions": [manager.serialize(session) for session in sessions]})
 
     @app.delete("/_ksadk/terminal/sessions/{terminal_session_id}")
-    async def delete_terminal_session(terminal_session_id: str) -> JSONResponse:
+    async def delete_terminal_session(terminal_session_id: str, request: Request) -> JSONResponse:
+        if not access_allowed(request.headers):
+            return JSONResponse(
+                {"error": "terminal_unavailable_for_isolated_identity"},
+                status_code=403,
+            )
         session = await manager.delete(terminal_session_id)
         if not session:
             return JSONResponse(
@@ -570,6 +596,12 @@ def register_terminal_routes(
     async def terminal_ws(ws: WebSocket) -> None:
         context = bind_context() if bind_context is not None else contextlib.nullcontext()
         with context:
+            if not access_allowed(ws.headers):
+                await ws.close(
+                    code=4403,
+                    reason="terminal unavailable for isolated identity",
+                )
+                return
             if TERMINAL_SUBPROTOCOL not in (ws.headers.get("sec-websocket-protocol") or ""):
                 await ws.close(code=4400, reason="missing ks-terminal.v1 subprotocol")
                 return

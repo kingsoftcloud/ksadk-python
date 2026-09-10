@@ -356,7 +356,13 @@ class WorkspaceSkillRuntime(_BuiltinRuntime):
             instructions = _required_string(
                 item, "instructions", code="builtin_skill_instructions_missing"
             )
-            contributions.append(HarnessSkillContribution(name=name, instructions=instructions))
+            contributions.append(
+                HarnessSkillContribution(
+                    name=name,
+                    instructions=instructions,
+                    resource_root=directory,
+                )
+            )
         if not contributions:
             raise PluginHostError(
                 "builtin_skill_resource_missing", "workspace Skill has no locked resource"

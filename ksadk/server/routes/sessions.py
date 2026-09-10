@@ -6,13 +6,23 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 
+from ksadk.conversations.runtime_persistence import (
+    ensure_conversation_session,
+    require_conversation_session,
+)
 from ksadk.runtime.executor import project_legacy_runtime_capabilities
+from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import SessionEvent
 from ksadk.sessions.base import CheckpointEventQuery, SessionEventQuery
 from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
+from ksadk.sessions.invocation_identity import (
+    bind_or_validate_session_identity,
+    identity_can_adopt_any_legacy_user,
+    session_identity_binding_matches,
+)
 from ksadk.tools.gateway import tool_approval_capability
 from ksadk.toolsets import describe_agentengine_tools
 from ksadk_runtime_common.workspace_files import (
@@ -20,6 +30,7 @@ from ksadk_runtime_common.workspace_files import (
     workspace_files_enabled,
 )
 
+from ..invocation_identity import resolve_trusted_invocation_identity
 from . import dependencies as deps
 from .common import (
     _action_response,
@@ -59,8 +70,91 @@ from .routers import sessions_router, tools_router, ui_bootstrap_router
 from .streaming import _cancel_detached_streams_for_session
 
 
+async def _require_identity_action_session(
+    service: Any,
+    *,
+    session_id: str,
+    agent_id: str | None,
+    user_id: str | None,
+    invocation_identity: PlatformIdentityContext,
+):
+    if invocation_identity.is_empty:
+        return await _require_action_session(
+            service,
+            session_id=session_id,
+            agent_id=agent_id,
+            user_id=user_id,
+        )
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="AgentId is required")
+    return await require_conversation_session(
+        agent_id=agent_id,
+        user_id=str(user_id or ""),
+        session_id=session_id,
+        session_service_provider=lambda: service,
+        invocation_identity=invocation_identity,
+    )
+
+
+async def _list_identity_session_metadata(
+    service: Any,
+    *,
+    agent_id: str,
+    user_id: str | None,
+    invocation_identity: PlatformIdentityContext,
+) -> list[Any]:
+    """List bound sessions; only the verified IAM account may adopt legacy rows."""
+
+    if invocation_identity.is_empty:
+        return await service.list_session_metadata(agent_id, user_id)
+    from ksadk.sessions.invocation_identity import identity_native_user_id
+
+    candidate_users: set[str | None] = {identity_native_user_id(invocation_identity)}
+    if identity_can_adopt_any_legacy_user(invocation_identity):
+        candidate_users.add(None)
+    elif (
+        invocation_identity.identity_namespace == "kscloud-iam"
+        and invocation_identity.subject_type == "user"
+    ):
+        candidate_users.add(invocation_identity.subject_id)
+    sessions: list[Any] = []
+    seen: set[str] = set()
+    for candidate_user in candidate_users:
+        for session in await service.list_session_metadata(agent_id, candidate_user):
+            if session.id in seen:
+                continue
+            matches = await session_identity_binding_matches(
+                service=service,
+                session=session,
+                identity=invocation_identity,
+            )
+            if not matches:
+                try:
+                    await bind_or_validate_session_identity(
+                        service=service,
+                        session=session,
+                        identity=invocation_identity,
+                        requested_user_id=session.user_id,
+                    )
+                except HTTPException:
+                    matches = False
+                else:
+                    matches = True
+            if matches:
+                sessions.append(session)
+                seen.add(session.id)
+    sessions.sort(
+        key=lambda item: (item.updated_at, item.created_at, item.id),
+        reverse=True,
+    )
+    return sessions
+
+
 @ui_bootstrap_router.post("/agentengine/api/v1/GetAgentUiBootstrap")
-async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
+async def get_agent_ui_bootstrap(
+    request: UiBootstrapRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     state = get_state()
     executor, launch_context = get_runtime_execution()
     detection = launch_context.detection
@@ -71,9 +165,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     ui_spec = _resolve_agent_ui_spec()
     capability_subject = executor.capability_subject(launch_context)
     if capability_subject is not None:
-        wait_timeout = max(
-            0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2")
-        )
+        wait_timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
         capability_snapshot = await state.persistence_capability.get_snapshot(
             runner=capability_subject,
             framework=framework,
@@ -87,14 +179,10 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         runtime_capability_matrix = executor.capability_matrix(launch_context)
     else:
         runtime_capability_matrix = executor.capability_matrix(launch_context)
-        persistence_status = dict(
-            await deps.get_persistence_status(framework=framework)
-        )
+        persistence_status = dict(await deps.get_persistence_status(framework=framework))
         if isinstance(persistence_status.get("Session"), Mapping):
             persistence = dict(persistence_status["Session"])
-            checkpoint_persistence = dict(
-                persistence_status.get("Checkpoint") or {}
-            )
+            checkpoint_persistence = dict(persistence_status.get("Checkpoint") or {})
         else:
             persistence = persistence_status
             checkpoint_persistence = dict(persistence_status)
@@ -102,9 +190,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
             executor.native_capabilities(launch_context), runtime_capability_matrix
         )
     resume_capability = (
-        runtime_capabilities.get("ResumeRun")
-        if isinstance(runtime_capabilities, Mapping)
-        else None
+        runtime_capabilities.get("ResumeRun") if isinstance(runtime_capabilities, Mapping) else None
     )
     resume_capability = resume_capability if isinstance(resume_capability, Mapping) else {}
     checkpoint_capability = (
@@ -116,9 +202,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         checkpoint_capability if isinstance(checkpoint_capability, Mapping) else {}
     )
     cancel_capability = (
-        runtime_capabilities.get("CancelRun")
-        if isinstance(runtime_capabilities, Mapping)
-        else None
+        runtime_capabilities.get("CancelRun") if isinstance(runtime_capabilities, Mapping) else None
     )
     cancel_capability = cancel_capability if isinstance(cancel_capability, Mapping) else {}
     checkpoint_resume_capability = {
@@ -196,7 +280,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 },
                 "MCP": False,
                 "HostedRuntime": False,
-                "NativeTerminal": _build_native_terminal_capability(framework),
+                "NativeTerminal": _build_native_terminal_capability(framework, invocation_identity),
                 "BuiltinTools": describe_agentengine_tools(),
             },
             "WorkspaceFiles": build_workspace_files_bootstrap(enabled=workspace_enabled),
@@ -228,22 +312,49 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
 
 
 @sessions_router.post("/agentengine/api/v1/CreateSession")
-async def create_session_action(request: CreateSessionActionRequest):
-    session = await _ensure_session(request.AgentId, request.UserId or "user", request.SessionId)
+async def create_session_action(
+    request: CreateSessionActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    if invocation_identity.is_empty:
+        session = await _ensure_session(
+            request.AgentId, request.UserId or "user", request.SessionId
+        )
+    else:
+        session = await ensure_conversation_session(
+            agent_id=request.AgentId,
+            user_id=request.UserId or "user",
+            session_id=request.SessionId,
+            session_service_provider=deps.resolve_session_service,
+            invocation_identity=invocation_identity,
+        )
     return _action_response("CreateSession", {"Session": await _session_to_action_payload(session)})
 
 
 @sessions_router.post("/agentengine/api/v1/ListSessions")
-async def list_sessions_action(request: ListSessionsActionRequest):
+async def list_sessions_action(
+    request: ListSessionsActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     service = deps.resolve_session_service()
     offset = (request.Page - 1) * request.PageSize
-    sessions = await service.list_sessions(
-        request.AgentId,
-        request.UserId,
-        offset=offset,
-        limit=request.PageSize,
-    )
-    total = await service.count_sessions(request.AgentId, request.UserId)
+    if invocation_identity.is_empty:
+        sessions = await service.list_sessions(
+            request.AgentId,
+            request.UserId,
+            offset=offset,
+            limit=request.PageSize,
+        )
+        total = await service.count_sessions(request.AgentId, request.UserId)
+    else:
+        all_sessions = await _list_identity_session_metadata(
+            service,
+            agent_id=request.AgentId,
+            user_id=request.UserId,
+            invocation_identity=invocation_identity,
+        )
+        total = len(all_sessions)
+        sessions = all_sessions[offset : offset + request.PageSize]
     session_payloads = [await _session_to_action_payload(session) for session in sessions]
     return _action_response(
         "ListSessions",
@@ -260,13 +371,17 @@ async def list_sessions_action(request: ListSessionsActionRequest):
 
 
 @sessions_router.post("/agentengine/api/v1/GetSession")
-async def get_session_action(request: SessionIdRequest):
+async def get_session_action(
+    request: SessionIdRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     service = deps.resolve_session_service()
-    session = await _require_action_session(
+    session = await _require_identity_action_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
     hydrated = await _hydrate_session(session)
     if hydrated is None:
@@ -275,13 +390,17 @@ async def get_session_action(request: SessionIdRequest):
 
 
 @sessions_router.post("/agentengine/api/v1/DeleteSession")
-async def delete_session_action(request: SessionIdRequest):
+async def delete_session_action(
+    request: SessionIdRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     service = deps.resolve_session_service()
-    await _require_action_session(
+    await _require_identity_action_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
     await _cancel_detached_streams_for_session(request.SessionId)
     deleted = await service.delete_session(request.SessionId)
@@ -291,7 +410,10 @@ async def delete_session_action(request: SessionIdRequest):
 
 
 @sessions_router.post("/agentengine/api/v1/ListSessionEvents")
-async def list_session_events_action(request: ListSessionEventsActionRequest):
+async def list_session_events_action(
+    request: ListSessionEventsActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     _executor, launch_context = get_runtime_execution()
     service = deps.resolve_session_service()
     session_id = str(request.SessionId or "").strip()
@@ -302,11 +424,31 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
         # seq 游标是会话内序号，跨会话模式下不适用，直接忽略）
         agent_id = str(request.AgentId or "").strip() or _runtime_agent_id(launch_context)
         session_ids = None
-        if request.UserId is not None:
+        if request.UserId is not None or not invocation_identity.is_empty:
             session_ids = [
                 session.id
-                for session in await service.list_session_metadata(agent_id, request.UserId)
+                for session in await _list_identity_session_metadata(
+                    service,
+                    agent_id=agent_id,
+                    user_id=request.UserId,
+                    invocation_identity=invocation_identity,
+                )
             ]
+        if not invocation_identity.is_empty and not session_ids:
+            return _action_response(
+                "ListSessionEvents",
+                {
+                    "Events": [],
+                    "Total": 0,
+                    "Offset": request.Offset or 0,
+                    "Limit": request.Limit or 0,
+                    "AfterSeqId": request.AfterSeqId,
+                    "BeforeSeqId": request.BeforeSeqId,
+                    "CheckpointIds": request.CheckpointIds,
+                    "EventTypes": request.EventTypes,
+                    "ScopedAllSessions": True,
+                },
+            )
         query = SessionEventQuery(
             session_ids=session_ids,
             agent_id=agent_id,
@@ -342,11 +484,12 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
                 "ScopedAllSessions": True,
             },
         )
-    await _require_action_session(
+    await _require_identity_action_session(
         service,
         session_id=session_id,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
     query = SessionEventQuery(
         session_ids=[session_id],
@@ -389,15 +532,19 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
 
 
 @sessions_router.post("/agentengine/api/v1/ListSessionMessages")
-async def list_session_messages_action(request: ListSessionMessagesActionRequest):
+async def list_session_messages_action(
+    request: ListSessionMessagesActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     from ksadk.conversations.message_projection import project_session_messages
 
     service = deps.resolve_session_service()
-    await _require_action_session(
+    await _require_identity_action_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
     total_events = await service.count_events(
         request.SessionId,
@@ -426,6 +573,7 @@ async def list_session_messages_action(request: ListSessionMessagesActionRequest
             include_reasoning=request.IncludeReasoning,
             include_tool_events=request.IncludeToolEvents,
             include_attachments=request.IncludeAttachments,
+            session_id=request.SessionId,
         )
 
     serialized_events, messages = project(events)
@@ -557,8 +705,7 @@ def _is_checkpoint_resumable(checkpoint: Mapping[str, Any]) -> bool:
     checkpoint_status = str(checkpoint.get("CheckpointStatus") or "").strip().lower()
     resume_status = str(checkpoint.get("ResumeStatus") or "").strip().lower()
     return (
-        checkpoint_status not in {"expired", "disabled", "terminal"}
-        and resume_status != "disabled"
+        checkpoint_status not in {"expired", "disabled", "terminal"} and resume_status != "disabled"
     )
 
 
@@ -599,20 +746,19 @@ async def _list_checkpoints_payload_legacy_filtered(
             continue
         if checkpoint_ids and checkpoint["CheckpointId"] not in checkpoint_ids:
             continue
-        if request.Framework and str(checkpoint["Framework"]).lower() != str(
+        if (
             request.Framework
-        ).lower():
+            and str(checkpoint["Framework"]).lower() != str(request.Framework).lower()
+        ):
             continue
         if (
             resume_status_filter
-            and str(checkpoint.get("ResumeStatus") or "").lower()
-            not in resume_status_filter
+            and str(checkpoint.get("ResumeStatus") or "").lower() not in resume_status_filter
         ):
             continue
         if (
             resume_type_filter
-            and str(checkpoint.get("Scope") or "unknown").lower()
-            not in resume_type_filter
+            and str(checkpoint.get("Scope") or "unknown").lower() not in resume_type_filter
         ):
             continue
         checkpoints.append(checkpoint)
@@ -625,7 +771,7 @@ async def _list_checkpoints_payload_legacy_filtered(
         key=lambda item: (item["Timestamp"], item["SessionId"], item["SeqId"]),
         reverse=True,
     )
-    checkpoints = checkpoints[offset: offset + request.Limit]
+    checkpoints = checkpoints[offset : offset + request.Limit]
     return {
         "Checkpoints": checkpoints,
         "Total": len(checkpoints),
@@ -640,25 +786,45 @@ async def _list_checkpoints_payload_legacy_filtered(
     }
 
 
-async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
+async def _list_checkpoints_payload(
+    request: ListSessionCheckpointsActionRequest,
+    invocation_identity: PlatformIdentityContext,
+) -> dict[str, Any]:
     service = deps.resolve_session_service()
     session_ids = _normalize_action_id_list(request.SessionId)
     checkpoint_ids = _normalize_action_id_list(request.CheckpointId)
     if session_ids:
         for session_id in session_ids:
-            await _require_action_session(
+            await _require_identity_action_session(
                 service,
                 session_id=session_id,
                 agent_id=request.AgentId,
                 user_id=request.UserId,
+                invocation_identity=invocation_identity,
             )
-    elif request.UserId is not None:
+    elif request.UserId is not None or not invocation_identity.is_empty:
         session_ids = [
             session.id
-            for session in await service.list_session_metadata(
-                request.AgentId, request.UserId
+            for session in await _list_identity_session_metadata(
+                service,
+                agent_id=request.AgentId,
+                user_id=request.UserId,
+                invocation_identity=invocation_identity,
             )
         ]
+    if not invocation_identity.is_empty and not session_ids:
+        return {
+            "Checkpoints": [],
+            "Total": 0,
+            "ResumableTotal": 0,
+            "HasResumableCheckpoint": False,
+            "SessionId": [],
+            "CheckpointId": checkpoint_ids,
+            "ResumeStatus": request.ResumeStatus,
+            "ResumeTypes": request.ResumeTypes,
+            "Offset": int(request.Offset or 0),
+            "Limit": request.Limit,
+        }
     query = CheckpointEventQuery(
         session_ids=session_ids or None,
         agent_id=request.AgentId,
@@ -685,14 +851,10 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
                         not checkpoint_ids
                         or str(checkpoint.get("CheckpointId") or "") in checkpoint_ids
                     )
-                    and (
-                        query.run_id is None
-                        or str(checkpoint.get("RunId") or "") == query.run_id
-                    )
+                    and (query.run_id is None or str(checkpoint.get("RunId") or "") == query.run_id)
                     and (
                         query.framework is None
-                        or str(checkpoint.get("Framework") or "").lower()
-                        == query.framework
+                        or str(checkpoint.get("Framework") or "").lower() == query.framework
                     )
                 ]
                 keys = [
@@ -713,13 +875,17 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
                         stats.get("latest_seq_ids") or {},
                         session_id=str(checkpoint.get("SessionId") or ""),
                     )
-                    if resume_status_filter and str(
-                        checkpoint.get("ResumeStatus") or ""
-                    ).strip().lower() not in resume_status_filter:
+                    if (
+                        resume_status_filter
+                        and str(checkpoint.get("ResumeStatus") or "").strip().lower()
+                        not in resume_status_filter
+                    ):
                         continue
-                    if resume_type_filter and str(
-                        checkpoint.get("Scope") or "unknown"
-                    ).strip().lower() not in resume_type_filter:
+                    if (
+                        resume_type_filter
+                        and str(checkpoint.get("Scope") or "unknown").strip().lower()
+                        not in resume_type_filter
+                    ):
                         continue
                     resumable_total += int(_is_checkpoint_resumable(checkpoint))
                     if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
@@ -761,18 +927,28 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
 
 
 @sessions_router.post("/agentengine/api/v1/ListSessionCheckpoints")
-async def list_session_checkpoints_action(request: ListSessionCheckpointsActionRequest):
-    return _action_response("ListSessionCheckpoints", await _list_checkpoints_payload(request))
+async def list_session_checkpoints_action(
+    request: ListSessionCheckpointsActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
+    return _action_response(
+        "ListSessionCheckpoints",
+        await _list_checkpoints_payload(request, invocation_identity),
+    )
 
 
 @tools_router.post("/agentengine/api/v1/ListToolReceipts")
-async def list_tool_receipts_action(request: ListToolReceiptsActionRequest):
+async def list_tool_receipts_action(
+    request: ListToolReceiptsActionRequest,
+    invocation_identity: PlatformIdentityContext = Depends(resolve_trusted_invocation_identity),
+):
     service = deps.resolve_session_service()
-    await _require_action_session(
+    await _require_identity_action_session(
         service,
         session_id=request.SessionId,
         agent_id=request.AgentId,
         user_id=request.UserId,
+        invocation_identity=invocation_identity,
     )
 
     run_id_filter = str(request.RunId or "").strip()

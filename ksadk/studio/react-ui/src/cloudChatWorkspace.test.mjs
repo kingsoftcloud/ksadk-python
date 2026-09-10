@@ -11,7 +11,7 @@ const workspaceSource = readFileSync(
 
 test("local and cloud targets mount the same shared conversation workspace", () => {
   assert.doesNotMatch(appSource, /CloudChatWorkspace/);
-  assert.equal((appSource.match(/<ChatWorkspace/g) || []).length, 2);
+  assert.equal((appSource.match(/<ChatWorkspace\b/g) || []).length, 2);
   assert.match(appSource, /isCloudChat && selectedCloudDeployment/);
   assert.match(appSource, /!isCloudChat && currentAgentId/);
 });

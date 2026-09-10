@@ -155,6 +155,19 @@ class AgentValidator:
         mcp_names = {ref.name for ref in capabilities.mcp_servers if ref.enabled}
         tool_names: set[str] = set()
         for index, tool in enumerate(capabilities.tools):
+            if (
+                tool.enabled and draft.spec.runtime and draft.spec.runtime.type == "harness"
+                and not (tool.executor == "mcp" and tool.mcp_server in mcp_names)
+            ):
+                from ksadk.plugins.providers.harness_tools import validate_tool_executor
+
+                try:
+                    validate_tool_executor(tool.model_dump(by_alias=True, mode="json"))
+                except ValueError as exc:
+                    diagnostics.append(self._error(
+                        "TOOL_RUNTIME_INCOMPATIBLE", str(exc),
+                        f"spec.capabilities.tools[{index}].executor",
+                    ))
             try:
                 require_exact_version(
                     tool.version,

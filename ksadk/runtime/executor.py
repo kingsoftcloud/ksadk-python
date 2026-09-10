@@ -246,6 +246,8 @@ class RuntimeExecutor:
         self,
         context: RuntimeLaunchContext,
         handle: RunHandle,
+        *,
+        preparation: RuntimeStartPreparation | None = None,
     ) -> RunHandle:
         expected_type = _normalize_runtime_type(context.runtime_type)
         if _normalize_runtime_type(handle.runtime_type) != expected_type:
@@ -253,7 +255,13 @@ class RuntimeExecutor:
         if self.is_attached(handle):
             return handle
 
-        adapter = self._registry.create(context)
+        if preparation is not None:
+            if preparation.context != context or preparation.consumed:
+                raise ValueError("attach preparation must be unused and match launch context")
+            preparation.consumed = True
+            adapter = preparation.adapter
+        else:
+            adapter = self._registry.create(context)
         restored = await adapter.attach(handle)
         if restored != handle:
             with suppress(Exception):

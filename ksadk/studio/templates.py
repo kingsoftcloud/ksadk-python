@@ -720,3 +720,27 @@ Operating principles:
 
 def _research_goal(request: AgentTemplateComposeRequest) -> str:
     return request.goal.strip() or request.prompt.strip()
+
+
+#: DSH harness provider 运行前检查必需的宿主权限（见 specs/studio-harness-authoring）。
+HARNESS_PROVIDER_REQUIRED_PERMISSION = "process:host-user"
+
+
+def with_harness_provider_permissions(spec: AgentSpec) -> AgentSpec:
+    """为模板默认创建的 Harness Agent 预置 provider 必需权限。
+
+    仅作用于"调用方未显式提供 spec"的路径；显式 spec 的授权语义
+    （含显式拒绝）由调用方保证，不在本函数改写。
+    """
+
+    security = spec.security
+    permission = HARNESS_PROVIDER_REQUIRED_PERMISSION
+    if permission in security.allowed_permissions:
+        return spec
+    return spec.model_copy(
+        update={
+            "security": security.model_copy(
+                update={"allowed_permissions": [*security.allowed_permissions, permission]}
+            )
+        }
+    )

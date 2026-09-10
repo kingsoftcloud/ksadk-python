@@ -142,6 +142,18 @@ class AgentBundleBuilder:
         resource_reference = None
         try:
             self._copy_runtime_source(bundle_root, draft)
+            if draft.spec.runtime and draft.spec.runtime.type == "harness":
+                from ksadk.plugins.providers.harness_tools import python_tool_bundle_path
+
+                for tool in compiled.resolved.capabilities.tools:
+                    if tool.enabled and tool.executor == "python":
+                        source = self.workspace.resolve(tool.source_path, must_exist=True)
+                        content = source.read_bytes()
+                        if "sha256:" + hashlib.sha256(content).hexdigest() != tool.source_sha256:
+                            raise ValueError("Python Tool source changed since registration")
+                        target = bundle_root / python_tool_bundle_path(tool.source_sha256)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(content)
             self._write_runtime_launch_config(bundle_root, draft)
             if resource_build is not None:
                 resource_reference = resource_build.materialize(

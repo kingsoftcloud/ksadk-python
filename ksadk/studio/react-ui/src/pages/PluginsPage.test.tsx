@@ -97,6 +97,18 @@ describe("PluginsPage", () => {
     expect(screen.getByRole('button', { name: 'Figma' })).toBeInTheDocument();
   });
 
+  it('reloads the catalog from the global refresh action without losing the search', async () => {
+    catalog([{ ecosystem: 'codex', pluginId: 'demo', displayName: 'Demo', installed: false }]);
+    const { rerender } = render(<PluginsPage refreshTick={0}/>);
+    await screen.findByText('Demo');
+    await userEvent.type(screen.getByRole('textbox', { name: '搜索插件' }), 'demo');
+    mockedFetch.mockClear();
+    rerender(<PluginsPage refreshTick={1}/>);
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('textbox', { name: '搜索插件' })).toHaveValue('demo');
+    await screen.findByText('Demo');
+  });
+
   it('does not render a provider as a DSH UI plugin', async () => {
     catalog([], [{ ecosystem: 'dsh', pluginId: '@kingsoftcloud/ksadk-codex-provider', runtimeState: { state: 'ready', providerRef: 'plugin://provider@1' } }]);
     render(<PluginsPage/>);

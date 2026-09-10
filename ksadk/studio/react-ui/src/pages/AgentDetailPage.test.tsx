@@ -6,6 +6,7 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 let deploymentItems: unknown[] = [];
 let scheduleEnabled = true;
 let agentSchedulerAvailable = true;
+let agentDetailFails = false;
 
 const ownTask = () => ({
   taskId: "task-daily",
@@ -46,6 +47,7 @@ const succeededOccurrence = {
 
 apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   if (path === "/api/v1/agents/demo-agent") {
+    if (agentDetailFails) return new Response(null, { status: 503 });
     return new Response(JSON.stringify({
       draft: {
         metadata: { id: "demo-agent", name: "Demo Agent", revision: 1 },
@@ -88,7 +90,32 @@ describe("AgentDetailPage cloud deployment", () => {
     deploymentItems = [];
     scheduleEnabled = true;
     agentSchedulerAvailable = true;
+    agentDetailFails = false;
     apiFetch.mockClear();
+  });
+
+  it("refreshes facts and schedules while preserving the active tab and pending task edits", async () => {
+    const user = userEvent.setup();
+    const props = { agentId: "demo-agent", onBack: vi.fn(), onChat: vi.fn(), onBuild: vi.fn(), onEdit: vi.fn(), onChanged: vi.fn() };
+    const view = render(<AgentDetailPage {...props} refreshTick={0} />);
+    await user.click(await screen.findByRole("tab", { name: "自动化" }));
+    await user.click(await screen.findByRole("button", { name: "查看定时任务 每日报告 的详情" }));
+    await user.click(screen.getAllByRole("button", { name: "编辑" }).at(-1)!);
+    const name = screen.getByLabelText("任务名称");
+    await user.clear(name);
+    await user.type(name, "尚未保存的任务名");
+    apiFetch.mockClear();
+    view.rerender(<AgentDetailPage {...props} refreshTick={1} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/agents/demo-agent"));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/schedules"));
+    expect(screen.getByRole("tab", { name: "自动化", hidden: true })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText("任务名称")).toHaveValue("尚未保存的任务名");
+    agentDetailFails = true;
+    view.rerender(<AgentDetailPage {...props} refreshTick={2} />);
+    expect(await screen.findByText("Agent 配置读取失败，请刷新重试。")).toBeInTheDocument();
+    expect(screen.getByLabelText("任务名称")).toHaveValue("尚未保存的任务名");
+    expect(screen.getByRole("tab", { name: "自动化", hidden: true })).toHaveAttribute("aria-selected", "true");
+    expect(apiFetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
   });
 
   it("keeps legacy Agent details usable when no Agent scheduler endpoint is available", async () => {
@@ -162,8 +189,9 @@ describe("AgentDetailPage cloud deployment", () => {
       expect.objectContaining({ method: "PUT" }),
     );
 
+    expect(screen.getByRole("button", { name: "立即运行" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "启用" }));
-    await waitFor(() => expect(scheduleEnabled).toBe(true));
+    await waitFor(() => expect(screen.getByRole("button", { name: "立即运行" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "立即运行" }));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
       "/api/v1/agents/demo-agent/schedules/task-daily:run",

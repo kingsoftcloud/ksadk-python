@@ -14,25 +14,16 @@ from ksadk.events.canonical import (
     ErrorInfo,
     ItemCompleted,
     ItemStarted,
-    ItemUpdated,
     OutputRef,
     RunCanceled,
     RunCompleted,
     RunFailed,
     RunStarted,
     SourceRef,
+    UsageReported,
 )
-from ksadk.events.content import (
-    ContentSnapshot,
-    TextContent,
-    ToolCallContent,
-    ToolResultContent,
-)
-from ksadk.events.identity import (
-    stable_event_id,
-    stable_item_id,
-    stable_scope_id,
-)
+from ksadk.events.content import ContentSnapshot, TextContent, ToolCallContent, ToolResultContent
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.harness.config import HarnessConfig
 from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
 from ksadk.harness.sandbox import HarnessSandboxExecutor
@@ -218,13 +209,28 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
     ) -> dict[str, Any]:
         tools = await self._ensure_tools()
         model, prompt = self._effective(request)
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": prompt},
-            *[dict(message) for message in session.messages],
-        ]
-        user_message = {"role": "user", "content": str(request.input or "")}
-        messages.append(user_message)
+        conversation = request.conversation_preprocessing()
+        history = (
+            [dict(item) for item in conversation.messages]
+            if conversation is not None and conversation.messages
+            else [dict(item) for item in session.messages]
+        )
+        messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
+        messages.extend(history)
+        current_input = str(request.input or "")
+        if not history or not (
+            str(history[-1].get("role") or "") == "user"
+            and str(history[-1].get("content") or "") == current_input
+        ):
+            messages.append({"role": "user", "content": current_input})
         execution_log: list[dict[str, Any]] = []
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+        reasoning_parts: list[str] = []
 
         for _turn_number in range(_MAX_REASONING_TURNS):
             turn = await self._reasoner.complete(
@@ -233,6 +239,10 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 messages=tuple(messages),
                 tools=tools,
             )
+            for key in usage:
+                usage[key] += max(0, int((turn.usage or {}).get(key, 0)))
+            if turn.reasoning:
+                reasoning_parts.append(turn.reasoning)
             if turn.tool_calls:
                 messages.append(
                     {
@@ -294,6 +304,11 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                 "prompt": prompt,
                 "tool_calls": execution_log,
                 "sandbox_read_only": self._config.sandbox.read_only,
+                "usage": {
+                    **usage,
+                    "total_tokens": usage["input_tokens"] + usage["output_tokens"],
+                },
+                "reasoning": "".join(reasoning_parts),
             }
         raise RuntimeError(f"Harness reasoning exceeded {_MAX_REASONING_TURNS} turns")
 
@@ -323,160 +338,180 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
 
     async def _stream(self, handle: RunHandle):
         run = self._require_run(handle)
-        framework = "ksadk"
-        run_id = handle.run_id
-        scope_id = stable_scope_id(framework, run_id)
-        message_item_id = stable_item_id(framework, run_id, "message", "final_answer")
-        run_item_id = stable_item_id(framework, run_id, "$run")
         seq = 0
-        started_items: set[tuple[str, str]] = set()
 
-        def next_seq() -> int:
+        framework = "ksadk"
+        scope_id = stable_scope_id(framework, handle.run_id)
+        run_item_id = stable_item_id(framework, handle.run_id, "$run")
+        request = run.request
+        source = SourceRef(
+            framework=framework,
+            native_run_id=handle.run_id,
+            metadata={
+                "agent_id": str(request.agent_id or self._agent_name),
+                "user_id": request.user_id,
+                "session_id": request.session_id,
+                "invocation_id": handle.run_id,
+            },
+        )
+
+        def envelope(event_type: str, item_id: str, part_id: str) -> dict[str, Any]:
             nonlocal seq
             seq += 1
-            return seq
-
-        def make_source() -> SourceRef:
-            return SourceRef(
-                framework=framework,
-                native_run_id=run_id,
-                metadata={
-                    "agent_id": str(run.request.agent_id or self._agent_name),
-                    "user_id": run.request.user_id,
-                    "session_id": run.request.session_id,
-                    "invocation_id": run_id,
-                },
-            )
-
-        def env_kwargs(item_id: str, event_type: str, part_id: str) -> dict[str, Any]:
-            n = next_seq()
             return {
                 "schema_version": 2,
                 "event_id": stable_event_id(
-                    framework, scope_id, item_id, event_type, part_id, run_id, n
+                    framework,
+                    scope_id,
+                    item_id,
+                    event_type,
+                    part_id,
+                    handle.run_id,
+                    seq,
                 ),
-                "seq": n,
+                "seq": seq,
                 "timestamp": time.time(),
-                "run_id": run_id,
+                "run_id": handle.run_id,
                 "scope_id": scope_id,
-                "source": make_source(),
+                "source": source,
             }
-
-        def ensure_started(
-            item_id: str,
-            item_kind: str,
-            phase: str | None = None,
-            initial: ContentSnapshot | None = None,
-        ) -> list[ItemStarted]:
-            key = (scope_id, item_id)
-            if key in started_items:
-                return []
-            started_items.add(key)
-            return [
-                ItemStarted(
-                    **env_kwargs(item_id, "item.started", "item"),
-                    item_id=item_id,
-                    item_kind=item_kind,
-                    phase=phase,
-                    initial=initial,
-                )
-            ]
 
         if run.pending_cancel:
             run.done = True
             yield RunCanceled(
-                **env_kwargs(run_item_id, "run.canceled", "run"),
+                **envelope("run.canceled", run_item_id, "run"),
                 status="canceled",
                 reason=CancelResult.PENDING_CANCEL_RECORDED.value,
             )
             return
         yield RunStarted(
-            **env_kwargs(run_item_id, "run.started", "run"),
+            **envelope("run.started", run_item_id, "run"),
             status="running",
         )
         run.task = asyncio.create_task(self.execute_request(run.request))
         try:
             result = await run.task
-            for call in result["tool_calls"]:
-                call_id = call["call_id"]
-                tool_item_id = stable_item_id(framework, run_id, "tool_call", call_id)
-                for ev in ensure_started(
-                    item_id=tool_item_id,
-                    item_kind="tool_call",
-                    initial=ContentSnapshot(
-                        parts=(
-                            ToolCallContent(
-                                part_id="tool-0",
-                                call_id=call_id,
-                                name=call["name"],
-                                arguments=call["arguments"],
-                            ),
-                        )
-                    ),
-                ):
-                    yield ev
+            usage = result["usage"]
+            reasoning_text = str(result.get("reasoning") or "")
+            if reasoning_text:
+                reasoning_item_id = stable_item_id(
+                    framework, handle.run_id, "reasoning", "0"
+                )
+                reasoning_part_id = "reasoning-0"
+                reasoning_content = ContentSnapshot(
+                    parts=(TextContent(part_id=reasoning_part_id, text=reasoning_text),)
+                )
+                yield ItemStarted(
+                    **envelope("item.started", reasoning_item_id, reasoning_part_id),
+                    item_id=reasoning_item_id,
+                    item_kind="reasoning",
+                    phase="commentary",
+                    initial=reasoning_content,
+                )
                 yield ItemCompleted(
-                    **env_kwargs(tool_item_id, "item.completed", "tool-0"),
-                    item_id=tool_item_id,
+                    **envelope("item.completed", reasoning_item_id, reasoning_part_id),
+                    item_id=reasoning_item_id,
+                    item_kind="reasoning",
+                    snapshot=reasoning_content,
+                )
+            yield UsageReported(
+                **envelope("usage.reported", run_item_id, "usage"),
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                total_tokens=usage["total_tokens"],
+                cached_tokens=usage["cached_tokens"],
+                reasoning_tokens=usage["reasoning_tokens"],
+            )
+            for call in result["tool_calls"]:
+                call_item_id = stable_item_id(
+                    framework, handle.run_id, "tool_call", call["call_id"]
+                )
+                call_part_id = "tool-call-0"
+                call_content = ToolCallContent(
+                    part_id=call_part_id,
+                    call_id=call["call_id"],
+                    name=call["name"],
+                    arguments=call["arguments"],
+                )
+                yield ItemStarted(
+                    **envelope("item.started", call_item_id, call_part_id),
+                    item_id=call_item_id,
                     item_kind="tool_call",
-                    snapshot=ContentSnapshot(
-                        parts=(
-                            ToolResultContent(
-                                part_id="tool-0",
-                                call_id=call_id,
-                                result=call["result"],
-                            ),
-                        )
-                    ),
+                    phase="commentary",
+                    initial=ContentSnapshot(parts=(call_content,)),
+                )
+                yield ItemCompleted(
+                    **envelope("item.completed", call_item_id, call_part_id),
+                    item_id=call_item_id,
+                    item_kind="tool_call",
+                    snapshot=ContentSnapshot(parts=(call_content,)),
+                )
+                result_item_id = stable_item_id(
+                    framework, handle.run_id, "tool_result", call["call_id"]
+                )
+                result_part_id = "tool-result-0"
+                result_content = ToolResultContent(
+                    part_id=result_part_id,
+                    call_id=call["call_id"],
+                    result=call["result"],
+                )
+                yield ItemStarted(
+                    **envelope("item.started", result_item_id, result_part_id),
+                    item_id=result_item_id,
+                    item_kind="tool_result",
+                    phase="commentary",
+                    initial=ContentSnapshot(parts=(result_content,)),
+                )
+                yield ItemCompleted(
+                    **envelope("item.completed", result_item_id, result_part_id),
+                    item_id=result_item_id,
+                    item_kind="tool_result",
+                    snapshot=ContentSnapshot(parts=(result_content,)),
                 )
             text = str(result["output"])
-            for ev in ensure_started(
+            message_item_id = stable_item_id(framework, handle.run_id, "message", "final_answer")
+            text_part_id = "text-0"
+            yield ItemStarted(
+                **envelope("item.started", message_item_id, text_part_id),
                 item_id=message_item_id,
                 item_kind="message",
                 phase="final_answer",
-            ):
-                yield ev
-            yield ItemUpdated(
-                **env_kwargs(message_item_id, "item.updated", "text-0"),
-                item_id=message_item_id,
-                item_kind="message",
-                op="append",
-                update=TextContent(part_id="text-0", text=text),
+                initial=None,
             )
             yield ItemCompleted(
-                **env_kwargs(message_item_id, "item.completed", "text-0"),
+                **envelope("item.completed", message_item_id, text_part_id),
                 item_id=message_item_id,
                 item_kind="message",
-                snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text=text),)),
+                snapshot=ContentSnapshot(parts=(TextContent(part_id=text_part_id, text=text),)),
             )
             run.done = True
             yield RunCompleted(
-                **env_kwargs(run_item_id, "run.completed", "run"),
+                **envelope("run.completed", run_item_id, "run"),
                 status="completed",
                 output_refs=(
                     OutputRef(
                         scope_id=scope_id,
                         item_id=message_item_id,
-                        part_id="text-0",
+                        part_id=text_part_id,
                     ),
                 ),
             )
         except asyncio.CancelledError:
             run.done = True
             yield RunCanceled(
-                **env_kwargs(run_item_id, "run.canceled", "run"),
+                **envelope("run.canceled", run_item_id, "run"),
                 status="canceled",
                 reason=CancelResult.INTERRUPTED_ACTIVE_TURN.value,
             )
         except Exception as exc:  # noqa: BLE001
             run.done = True
             yield RunFailed(
-                **env_kwargs(run_item_id, "run.failed", "run"),
+                **envelope("run.failed", run_item_id, "run"),
                 status="failed",
                 error=ErrorInfo(
-                    code="harness_failed",
+                    code="HARNESS_EXECUTION_FAILED",
                     message=str(exc),
-                    source=framework,
+                    source="ksadk.harness",
                     scope_id=scope_id,
                 ),
             )

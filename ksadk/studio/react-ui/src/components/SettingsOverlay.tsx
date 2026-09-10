@@ -34,8 +34,11 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
 ];
 
 function credentialSourceLabel(source: string): string {
+  source = source.replace(/-alias$/, "");
   if (source === "workspace" || source === "session") return "工作区";
   if (source === "environment") return "启动环境";
+  if (source === "env-file") return "启动时指定的配置";
+  if (source === "dotenv") return "项目环境配置";
   return source === "missing" ? "未配置" : source;
 }
 
@@ -66,6 +69,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
       codexProxy: "auto",
       cloudRegion: "",
       cloudBucket: "",
+      cloudServerUrl: "",
       cloudAccessKey: "",
       cloudSecretKey: "",
       cloudAccountId: "",
@@ -77,15 +81,12 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
   const [configModel, setConfigModel] = useState<ResItem | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
 
-  const scrollToSection = useCallback((section: SettingsSection) => {
-    setActiveSection(section);
-    document.getElementById(`settings-${section}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, []);
+  useEffect(() => { setActiveSection(initialSection); }, [initialSection]);
 
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => scrollToSection(initialSection));
-    return () => cancelAnimationFrame(frame);
-  }, [initialSection, scrollToSection]);
+  function revealField(name: keyof SettingsFormValues) {
+    setActiveSection(name.startsWith("cloud") ? "cloud" : "runtime");
+    requestAnimationFrame(() => settingsForm.setFocus(name));
+  }
 
   const loadCredentials = useCallback(async () => {
     try {
@@ -123,6 +124,10 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
           codexProxy: s.codexProxy || "auto",
           cloudRegion: s.cloudRegion || "",
           cloudBucket: s.cloudBucket || "",
+          cloudServerUrl: s.cloudServerUrl || "",
+          cloudAccessKey: "",
+          cloudSecretKey: "",
+          cloudAccountId: s.cloudAccountId || "",
         });
       } catch { setSettings({}); }
       await loadCredentials();
@@ -132,6 +137,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
           ["工作区", b?.workspace?.name || "-"],
           ["路径", b?.workspace?.path || "-"],
           ["API 版本", b?.apiVersion || "-"],
+          ["Studio 资源", b?.frontend?.entryAssets?.join(" / ") || "未构建"],
         ]);
       } catch { setAbout([]); }
     })();
@@ -147,23 +153,35 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
       };
       if (values.cloudRegion.trim()) payload.cloudRegion = values.cloudRegion.trim();
       if (values.cloudBucket.trim()) payload.cloudBucket = values.cloudBucket.trim();
+      if (values.cloudServerUrl.trim()) payload.cloudServerUrl = values.cloudServerUrl.trim();
       // 云账号:留空 = 不修改;AccountID 空串不提交(避免清掉已存值)
       if (values.cloudAccessKey.trim()) payload.cloudAccessKey = values.cloudAccessKey.trim();
       if (values.cloudSecretKey.trim()) payload.cloudSecretKey = values.cloudSecretKey.trim();
-      if (values.cloudAccountId.trim()) payload.cloudAccountId = values.cloudAccountId.trim();
+      // Do not carry an untouched old account ID into a newly entered key pair.
+      if (values.cloudAccountId.trim() && (!payload.cloudAccessKey || settingsForm.formState.dirtyFields.cloudAccountId)) {
+        payload.cloudAccountId = values.cloudAccountId.trim();
+      }
       const res = await apiFetch("/api/v1/system/settings", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const errorPayload = await res.json().catch(() => null);
-        if (applyApiFieldErrors(errorPayload, settingsForm.setError)) {
+        if (applyApiFieldErrors(errorPayload, (name, error) => {
+          if (!Object.hasOwn(settingsForm.getValues(), name)) {
+            showToast("保存失败", error.message || "请检查配置", "error");
+            return;
+          }
+          const field = name as keyof SettingsFormValues;
+          settingsForm.setError(field, error);
+          revealField(field);
+        })) {
           setSaving(false);
           return;
         }
         throw new Error(errorPayload?.error?.message || `保存失败（${res.status}）`);
       }
       onClose();
-      showToast("设置已保存", "工作区级配置已写入 .agentkit/settings.yaml。");
+      showToast("设置已保存", "已保存到当前工作区，运行配置已更新。");
     } catch (e: any) {
       showToast("保存失败", e.message, "error");
     }
@@ -174,13 +192,16 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
     <FormProvider {...settingsForm}>
     <Drawer
       title="设置"
-      subtitle="工作区级配置，保存到 .agentkit/settings.yaml，重启后仍生效。"
+      subtitle="在这里统一管理工作区配置，保存后生效，重启后保留。"
       wide
       onClose={onClose}
       footer={
         <>
           <button className="button secondary" type="button" onClick={onClose}>取消</button>
-          <button className="button accent" type="button" onClick={settingsForm.handleSubmit(save)} disabled={saving || settings == null}>
+          <button className="button accent" type="button" onClick={settingsForm.handleSubmit(save, errors => {
+            const name = Object.keys(errors)[0] as keyof SettingsFormValues;
+            if (name) revealField(name);
+          })} disabled={saving || settings == null}>
             <Check size={15} /><span>{saving ? "保存中" : "保存"}</span>
           </button>
         </>
@@ -193,14 +214,16 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
             key={section.id}
             className={activeSection === section.id ? "active" : ""}
             type="button"
-            onClick={() => scrollToSection(section.id)}
+            aria-pressed={activeSection === section.id}
+            aria-controls={`settings-${section.id}`}
+            onClick={() => setActiveSection(section.id)}
           >
             {section.label}
           </button>
         ))}
       </nav>
       <div className="settings-sections">
-      <section id="settings-general" className="settings-group" tabIndex={-1}>
+      <section id="settings-general" hidden={activeSection !== "general"} className="settings-group" tabIndex={-1}>
         <h3>外观</h3>
         <div className="appearance-options" role="radiogroup" aria-label="颜色模式">
           {APPEARANCE_OPTIONS.map(option => {
@@ -208,7 +231,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
             return (
               <label key={option.value} className={`appearance-option${themePreference === option.value ? " selected" : ""}`}>
                 <Icon aria-hidden="true" />
-                <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                <span><strong>{option.label}</strong></span>
                 <input
                   type="radio"
                   name="studio-theme"
@@ -220,10 +243,10 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
             );
           })}
         </div>
-        <p className="appearance-note">外观仅保存到当前浏览器，并会立即应用到 Studio 与会话工作台。</p>
+        <p className="appearance-note">立即生效，仅保存在当前浏览器。</p>
       </section>
 
-      <section id="settings-runtime" className="settings-group" tabIndex={-1}>
+      <section id="settings-runtime" hidden={activeSection !== "runtime"} className="settings-group" tabIndex={-1}>
         <h3>执行与沙箱</h3>
         <FormField label="默认执行权限（Codex）" requirement="required" htmlFor="settingSandbox" hint="新 Agent 默认值；会话页可单次覆盖，下一轮对话生效。" error={settingsForm.formState.errors.sandbox?.message}>
           <StudioSelect
@@ -247,7 +270,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
         </div>
       </section>
 
-      <section id="settings-credentials" className="settings-group" tabIndex={-1}>
+      <section id="settings-credentials" hidden={activeSection !== "credentials"} className="settings-group" tabIndex={-1}>
         <h3>凭证</h3>
         {credRows.length === 0 ? (
           <div className="settings-empty">暂无凭证</div>
@@ -262,7 +285,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
         ))}
       </section>
 
-      <section id="settings-runtime-proxy" className="settings-group" tabIndex={-1}>
+      <section id="settings-runtime-proxy" hidden={activeSection !== "runtime"} className="settings-group" tabIndex={-1}>
         <h3>运行时</h3>
         <FormField label="Codex Responses→Chat 代理" requirement="required" htmlFor="settingCodexProxy" hint="非原生 Responses 上游可启用兼容代理。" error={settingsForm.formState.errors.codexProxy?.message}>
           <StudioSelect
@@ -279,9 +302,13 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
         </FormField>
       </section>
 
-      <section id="settings-cloud" className="settings-group" tabIndex={-1}>
+      <section id="settings-cloud" hidden={activeSection !== "cloud"} className="settings-group" tabIndex={-1}>
         <h3>云端部署</h3>
-        <p className="helper">配置云端部署使用的区域和制品存储。</p>
+        <p className="helper">配置本地平台资源调用和云端部署使用的连接，保存后无需另建环境文件。</p>
+        <FormField label="控制面地址" requirement="optional" htmlFor="settingCloudServerUrl" hint="平台资源调用使用的 HTTPS 服务地址；留空保留现有配置。" error={settingsForm.formState.errors.cloudServerUrl?.message}>
+          <input id="settingCloudServerUrl" placeholder="https://…" {...settingsForm.register("cloudServerUrl")} />
+        </FormField>
+        <p className="helper">地址来源：{credentialSourceLabel(settings?.configurationSources?.cloudServerUrl || "missing")}；账号来源：{credentialSourceLabel(settings?.configurationSources?.cloudAccessKey || "missing")}</p>
         <div className="form-grid two-columns">
           <FormField label="Region" requirement="optional" htmlFor="settingCloudRegion" error={settingsForm.formState.errors.cloudRegion?.message}>
             <input id="settingCloudRegion" placeholder="cn-beijing-6" {...settingsForm.register("cloudRegion")} />
@@ -301,10 +328,11 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
         <FormField label="Account ID" requirement="optional" htmlFor="settingCloudAccountId" hint="主账号 ID（X-Ksc-Account-Id）；可从金山云控制台获取。" error={settingsForm.formState.errors.cloudAccountId?.message}>
           <input id="settingCloudAccountId" placeholder="10203040..." {...settingsForm.register("cloudAccountId")} />
         </FormField>
-        <p className="helper">云端账号：{settings?.cloudAccountConfigured ? "已就绪" : "尚未配置"}；云端部署：{settings?.cloudSignedAccountConfigured ? "已就绪" : "尚未配置"}</p>
+        {!!settings?.platformResourceMissingFields?.length && <p className="helper" role="status">平台资源连接还需配置：{settings.platformResourceMissingFields.map((key: string) => ({cloudAccessKey: "Access Key", cloudSecretKey: "Secret Key", cloudServerUrl: "控制面地址"}[key] || key)).join("、")}</p>}
+        <p className="helper">平台资源：{settings?.platformResourcesConfigured ? "连接配置完整" : "连接配置未完成"}；云端账号：{settings?.cloudAccountConfigured ? "已就绪" : "尚未配置"}；云端部署：{settings?.cloudSignedAccountConfigured ? "已就绪" : "尚未配置"}</p>
       </section>
 
-      <section id="settings-about" className="settings-group" tabIndex={-1}>
+      <section id="settings-about" hidden={activeSection !== "about"} className="settings-group" tabIndex={-1}>
         <h3>关于</h3>
         <dl className="trace-detail-grid">
           {about.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}

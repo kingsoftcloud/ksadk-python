@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { Bot, MessageSquarePlus, PanelLeftOpen, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
@@ -8,7 +9,17 @@ import { apiFetch } from "../api";
 import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
 
+export interface ChatWorkspaceHandle { startNewChat: () => void; }
+
 interface ChatWorkspaceProps {
+  ref?: Ref<ChatWorkspaceHandle>;
+  newChatRequest?: number;
+  onNewChatStarted?: () => void;
+  integratedHistory?: boolean;
+  onStreamingChange?: (streaming: boolean) => void;
+  historyHost?: HTMLElement | null;
+  headerHost?: HTMLElement | null;
+  onSelectConversation?: () => void;
   agentId: string;
   agentName: string;
   agentAppearance?: AgentAppearance;
@@ -57,9 +68,19 @@ export function ChatWorkspace({
   refreshTick = 0,
   requestedSessionId = "",
   onSessionChanged,
+  newChatRequest = 0, onNewChatStarted,
+  ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
+  const startedNewChatRequest = useRef(0);
+  useEffect(() => {
+    if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
+    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
+      || chat.isLoadingSessions || chat.isStreaming || startedNewChatRequest.current === newChatRequest) return;
+    startedNewChatRequest.current = newChatRequest;
+    void Promise.resolve(chat.createNewSession()).finally(() => onNewChatStarted?.());
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.isStreaming, chat.createNewSession]);
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
@@ -75,6 +96,8 @@ export function ChatWorkspace({
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
+  const sessionTriggerRef = useRef<HTMLButtonElement>(null);
+  const sessionSearchRef = useRef<HTMLInputElement>(null);
   const [deleteSessionId, setDeleteSessionId] = useState("");
   const previousRefreshTick = useRef(refreshTick);
   const refreshChat = chat.refresh;
@@ -84,6 +107,24 @@ export function ChatWorkspace({
     onSessionChanged?.(chat.currentSessionId || "");
     return () => onSessionChanged?.("");
   }, [chat.currentSessionId, onSessionChanged]);
+
+  useEffect(() => {
+    onStreamingChange?.(chat.isStreaming);
+    return () => onStreamingChange?.(false);
+  }, [chat.isStreaming, onStreamingChange]);
+
+  useImperativeHandle(ref, () => ({ startNewChat() {
+    if (!chat.isStreaming) void chat.createNewSession();
+  } }), [chat.isStreaming, chat.createNewSession]);
+
+  function closeSessionPanel() {
+    setSessionPanelOpen(false);
+    sessionTriggerRef.current?.focus();
+  }
+
+  useEffect(() => {
+    if (sessionPanelOpen) sessionSearchRef.current?.focus();
+  }, [sessionPanelOpen]);
 
   useEffect(() => {
     const previous = previousTransport.current;
@@ -96,6 +137,10 @@ export function ChatWorkspace({
     // shared session loader resumes its event subscription without re-running it.
     if (settled) void refreshChat();
   }, [agentId, chat.currentSessionId, chat.isStreaming, refreshChat]);
+
+  const currentSession = chat.sessions.find(session => session.SessionId === chat.currentSessionId);
+  const conversationTitle = currentSession && currentSession.Title !== currentSession.SessionId
+    ? currentSession.Title || "新对话" : "新对话";
 
   const filteredSessions = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -111,22 +156,40 @@ export function ChatWorkspace({
     void refreshChat();
   }, [refreshChat, refreshTick]);
 
-  return (
-    <div
-      className={`ksadk-web studio-chat-shell${sessionPanelOpen ? " sessions-open" : ""}`}
-      data-testid="studio-chat-workbench"
-      data-agent-id={agentId}
-    >
-      <aside className="chat-session-sidebar" aria-label="会话历史">
+  const conversationHeader = (
+        <div className="chat-conversation-header">
+            {!integratedHistory && <button
+              ref={sessionTriggerRef}
+            className="icon-button tertiary chat-session-mobile-trigger"
+            type="button"
+            aria-label="打开会话历史"
+            title="会话历史"
+            aria-expanded={sessionPanelOpen}
+            onClick={() => setSessionPanelOpen(true)}
+          >
+            <PanelLeftOpen size={17} />
+          </button>}
+          {!integratedHistory && <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />}
+          <h1>{conversationTitle}</h1>
+        </div>
+  );
+
+  const history = (
+      <aside className={`chat-session-sidebar${integratedHistory ? " integrated-history" : ""}`} aria-label="会话历史" onKeyDown={event => {
+        if (sessionPanelOpen && event.key === "Escape") {
+          event.preventDefault();
+          closeSessionPanel();
+        }
+      }}>
         <header className="chat-session-header">
-          <h2>会话</h2>
-          <div className="chat-session-header-actions">
+          <h2>{integratedHistory ? "最近对话" : "会话"}</h2>
+          {!integratedHistory && <div className="chat-session-header-actions">
             <button
               className="icon-button tertiary"
               type="button"
               aria-label="新对话"
               title="新对话"
-              onClick={() => { void chat.createNewSession(); }}
+              onClick={() => { void chat.createNewSession(); if (sessionPanelOpen) closeSessionPanel(); }}
               disabled={chat.isStreaming}
             >
               <MessageSquarePlus size={16} />
@@ -136,15 +199,16 @@ export function ChatWorkspace({
               type="button"
               aria-label="关闭会话历史"
               title="关闭会话历史"
-              onClick={() => setSessionPanelOpen(false)}
+              onClick={closeSessionPanel}
             >
               <X size={17} />
             </button>
-          </div>
+          </div>}
         </header>
         <label className="chat-session-search">
           <span className="sr-only">搜索会话</span>
           <input
+            ref={sessionSearchRef}
             type="search"
             value={query}
             onChange={event => setQuery(event.target.value)}
@@ -178,7 +242,7 @@ export function ChatWorkspace({
                   className="chat-session-main"
                   type="button"
                   aria-current={chat.currentSessionId === session.SessionId ? "true" : undefined}
-                  onClick={() => chat.selectSession(session.SessionId)}
+                  onClick={() => { chat.selectSession(session.SessionId); onSelectConversation?.(); if (sessionPanelOpen) closeSessionPanel(); }}
                   title={`${displayTitle} · ${formatSessionTime(String(session.UpdatedAt || ""))}`}
                 >
                   <strong>{shortText(displayTitle)}</strong>
@@ -199,31 +263,30 @@ export function ChatWorkspace({
           })}
         </div>
       </aside>
+  );
+
+  return (
+    <div
+      className={`ksadk-web studio-chat-shell${sessionPanelOpen ? " sessions-open" : ""}`}
+      data-testid="studio-chat-workbench"
+      data-agent-id={agentId}
+      data-integrated-history={integratedHistory}
+      data-integrated-header={Boolean(headerHost)}
+    >
+      {integratedHistory ? (historyHost ? createPortal(history, historyHost) : null) : history}
+
 
       <button
         className="chat-session-backdrop"
         type="button"
         aria-label="关闭会话历史"
-        onClick={() => setSessionPanelOpen(false)}
+        onClick={closeSessionPanel}
       />
 
       <section className="chat-conversation" aria-label={`与 ${agentName} 对话`}>
-        <header className="chat-conversation-header">
-          <button
-            className="icon-button tertiary chat-session-mobile-trigger"
-            type="button"
-            aria-label="打开会话历史"
-            title="会话历史"
-            aria-expanded={sessionPanelOpen}
-            onClick={() => setSessionPanelOpen(true)}
-          >
-            <PanelLeftOpen size={17} />
-          </button>
-          <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />
-          <h1>{agentName}</h1>
-        </header>
+        {headerHost ? (active ? createPortal(conversationHeader, headerHost) : null) : conversationHeader}
 
-        {chat.bootstrapStatus === "loading" ? (
+        {chat.bootstrapStatus === "loading" || newChatRequest !== 0 ? (
           <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent">
             <i />
           </div>
@@ -236,12 +299,12 @@ export function ChatWorkspace({
         ) : (
           <>
             <AgentConversationTimeline
+              className="studio-chat-timeline"
               agentName={agentName}
               emptyState={(
                 <div className="studio-conversation-welcome">
-                  <AgentAvatar name={agentName} appearance={agentAppearance} size="lg" />
-                  <h2>{agentName}</h2>
-                  <p>有什么可以帮你？</p>
+                  <p>{agentName}</p>
+                  <h2>有什么可以帮你？</h2>
                 </div>
               )}
               isMobile={chat.isMobile}
@@ -254,6 +317,7 @@ export function ChatWorkspace({
               onLoadOlderSessionMessages={chat.loadOlderMessages}
               interactionRecords={chat.interactionRecords}
             />
+            <div className="studio-composer-area">
             <AgentConversationComposer
               onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
               composerMaxHeight={176}
@@ -272,6 +336,7 @@ export function ChatWorkspace({
               onRespondInteraction={input => { void chat.respondInteraction(input); }}
               localCatalog={chat.localCatalog}
             />
+            </div>
           </>
         )}
       </section>

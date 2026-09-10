@@ -398,7 +398,7 @@ describe("AgentEditor form", () => {
     });
   });
 
-  it("exposes the shared editor sections and preserves model, Skill, MCP and Tool bindings", async () => {
+  it.each(["langgraph", "harness"])("preserves bindings and exposes correct MCP controls for %s", async runtimeType => {
     mockedFetch.mockImplementation(async (input, init) => {
       if (init?.method === "PUT") {
         return {
@@ -412,7 +412,7 @@ describe("AgentEditor form", () => {
           draft: {
             metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 1 },
             spec: {
-              runtime: { type: "langgraph", projectPath: ".", entryPoint: "graph.py", agentVariable: "app" },
+              runtime: runtimeType === "harness" ? { type: "harness" } : { type: "langgraph", projectPath: ".", entryPoint: "graph.py", agentVariable: "app" },
               instructions: { system: "你是一个研究助手。" },
               bindings: {
                 modelProfileId: "model-a",
@@ -443,13 +443,26 @@ describe("AgentEditor form", () => {
 
     render(<AgentEditor agentId="agentkit-a1b2c3d4" catalog={catalog} onSaved={vi.fn()} />);
 
+    if (runtimeType === "harness") {
+      fireEvent.click(await screen.findByText("本地运行：未授权 · 高级权限"));
+      const consent = await screen.findByRole("checkbox", { name: /允许 KsADK Harness/ });
+      expect(consent).not.toBeChecked();
+      fireEvent.click(consent);
+    }
     fireEvent.click(await screen.findByRole("button", { name: "能力绑定" }));
     expect(screen.getAllByText("Model A").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Model B")).toBeVisible();
     expect(screen.getByText("Review Skill")).toBeVisible();
     expect(screen.getByText("Review MCP")).toBeVisible();
     expect(screen.queryByText("New MCP")).not.toBeInTheDocument();
-    expect(screen.getByText(/当前 Runtime 尚未实现 MCP 源码注入/)).toBeVisible();
+    if (runtimeType === "harness") {
+      expect(screen.getByText(/由 KsADK Harness 按需加载/)).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "选择绑定 MCP" }));
+      fireEvent.click(screen.getByRole("option", { name: /New MCP/ }));
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    } else {
+      expect(screen.getByText(/当前 Runtime 尚未实现 MCP 源码注入/)).toBeVisible();
+    }
     expect(screen.getByText("Review Tool")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "选择绑定 Tool" }));
     expect(screen.getByText("Python Tool")).toBeVisible();
@@ -463,7 +476,12 @@ describe("AgentEditor form", () => {
       const spec = JSON.parse(String(updateCall?.[1]?.body));
       expect(spec.bindings.modelProfileIds).toEqual(["model-a", "model-b"]);
       expect(spec.bindings.skills).toEqual([{ resourceId: "skill-a" }]);
-      expect(spec.bindings.mcpServers).toEqual([{ resourceId: "mcp-a" }]);
+      expect(spec.bindings.mcpServers).toEqual(runtimeType === "harness"
+        ? [{ resourceId: "mcp-a" }, { resourceId: "mcp-new", enabled: true }]
+        : [{ resourceId: "mcp-a" }]);
+      expect(spec.runtime.type).toBe(runtimeType);
+      if (runtimeType === "harness") expect(spec.runtime.entryPoint).toBeUndefined();
+      if (runtimeType === "harness") expect(spec.security.allowedPermissions).toContain("process:host-user");
       expect(spec.bindings.tools).toEqual([{ resourceId: "tool-a" }]);
     });
   });

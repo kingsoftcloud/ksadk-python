@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ksadk_runtime_common.memory_backend.manifest import MemoryBackendManifest
 from ksadk_runtime_common.memory_backend.registry import RenderResult
+
+
+_LANCEDB_API_KEY_FALLBACK_ENVS = ("OPENAI_API_KEY", "OPENCLAW_MODEL_API_KEY")
 
 
 class LanceDBProvider:
@@ -21,8 +25,11 @@ class LanceDBProvider:
         """
         entry: dict[str, Any] = {"enabled": True}
         config = self._render_plugin_config(manifest.config or {})
+        self._apply_secrets_env(config, manifest.secrets_env or {})
         if config:
             entry["config"] = config
+        # 2026.9.1 requires non-bundled plugins to opt in to conversation hooks.
+        entry["hooks"] = {"allowConversationAccess": True}
 
         return RenderResult(
             backend_type="lancedb",
@@ -39,6 +46,46 @@ class LanceDBProvider:
             plugin_ids=["memory-lancedb"],
             disabled_plugin_ids=["openclaw-mem0"],
         )
+
+    @staticmethod
+    def _resolve_env_name(secrets_env: dict[str, str], key: str, default: str) -> str:
+        return str(secrets_env.get(key) or default).strip() or default
+
+    @classmethod
+    def _apply_secrets_env(
+        cls,
+        config: dict[str, Any],
+        secrets_env: dict[str, str],
+    ) -> None:
+        if not secrets_env:
+            return
+        embedding = config.setdefault("embedding", {})
+        if not embedding.get("apiKey"):
+            api_key_env = cls._resolve_env_name(
+                secrets_env, "embedding_api_key", "LANCEDB_API_KEY"
+            )
+            if not (api_key_env and os.getenv(api_key_env)):
+                for fallback in _LANCEDB_API_KEY_FALLBACK_ENVS:
+                    if os.getenv(fallback):
+                        api_key_env = fallback
+                        break
+            if api_key_env and os.getenv(api_key_env):
+                embedding["apiKey"] = f"${{{api_key_env}}}"
+            elif not embedding:
+                config.pop("embedding", None)
+        storage = config.get("storageOptions")
+        if not isinstance(storage, dict):
+            storage = {}
+        for target, secret_key, fallback_env in (
+            ("accessKeyId", "storage_access_key_id", "AWS_ACCESS_KEY_ID"),
+            ("secretAccessKey", "storage_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+        ):
+            if not storage.get(target):
+                env_name = cls._resolve_env_name(secrets_env, secret_key, fallback_env)
+                if env_name and os.getenv(env_name):
+                    storage[target] = f"${{{env_name}}}"
+        if storage:
+            config["storageOptions"] = storage
 
     @staticmethod
     def _first(config: dict[str, Any], *keys: str) -> Any:
@@ -60,18 +107,25 @@ class LanceDBProvider:
         output: dict[str, Any] = {}
 
         embedding: dict[str, Any] = {}
+        embedding_source = config.get("embedding")
+        if not isinstance(embedding_source, dict):
+            embedding_source = {}
         for target_key, *source_keys in (
             ("provider", "provider", "embedding_provider"),
             ("model", "model", "embedding_model"),
             ("apiKey", "apiKey", "api_key", "embedding_api_key"),
             ("baseUrl", "baseUrl", "base_url", "embedding_base_url"),
         ):
-            value = cls._first(config, *source_keys)
+            value = cls._first(embedding_source, *source_keys)
+            if value is None:
+                value = cls._first(config, *source_keys)
             if value is not None:
                 embedding[target_key] = value
         dimensions = cls._first(
-            config, "dimensions", "embedding_dimensions"
+            embedding_source, "dimensions", "embedding_dimensions"
         )
+        if dimensions is None:
+            dimensions = cls._first(config, "dimensions", "embedding_dimensions")
         if isinstance(dimensions, int) or (
             isinstance(dimensions, str) and dimensions.strip().isdigit()
         ):

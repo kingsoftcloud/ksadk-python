@@ -17,13 +17,14 @@ from langgraph.types import Command
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
+from ksadk.runners._session_identity import LangGraphSessionIdentityMixin
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.utils import load_agent_module
 from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
-class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
+class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, BaseRunner):
     """LangGraph 框架运行时
 
     透传原生 LangGraph 功能，支持任意 State 格式
@@ -41,6 +42,8 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         self._managed_checkpoint_error: tuple[str, str] | None = None
         self._managed_checkpoint_pool: Any = None
         self._managed_checkpoint_namespace = ""
+        self._identity_thread_bindings: dict[str, str] = {}
+        self._identity_thread_lock = asyncio.Lock()
 
     def load_agent(self) -> None:
         self._load_agent(force_reload=False)
@@ -133,8 +136,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             return "unknown"
         try:
             closed_values = {
-                name: cell.cell_contents
-                for name, cell in zip(code.co_freevars, closure)
+                name: cell.cell_contents for name, cell in zip(code.co_freevars, closure)
             }
         except (AttributeError, ValueError):
             return "unknown"
@@ -199,8 +201,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                 "ResumeMode": "none",
                 "ReasonCode": "CHECKPOINTER_NOT_DURABLE",
                 "Reason": (
-                    "In-memory checkpoint cannot be recovered after process restart "
-                    "or across pods"
+                    "In-memory checkpoint cannot be recovered after process restart or across pods"
                 ),
             }
         return {
@@ -332,9 +333,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         if session_namespace:
             return session_namespace
         agent_id = str(
-            os.getenv("AGENTENGINE_AGENT_ID")
-            or os.getenv("KSADK_AGENT_ID")
-            or "default"
+            os.getenv("AGENTENGINE_AGENT_ID") or os.getenv("KSADK_AGENT_ID") or "default"
         ).strip()
         return f"agent:{agent_id}"
 
@@ -390,20 +389,12 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         )
         checkpoint_id = str(
             native_ref.get("checkpoint_id")
-            or (
-                langgraph_ref.get("checkpoint_id")
-                if isinstance(langgraph_ref, Mapping)
-                else ""
-            )
+            or (langgraph_ref.get("checkpoint_id") if isinstance(langgraph_ref, Mapping) else "")
             or ""
         ).strip()
         thread_id = str(
             native_ref.get("thread_id")
-            or (
-                langgraph_ref.get("thread_id")
-                if isinstance(langgraph_ref, Mapping)
-                else ""
-            )
+            or (langgraph_ref.get("thread_id") if isinstance(langgraph_ref, Mapping) else "")
             or ""
         ).strip()
         if not checkpoint_id or not thread_id:
@@ -424,11 +415,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         }
         checkpoint_ns = str(
             native_ref.get("checkpoint_ns")
-            or (
-                langgraph_ref.get("checkpoint_ns")
-                if isinstance(langgraph_ref, Mapping)
-                else ""
-            )
+            or (langgraph_ref.get("checkpoint_ns") if isinstance(langgraph_ref, Mapping) else "")
             or ""
         ).strip()
         if checkpoint_ns:
@@ -436,8 +423,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         config = {"configurable": configurable}
 
         if callable(
-            getattr(self._agent, "aget_state", None)
-            or getattr(self._agent, "get_state", None)
+            getattr(self._agent, "aget_state", None) or getattr(self._agent, "get_state", None)
         ):
             return await self._checkpoint_state_resolves(
                 config,
@@ -509,19 +495,14 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         async with self._managed_checkpoint_lock:
             if self._managed_checkpoint_state in {"ready", "terminal_failure"}:
                 return
-            if (
-                self._managed_checkpoint_state == "transient_failure"
-                and not allow_transient_retry
-            ):
+            if self._managed_checkpoint_state == "transient_failure" and not allow_transient_retry:
                 return
 
             checkpointer = getattr(self._agent, "checkpointer", None)
             if checkpointer is None:
                 checkpointer = getattr(self._agent, "_checkpointer", None)
             if self._checkpoint_backend_from_saver(checkpointer) == "postgres":
-                self._managed_checkpoint_namespace = (
-                    self._resolve_checkpoint_namespace()
-                )
+                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
                 self._managed_checkpoint_prepared = True
                 self._managed_checkpoint_state = "ready"
                 return
@@ -556,9 +537,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                     raise TypeError("ksadk_graph_factory must return a compiled LangGraph graph")
                 self._agent = managed_graph
                 self._managed_checkpoint_pool = pool
-                self._managed_checkpoint_namespace = (
-                    self._resolve_checkpoint_namespace()
-                )
+                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
                 self._managed_checkpoint_error = None
                 self._managed_checkpoint_state = "ready"
             except (ModuleNotFoundError, ImportError):
@@ -577,8 +556,10 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                 permission_failure = any(
                     marker in error_name for marker in ("privilege", "permission")
                 )
-                terminal = authentication_failure or permission_failure or isinstance(
-                    exc, (TypeError, ValueError)
+                terminal = (
+                    authentication_failure
+                    or permission_failure
+                    or isinstance(exc, (TypeError, ValueError))
                 )
                 reason_code = (
                     "AUTH_FAILED"
@@ -635,12 +616,18 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         *,
         session_id: str,
         checkpoint_ref: dict[str, Any],
+        enforce_bound_thread: bool = False,
     ) -> dict[str, Any]:
         checkpoint_id = str(checkpoint_ref.get("checkpoint_id") or "").strip()
         if not checkpoint_id:
             raise ValueError("checkpoint_resume requires framework_ref.langgraph.checkpoint_id")
 
-        thread_id = str(checkpoint_ref.get("thread_id") or session_id or "").strip()
+        configured = dict(config.get("configurable") or {})
+        bound_thread_id = str(configured.get("thread_id") or session_id or "").strip()
+        requested_thread_id = str(checkpoint_ref.get("thread_id") or "").strip()
+        if enforce_bound_thread and requested_thread_id and requested_thread_id != bound_thread_id:
+            raise ValueError("checkpoint_resume thread does not belong to this session")
+        thread_id = requested_thread_id or bound_thread_id
         if not thread_id:
             raise ValueError(
                 "checkpoint_resume requires session_id or framework_ref.langgraph.thread_id"
@@ -649,7 +636,16 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         next_config = dict(config)
         configurable = dict(next_config.get("configurable") or {})
         configurable["thread_id"] = thread_id
-        configurable["checkpoint_ns"] = str(checkpoint_ref.get("checkpoint_ns") or "")
+        requested_namespace = str(checkpoint_ref.get("checkpoint_ns") or "")
+        bound_namespace = str(configurable.get("checkpoint_ns") or "")
+        if (
+            enforce_bound_thread
+            and requested_namespace
+            and bound_namespace
+            and requested_namespace != bound_namespace
+        ):
+            raise ValueError("checkpoint_resume namespace does not belong to this session")
+        configurable["checkpoint_ns"] = requested_namespace or bound_namespace
         configurable["checkpoint_id"] = checkpoint_id
         next_config["configurable"] = configurable
         return next_config
@@ -1126,12 +1122,13 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             payload.get("platform_context"),
             context_schema=getattr(self._agent, "context_schema", None),
         )
-        config = self._get_config(session_id)
+        config = await self._get_session_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
                 config,
                 session_id=session_id,
                 checkpoint_ref=checkpoint_ref,
+                enforce_bound_thread=bool(self._invocation_identity_scope_ref()),
             )
 
         # 判断输入格式 / resume
@@ -1385,7 +1382,6 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
                     }
                 )
         return events
-
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""

@@ -84,8 +84,12 @@ def compare(local: str, published: str) -> int:
     return 0
 
 
-def check_project(project: str, local_version: str, allow_offline: bool) -> int:
+def check_project(
+    project: str, local_version: str, allow_offline: bool, *, mode: str = "release"
+) -> int:
     """检查单个 project。返回退出码。"""
+    if mode not in {"release", "source-sync"}:
+        raise ValueError(f"Unknown version-check mode: {mode}")
     published = fetch_pypi_version(project)
     if published is None:
         if allow_offline:
@@ -104,6 +108,9 @@ def check_project(project: str, local_version: str, allow_offline: bool) -> int:
             file=sys.stderr,
         )
         return 1
+    if cmp == 0 and mode == "source-sync" and local_version == published:
+        print(f"✅ {project}: 源码同步保留已发版本 {local_version}；不授权发布制品")
+        return 0
     if cmp == 0:
         print(
             f"❌ {project}: 本地版本 {local_version} == PyPI 已发版本 {published},"
@@ -129,6 +136,8 @@ def main() -> int:
     ap.add_argument(
         "--allow-offline", action="store_true", help="PyPI 不可达时跳过而非失败(用于网络隔离环境)"
     )
+    ap.add_argument("--mode", choices=("release", "source-sync"), default="release",
+                    help="release 要求新版本；source-sync 允许同版本源码同步，仍禁止降版")
     ap.add_argument("--repo-root", default=".", help="仓库根目录(默认当前目录)")
     args = ap.parse_args()
 
@@ -136,16 +145,16 @@ def main() -> int:
     local_version = read_local_version(repo_root)
     print(f"==> 版本门禁:本地 {args.project}={local_version}")
 
-    rc = check_project(args.project, local_version, args.allow_offline)
+    rc = check_project(args.project, local_version, args.allow_offline, mode=args.mode)
     if rc != 0:
         return rc
 
     if not args.skip_alias:
-        rc = check_project(args.alias_project, local_version, args.allow_offline)
+        rc = check_project(args.alias_project, local_version, args.allow_offline, mode=args.mode)
         if rc != 0:
             return rc
 
-    print(f"✅ 版本门禁通过:本地版本 {local_version} 高于所有已发版本")
+    print(f"✅ 版本门禁通过:模式 {args.mode}，本地版本 {local_version}")
     return 0
 
 

@@ -256,7 +256,7 @@ def _assert_harness_vertical(
     model: DeterministicChatCompletionsStub,
 ) -> None:
     page.goto(f"{base_url}/#/automations", wait_until="networkidle")
-    expect(page.get_by_role("heading", name="让重复的工作，按时完成")).to_be_visible()
+    expect(page.get_by_role("heading", name="自动化", exact=True, level=1)).to_be_visible()
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
 
     new_task = _create_task(
@@ -313,7 +313,13 @@ def _assert_harness_vertical(
     assert all(item.path == "/v1/chat/completions" for item in requests)
     assert all(item.authorization == "Bearer harness-fixture-key" for item in requests)
     assert len(requests[0].payload["messages"]) == 2
-    assert requests[2].payload["messages"] == [
+    # LiteLLM may serialize an unset optional name as null. Preserve exact
+    # message count, order, roles, content and every other wire field.
+    messages = [
+        {key: value for key, value in message.items() if key != "name" or value is not None}
+        for message in requests[2].payload["messages"]
+    ]
+    assert messages == [
         {
             "role": "system",
             "content": (

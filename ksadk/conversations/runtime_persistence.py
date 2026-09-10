@@ -19,7 +19,13 @@ from ksadk.conversations.runtime_constants import (
     EVENT_SCAN_PAGE_SIZE,
 )
 from ksadk.conversations.runtime_observability import _extract_deferred_tool_names
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY, PlatformIdentityContext
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
+from ksadk.sessions.invocation_identity import (
+    bind_or_validate_session_identity,
+    identity_native_user_id,
+    require_complete_platform_identity,
+)
 
 
 async def ensure_conversation_session(
@@ -28,20 +34,101 @@ async def ensure_conversation_session(
     user_id: str,
     session_id: Optional[str],
     session_service_provider: Callable[[], Any] | None = None,
+    invocation_identity: Any = None,
 ) -> Session:
-    """确保会话存在，并在显式 session_id 冲突时做 owner 校验。"""
+    """确保会话存在，并在读取历史前校验可信业务 owner。"""
     service = (session_service_provider or resolve_session_service)()
+    identity = require_complete_platform_identity(invocation_identity)
     if session_id:
-        existing = await service.get_session(session_id)
+        # Ownership is decided from metadata/state before any transcript read.
+        existing = await service.get_session_metadata(session_id)
         if existing:
-            if existing.agent_id != agent_id or existing.user_id != user_id:
+            if existing.agent_id != agent_id:
+                if not identity.is_empty:
+                    raise HTTPException(status_code=404, detail="Session not found")
                 raise HTTPException(
                     status_code=409,
                     detail="Session id belongs to a different agent or user",
                 )
-            return existing
-        return await service.create_session(agent_id, user_id, session_id=session_id)
-    return await service.create_session(agent_id, user_id)
+            return await bind_or_validate_session_identity(
+                service=service,
+                session=existing,
+                identity=identity,
+                requested_user_id=user_id,
+            )
+        native_user_id = identity_native_user_id(identity) or user_id
+        created = await service.create_session(agent_id, native_user_id, session_id=session_id)
+        if created.agent_id != agent_id:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return await bind_or_validate_session_identity(
+            service=service,
+            session=created,
+            identity=identity,
+            requested_user_id=user_id,
+        )
+    native_user_id = identity_native_user_id(identity) or user_id
+    created = await service.create_session(agent_id, native_user_id)
+    return await bind_or_validate_session_identity(
+        service=service,
+        session=created,
+        identity=identity,
+        requested_user_id=user_id,
+    )
+
+
+async def require_conversation_session(
+    *,
+    agent_id: str,
+    user_id: str,
+    session_id: str,
+    session_service_provider: Callable[[], Any] | None = None,
+    invocation_identity: Any = None,
+) -> Session:
+    """Authorize an existing session without creating state on a read/control path."""
+
+    service = (session_service_provider or resolve_session_service)()
+    identity = require_complete_platform_identity(invocation_identity)
+    existing = await service.get_session_metadata(session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if existing.agent_id != agent_id:
+        if not identity.is_empty:
+            raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(
+            status_code=409,
+            detail="Session id belongs to a different agent or user",
+        )
+    return await bind_or_validate_session_identity(
+        service=service,
+        session=existing,
+        identity=identity,
+        requested_user_id=user_id,
+    )
+
+
+async def prepare_stream_identity_session(
+    *,
+    agent_id: str,
+    user_id: str,
+    session_id: str | None,
+    request_metadata: Mapping[str, Any] | None,
+    session_service_provider: Callable[[], Any] | None = None,
+) -> tuple[str, str | None, PlatformIdentityContext, dict[str, Any]]:
+    """Authorize a stream before preview reads and hide its private identity carrier."""
+
+    public_metadata = dict(request_metadata or {})
+    identity_payload = public_metadata.pop(TRUSTED_IDENTITY_METADATA_KEY, None)
+    identity = PlatformIdentityContext.from_payload(identity_payload)
+    if not identity_payload:
+        return user_id, session_id, identity, public_metadata
+    session = await ensure_conversation_session(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        session_service_provider=session_service_provider,
+        invocation_identity=identity_payload,
+    )
+    return session.user_id, session.id, identity, public_metadata
 
 
 async def append_conversation_event(

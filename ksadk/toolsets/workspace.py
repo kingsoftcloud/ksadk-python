@@ -14,6 +14,7 @@ from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
 from ksadk.tools.result_budget import budget_tool_output, default_tool_result_budget
 from ksadk.toolsets._langchain import as_tool
+from ksadk.toolsets.workspace_identity import identity_workspace_root
 from ksadk.toolsets.workspace_state import WorkspaceReadState, get_read_state, record_read_state
 
 _WORKSPACE_TOOL_POLICIES = {
@@ -41,7 +42,7 @@ def _dict_result(value: Any, *, tool_name: str) -> dict[str, Any]:
 
 
 def workspace_root() -> Path:
-    return Path(resolve_local_session_dir()) / "workspace"
+    return identity_workspace_root(Path(resolve_local_session_dir()) / "workspace")
 
 
 def resolve_workspace_path(relative_path: str) -> Path:
@@ -59,7 +60,6 @@ def workspace_relative(path: Path) -> str:
 
 def workspace_status() -> dict[str, Any]:
     """Return current AgentEngine workspace status."""
-
     return _dict_result(
         _gateway().invoke("workspace_status", _workspace_status_impl),
         tool_name="workspace_status",
@@ -818,7 +818,7 @@ def _validate_read_state(target: Path, relative: str) -> dict[str, Any] | None:
             "error_type": "file_modified_since_read",
             "error_message": "workspace file changed since last read",
             "suggested_action": (
-                f"Re-read the file with read_workspace_file(path={relative!r}) " "and retry."
+                f"Re-read the file with read_workspace_file(path={relative!r}) and retry."
             ),
         }
     return None

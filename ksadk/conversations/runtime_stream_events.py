@@ -10,6 +10,7 @@ from ksadk.conversations.run_kinds import (
     trigger_from_resume_input,
     validate_run_mode,
 )
+from ksadk.conversations.runtime_baseline import record_baseline_turn
 from ksadk.conversations.runtime_compaction import preview_auto_compaction
 from ksadk.conversations.runtime_constants import (
     ASSISTANT_STREAM_SNAPSHOT_INTERVAL_SECONDS,
@@ -57,6 +58,7 @@ from ksadk.conversations.runtime_persistence import (
     append_reasoning_event,
     append_run_checkpoint_event,
     append_run_status_event,
+    prepare_stream_identity_session,
 )
 from ksadk.conversations.runtime_preparation import _refresh_history, build_run_input
 from ksadk.conversations.runtime_resume import (
@@ -81,35 +83,6 @@ from ksadk.sessions import resolve_session_service
 from ksadk.tools.gateway import (
     approval_interrupt_info_from_result,
 )
-
-
-def _record_baseline_turn(
-    *,
-    prepared: Any,
-    model: str | None,
-    usage: Any,
-    ptl: bool,
-    attempts: int,
-    turn_start_monotonic: float | None,
-) -> None:
-    """env-gated 旁路采集：未启用时 no-op，启用时记录一条 turn 基线。不进决策路径。"""
-    from ksadk.context_engine.baseline import record_baseline_turn
-
-    latency_ms = None
-    if turn_start_monotonic is not None:
-        latency_ms = int((time.monotonic() - turn_start_monotonic) * 1000)
-    record_baseline_turn(
-        getattr(prepared, "shadow_context_plan", None),
-        session_id=getattr(prepared, "session_id", ""),
-        invocation_id=getattr(prepared, "invocation_id", ""),
-        model=str(model or ""),
-        usage=usage if isinstance(usage, Mapping) else None,
-        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
-        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
-        prompt_too_long=ptl,
-        retry_attempts=attempts,
-        turn_latency_ms=latency_ms,
-    )
 
 
 async def _iter_conversation_turn_events(
@@ -145,6 +118,18 @@ async def _iter_conversation_turn_events(
     _governance_record_turn_start(governance)
     entry_run_mode = validate_run_mode(run_mode)
     entry_run_trigger = trigger_from_resume_input(resume_input)
+    (
+        user_id,
+        session_id,
+        invocation_identity,
+        public_request_metadata,
+    ) = await prepare_stream_identity_session(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        request_metadata=request_metadata,
+        session_service_provider=provider,
+    )
     if resume_input is None:
         compaction_preview = await preview_auto_compaction(
             agent_id=agent_id,
@@ -220,9 +205,10 @@ async def _iter_conversation_turn_events(
         yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
         return
     _inject_runner_deferred_tools_for_request(runner, prepared)
+    effective_user_id = prepared.user_id or user_id
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
-        user_id=user_id,
+        user_id=effective_user_id,
         user_input=prepared.user_input,
     )
     prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
@@ -231,7 +217,7 @@ async def _iter_conversation_turn_events(
     runtime_context = PlatformInvocationContext(
         session=SessionContext.from_payload(prepared.session_context),
         agent_id=agent_id,
-        user_id=user_id,
+        user_id=effective_user_id,
         account_id=str(account_id or ""),
         session_id=prepared.session_id,
         history=list(prepared.history),
@@ -250,6 +236,7 @@ async def _iter_conversation_turn_events(
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
         tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
+        identity=invocation_identity,
     )
     if prepared.compaction_triggered:
         yield {
@@ -293,7 +280,7 @@ async def _iter_conversation_turn_events(
         _set_conversation_span_attributes(
             span,
             agent_id=agent_id,
-            user_id=user_id,
+            user_id=effective_user_id,
             session_id=prepared.session_id,
             invocation_id=prepared.invocation_id,
             runner_name=runner_name,
@@ -309,7 +296,7 @@ async def _iter_conversation_turn_events(
         yield {
             "type": "started",
             "session_id": prepared.session_id,
-            "metadata": {**trace_metadata, **dict(request_metadata or {})},
+            "metadata": {**trace_metadata, **public_request_metadata},
         }
         await append_run_status_event(
             session_id=prepared.session_id,
@@ -946,7 +933,7 @@ async def _iter_conversation_turn_events(
         )
         await _auto_save_ltm_turn(
             agent_id=agent_id,
-            user_id=user_id,
+            user_id=effective_user_id,
             prepared=prepared,
             output_text=accumulated_text,
             runner_type=runtime_context.runner_type,
@@ -969,7 +956,7 @@ async def _iter_conversation_turn_events(
             usage=assistant_metadata.get("usage"),
         )
         _set_prompt_source_attributes(span, getattr(prepared, "compiled_prompt", None))
-        _record_baseline_turn(
+        record_baseline_turn(
             prepared=prepared,
             model=model,
             usage=assistant_metadata.get("usage"),

@@ -82,6 +82,7 @@ export const settingsSchema = z.object({
   buildAfterCreate: z.boolean(),
   codexProxy: z.enum(["auto", "forced", "direct"]),
   cloudRegion: z.string().trim().max(128, "Region 不能超过 128 个字符").default(""),
+  cloudServerUrl: z.string().trim().max(2048, "地址不能超过 2048 个字符").default(""),
   cloudBucket: z.string().trim().max(128, "KS3 Bucket 不能超过 128 个字符").default(""),
   // 云账号 AK/SK/AccountID:留空 = 不修改已保存值(后端按增量合并)
   cloudAccessKey: z.string().trim().max(256, "Access Key 不能超过 256 个字符").default(""),

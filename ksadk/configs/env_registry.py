@@ -5,6 +5,26 @@ from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
+        "KSADK_MEMORY_POSTGRES_DSN", "memory", "Harness memory PostgreSQL DSN.",
+        sensitive=True, documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_OTEL_ENDPOINT", "harness", "Optional Harness trace export endpoint.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_OTEL_SERVICE_NAME", "harness", "Harness trace service name.",
+        "ksadk-harness", documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_API_KEY", "sandbox", "Legacy Skill MCP forwarded sandbox credential.",
+        sensitive=True, documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_MANIFEST_TTL", "skills", "Skill manifest cache TTL in seconds.",
+        "60", documented=False,
+    ),
+    EnvVarSpec(
         "KSADK_AGENT_EVAL",
         "evaluation",
         "Enable internal Agent evaluation integration.",
@@ -391,6 +411,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "false",
     ),
     EnvVarSpec(
+        "KSADK_HARNESS_STATE_DIR",
+        "harness",
+        "Runtime server durable state directory (checkpoints and receipts).",
+    ),
+    EnvVarSpec(
         "KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS",
         "builders",
         "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
@@ -451,6 +476,22 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_MEMORY_PREFIX", "memory", "Generic memory key prefix.", "ksadk:memory:"),
     EnvVarSpec("KSADK_MEMORY_TTL", "memory", "Generic memory default TTL seconds."),
     EnvVarSpec("KSADK_MEMORY_URL", "memory", "Generic memory backend URL.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_MODEL_PROFILE_MAP",
+        "models",
+        "JSON object mapping model profile refs to provider model ids.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_STREAMING",
+        "models",
+        "Enable streaming model responses when supported (unset = auto).",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_CAPABILITY_FILE",
+        "models",
+        "Provider capability declaration file produced by the model matrix.",
+    ),
     EnvVarSpec(
         "KSADK_MODEL_PROXY_AGENTS",
         "model_proxy",

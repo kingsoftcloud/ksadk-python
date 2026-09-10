@@ -19,6 +19,7 @@ from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
 from ksadk.skills.package_store import SkillPackage
 from ksadk.skills.runtime.artifact_delivery import ArtifactBundle, import_artifacts
 from ksadk.skills.runtime.base import (
+    parse_workflow_result,
     SandboxInputFile,
     SkillRuntimeError,
     SkillRuntimeResult,
@@ -240,6 +241,7 @@ class E2BSkillRuntimeBackend:
                     )
                     + "\n"
                 )
+            wf = parse_workflow_result(stdout)
             return SkillRuntimeResult(
                 runtime_id=session.sandbox_id,
                 exit_code=result.exit_code,
@@ -247,6 +249,9 @@ class E2BSkillRuntimeBackend:
                 stderr=result.stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 output_files=output_files,
+                workflow_status=str(wf.get("status", "")),
+                executed_skill=str(wf.get("executed_skill", "")),
+                instructions=str(wf.get("instructions", "")),
             )
         except Exception as exc:
             error_type = type(exc).__name__

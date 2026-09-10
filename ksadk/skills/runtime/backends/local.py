@@ -17,6 +17,7 @@ from ksadk.skills.runtime.base import (
     format_skill_names_env,
     normalize_skill_names,
     parse_output_files,
+    parse_workflow_result,
 )
 from ksadk.skills.runtime.pinned import stage_packages
 
@@ -151,6 +152,7 @@ class LocalProcessSkillRuntimeBackend:
                         else line
                         for line in stdout.splitlines()
                     ) + "\n"
+            wf = parse_workflow_result(stdout)
             return SkillRuntimeResult(
                 runtime_id=f"local:{session_id}",
                 exit_code=completed.returncode,
@@ -158,6 +160,9 @@ class LocalProcessSkillRuntimeBackend:
                 stderr=completed.stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 output_files=output_files,
+                workflow_status=str(wf.get("status", "")),
+                executed_skill=str(wf.get("executed_skill", "")),
+                instructions=str(wf.get("instructions", "")),
             )
         except subprocess.TimeoutExpired as exc:
             return SkillRuntimeResult(

@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
 
 PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
 # Phase 1 runtime drills must run beside real Agent workloads in the preprod
@@ -197,6 +197,7 @@ studio-react-test:
 		test -f "ksadk/studio/static/index.html"; \
 	fi
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_workspace_navigation_smoke.py --output "$$(mktemp -d)"
 	@# studio_responsive_smoke validates the composer re-enable flow on
 	@# session switch.  It is green locally and the composer fix ships in
 	@# this release, but the headless CI runner leaves the locator disabled
@@ -379,7 +380,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
+PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py tests/studio/test_scheduler_runtime.py tests/studio/test_shared_web.py tests/test_public_release_positioning.py tests/test_docs_site_output_audit.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -525,9 +526,11 @@ open-source-audit-alias-dist:
 	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist-alias/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
 	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist-alias/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
 
+PUBLIC_PREFLIGHT_MODE ?= release
+
 public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
-	uv run python scripts/check_release_version.py
+	uv run python scripts/check_release_version.py --mode "$(PUBLIC_PREFLIGHT_MODE)"
 
 phase2-release-preflight: public-build-check
 	@echo "==> Phase 2 compatibility, native host, browser, and artifact preflight"
@@ -559,7 +562,10 @@ public-preflight: public-version-gate public-audit sync-ksadk-web-static public-
 # doubles the work and stalls on the shared CI runner.  So the publish
 # preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test
 # + build/twine check, without docs-site-build or phase2-release-preflight.
-public-preflight-publish: public-version-gate public-audit sync-ksadk-web-static public-test public-build-check
+public-release-version-gate:
+	uv run python scripts/check_release_version.py --mode release
+
+public-preflight-publish: public-release-version-gate public-audit sync-ksadk-web-static public-test public-build-check
 	@echo "✅ public publish preflight passed"
 
 public-publish-check:

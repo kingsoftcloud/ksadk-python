@@ -125,18 +125,28 @@ class StudioRunService:
         # every decision for that run, not only identical interaction ids, so
         # two concurrently visible cards cannot overwrite each other's receipt.
         self._interaction_locks: dict[str, asyncio.Lock] = {}
+        self._recovery_tasks: set[asyncio.Task] = set()
+        self._detaching_recoveries = False
 
-    async def recover_interrupted(self) -> None:
+    def has_active_runs(self) -> bool:
+        return bool(self._active_sessions or self._active_handles)
+
+    async def recover_interrupted(self, resolve_spec=None) -> None:
         """Settle local runs left active across a Studio restart.
 
-        An in-process handle cannot be resumed safely.  Keep its durable event
-        history and record an explicit interruption; lease-backed hosted
-        recovery remains owned by the Kernel composition root.
+        Reattach approval-paused providers only when their pinned Build and
+        durable-restore capability can be verified. Other in-process runs are
+        explicitly interrupted; active execution takeover remains Kernel-owned.
         """
         active = {RunStatus.RUNNING, RunStatus.WAITING_INPUT}
         for record in self.event_store.list_runs():
             if record.status not in active:
                 continue
+            if record.status == RunStatus.WAITING_INPUT and resolve_spec is not None:
+                from ksadk.studio.provider_recovery import restore_waiting_provider_run
+
+                if await restore_waiting_provider_run(self, record, resolve_spec):
+                    continue
             record.status = RunStatus.INTERRUPTED
             record.completed_at = datetime.now(timezone.utc)
             record.error = {
@@ -270,9 +280,22 @@ class StudioRunService:
                 on_event=on_event,
             )
 
+        return await self._execute_runtime_record(
+            spec, user_input, record=record, runtime_input=runtime_input,
+            on_event=on_event, prepared_turn=prepared_turn,
+            provider_runtime_adapter=provider_runtime_adapter,
+        )
+
+    async def _execute_runtime_record(
+        self, spec, user_input, *, record, runtime_input=None, on_event=None,
+        prepared_turn=None, provider_runtime_adapter=False, restored_handle=None,
+    ) -> RunRecord:
+        run_id, session = record.id, record.session_id
+        runtime_type = record.runtime_type
         started = time.monotonic()
-        record.status = RunStatus.RUNNING
-        record.started_at = datetime.now(timezone.utc)
+        if restored_handle is None:
+            record.status = RunStatus.RUNNING
+            record.started_at = datetime.now(timezone.utc)
         self.event_store.save(record)
 
         async def persist(runtime_event: RuntimeEvent) -> RunEvent:
@@ -349,7 +372,7 @@ class StudioRunService:
                     )
                 adapter = self.plugin_runtime.kernel_adapter_provider(spec)()
                 preparation = RuntimeStartPreparation(context=spec.launch_context, adapter=adapter)
-            handle = await self.executor.start(
+            handle = restored_handle or await self.executor.start(
                 spec.launch_context, request, preparation=preparation,
             )
             record.runtime_handle = handle.model_dump(mode="json")
@@ -357,7 +380,10 @@ class StudioRunService:
             self._active_handles[run_id] = handle
             while True:
                 terminal_seen = False
-                should_resume = False
+                should_resume = restored_handle is not None
+                if restored_handle is not None:
+                    self._waiting_modes[run_id] = "resume"
+                    restored_handle = None
                 async for event in self.executor.stream(handle):
                     if (
                         isinstance(event, RunInterrupted)
@@ -524,6 +550,8 @@ class StudioRunService:
                 fallback_parts = [part for part in streamed_text_by_item.values() if part]
                 record.output = "\n\n".join(completed_parts or fallback_parts)
         except asyncio.CancelledError:
+            if self._detaching_recoveries and record.status == RunStatus.WAITING_INPUT:
+                raise
             cancel_result = "task_cancelled"
             if handle is not None and self.executor.is_attached(handle):
                 try:
@@ -589,8 +617,12 @@ class StudioRunService:
             self._control_queues.pop(run_id, None)
             self._waiting_modes.pop(run_id, None)
             self._submitted_interactions.pop(run_id, None)
-            record.completed_at = datetime.now(timezone.utc)
-            self._expire_unresolved_interactions(record, on_event=on_event)
+            preserve_waiting = (
+                self._detaching_recoveries and record.status == RunStatus.WAITING_INPUT
+            )
+            if not preserve_waiting:
+                record.completed_at = datetime.now(timezone.utc)
+                self._expire_unresolved_interactions(record, on_event=on_event)
             if runtime_duration_ms is not None:
                 record.duration_ms = runtime_duration_ms
                 record.duration_source = "runtime"

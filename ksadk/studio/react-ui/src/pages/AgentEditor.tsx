@@ -134,6 +134,7 @@ function modelName(item?: EditorCatalogItem) {
 }
 
 function runtimeTitle(runtime: string) {
+  if (runtime === "harness") return "KsADK Harness";
   if (runtime === "adk") return "ADKRuntimeAdapter";
   if (runtime === "langgraph") return "LangGraphRuntimeAdapter";
   if (runtime === "plugin") return "External AgentProvider";
@@ -141,7 +142,7 @@ function runtimeTitle(runtime: string) {
 }
 
 function runtimeManifest(runtime: string) {
-  if (runtime === "codex") return { type: "codex" };
+  if (runtime === "codex" || runtime === "harness") return { type: runtime };
   return {
     type: runtime,
     projectPath: ".",
@@ -203,6 +204,7 @@ export function AgentEditor({
   activeSection = 1,
   onSaved,
   onAppearanceSaved,
+  onCancel,
 }: {
   agentId: string;
   catalog: EditorCatalogItem[];
@@ -210,8 +212,11 @@ export function AgentEditor({
   activeSection?: number;
   onSaved: (agentId: string, openChat: boolean) => void;
   onAppearanceSaved?: () => void;
+  onCancel?: () => void;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
+  const [harnessPermission, setHarnessPermission] = useState(false);
+  const [harnessPermissionTouched, setHarnessPermissionTouched] = useState(false);
   const [loadError, setLoadError] = useState("");
   const agentForm = useForm<AgentEditFormValues>({
     resolver: zodResolver(agentEditSchema) as Resolver<AgentEditFormValues>,
@@ -329,6 +334,8 @@ export function AgentEditor({
           ? bindings.modelProfileIds
           : bindings.modelProfileId ? [bindings.modelProfileId] : [];
         setDetail(payload);
+        setHarnessPermission(Boolean(payload.draft?.spec?.security?.allowedPermissions?.includes("process:host-user")));
+        setHarnessPermissionTouched(false);
         resetAgentForm({
           name: draft.metadata.name || "",
           slug: draft.metadata.id || agentId,
@@ -392,7 +399,13 @@ export function AgentEditor({
 
   const primaryModel = models.find(item => item.resourceId === defaultModel)
     || selectedModelItems[0];
-  const contextOwnershipOptions = runtime === "codex"
+  const supportsMcpEditing = ["harness", "codex", "plugin"].includes(runtime);
+  const contextOwnershipOptions = runtime === "harness"
+    ? [
+      { value: "auto", label: "自动（推荐）", description: "按 Harness 能力选择安全模式" },
+      { value: "ksadk", label: "KsADK 管理", description: "统一规划、压缩和保护上下文" },
+    ]
+    : runtime === "codex"
     ? [
       { value: "auto", label: "自动（推荐）", description: "按 Codex Runtime 能力选择安全投影方式" },
       { value: "native", label: "原生 Runtime 管理", description: "由 Codex 管理最终模型上下文" },
@@ -488,9 +501,11 @@ export function AgentEditor({
     "spec:",
     "  runtime:",
     `    type: ${runtime}`,
-    `    projectPath: ${runtimeProjectPath || "."}`,
-    `    entryPoint: ${runtimeEntryPoint || (runtime === "adk" ? "agent.py" : "graph.py")}`,
-    `    agentVariable: ${runtimeAgentVariable || (runtime === "adk" ? "root_agent" : "app")}`,
+    ...(runtime === "harness" ? [] : [
+      `    projectPath: ${runtimeProjectPath || "."}`,
+      `    entryPoint: ${runtimeEntryPoint || (runtime === "adk" ? "agent.py" : "graph.py")}`,
+      `    agentVariable: ${runtimeAgentVariable || (runtime === "adk" ? "root_agent" : "app")}`,
+    ]),
     ...soulYamlLines,
     "  instructions:",
     "    system: |-",
@@ -570,6 +585,11 @@ export function AgentEditor({
     try {
       const original = detail.draft.spec;
       const spec = JSON.parse(JSON.stringify(original));
+      if (values.runtimeType === "harness" && harnessPermissionTouched) {
+        const retained = (spec.security?.allowedPermissions || []).filter((p: string) => p !== "process:host-user");
+        spec.security = { ...spec.security, allowedPermissions: harnessPermission
+          ? [...retained, "process:host-user"] : retained };
+      }
       spec.runtime = values.runtimeType === "plugin" ? {
         type: "plugin",
         providerRef: selectedProvider?.providerRef,
@@ -797,14 +817,17 @@ export function AgentEditor({
         <section className="agent-edit-section" hidden={visibleSection !== 1} aria-label="基础与 Prompt">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">01</span>
-          <div><h3>基础与 Prompt</h3><p>维护 Agent 身份、Runtime 与系统提示词。</p></div>
+          <div><h3>基础与 Prompt</h3></div>
         </div>
+        <details className="secondary-settings agent-appearance-disclosure">
+          <summary>头像与配色</summary>
         <AgentAppearanceEditor
           name={name || detail.draft.metadata.name}
           appearance={detail.draft.metadata.appearance}
           disabled={saving}
           onSave={saveAppearance}
         />
+        </details>
         <div className="form-grid two-columns">
           <FormField label="显示名称" requirement="required" htmlFor="editAgentName" error={agentForm.formState.errors.name?.message}>
             <input id="editAgentName" readOnly {...agentForm.register("name")} />
@@ -826,6 +849,7 @@ export function AgentEditor({
             disabled
             value={runtime}
             options={[
+              { value: "harness", label: "KsADK Harness" },
               { value: "codex", label: "CodexRuntimeAdapter" },
               { value: "adk", label: "ADKRuntimeAdapter" },
               { value: "langgraph", label: "LangGraphRuntimeAdapter" },
@@ -895,6 +919,16 @@ export function AgentEditor({
           <CodexProviderPermissions provider={codexProvider} approved={providerPermissionsApproved}
             onChange={setProviderPermissionsApproved} />
         )}
+        {runtime === "harness" && <details className="template-specific">
+          <summary>本地运行：{harnessPermission ? "已授权" : "未授权"} · 高级权限</summary>
+          <label className="post-create-option">
+          <input type="checkbox" checked={harnessPermission} onChange={event => {
+            setHarnessPermission(event.target.checked); setHarnessPermissionTouched(true);
+          }} />
+          <span><strong>允许 KsADK Harness 在本机运行</strong>
+            <small>仅授权本地执行引擎启动；工具仍受权限与审批策略约束。撤销后保存到新版本，该版本将无法使用本地 Harness。</small>
+          </span>
+        </label></details>}
         <fieldset className="agent-policy-editor soul-editor" aria-describedby="soulPolicyHint">
           <legend>Soul · 稳定人格</legend>
           <label className="pcm-memory-toggle soul-enable-toggle">
@@ -1018,7 +1052,7 @@ export function AgentEditor({
           />
         </div>
         <div className="field quick-model-binding-field">
-          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">{runtime === "codex" ? "Skill 与 MCP 由 Codex Runtime 按能力投影。" : runtime === "plugin" ? "Skill 与 MCP 会通过 PluginHost 投影给外部 Provider。" : "Skill 可编辑；当前 Runtime 尚未实现 MCP 源码注入，历史 MCP 仅保留。"}</span></div>
+          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">{runtime === "harness" ? "Skill 与 MCP 由 KsADK Harness 按需加载，并执行权限与审批策略。" : runtime === "codex" ? "Skill 与 MCP 由 Codex Runtime 按能力投影。" : runtime === "plugin" ? "Skill 与 MCP 会通过 PluginHost 投影给外部 Provider。" : "Skill 可编辑；当前 Runtime 尚未实现 MCP 源码注入，历史 MCP 仅保留。"}</span></div>
           <div className="quick-capability-bindings">
             <StudioMultiSelect
               ariaLabel="选择绑定 Skill"
@@ -1033,15 +1067,15 @@ export function AgentEditor({
             />
             <StudioMultiSelect
               ariaLabel="选择绑定 MCP"
-              items={["codex", "plugin"].includes(runtime) ? visibleMcps : visibleMcps.filter(item => selectedMcp.includes(item.resourceId))}
+              items={supportsMcpEditing ? visibleMcps : visibleMcps.filter(item => selectedMcp.includes(item.resourceId))}
               selectedIds={selectedMcp}
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
               getDescription={item => mcpUnavailableReason(item, runtime) || `${item.version} · ${item.health?.toolCount || 0} Tool`}
-              onChange={["codex", "plugin"].includes(runtime) ? setSelectedMcp : () => undefined}
-              disabledIds={["codex", "plugin"].includes(runtime) ? visibleMcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId) : selectedMcp}
+              onChange={supportsMcpEditing ? setSelectedMcp : () => undefined}
+              disabledIds={supportsMcpEditing ? visibleMcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId) : selectedMcp}
               searchPlaceholder="搜索 MCP"
-              emptyMessage={["codex", "plugin"].includes(runtime) ? "没有已连接的 MCP" : "当前 Runtime 不支持新增 MCP"}
+              emptyMessage={supportsMcpEditing ? "没有已连接的 MCP" : "当前 Runtime 不支持新增 MCP"}
             />
           </div>
         </div>
@@ -1263,6 +1297,7 @@ export function AgentEditor({
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />
             <span><strong>{isManagedDeclaration ? "保存后生成配置快照" : "保存后构建新 Bundle"}</strong><small>{isManagedDeclaration ? "校验 YAML 并生成可追溯的部署输入" : "新 Bundle 完成后进入会话工作台"}</small></span>
           </label>
+          {onCancel && <button className="button secondary" type="button" disabled={saving} onClick={onCancel}>取消</button>}
           <button className="button accent" type="submit" disabled={saving || pluginsPending}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
         </div>
         {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>操作未完成</strong><p>{saveError}</p></div></div>}

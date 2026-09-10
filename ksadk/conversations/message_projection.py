@@ -18,6 +18,7 @@ def project_session_messages(
     include_reasoning: bool = False,
     include_tool_events: bool = False,
     include_attachments: bool = True,
+    session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Project persisted runtime events into the chat history contract.
 
@@ -53,7 +54,17 @@ def project_session_messages(
                 approval_responses=approval_responses,
             )
         )
-    return sorted(messages, key=lambda item: int(item.get("SeqId") or 0))
+    projected = sorted(messages, key=lambda item: int(item.get("SeqId") or 0))
+    if session_id:
+        for message in projected:
+            for attachment in message.get("Attachments") or []:
+                file_uri = str(attachment.get("file_uri") or "")
+                if file_uri.startswith(("ksadk-upload://", "ae-upload://")):
+                    attachment["url"] = (
+                        "/agentengine/api/v1/AttachmentContent?FileUri="
+                        f"{quote(file_uri, safe='')}&SessionId={quote(str(session_id), safe='')}"
+                    )
+    return projected
 
 
 def _project_event_group(
@@ -119,8 +130,7 @@ def _project_event_group(
             # emit a placeholder assistant message for them first.
             if has_pre_assistant_approvals and not assistant_seen:
                 anchor = next(
-                    (e for e in events
-                     if str(e.get("EventType") or "") == "approval_request"),
+                    (e for e in events if str(e.get("EventType") or "") == "approval_request"),
                     events[0],
                 )
                 placeholder = _base_message(anchor, "assistant", content="")
@@ -224,9 +234,7 @@ def _project_interleaved_blocks(
     saw_stream_text = False
     saw_reasoning_after_stream_text = False
     tools_by_seq_id = {
-        int(tool.get("SeqId") or 0): tool
-        for tool in tool_events
-        if int(tool.get("SeqId") or 0) > 0
+        int(tool.get("SeqId") or 0): tool for tool in tool_events if int(tool.get("SeqId") or 0) > 0
     }
 
     def append_text(text: str, seq_id: Any) -> None:
@@ -493,9 +501,7 @@ def _project_approval_events(
                         )
                         if not isinstance(first_action, Mapping):
                             first_action = {}
-                        interaction_id = runtime_event.get("interaction_id") or req.get(
-                            "call_id"
-                        )
+                        interaction_id = runtime_event.get("interaction_id") or req.get("call_id")
                         interrupt_info = {
                             "approval_request_id": interaction_id,
                             "id": interaction_id,
@@ -528,17 +534,11 @@ def _project_approval_events(
         # 这里统一提取，避免 Name fallback 成 "approval" 导致前端显示不对。
         action_requests = interrupt_info.get("action_requests")
         first_action = (
-            action_requests[0]
-            if isinstance(action_requests, list) and action_requests
-            else {}
+            action_requests[0] if isinstance(action_requests, list) and action_requests else {}
         )
         if not isinstance(first_action, Mapping):
             first_action = {}
-        tool_name = (
-            interrupt_info.get("tool_name")
-            or first_action.get("name")
-            or "approval"
-        )
+        tool_name = interrupt_info.get("tool_name") or first_action.get("name") or "approval"
         entry: dict[str, Any] = {
             "SeqId": request.get("SeqId"),
             "Type": "approval",
@@ -559,10 +559,7 @@ def _project_approval_events(
         )
         if arguments is not None:
             entry["Args"] = arguments
-        description = (
-            interrupt_info.get("description")
-            or first_action.get("description")
-        )
+        description = interrupt_info.get("description") or first_action.get("description")
         if description:
             entry["Description"] = str(description)
         review_configs = interrupt_info.get("review_configs")
@@ -721,7 +718,7 @@ def _normalize_canonical_event(
             initial = runtime_event.get("initial") or {}
             parts = initial.get("parts") if isinstance(initial, Mapping) else []
             data: Any = {}
-            for part in (parts or []):
+            for part in parts or []:
                 if isinstance(part, Mapping) and part.get("content_type") == "data":
                     data = part.get("data")
                     break
@@ -821,9 +818,7 @@ def _normalize_canonical_event(
             # 嵌在 action_requests[0] 里，detail 顶层没有，需要提取。
             action_requests = detail.get("action_requests")
             first_action = (
-                action_requests[0]
-                if isinstance(action_requests, list) and action_requests
-                else {}
+                action_requests[0] if isinstance(action_requests, list) and action_requests else {}
             )
             if not isinstance(first_action, Mapping):
                 first_action = {}
@@ -833,20 +828,16 @@ def _normalize_canonical_event(
             normalized_metadata["interrupt_info"] = {
                 "approval_request_id": interaction_id or call_id,
                 "id": interaction_id or call_id,
-                "tool_name": detail.get("tool_name")
-                or first_action.get("name")
-                or kind,
+                "tool_name": detail.get("tool_name") or first_action.get("name") or kind,
                 "arguments": detail.get("arguments")
                 or detail.get("args")
                 or first_action.get("args")
                 or first_action.get("arguments"),
-                "description": detail.get("description")
-                or first_action.get("description"),
+                "description": detail.get("description") or first_action.get("description"),
                 "review_configs": review_configs if isinstance(review_configs, list) else None,
                 "approval_level": detail.get("approval_level")
                 or first_action.get("approval_level"),
-                "approval_message": detail.get("message")
-                or first_action.get("description"),
+                "approval_message": detail.get("message") or first_action.get("description"),
             }
             # Preserve ag-ui protocol tag from source metadata.
             source = runtime_event.get("source") or {}

@@ -34,6 +34,14 @@ _PREFERENCE_CORRECTION = re.compile(
     re.IGNORECASE,
 )
 _PREFERENCE_SLOT = re.compile(r"(?:我|本人)?喜欢(?P<action>吃|喝|用|看|听|玩)")
+# 一般祈使纠偏（"以后报表不要用英文，请改成中文"）：语义边界不如动作型偏好
+# 清晰，但"否定旧值 + 指定新值"结构明确，仍按显式纠错（update）处理。
+_GENERAL_CORRECTION = re.compile(
+    r"(?:以后|今后)?(?P<subject>[一-龥A-Za-z0-9]{1,12})?"
+    r"(?:请)?(?:不要|别)(?P<old>.{1,20}?)[，,]?"
+    r"(?:请)?(?:改成|改为|换成|改用)(?P<new>.+?)(?:[。.!！]|$)",
+    re.IGNORECASE,
+)
 _HOBBY_DECLARATION = re.compile(
     r"(?:我|本人)?的?爱好(?P<correction>其实|现在|改)?(?:是|改成|变成)\s*(?P<value>.+?)"
     r"(?:[。.!！]|$)",
@@ -47,7 +55,16 @@ _IMPLICIT_PREFERENCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 # 工具稳定事实信号。
-_FACT_SIGNALS = ("confirmed", "最终确认", "final", "verified", "确认成功")
+_FACT_SIGNALS = (
+    "confirmed",
+    "最终确认",
+    "final",
+    "verified",
+    "确认成功",
+    "查询成功",
+    "已认证",
+    "已核实",
+)
 
 
 def _event_text(event: any) -> str:  # type: ignore[name-defined]
@@ -117,6 +134,28 @@ def propose_memory_candidates(
                             content=content[:1000],
                             confidence=0.95,
                             importance=0.9,
+                            source_event_ids=[event_id],
+                            slot_key=derive_profile_slot_key(content),
+                            reason="explicit_user_correction",
+                        )
+                    )
+                    continue
+            general = _GENERAL_CORRECTION.search(text)
+            if general:
+                subject = (general.group("subject") or "").strip()
+                new_value = general.group("new").strip().strip("。.，, ")
+                if new_value:
+                    content = f"{subject}改为{new_value}" if subject else f"改为{new_value}"
+                    candidates.append(
+                        MemoryCandidate(
+                            candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
+                            operation="update",
+                            memory_type="profile",
+                            scope=scope,
+                            scope_id=scope_id,
+                            content=content[:1000],
+                            confidence=0.9,
+                            importance=0.8,
                             source_event_ids=[event_id],
                             slot_key=derive_profile_slot_key(content),
                             reason="explicit_user_correction",

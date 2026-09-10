@@ -6,8 +6,8 @@ const agentSlug = z.string().trim()
   .max(63, "本地标识不能超过 63 个字符")
   .regex(/^[a-z][a-z0-9-]*$/, "本地标识只能包含小写字母、数字和连字符");
 const optionalAgentSlug = z.union([z.literal(""), agentSlug]);
-const studioRuntimeType = z.enum(["codex", "adk", "langgraph", "plugin"]);
-const conversationRuntimeType = z.enum(["codex", "adk", "langgraph"]);
+const studioRuntimeType = z.enum(["harness", "codex", "adk", "langgraph", "plugin"]);
+const conversationRuntimeType = z.enum(["harness", "codex", "adk", "langgraph"]);
 const agentPrompt = z.string().trim()
   .min(4, "系统提示词至少填写 4 个字符")
   .max(32768, "系统提示词不能超过 32768 个字符");
