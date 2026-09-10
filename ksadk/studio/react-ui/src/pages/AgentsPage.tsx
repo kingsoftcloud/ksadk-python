@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, Bot, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Plus, Search, Bot } from "lucide-react";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MoreActionsMenu } from "../components/MoreActionsMenu";
@@ -31,35 +31,14 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
   onCreate: () => void;
   onDetail: (id: string) => void;
   onChat: (id: string) => void;
-  onBuild: () => void;
+  onBuild: (id: string) => void;
   onChanged: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
-  const [models, setModels] = useState(0);
-  const [capabilities, setCapabilities] = useState(0);
   const [pendingDelete, setPendingDelete] = useState<AgentItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState("");
-
-  useEffect(() => {
-    // 合并本地/市场模型与 provider 探测模型；能力资源只计 ready。
-    Promise.all([
-      apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()),
-      apiFetch("/api/v1/catalog/models").then(r => r.json()).catch(() => null),
-    ]).then(([d, discovered]) => {
-      const items = d.items || [];
-      let modelItems = items.filter((i: any) => i.kind === "model");
-      if (discovered?.items?.length) {
-        modelItems = [
-          ...modelItems.filter((i: any) => i.source === "local" || i.source === "market"),
-          ...discovered.items,
-        ];
-      }
-      setModels(modelItems.filter((i: any) => i.status === "ready").length);
-      setCapabilities(items.filter((i: any) => ["tool", "mcp", "skill"].includes(i.kind) && i.status === "ready").length);
-    }).catch(() => {});
-  }, []);
 
   const filtered = useMemo(() => agents.filter(agent => {
     const built = Boolean(agent.builds?.some(b => b.status === "SUCCEEDED"));
@@ -114,14 +93,15 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
         const bindings = agent.spec?.bindings || {};
         return (
           <div className="resource-counts">
-            <span>{bindings.tools?.length || 0} Tool</span>
-            <span>{bindings.mcpServers?.length || 0} MCP</span>
-            <span>{bindings.skills?.length || 0} Skill</span>
+            {bindings.tools?.length ? <span>{bindings.tools.length} Tool</span> : null}
+            {bindings.mcpServers?.length ? <span>{bindings.mcpServers.length} MCP</span> : null}
+            {bindings.skills?.length ? <span>{bindings.skills.length} Skill</span> : null}
+            {!bindings.tools?.length && !bindings.mcpServers?.length && !bindings.skills?.length && <span className="resource-count-empty">—</span>}
           </div>
         );
       },
     },
-    { id: "revision", header: "Revision", width: 84, className: "agent-revision-column", headerClassName: "agent-revision-column", cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
+    { id: "revision", header: "版本", width: 84, className: "agent-revision-column", headerClassName: "agent-revision-column", cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
     {
       id: "build",
       header: "最近校验 / 构建",
@@ -145,18 +125,11 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
             label={`${agent.metadata.name} 的更多操作`}
             items={[
               { label: "配置", onSelect: () => onDetail(agent.metadata.id) },
-              { label: isDeclarativeAgent(agent) ? "校验声明" : "构建", onSelect: onBuild },
+              { label: isDeclarativeAgent(agent) ? "校验声明" : "构建", onSelect: () => onBuild(agent.metadata.id) },
+              { label: "删除", danger: true, onSelect: () => setPendingDelete(agent) },
             ]}
           />
-          <button
-            className="icon-button danger-ghost"
-            type="button"
-            aria-label={`删除 ${agent.metadata.name}`}
-            title="删除"
-            onClick={() => setPendingDelete(agent)}
-          >
-            <Trash2 size={15} />
-          </button>
+
         </div>
       ),
     },
@@ -191,31 +164,18 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
       <div className="data-page-body table-data-body">
         {actionError && <div className="form-error" style={{ marginBottom: 16 }}>{actionError}</div>}
 
-        <section className="agents-overview-section" aria-labelledby="agents-overview-title" title={workspaceName || "本地工作区"}>
-          <h2 id="agents-overview-title" className="sr-only">工作区概览</h2>
-          <div className="stat-strip compact-summary">
-            <div><span className="stat-label">Agent</span><strong className="stat-value">{agents.length}</strong></div>
-            <div><span className="stat-label">可用模型</span><strong className="stat-value">{models}</strong></div>
-            <div><span className="stat-label">能力资源</span><strong className="stat-value">{capabilities}</strong></div>
-            <div className="runtime-summary" data-state={!runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed"}>
-              <span className="stat-label">本地 Runtime</span>
-              <strong className="stat-value"><span className="summary-status-dot" />{!runtimeChecked ? "检查中" : runtimeReady ? "正常" : "连接失败"}</strong>
-            </div>
+        {runtimeChecked && !runtimeReady && (
+          <div className="compact-status-alert" role="alert">
+            <strong>本地 Runtime 连接失败</strong>
+            <span>请确认本地服务正在运行，然后刷新页面。</span>
           </div>
-          {runtimeChecked && !runtimeReady && (
-            <div className="compact-status-alert" role="alert">
-              <strong>本地 Runtime 连接失败</strong>
-              <span>请确认本地服务正在运行，然后刷新页面。</span>
-            </div>
-          )}
-        </section>
+        )}
 
         <section className="agents-catalog-section block" aria-labelledby="agents-catalog-title">
           <header className="agents-catalog-header">
-            <h2 id="agents-catalog-title">Agent 列表</h2>
+            <h2 id="agents-catalog-title" className="sr-only">Agent 列表</h2>
             <div className="agents-catalog-meta">
               <span>{filtered.length === agents.length ? `${agents.length} 个 Agent` : `${filtered.length} / ${agents.length} 个 Agent`}</span>
-              <span className="sync-state">已同步</span>
             </div>
           </header>
           <div className="section-toolbar">
@@ -249,10 +209,8 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
               description: query || statusFilter
                 ? "调整搜索词或状态筛选。"
                 : "创建第一个可运行的 Agent。",
-              action: !query && !statusFilter ? (
-                <button className="button accent" type="button" onClick={onCreate}>
-                  <Plus size={16} /><span>创建 Agent</span>
-                </button>
+              action: query || statusFilter ? (
+                <button className="button secondary" type="button" onClick={() => { setQuery(""); setStatusFilter(""); }}>清除筛选</button>
               ) : undefined,
             }}
           />

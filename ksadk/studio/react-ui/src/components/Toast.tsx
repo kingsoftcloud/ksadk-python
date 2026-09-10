@@ -18,7 +18,8 @@ export function showToast(title: string, message = "", type: "success" | "error"
   const toastKey = `${type}:${title}:${message}`;
   if (items.some(t => t.toastKey === toastKey)) return;
   const item: ToastItem = { key: ++seq, toastKey, title, message, type };
-  items = [...items, item];
+  // Keep the latest success feedback instead of stacking completed steps.
+  items = [...items.filter(previous => previous.type === "error"), item];
   emit();
   window.setTimeout(() => {
     items = items.filter(t => t.key !== item.key);

@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { MoreActionsMenu } from "../MoreActionsMenu";
 import {
   StudioDataTable,
   type StudioDataColumn,
@@ -111,5 +112,46 @@ describe("StudioDataTable", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Trace 加载失败");
     await user.click(screen.getByRole("button", { name: "重新加载" }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+  it("hides empty headings and zero pagination, while later empty pages remain navigable", () => {
+    const pagination = { pageIndex: 0, pageSize: 20, total: 0, hasNextPage: false, onPreviousPage: vi.fn(), onNextPage: vi.fn() };
+    const { rerender } = render(<StudioDataTable<Row> columns={columns} data={[]} getRowId={row => row.id} pagination={pagination} />);
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /上一页/ })).not.toBeInTheDocument();
+    rerender(<StudioDataTable<Row> columns={columns} data={[]} getRowId={row => row.id} pagination={{ ...pagination, pageIndex: 1 }} />);
+    expect(screen.getByRole("button", { name: /上一页/ })).toBeEnabled();
+  });
+
+  it("does not open a row when a nested action is activated from the keyboard", async () => {
+    const user = userEvent.setup();
+    const onRowActivate = vi.fn();
+    const onAction = vi.fn();
+    render(<StudioDataTable<Row> columns={[{ id: "action", header: "操作", cell: () => <button onClick={onAction}>操作菜单</button> }]}
+      data={[{ id: "1", name: "Agent" }]} getRowId={row => row.id} onRowActivate={onRowActivate} />);
+    screen.getByRole("button", { name: "操作菜单" }).focus();
+    await user.keyboard("{Enter}");
+    expect(onAction).toHaveBeenCalledOnce();
+    expect(onRowActivate).not.toHaveBeenCalled();
+  });
+
+  it.each(["pointer", "keyboard"])("keeps portaled menu actions from activating the row via %s", async method => {
+    const user = userEvent.setup();
+    const onRowActivate = vi.fn();
+    const onDelete = vi.fn();
+    render(<StudioDataTable<Row>
+      columns={[{ id: "actions", header: "操作", cell: () => <MoreActionsMenu items={[{ label: "删除", onSelect: onDelete, danger: true }]} /> }]}
+      data={[{ id: "1", name: "Agent" }]} getRowId={row => row.id} onRowActivate={onRowActivate} />);
+    const trigger = screen.getByRole("button", { name: "更多操作" });
+    if (method === "pointer") {
+      await user.click(trigger);
+      await user.click(screen.getByRole("menuitem", { name: "删除" }));
+    } else {
+      trigger.focus();
+      await user.keyboard("{Enter}");
+      screen.getByRole("menuitem", { name: "删除" }).focus();
+      await user.keyboard("{Enter}");
+    }
+    expect(onDelete).toHaveBeenCalledOnce();
+    expect(onRowActivate).not.toHaveBeenCalled();
   });
 });

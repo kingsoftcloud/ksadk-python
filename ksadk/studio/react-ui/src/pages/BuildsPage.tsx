@@ -79,8 +79,9 @@ async function fetchOperationEvents(path: string): Promise<OperationEvent[]> {
   return parseOperationEvents(await response.text());
 }
 
-export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: {
+export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate, refreshTick = 0 }: {
   currentAgentId: string;
+  refreshTick?: number;
   agents: AgentSummary[];
   onSelectAgent: (id: string) => void;
   onCreate: () => void;
@@ -92,19 +93,25 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
   const [building, setBuilding] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
   const buildSeq = useRef(0);
+  const detailRequestSeq = useRef(0);
 
   const loadDetail = useCallback(async () => {
+    const requestSeq = ++detailRequestSeq.current;
     if (!currentAgentId) { setDetail(null); return; }
     try {
       const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(currentAgentId)}`);
       if (!response.ok) throw new Error("Agent detail is unavailable");
-      setDetail(await response.json());
+      const next = await response.json();
+      if (requestSeq === detailRequestSeq.current) setDetail(next);
     } catch {
-      setDetail(null);
+      if (requestSeq === detailRequestSeq.current) setDetail(null);
     }
   }, [currentAgentId]);
 
-  useEffect(() => { void loadDetail(); }, [loadDetail]);
+  useEffect(() => {
+    void loadDetail();
+    return () => { detailRequestSeq.current += 1; };
+  }, [loadDetail, refreshTick]);
 
   const draft = detail?.draft;
   const builds: BuildRecord[] = detail?.builds || [];
@@ -245,7 +252,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
           <section className="delivery-next-step" data-state={deployable ? "ready" : state} aria-label="构建下一步">
             <div>
               <span>下一步</span>
-              <strong>{deployable ? "构建完成，下一步可部署到云端" : "等待构建完成"}</strong>
+              <strong>{deployable ? "构建完成，下一步可部署到云端" : building ? "等待当前操作完成" : "点击右上角开始校验或构建"}</strong>
             </div>
             {deployable && (
               <button className="button secondary compact" type="button" onClick={openDeploymentFlow}>

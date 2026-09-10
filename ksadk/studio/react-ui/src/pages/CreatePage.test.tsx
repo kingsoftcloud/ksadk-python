@@ -85,7 +85,7 @@ describe("CreatePage quick authoring", () => {
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
     expect(consent).toBeChecked();
-    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "你是一个本地验证助手，请简洁回答。");
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
     await user.click(screen.getByRole("button", { name: "继续" }));
     await user.click(await screen.findByRole("button", { name: "选择模型" }));
     await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
@@ -114,7 +114,7 @@ describe("CreatePage quick authoring", () => {
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
-    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "Answer with evidence.");
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "Answer with evidence.");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /DSH AgentProvider/ }));
     expect(screen.getByRole("checkbox", { name: /确认 Provider 请求/ })).not.toBeChecked();
@@ -131,7 +131,7 @@ describe("CreatePage quick authoring", () => {
         contract: { materialization: 'dsh-profile' }, health: { toolCount: 0 },
       }] })) : base(input, init));
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
-    await userEvent.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), '你是一个本地验证助手，请简洁回答。');
+    await userEvent.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), '你是一个本地验证助手，请简洁回答。');
     await userEvent.click(screen.getByRole('button', { name: '继续' }));
     await userEvent.click(await screen.findByRole('button', { name: '选择 MCP Server' }));
     const option = screen.getByRole('option', { name: /DSH Profile/ });
@@ -146,7 +146,7 @@ describe("CreatePage quick authoring", () => {
         field: 'spec.runtime.type', message: 'DSH Profile MCP 当前只支持 Harness Runtime',
       } }) } as Response) : base(input, init));
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
-    await userEvent.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), '你是一个本地验证助手，请简洁回答。');
+    await userEvent.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), '你是一个本地验证助手，请简洁回答。');
     await userEvent.click(screen.getByRole('button', { name: '继续' }));
     await userEvent.click(await screen.findByRole('button', { name: '选择模型' }));
     await userEvent.click(screen.getByRole('option', { name: /Local Test Model/ }));
@@ -184,7 +184,7 @@ describe("CreatePage quick authoring", () => {
     );
 
     await user.type(
-      screen.getByPlaceholderText(/你是一名企业技术支持助手/),
+      screen.getByRole("textbox", { name: /Agent 目标与要求/ }),
       "你是一个本地验证助手，请简洁回答。",
     );
     await user.click(screen.getByRole("button", { name: "继续" }));
@@ -226,6 +226,7 @@ describe("CreatePage quick authoring", () => {
     await user.click(screen.getByRole("button", { name: "继续" }));
     expect(screen.getByText("创建后立即校验 YAML 声明并打开会话")).toBeInTheDocument();
     expect(screen.getByText("只冻结 YAML 和 runtime 摘要；部署时不会上传代码包。")).toBeInTheDocument();
+    expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
     await user.click(screen.getByRole("button", { name: "创建 Agent" }));
 
     await waitFor(() => {
@@ -286,7 +287,7 @@ describe("CreatePage quick authoring", () => {
     });
 
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "使用外部 Provider 完成任务。");
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "使用外部 Provider 完成任务。");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /Example Provider · Plugin/ }));
     expect(await screen.findByRole("combobox", { name: "AgentProvider" })).toHaveTextContent("Example Provider");
@@ -371,7 +372,7 @@ describe("CreatePage quick authoring", () => {
     });
 
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "使用 Codex 完成任务。");
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "使用 Codex 完成任务。");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /Codex · Plugin/ }));
     await user.click(screen.getByRole("button", { name: "继续" }));
@@ -453,7 +454,7 @@ describe("CreatePage quick authoring", () => {
     await user.clear(nameInput);
     await user.type(nameInput, "销售日报 Agent");
     await user.type(
-      screen.getByPlaceholderText(/你是一名企业技术支持助手/),
+      screen.getByRole("textbox", { name: /Agent 目标与要求/ }),
       "根据聊天记录生成销售日报，不得编造。",
     );
     await user.click(screen.getByRole("button", { name: "继续" }));
@@ -572,7 +573,7 @@ describe("CreatePage quick authoring", () => {
     expect(screen.queryByText(/1\.0元/)).not.toBeInTheDocument();
     expect(screen.queryByText(/models\.example\.test\/v1\/models/)).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
-    await user.click(screen.getByRole("button", { name: "确认并创建 Revision" }));
+    await user.click(screen.getByRole("button", { name: "确认创建 Agent" }));
 
     await waitFor(() => {
       const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
@@ -638,7 +639,8 @@ describe("CreatePage quick authoring", () => {
 
     await user.click(screen.getByRole("tab", { name: /对话构建/ }));
     await waitFor(() => {
-      expect(screen.getByText("从对话开始")).toBeVisible();
+      expect(screen.getByText("从一句需求开始")).toBeVisible();
+      expect(screen.queryByRole("complementary", { name: "Agent 草稿" })).not.toBeInTheDocument();
       expect(screen.getByText(/Codex · 1 个模型/)).toBeVisible();
     });
     expect(screen.queryByRole("region", { name: "draft-patch.json 源码" })).not.toBeInTheDocument();
@@ -735,5 +737,60 @@ describe("CreatePage conversation authoring stages", () => {
     expect(input).toHaveValue("第一行\n第二行");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(requestBody?.messages.at(-1)?.content).toBe("第一行\n第二行"));
+  });
+});
+
+describe("CreatePage inspection freshness", () => {
+  beforeEach(() => {
+    mockedFetch.mockReset();
+    mockedFetch.mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("projects:inspect")) {
+        const body = JSON.parse(String(init?.body));
+        return response({ inspectionToken: `token-${body.path}`, projectPath: body.path, name: "Detected Agent", runtimeType: "adk", entryPoint: "agent.py" });
+      }
+      if (path.includes("imports:inspect")) return { ok: false, json: async () => ({ error: { message: "Agent YAML 无法解析" } }) } as Response;
+      return response({ items: [] });
+    });
+  });
+  it("invalidates a checked project when its path changes and requires another inspection", async () => {
+    const user = userEvent.setup(); render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await user.click(screen.getByRole("tab", { name: "项目识别" }));
+    await user.click(screen.getByRole("button", { name: "检测项目" }));
+    await screen.findByText("检测完成");
+    expect(screen.getByRole("button", { name: "确认创建 Agent" })).toBeEnabled();
+    expect(screen.getByText("查看完整检查结果").closest("details")).not.toHaveAttribute("open");
+    await user.clear(screen.getByRole("textbox", { name: /工作区相对路径/ }));
+    await user.type(screen.getByRole("textbox", { name: /工作区相对路径/ }), "other-project");
+    expect(screen.queryByRole("button", { name: "确认创建 Agent" })).not.toBeInTheDocument();
+    expect(mockedFetch.mock.calls.some(([path]) => String(path).includes(":commit"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "检测项目" }));
+    await screen.findByText("检测完成");
+    expect(screen.getByText("other-project")).toBeVisible();
+  });
+  it("ignores an inspection response that arrives after the path changed", async () => {
+    let resolveInspection!: (value: Response) => void;
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input).includes("projects:inspect")
+      ? new Promise(resolve => { resolveInspection = resolve; }) : base(input, init));
+    const user = userEvent.setup(); render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await user.click(screen.getByRole("tab", { name: "项目识别" }));
+    await user.click(screen.getByRole("button", { name: "检测项目" }));
+    await user.type(screen.getByRole("textbox", { name: /工作区相对路径/ }), "/other");
+    resolveInspection(response({ inspectionToken: "stale", runtimeType: "adk", name: "stale project" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "检测项目" })).toBeEnabled());
+    expect(screen.queryByText("检测完成")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认创建 Agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /工作区相对路径/ })).toHaveValue("./other");
+  });
+  it("disables empty inspection and clears import errors when changing mode", async () => {
+    const user = userEvent.setup(); render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await user.click(screen.getByRole("tab", { name: "导入" }));
+    expect(screen.getByRole("button", { name: "只读检查" })).toBeDisabled();
+    await user.upload(screen.getByLabelText("选择 Agent YAML 或 ZIP"), new File(["invalid"], "bad.yaml", { type: "application/yaml" }));
+    await user.click(screen.getByRole("button", { name: "只读检查" }));
+    await screen.findByText("Agent YAML 无法解析");
+    await user.click(screen.getByRole("tab", { name: "项目识别" }));
+    expect(screen.queryByText("Agent YAML 无法解析")).not.toBeInTheDocument();
   });
 });

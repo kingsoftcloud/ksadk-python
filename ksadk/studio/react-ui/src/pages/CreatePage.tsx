@@ -1,4 +1,5 @@
 import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
+import { AuthoringInspectionSummary } from "../components/AuthoringInspectionSummary";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, Zap, MessagesSquare, Upload, Folder, Check,
@@ -6,6 +7,7 @@ import {
   RefreshCw, Send, CircleAlert, ShieldCheck,
 } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { apiFetch } from "../api";
 import { AgentEditor } from "./AgentEditor";
@@ -19,10 +21,10 @@ import { FileDropzone } from "../components/ui/FileDropzone";
 import { TextShimmer } from "../components/ui/TextShimmer";
 import { FormField } from "../components/ui/FormField";
 import { StudioDrawer } from "../components/ui/StudioDialog";
-import { CodeViewer } from "../components/ui/CodeViewer";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { PlatformResourceBindings } from "../components/PlatformResourceBindings";
 import type { NativePluginBinding } from "../components/NativePluginBindings";
+import { showToast } from "../components/Toast";
 import { applyApiFieldErrors } from "../lib/formErrors";
 import { mcpUnavailableReason } from "../lib/mcpCompatibility";
 import {
@@ -54,7 +56,45 @@ interface ResItem {
   health?: { toolCount?: number };
 }
 
-const DRAFT_PREFIX = "agentkit.studio.agentDraft.v1";
+const DRAFT_PREFIX = "agentkit.studio.agentDraft.v2";
+const draftIds = z.array(z.string().max(512)).max(200);
+const quickDraftSchema = z.object({
+  version: z.literal(2),
+  workspacePath: z.string().min(1),
+  savedAt: z.iso.datetime(),
+  fields: z.object({
+    name: z.string().max(128), slug: z.string().max(63),
+    description: z.string().max(1024), prompt: z.string().max(32768),
+    runtimeType: z.enum(["codex", "adk", "langgraph", "plugin"]),
+    template: z.enum(["blank", "research"]), audience: z.string().max(256),
+    language: z.enum(["zh-CN", "en-US"]), depth: z.enum(["focused", "standard", "deep"]),
+    format: z.enum(["report", "brief", "evidence-table"]),
+    systemPrompt: z.string().max(32768), taskPrompt: z.string().max(32768),
+    buildAfterCreate: z.boolean(),
+  }),
+  wizard: z.object({
+    step: z.number().int().min(1).max(4), maxStep: z.number().int().min(1).max(4),
+    selectedModels: draftIds, selectedTools: draftIds, selectedSkills: draftIds, selectedMcp: draftIds,
+    selectedPlatformResources: z.array(z.object({
+      ecosystem: z.enum(["codex", "dsh"]), pluginRef: z.string().max(512),
+      snapshotDigest: z.string().max(512), components: draftIds,
+      enabled: z.boolean(), config: z.record(z.string(), z.unknown()),
+    })).max(200).default([]),
+    policy: z.enum(["strict", "loose", "custom"]),
+    contextOwnership: z.enum(["auto", "native", "framework", "ksadk"]),
+    contextEngineRollout: z.enum(["off", "shadow", "enabled"]),
+    memoryEnabled: z.boolean(), memoryWriteRollout: z.enum(["off", "shadow", "enabled"]),
+    selectedProviderRef: z.string().max(512), providerConfigText: z.string().max(65536),
+  }),
+});
+
+function emptyQuickForm(): QuickAgentFormValues {
+  return {
+    name: "New Agent", slug: generateAgentSlug(), runtimeType: "codex", template: "blank",
+    prompt: "", description: "", audience: "产品与技术负责人", language: "zh-CN", depth: "deep",
+    format: "report", systemPrompt: "", taskPrompt: "", buildAfterCreate: true,
+  };
+}
 const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
 const BUILTIN_RUNTIME_OPTIONS = [
   { value: "codex", label: "Codex · ManagedRuntime" },
@@ -190,8 +230,9 @@ async function waitForCreatedBuild(operationId: string) {
   throw new Error("构建等待超时");
 }
 
-export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsChanged }: {
+export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack, onCreated, onAgentsChanged }: {
   editingAgentId?: string;
+  workspacePath?: string;
   viewportMode: StudioViewportMode;
   onBack: () => void;
   onCreated: (id?: string, openChat?: boolean) => void;
@@ -201,6 +242,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [createRailOpen, setCreateRailOpen] = useState(false);
   const [draftState, setDraftState] = useState("尚未保存");
   const [catalog, setCatalog] = useState<ResItem[]>([]);
+  const [catalogReady, setCatalogReady] = useState(false);
   const [agentProviders, setAgentProviders] = useState<AgentProviderCatalogItem[]>([]);
   const [selectedProviderRef, setSelectedProviderRef] = useState("");
   const [providerConfigText, setProviderConfigText] = useState("{}");
@@ -214,21 +256,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [maxStep, setMaxStep] = useState(1);
   const quickForm = useForm<QuickAgentFormValues>({
     resolver: zodResolver(quickAgentSchema) as Resolver<QuickAgentFormValues>,
-    defaultValues: {
-      name: "New Agent",
-      slug: generateAgentSlug(),
-      runtimeType: "codex",
-      template: "blank",
-      prompt: "",
-      description: "",
-      audience: "产品与技术负责人",
-      language: "zh-CN",
-      depth: "deep",
-      format: "report",
-      systemPrompt: "",
-      taskPrompt: "",
-      buildAfterCreate: true,
-    },
+    defaultValues: emptyQuickForm(),
   });
   const {
     name,
@@ -292,15 +320,24 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   const [configModel, setConfigModel] = useState<ResItem | null>(null);
   const [showMcpConnect, setShowMcpConnect] = useState(false);
   const compositionRef = useRef<any>(null);
+  const restoredWorkspaceRef = useRef("");
+  const [restoreComposition, setRestoreComposition] = useState(false);
   const createRailTriggerRef = useRef<HTMLButtonElement>(null);
   const composeSeq = useRef(0);
   const conversationEntryInitialized = useRef(false);
 
   useEffect(() => {
-    if (!contextOwnershipOptions.some(option => option.value === contextOwnership)) {
+    // React Hook Form publishes reset values separately from this render's
+    // watched runtime; do not clamp a restored policy using the old runtime.
+    const activeRuntime = quickForm.getValues("runtimeType");
+    if (!activeRuntime) return;
+    const supported = activeRuntime === "codex" ? ["auto", "native"]
+      : activeRuntime === "langgraph" ? ["auto", "framework", "ksadk"]
+      : ["auto", "framework"];
+    if (!supported.includes(contextOwnership)) {
       setContextOwnership("auto");
     }
-  }, [contextOwnership, contextOwnershipOptions]);
+  }, [contextOwnership, contextOwnershipOptions, runtime, quickForm]);
 
   /* conversation 模式 */
   const [convMessages, setConvMessages] = useState<Array<{ role: string; content: string }>>([]);
@@ -346,7 +383,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     resolver: zodResolver(projectImportSchema) as Resolver<ProjectImportFormValues>,
     defaultValues: { name: "", slug: generateAgentSlug(), path: "." },
   });
-  const projectPath = projectForm.watch("path");
+  const inspectEpoch = useRef(0);
+  const inspectedProjectPath = useRef("");
   const [inspectBusy, setInspectBusy] = useState(false);
   const [inspectError, setInspectError] = useState("");
 
@@ -363,6 +401,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       setCatalog([...modelItems, ...items.filter((i: ResItem) => i.kind !== "model")]);
       const providerItems: AgentProviderCatalogItem[] = providerCatalog?.items || [];
       setAgentProviders(providerItems);
+      setCatalogReady(true);
       setSelectedProviderRef(current => (
         providerItems.some(item => item.providerRef === current && item.selectable)
           ? current
@@ -504,23 +543,77 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     conversationForm.setValue("modelProfileId", ordered[0] || "", { shouldDirty: true, shouldValidate: true });
   }
 
-  /* 草稿（localStorage） */
-  function draftKey() { return `${DRAFT_PREFIX}:local-workspace`; }
+  /* 草稿只保存当前工作区的配置与资源引用，不保存凭证。 */
+  function draftKey() { return `${DRAFT_PREFIX}:${encodeURIComponent(workspacePath || "")}`; }
+
+  useEffect(() => {
+    if (editingAgentId || !workspacePath || !catalogReady || restoredWorkspaceRef.current === workspacePath) return;
+    const switchingWorkspace = Boolean(restoredWorkspaceRef.current);
+    restoredWorkspaceRef.current = workspacePath;
+    // A late bootstrap must not replace fields the user has already edited.
+    if (!switchingWorkspace && quickForm.formState.isDirty) return;
+    if (switchingWorkspace) {
+      quickForm.reset(emptyQuickForm());
+      setStep(1); setMaxStep(1); setSelectedModels([]); setSelectedTools([]);
+      setSelectedMcp([]); setSelectedSkills([]); setPolicy("strict");
+      setSelectedPlatformResources([]);
+      setContextOwnership("auto"); setContextEngineRollout("shadow");
+      setMemoryEnabled(false); setMemoryWriteRollout("shadow");
+      setSelectedProviderRef(agentProviders.find(item => item.selectable)?.providerRef || "");
+      setProviderConfigText("{}"); setProviderPermissionsApproved(false);
+      setDraftState("尚未保存"); setPromptStatus("idle"); setCreateError("");
+      setRestoreComposition(false); compositionRef.current = null; composeSeq.current += 1;
+    }
+    try {
+      const raw = window.localStorage.getItem(`${DRAFT_PREFIX}:${encodeURIComponent(workspacePath)}`);
+      if (!raw) return;
+      const saved = quickDraftSchema.safeParse(JSON.parse(raw));
+      if (!saved.success || saved.data.workspacePath !== workspacePath) {
+        showToast("未恢复草稿", "草稿格式已失效，请重新填写。", "error");
+        return;
+      }
+      const { fields, wizard } = saved.data;
+      const provider = agentProviders.find(item => item.providerRef === wizard.selectedProviderRef);
+      const providerConfig = parseProviderConfig(wizard.providerConfigText, provider?.secretFields);
+      quickForm.reset(fields);
+      setStep(wizard.step); setMaxStep(Math.max(wizard.step, wizard.maxStep));
+      setSelectedModels(wizard.selectedModels); setSelectedTools(wizard.selectedTools);
+      setSelectedMcp(wizard.selectedMcp); setSelectedSkills(wizard.selectedSkills);
+      setSelectedPlatformResources(wizard.selectedPlatformResources);
+      setPolicy(wizard.policy); setContextOwnership(wizard.contextOwnership);
+      setContextEngineRollout(wizard.contextEngineRollout); setMemoryEnabled(wizard.memoryEnabled);
+      setMemoryWriteRollout(wizard.memoryWriteRollout); setSelectedProviderRef(wizard.selectedProviderRef);
+      setProviderConfigText(JSON.stringify(providerConfig, null, 2));
+      // Provider permissions are checked again against the current provider.
+      setProviderPermissionsApproved(false);
+      setDraftState("已恢复草稿");
+      setRestoreComposition(wizard.step >= 3);
+      showToast("已恢复草稿", "已恢复上次保存的配置。");
+    } catch {
+      showToast("未恢复草稿", "无法读取本地草稿，请重新填写。", "error");
+    }
+  }, [workspacePath, editingAgentId, catalogReady, agentProviders, quickForm]);
+
   function saveDraft() {
     try {
+      if (!workspacePath) throw new Error("工作区尚未连接，请稍后再试。");
+      const safeProviderConfig = parseProviderConfig(providerConfigText, selectedProvider?.secretFields);
       window.localStorage.setItem(draftKey(), JSON.stringify({
-        version: 1, savedAt: new Date().toISOString(), mode,
+        version: 2, workspacePath, savedAt: new Date().toISOString(),
         wizard: {
-          step, maxStep, template, runtime, depth, selectedTools, selectedSkills,
+          step, maxStep, selectedTools, selectedSkills,
           selectedMcp, selectedModels, selectedPlatformResources, policy, contextOwnership,
           contextEngineRollout, memoryEnabled, memoryWriteRollout,
-          selectedProviderRef, providerConfigText,
-          providerPermissionsApproved, codexPermissionsApproved,
+          selectedProviderRef, providerConfigText: JSON.stringify(safeProviderConfig),
         },
-        fields: { name, slug, description, prompt, audience, language, format, systemPrompt, taskPrompt, buildAfterCreate },
+        fields: quickForm.getValues(),
       }));
       setDraftState(`已保存 ${new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date())}`);
-    } catch { /* 存储不可用时静默 */ }
+      showToast("草稿已保存", "下次打开此工作区时会恢复。");
+    } catch (error: any) {
+      setDraftState("保存失败");
+      showToast("草稿保存失败", error?.message || "浏览器无法保存本地数据，请检查存储权限。", "error");
+    }
   }
   function markDirty() { setDraftState("有未保存更改"); }
 
@@ -584,6 +677,12 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       }
     }
   }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm]);
+
+  useEffect(() => {
+    if (!restoreComposition) return;
+    setRestoreComposition(false);
+    void composeAgent({ preservePrompt: true });
+  }, [restoreComposition, composeAgent]);
 
   const optimizePromptWithModel = useCallback(async () => {
     const authoringModel = selectedModels[0];
@@ -716,7 +815,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
     setCreateError("");
     setSubmitting(true);
     try {
-      if (!compositionRef.current) await composeAgent({ preservePrompt: false });
+      if (!compositionRef.current) await composeAgent({ preservePrompt: true });
       if (!compositionRef.current) {
         throw new Error("未能生成 Agent 配置，请检查模板和能力绑定后重试。");
       }
@@ -1031,6 +1130,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   /* import / project */
   async function inspectImport() {
     if (!importFile) return;
+    const epoch = ++inspectEpoch.current;
+    setImportInspection(null);
     setInspectBusy(true);
     setInspectError("");
     try {
@@ -1038,13 +1139,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       body.append("file", importFile);
       const res = await apiFetch("/api/v1/authoring/imports:inspect", { method: "POST", body });
       const d = await res.json();
+      if (epoch !== inspectEpoch.current) return;
       if (!res.ok) throw new Error(d?.error?.message || `检查失败（${res.status}）`);
       setImportInspection(d);
       importForm.reset({ name: d.displayName || "", slug: generateAgentSlug() });
     } catch (e: any) {
-      setInspectError(e.message);
+      if (epoch === inspectEpoch.current) setInspectError(e.message);
     } finally {
-      setInspectBusy(false);
+      if (epoch === inspectEpoch.current) setInspectBusy(false);
     }
   }
 
@@ -1073,27 +1175,32 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
 
   async function inspectProject() {
     if (!await projectForm.trigger("path")) return;
+    const epoch = ++inspectEpoch.current;
+    const path = projectForm.getValues("path").trim();
+    setProjectInspection(null);
     setInspectBusy(true);
     setInspectError("");
     try {
       const res = await apiFetch("/api/v1/authoring/projects:inspect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: projectPath.trim() }),
+        body: JSON.stringify({ path }),
       });
       const d = await res.json();
+      if (epoch !== inspectEpoch.current || path !== projectForm.getValues("path").trim()) return;
       if (!res.ok) throw new Error(d?.error?.message || `检测失败（${res.status}）`);
+      inspectedProjectPath.current = path;
       setProjectInspection(d);
-      projectForm.reset({ name: d.name || "Detected Agent", slug: generateAgentSlug(), path: projectPath });
+      projectForm.reset({ name: d.name || "Detected Agent", slug: generateAgentSlug(), path });
     } catch (e: any) {
-      setInspectError(e.message);
+      if (epoch === inspectEpoch.current) setInspectError(e.message);
     } finally {
-      setInspectBusy(false);
+      if (epoch === inspectEpoch.current) setInspectBusy(false);
     }
   }
 
   async function commitProject(values: ProjectImportFormValues) {
-    if (!projectInspection) return;
+    if (!projectInspection || values.path.trim() !== inspectedProjectPath.current) return;
     setInspectBusy(true);
     setInspectError("");
     try {
@@ -1145,6 +1252,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   }, [closeCreateRail, viewportMode]);
 
   function selectMode(nextMode: Mode) {
+    inspectEpoch.current += 1;
+    setInspectBusy(false);
+    setInspectError("");
     setMode(nextMode);
     if (viewportMode === "compact") closeCreateRail(true);
   }
@@ -1157,9 +1267,8 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
   ];
   const layout = !editingAgentId && mode === "conversation" ? "workbench" : "document";
 
-  const renderCreateRailContent = (showModeLabel: boolean) => (
+  const renderCreateRailContent = () => (
     <div className="create-rail-panel">
-      {showModeLabel && <div className="create-rail-label">创建方式</div>}
       {!editingAgentId && (
         <nav className="authoring-mode-tabs" aria-label="创建方式" role="tablist">
           {MODE_TABS.map(tab => {
@@ -1176,7 +1285,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 title={`${tab.label}：${tab.sub}`}
                 onClick={() => selectMode(tab.id)}
               >
-                <Icon size={16} /><span><strong>{tab.label}</strong><small>{tab.sub}</small></span>
+                <Icon size={16} /><span><strong>{tab.label}</strong></span>
               </button>
             );
           })}
@@ -1184,8 +1293,6 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       )}
       {(editingAgentId || mode === "quick") && (
         <>
-          <div className="create-rail-divider" />
-          <div className="create-rail-label wizard-step-label">配置步骤</div>
           <nav className="wizard-steps" aria-label="创建步骤">
             {wizardStepMeta.map((meta, index) => {
               const number = index + 1;
@@ -1199,7 +1306,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   onClick={() => gotoStep(number)}
                 >
                   <span className="step-number">{completed ? <Check size={13} strokeWidth={3} /> : number}</span>
-                  <span><strong>{meta[0]}</strong><small>{meta[1]}</small></span>
+                  <span><strong>{meta[0]}</strong></span>
                 </button>
               );
             })}
@@ -1232,7 +1339,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
       <div className="create-workbench">
         {!editingAgentId && viewportMode !== "compact" && (
           <aside id="createRail" className="create-rail" aria-label="创建方式与步骤">
-            {renderCreateRailContent(true)}
+            {renderCreateRailContent()}
           </aside>
         )}
 
@@ -1246,7 +1353,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               if (!open) closeCreateRail(true);
             }}
           >
-            <div id="createRail">{renderCreateRailContent(false)}</div>
+            <div id="createRail">{renderCreateRailContent()}</div>
           </StudioDrawer>
         )}
 
@@ -1258,6 +1365,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               providers={agentProviders}
               onSaved={(id, openChat) => onCreated(id, openChat)}
               onAppearanceSaved={onAgentsChanged}
+              onCancel={onBack}
             />
           )}
           {!editingAgentId && mode === "conversation" && (
@@ -1268,7 +1376,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               aria-labelledby="authoring-tab-conversation"
             >
               <div className="authoring-panel-heading conversation-panel-heading">
-                <div><span className="eyebrow">Conversation authoring</span><h2>对话创建 Agent</h2><p>描述目标，逐轮完善；准备好后再检查并确认草稿。</p></div>
+                <div><h2>对话创建 Agent</h2></div>
                 <span className="tag">不会自动创建</span>
               </div>
               <div
@@ -1277,7 +1385,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               >
                 <section className="conversation-chat" aria-label="对话创建">
                   <div className="conversation-chat-header">
-                    <div><strong>从需求开始</strong><p>像对话一样说明要做什么；后续可以继续补充边界和能力。</p></div>
+                    <div><strong>描述你的需求</strong></div>
                     <span className="conversation-context-state">{convMessages.length ? `${Math.ceil(convMessages.length / 2)} 轮上下文` : "持续保留上下文"}</span>
                   </div>
                   <div className="conversation-transcript" aria-live="polite">
@@ -1426,9 +1534,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   </details>
                 </section>
                 <FormProvider {...conversationForm}>
-                <aside className={`conversation-draft-rail${!proposal ? " is-empty" : convReviewOpen ? " is-reviewing" : ""}`} aria-label="Draft Patch">
+                <aside hidden={!proposal} className={`conversation-draft-rail${!proposal ? " is-empty" : convReviewOpen ? " is-reviewing" : ""}`} aria-label="Agent 草稿">
                   <div className="conversation-draft-rail-heading">
-                    <div><strong>Draft Patch</strong><p>{proposal ? "草稿已随对话更新" : "对话后生成，可随时检查"}</p></div>
+                    <div><strong>草稿</strong><p>{proposal ? "草稿已随对话更新" : "对话后生成，可随时检查"}</p></div>
                     <span className="badge" data-state={proposal ? "ready" : "pending"}>{proposal ? "已更新" : "待生成"}</span>
                   </div>
                   {!proposal ? (
@@ -1457,7 +1565,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     </div>
                   ) : (
                     <form className="conversation-review-form" onSubmit={conversationForm.handleSubmit(confirmConversation)} noValidate>
-                      <div className="conversation-review-heading"><div><strong>检查并确认</strong><p>编辑名称、提示词或打开左侧部署配置；确认后才会创建 Revision。</p></div><button type="button" className="button secondary" onClick={() => setConvReviewOpen(false)}>收起</button></div>
+                      <div className="conversation-review-heading"><div><strong>检查并确认</strong><p>确认名称、提示词与能力后创建 Agent。</p></div><button type="button" className="button secondary" onClick={() => setConvReviewOpen(false)}>收起</button></div>
                       <div className="form-grid two-columns">
                         <FormField label="显示名称" requirement="required" htmlFor="conversationName" error={conversationForm.formState.errors.name?.message}>
                           <input id="conversationName" {...conversationForm.register("name")} />
@@ -1473,7 +1581,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                         <textarea id="conversationPrompt" rows={8} {...conversationForm.register("prompt")} />
                       </FormField>
                       <div className="authoring-card-actions">
-                        <button className="button accent" type="submit" disabled={convBusy}><Check size={16} /><span>确认并创建 Revision</span></button>
+                        <button className="button accent" type="submit" disabled={convBusy}><Check size={16} /><span>确认创建 Agent</span></button>
                       </div>
                     </form>
                   )}
@@ -1491,14 +1599,14 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               aria-labelledby="authoring-tab-import"
             >
               <div className="authoring-panel-heading">
-                <div><span className="eyebrow">Agent import</span><h2>检查并导入 Agent</h2><p>先解析格式、Runtime、文件清单和 SHA-256，确认后再写入。</p></div>
+                <div><h2>导入 Agent</h2><p>支持 YAML 或 ZIP，检查后再导入。</p></div>
                 <span className="tag">YAML / ZIP</span>
               </div>
               <div className="authoring-inspect-grid">
                 <form className="authoring-input-card" onSubmit={e => { e.preventDefault(); inspectImport(); }}>
                   <div className="authoring-section-heading">
                     <span className="authoring-section-index">01</span>
-                    <div><strong>选择 Agent 文件</strong><p>支持 YAML 或 ZIP；检查过程不会写入 Catalog。</p></div>
+                    <div><strong>选择 Agent 文件</strong><p>检查文件后再确认导入。</p></div>
                   </div>
                   <FormField label="Agent 文件" requirement="required" hint="拖放 Agent YAML / ZIP，或点击选择">
                     <div>
@@ -1511,20 +1619,20 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       }}
                       maxSize={100 * 1024 * 1024}
                       file={importFile}
-                      onFile={file => { setImportFile(file); setImportInspection(null); }}
+                      onFile={file => { inspectEpoch.current += 1; setImportFile(file); setImportInspection(null); setInspectError(""); setInspectBusy(false); }}
                       onError={setInspectError}
                     />
                     </div>
                   </FormField>
                   <div className="authoring-card-actions">
-                    <button className="button accent" type="submit" disabled={inspectBusy}><Search size={16} /><span>{inspectBusy ? "检查中" : "只读检查"}</span></button>
+                    <button className="button accent" type="submit" disabled={!importFile || inspectBusy}><Search size={16} /><span>{inspectBusy ? "检查中" : "只读检查"}</span></button>
                   </div>
                 </form>
                 <FormProvider {...importForm}>
-                <form className="authoring-inspection-card" onSubmit={importForm.handleSubmit(commitImport)} noValidate>
+                <form className="authoring-inspection-card" hidden={!importInspection} onSubmit={importForm.handleSubmit(commitImport)} noValidate>
                   <div className="authoring-section-heading">
                     <span className="authoring-section-index">02</span>
-                    <div><strong>检查并确认</strong><p>核对解析结果、警告与 RuntimeRef，再执行导入。</p></div>
+                    <div><strong>检查并确认</strong><p>确认解析结果与警告。</p></div>
                     <span className="badge" data-state={importInspection ? "ready" : "pending"} aria-live="polite">
                       {importInspection ? "检查完成" : "等待检查"}
                     </span>
@@ -1540,13 +1648,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       error={importForm.formState.errors.slug?.message}
                     />
                   </div>
-                  <CodeViewer
-                    code={importInspection ? JSON.stringify(importInspection, null, 2) : "选择文件并检查后显示解析结果、警告和 RuntimeRef。"}
-                    language={importInspection ? "json" : "text"}
-                    filename="agent-import-inspection.json"
-                    showLineNumbers={Boolean(importInspection)}
-                    wrap={!importInspection}
-                  />
+                  {importInspection && <AuthoringInspectionSummary inspection={importInspection} />}
                   <div className="authoring-card-actions">
                     <button className="button accent" type="submit" disabled={!importInspection || inspectBusy}><Check size={16} /><span>确认导入</span></button>
                   </div>
@@ -1565,27 +1667,28 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
               aria-labelledby="authoring-tab-project"
             >
               <div className="authoring-panel-heading">
-                <div><span className="eyebrow">Project detection</span><h2>识别现有项目</h2><p>复用 FrameworkDetector 展示证据和置信度；确认前不修改源码。</p></div>
-                <span className="tag">Workspace only</span>
+                <div><h2>识别现有项目</h2><p>选择工作区项目，检查后导入。</p></div>
               </div>
               <FormProvider {...projectForm}>
               <div className="authoring-inspect-grid">
                 <form className="authoring-input-card" onSubmit={e => { e.preventDefault(); inspectProject(); }}>
                   <div className="authoring-section-heading">
                     <span className="authoring-section-index">01</span>
-                    <div><strong>指定项目路径</strong><p>仅识别当前工作区内的目录，不会修改项目源码。</p></div>
+                    <div><strong>指定项目路径</strong></div>
                   </div>
                   <FormField label="工作区相对路径" requirement="required" htmlFor="projectPath" hint="仅检查当前工作区内的目录，不会修改项目源码。" error={projectForm.formState.errors.path?.message}>
-                    <input id="projectPath" {...projectForm.register("path")} />
+                    <input id="projectPath" {...projectForm.register("path", { onChange: () => {
+                      inspectEpoch.current += 1; setProjectInspection(null); setInspectError(""); setInspectBusy(false);
+                    } })} />
                   </FormField>
                   <div className="authoring-card-actions">
                     <button className="button accent" type="submit" disabled={inspectBusy}><Search size={16} /><span>{inspectBusy ? "检测中" : "检测项目"}</span></button>
                   </div>
                 </form>
-                <form className="authoring-inspection-card" onSubmit={projectForm.handleSubmit(commitProject)} noValidate>
+                <form className="authoring-inspection-card" hidden={!projectInspection} onSubmit={projectForm.handleSubmit(commitProject)} noValidate>
                   <div className="authoring-section-heading">
                     <span className="authoring-section-index">02</span>
-                    <div><strong>检查并确认</strong><p>核对 FrameworkDetector 证据与置信度，再创建 Revision。</p></div>
+                    <div><strong>检查并确认</strong><p>核对识别结果后创建 Agent。</p></div>
                     <span className="badge" data-state={projectInspection ? "ready" : "pending"} aria-live="polite">
                       {projectInspection ? "检测完成" : "等待检测"}
                     </span>
@@ -1601,15 +1704,9 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       error={projectForm.formState.errors.slug?.message}
                     />
                   </div>
-                  <CodeViewer
-                    code={projectInspection ? JSON.stringify(projectInspection, null, 2) : "输入本地项目路径后显示 FrameworkDetector 证据。"}
-                    language={projectInspection ? "json" : "text"}
-                    filename="project-inspection.json"
-                    showLineNumbers={Boolean(projectInspection)}
-                    wrap={!projectInspection}
-                  />
+                  {projectInspection && <AuthoringInspectionSummary inspection={projectInspection} project />}
                   <div className="authoring-card-actions">
-                    <button className="button accent" type="submit" disabled={!projectInspection || inspectBusy}><Check size={16} /><span>确认创建 Revision</span></button>
+                    <button className="button accent" type="submit" disabled={!projectInspection || inspectBusy}><Check size={16} /><span>确认创建 Agent</span></button>
                   </div>
                 </form>
               </div>
@@ -1631,19 +1728,19 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 <section className={`wizard-panel${step === 1 ? " active" : ""}`} hidden={step !== 1}>
                   <div className="panel-heading">
                     <span className="panel-index">01</span>
-                    <div><h2>定义 Agent 的角色</h2><p>选择起点，并说明 Agent 的职责、边界和期望行为。</p></div>
+                    <div><h2>定义 Agent</h2></div>
                   </div>
                   <div className="field">
-                    <label>创建方式</label>
+                    <label>起点</label>
                     <div className="template-grid">
                       <button className={`template-card${template === "blank" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "blank", { shouldDirty: true }); markDirty(); }}>
                         <span className="template-icon"><Bot size={18} /></span>
-                        <span><strong>空白 Agent</strong><small>输入系统提示词，自主选择能力和执行策略</small></span>
+                        <span><strong>空白 Agent</strong><small>从自己的需求开始</small></span>
                         <span className="choice-check"><Check size={14} /></span>
                       </button>
                       <button className={`template-card${template === "research" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "research", { shouldDirty: true }); markDirty(); }}>
                         <span className="template-icon"><Search size={18} /></span>
-                        <span><strong>深度调研</strong><small>预置问题拆解、来源验证和引用报告方法</small></span>
+                        <span><strong>深度调研</strong><small>调研、验证来源并生成报告</small></span>
                         <span className="choice-check"><Check size={14} /></span>
                       </button>
                     </div>
@@ -1652,22 +1749,16 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                     <FormField label="Agent 名称" requirement="required" htmlFor="quickAgentName" error={quickForm.formState.errors.name?.message}>
                       <input id="quickAgentName" maxLength={128} placeholder="例如：技术支持助手" {...quickForm.register("name", { onChange: markDirty })} />
                     </FormField>
-                    <GeneratedIdField
-                      value={slug}
-                      onChange={value => {
-                        quickForm.setValue("slug", value, { shouldDirty: true, shouldValidate: true });
-                        markDirty();
-                      }}
-                      error={quickForm.formState.errors.slug?.message}
-                    />
+
                   </div>
-                  <FormField label="Runtime" requirement="required" htmlFor="quickRuntime" hint="由所选 RuntimeAdapter 运行；Codex 支持 OpenAI Responses 与兼容代理。" error={quickForm.formState.errors.runtimeType?.message}>
+                  <FormField label="Runtime" requirement="required" htmlFor="quickRuntime" hint="Codex 支持 OpenAI Responses 与兼容接口。" error={quickForm.formState.errors.runtimeType?.message}>
                     <StudioSelect
                       id="quickRuntime"
                       ariaLabel="Runtime"
                       value={runtime}
                       options={quickRuntimeOptions}
                       onValueChange={value => {
+                        if (!value) return;
                         quickForm.setValue("runtimeType", value as QuickAgentFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true });
                         markDirty();
                       }}
@@ -1737,19 +1828,33 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                       ) : null}
                     </div>
                   )}
-                  <FormField label="描述" requirement="optional" htmlFor="quickDescription" error={quickForm.formState.errors.description?.message}>
-                    <input id="quickDescription" maxLength={1024} placeholder="简要说明这个 Agent 解决什么问题" {...quickForm.register("description", { onChange: markDirty })} />
-                  </FormField>
+
                   <FormField
                     label="Agent 目标与要求"
                     requirement="required"
                     htmlFor="quickPrompt"
                     hint="写清角色、目标、工作边界和回答方式。"
                     error={quickForm.formState.errors.prompt?.message}
-                    footer={<div className="field-footer"><span>角色 · 目标 · 边界 · 回答方式</span><span>{prompt.length} / 32768</span></div>}
+                    footer={<div className="field-footer"><span>{prompt.length} / 32768</span></div>}
                   >
-                    <textarea id="quickPrompt" rows={7} maxLength={32768} placeholder="例如：你是一名企业技术支持助手。先识别问题类型，再结合知识库给出准确、可执行的处理步骤；信息不足时先提问，不要编造事实。" {...quickForm.register("prompt", { onChange: markDirty })} />
+                    <textarea id="quickPrompt" rows={6} maxLength={32768} placeholder="例如：帮助用户排查技术问题。先确认现象，再给出可执行的步骤。" {...quickForm.register("prompt", { onChange: markDirty })} />
                   </FormField>
+                  <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description) || undefined}>
+                    <summary>标识与描述</summary>
+                    <div className="form-grid two-columns">
+                    <GeneratedIdField
+                      value={slug}
+                      onChange={value => {
+                        quickForm.setValue("slug", value, { shouldDirty: true, shouldValidate: true });
+                        markDirty();
+                      }}
+                      error={quickForm.formState.errors.slug?.message}
+                    />
+                  <FormField label="描述" requirement="optional" htmlFor="quickDescription" error={quickForm.formState.errors.description?.message}>
+                    <input id="quickDescription" maxLength={1024} placeholder="简要说明这个 Agent 解决什么问题" {...quickForm.register("description", { onChange: markDirty })} />
+                  </FormField>
+                    </div>
+                  </details>
                   {template === "research" && (
                     <div className="template-specific">
                       <div className="form-grid two-columns">
@@ -1805,12 +1910,12 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 <section className={`wizard-panel${step === 2 ? " active" : ""}`} hidden={step !== 2}>
                   <div className="panel-heading">
                     <span className="panel-index">02</span>
-                    <div><h2>选择 Agent 可以使用的能力</h2><p>所有依赖都会在构建时锁定版本和摘要，并由权限策略控制调用。</p></div>
+                    <div><h2>绑定能力</h2></div>
                   </div>
                   {usesNativeCodexTools && (
                     <div className="inline-alert warning codex-capability-notice">
                       <CircleAlert size={16} />
-                      <div><strong>Codex 使用原生工具，不绑定 KsADK 内置 Tool</strong><p>Codex CLI 自身提供工具能力。MCP（streamable-http）与 Skill 仍可绑定：MCP 经 Codex 配置注入，Skill 以原生 SkillInput 注入。模型仍需选择并配置凭证。</p></div>
+                      <div><strong>Codex 使用原生工具，不绑定 KsADK 内置 Tool</strong><p>可继续添加 MCP 和 Skill，并选择已配置凭证的模型。</p></div>
                     </div>
                   )}
                   <div className="capability-section">
@@ -1875,7 +1980,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                   <div className="capability-section">
                     <div className="capability-heading">
                       <span className="capability-icon"><Network size={15} /></span>
-                      <div><h3>MCP Server</h3><p>连接外部服务并提供可发现的 Tool；codex 经 config_overrides 注入 streamable-http MCP</p></div>
+                      <div><h3>MCP Server</h3><p>连接外部服务与工具</p></div>
                       <button className="button secondary small" type="button" onClick={() => setShowMcpConnect(true)}>
                         <Plus size={14} /><span>连接 MCP</span>
                       </button>
@@ -1932,7 +2037,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 <section className={`wizard-panel${step === 3 ? " active" : ""}`} hidden={step !== 3}>
                   <div className="panel-heading">
                     <span className="panel-index">03</span>
-                    <div><h2>检查系统提示词与任务契约</h2><p>保存前可以继续编辑，创建时会完整写入 Agent Draft。</p></div>
+                    <div><h2>提示词与策略</h2></div>
                     <button className={`button secondary small prompt-optimize-button${promptStatus === "composing" ? " is-working" : ""}`} type="button" disabled={promptStatus === "composing"} aria-busy={promptStatus === "composing"} onClick={optimizePromptWithModel}>
                       <RefreshCw size={14} aria-hidden="true" /><span className={promptStatus === "composing" ? "text-shimmer" : undefined}>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在优化" : "正在生成") : "一键优化 Prompt"}</span>
                     </button>
@@ -1961,7 +2066,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                           ariaLabel="上下文责任边界"
                           value={contextOwnership}
                           options={contextOwnershipOptions}
-                          onValueChange={value => { setContextOwnership(value); markDirty(); }}
+                          onValueChange={value => { if (value) { setContextOwnership(value); markDirty(); } }}
                         />
                       </FormField>
                       <FormField label="上下文优化" requirement="optional" htmlFor="contextEngineRollout" hint="控制预算规划、压缩和降载能力的启用阶段。">
@@ -2007,7 +2112,7 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 <section className={`wizard-panel${step === 4 ? " active" : ""}`} hidden={step !== 4}>
                   <div className="panel-heading">
                     <span className="panel-index">04</span>
-                    <div><h2>检查配置并创建</h2><p>确认 Agent 身份、能力依赖和创建后的动作。</p></div>
+                    <div><h2>检查并创建</h2></div>
                   </div>
                   <div className="review-block">
                     <div className="review-title"><span>Agent</span><button className="text-button" type="button" onClick={() => gotoStep(1)}>编辑</button></div>
@@ -2043,29 +2148,22 @@ export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsCh
                 )}
 
                 <footer className="wizard-actions">
-                  <button className="button secondary" type="button" disabled={step === 1} onClick={() => gotoStep(step - 1)}>
+                  <button className="button secondary" type="button" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => gotoStep(step - 1)}>
                     <ArrowLeft size={16} /><span>上一步</span>
                   </button>
                   <span className="wizard-progress">第 {step} 步，共 4 步</span>
-                  <dl className="summary-chips" aria-label="配置摘要">
-                    <div><dt>模板</dt><dd>{templateLabel}</dd></div>
-                    <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
-                    <div><dt>模型</dt><dd>{reviewModel}</dd></div>
-                    {supportsKsAdkTools && <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>}
-                    <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
-                    <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
-                  </dl>
-                  <button className="button tertiary summary-toggle" type="button" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
+
+                  <button className="button tertiary summary-toggle" type="button" aria-label="完整摘要" title="完整摘要" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
                     <PanelRight size={16} /><span>完整摘要</span>
                   </button>
                   <div className="wizard-flow-actions">
                     <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
                     {step < 4 ? (
-                      <button className="button accent" type="button" disabled={platformResourcesPending} onClick={() => gotoStep(step + 1)}>
+                      <button key="continue" className="button accent" type="button" disabled={platformResourcesPending} onClick={event => { event.preventDefault(); void gotoStep(step + 1); }}>
                         <span>继续</span><ArrowRight size={16} />
                       </button>
                     ) : (
-                      <button className="button accent" type="submit" disabled={submitting || platformResourcesPending}>
+                      <button key="create" className="button accent" type="submit" disabled={submitting || platformResourcesPending}>
                         <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
                       </button>
                     )}

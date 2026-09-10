@@ -8,6 +8,8 @@ import "./index.css";
 import "./kingdesign.css";
 import "./studio-refinement.css";
 import "./plugins.css";
+import "./layout-simplification.css";
+import "./mobile-resource-lists.css";
 
 async function mount(container: HTMLElement) {
   initializeStudioTheme();

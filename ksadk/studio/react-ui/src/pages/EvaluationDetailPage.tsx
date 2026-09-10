@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, ArrowLeft, RefreshCw, Square } from "lucide-react";
+import { Activity, ArrowLeft, Square } from "lucide-react";
 import { apiFetch } from "../api";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import {
   ACTIVE_EVALUATION_STATES,
@@ -34,7 +35,7 @@ function assertionResult(
     .filter(metric => metric.evidence?.assertion === assertion.type)[occurrence];
 }
 
-export function EvaluationDetailPage({ runId, onBack }: { runId: string; onBack: () => void }) {
+export function EvaluationDetailPage({ runId, onBack, refreshTick = 0 }: { runId: string; onBack: () => void; refreshTick?: number }) {
   const requestController = useRef<AbortController | null>(null);
   const [run, setRun] = useState<EvaluationRun | null>(null);
   const [activeCaseId, setActiveCaseId] = useState("");
@@ -52,6 +53,7 @@ export function EvaluationDetailPage({ runId, onBack }: { runId: string; onBack:
       });
       if (!response.ok) throw new Error(await evaluationErrorMessage(response, "评测详情加载失败"));
       const next: EvaluationRun = await response.json();
+      if (controller.signal.aborted) return;
       setRun(next);
       setActiveCaseId(current => (
         next.report?.caseRuns.some(item => item.caseId === current)
@@ -71,7 +73,7 @@ export function EvaluationDetailPage({ runId, onBack }: { runId: string; onBack:
     setLoading(true);
     void loadRun();
     return () => requestController.current?.abort();
-  }, [loadRun]);
+  }, [loadRun, refreshTick]);
 
   useEffect(() => {
     if (!run || !ACTIVE_EVALUATION_STATES.has(run.status)) return;
@@ -113,25 +115,20 @@ export function EvaluationDetailPage({ runId, onBack }: { runId: string; onBack:
 
   return (
     <div className="page-container evaluation-page evaluation-detail-page" data-layout="data" data-scroll-mode="workbench">
-      <header className="page-header">
-        <div>
-          <h1>{run?.evalset.name || "评测详情"}</h1>
-          <p className="mono">{runId}</p>
-        </div>
-        <div className="header-actions">
-          <button className="button tertiary" type="button" onClick={onBack}>
-            <ArrowLeft size={15} /><span>返回评测列表</span>
+      <PageHeaderActions>
+        <button className="button tertiary" type="button" onClick={onBack}>
+          <ArrowLeft size={15} /><span>返回评测列表</span>
+        </button>
+        {run && ACTIVE_EVALUATION_STATES.has(run.status) && (
+          <button className="button danger" type="button" onClick={() => void cancelEvaluation()} disabled={cancelling}>
+            <Square size={14} /><span>{cancelling ? "正在取消" : "取消评测"}</span>
           </button>
-          <button className="button secondary" type="button" onClick={() => void loadRun()}>
-            <RefreshCw size={15} /><span>刷新</span>
-          </button>
-          {run && ACTIVE_EVALUATION_STATES.has(run.status) && (
-            <button className="button danger" type="button" onClick={() => void cancelEvaluation()} disabled={cancelling}>
-              <Square size={14} /><span>{cancelling ? "正在取消" : "取消评测"}</span>
-            </button>
-          )}
-        </div>
+        )}
+      </PageHeaderActions>
+      <header className="evaluation-detail-page__title">
+        <h2>{run?.evalset.name || "评测详情"}</h2>
       </header>
+      {loadError && run && <p className="studio-field-error" role="alert">{loadError}</p>}
 
       {loading && !run ? (
         <div className="evaluation-page__detail-empty"><Activity size={22} /><strong>正在加载评测详情</strong></div>
@@ -143,28 +140,19 @@ export function EvaluationDetailPage({ runId, onBack }: { runId: string; onBack:
       ) : run ? (
         <>
           <section className="evaluation-detail-page__overview" aria-label="评测运行概览">
-            <div><span>状态</span><strong><span className={`status-badge ${evaluationStatusClass(run.status)}`}>{run.status}</span></strong><small>{run.error?.message || "任务状态"}</small></div>
-            <div><span>进度</span><strong>{run.progress ? `${run.progress.current} / ${run.progress.total}` : run.summary ? `${run.summary.passedCases} / ${run.summary.totalCases}` : "等待开始"}</strong><small>{run.progress?.caseId || (run.hasReport ? "通过 Case" : "尚未执行 Case")}</small></div>
-            <div><span>Target</span><strong>{run.target.label || run.target.kind || "-"}</strong><small>{run.target.kind || "-"}</small></div>
-            <div><span>耗时</span><strong>{evaluationElapsed(run)}</strong><small>{formatEvaluationDate(run.createdAt)}</small></div>
+            <span className={`status-badge ${evaluationStatusClass(run.status)}`}>{run.status}</span>
+            <span>{run.summary ? <><strong>{run.summary.passedCases} / {run.summary.totalCases}</strong> 用例通过</> : run.progress ? <><strong>{run.progress.current} / {run.progress.total}</strong> 已执行</> : "等待开始"}</span>
+            <span>{evaluationElapsed(run)}</span>
+            <span>{formatEvaluationDate(run.createdAt)}</span>
           </section>
-
-          {!run.report && (
-            <section className="evaluation-detail-page__pending">
-              <Activity size={20} />
-              <div>
-                <strong>{ACTIVE_EVALUATION_STATES.has(run.status) ? "评测正在后台执行" : "该任务没有可用报告"}</strong>
-                <span>{run.progress?.caseId ? `当前 Case：${run.progress.caseId}` : run.error?.message || "等待运行状态更新。"}</span>
-              </div>
-            </section>
-          )}
-
-          {run.report && (
-            <section className="evaluation-detail-page__report">
-              <div className="evaluation-page__panel-header">
-                <div><strong>评测报告</strong><span>{run.report.caseRuns.length} 个 Case</span></div>
-                <span className={`status-badge ${evaluationStatusClass(run.report.status)}`}>{run.report.status}</span>
-              </div>
+          {run.error?.message && <p className="studio-field-error" role="alert">{run.error.message}</p>}
+          <details className="evaluation-detail-page__configuration">
+            <summary>评测配置与数据集</summary>
+            <dl className="evaluation-page__snapshot">
+              <div><dt>任务 ID</dt><dd className="mono">{runId}</dd></div>
+              <div><dt>评测目标</dt><dd>{run.target.label || run.target.kind || "-"}</dd></div>
+            </dl>
+            {run.report && <>
               <dl className="evaluation-page__snapshot">
                 <div><dt>Target</dt><dd>{run.report.spec.target.kind}</dd></div>
                 <div><dt>Runtime</dt><dd>{run.report.spec.target.runtime || "-"}</dd></div>
@@ -188,14 +176,32 @@ export function EvaluationDetailPage({ runId, onBack }: { runId: string; onBack:
                   <div><dt>Content Digest</dt><dd className="mono">{run.report.spec.evalset.contentDigest || "-"}</dd></div>
                 </dl>
               </section>
+            </>}
+          </details>
+
+          {!run.report && (
+            <section className="evaluation-detail-page__pending">
+              <Activity size={20} />
+              <div>
+                <strong>{ACTIVE_EVALUATION_STATES.has(run.status) ? "评测正在后台执行" : "该任务没有可用报告"}</strong>
+                <span>{run.progress?.caseId ? `当前 Case：${run.progress.caseId}` : run.error?.message || "等待运行状态更新。"}</span>
+              </div>
+            </section>
+          )}
+
+          {run.report && (
+            <section className="evaluation-detail-page__report">
+              <div className="evaluation-page__panel-header">
+                <div><strong>用例结果</strong></div><span>{run.report.caseRuns.length} 个用例</span>
+              </div>
               <div className="evaluation-page__case-layout">
-                <div className="evaluation-page__case-list" aria-label="Case 列表">
+                <div className="evaluation-page__case-list" aria-label="用例列表">
                   {run.report.caseRuns.map(caseRun => {
                     const status = evaluationCaseStatus(caseRun);
                     const caseSpec = caseSpecs.get(caseRun.caseId);
                     const inputPreview = caseSpec?.turns.at(-1)?.input;
                     return (
-                      <button key={caseRun.caseId} type="button" className={caseRun.caseId === activeCaseId ? "active" : ""} onClick={() => setActiveCaseId(caseRun.caseId)}>
+                      <button key={caseRun.caseId} type="button" aria-pressed={caseRun.caseId === activeCaseId} className={caseRun.caseId === activeCaseId ? "active" : ""} onClick={() => setActiveCaseId(caseRun.caseId)}>
                         <span><strong>{caseRun.caseId}</strong><small className="evaluation-page__case-preview">{inputPreview || `Attempt ${caseRun.attempt}`}</small></span>
                         <span><span className={`status-badge ${evaluationStatusClass(status)}`}>{status}</span><small>{formatEvaluationDuration(caseRun.targetRun.durationMs)}</small></span>
                       </button>

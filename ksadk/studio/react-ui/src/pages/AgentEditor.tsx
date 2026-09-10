@@ -203,6 +203,7 @@ export function AgentEditor({
   activeSection = 1,
   onSaved,
   onAppearanceSaved,
+  onCancel,
 }: {
   agentId: string;
   catalog: EditorCatalogItem[];
@@ -210,6 +211,7 @@ export function AgentEditor({
   activeSection?: number;
   onSaved: (agentId: string, openChat: boolean) => void;
   onAppearanceSaved?: () => void;
+  onCancel?: () => void;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -797,14 +799,17 @@ export function AgentEditor({
         <section className="agent-edit-section" hidden={visibleSection !== 1} aria-label="基础与 Prompt">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">01</span>
-          <div><h3>基础与 Prompt</h3><p>维护 Agent 身份、Runtime 与系统提示词。</p></div>
+          <div><h3>基础与 Prompt</h3></div>
         </div>
+        <details className="secondary-settings agent-appearance-disclosure">
+          <summary>头像与配色</summary>
         <AgentAppearanceEditor
           name={name || detail.draft.metadata.name}
           appearance={detail.draft.metadata.appearance}
           disabled={saving}
           onSave={saveAppearance}
         />
+        </details>
         <div className="form-grid two-columns">
           <FormField label="显示名称" requirement="required" htmlFor="editAgentName" error={agentForm.formState.errors.name?.message}>
             <input id="editAgentName" readOnly {...agentForm.register("name")} />
@@ -1263,6 +1268,7 @@ export function AgentEditor({
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />
             <span><strong>{isManagedDeclaration ? "保存后生成配置快照" : "保存后构建新 Bundle"}</strong><small>{isManagedDeclaration ? "校验 YAML 并生成可追溯的部署输入" : "新 Bundle 完成后进入会话工作台"}</small></span>
           </label>
+          {onCancel && <button className="button secondary" type="button" disabled={saving} onClick={onCancel}>取消</button>}
           <button className="button accent" type="submit" disabled={saving || pluginsPending}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
         </div>
         {saveError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>操作未完成</strong><p>{saveError}</p></div></div>}

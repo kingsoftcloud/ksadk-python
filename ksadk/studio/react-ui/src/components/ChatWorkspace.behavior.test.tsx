@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
-import { ChatWorkspace } from "./ChatWorkspace";
+import { ChatWorkspace, type ChatWorkspaceHandle } from "./ChatWorkspace";
 
 const mocks = vi.hoisted(() => {
   const chat = {
@@ -147,6 +148,38 @@ describe("ChatWorkspace shared conversation composition", () => {
     await waitFor(() => expect(mocks.chat.selectSession).toHaveBeenCalledExactlyOnceWith("scheduled-session"));
     rerender(<ChatWorkspace agentId="local-1" agentName="Agent" requestedSessionId="scheduled-session" refreshTick={1} />);
     expect(mocks.chat.selectSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one history surface and preserves its filter across product navigation", () => {
+    const historyHost = document.createElement("div");
+    const headerHost = document.createElement("div");
+    document.body.append(historyHost, headerHost);
+    const onSelectConversation = vi.fn();
+    const { container, rerender, unmount } = render(<ChatWorkspace agentId="local-1" agentName="Agent"
+      integratedHistory historyHost={historyHost} headerHost={headerHost} onSelectConversation={onSelectConversation}/>);
+    expect(within(container).queryByRole("complementary", { name: "会话历史" })).toBeNull();
+    expect(within(historyHost).getByRole("complementary", { name: "会话历史" })).toBeInTheDocument();
+    fireEvent.change(within(historyHost).getByRole("searchbox"), { target: { value: "已有" } });
+    rerender(<ChatWorkspace agentId="local-1" agentName="Agent" active={false}
+      integratedHistory historyHost={historyHost} headerHost={headerHost} onSelectConversation={onSelectConversation}/>);
+    expect(headerHost).toBeEmptyDOMElement();
+    expect(within(historyHost).getByRole("searchbox")).toHaveValue("已有");
+    fireEvent.click(within(historyHost).getByRole("button", { name: "已有会话" }));
+    expect(mocks.chat.selectSession).toHaveBeenCalledWith("session-1");
+    expect(onSelectConversation).toHaveBeenCalledOnce();
+    unmount(); historyHost.remove(); headerHost.remove();
+  });
+
+  it("starts new conversations through the product rail without interrupting a stream", () => {
+    const ref = createRef<ChatWorkspaceHandle>();
+    const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
+    ref.current?.startNewChat();
+    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    mocks.chat.isStreaming = true;
+    rerender(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
+    ref.current?.startNewChat();
+    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.stop).not.toHaveBeenCalled();
   });
 
   it("reconciles the same session when the transport ends without duplicating a run", () => {
