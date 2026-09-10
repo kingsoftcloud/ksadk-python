@@ -903,6 +903,7 @@ def create_studio_app(
                 "path": str(studio.workspace.root),
             },
             "operationScope": studio.deployment_operation_scope(),
+            "frontend": studio.frontend_assets(),
             "features": {
                 "build": True,
                 "run": True,
@@ -924,7 +925,7 @@ def create_studio_app(
 
     @app.put("/api/v1/system/settings")
     async def update_settings(payload: dict[str, Any]):
-        return studio.update_settings(payload)
+        return await studio.apply_settings(payload)
 
     @app.get("/api/v1/schedules")
     async def list_schedules():

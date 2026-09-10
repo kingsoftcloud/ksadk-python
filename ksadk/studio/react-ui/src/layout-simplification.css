@@ -1,0 +1,232 @@
+/* Page layouts share the neutral Studio tokens; each surface owns its spacing. */
+.agents-page .agents-catalog-header { padding-block: 16px 4px; }
+.agents-page .agents-catalog-meta { color: var(--text-tertiary); }
+.agents-page .resource-count-empty { padding: 0; background: transparent; }
+.row-actions { flex-wrap: nowrap; }
+.row-actions > .button, .row-actions > .icon-button { flex-shrink: 0; }
+.more-actions-trigger { min-width: 36px; }
+.plugins-page .button.primary { background: var(--button-primary-bg); color: var(--button-primary-text); border-color: transparent; }
+.plugins-page .button.primary:hover:not(:disabled) { background: var(--button-primary-bg-hover); }
+.app-shell .search-field input,
+.app-shell .search-field input:hover,
+.app-shell .search-field input:focus {
+  /* The shared input reset uses four :not() selectors; the search shell owns its edge. */
+  padding-left: 36px !important;
+  border: 0 !important;
+  box-shadow: none;
+  background: transparent;
+}
+
+.secondary-settings { border: 0; border-top: 1px solid var(--studio-border); padding-top: 12px; margin-block: 16px; }
+.secondary-settings > summary,
+.resource-filter-details > summary {
+  min-height: 40px;
+  padding: 10px 4px;
+  cursor: pointer;
+  color: var(--studio-text-secondary);
+  font-size: var(--font-size-meta);
+  border-radius: var(--radius-control);
+}
+.secondary-settings > summary:hover,
+.resource-filter-details > summary:hover { background: var(--surface-hover); }
+.secondary-settings > summary:focus-visible,
+.resource-filter-details > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.secondary-settings[open] > summary { margin-bottom: 12px; }
+.resource-filter-details { min-width: 112px; }
+.resource-filter-details[open] { flex-basis: 100%; }
+.resource-filter-fields { display: flex; flex-wrap: wrap; gap: 12px; padding-block: 4px 12px; }
+.resource-filter-fields > .studio-select-trigger { flex: 1; min-width: 150px; max-width: 240px; }
+
+/* Only the chosen settings category is visible. The dialog frame never scrolls. */
+.overlay .drawer { grid-template-columns: minmax(0, 1fr); }
+.overlay :is(.drawer-header, .drawer-body, .drawer-footer) { min-width: 0; }
+.drawer-header > .icon-button { flex-shrink: 0; }
+.drawer-header :is(h2, p) { overflow-wrap: anywhere; }
+body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
+.credential-profile > div { grid-template-columns: 108px minmax(0, 1fr); }
+.credential-profile :is(strong, code), .credential-status > div { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.settings-group[hidden] { display: none; }
+.drawer:has(.settings-layout) { overflow: hidden; }
+.drawer:has(.settings-layout) .drawer-body { min-height: 0; overflow: hidden; display: flex; }
+.drawer:has(.settings-layout) :is(.drawer-header, .drawer-footer) { flex-shrink: 0; }
+.settings-layout { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 24px; width: 100%; min-height: 0; flex: 1; }
+.settings-section-nav { align-self: start; }
+.settings-sections { min-width: 0; min-height: 0; overflow-y: auto; padding: 2px 4px 12px; }
+.settings-group { margin: 0 0 20px; padding: 0 0 20px; }
+.settings-group:only-of-type { border: 0; }
+.appearance-options .appearance-option { min-height: 72px; }
+
+/* Authoring modes and steps share a short top bar on larger viewports. */
+@media (min-width: 761px) {
+  .app-shell .create-shell:not([data-editing="true"]) .create-workbench {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .app-shell .create-shell .create-rail {
+    position: static;
+    min-height: 0;
+    width: auto;
+    max-height: none;
+    padding: 10px 24px;
+    border: 0;
+    border-bottom: 1px solid var(--studio-border);
+    background: var(--studio-surface);
+  }
+  .create-rail-panel { display: grid; gap: 8px; }
+  .create-rail .authoring-mode-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .create-rail .authoring-mode-tabs button { width: auto; min-height: 40px; padding: 8px 14px; }
+  .create-rail .wizard-steps { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px; padding: 8px 0 0; }
+  .create-rail .wizard-step { width: auto; flex: 1; min-height: 40px; padding: 6px 10px; }
+  .create-rail .wizard-step::before, .create-rail .wizard-step::after { display: none; }
+  .create-shell .wizard-content { width: 100%; max-width: 1200px; margin-inline: auto; }
+  .create-shell .authoring-mode-panel { max-width: 1360px; margin-inline: auto; }
+  .create-shell .wizard-panel { max-width: 920px; margin-inline: auto; padding: 28px 32px 40px; min-height: 0; }
+  .create-shell .wizard-panel > .form-grid.two-columns:has(#quickAgentName) { grid-template-columns: minmax(0, 1fr); }
+}
+.create-shell .panel-heading { margin-bottom: 20px; }
+.create-shell .wizard-actions { gap: 12px; }
+.create-shell .wizard-actions .summary-toggle { margin-left: auto; }
+.create-shell .template-card { min-height: 72px; }
+.app-shell .create-shell .conversation-authoring-layout[data-draft-state="empty"] { grid-template-columns: minmax(0, 1fr); max-width: 900px; margin-inline: auto; }
+.conversation-draft-rail[hidden] { display: none; }
+.agent-appearance-disclosure .agent-appearance-editor { margin-top: 12px; }
+
+/* A single task surface until the user opens a task or starts editing. */
+.automation-layout[data-inspector="false"] { grid-template-columns: minmax(0, 1fr); }
+.automation-inspector[hidden] { display: none; }
+.automation-runtime-details { margin-block: 4px 16px; padding: 0; border: 0; }
+.automation-runtime-details > summary { display: inline-block; }
+.automation-intro { margin-bottom: 4px; }
+.automation-intro h2 { margin: 0; }
+.automation-inspector, .automation-occurrences, .automation-occurrence-card { min-width: 0; }
+.automation-inspector .automation-occurrence-summary { grid-template-columns: auto minmax(0, 1fr); }
+.automation-inspector .automation-occurrence-facts { grid-template-columns: minmax(0, 1fr); }
+.automation-execution-details .automation-occurrence-facts dd { white-space: normal; overflow-wrap: anywhere; }
+.automation-occurrence-summary strong, .automation-detail-heading h2, .automation-detail-grid p { overflow-wrap: anywhere; }
+.automation-execution-details > summary { min-height: 36px; padding-block: 8px; color: var(--studio-text-secondary); cursor: pointer; }
+.automation-execution-details[open] { display: grid; gap: 12px; }
+.automation-execution-note { margin: 0; color: var(--studio-text-secondary); }
+.automation-diagnosis { flex-wrap: wrap; overflow-wrap: anywhere; }
+.automation-diagnosis:not([data-state="failed"]) { color: var(--studio-text-secondary); background: var(--surface-subtle); }
+
+.studio-chat-shell { border: 0; }
+.studio-chat-shell .chat-conversation-header { border-bottom-color: transparent; }
+.studio-conversation-welcome h2 { font-size: 24px; font-weight: var(--font-weight-medium); }
+
+@media (max-width: 760px) {
+  body:has(.overlay .drawer-footer) .toast-region { bottom: 144px; }
+  .overlay .drawer-footer { flex-wrap: wrap; height: auto; gap: 8px; padding: 12px 16px; }
+  .overlay .drawer-footer-spacer { display: none; }
+  .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 16px; }
+  .settings-section-nav { position: static; display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 10px; }
+  .settings-section-nav button { flex: 1 0 auto; min-height: 40px; }
+  .drawer:has(.settings-layout) .drawer-body { padding: 16px; }
+  .appearance-options { grid-template-columns: minmax(0, 1fr); }
+  .appearance-options .appearance-option { min-height: 48px; }
+  .resource-filter-fields { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .resource-filter-fields > .studio-select-trigger { width: 100%; max-width: none; }
+  .create-shell .wizard-actions { gap: 8px; }
+  .studio-conversation-welcome h2 { font-size: 22px; }
+}
+
+.studio-chat-shell .studio-chat-timeline > div { max-width: 800px; }
+.studio-chat-shell .studio-composer-area { width: 100%; min-width: 0; max-width: 832px; margin-inline: auto; flex-shrink: 0; }
+.studio-chat-shell .chat-conversation { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 720px) {
+  .studio-chat-shell:not(.sessions-open) .chat-session-sidebar { visibility: hidden; }
+}
+
+@media (min-width: 761px) {
+  .drawer:has(.settings-layout) { height: min(720px, calc(100dvh - 32px)); align-self: center; }
+}
+
+@media (min-width: 1024px) {
+  .app-shell[data-view="create"] .create-workbench:has(> .create-rail) > .create-stage { grid-column: 1; grid-row: 2; }
+  .app-shell[data-view="create"] .create-workbench > .create-rail { grid-column: 1; grid-row: 1; }
+}
+@media (max-width: 760px) {
+  .app-shell:not([data-view="conversations"]) .app-main { display: flex; flex-direction: column; height: 100dvh; }
+  .app-shell:not([data-view="conversations"]) #mainContent { flex: 1; min-height: 0; overflow-y: auto; }
+  .app-shell:not([data-view="conversations"]) #mainContent > div:last-child { height: 100%; }
+  .app-shell:not([data-view="conversations"]) .page-container:is([data-layout="data"], [data-layout="workbench"]) { height: 100%; min-height: 0; }
+  .app-shell:not([data-view="conversations"]) .global-header {
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px 8px;
+    height: auto;
+    padding-block: 12px;
+  }
+  .app-shell:not([data-view="conversations"]) .global-header > :is(.header-identity, .header-identity-inline) { grid-column: 2; grid-row: 1; max-width: none; }
+  .app-shell:not([data-view="conversations"]) .header-actions { display: contents; }
+  .app-shell:not([data-view="conversations"]) .global-refresh-button { grid-column: 3; grid-row: 1; }
+  .app-shell:not([data-view="conversations"]) .header-actions > :is(.tag, .badge) { display: none; }
+  .app-shell:not([data-view="conversations"]) #pageHeaderActions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .app-shell:not([data-view="conversations"]) #pageHeaderActions > :is(.button, .compact-create-rail-trigger) { width: auto; min-width: 40px; padding-inline: 12px; }
+  .app-shell:not([data-view="conversations"]) #pageHeaderActions .button > span { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; }
+  .app-shell:not([data-view="conversations"]) .header-agent-selector { grid-column: 1 / -1; grid-row: 3; width: 100%; min-width: 0; }
+  .app-shell:not([data-view="conversations"]) #pageHeaderTools { grid-column: 1 / -1; grid-row: 4; min-width: 0; }
+  .app-shell:not([data-view="conversations"]) :is(#pageHeaderActions, #pageHeaderTools):empty { display: none; }
+  .studio-composer-area [data-slot="composer"] form > div:last-child { flex-wrap: wrap; row-gap: 8px; }
+  .studio-composer-area [data-slot="composer"] form > div:last-child > div:last-child { margin-left: auto; }
+  .studio-composer-area [data-slot="composer"] button[title="选择模型"] { max-width: 150px; }
+  .studio-composer-area [data-slot="composer"] button[title="设置本次会话的工具审批规则"] { white-space: nowrap; }
+  .app-shell[data-view="create"] .wizard-actions {
+    position: fixed;
+    left: var(--studio-app-rail);
+    right: 0;
+    bottom: 0;
+    min-height: 64px;
+    padding: 10px 12px;
+    background: var(--studio-surface);
+    z-index: 18;
+  }
+  .app-shell[data-view="create"] .wizard-panel { padding-bottom: 96px; }
+}
+
+@media (max-width: 760px) {
+  .app-shell .global-header > .rail-toggle { display: inline-flex; grid-column: 1; grid-row: 1; }
+}
+
+/* Inspection is a short document. Raw protocol data is optional detail. */
+.app-shell .create-shell .authoring-inspect-grid { grid-template-columns: minmax(0, 1fr); align-items: start; max-width: 800px; margin-inline: auto; }
+.authoring-inspection-card[hidden] { display: none; }
+.app-shell .authoring-input-card, .app-shell .authoring-inspection-card { border: 0; box-shadow: none; border-radius: 0; padding: 20px 0; background: transparent; }
+.authoring-inspection-card { border-top: 1px solid var(--studio-border); }
+.authoring-inspection-summary dl { display: grid; gap: 12px; margin: 20px 0; }
+.authoring-inspection-summary dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 16px; font-size: 13px; }
+.authoring-inspection-summary dt { color: var(--studio-text-secondary); }
+.authoring-inspection-summary dd { margin: 0; overflow-wrap: anywhere; }
+.authoring-inspection-summary .code-viewer { max-height: 360px; overflow: auto; }
+
+/* Editor actions remain readable and reachable beside long configuration forms. */
+.create-shell[data-editing="true"] .quick-create-actions { flex-wrap: wrap; gap: 12px; }
+.create-shell[data-editing="true"] .quick-create-actions > .checkbox-row { flex: 1 1 240px; min-width: 0; }
+.create-shell[data-editing="true"] .quick-create-actions > .button { flex-shrink: 0; }
+@media (max-width: 760px) {
+  .app-shell .create-shell[data-editing="true"] .quick-create { padding-bottom: 160px; }
+  .app-shell .create-shell[data-editing="true"] .quick-create-actions {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 18;
+    display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px;
+    padding: 12px 16px; margin: 0; background: var(--studio-surface);
+    border-top: 1px solid var(--studio-border);
+  }
+  .create-shell[data-editing="true"] .quick-create-actions > .checkbox-row { flex-basis: 100%; min-height: 24px; margin: 0; align-items: center; }
+  .create-shell[data-editing="true"] .quick-create-actions .checkbox-row small { display: none; }
+  body:has(.create-shell[data-editing="true"]) .toast-region { bottom: 124px; }
+}
+
+/* Intrinsic widths from a conversation title must never enlarge the app grid. */
+.app-shell .app-main { grid-template-columns: minmax(0, 1fr); }
+.app-shell .global-header { min-width: 0; }
+.app-shell[data-view="conversations"] .app-main { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
+.app-shell[data-view="conversations"] :is(main, .chat-wrap, .chat-host) { height: 100%; min-height: 0; }
+.studio-chat-timeline [data-slot="processing-blocks"] button { color: var(--studio-text-secondary); }

@@ -402,6 +402,16 @@ class StudioPluginRuntime:
         if bool(spec.request_config.get("dynamic_dsh_mcp")):
             await self.close_session(session_id)
 
+    def check_configuration_mutable(self) -> None:
+        if self._hosts:
+            raise StudioError(
+                "SETTINGS_RUNTIME_BUSY", "请通过设置接口刷新运行配置", status_code=409
+            )
+
+    def replace_resource_authority(self, authority: Any) -> None:
+        self.check_configuration_mutable()
+        self._resource_authority = authority
+
     async def suspend_admission(self) -> None:
         """Stop new activations and drain every currently owned host."""
 
@@ -463,6 +473,15 @@ class StudioPluginRuntime:
         # Re-resolve every turn. This deliberately rechecks enabled receipts and
         # package digests rather than trusting a previously healthy child.
         bundle = self._resolve_bundle(bundle_root)
+        if any(
+            item.ref == PLATFORM_RESOURCE_MCP_REF
+            for item in bundle.composition.profile.capabilities
+        ) and not callable(getattr(self._resource_authority, "admit_runtime", None)):
+            raise StudioError(
+                "PLATFORM_RESOURCE_CONFIGURATION_REQUIRED",
+                "平台资源连接尚未配置，请在设置的云端连接中填写账号凭据和控制面地址",
+                status_code=422,
+            )
         key = bundle.bundle_digest
         async with self._lock:
             if self._closed:
@@ -493,9 +512,7 @@ class StudioPluginRuntime:
                 "credential_resolver": self._secret_resolver,
                 # Harness Provider 持久 Checkpoint/RunStore/Receipt 的状态根
                 # （与 builtin capability factories 同一 Workspace 命名空间）。
-                "harness_state_dir": str(
-                    self.workspace.resolve(".agentkit/plugin-runtime/state")
-                ),
+                "harness_state_dir": str(self.workspace.resolve(".agentkit/plugin-runtime/state")),
                 "codex_local_launch_resolver": self._codex_local_launch_resolver,
                 "runtime_executor": self._runtime_executor,
                 "dsh_capability_service": self._resource_dsh_capability_service,
@@ -554,8 +571,7 @@ class StudioPluginRuntime:
         )
         dynamic_refs = {reference, PLATFORM_RESOURCE_MCP_REF}
         return any(
-            capability.ref in dynamic_refs
-            for capability in bundle.composition.profile.capabilities
+            capability.ref in dynamic_refs for capability in bundle.composition.profile.capabilities
         )
 
     def _resolve_bundle(self, bundle_root: Path) -> ResolvedPluginBundle:

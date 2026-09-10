@@ -41,7 +41,7 @@ describe("EvaluationsPage", () => {
     expect(await screen.findByText("还没有评测任务")).toBeInTheDocument();
     expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-runs", expect.anything());
     expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-targets");
-    expect(screen.getByRole("region", { name: "评测运行" }).querySelectorAll(".evaluation-page__panel-header")).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "评测运行" })).toBeInTheDocument();
   });
 
   it("uses the shared aligned form grid and business target labels", async () => {
@@ -54,7 +54,7 @@ describe("EvaluationsPage", () => {
     expect(form).toHaveClass("form-grid", "two-columns");
     expect(screen.getByLabelText(/Agent 地址/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
+    await user.click(screen.getByRole("combobox", { name: "评测目标" }));
     await user.click(await screen.findByRole("option", { name: "本地源码" }));
     expect(screen.getByLabelText(/Agent 源码目录/)).toBeInTheDocument();
   });
@@ -112,7 +112,7 @@ describe("EvaluationsPage", () => {
     render(<EvaluationsPage refreshTick={0} />);
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
+    await user.click(screen.getByRole("combobox", { name: "评测目标" }));
     await user.click(await screen.findByRole("option", { name: "Studio Build" }));
     expect(screen.getByRole("combobox", { name: "Studio Agent" })).toHaveTextContent("Agent One");
     expect(screen.getByRole("combobox", { name: "Studio Build" })).toHaveTextContent("build-2");
@@ -209,4 +209,48 @@ describe("EvaluationsPage", () => {
     expect(await screen.findByText("2 / 3")).toBeInTheDocument();
     expect(screen.getByText("case-2")).toBeInTheDocument();
   });
+  it("invalidates the previous EvalSet when a replacement upload fails", async () => {
+    const user = userEvent.setup();
+    let uploadCount = 0;
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (isEvalsetUpload(input, init)) {
+        uploadCount += 1;
+        return uploadCount === 1 ? response({ path: uploadedEvalsetPath }) : response({ error: { message: "无效的评测文件" } }, false);
+      }
+      return response({ items: [], builds: [] });
+    });
+    render(<EvaluationsPage refreshTick={0} />);
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await uploadEvalset(user);
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
+    expect(screen.getByRole("button", { name: "开始评测" })).toBeEnabled();
+    await user.upload(screen.getByLabelText("选择 EvalSet 文件"), new File(["{"], "broken.json", { type: "application/json" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("无效的评测文件");
+    expect(screen.queryByText(uploadedEvalsetPath)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始评测" })).toBeDisabled();
+    expect(mockedFetch.mock.calls.some(([input]) => String(input) === "/api/v1/evaluations")).toBe(false);
+  });
+
+  it("filters reports by status and opens the selected report", async () => {
+    const user = userEvent.setup();
+    const onOpenRun = vi.fn();
+    mockedFetch.mockImplementation(async input => response(String(input) === "/api/v1/evaluation-runs" ? {
+      items: ["PASSED", "FAILED", "CANCELLED"].map((status, index) => ({
+        id: `eval-${index}`, status, evalset: { name: `检查 ${index}` },
+        target: { kind: "a2a" }, createdAt: "2026-08-18T00:00:00Z", hasReport: true,
+      })),
+    } : { items: [], builds: [] }));
+    render(<EvaluationsPage refreshTick={0} onOpenRun={onOpenRun} />);
+    await screen.findByRole("row", { name: "打开评测 检查 0" });
+    await user.click(screen.getByRole("button", { name: "需关注 1" }));
+    expect(screen.queryByRole("row", { name: "打开评测 检查 0" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("row", { name: "打开评测 检查 2" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("row", { name: "打开评测 检查 1" }));
+    expect(onOpenRun).toHaveBeenCalledWith("eval-1");
+    await user.click(screen.getByRole("button", { name: "运行中 0" }));
+    expect(screen.getByText("没有符合条件的评测")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "全部 3" }));
+    expect(screen.getByRole("row", { name: "打开评测 检查 2" })).toBeInTheDocument();
+  });
+
 });

@@ -14,6 +14,7 @@ import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
+import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
@@ -43,7 +44,7 @@ const VIEW_TITLE: Record<View, string> = {
   create: "创建 Agent",
   "agent-detail": "Agent 配置",
   conversations: "会话",
-  resources: "工程资源",
+  resources: "资源库",
   builds: "构建",
   deployments: "部署",
   observability: "可观测",
@@ -58,7 +59,7 @@ const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
 const RESOURCE_KINDS: ResourceKind[] = [
   "model", "tool", "mcp", "skill", "knowledge-base", "memory-instance", "skill-space",
 ];
-const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "automations", "orchestration"]);
+const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "orchestration"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
 
 function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
@@ -165,6 +166,12 @@ export default function App() {
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
+  const [newChatRequest, setNewChatRequest] = useState(0);
+  const onNewChatStarted = useCallback(() => setNewChatRequest(0), []);
+  const [conversationHeaderHost, setConversationHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [chatStreaming, setChatStreaming] = useState(false);
+  const [historyHost, setHistoryHost] = useState<HTMLDivElement | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
   useEffect(() => {
     document.body.classList.toggle("create-mode", view === "create");
@@ -469,15 +476,17 @@ export default function App() {
     || view === "observability";
   const railCanExpand = viewportMode !== "compact";
   const railExpanded = railCanExpand && (railExpandedPreference ?? true);
+  useEffect(() => { setMobileNavOpen(false); }, [view, resourceKind, viewportMode]);
 
   function toggleRail() {
-    if (!railCanExpand) return;
+    if (!railCanExpand) { setMobileNavOpen(open => !open); return; }
     const next = !railExpanded;
     setRailExpandedPreference(next);
     writeNavigationRailPreference(next);
   }
 
   function navigateFromRail(nextView: NavigationView, kind?: ResourceKind) {
+    setMobileNavOpen(false);
     if (nextView === "conversations") enterChat();
     else if (nextView === "resources") openResources(kind || "model");
     else {
@@ -494,11 +503,19 @@ export default function App() {
         view={view}
         resourceKind={resourceKind}
         expanded={railExpanded}
+        mobile={!railCanExpand}
+        mobileOpen={mobileNavOpen}
+        onMobileOpenChange={setMobileNavOpen}
+        onExpand={() => { setRailExpandedPreference(true); writeNavigationRailPreference(true); }}
+        onHistoryHostChange={setHistoryHost}
+        chatStreaming={chatStreaming || newChatRequest !== 0}
+        onStartChat={() => { setRequestedSessionId(""); setNewChatRequest(request => request + 1); enterChat(); setMobileNavOpen(false); }}
         workspaceName={workspaceName}
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
         onNavigate={navigateFromRail}
         onOpenSettings={() => {
+          setMobileNavOpen(false);
           setSettingsSection("general");
           setSettingsOpen(true);
         }}
@@ -506,11 +523,12 @@ export default function App() {
 
       <div className="app-main">
         <header className={`global-header${breadcrumbParent ? " nested" : ""}`} aria-label="当前页面">
-          {railCanExpand && (
+          {(
             <button
               className="icon-button tertiary rail-toggle"
               type="button"
-              aria-label={railExpanded ? "收起导航" : "展开导航"}
+              aria-label={(railExpanded || mobileNavOpen) ? "收起导航" : "展开导航"}
+              aria-expanded={railExpanded || mobileNavOpen}
               title={railExpanded ? "收起导航" : "展开导航"}
               onClick={toggleRail}
             >
@@ -535,16 +553,13 @@ export default function App() {
               )}
             </div>
           )}
-          {!breadcrumbParent && (
+          {!breadcrumbParent && view !== "conversations" && (
             <div className="header-identity">
-              <span>工作区 · {workspaceName}</span>
-              {view === "conversations"
-                ? <strong>{breadcrumbTitle}</strong>
-                : <h1>{breadcrumbTitle}</h1>}
+              <h1>{breadcrumbTitle}</h1>
             </div>
           )}
           <div className="header-actions">
-            <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
+            <div ref={setConversationHeaderHost} id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
             {view === "conversations" ? (
               <StudioSelect
                 className="header-agent-selector conversation-target-selector"
@@ -566,14 +581,18 @@ export default function App() {
             )}
             {view !== "conversations" && <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>}
             <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
-            <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
+            {(view !== "conversations" || railCanExpand) && <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
               <RefreshCw size={16} />
-            </button>
-            {view === "conversations" && chatMounted && currentAgentId && !isCloudChat && (
+            </button>}
+            {view === "conversations" && railCanExpand && chatMounted && currentAgentId && !isCloudChat && (
               <button className="icon-button tertiary conversation-run-detail" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
                 <PanelRight size={16} />
               </button>
             )}
+            {view === "conversations" && !railCanExpand && <MoreActionsMenu label="对话操作" items={[
+              { label: "刷新", onSelect: () => setRefreshTick(t => t + 1) },
+              ...(chatMounted && currentAgentId && !isCloudChat ? [{ label: "运行详情", onSelect: () => setRunPanelOpen(v => !v) }] : []),
+            ]}/>}
             <div id="pageHeaderActions" className="page-header-page-actions" data-testid="page-header-actions" />
           </div>
         </header>
@@ -584,6 +603,13 @@ export default function App() {
             <div className="chat-host">
               {chatMounted && isCloudChat && selectedCloudDeployment && (
                 <ChatWorkspace
+                  newChatRequest={newChatRequest}
+                  onNewChatStarted={onNewChatStarted}
+                  onStreamingChange={setChatStreaming}
+                  integratedHistory
+                  historyHost={historyHost}
+                  headerHost={conversationHeaderHost}
+                  onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   key={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
@@ -593,6 +619,13 @@ export default function App() {
               )}
               {chatMounted && !isCloudChat && currentAgentId && (
                 <ChatWorkspace
+                  newChatRequest={newChatRequest}
+                  onNewChatStarted={onNewChatStarted}
+                  onStreamingChange={setChatStreaming}
+                  integratedHistory
+                  historyHost={historyHost}
+                  headerHost={conversationHeaderHost}
+                  onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   key={currentAgentId}
                   agentId={currentAgentId}
                   requestedSessionId={requestedSessionId}
@@ -642,12 +675,13 @@ export default function App() {
                 onCreate={openCreate}
                 onDetail={openDetail}
                 onChat={enterChat}
-                onBuild={() => setView("builds")}
+                onBuild={id => { setCurrentAgentId(id); setView("builds"); }}
                 onChanged={loadAgents}
               />
             )}
             {view === "create" && (
               <CreatePage
+                workspacePath={workspace?.path}
                 editingAgentId={editingAgentId || undefined}
                 viewportMode={viewportMode}
                 onAgentsChanged={loadAgents}
@@ -663,18 +697,20 @@ export default function App() {
             )}
             {view === "agent-detail" && detailAgentId && (
               <AgentDetailPage
+                refreshTick={refreshTick}
                 agentId={detailAgentId}
                 onBack={() => setView("agents")}
                 onChat={enterChat}
-                onBuild={() => setView("builds")}
+                onBuild={() => { setCurrentAgentId(detailAgentId); setView("builds"); }}
                 onEdit={openEdit}
                 onChanged={loadAgents}
               />
             )}
             {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
-            {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
+            {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} refreshTick={refreshTick} />}
             {view === "deployments" && (
               <DeploymentsPage
+                refreshTick={refreshTick}
                 onCreate={openCreate}
                 onOpenChat={enterCloudChat}
                 onSelectBuild={() => setView("builds")}
@@ -687,12 +723,12 @@ export default function App() {
               <EvaluationsPage refreshTick={refreshTick} onOpenRun={openEvaluationRun} />
             )}
             {view === "evaluations" && evaluationRunId && (
-              <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} />
+              <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} refreshTick={refreshTick} />
             )}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
-            {view === "plugins" && <PluginsPage />}
-            {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} />}
-            {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
+            {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
+            {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
+            {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} onEdit={openEdit} onOpenChat={() => enterChat(currentAgentId)} refreshTick={refreshTick} />}
           </div>
         </main>
       </div>

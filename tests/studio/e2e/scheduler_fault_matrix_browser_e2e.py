@@ -267,7 +267,7 @@ def _assert_fault_matrix(page: Page, base_url: str) -> None:
     # browser reaching a global network-idle state; the page's own heading and
     # durable history are the product-level readiness signals.
     page.goto(f"{base_url}/#/automations", wait_until="domcontentloaded")
-    expect(page.get_by_role("heading", name="让重复的工作，按时完成")).to_be_visible()
+    expect(page.get_by_role("heading", name="自动化", exact=True, level=1)).to_be_visible()
     page.get_by_role("tab", name="执行记录", exact=True).click()
 
     history = page.locator(".automation-history")

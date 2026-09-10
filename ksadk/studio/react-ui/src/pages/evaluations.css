@@ -67,38 +67,35 @@
   white-space: nowrap;
 }
 
-.evaluation-page__metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 16px;
-  border-block: 1px solid var(--studio-border);
+.evaluation-page__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.evaluation-page__filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--studio-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.evaluation-page__filters button:hover,
+.evaluation-page__filters button[aria-pressed="true"] {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+.evaluation-page__filters button span {
+  font-size: var(--font-size-caption);
+  color: var(--studio-text-secondary);
 }
 
-.evaluation-page__metrics > div {
-  min-height: 72px;
-  padding: 12px 18px;
-  border-right: 1px solid var(--studio-border);
-}
-
-.evaluation-page__metrics > div:last-child {
-  border-right: 0;
-}
-
-.evaluation-page__metrics span,
-.evaluation-page__metrics small {
-  display: block;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-meta);
-}
-
-.evaluation-page__metrics strong {
-  display: block;
-  margin-top: 3px;
-  font-size: var(--font-size-subtitle);
-  font-weight: var(--font-weight-semibold);
-}
-
-.evaluation-page__run-list,
 .evaluation-detail-page__report {
   overflow: hidden;
   border: 1px solid var(--studio-border);
@@ -111,38 +108,32 @@
   border-radius: 0;
 }
 
+.evaluation-detail-page__title h2 {
+  margin: 0 0 12px;
+  font-size: 22px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
 .evaluation-detail-page__overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   margin-bottom: 20px;
-  border-block: 1px solid var(--studio-border);
-}
-
-.evaluation-detail-page__overview > div {
-  min-width: 0;
-  min-height: 88px;
-  padding: 16px 20px;
-  border-right: 1px solid var(--studio-border);
-}
-
-.evaluation-detail-page__overview > div:last-child {
-  border-right: 0;
-}
-
-.evaluation-detail-page__overview span,
-.evaluation-detail-page__overview small {
-  display: block;
-  overflow: hidden;
-  color: var(--text-tertiary);
+  color: var(--studio-text-secondary);
   font-size: var(--font-size-meta);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-
-.evaluation-detail-page__overview strong {
-  display: block;
-  margin: 6px 0;
-  font-size: var(--font-size-subtitle);
+.evaluation-detail-page__overview strong { color: var(--text-primary); }
+.evaluation-detail-page__configuration {
+  margin-bottom: 20px;
+  font-size: var(--font-size-meta);
+}
+.evaluation-detail-page__configuration > summary {
+  width: fit-content;
+  min-height: 36px;
+  align-content: center;
+  color: var(--studio-text-secondary);
+  cursor: pointer;
 }
 
 .evaluation-detail-page__pending {
@@ -225,7 +216,8 @@
   margin: 3px 0 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   font-size: var(--font-size-meta);
 }
 
@@ -291,11 +283,13 @@
 .evaluation-page__case-layout {
   min-height: 380px;
   display: grid;
-  grid-template-columns: minmax(230px, .65fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(230px, .45fr) minmax(280px, 1fr);
 }
 
 .evaluation-page__case-list {
   overflow: auto;
+  max-height: 560px;
+  padding: 8px;
   border-right: 1px solid var(--studio-border);
 }
 
@@ -308,7 +302,8 @@
   gap: 12px;
   padding: 10px 14px;
   border: 0;
-  border-bottom: 1px solid var(--studio-border);
+  border-radius: var(--radius-control);
+  margin-bottom: 6px;
   color: var(--text-primary);
   background: transparent;
   text-align: left;
@@ -492,89 +487,49 @@
 }
 
 @media (max-width: 1180px) {
-  .evaluation-detail-page__overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .evaluation-page__dataset-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .evaluation-page__dataset-summary > div:nth-child(2) {
-    border-right: 0;
-  }
-
-  .evaluation-page__dataset-summary > div:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--studio-border);
-  }
+  .evaluation-page__dataset-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-
 @media (max-width: 760px) {
-  .evaluation-detail-page > .page-header {
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .evaluation-detail-page > .page-header > div:first-child,
-  .evaluation-detail-page > .page-header > .header-actions {
-    width: 100%;
-  }
-
-  .evaluation-detail-page > .page-header > .header-actions {
-    flex-wrap: wrap;
-    margin-left: 0;
-  }
-
-  .evaluation-detail-page > .page-header p {
-    overflow-wrap: anywhere;
-  }
-
-  .evaluation-page__metrics,
-  .evaluation-detail-page__overview,
+  .evaluation-page__filters { gap: 4px; }
+  .evaluation-page__filters button { padding-inline: 10px; }
   .evaluation-page__snapshot,
-  .evaluation-page__case-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .evaluation-page__metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
+  .evaluation-page__case-layout,
   .evaluation-page__dataset-summary,
-  .evaluation-page__assertions > div {
-    grid-template-columns: 1fr;
-  }
-
+  .evaluation-page__assertions > div,
+  .evaluation-page__evaluator-options { grid-template-columns: 1fr; }
+  .evaluation-page__case-list { max-height: 228px; }
+  .evaluation-page__case-list,
+  .evaluation-page__snapshot > div,
   .evaluation-page__dataset-summary > div {
     border-right: 0;
     border-bottom: 1px solid var(--studio-border);
   }
-
-  .evaluation-page__dataset-summary > div:last-child {
-    border-bottom: 0;
+  .evaluation-page__dataset-summary dd {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
-
-  .evaluation-detail-page__overview > div,
-  .evaluation-page__snapshot > div,
-  .evaluation-page__case-list {
-    border-right: 0;
+  .evaluation-page__section-title { flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .evaluation-page__run-list table { display: block; min-width: 0 !important; }
+  .evaluation-page__run-list thead { display: none; }
+  .evaluation-page__run-list tbody { display: grid; gap: 12px; }
+  .evaluation-page__run-list tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+    padding: 16px;
     border-bottom: 1px solid var(--studio-border);
   }
-
-  .evaluation-page__metrics > div {
-    border-right: 1px solid var(--studio-border);
-    border-bottom: 1px solid var(--studio-border);
+  .evaluation-page__run-list td {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
-
-  .evaluation-page__metrics > div:nth-child(even) {
-    border-right: 0;
-  }
-
-  .evaluation-page__metrics > div:nth-child(n + 3) {
-    border-bottom: 0;
-  }
-
-  .evaluation-page__evaluator-options {
-    grid-template-columns: 1fr;
-  }
+  .evaluation-run__name { grid-column: 1; grid-row: 1; }
+  .evaluation-run__status { grid-column: 2; grid-row: 1; justify-self: end; }
+  .evaluation-run__target { grid-column: 1; grid-row: 2; color: var(--studio-text-secondary); }
+  .evaluation-run__progress { grid-column: 2; grid-row: 2; justify-self: end; }
+  .evaluation-run__date { grid-column: 1; grid-row: 3; color: var(--studio-text-secondary); }
+  .evaluation-run__duration { grid-column: 2; grid-row: 3; justify-self: end; color: var(--studio-text-secondary); }
 }

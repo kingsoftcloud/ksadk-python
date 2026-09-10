@@ -31,7 +31,11 @@ agentengine studio ./my-agent-workspace --port 8081 --no-open
 agentengine studio ./my-agent-workspace --env-file ./model.env
 ```
 
-`--env-file` reads only `OPENAI_API_BASE`, `OPENAI_API_KEY`, and `OPENAI_MODEL_NAME`. Existing process environment values take precedence and are not overwritten. When a Codex project needs Responses-to-Chat compatibility conversion, use `--codex-proxy auto`; see the full options in the [CLI reference](/en/docs/cli#agentengine-studio).
+Run `ksadk studio` and configure the control-plane URL, region, AK/SK and model credentials in Settings. Saved values apply to subsequent runs and survive restarts; a separate `studio.env` is unnecessary. Wait for active runs before saving, and provide both AK/SK when switching accounts.
+
+Settings and credentials share `.agentkit/config.yaml`, written with owner-only permissions and excluded from Git. Legacy `settings.yaml` and `secrets.env` are imported once and left intact. Studio never rewrites your `.env`. Ordinary CLI commands also load the current workspace configuration.
+
+Precedence: explicit `--env-file` > saved workspace configuration > startup environment > workspace `.env`. The default launch remains compatible with the current directory's `.env`. The explicit file is a process-only override accepting allowlisted model and cloud-control variables; Settings shows the active source. Explicit `--codex-proxy` also overrides saved values.
 
 <Callout type="warning" title="Local control client, not a multi-user SaaS">
   The Studio UI and credential proxy still run locally. Cloud lifecycle management is supported, but shared multi-user workspaces are not. The browser never receives AK/SK; the local service signs cloud requests and sends them to AgentEngine Server.
@@ -98,3 +102,9 @@ Do not remove Agent source files or `agentengine.yaml` to reset conversations. T
 Wheel users do not need to build the Studio frontend: the wheel includes the reviewed production static assets. The public repository, sdist, and wheel do not include editable Studio React / TypeScript source; the public release gate validates and packages only `ksadk/studio/static`.
 
 See [build and package](./build-and-package.mdx) and the [Web UI source and release contract](./web-ui-source.mdx) for details.
+
+### Editable installs and frontend diagnostics
+
+An editable Python install does not compile Studio assets. Run `make build-frontend` in the SDK repository and restart Studio. Wheels already contain the frontend.
+
+Settings → About shows the served JS/CSS entry filenames, including their build hashes. After stopping the old process, upgrade in the activated environment with `uv pip install -U --no-cache --reinstall-package ksadk 'ksadk[all]'`, restart that environment's `ksadk studio`, then hard-refresh the browser (Cmd+Shift+R on macOS, Ctrl+Shift+R on Windows/Linux). If the old page remains, compare `uv pip show ksadk`, the CLI path and entry filenames.

@@ -128,6 +128,9 @@ class StudioRunService:
         self._recovery_tasks: set[asyncio.Task] = set()
         self._detaching_recoveries = False
 
+    def has_active_runs(self) -> bool:
+        return bool(self._active_sessions or self._active_handles)
+
     async def recover_interrupted(self, resolve_spec=None) -> None:
         """Settle local runs left active across a Studio restart.
 

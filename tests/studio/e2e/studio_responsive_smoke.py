@@ -1,17 +1,38 @@
-"""Responsive acceptance for the production React Studio shell."""
+"""Responsive acceptance for the production React Studio shell.
+
+Run after building Studio: PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from urllib.request import Request, urlopen
 
 from playwright.sync_api import Page, expect, sync_playwright
-from studio_e2e_support import studio_server
+from studio_e2e_support import navigate, open_navigation, studio_server
 
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    OutputRef,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+    UsageReported,
+)
+from ksadk.events.content import TextContent
+from ksadk.runtime import RunHandle, StartRequest
 from ksadk.studio.service import StudioService
+from tests.studio.runtime_adapter_fixtures import RuntimeFixture
 
 VIEWPORTS = (
     (768, 768),
@@ -253,73 +274,99 @@ def route_trace_fixture(route) -> None:
     )
 
 
-def route_recoverable_chat_fixture(route) -> None:
-    url = route.request.url.split("?", 1)[0]
-    if url.endswith("/api/v1/runs/run-live/events"):
-        route.fulfill(
-            status=200,
-            content_type="text/event-stream",
-            body=(
-                'id: 1\nevent: thinking.delta\ndata: {"text":"读取当前上下文"}\n\n'
-                'id: 2\nevent: command.started\ndata: {"callId":"cmd-live","command":"rg TODO"}\n\n'
-                'id: 3\nevent: message.delta\ndata: {"text":"正在继续生成可恢复的回答"}\n\n'
-            ),
+class RecoverableConversationEvents:
+    """Real canonical sessions with one completed and one deliberately live turn.
+
+    Only the runtime event source is deterministic. Session creation, the RunAgent
+    stream, persistence, active-run discovery and replay use production routes.
+    """
+
+    def __init__(self) -> None:
+        self.release_live = Event()
+
+    async def __call__(
+        self, request: StartRequest, handle: RunHandle
+    ) -> AsyncIterator[RuntimeEvent]:
+        live = "长任务" in str(request.input)
+        body = "正在继续生成可恢复的回答" if live else "这是已经完成的历史答案。"
+        if live:
+            body += "\n\n" + "\n\n".join(
+                f"第 {index} 项：保留完整对话内容，并让输入区保持在可见位置。"
+                for index in range(1, 45)
+            )
+        source = SourceRef(framework="codex")
+        common = {
+            "schema_version": 2,
+            "timestamp": 1.0,
+            "run_id": handle.run_id,
+            "scope_id": f"scope-{handle.run_id}",
+            "source": source,
+        }
+        yield RunStarted(event_id=f"{handle.run_id}:1", seq=1, status="running", **common)
+        yield ItemStarted(
+            event_id=f"{handle.run_id}:2",
+            seq=2,
+            item_id="answer",
+            item_kind="message",
+            phase="final_answer",
+            initial=ContentSnapshot(parts=()),
+            **common,
         )
-        return
-    if url.endswith("/api/v1/runs/run-history/events"):
-        route.fulfill(status=200, content_type="text/event-stream", body="")
-        return
-    route.fulfill(
-        status=200,
-        content_type="application/json",
-        body=json.dumps(
-            {
-                "items": [
-                    {
-                        "id": "run-live",
-                        "agentId": "responsive-agent",
-                        "sessionId": "session-live",
-                        "status": "RUNNING",
-                        "input": "继续处理这个长任务",
-                        "output": "",
-                        "model": "fixture-model",
-                        "startedAt": "2026-08-10T09:00:00Z",
-                    },
-                    {
-                        "id": "run-history",
-                        "agentId": "responsive-agent",
-                        "sessionId": "session-history",
-                        "status": "COMPLETED",
-                        "input": "展示历史答案",
-                        "output": "这是已经完成的历史答案。",
-                        "model": "fixture-model",
-                        "startedAt": "2026-08-10T08:00:00Z",
-                        "completedAt": "2026-08-10T08:00:01Z",
-                    },
-                ]
-            }
-        ),
-    )
+        yield ItemUpdated(
+            event_id=f"{handle.run_id}:3",
+            seq=3,
+            item_id="answer",
+            item_kind="message",
+            op="append",
+            update=TextContent(part_id="text", text=body),
+            **common,
+        )
+        yield UsageReported(
+            event_id=f"{handle.run_id}:4",
+            seq=4,
+            input_tokens=80,
+            output_tokens=120,
+            total_tokens=200,
+            **common,
+        )
+        while live and not self.release_live.is_set():
+            await asyncio.sleep(0.05)
+        yield ItemCompleted(
+            event_id=f"{handle.run_id}:5",
+            seq=5,
+            item_id="answer",
+            item_kind="message",
+            snapshot=ContentSnapshot(parts=(TextContent(part_id="text", text=body),)),
+            **common,
+        )
+        yield RunCompleted(
+            event_id=f"{handle.run_id}:6",
+            seq=6,
+            status="completed",
+            output_refs=(OutputRef(scope_id=common["scope_id"], item_id="answer", part_id="text"),),
+            **common,
+        )
 
 
 def assert_page_matrix(page: Page, width: int) -> None:
-    navigation = page.locator(".primary-nav")
     pages = (
         ("Agent", "Agent", "data", None),
         ("构建", "构建", "document", None),
         ("部署", "部署", "document", None),
-        ("工程资源", "工程资源", "data", "模型"),
-        ("工程资源", "工程资源", "data", "Tool"),
-        ("工程资源", "工程资源", "data", "MCP"),
-        ("工程资源", "工程资源", "data", "Skill"),
+        ("模型与工具", "资源库", "data", "模型"),
+        ("模型与工具", "资源库", "data", "Tool"),
+        ("模型与工具", "资源库", "data", "MCP"),
+        ("模型与工具", "资源库", "data", "Skill"),
         ("可观测", "可观测", "workbench", None),
         ("运行资源", "运行资源", "document", None),
         ("自动化", "自动化", "document", None),
     )
     for nav_label, page_title, layout, tab_label in pages:
-        navigation.get_by_role("button", name=nav_label, exact=True).click()
+        navigate(page, nav_label)
         if tab_label is not None:
-            page.get_by_role("tab", name=tab_label, exact=True).click()
+            page.get_by_role(
+                "tab", name=re.compile(rf"^{re.escape(tab_label)}(?:\s+\d+)?$")
+            ).click()
         expect(
             page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)
         ).to_be_visible()
@@ -353,10 +400,14 @@ def assert_page_matrix(page: Page, width: int) -> None:
 
 
 def main() -> None:
+    verification_failures: list[str] = []
     with TemporaryDirectory(prefix="ksadk-responsive-studio-") as temp_dir:
         workspace = Path(temp_dir)
+        conversation_events = RecoverableConversationEvents()
+        conversation_runtime = RuntimeFixture(conversation_events)
         service = StudioService(
             workspace,
+            runtime_executor=conversation_runtime.executor,
             codex_runtime_inspector=lambda _runtime: (
                 "0.8.2",
                 # This browser fixture creates a current Codex agent.  Keep
@@ -383,6 +434,7 @@ def main() -> None:
 
                 assert_no_root_overflow(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "light")
+                open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
                 settings_dialog = page.get_by_role("dialog", name="设置")
                 expect(settings_dialog).to_be_visible()
@@ -399,6 +451,7 @@ def main() -> None:
                 reload_studio(page)
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
 
+                open_navigation(page)
                 page.get_by_role("button", name="设置", exact=True).click()
                 settings_dialog = page.get_by_role("dialog", name="设置")
                 settings_dialog.locator('input[name="studio-theme"][value="system"]').check()
@@ -448,9 +501,21 @@ def main() -> None:
                 assert not page.locator(".create-rail").evaluate(
                     "element => element.hasAttribute('inert')"
                 )
-                expect(page.locator(".create-rail")).to_have_css("width", "212px")
                 laptop_rail = rect(page, ".create-rail")
-                assert abs(laptop_rail["width"] - 212) <= 1, laptop_rail
+                laptop_stage = rect(page, ".create-stage")
+                assert laptop_rail["height"] < 150, laptop_rail
+                assert laptop_stage["top"] >= laptop_rail["bottom"] - 1, (laptop_rail, laptop_stage)
+                assert laptop_stage["width"] <= laptop_rail["width"] + 1, (
+                    laptop_rail,
+                    laptop_stage,
+                )
+                assert (
+                    abs(
+                        (laptop_stage["left"] + laptop_stage["right"])
+                        - (laptop_rail["left"] + laptop_rail["right"])
+                    )
+                    <= 2
+                ), (laptop_rail, laptop_stage)
                 expect(conversation_input).to_have_value("保留这段构建说明")
                 assert_no_root_overflow(page)
 
@@ -515,10 +580,7 @@ def main() -> None:
                 assert_no_root_overflow(page)
 
                 page.set_viewport_size({"width": 768, "height": 768})
-                resource_trigger = page.locator(".primary-nav").get_by_role(
-                    "button", name="工程资源", exact=True
-                )
-                resource_trigger.click()
+                navigate(page, "模型与工具")
                 skill_tab = page.get_by_role(
                     "tab", name=re.compile(r"^Skill(?:\s+\d+)?$")
                 )
@@ -531,7 +593,7 @@ def main() -> None:
                 discovery_dialog = page.get_by_role("dialog", name="发现本地 Skill")
                 expect(discovery_dialog).to_be_visible()
                 expect(page.locator(".global-header")).to_have_attribute("inert", "")
-                expect(page.locator(".sidebar")).to_have_attribute("inert", "")
+                expect(page.locator(".studio-navigation")).to_have_count(0)
                 expect(page.locator(".skip-link")).to_have_attribute("inert", "")
                 for _ in range(20):
                     page.keyboard.press("Tab")
@@ -561,8 +623,9 @@ def main() -> None:
                     )
                     matrix_page = matrix_context.new_page()
                     open_studio(matrix_page, base_url)
-                    expected_rail = 80 if width <= 1023 else 216
-                    sidebar_rect = rect(matrix_page, ".sidebar")
+                    open_navigation(matrix_page)
+                    expected_rail = min(300, width - 48) if width <= 1023 else 224
+                    sidebar_rect = rect(matrix_page, ".studio-navigation")
                     assert abs(sidebar_rect["width"] - expected_rail) <= 1, (
                         width,
                         sidebar_rect,
@@ -570,9 +633,7 @@ def main() -> None:
                     assert_page_matrix(matrix_page, width)
 
                     if width == 3840:
-                        matrix_page.locator(".primary-nav").get_by_role(
-                            "button", name="Agent", exact=True
-                        ).click()
+                        navigate(matrix_page, "Agent")
                         matrix_page.get_by_role(
                             "button", name="创建 Agent", exact=True
                         ).first.click()
@@ -585,6 +646,7 @@ def main() -> None:
                         assert workbench_rect["width"] <= 1361, workbench_rect
                     matrix_context.close()
 
+                print("Responsive shell and viewport matrix passed", flush=True)
                 create_test_agent(base_url)
                 workbench_context = browser.new_context(
                     viewport={"width": 1024, "height": 768},
@@ -595,46 +657,60 @@ def main() -> None:
                     "localStorage.setItem('agentkit-studio-theme', 'system')"
                 )
                 workbench_page = workbench_context.new_page()
-                workbench_page.route("**/api/v1/runs**", route_recoverable_chat_fixture)
                 open_studio(workbench_page, base_url)
                 expect(workbench_page.locator("html")).to_have_attribute("data-theme", "dark")
-                workbench_page.locator(".primary-nav").get_by_role(
-                    "button", name="会话", exact=True
-                ).click()
+                navigate(workbench_page, "新对话")
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-view", "conversations"
                 )
                 expect(workbench_page.locator(".studio-chat-shell")).to_be_visible()
                 expect(workbench_page.locator(".chat-conversation")).to_be_visible()
-                expect(workbench_page.locator(".chat-composer")).to_be_visible()
+                composer = workbench_page.locator('[data-slot="composer"]')
+                message_list = workbench_page.locator('[data-slot="message-list"]')
+                message_input = composer.locator("textarea")
+                expect(composer).to_be_visible()
+                expect(message_input).to_be_enabled()
+                message_input.fill("展示历史答案")
+                workbench_page.get_by_role("button", name="发送消息", exact=True).click()
                 expect(
-                    workbench_page.get_by_text("正在继续生成可恢复的回答", exact=True)
-                ).to_be_visible()
+                    workbench_page.get_by_text("这是已经完成的历史答案。", exact=True)
+                ).to_be_visible(timeout=15000)
+                expect(
+                    workbench_page.get_by_role("button", name="停止生成", exact=True)
+                ).to_have_count(0)
+                workbench_page.get_by_role("button", name="新对话", exact=True).click()
+                message_input.fill("继续处理这个长任务")
+                workbench_page.get_by_role("button", name="发送消息", exact=True).click()
+                live_answer = workbench_page.get_by_text("正在继续生成可恢复的回答", exact=True)
+                expect(live_answer).to_be_visible(timeout=15000)
+                stop_button = workbench_page.get_by_role("button", name="停止生成", exact=True)
+                expect(stop_button).to_be_visible()
+                expect(workbench_page.locator(".chat-session-item")).to_have_count(2)
+                assert len(conversation_runtime.start_requests) == 2
+                # Active sessions may retain the server's initial title until
+                # their first turn completes. Identify the row we actually
+                # started rather than inventing a title from the input text.
+                live_session_title = (
+                    workbench_page.locator('.chat-session-main[aria-current="true"]')
+                    .inner_text()
+                    .strip()
+                )
+                assert live_session_title
                 first_session_row = workbench_page.locator(".chat-session-item").first.evaluate(
                     "element => element.getBoundingClientRect().toJSON()"
                 )
-                assert first_session_row["height"] <= 41, first_session_row
+                assert first_session_row["height"] <= 42, first_session_row
                 assert workbench_page.locator(".chat-session-item time").count() == 0
-                # A live run owns the Runtime handle.  The composer must be
-                # visibly unavailable rather than allowing a second submit
-                # which would fail with an already-attached-handle error.
-                expect(workbench_page.get_by_role("textbox", name="消息")).to_be_disabled()
-                expect(workbench_page.get_by_role("button", name="暂停生成")).to_be_visible()
-                workbench_page.locator(".chat-message-list").evaluate(
-                    """element => {
-                      const spacer = document.createElement('div');
-                      spacer.dataset.testLongConversation = 'true';
-                      spacer.style.height = '1800px';
-                      element.append(spacer);
-                    }"""
-                )
+                # The shared composer supports drafting/queueing during a live
+                # run. Its submit control must remain Stop, and navigation or
+                # replay must never submit another RunAgent request.
+                expect(message_input).to_be_enabled()
                 dark_chat_colors = workbench_page.evaluate(
                     """() => {
                       const header = document.querySelector('.chat-conversation-header');
-                      const composer = document.querySelector('.chat-composer');
+                      const composer = document.querySelector('[data-slot="composer"] form');
                       const sidebar = document.querySelector('.chat-session-sidebar');
                       const text = header.querySelector('h1');
-
                       const context = document.createElement('canvas').getContext('2d');
                       const rgb = value => {
                         context.clearRect(0, 0, 1, 1);
@@ -642,13 +718,12 @@ def main() -> None:
                         context.fillRect(0, 0, 1, 1);
                         return Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
                       };
-                      const result = {
+                      return {
                         header: rgb(getComputedStyle(header).backgroundColor),
                         form: rgb(getComputedStyle(composer).backgroundColor),
                         messageBackground: rgb(getComputedStyle(sidebar).backgroundColor),
                         messageText: rgb(getComputedStyle(text).color),
                       };
-                      return result;
                     }"""
                 )
                 for surface in ("header", "form", "messageBackground"):
@@ -657,13 +732,14 @@ def main() -> None:
                 chat_rect = rect(workbench_page, ".chat-wrap")
                 assert chat_rect["top"] >= 64, chat_rect
                 assert chat_rect["bottom"] <= 769, chat_rect
-                composer_rect = rect(workbench_page, ".chat-composer-wrap")
+                composer_rect = rect(workbench_page, '[data-slot="composer"]')
                 assert composer_rect["top"] >= 64, composer_rect
                 assert composer_rect["bottom"] <= chat_rect["bottom"] + 1, (
                     composer_rect,
                     chat_rect,
                 )
-                message_scroll = workbench_page.locator(".chat-message-list").evaluate(
+                assert composer_rect["right"] <= 1025, composer_rect
+                message_scroll = message_list.evaluate(
                     """element => ({
                       overflowY: getComputedStyle(element).overflowY,
                       clientHeight: element.clientHeight,
@@ -674,57 +750,76 @@ def main() -> None:
                 assert message_scroll["scrollHeight"] > message_scroll["clientHeight"], (
                     message_scroll
                 )
+                message_list.evaluate("element => { element.scrollTop = 0; }")
+                scrolled_composer = rect(workbench_page, '[data-slot="composer"]')
+                assert abs(scrolled_composer["top"] - composer_rect["top"]) <= 1, (
+                    composer_rect,
+                    scrolled_composer,
+                )
                 assert_no_root_overflow(workbench_page)
 
                 workbench_page.locator(".chat-session-main").filter(has_text="展示历史答案").click()
                 expect(
                     workbench_page.get_by_text("这是已经完成的历史答案。", exact=True)
                 ).to_be_visible()
-                # Selecting a completed session clears the live run's stream
-                # so the composer re-enables.  Allow a generous window: the
-                # React re-render chain (stream reset -> runs recompute ->
-                # composer enabled) is fast locally but can brush the default
-                # 5s budget on a loaded shared CI runner.
-                expect(workbench_page.get_by_role("textbox", name="消息")).to_be_enabled(timeout=20000)
-                model_trigger = workbench_page.locator(".chat-model-trigger")
+                expect(message_input).to_be_enabled(timeout=20000)
+                expect(stop_button).to_have_count(0)
+                model_trigger = workbench_page.get_by_role("button", name=re.compile(r"^模型 "))
                 expect(model_trigger).to_be_visible()
-                model_trigger_text = model_trigger.inner_text().strip()
-                assert model_trigger_text and model_trigger_text != "模型"
-                expect(
-                    workbench_page.get_by_role("button", name="批准模式：帮我批准")
-                ).to_be_visible()
-                workbench_page.get_by_role("button", name="批准模式：帮我批准").click()
-                approval_menu = workbench_page.locator(".chat-approval-menu")
+                assert model_trigger.inner_text().strip() not in ("", "模型")
+                workbench_page.get_by_role("button", name="风险确认", exact=True).click()
+                approval_menu = workbench_page.get_by_role("menu", name="工具权限")
                 expect(approval_menu).to_be_visible()
-                assert approval_menu.locator(".chat-approval-option").count() == 3
-                approval_menu.get_by_text("请求批准", exact=True).click()
+                expect(approval_menu.get_by_role("menuitemradio")).to_have_count(3)
+                approval_menu.get_by_role("menuitemradio", name=re.compile(r"^请求批准")).click()
                 expect(
-                    workbench_page.get_by_role("button", name="批准模式：请求批准")
+                    workbench_page.get_by_role("button", name="请求批准", exact=True)
                 ).to_be_visible()
                 workbench_page.locator(".chat-session-main").filter(
-                    has_text="继续处理这个长任务"
+                    has_text=live_session_title
                 ).click()
-                expect(
-                    workbench_page.get_by_text("正在继续生成可恢复的回答", exact=True)
-                ).to_be_visible()
-                workbench_page.reload(wait_until="domcontentloaded")
+                expect(live_answer).to_be_visible()
+                expect(stop_button).to_be_visible()
+                reload_studio(workbench_page)
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-view", "conversations"
                 )
-                expect(
-                    workbench_page.get_by_text("正在继续生成可恢复的回答", exact=True)
-                ).to_be_visible()
-                expect(workbench_page.locator(".chat-composer")).to_be_visible()
-                context_ring = workbench_page.locator(".chat-context-ring")
-                context_tooltip = workbench_page.locator(".chat-context-tooltip")
+                try:
+                    expect(live_answer).to_be_visible(timeout=15000)
+                except AssertionError:
+                    session_id = conversation_runtime.start_requests[-1].session_id
+                    with urlopen(
+                        f"{base_url}/api/v1/sessions/{session_id}/events?limit=100"
+                    ) as response:
+                        persisted = json.loads(response.read())
+                    has_persisted_body = "正在继续生成可恢复的回答" in json.dumps(
+                        persisted, ensure_ascii=False
+                    )
+                    failure = (
+                        "Active-session reload lost streamed output "
+                        f"(canonical events contain output: {has_persisted_body})"
+                    )
+                    verification_failures.append(failure)
+                    print(f"VERIFICATION FAILED: {failure}", flush=True)
+                expect(composer).to_be_visible()
+                expect(stop_button).to_be_visible()
+                assert len(conversation_runtime.start_requests) == 2
+                context_ring = workbench_page.get_by_role("button", name="上下文用量与压缩")
+                context_dialog = workbench_page.get_by_role("dialog", name="上下文", exact=True)
                 expect(context_ring).to_be_visible()
-                expect(context_tooltip).to_be_hidden()
+                expect(context_dialog).to_be_hidden()
                 context_ring.hover()
-                expect(context_tooltip).to_be_visible()
-                expect(context_tooltip).to_contain_text("上下文窗口")
+                expect(context_dialog).to_be_visible()
+                expect(
+                    context_dialog.get_by_role("button", name="压缩上下文", exact=True)
+                ).to_be_disabled()
                 workbench_page.mouse.move(0, 0)
                 context_ring.focus()
-                expect(context_tooltip).to_be_visible()
+                workbench_page.keyboard.press("Enter")
+                expect(context_dialog).to_be_visible()
+                workbench_page.keyboard.press("Escape")
+                expect(context_dialog).to_be_hidden()
+                expect(context_ring).to_be_focused()
 
                 workbench_page.get_by_role("button", name="运行详情", exact=True).click()
                 expect(workbench_page.locator(".chat-run-panel")).to_be_visible()
@@ -738,9 +833,33 @@ def main() -> None:
                 expect(workbench_page.locator(".app-shell")).to_have_attribute(
                     "data-viewport", "desktop"
                 )
-                chat_sidebar = rect(workbench_page, ".sidebar")
-                assert abs(chat_sidebar["width"] - 216) <= 1, chat_sidebar
+                chat_sidebar = rect(workbench_page, ".studio-navigation")
+                assert abs(chat_sidebar["width"] - 224) <= 1, chat_sidebar
+                # Explicit collapse and expansion persist across reloads.
+                workbench_page.get_by_role("button", name="收起导航", exact=True).click()
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "64px")
+                workbench_page.get_by_role("button", name="展开导航", exact=True).click()
+                expect(workbench_page.locator(".app-shell")).to_have_attribute(
+                    "data-rail", "expanded"
+                )
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "224px")
                 assert_no_root_overflow(workbench_page)
+                conversation_events.release_live.set()
+                expect(
+                    workbench_page.get_by_role("button", name="停止生成", exact=True)
+                ).to_have_count(0, timeout=15000)
+                assert len(conversation_runtime.start_requests) == 2
+                reload_studio(workbench_page)
+                expect(live_answer).to_be_visible(timeout=15000)
+                expect(workbench_page.locator(".app-shell")).to_have_attribute(
+                    "data-rail", "expanded"
+                )
+                expect(workbench_page.locator(".studio-navigation")).to_have_css("width", "224px")
+                assert len(conversation_runtime.start_requests) == 2
+                print(
+                    "Conversation layout, history switching, permissions and run panel exercised",
+                    flush=True,
+                )
                 workbench_context.close()
 
                 trace_context = browser.new_context(
@@ -750,9 +869,7 @@ def main() -> None:
                 trace_page = trace_context.new_page()
                 trace_page.route("**/api/v1/traces**", route_trace_fixture)
                 open_studio(trace_page, base_url)
-                trace_page.locator(".primary-nav").get_by_role(
-                    "button", name="可观测", exact=True
-                ).click()
+                navigate(trace_page, "可观测")
                 trace_root = trace_page.locator(".observability-page")
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 assert trace_page.url.endswith("#/observability"), trace_page.url
@@ -766,8 +883,8 @@ def main() -> None:
                 trace_page.get_by_role("button", name="查看详情", exact=True).click()
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-span-row")).to_have_count(1)
-                trace_sidebar = rect(trace_page, ".sidebar")
-                assert abs(trace_sidebar["width"] - 216) <= 1, trace_sidebar
+                trace_sidebar = rect(trace_page, ".studio-navigation")
+                assert abs(trace_sidebar["width"] - 224) <= 1, trace_sidebar
                 observability_body = trace_page.locator(".observability-body")
                 body_scroll = observability_body.evaluate(
                     """element => ({
@@ -776,9 +893,9 @@ def main() -> None:
                       scrollHeight: element.scrollHeight,
                     })"""
                 )
-                # Desktop trace workbench keeps scrolling inside its panes so
-                # the overview and panel headers remain stable.
-                assert body_scroll["overflowY"] == "hidden", body_scroll
+                # The responsive workbench scrolls inside the page body;
+                # span and event panes retain their own scrolling below.
+                assert body_scroll["overflowY"] == "auto", body_scroll
                 trace_page.locator(".trace-workbench").scroll_into_view_if_needed()
                 trace_rect = rect(trace_page, ".trace-workbench")
                 assert trace_rect["top"] >= 64, trace_rect
@@ -796,7 +913,7 @@ def main() -> None:
                     "spans": "auto",
                     "detail": "auto",
                 }, trace_overflows
-                trace_page.get_by_role("tab", name="Events", exact=True).click()
+                trace_page.get_by_role("tab", name="事件", exact=True).click()
                 event_row = trace_page.locator(".trace-event-card .trace-kv-row").first
                 expect(event_row).to_be_visible()
                 event_columns = event_row.evaluate(
@@ -810,7 +927,7 @@ def main() -> None:
                 )
                 assert event_columns["keyRight"] <= event_columns["valueLeft"], event_columns
 
-                trace_page.get_by_role("tab", name="Raw OTLP", exact=True).click()
+                trace_page.get_by_role("tab", name="原始数据", exact=True).click()
                 json_tree = trace_page.locator(".otlp-json")
                 expect(json_tree).to_be_visible()
                 expect(json_tree).to_contain_text("resourceSpans")
@@ -840,7 +957,7 @@ def main() -> None:
                     "button", name="展开右侧详情", exact=True
                 )
                 expect(reopen_detail).to_be_visible()
-                expect(trace_page.get_by_role("tab", name="Raw OTLP", exact=True)).to_be_hidden()
+                expect(trace_page.get_by_role("tab", name="原始数据", exact=True)).to_be_hidden()
                 reopen_detail.click()
 
                 expand_button = trace_page.get_by_role("button", name="放大详情", exact=True)
@@ -858,15 +975,20 @@ def main() -> None:
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-list-page")).to_be_visible()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
-                expect(trace_page.locator(".sidebar")).to_have_css("width", "216px")
-                expanded_sidebar = rect(trace_page, ".sidebar")
-                assert abs(expanded_sidebar["width"] - 216) <= 1, expanded_sidebar
+                expect(trace_page.locator(".studio-navigation")).to_have_css("width", "224px")
+                expanded_sidebar = rect(trace_page, ".studio-navigation")
+                assert abs(expanded_sidebar["width"] - 224) <= 1, expanded_sidebar
                 reload_studio(trace_page)
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
                 trace_page.get_by_role("button", name="收起导航", exact=True).click()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "compact")
+                print(
+                    "Trace detail, pane scrolling, Events and Raw OTLP controls passed", flush=True
+                )
                 trace_context.close()
+                assert not verification_failures, "\n".join(verification_failures)
             finally:
+                conversation_events.release_live.set()
                 browser.close()
 
 

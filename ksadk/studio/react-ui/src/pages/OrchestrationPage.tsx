@@ -111,11 +111,11 @@ function layoutPipeline(steps: PipelineStep[], width: number): {
   nodes: PipelineGraphNode[];
   edges: PipelineGraphEdge[];
 } {
-  const usableWidth = Math.max(560, width - 96);
-  const maxColumns = usableWidth >= 1120 ? 3 : usableWidth >= 720 ? 3 : 2;
+  const usableWidth = width - 64;
+  const maxColumns = usableWidth >= 720 ? 3 : usableWidth >= 496 ? 2 : 1;
   const columns = Math.max(1, Math.min(maxColumns, steps.length));
   const gridWidth = columns * NODE_WIDTH + (columns - 1) * COLUMN_GAP;
-  const startX = Math.max(48, (Math.max(width, 560) - gridWidth) / 2);
+  const startX = Math.max(32, (width - gridWidth) / 2);
   const positions = steps.map((_, index) => {
     const row = Math.floor(index / columns);
     const offset = index % columns;
@@ -191,6 +191,7 @@ function PipelineCanvas({ steps }: { steps: PipelineStep[] }) {
     <div
       ref={containerRef}
       className="orchestration-graph"
+      style={width < 560 ? { height: steps.length * (NODE_HEIGHT + ROW_GAP) + 40 } : undefined}
       role="application"
       aria-label="执行链路画布"
       data-layout="adaptive-serpentine"
@@ -206,12 +207,16 @@ function PipelineCanvas({ steps }: { steps: PipelineStep[] }) {
         minZoom={0.55}
         maxZoom={1.35}
         nodesConnectable={false}
-        elementsSelectable
+        nodesDraggable={false}
+        nodesFocusable={false}
+        edgesFocusable={false}
+        elementsSelectable={false}
         panOnScroll
         selectionOnDrag={false}
+        ariaLabelConfig={{ "controls.zoomIn.ariaLabel": "放大画布", "controls.zoomOut.ariaLabel": "缩小画布", "controls.ariaLabel": "画布视图" }}
         proOptions={{ hideAttribution: true }}
       >
-        <Controls showFitView={false} position="bottom-right">
+        <Controls showFitView={false} showInteractive={false} position="bottom-right">
           <ControlButton
             aria-label="适应画布"
             title="适应画布"
@@ -225,23 +230,31 @@ function PipelineCanvas({ steps }: { steps: PipelineStep[] }) {
   );
 }
 
-export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCreate }: {
+export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCreate, onEdit, onOpenChat, refreshTick = 0 }: {
   currentAgentId: string;
+  refreshTick?: number;
   agents: AgentSummary[];
   onSelectAgent: (id: string) => void;
   onCreate: () => void;
+  onEdit?: (agentId: string) => void;
+  onOpenChat?: () => void;
 }) {
   void agents;
   void onSelectAgent; // 切换 Agent 统一走全局头部选择器。
   const [draft, setDraft] = useState<any>(null);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [catalog, setCatalog] = useState<any[]>([]);
+  const [loading, setLoading] = useState(Boolean(currentAgentId));
+  const [loadError, setLoadError] = useState("");
+  const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([
       apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()),
       apiFetch("/api/v1/catalog/models").then(r => r.json()).catch(() => null),
     ]).then(([resources, discovered]) => {
+      if (cancelled) return;
       const items = resources.items || [];
       const providerModels = discovered?.items || [];
       setCatalog([
@@ -249,21 +262,30 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
         ...providerModels,
       ]);
     }).catch(() => {});
-  }, []);
+    return () => { cancelled = true; };
+  }, [refreshTick]);
 
   useEffect(() => {
-    if (!currentAgentId) { setDraft(null); setRuns([]); return; }
+    setDraft(null);
+    setRuns([]);
+    setLoadError("");
+    if (!currentAgentId) { setLoading(false); return; }
+    setLoading(true);
     let cancelled = false;
     Promise.all([
-      apiFetch(`/api/v1/agents/${encodeURIComponent(currentAgentId)}`).then(r => r.json()),
+      apiFetch(`/api/v1/agents/${encodeURIComponent(currentAgentId)}`).then(r => {
+        if (!r.ok) throw new Error("Agent 配置加载失败，请重试。");
+        return r.json();
+      }),
       apiFetch("/api/v1/runs?limit=200").then(r => r.json()).catch(() => ({ items: [] })),
     ]).then(([detail, runList]) => {
       if (cancelled) return;
       setDraft(detail.draft || null);
       setRuns((runList.items || []).filter((r: RunItem) => r.agentId === currentAgentId));
-    }).catch(() => { if (!cancelled) { setDraft(null); setRuns([]); } });
+    }).catch(error => { if (!cancelled) setLoadError(error instanceof Error ? error.message : "执行链路加载失败，请重试。"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [currentAgentId]);
+  }, [currentAgentId, refreshTick, retryTick]);
 
   const bindings = draft?.spec?.bindings || {};
   const runtimeType = draft?.spec?.runtime?.type
@@ -318,45 +340,45 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
 
   return (
     <div className="page-container orchestration-page" data-layout="document">
-      {!draft && <PageHeaderActions>
+      {!draft && !loading && !loadError && <PageHeaderActions>
         <button className="button accent" type="button" onClick={onCreate}><Plus size={15} /><span>创建 Agent</span></button>
       </PageHeaderActions>}
-      {!draft ? (
+      {draft && <PageHeaderActions>
+        {onEdit && <button className="button secondary" type="button" onClick={() => onEdit(currentAgentId)}>编辑配置</button>}
+        {onOpenChat && <button className="button accent" type="button" onClick={() => onOpenChat()}>打开对话</button>}
+      </PageHeaderActions>}
+      {loading ? <div className="empty-state inline" role="status">正在加载执行链路</div>
+      : loadError ? <div className="empty-state inline" role="alert"><p>{loadError}</p><button className="button secondary" type="button" onClick={() => setRetryTick(tick => tick + 1)}>重新加载</button></div>
+      : !draft ? (
         <div className="orchestration-empty empty-state block">
           <span className="empty-icon"><Network size={24} /></span>
           <h2>先选择或创建一个 Agent</h2>
-          <p>编排视图会读取 Agent Revision、RuntimeRef 和能力绑定生成真实执行链路。</p>
+          <p>查看 Agent 的模型、能力绑定和执行顺序。</p>
         </div>
       ) : (
         <>
-        <section className="stat-strip compact-summary" aria-label="编排概览">
-          <div title={draft.metadata?.id}><span>Revision</span><strong>r{draft.metadata?.revision || 1}</strong></div>
-          <div title={`${strategy} · Edge`}><span>Runtime</span><strong>{runtimeType}</strong></div>
-          <div title={`${bindings.tools?.length || 0} Tool · ${bindings.mcpServers?.length || 0} MCP · ${bindings.skills?.length || 0} Skill`}><span>能力绑定</span><strong>{capCount}</strong></div>
-          <div className="emphasis"><span>最近调度</span><strong>{recentRuns[0] ? runStatusLabel(recentRuns[0].status) : "暂无"}</strong></div>
-        </section>
         <div className="orchestration-workbench">
           <section className="orchestration-canvas block">
             <div className="section-heading">
               <AgentAvatar name={draft.metadata?.name || "Agent"} appearance={draft.metadata?.appearance} size="md" />
               <div className="section-heading-copy">
                 <h2 title={draft.metadata?.id}>{draft.metadata?.name}</h2>
+                <p>执行链路预览 · 在编辑配置中调整模型与能力</p>
               </div>
             </div>
             <PipelineCanvas steps={pipelineSteps} />
           </section>
           <aside className="orchestration-aside block">
-            <section className="orchestration-aside-section">
-              <div className="aside-title">路由与约束</div>
+            <details className="orchestration-aside-section">
+              <summary className="aside-title">执行配置</summary>
               <dl>
                 <div><dt>Revision</dt><dd>r{draft.metadata?.revision}</dd></div>
                 <div><dt>执行位置</dt><dd>Edge · Local</dd></div>
                 <div><dt>Runtime</dt><dd>{runtimeType}</dd></div>
                 <div><dt>策略</dt><dd>{strategy}</dd></div>
                 <div><dt>最大步骤</dt><dd>{draft.spec?.execution?.maxSteps || "-"}</dd></div>
-                <div><dt>云端</dt><dd>未连接</dd></div>
               </dl>
-            </section>
+            </details>
             <div className="aside-divider" />
             <section className="orchestration-aside-section">
               <div className="aside-title">最近调度</div>

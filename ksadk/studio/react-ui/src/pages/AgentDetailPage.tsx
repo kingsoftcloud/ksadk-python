@@ -121,8 +121,9 @@ function InvocationDrawer({ detail, catalog, buildId, onClose }: {
   );
 }
 
-export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onChanged }: {
+export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onChanged, refreshTick = 0 }: {
   agentId: string;
+  refreshTick?: number;
   onBack: () => void;
   onChat: (id: string) => void;
   onBuild: () => void;
@@ -139,13 +140,21 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
   const [scheduleCount, setScheduleCount] = useState<number | null>(null);
   const [section, setSection] = useState<"overview" | "automations">("overview");
 
+  useEffect(() => { setSection("overview"); setDetail(null); setError(""); }, [agentId]);
+
   useEffect(() => {
-    setSection("overview");
-    apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`).then(r => r.json()).then(setDetail).catch(() => setDetail(null));
-    apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()).then(d => setCatalog(d.items || [])).catch(() => {});
-    apiFetch("/api/v1/deployments").then(r => r.json()).then(d => setDeployments(d.items || [])).catch(() => {});
-    apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/schedules`).then(r => r.ok ? r.json() : null).then(d => setScheduleCount(d?.items?.length ?? 0)).catch(() => setScheduleCount(null));
-  }, [agentId]);
+    let cancelled = false;
+    apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`).then(r => {
+      if (!r.ok) throw new Error("Agent 配置读取失败，请刷新重试。");
+      return r.json();
+    }).then(value => {
+      if (!cancelled) { setDetail(value); setError(""); }
+    }).catch(() => { if (!cancelled) setError("Agent 配置读取失败，请刷新重试。"); });
+    apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()).then(d => { if (!cancelled) setCatalog(d.items || []); }).catch(() => {});
+    apiFetch("/api/v1/deployments").then(r => r.json()).then(d => { if (!cancelled) setDeployments(d.items || []); }).catch(() => {});
+    apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}/schedules`).then(r => r.ok ? r.json() : null).then(d => { if (!cancelled) setScheduleCount(d?.items?.length ?? 0); }).catch(() => { if (!cancelled) setScheduleCount(null); });
+    return () => { cancelled = true; };
+  }, [agentId, refreshTick]);
 
   async function doDelete() {
     setDeleting(true);
@@ -167,7 +176,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
   }
 
   if (!detail) {
-    return <div className="page-container" data-layout="document"><p style={{ color: "var(--text-tertiary)" }}>正在加载 Agent 配置…</p></div>;
+    return <div className="page-container" data-layout="document">{error ? <p className="form-error" role="alert">{error}</p> : <p style={{ color: "var(--text-tertiary)" }}>正在加载 Agent 配置…</p>}</div>;
   }
 
   const draft = detail.draft;
@@ -313,6 +322,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
       </div>}
       {section === "automations" && (
         <AutomationsPage
+          refreshTick={refreshTick}
           currentAgentId={agentId}
           agents={[{ metadata: { id: agentId, name: draft.metadata.name } }]}
           onSelectAgent={() => {}}

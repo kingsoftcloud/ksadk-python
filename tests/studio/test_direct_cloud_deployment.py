@@ -10,6 +10,7 @@ import pytest
 from ksadk.api import AgentEngineAPIError
 from ksadk.studio.builder import AgentBundleBuilder
 from ksadk.studio.cloud import CloudDeploymentService, DirectAgentEngineCloudDeploymentGateway
+from ksadk.studio.configuration import WorkspaceConfiguration
 from ksadk.studio.contracts import (
     AgentDraft,
     AgentMetadata,
@@ -47,9 +48,17 @@ def test_direct_gateway_signs_control_actions_with_process_credentials(monkeypat
     }
 
 
-def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatch) -> None:
+def _cloud_composition_service(tmp_path: Path):
     from ksadk.studio.service import StudioService
 
+    # Exercise gateway composition with the real workspace configuration, without
+    # starting the unrelated DSH discovery performed by StudioService.__init__.
+    service = StudioService.__new__(StudioService)
+    service.configuration = WorkspaceConfiguration(Workspace(tmp_path))
+    return service
+
+
+def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatch, tmp_path) -> None:
     captured: list[dict[str, str]] = []
 
     class _CapturedClient:
@@ -59,13 +68,17 @@ def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatc
     monkeypatch.setenv("KSYUN_ACCESS_KEY", "studio-access")
     monkeypatch.setenv("KSYUN_SECRET_KEY", "studio-secret")
     monkeypatch.setenv("KSYUN_REGION", "pre-online")
+    monkeypatch.delenv("AGENTENGINE_REGION", raising=False)
+    monkeypatch.delenv("AGENTENGINE_SERVER_URL", raising=False)
+    monkeypatch.delenv("AGENTENGINE_STREAM_SERVER_URL", raising=False)
     monkeypatch.setattr("ksadk.studio.service.AgentEngineClient", _CapturedClient)
 
-    gateway = StudioService._configured_cloud_gateway()
+    gateway = _cloud_composition_service(tmp_path)._configured_cloud_gateway()
 
     assert isinstance(gateway, DirectAgentEngineCloudDeploymentGateway)
     assert captured == [
         {
+            "base_url": None,
             "region": "pre-online",
             "access_key": "studio-access",
             "secret_key": "studio-secret",
@@ -81,11 +94,9 @@ def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatc
 
 
 def test_studio_keeps_preonline_server_route_when_region_setting_is_physical_region(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
     """The settings page may persist cn-beijing-6 while studio.env selects pre-online."""
-    from ksadk.studio.service import StudioService
-
     captured: list[dict[str, str]] = []
 
     class _CapturedClient:
@@ -96,14 +107,16 @@ def test_studio_keeps_preonline_server_route_when_region_setting_is_physical_reg
     monkeypatch.setenv("KSYUN_SECRET_KEY", "studio-secret")
     monkeypatch.setenv("KSYUN_REGION", "pre-online")
     monkeypatch.setenv("AGENTENGINE_REGION", "cn-beijing-6")
+    monkeypatch.delenv("AGENTENGINE_SERVER_URL", raising=False)
     monkeypatch.delenv("AGENTENGINE_STREAM_SERVER_URL", raising=False)
     monkeypatch.setattr("ksadk.studio.service.AgentEngineClient", _CapturedClient)
 
-    gateway = StudioService._configured_cloud_gateway()
+    gateway = _cloud_composition_service(tmp_path)._configured_cloud_gateway()
 
     assert isinstance(gateway, DirectAgentEngineCloudDeploymentGateway)
     assert captured == [
         {
+            "base_url": None,
             "region": "pre-online",
             "access_key": "studio-access",
             "secret_key": "studio-secret",
