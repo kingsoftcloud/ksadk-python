@@ -106,6 +106,7 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/studio/test_scheduler_runtime.py",
     "tests/test_check_release_version.py",
     "tests/studio/test_shared_web.py",
     "tests/studio/test_dsh_application.py",

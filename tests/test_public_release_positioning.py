@@ -530,6 +530,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "KSADK_WEB_VERSION ?= 0.3.7" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py "
+        "tests/studio/test_scheduler_runtime.py "
         "tests/studio/test_shared_web.py tests/test_public_release_positioning.py "
         "tests/test_docs_site_output_audit.py tests/test_config_env_registry.py "
         "tests/test_managed_runtime_builder.py "
