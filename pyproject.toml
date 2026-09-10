@@ -160,7 +160,7 @@ codex = [
 ]
 # Official AG-UI transport. Optional until Hosted UI selects it from bootstrap.
 agui = [
-    "ag-ui-protocol==0.1.19",
+    "ag-ui-protocol==0.1.22",
     "ag-ui-langgraph[fastapi]==0.0.42",
     "copilotkit==0.1.94",
 ]
