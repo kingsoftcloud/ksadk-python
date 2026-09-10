@@ -59,7 +59,7 @@
 ### 兼容与发布验证
 ### Skill Center MCP Server 与 Skill Runtime
 
-- 新增 `ksadk.skills.mcp_server` 包：Skill Center 的 MCP server 实现，向 OpenClaw / Hermes 等托管运行时注入 `execute_skills`、`list_skills` 等 MCP 工具，运行时通过 `SKILL_SPACE_ID` 环境变量绑定 Skill 空间，按 `KSADK_SKILL_SERVICE_REGION` 区分预发/线上。
+- 新增 `ksadk.skills.mcp_server` 包：Skill Center 的 MCP server 实现，向 OpenClaw / Hermes 等托管运行时注入 `execute_skills`、`list_skills` 等 MCP 工具，运行时通过 `SKILL_SPACE_ID` 环境变量绑定 Skill 空间，通过 `KSADK_SKILL_SERVICE_REGION` 选择服务区域。
 - 新增 `ksadk.skills.mcp_server.register.py`：MCP server 注册逻辑与凭证回退——当 `KSADK_SKILL_SERVICE_ACCESS_KEY/SECRET_KEY` 未设置但 `SKILL_SPACE_ID` 已配置时，自动回退到 `KSYUN_ACCESS_KEY/KSYUN_SECRET_KEY`，使部署时无需显式传入 Skill Service 凭证。
 - 新增 `ksadk.skills.manifest_cache.py`：Skill manifest 缓存层，减少 Skill Service `ListSkillsBySpaceId` 重复请求。
 - 改进 `ksadk.skills.runtime` 执行器、`local_process` backend 和 base 抽象，统一 `execute_skills` 编排和沙箱会话生命周期。
