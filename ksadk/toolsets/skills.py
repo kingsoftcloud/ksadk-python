@@ -444,5 +444,3 @@ def _iter_remote_skills(client: SkillServiceClient, space_id: str | None = None)
         yield from _iter_space_skills(client, user_space_id)
     if public_skill_space_ids():
         yield from _iter_space_skills(client, "public")
-
-
