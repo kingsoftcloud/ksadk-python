@@ -193,7 +193,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
       <aside className="studio-team-directory" aria-label="团队列表">
         <header>
           <div>
-            <span className="studio-teams-eyebrow">协作空间</span>
+            <span className="studio-teams-eyebrow">协作空间 <b className="studio-beta-badge">Beta</b></span>
             <h2>团队</h2>
           </div>
           <button
@@ -299,7 +299,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
             <span className="studio-teams-symbol">
               <UsersRound size={26} />
             </span>
-            <span className="studio-teams-eyebrow">AGENT TEAMS</span>
+            <span className="studio-teams-eyebrow">AGENT TEAMS <b className="studio-beta-badge">Beta</b></span>
             <h2>一个目标，团队一起完成</h2>
             <p>
               让 Leader 组织分工，让成员专注任务。

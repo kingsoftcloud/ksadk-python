@@ -82,7 +82,7 @@ export function TeamsAvailability({ compact = false }: { compact?: boolean }) {
         <UsersRound size={23} />
       </span>
       <div>
-        <span className="studio-teams-eyebrow">Agent Teams</span>
+        <span className="studio-teams-eyebrow">Agent Teams <b className="studio-beta-badge">Beta</b></span>
         <h2>
           {compact
             ? "让多个 Agent 一起完成目标"

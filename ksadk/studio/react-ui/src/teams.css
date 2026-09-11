@@ -87,6 +87,20 @@
   font-weight: 600;
   color: var(--studio-text-secondary);
 }
+.studio-beta-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.12rem 0.38rem;
+  border: 1px solid var(--team-warning);
+  border-radius: 999px;
+  color: var(--team-warning);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
 .studio-team-search {
   margin: 0 14px 16px;
   padding: 5px 10px;

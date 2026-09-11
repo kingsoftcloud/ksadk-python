@@ -11,7 +11,6 @@ import "./studio-refinement.css";
 import "./plugins.css";
 import "./layout-simplification.css";
 import "./mobile-resource-lists.css";
-import "@kingsoftcloud/ksadk-web/teams/styles";
 import "./teams.css";
 
 async function mount(container: HTMLElement) {

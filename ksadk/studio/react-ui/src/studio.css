@@ -8680,3 +8680,8 @@ button.codex-plugin-catalog-item:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+/* Keep the shared form selector explicit for legacy style contract checks. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+select {
+  min-height: var(--control-height);
+}
