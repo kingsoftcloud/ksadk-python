@@ -129,6 +129,7 @@ export interface NavigationRailProps {
   onWorkspaceSwitch?: () => void;
   workspaces?: Array<{ workspaceId: string; name: string; path: string }>;
   onWorkspaceSelect?: (path: string) => void;
+  workspaceRunCount?: number;
 }
 export function NavigationRail({
   view,
@@ -149,6 +150,7 @@ export function NavigationRail({
   onWorkspaceSwitch,
   workspaces = [],
   onWorkspaceSelect,
+  workspaceRunCount = 0,
 }: NavigationRailProps) {
   const activeGroup =
     GROUPS.find((group) => group.items.some((item) => item.id === view))?.id ||
@@ -193,6 +195,7 @@ export function NavigationRail({
         >
           <Folder size={15} aria-hidden="true" />
           {showLabels && <span>{workspaceName}</span>}
+          {showLabels && workspaceRunCount > 0 && <small aria-label={`${workspaceRunCount} 个后台任务`}>{workspaceRunCount}</small>}
           <i
             data-ready={runtimeReady}
             aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"}

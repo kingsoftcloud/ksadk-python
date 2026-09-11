@@ -154,6 +154,7 @@ export default function App() {
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string; workspaceId?: string } | null>(null);
   const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>([]);
+  const [workspaceRunCount, setWorkspaceRunCount] = useState(0);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -306,6 +307,12 @@ export default function App() {
       setWorkspace(d.workspace || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => setRuntimeReady(false)).finally(() => setRuntimeChecked(true));
+  }, [refreshTick]);
+
+  useEffect(() => {
+    apiFetch("/api/v1/workspaces/runs").then(r => r.ok ? r.json() : null)
+      .then(d => setWorkspaceRunCount(Array.isArray(d?.items) ? d.items.filter((item: any) => ["running", "pending", "input-required", "paused"].includes(item.status)).length : 0))
+      .catch(() => undefined);
   }, [refreshTick]);
 
   useEffect(() => {
@@ -520,6 +527,7 @@ export default function App() {
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
         workspaces={workspaces}
+        workspaceRunCount={workspaceRunCount}
         onWorkspaceSelect={async path => {
           const response = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path }) });
           if (response.ok) window.location.reload();
