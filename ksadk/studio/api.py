@@ -233,6 +233,11 @@ def create_studio_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             await studio.start()
+            try:
+                await studio.active.teams_installation.enable()
+            except Exception:
+                # Teams is optional when a host has no usable DSH toolchain.
+                pass
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
@@ -1069,8 +1074,15 @@ def create_studio_app(
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
         try:
-            record = studio.switch(payload.path, create=payload.create)
+            # A user-selected directory is itself the workspace. The registry
+            # entry is created as part of opening it; callers do not need to
+            # pre-register paths in a separate settings screen.
+            record = studio.switch(payload.path, create=True)
             await studio.start()
+            try:
+                await studio.active.teams_installation.enable()
+            except Exception:
+                pass
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         response = {

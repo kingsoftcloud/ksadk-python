@@ -89,6 +89,8 @@ class StudioScheduledKernelRegistry:
         self._entries_by_build: dict[str, _RuntimeEntry] = {}
         self._build_by_instance: dict[str, str] = {}
         self._lock = asyncio.Lock()
+        self._admission_lock = asyncio.Lock()
+        self._admission_open = True
         self._started = False
 
     @property
@@ -101,6 +103,22 @@ class StudioScheduledKernelRegistry:
 
     async def start(self) -> None:
         self._started = True
+
+    async def set_admission_open(self, enabled: bool) -> None:
+        """Fence scheduler runtime creation during Profile maintenance."""
+        async with self._admission_lock:
+            async with self._lock:
+                self._admission_open = enabled
+
+    async def close(self) -> None:
+        """Stop and release all scheduler-owned Kernel runtimes."""
+        async with self._lock:
+            entries = tuple(self._entries_by_build.values())
+            self._entries_by_build.clear()
+            self._build_by_instance.clear()
+            self._started = False
+        for entry in entries:
+            await entry.runtime.close()
 
     async def ensure_build(
         self,
@@ -120,6 +138,10 @@ class StudioScheduledKernelRegistry:
             raise StudioSchedulerRuntimeError(
                 "SCHEDULER_RUNTIME_NOT_STARTED",
                 "Studio Scheduler Runtime 尚未启动",
+            )
+        if not self._admission_open:
+            raise StudioSchedulerRuntimeError(
+                "SCHEDULER_MAINTENANCE", "插件宿主正在维护，暂不启动新的 Scheduler Kernel"
             )
         existing = self._entries_by_build.get(normalized)
         if existing is not None:
