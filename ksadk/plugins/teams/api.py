@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import time
 from typing import Any, Literal
 
@@ -34,7 +35,7 @@ class TeamsRoute(APIRoute):
             except ValueError as error:
                 if hasattr(error, "code") and hasattr(error, "status"):
                     return JSONResponse(
-                        {"error": {"code": error.code, "message": str(error)}},
+                        {"error": {"code": error.code, "message": "团队请求无法处理"}},
                         status_code=error.status,
                     )
                 raise
@@ -362,8 +363,13 @@ def create_router(application: TeamsApplication) -> APIRouter:
             item = tx.get("artifact", artifact_id)
             if item["groupId"] != group_id:
                 raise TeamsError("artifact_forbidden", "文件不属于此团队", status=403)
+        artifact_path = Path(item["_path"]).resolve(strict=True)
+        try:
+            artifact_path.relative_to(application.workspace_root)
+        except ValueError:
+            raise TeamsError("artifact_path_forbidden", "文件不属于工作区", status=403) from None
         return FileResponse(
-            item["_path"],
+            artifact_path,
             filename=item["name"],
             media_type=item["mediaType"],
             headers={"X-Content-Type-Options": "nosniff"},
