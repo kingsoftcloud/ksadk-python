@@ -61,6 +61,7 @@ set -eu
 APP_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 WORKSPACE="${STUDIO_APP_WORKSPACE:-.}"
 PORT="${STUDIO_APP_PORT:-8172}"
+export AGENTENGINE_PLUGIN_TOOLCHAIN_HOME="$APP_ROOT/Contents/Resources/plugin-toolchains"
 exec "$APP_ROOT/Contents/Resources/electron/Contents/MacOS/Electron" "$APP_ROOT/Contents/Resources/app" "$@"
 LAUNCHER
 chmod 0755 "$STUDIO_APP_BUNDLE/Contents/MacOS/AgentKitStudio"
@@ -86,6 +87,16 @@ cp -R "$electron_dist/Electron.app/." "$STUDIO_APP_BUNDLE/Contents/Resources/ele
 cp electron-main.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/main.js"
 cp desktop-runtime.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/desktop-runtime.js"
 cp preload.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/preload.js"
+
+# Bundle the exact pinned DSH CLI/Core runtime for offline provider registration.
+dsh_source="${STUDIO_APP_DSH_ROOT:-$HOME/.agentengine/plugin-toolchains/dsh/0.1.5-rc.1}"
+test -x "$dsh_source/node_modules/.bin/dsh" || {
+  echo "ERROR: pinned DSH toolchain is missing: $dsh_source" >&2
+  exit 1
+}
+mkdir -p "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh"
+rm -rf "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh/0.1.5-rc.1"
+cp -R "$dsh_source" "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains/dsh/0.1.5-rc.1"
 cat > "$STUDIO_APP_BUNDLE/Contents/Resources/app/package.json" <<'JSON'
 {"name":"agentkit-studio-shell","version":"1.0.0","main":"main.js"}
 JSON
