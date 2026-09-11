@@ -1108,6 +1108,12 @@ def create_studio_app(
             # optional DSH/Profile bootstrap; the selected workspace becomes
             # active immediately and its plugins start lazily on demand.
             record = studio.switch(payload.path, create=True)
+            # A newly selected workspace has a fresh StudioService. Start its
+            # local state and schedule DSH/provider discovery without waiting
+            # for the optional toolchain. Without this step the active service
+            # has no provider snapshot, so the first Codex/Teams action would
+            # incorrectly report "Provider 未注册" until a process restart.
+            await studio.active.start(wait_for_dsh=False)
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         response = {
