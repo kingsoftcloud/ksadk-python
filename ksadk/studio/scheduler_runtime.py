@@ -1,17 +1,4 @@
-"""Build-pinned AgentKernel runtimes owned by the local Studio scheduler.
-
-The ordinary Studio conversation path may keep using its historical direct
-RuntimeExecutor or an independently enabled HTTP Kernel.  Scheduler Lite owns
-neither of those lifecycles.  Instead it lazily starts one in-process Kernel
-runtime for each immutable Build referenced by a local scheduled task.
-
-This is intentionally a registry rather than another process-global Kernel:
-one AgentKernelWorker has one concrete RuntimeAdapter factory, so reusing a
-single global worker for multiple Studio Builds can execute the wrong Agent.
-The registry keeps ``Build -> instance -> Runtime`` exact and dispatches every
-occurrence through that runtime's AgentControl Inbox and canonical
-SessionEvent log.
-"""
+"""Scheduler-specific target, title and event adapters for the Build registry."""
 
 from __future__ import annotations
 
@@ -34,28 +21,25 @@ from ksadk.kernel.contracts import (
     SessionEventSubscription,
 )
 from ksadk.kernel.ingress import trusted_context
-from ksadk.runtime import RuntimeAdapter
 from ksadk.scheduler.contracts import ScheduledTaskTarget, ScheduleOccurrence
-from ksadk.sessions.base import BaseSessionService
-from ksadk.studio.run_service import StudioRunSpec
+from ksadk.studio.kernel_registry import (
+    ResolveAdapterProvider,
+    ResolveBuild,
+    StudioBuildKernelError,
+    StudioBuildKernelRegistry,
+    StudioBuildRuntimeTarget,
+)
 
-ResolveBuild = Callable[[str], StudioRunSpec]
-ResolveAdapterProvider = Callable[
-    [StudioRunSpec], Callable[[], RuntimeAdapter]
-]
 
-
-class StudioSchedulerRuntimeError(RuntimeError):
+class StudioSchedulerRuntimeError(StudioBuildKernelError):
     """Stable local scheduling failure safe to persist on an occurrence."""
 
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
+
+StudioScheduledRuntimeTarget = StudioBuildRuntimeTarget
 
 
-@dataclass(frozen=True)
-class StudioScheduledRuntimeTarget:
-    """Server-owned immutable routing facts persisted on ScheduledTask/v1."""
+class StudioScheduledKernelRegistry(StudioBuildKernelRegistry):
+    """Add Scheduler references and session presentation to shared Build Kernels."""
 
     build_id: str
     agent_id: str
@@ -255,15 +239,6 @@ class StudioScheduledKernelRegistry:
             )
         return exact
 
-    def runtime_for_build(self, build_id: str) -> AgentKernelRuntime:
-        entry = self._entries_by_build.get(str(build_id))
-        if entry is None:
-            raise StudioSchedulerRuntimeError(
-                "SCHEDULER_TARGET_UNAVAILABLE",
-                "定时任务目标 Kernel 未注册",
-            )
-        return entry.runtime
-
     async def submit(
         self,
         command: AgentControlCommand,
@@ -271,26 +246,21 @@ class StudioScheduledKernelRegistry:
     ) -> AgentControlReceipt:
         entry = self._entry_for_instance(command.agent_instance_id)
         if command.tenant_id != entry.target.tenant_id:
-            raise StudioSchedulerRuntimeError(
-                "SCHEDULER_TARGET_MISMATCH",
-                "AgentControl tenant 与 Build Kernel 不一致",
-            )
-        if await self._session_service.get_session(command.session_id) is None:
-            await self._session_service.create_session(
-                agent_id=entry.target.agent_id,
-                user_id=command.tenant_id,
-                session_id=command.session_id,
-            )
-            prompt = command.payload.get("content")
-            if isinstance(prompt, str) and prompt.strip():
-                await self._session_service.update_session_metadata(
-                    command.session_id,
-                    title=f"定时任务 · {prompt[:40]}",
-                    title_source="scheduler",
-                    first_prompt=prompt,
-                    last_prompt=prompt,
-                )
-        return await entry.runtime.kernel.submit(command, permit=permit)
+            raise self._error("TARGET_MISMATCH", "AgentControl tenant 与 Build Kernel 不一致")
+        prompt = command.payload.get("content")
+        has_prompt = isinstance(prompt, str) and bool(prompt.strip())
+        await self.ensure_session(
+            entry.target.build_id,
+            command.session_id,
+            command.tenant_id,
+            title=f"定时任务 · {prompt[:40]}" if has_prompt else None,
+            metadata={
+                "title_source": "scheduler",
+                "first_prompt": prompt,
+                "last_prompt": prompt,
+            } if has_prompt else None,
+        )
+        return await self.submit_control(command, permit)
 
     async def read_events(
         self, occurrence: ScheduleOccurrence
@@ -332,56 +302,6 @@ class StudioScheduledKernelRegistry:
         finally:
             await stream.aclose()
         return tuple(result)
-
-    async def close(self) -> None:
-        async with self._lock:
-            entries = list(self._entries_by_build.values())
-            self._entries_by_build.clear()
-            self._build_by_instance.clear()
-            self._started = False
-        first_error: BaseException | None = None
-        for entry in reversed(entries):
-            try:
-                await entry.runtime.close()
-            except BaseException as error:  # cleanup must continue for other Builds
-                if first_error is None:
-                    first_error = error
-        if first_error is not None:
-            raise first_error
-
-    def _entry_for_instance(self, instance_id: str) -> _RuntimeEntry:
-        build_id = self._build_by_instance.get(str(instance_id))
-        entry = self._entries_by_build.get(build_id or "")
-        if entry is None:
-            raise StudioSchedulerRuntimeError(
-                "SCHEDULER_TARGET_UNAVAILABLE",
-                "定时任务目标 Kernel 未注册",
-            )
-        return entry
-
-    def _instance_id(self, build_id: str) -> str:
-        digest = hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:24]
-        return f"studio-schedule-{digest}"
-
-    @staticmethod
-    def _require_agent(spec: StudioRunSpec, expected_agent_id: str | None) -> None:
-        if expected_agent_id and spec.agent_id != expected_agent_id:
-            raise StudioSchedulerRuntimeError(
-                "SCHEDULER_AGENT_MISMATCH",
-                "定时任务 Agent 与不可变 Build 不一致",
-            )
-
-    @staticmethod
-    def _start_defaults(spec: StudioRunSpec) -> dict[str, object]:
-        defaults: dict[str, object] = {
-            "agent_id": spec.agent_id,
-            "config": dict(spec.request_config),
-        }
-        if spec.model:
-            defaults["model"] = spec.model
-            defaults["allowed_models"] = [spec.model]
-        return defaults
-
 
 __all__ = [
     "ResolveAdapterProvider",

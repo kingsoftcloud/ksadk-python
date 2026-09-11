@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
+from ksadk.plugins.dsh_home import prepare_studio_dsh_home
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.studio.contracts import AgentSpec
 from ksadk.studio.service import StudioService
@@ -77,6 +78,7 @@ def _managed_harness_profile(workspace: Path) -> dict[str, str]:
     """Install the wheel-owned Bundle behind a deterministic DSH CLI seam."""
 
     home = workspace / ".agentkit" / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     installed = profile / "node_modules" / "@kingsoftcloud" / "ksadk-harness-provider"
     installed.parent.mkdir(parents=True)

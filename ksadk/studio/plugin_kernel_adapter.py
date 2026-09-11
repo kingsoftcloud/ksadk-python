@@ -12,6 +12,11 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
     """Bind a Studio Build/session to its profile-fenced provider activation."""
 
     def __init__(self, plugin_runtime: Any, spec: StudioRunSpec) -> None:
+        self._policy_supported = (
+            spec.request_config.get("provider_runtime_type") == "harness"
+            and getattr(plugin_runtime, "execution_policy_resolver", None) is not None
+        )
+
         async def bind_delegate(session_id: str):  # type: ignore[no-untyped-def]
             return await plugin_runtime.kernel_adapter(spec, session_id=session_id)
 

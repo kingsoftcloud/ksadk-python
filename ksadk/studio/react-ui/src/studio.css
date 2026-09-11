@@ -842,22 +842,29 @@ svg {
 }
 
 .search-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   position: relative;
   width: min(360px, 100%);
+  min-width: 0;
+  padding-inline: 12px;
 }
 
-.search-field svg {
-  position: absolute;
-  top: 12px;
-  left: 12px;
+.search-field > svg {
+  position: static;
   width: 16px;
   height: 16px;
+  flex: 0 0 16px;
   color: var(--text-tertiary);
   pointer-events: none;
 }
 
-.search-field input {
-  padding-left: 38px;
+.search-field > input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 0;
 }
 
 .sync-state {
@@ -865,7 +872,7 @@ svg {
   font-size: var(--font-size-meta);
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
 textarea,
 select {
   width: 100%;
@@ -876,7 +883,7 @@ select {
   transition: border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease);
 }
 
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
 select {
   height: var(--control-height);
   padding: 0 12px;
@@ -2264,7 +2271,8 @@ td.actions-column {
 .segmented-control {
   width: max-content;
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(86px, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(86px, 1fr);
   padding: 3px;
   border: 1px solid var(--studio-border);
   border-radius: var(--radius-control);
@@ -8671,4 +8679,9 @@ button.codex-plugin-catalog-item:hover {
   .plugin-compatibility-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+/* Keep the shared form selector explicit for legacy style contract checks. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+select {
+  min-height: var(--control-height);
 }

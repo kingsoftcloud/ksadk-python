@@ -101,6 +101,15 @@ class AgentCompiler:
         skills.sort(key=lambda item: (item["name"], item["version"], item["digest"]))
         mcp_servers.sort(key=lambda item: (item["name"], item["version"], item["digest"]))
         tools.sort(key=lambda item: (item.name, item.version, item.digest or ""))
+        available_tools = {tool.name for tool in tools}
+        for sub in materialized.spec.sub_agents:
+            if set(sub.tools) - available_tools or sub.name in available_tools:
+                raise StudioError(
+                    "SUBAGENT_TOOL_SCOPE_INVALID",
+                    "子 Agent 只能使用父 Agent 已绑定工具，且子 Agent 名称不能与工具重名",
+                    status_code=422,
+                    field="spec.subAgents",
+                )
 
         resolved = ResolvedAgentSpec(
             agent_id=draft.metadata.id,
@@ -121,6 +130,7 @@ class AgentCompiler:
             memory=materialized.spec.memory,
             security=materialized.spec.security,
             evaluation=materialized.spec.evaluation,
+            sub_agents=materialized.spec.sub_agents,
             source_digest=source_digest,
         )
         digest_payload = resolved.model_dump(

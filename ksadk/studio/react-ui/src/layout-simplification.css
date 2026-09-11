@@ -7,15 +7,6 @@
 .more-actions-trigger { min-width: 36px; }
 .plugins-page .button.primary { background: var(--button-primary-bg); color: var(--button-primary-text); border-color: transparent; }
 .plugins-page .button.primary:hover:not(:disabled) { background: var(--button-primary-bg-hover); }
-.app-shell .search-field input,
-.app-shell .search-field input:hover,
-.app-shell .search-field input:focus {
-  /* The shared input reset uses four :not() selectors; the search shell owns its edge. */
-  padding-left: 36px !important;
-  border: 0 !important;
-  box-shadow: none;
-  background: transparent;
-}
 
 .secondary-settings { border: 0; border-top: 1px solid var(--studio-border); padding-top: 12px; margin-block: 16px; }
 .secondary-settings > summary,
@@ -171,7 +162,7 @@ body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
     justify-content: flex-end;
   }
   .app-shell:not([data-view="conversations"]) #pageHeaderActions > :is(.button, .compact-create-rail-trigger) { width: auto; min-width: 40px; padding-inline: 12px; }
-  .app-shell:not([data-view="conversations"]) #pageHeaderActions .button > span { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; }
+  .app-shell:not([data-view="conversations"]) #pageHeaderActions .button > span:not(.king-icon) { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; }
   .app-shell:not([data-view="conversations"]) .header-agent-selector { grid-column: 1 / -1; grid-row: 3; width: 100%; min-width: 0; }
   .app-shell:not([data-view="conversations"]) #pageHeaderTools { grid-column: 1 / -1; grid-row: 4; min-width: 0; }
   .app-shell:not([data-view="conversations"]) :is(#pageHeaderActions, #pageHeaderTools):empty { display: none; }
@@ -230,3 +221,34 @@ body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
 .app-shell[data-view="conversations"] .app-main { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
 .app-shell[data-view="conversations"] :is(main, .chat-wrap, .chat-host) { height: 100%; min-height: 0; }
 .studio-chat-timeline [data-slot="processing-blocks"] button { color: var(--studio-text-secondary); }
+
+/* Resource names remain readable; narrow screens scroll this tab strip. */
+.resources-page .page-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.resources-page .page-tabs > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding-inline: 16px;
+  white-space: nowrap;
+}
+
+.model-endpoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.model-endpoint-actions > .segmented-control { flex: 1 1 250px; min-width: 0; }
+.model-endpoint-actions > .segmented-control button { white-space: nowrap; }
+.model-endpoint-actions > .button { flex-shrink: 0; margin-left: auto; }

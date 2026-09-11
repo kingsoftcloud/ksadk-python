@@ -552,7 +552,9 @@ class AgentKernelRuntime:
         """
 
         try:
-            await self.recovery.recover(self.config.agent_instance_id, lease)
+            await self.recovery.recover(
+                self.config.agent_instance_id, lease, session_id=session_id
+            )
             return None
         except Exception as exc:
             first_failure = exc

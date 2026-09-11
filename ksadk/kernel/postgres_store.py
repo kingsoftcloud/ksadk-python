@@ -31,15 +31,15 @@ from ksadk.events.session_event import (
     validate_write_guard,
 )
 from ksadk.interaction.contracts import (
-    InteractionRecord,
     InteractionReceipt,
+    InteractionRecord,
     InteractionSubmission,
     is_terminal,
 )
 from ksadk.interaction.ledger import (
     ALREADY_RESOLVED,
-    REVISION_MISMATCH,
     REQUEST_CONFLICT,
+    REVISION_MISMATCH,
     interaction_event,
     request_digest,
     requested_event_payload,
@@ -56,6 +56,8 @@ from ksadk.kernel.contracts import (
     SessionEventEnvelope,
 )
 from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
+from ksadk.kernel.execution_grants import execution_grant_id
+from ksadk.kernel.execution_grants_postgres import PostgresExecutionGrantMixin
 from ksadk.kernel.state import (
     InboxState,
     RunState,
@@ -310,7 +312,7 @@ class PostgresNonceStore:
                 )
 
 
-class PostgresAgentKernelStore:
+class PostgresAgentKernelStore(PostgresExecutionGrantMixin):
     def __init__(
         self,
         pool: Any,
@@ -345,6 +347,8 @@ class PostgresAgentKernelStore:
                 "DELETE FROM kernel_inbox; DELETE FROM kernel_runs;"
                 " DELETE FROM kernel_activations; DELETE FROM kernel_accepted_seq;"
                 " DELETE FROM kernel_interactions; DELETE FROM kernel_interaction_submissions;"
+                " DELETE FROM kernel_execution_grant_operations;"
+                " DELETE FROM kernel_execution_grants;"
                 " DELETE FROM ksadk_events WHERE namespace = 'default';"
             )
 
@@ -433,6 +437,8 @@ class PostgresAgentKernelStore:
             raise InvalidCommandError("queue_limit must be positive")
         async with self._connection() as connection:
             async with connection.transaction():
+                if execution_grant_id(command):
+                    await self._postgres_lock_command_grant(connection, command)
                 existing = await connection.fetchrow(
                     "SELECT message_id, accepted_seq, request_digest FROM kernel_inbox"
                     " WHERE tenant_id=$1 AND session_id=$2 AND idempotency_key=$3",
@@ -473,6 +479,19 @@ class PostgresAgentKernelStore:
                         message_id=str(existing["message_id"]),
                         accepted_seq=int(existing["accepted_seq"]),
                     )
+
+                grant_error = await self._postgres_admission_grant_error(connection, command)
+                if grant_error:
+                    await self._append_admission(connection, command, control_event(
+                        session_id=command.session_id, event_type="control.command_rejected",
+                        payload={
+                            "command_id": str(command.command_id), "status": "rejected",
+                            "reason": grant_error,
+                        },
+                    ))
+                    return self._receipt(command, "rejected", error=ControlError(
+                        code=grant_error, message=grant_error, retryable=False,
+                    ))
 
                 depth = await connection.fetchval(
                     "SELECT COUNT(*) FROM kernel_inbox WHERE tenant_id=$1"
@@ -686,23 +705,29 @@ class PostgresAgentKernelStore:
         message_id = str(message_id)
         async with self._connection() as connection:
             async with connection.transaction():
+                # Lock grant before Inbox, matching the revocation lock order.
+                candidate = await connection.fetchrow(
+                    "SELECT payload FROM kernel_inbox WHERE message_id=$1::uuid", message_id,
+                )
+                if candidate is None:
+                    raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                command = AgentControlCommand.model_validate_json(candidate["payload"])
+                grant = await self._postgres_lock_command_grant(connection, command)
                 row = await connection.fetchrow(
                     "SELECT * FROM kernel_inbox WHERE message_id=$1::uuid FOR UPDATE",
                     message_id,
                 )
                 if row is None:
                     raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                activation = await self._assert_fence(
+                    connection, row["agent_instance_id"], row["session_id"], fencing_token,
+                )
+                await self._postgres_require_claim_grant(connection, row, command, grant)
                 if (
                     row["status"] == InboxState.CLAIMED.value
                     and int(row["claimed_fence"]) == int(fencing_token)
                 ):
-                    return self._row_to_message(row)  # type: ignore[return-value]
-                activation = await self._assert_fence(
-                    connection,
-                    row["agent_instance_id"],
-                    row["session_id"],
-                    fencing_token,
-                )
+                    return self._row_to_message(row)
                 if row["status"] not in (
                     InboxState.ACCEPTED.value,
                     InboxState.CLAIMED.value,
@@ -876,7 +901,7 @@ class PostgresAgentKernelStore:
                     connection, agent_instance_id, session_id, fencing_token
                 )
                 row = await connection.fetchrow(
-                    "SELECT message_id, status FROM kernel_inbox"
+                    "SELECT * FROM kernel_inbox"
                     " WHERE agent_instance_id=$1 AND session_id=$2"
                     " AND (status='accepted' OR (status='claimed' AND claimed_fence <> $3))"
                     " ORDER BY accepted_seq"
@@ -888,27 +913,32 @@ class PostgresAgentKernelStore:
                 )
                 if row is None:
                     return None
-                if row["status"] == InboxState.ACCEPTED.value:
-                    assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
-                await connection.execute(
-                    "UPDATE kernel_inbox SET status='claimed', claimed_fence=$1"
-                    " WHERE message_id=$2::uuid",
-                    int(fencing_token),
-                    str(row["message_id"]),
-                )
-                await self._append_activation_fact(
-                    connection,
-                    control_event(
-                        session_id=session_id,
-                        event_type="control.message_claimed",
-                        payload={
-                            "message_id": str(row["message_id"]),
-                            "fencing_token": int(fencing_token),
-                        },
-                    ),
-                    activation,
-                    fencing_token,
-                )
+                command = AgentControlCommand.model_validate_json(row["payload"])
+                grant_qualified_path = execution_grant_id(command) is not None
+                if not grant_qualified_path:
+                    if row["status"] == InboxState.ACCEPTED.value:
+                        assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
+                    await connection.execute(
+                        "UPDATE kernel_inbox SET status='claimed', claimed_fence=$1"
+                        " WHERE message_id=$2::uuid",
+                        int(fencing_token),
+                        str(row["message_id"]),
+                    )
+                    await self._append_activation_fact(
+                        connection,
+                        control_event(
+                            session_id=session_id,
+                            event_type="control.message_claimed",
+                            payload={
+                                "message_id": str(row["message_id"]),
+                                "fencing_token": int(fencing_token),
+                            },
+                        ),
+                        activation,
+                        fencing_token,
+                    )
+        if grant_qualified_path:
+            return await self.claim_message(str(row["message_id"]), fencing_token)
         return await self.load_message(row["message_id"])
 
     async def complete_claim(self, message_id: str, *, expected_fence: int) -> None:

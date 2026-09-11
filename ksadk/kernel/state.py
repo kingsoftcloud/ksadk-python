@@ -8,8 +8,7 @@ Run 固定 ``pending -> running -> paused|waiting|completed|failed|cancelled|int
 
 from __future__ import annotations
 
-from enum import StrEnum
-
+from ksadk._str_enum import StrEnum
 from ksadk.kernel.errors import InvalidCommandError
 
 

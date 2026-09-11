@@ -51,6 +51,12 @@ from ksadk.kernel.errors import (
     StaleFenceError,
     UnsupportedError,
 )
+from ksadk.kernel.execution_grants import (
+    ExecutionGrantBarrier,
+    ExecutionGrantCommand,
+    ExecutionGrantRecord,
+    ExecutionGrantSpec,
+)
 
 # worker 依赖 ksadk.runtime.adapter；runtime.adapter 又经 ksadk.events 回指本包的
 # contracts，急切导入会成环，故用 PEP 562 惰性导出。
@@ -70,6 +76,10 @@ __all__ = [
     "AgentControlPermitVerifier",
     "AgentKernel",
     "AgentKernelWorker",
+    "ExecutionGrantBarrier",
+    "ExecutionGrantCommand",
+    "ExecutionGrantRecord",
+    "ExecutionGrantSpec",
     "JwksSource",
     "PermitExpiredError",
     "VerifiedAdmission",

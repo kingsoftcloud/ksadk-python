@@ -146,6 +146,7 @@ class StudioSharedWebBridge:
         return {"Session": self._session_metadata_record(session)}
 
     async def get_session(self, session_id: str) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         runs = self.studio.event_store.list_runs(session_id=session_id)
         if runs:
             return {"Session": self._session_record(runs)}
@@ -155,6 +156,7 @@ class StudioSharedWebBridge:
         return {"Session": self._session_metadata_record(session)}
 
     async def compact_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         from ksadk.codex.runtime import CodexRuntimeAdapter
 
         runs = self.studio.event_store.list_runs(session_id=session_id, agent_id=agent_id)
@@ -218,6 +220,7 @@ class StudioSharedWebBridge:
         before_seq_id: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         runs = self.studio.event_store.list_runs(session_id=session_id)
         messages: list[dict[str, Any]] = []
         sequence = 0
@@ -279,6 +282,7 @@ class StudioSharedWebBridge:
         }
 
     async def list_session_events(self, session_id: str) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         runs = self.studio.event_store.list_runs(session_id=session_id)
         events: list[dict[str, Any]] = []
         sequence = 0
@@ -387,6 +391,7 @@ class StudioSharedWebBridge:
         return {**data, "runtimeEvent": {**native, "run_id": run_id}}
 
     async def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
+        self.studio._require_direct_session(session_id)
         run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
         try:
             run = self.studio.event_store.get(run_id)
@@ -462,18 +467,21 @@ class StudioSharedWebBridge:
             await asyncio.sleep(0.25)
 
     def cancel_run(self, invocation_id: str) -> dict[str, Any]:
+        self.studio._require_direct_run(invocation_id)
         operation_id = self._operations_by_invocation.get(invocation_id)
         if operation_id:
             self.studio.operations.cancel(operation_id)
         return {"InvocationId": invocation_id, "Cancelled": bool(operation_id)}
 
     async def pause_run(self, invocation_id: str) -> dict[str, Any]:
+        self.studio._require_direct_run(invocation_id)
         run_id = self._run_ids_by_invocation.get(invocation_id)
         if not run_id:
             raise StudioError("RUN_NOT_READY", "运行尚未创建，请稍后重试", status_code=409)
         return await self.studio.run_service.pause_run(run_id)
 
     async def resume_run(self, invocation_id: str) -> dict[str, Any]:
+        self.studio._require_direct_run(invocation_id)
         run_id = self._run_ids_by_invocation.get(invocation_id)
         if not run_id:
             raise StudioError("RUN_NOT_FOUND", "未找到可继续的运行", status_code=404)
@@ -1086,6 +1094,7 @@ class StudioSharedWebBridge:
             session.id: self._session_metadata_record(session)
             for session in persisted
             if session.user_id in {"local-user", "local-studio"}
+            and not self.studio.execution_host.is_reserved_session(session.id)
         }
         grouped: dict[str, list[RunRecord]] = {}
         for run in self.studio.event_store.list_runs():

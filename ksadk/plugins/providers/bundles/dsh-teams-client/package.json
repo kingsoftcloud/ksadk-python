@@ -1,0 +1,35 @@
+{
+  "name": "@kingsoftcloud/dsh-teams-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Teams client Cordis companion contribution",
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "client.js"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@kingsoftcloud/dsh-teams-leader-policy": "0.1.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@kingsoftcloud/dsh-app-studio"
+      ],
+      "platform": "web"
+    }
+  }
+}

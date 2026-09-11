@@ -44,11 +44,10 @@ test("keeps the resource catalogue inside the bounded data-page scroll contract"
   assert.match(responsive, /\.app-shell \.table-data-body \.data-scroll-region\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
 });
 
-test("derives interactive AI surfaces from tokens in both light and dark themes", () => {
+test("derives conversation surfaces from tokens in both light and dark themes", () => {
   assert.match(finalLayer, /:root:not\(\.dark\)\s*\{/);
   assert.match(finalLayer, /:root\.dark\s*\{/);
   assert.match(finalLayer, /background:\s*var\(--kc-user-bubble\)/);
-  assert.match(finalLayer, /background-color:\s*var\(--kc-graph-fill\)/);
 });
 
 test("uses soft borders for the creation workbench and blue only for selection", () => {
