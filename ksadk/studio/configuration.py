@@ -10,8 +10,8 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
-from ksadk.studio.errors import StudioError
 from ksadk.configs.global_config import get_env_from_global_config
+from ksadk.studio.errors import StudioError
 
 SETTINGS_ENV = {
     "cloudAccessKey": "KSYUN_ACCESS_KEY",
@@ -147,7 +147,14 @@ class WorkspaceConfiguration:
         return None, "missing"
 
     def resolve_candidates(self, names: list[str]) -> tuple[str | None, str]:
-        ranked = {"env-file": 0, "workspace": 1, "global": 2, "environment": 3, "dotenv": 4, "missing": 5}
+        ranked = {
+            "env-file": 0,
+            "workspace": 1,
+            "global": 2,
+            "environment": 3,
+            "dotenv": 4,
+            "missing": 5,
+        }
         candidates = [(self.resolve(name), i) for i, name in enumerate(names)]
         (value, source), index = min(candidates, key=lambda item: (ranked[item[0][1]], item[1]))
         return value, source + ("-alias" if value and index else "")

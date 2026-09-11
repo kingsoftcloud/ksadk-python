@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from ksadk.studio.workspace_registry import LinkedDirectoryPolicy, WorkspaceRegistry, WorkspaceRuntimeManager
+from ksadk.studio.workspace_registry import (
+    LinkedDirectoryPolicy,
+    WorkspaceRegistry,
+    WorkspaceRuntimeManager,
+)
 
 
 def test_registry_assigns_stable_identity_and_tracks_recent(tmp_path: Path) -> None:
@@ -48,7 +52,15 @@ def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
         def __init__(self, root):
             self.workspace = type("Workspace", (), {"root": Path(root)})()
             self.value = Path(root).name
-            self.event_store = type("Events", (), {"list_runs": lambda self: [{"runId": "r"}], "get": lambda self, _run_id: {"runId": "r"}, "list_traces_page": lambda self, **_: {"items": [{"traceId": "t"}]}})()
+            self.event_store = type(
+                "Events",
+                (),
+                {
+                    "list_runs": lambda self: [{"runId": "r"}],
+                    "get": lambda self, _run_id: {"runId": "r"},
+                    "list_traces_page": lambda self, **_: {"items": [{"traceId": "t"}]},
+                },
+            )()
             self.workspace_record = type("Record", (), {"workspace_id": self.value})()
 
     first = FakeService(tmp_path / "a")

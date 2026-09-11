@@ -42,6 +42,7 @@ from ksadk.studio.api_contracts import (
     CreateAgentRequest,
     ImportRootRequest,
     InteractionSubmitRequest,
+    LinkedDirectoryRequest,
     ProjectInspectRequest,
     PromptCompileRequest,
     QuickAuthoringRequest,
@@ -51,7 +52,6 @@ from ksadk.studio.api_contracts import (
     StudioEvaluationCreate,
     ValidationRequest,
     WorkspaceOpenRequest,
-    LinkedDirectoryRequest,
 )
 from ksadk.studio.api_helpers import (
     error_response as _error_response,
@@ -92,8 +92,12 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
-from ksadk.studio.workspace_registry import WorkspaceRegistry, LinkedDirectoryPolicy, WorkspaceRuntimeManager
 from ksadk.studio.shared_web import StudioSharedWebBridge
+from ksadk.studio.workspace_registry import (
+    LinkedDirectoryPolicy,
+    WorkspaceRegistry,
+    WorkspaceRuntimeManager,
+)
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
@@ -219,7 +223,9 @@ def create_studio_app(
     security_enabled: bool = True,
 ) -> FastAPI:
     initial_service = service or StudioService(root)
-    studio = WorkspaceRuntimeManager(initial_service, lambda workspace_root: StudioService(workspace_root))
+    studio = WorkspaceRuntimeManager(
+        initial_service, lambda workspace_root: StudioService(workspace_root)
+    )
     session_secret = session_token or secrets.token_urlsafe(32)
     csrf_secret = csrf_token or secrets.token_urlsafe(24)
 
@@ -1066,24 +1072,46 @@ def create_studio_app(
 
     @app.post("/api/v1/workspaces/{workspace_id}/linked-directories")
     async def add_linked_directory(workspace_id: str, payload: LinkedDirectoryRequest):
-        record = next((r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None)
-        if record is None or os.path.normcase(record.path) != os.path.normcase(str(studio.workspace.root)):
-            raise StudioError("WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404)
-        item = LinkedDirectoryPolicy(studio.workspace.root).set(payload.path, payload.mode, payload.label)
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
+        item = LinkedDirectoryPolicy(studio.workspace.root).set(
+            payload.path, payload.mode, payload.label
+        )
         return item.__dict__
 
     @app.get("/api/v1/workspaces/{workspace_id}/linked-directories")
     async def list_linked_directories(workspace_id: str):
-        record = next((r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None)
-        if record is None or os.path.normcase(record.path) != os.path.normcase(str(studio.workspace.root)):
-            raise StudioError("WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404)
-        return {"items": [item.__dict__ for item in LinkedDirectoryPolicy(studio.workspace.root).list()]}
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
+        return {
+            "items": [item.__dict__ for item in LinkedDirectoryPolicy(studio.workspace.root).list()]
+        }
 
     @app.delete("/api/v1/workspaces/{workspace_id}/linked-directories")
     async def remove_linked_directory(workspace_id: str, path: str):
-        record = next((r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None)
-        if record is None or os.path.normcase(record.path) != os.path.normcase(str(studio.workspace.root)):
-            raise StudioError("WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404)
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
         return {"removed": LinkedDirectoryPolicy(studio.workspace.root).remove(path)}
 
     @app.get("/api/v1/workspaces/{workspace_id}/linked-directories/authorize")
@@ -1092,9 +1120,15 @@ def create_studio_app(
         path: str,
         operation: Literal["read", "write"] = "read",
     ):
-        record = next((r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None)
-        if record is None or os.path.normcase(record.path) != os.path.normcase(str(studio.workspace.root)):
-            raise StudioError("WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404)
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
         allowed = LinkedDirectoryPolicy(studio.workspace.root).authorize(path, operation)
         return {"path": path, "operation": operation, "allowed": allowed}
 

@@ -1,14 +1,14 @@
 """Durable local workspace identities and linked directory permissions."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import time
-import uuid
-from threading import RLock
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Literal
 
 AccessMode = Literal["read", "write"]
@@ -49,7 +49,12 @@ class WorkspaceRegistry:
     def _write(self, items: list[WorkspaceRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"version": 1, "items": [asdict(i) for i in items]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(
+                {"version": 1, "items": [asdict(i) for i in items]}, ensure_ascii=False, indent=2
+            ),
+            encoding="utf-8",
+        )
         try:
             tmp.chmod(0o600)
         except OSError:
@@ -64,7 +69,12 @@ class WorkspaceRegistry:
             raise FileNotFoundError(root)
         items = self._read()
         existing = next((i for i in items if _canonical(i.path) == root), None)
-        record = existing or WorkspaceRecord(hashlib.sha256(str(root).encode()).hexdigest()[:24], str(root), root.name or "workspace", time.time())
+        record = existing or WorkspaceRecord(
+            hashlib.sha256(str(root).encode()).hexdigest()[:24],
+            str(root),
+            root.name or "workspace",
+            time.time(),
+        )
         record = WorkspaceRecord(record.workspace_id, str(root), record.name, time.time())
         self._write([record] + [i for i in items if i.workspace_id != record.workspace_id])
         return record
@@ -150,11 +160,15 @@ class LinkedDirectoryPolicy:
 
     def list(self) -> list[LinkedDirectory]:
         try:
-            return [LinkedDirectory(**x) for x in json.loads(self.path.read_text()).get("items", [])]
+            return [
+                LinkedDirectory(**x) for x in json.loads(self.path.read_text()).get("items", [])
+            ]
         except (OSError, ValueError, TypeError, KeyError):
             return []
 
-    def set(self, path: Path | str, mode: AccessMode = "read", label: str | None = None) -> LinkedDirectory:
+    def set(
+        self, path: Path | str, mode: AccessMode = "read", label: str | None = None
+    ) -> LinkedDirectory:
         if mode not in ("read", "write"):
             raise ValueError("mode must be read or write")
         target = _canonical(path)
@@ -165,7 +179,12 @@ class LinkedDirectoryPolicy:
         items.append(item)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"version": 1, "items": [asdict(x) for x in items]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(
+                {"version": 1, "items": [asdict(x) for x in items]}, ensure_ascii=False, indent=2
+            ),
+            encoding="utf-8",
+        )
         try:
             tmp.chmod(0o600)
         except OSError:
@@ -178,7 +197,14 @@ class LinkedDirectoryPolicy:
         items = [x for x in self.list() if _canonical(x.path) != target]
         changed = len(items) != len(self.list())
         if changed:
-            self.path.write_text(json.dumps({"version": 1, "items": [asdict(x) for x in items]}, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.path.write_text(
+                json.dumps(
+                    {"version": 1, "items": [asdict(x) for x in items]},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
         return changed
 
     def authorize(self, path: Path | str, operation: Literal["read", "write"] = "read") -> bool:
