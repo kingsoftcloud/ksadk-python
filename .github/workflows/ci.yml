@@ -131,6 +131,11 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Set up pnpm for DSH toolchain tests
+        uses: pnpm/action-setup@v6
+        with:
+          version: "10.33.2"
+
       - name: Install dependencies
         run: uv sync --extra all
 
