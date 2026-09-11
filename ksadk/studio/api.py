@@ -1068,7 +1068,13 @@ def create_studio_app(
 
     @app.get("/api/v1/workspaces")
     async def list_workspaces():
-        return {"items": [r.__dict__ for r in WorkspaceRegistry().list()]}
+        active_path = os.path.normcase(str(studio.workspace.root))
+        items = []
+        for record in WorkspaceRegistry().list():
+            item = record.__dict__.copy()
+            item["active"] = os.path.normcase(record.path) == active_path
+            items.append(item)
+        return {"items": items}
 
     @app.post("/api/v1/workspaces/{workspace_id}/linked-directories")
     async def add_linked_directory(workspace_id: str, payload: LinkedDirectoryRequest):
