@@ -1567,11 +1567,17 @@ def create_studio_app(
 
     @app.get("/api/v1/runs/{run_id}")
     async def get_run(run_id: str):
-        return studio.event_store.get(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return runtime.event_store.get(run_id)
 
     @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
     async def cancel_run(run_id: str):
-        return await studio.run_service.cancel_run(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.cancel_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):

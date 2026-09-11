@@ -105,6 +105,15 @@ class WorkspaceRuntimeManager:
                 runs.append(item)
         return runs
 
+    def runtime_for_run(self, run_id: str):
+        for runtime in self._services.values():
+            try:
+                runtime.event_store.get(run_id)
+                return runtime
+            except Exception:
+                continue
+        return None
+
 
 class LinkedDirectoryPolicy:
     """Persist explicit directory relationships in the private workspace config."""
