@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from threading import RLock
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Literal
@@ -77,6 +78,7 @@ class WorkspaceRuntimeManager:
 
     def __init__(self, initial, factory) -> None:
         self._factory = factory
+        self._lock = RLock()
         self._services = {_canonical(initial.workspace.root): initial}
         self._active = _canonical(initial.workspace.root)
 
@@ -89,11 +91,12 @@ class WorkspaceRuntimeManager:
 
     def switch(self, path: str | Path, *, create: bool = False):
         root = _canonical(path)
-        record = WorkspaceRegistry().open(root, create=create)
-        if root not in self._services:
-            self._services[root] = self._factory(root)
-        self._active = root
-        return record
+        with self._lock:
+            record = WorkspaceRegistry().open(root, create=create)
+            if root not in self._services:
+                self._services[root] = self._factory(root)
+            self._active = root
+            return record
 
     def services(self):
         return tuple(self._services.values())
