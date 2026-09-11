@@ -62,7 +62,19 @@ def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
                 },
             )()
             self.workspace_record = type("Record", (), {"workspace_id": self.value})()
-            self.operations = type("Operations", (), {"list": lambda self: []})()
+            self.operations = type(
+                "Operations",
+                (),
+                {
+                    "list": lambda self: [],
+                    "get": lambda self, operation_id: (
+                        {"id": operation_id}
+                        if operation_id == self.owner
+                        else (_ for _ in ()).throw(KeyError(operation_id))
+                    ),
+                },
+            )()
+            self.operations.owner = self.value
 
     first = FakeService(tmp_path / "a")
     manager = WorkspaceRuntimeManager(first, FakeService)
@@ -75,3 +87,4 @@ def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
     assert {item["workspaceId"] for item in manager.all_runs()} == {"a", "b"}
     assert manager.runtime_for_run("r") is not None
     assert {item["workspaceId"] for item in manager.all_traces()} == {"a", "b"}
+    assert manager.runtime_for_operation("b") is manager.services()[1]
