@@ -486,7 +486,7 @@ export default function App() {
   const pluginPageId = view.startsWith("plugin:") ? view.slice(7) : "";
   const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : pluginPageId ? (workspacePages.find(page => page.id === pluginPageId)?.label || "插件工作区") : VIEW_TITLE[view];
 
-  const workspaceName = workspace?.name || "Workspace";
+  const workspaceName = workspace?.path?.endsWith("/default-workspace") ? "未打开工作区" : (workspace?.name || "未打开工作区");
   const workspacePath = workspace?.path || (runtimeReady ? "本地工作区" : "正在连接本地工作区");
   const focusedView = view === "create"
     || view === "conversations"

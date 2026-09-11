@@ -1,29 +1,72 @@
-const {app, BrowserWindow, dialog} = require('electron');
-const {spawn} = require('child_process');
-const http = require('http');
-const path = require('path');
-let service;
-function waitForStudio(url, tries=120) {
-  return new Promise((resolve,reject)=>{ const tick=()=>{ const req=http.get(url, r=>{ req.destroy(); resolve(); }); req.on('error',()=>{ if(--tries<=0) reject(new Error('Studio did not start')); else setTimeout(tick,250); }); }; tick(); });
+const {app, BrowserWindow, dialog, Menu, nativeImage} = require('electron');
+const path = require('node:path');
+const fs = require('node:fs');
+const {startRuntime, requestJson} = require('./desktop-runtime');
+let runtime;
+let window;
+let quitting = false;
+app.setName('AgentKit Studio');
+const partition = 'studio-' + process.pid;
+const resources = path.resolve(__dirname, '..');
+
+function preferencesPath() { return path.join(app.getPath('userData'), 'workspace.json'); }
+function defaultWorkspace() { const root = path.join(app.getPath('userData'), 'default-workspace'); fs.mkdirSync(root, {recursive: true}); return root; }
+function saveWorkspace(workspace) {
+  fs.mkdirSync(app.getPath('userData'), {recursive: true});
+  fs.writeFileSync(preferencesPath(), JSON.stringify({workspace}, null, 2), {mode: 0o600});
 }
 async function chooseWorkspace() {
   const explicit = process.env.STUDIO_APP_WORKSPACE;
-  if (explicit && explicit !== '.') return path.resolve(explicit);
-  const result = await dialog.showOpenDialog({properties:['openDirectory','createDirectory'], title:'选择 AgentKit Studio 工作区', buttonLabel:'打开工作区'});
-  if (result.canceled || !result.filePaths[0]) return null;
-  return result.filePaths[0];
+  if (explicit && explicit !== '.') return fs.realpathSync(explicit);
+  return defaultWorkspace();
 }
-async function createWindow() {
+async function chooseWorkspaceForSwitch() {
+  const result = await dialog.showOpenDialog({properties: ['openDirectory', 'createDirectory'], title: '打开 AgentKit Studio 工作区', buttonLabel: '打开目录'});
+  return result.canceled ? null : result.filePaths[0];
+}
+async function switchWorkspace() {
+  const workspace = await chooseWorkspaceForSwitch();
+  if (!workspace || !runtime) return;
+  try {
+    const result = await requestJson(runtime.port, '/api/v1/workspaces:open', {
+      method: 'POST', data: {path: workspace}, cookie: runtime.cookie, csrf: runtime.csrf,
+    });
+    if (result.status !== 200) throw new Error(result.body?.message || '切换工作区失败');
+    saveWorkspace(workspace);
+    window.reload();
+  } catch (error) { dialog.showErrorBox('切换工作区失败', error.message); }
+}
+async function launch() {
+  const icon = nativeImage.createFromPath(path.join(resources, 'AgentKitStudio.icns'));
+  if (!icon.isEmpty() && app.dock) app.dock.setIcon(icon);
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {label: 'AgentKit Studio', submenu: [{role: 'about'}, {type: 'separator'}, {role: 'quit'}]},
+    {label: '工作区', submenu: [{label: '打开工作区…', accelerator: 'CmdOrCtrl+O', click: switchWorkspace}]},
+    {role: 'editMenu'}, {role: 'viewMenu'}, {role: 'windowMenu'},
+  ]));
   const workspace = await chooseWorkspace();
-  if (!workspace) { app.quit(); return; }
-  const root=path.resolve(__dirname,'..');
-  const runtime=path.join(root,'runtime','bin','agentengine');
-  const port=process.env.STUDIO_APP_PORT||'8172';
-  const env={...process.env, STUDIO_APP_WORKSPACE:workspace};
-  service=spawn(runtime,['studio',workspace,'--port',port],{stdio:'ignore',env});
-  await waitForStudio(`http://127.0.0.1:${port}/`);
-  const win=new BrowserWindow({width:1440,height:900,show:true, title:'AgentKit Studio'});
-  await win.loadURL(`http://127.0.0.1:${port}/`);
+  const logPath = path.join(app.getPath('logs'), 'studio-backend.log');
+  runtime = await startRuntime({resources, workspace, logPath, preferredPort: Number(process.env.STUDIO_APP_PORT || 0)});
+  if (workspace !== defaultWorkspace()) saveWorkspace(workspace);
+  runtime.child.on('exit', () => {
+    if (!quitting) {
+      dialog.showErrorBox('Studio 后端已退出', '请重新打开应用。诊断日志：' + logPath);
+      app.quit();
+    }
+  });
+  window = new BrowserWindow({width: 1440, height: 900, title: 'AgentKit Studio', webPreferences: {
+    nodeIntegration: false, contextIsolation: true, sandbox: true, partition,
+  }});
+  window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
+  window.webContents.on('will-navigate', (event, url) => {
+    if (new URL(url).origin !== new URL(runtime.url).origin) event.preventDefault();
+  });
+  await window.loadURL(runtime.url);
 }
-app.whenReady().then(createWindow).catch(error=>{ console.error(error); dialog.showErrorBox('AgentKit Studio 启动失败',String(error)); app.quit(); });
-app.on('before-quit',()=>{if(service) service.kill('SIGTERM');});
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', () => { if (window) { window.show(); window.focus(); } });
+  app.whenReady().then(launch).catch(error => { dialog.showErrorBox('AgentKit Studio 启动失败', error.message); app.quit(); });
+}
+app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => { quitting = true; if (runtime) runtime.child.kill('SIGTERM'); });

@@ -416,6 +416,36 @@ class StudioDshProviderRegistrationManager:
             )
         return result
 
+    async def bootstrap_official_harness_provider(self) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+        """Install and preflight the wheel-owned Harness provider in the managed profile."""
+        if not self._owns_workspace_default_profile:
+            return "skipped"
+        async with self._lock:
+            return await asyncio.to_thread(self._bootstrap_official_harness_provider_sync)
+
+    def _bootstrap_official_harness_provider_sync(self) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+        if not self._owns_workspace_default_profile:
+            return "skipped"
+        command = self._dsh_command or DshToolchainManager().require_command()
+        shipped = shipped_harness_dsh_bundle()
+        with self._bridge_factory(dsh_home=self._dsh_home, profile=self._profile, dsh_command=command, cwd=self._workspace) as bridge:
+            self._repair_owned_profile_layout(bridge)
+            installed = {item.name: item for item in bridge.list_plugins()}
+            current = installed.get(SHIPPED_HARNESS_DSH_PACKAGE)
+            if current is None:
+                current = bridge.install_plugin(str(shipped.root), accept_host_permissions=True)
+                result = "installed"
+            else:
+                result = "already_enabled" if current.enabled else "disabled"
+            if current.name != SHIPPED_HARNESS_DSH_PACKAGE or current.version != SHIPPED_HARNESS_PROVIDER_VERSION:
+                raise StudioDshProviderRegistrationError("harness_dsh_bundle_not_active", "the official Harness DSH Bundle version is not supported")
+            if result == "installed" and not current.enabled:
+                current = bridge.set_enabled(SHIPPED_HARNESS_DSH_PACKAGE, enabled=True)
+            if not current.enabled:
+                return "disabled"
+            self._verify_shipped_bundle_bytes(SHIPPED_HARNESS_DSH_PACKAGE)
+        return result
+
     async def bootstrap_official_resource_plugins(
         self,
     ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:

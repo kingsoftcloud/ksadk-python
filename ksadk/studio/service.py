@@ -600,6 +600,17 @@ class StudioService:
                     "official Codex DSH provider bootstrap: %s", result
                 )
         try:
+            harness_result = await manager.bootstrap_official_harness_provider()
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "official Harness DSH provider bootstrap skipped: %s", error
+            )
+        else:
+            if harness_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official Harness DSH provider bootstrap: %s", harness_result
+                )
+        try:
             resource_result = await manager.bootstrap_official_resource_plugins()
         except Exception as error:  # optional DSH must fail closed to legacy paths
             logging.getLogger(__name__).warning(
