@@ -126,6 +126,7 @@ export interface NavigationRailProps {
   onHistoryHostChange?: (host: HTMLDivElement | null) => void;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
   onOpenSettings: () => void;
+  onWorkspaceSwitch?: () => void;
 }
 export function NavigationRail({
   view,
@@ -143,6 +144,7 @@ export function NavigationRail({
   onHistoryHostChange,
   onNavigate,
   onOpenSettings,
+  onWorkspaceSwitch,
 }: NavigationRailProps) {
   const activeGroup =
     GROUPS.find((group) => group.items.some((item) => item.id === view))?.id ||
@@ -178,10 +180,12 @@ export function NavigationRail({
           </button>
         )}
       </div>
-      <RailTooltip label={workspacePath}>
-        <div
-          className="studio-nav-workspace"
+      <RailTooltip label={`${workspacePath}（切换工作区）`}>
+        <button
+          type="button"
+          className="studio-nav-workspace workspace-switcher"
           aria-label={`${workspaceName} 工作区`}
+          onClick={onWorkspaceSwitch}
         >
           <Folder size={15} aria-hidden="true" />
           {showLabels && <span>{workspaceName}</span>}
@@ -189,7 +193,7 @@ export function NavigationRail({
             data-ready={runtimeReady}
             aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"}
           />
-        </div>
+        </button>
       </RailTooltip>
       <div className="studio-nav-scroll">
         <nav className="studio-nav-primary" aria-label="产品导航">

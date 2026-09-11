@@ -519,6 +519,11 @@ export default function App() {
           setSettingsSection("general");
           setSettingsOpen(true);
         }}
+        onWorkspaceSwitch={() => {
+          setMobileNavOpen(false);
+          setSettingsSection("general");
+          setSettingsOpen(true);
+        }}
       />
 
       <div className="app-main">
