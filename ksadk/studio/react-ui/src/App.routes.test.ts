@@ -26,6 +26,12 @@ describe("Studio route parsing", () => {
     });
   });
 
+  it("routes live plugin workspaces and migrates the old orchestration entry", () => {
+    expect(parseStudioLocationHash("#/workspace/teams?groupId=g")).toMatchObject({ view: "plugin:teams" });
+    expect(parseStudioLocationHash("#/orchestration")).toMatchObject({ view: "plugin:teams" });
+    expect(parseStudioLocationHash("#/workspace/another-plugin")).toMatchObject({ view: "plugin:another-plugin" });
+  });
+
   it("falls back from retired in-process extension routes", () => {
     expect(parseStudioLocationHash("#/extensions/tasks")).toMatchObject({ view: "agents" });
   });

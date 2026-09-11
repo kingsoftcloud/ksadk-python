@@ -174,6 +174,38 @@ def studio_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore
 
 
 @pytest.mark.asyncio
+async def test_explicit_legacy_home_can_be_listed_but_new_core_cannot_mutate_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    marker = legacy / "old-session.jsonl"
+    marker.write_text('{"version":2}\n')
+    monkeypatch.setenv("KSADK_DSH_HOME", str(legacy))
+    monkeypatch.setattr(api_plugin_routes, "DshProfilePluginBridge", _FakeBridge)
+    service = StudioService(tmp_path, dsh_capability_service=_FakeCapabilities())
+    app = create_studio_app(
+        tmp_path, service=service, session_token="studio-session", csrf_token="csrf-token",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+    ) as client:
+        listing = await client.get("/api/v1/plugin-ecosystems/dsh/plugins", headers=_headers())
+        assert listing.status_code == 200
+        assert len(listing.json()["items"]) == 1
+        assert listing.json()["homeCompatibility"]["reason"] == "receipt_missing"
+        response = await client.post(
+            f"/api/v1/plugin-ecosystems/dsh/plugins/{_PLUGIN_ID}:disable",
+            headers=_headers(write=True),
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "DSH_HOME_VERSION_UNVERIFIED"
+        assert "原版本工具链" in response.json()["error"]["message"]
+    assert list(legacy.iterdir()) == [marker]
+    assert marker.read_text() == '{"version":2}\n'
+
+
+@pytest.mark.asyncio
 async def test_layout_recovery_failure_keeps_studio_admission_suspended(studio_app, monkeypatch):
     app, _ = studio_app
     studio = app.state.studio_service

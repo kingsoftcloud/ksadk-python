@@ -8,6 +8,7 @@ endpoint — with no ksadk-private plugin format and no upstream patch.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -90,6 +91,13 @@ async def test_real_upstream_cordis_plugin_runs_unmodified_through_profile_mcp(
         )
         assert (installed_pkg / "package.json").is_file()
         assert (installed_pkg / "lib" / "index.js").is_file()
+        # Preserve the author's exact tool-definition dependency. Compatibility
+        # with the reviewed Core is demonstrated by the real call below, not
+        # obtained by silently rewriting third-party package requirements.
+        manifest = json.loads((installed_pkg / "package.json").read_text())
+        requirements = {**manifest.get("peerDependencies", {}), **manifest.get("dependencies", {})}
+        assert requirements["@deepseek-ai/dsh-tools"] == "0.1.0-rc.6"
+        assert not (dsh_home / "profiles" / "web" / ".pnpmfile.cjs").exists()
         # The plugin's source declares inject: ['tools'] and registers
         # read_file — verify it was not modified.
         source = (installed_pkg / "lib" / "index.js").read_text(encoding="utf-8")

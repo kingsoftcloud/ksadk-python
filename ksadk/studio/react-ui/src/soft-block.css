@@ -286,8 +286,8 @@
   padding: 18px;
 }
 
-/* Independent work surfaces need a stable edge on both white and canvas
-   backgrounds. Outline preserves component geometry and avoids border soup. */
+/* Components own their borders. Reserve outlines for keyboard focus rather
+   than drawing a second edge over nested panels, tabs and dialogs. */
 :where(
   .block:not(.runtime-resource-group),
   .table-section,
@@ -308,32 +308,12 @@
   .drawer,
   .data-page-body > .empty-state
 ) {
-  outline: 1px solid var(--studio-outline-surface);
+  outline: none;
   outline-offset: -1px;
 }
 
 /* Inset cards are independently interactive but visually subordinate to the
    surrounding work surface. */
-:where(
-  .authoring-chat-column,
-  .authoring-input-card,
-  .authoring-inspection-card,
-  .pipeline-node-card,
-  .capability-empty-state,
-  .code-viewer,
-  .a2ui-surface,
-  .appearance-option,
-  .orchestration-graph .react-flow__controls,
-  .more-actions-menu,
-  .studio-select-content,
-  .studio-multi-select-popover,
-  .composer-action-menu,
-  .composer-command-menu,
-  .studio-tooltip
-) {
-  outline: 1px solid var(--studio-outline-inset);
-  outline-offset: -1px;
-}
 
 /* Parent surfaces own these edges; nested resource groups and tables remain
    open so the page does not become a stack of framed cards. */
@@ -389,7 +369,7 @@ select {
   .block > .icon-button,
   .segmented-control
 ) {
-  outline: 1px solid var(--studio-outline-inset);
+  outline: none;
   outline-offset: -1px;
 }
 
@@ -480,6 +460,7 @@ select {
 .studio-form-field + .studio-form-field,
 .studio-form-field + .form-grid,
 .form-grid + .studio-form-field,
+.form-grid + .form-grid,
 .field + .field {
   margin-top: 22px;
 }
@@ -2592,7 +2573,7 @@ details.build-log > pre {
 .delivery-empty-state {
   border-radius: var(--radius-block);
   background: var(--studio-surface);
-  outline: 1px solid var(--studio-outline-surface);
+  outline: none;
   outline-offset: -1px;
 }
 
@@ -2610,7 +2591,7 @@ details.build-log > pre {
   overflow: hidden;
   border-radius: var(--radius-card);
   background: var(--studio-surface);
-  outline: 1px solid var(--studio-outline-surface);
+  outline: none;
   outline-offset: -1px;
 }
 
@@ -2620,7 +2601,7 @@ details.build-log > pre {
 }
 
 .delivery-stat-strip > div + div {
-  outline: 1px solid var(--studio-outline-inset);
+  outline: none;
   outline-offset: -1px;
 }
 
@@ -2729,7 +2710,7 @@ details.build-log > pre {
   padding: 14px;
   border-radius: var(--radius-inset);
   background: var(--surface-subtle);
-  outline: 1px solid var(--studio-outline-inset);
+  outline: none;
   outline-offset: -1px;
 }
 
@@ -2785,7 +2766,7 @@ details.build-log > pre {
   overflow-x: auto;
   margin-top: 16px;
   border-radius: var(--radius-inset);
-  outline: 1px solid var(--studio-outline-inset);
+  outline: none;
   outline-offset: -1px;
 }
 
@@ -2963,7 +2944,7 @@ details.build-log > pre {
   padding: 4px;
   border-radius: var(--radius-inset);
   background: var(--studio-surface);
-  outline: 1px solid var(--studio-outline-surface);
+  outline: none;
   outline-offset: -1px;
 }
 

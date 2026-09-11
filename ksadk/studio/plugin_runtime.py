@@ -214,6 +214,7 @@ class StudioPluginRuntime:
         self._resource_write_modes: dict[str, str] = {}
         self._admission_open = True
         self._closed = False
+        self.execution_policy_resolver: Any | None = None
 
     def replace_provider_registrations(
         self,
@@ -515,6 +516,7 @@ class StudioPluginRuntime:
                 "harness_state_dir": str(self.workspace.resolve(".agentkit/plugin-runtime/state")),
                 "codex_local_launch_resolver": self._codex_local_launch_resolver,
                 "runtime_executor": self._runtime_executor,
+                "execution_policy_resolver": self.execution_policy_resolver,
                 "dsh_capability_service": self._resource_dsh_capability_service,
                 "resource_authority": self._resource_authority,
                 "resource_connections": self._resource_connections,
@@ -544,15 +546,10 @@ class StudioPluginRuntime:
                 bundle=verified,
                 host=host,
             )
-            stale = [
-                (digest, entry)
-                for digest, entry in self._hosts.items()
-                if entry.agent_id == candidate.agent_id and digest != key
-            ]
             self._hosts[key] = candidate
-            for digest, entry in stale:
-                self._hosts.pop(digest, None)
-                await entry.host.dispose()
+            # Distinct immutable Builds of the same Agent may be active in
+            # different authorized sessions. Their profile graphs are owned
+            # until explicit maintenance/close, never evicted by another Build.
             return candidate
 
     def _resource_write_authorizer(

@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "test": "node --test --test-concurrency=1 src/*.test.mjs",
     "test:api": "node --test src/api.test.mjs",
-    "test:ui": "vitest run"
+    "test:ui": "vitest run",
+    "test:e2e:teams": "playwright test --config playwright.teams.config.mjs",
+    "dev:local-web": "node scripts/use-local-web.mjs",
+    "test:teams:contract": "node scripts/test-teams-contract.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.7.1",
@@ -45,6 +48,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",

@@ -109,6 +109,7 @@ function secureTokenEqual(actual, expected) {
 
 function parseScopedToken(presented, token, profileDigest, tools, allowExpired = false) {
   const parts = presented.split('.')
+  if (parts[0] === 'ks3') return parseCompanionToken(parts, token, profileDigest, tools, allowExpired)
   if (parts[0] === 'ks2') return parseResourceToken(parts, token, profileDigest, tools, allowExpired)
   if (parts.length !== 3 || parts[0] !== 'ks1') return null
   const [, payloadEncoded, signature] = parts
@@ -144,6 +145,33 @@ function parseScopedToken(presented, token, profileDigest, tools, allowExpired =
     !tools.some((tool) => tool.name === source)
   )) return null
   return { root: false, scopeId: signature, aliases, expiresAt: payload.exp }
+}
+
+function parseCompanionToken(parts, token, profileDigest, tools, allowExpired) {
+  if (parts.length !== 3) return null
+  const [, encoded, signature] = parts
+  const expected = createHmac('sha256', token).update(`ks3.${encoded}`).digest('base64url')
+  if (!secureTokenEqual(signature, expected)) return null
+  let payload
+  try { payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) }
+  catch { return null }
+  if (!payload || payload.v !== 3 || payload.profileDigest !== profileDigest ||
+      !/^[A-Za-z0-9_.-]{1,128}$/.test(payload.pluginId) ||
+      !/^dshgen_[A-Za-z0-9_-]{24,96}$/.test(payload.generationId) ||
+      !/^[A-Za-z0-9_-]{32,256}$/.test(payload.handle) ||
+      !/^[A-Za-z0-9_.:-]{1,128}$/.test(payload.callId) ||
+      !/^[A-Za-z0-9_-]{16,64}$/.test(payload.jti) ||
+      !Number.isSafeInteger(payload.exp) ||
+      (!allowExpired && payload.exp <= Math.floor(Date.now() / 1000)) ||
+      payload.exp > Math.floor(Date.now() / 1000) + 120 ||
+      !payload.aliases || typeof payload.aliases !== 'object' || Array.isArray(payload.aliases) ||
+      Object.keys(payload.aliases).length !== 1) return null
+  const aliases = new Map(Object.entries(payload.aliases))
+  if ([...aliases].some(([alias, source]) => alias !== source ||
+      !tools.some(tool => tool.name === source))) return null
+  return { root: false, scopeId: signature, aliases, expiresAt: payload.exp,
+    companion: { pluginId: payload.pluginId, generationId: payload.generationId,
+      handle: payload.handle, callId: payload.callId } }
 }
 
 function parseResourceToken(parts, token, profileDigest, tools, allowExpired) {
@@ -456,6 +484,12 @@ export async function apply(ctx, config = {}) {
   let lastToolChange = Date.now()
   let tools = []
   let resourceBridge = null
+  let companionBridge = null
+  if (typeof ctx.inject === 'function') ctx.inject(['pluginCompanions'], companionCtx => {
+    const bridge = companionCtx.pluginCompanions
+    companionBridge = bridge
+    companionCtx.effect(() => () => { if (companionBridge === bridge) companionBridge = null })
+  })
   // A pending optional child does not add another Core or block ordinary tools.
   // Its dependency lifecycle clears the reference when the resource plugin stops.
   if (typeof ctx.inject === 'function') ctx.inject(['platformResources'], resourceCtx => {
@@ -713,6 +747,17 @@ export async function apply(ctx, config = {}) {
         result: toolFailure('Resource invocation context is required', 'RESOURCE_CONTEXT_REQUIRED') })
       return
     }
+    const companionOperation = companionBridge?.operationForTool(sourceToolName)
+    const companionScope = authorization.companion
+    if ((companionOperation || companionScope) &&
+        (!companionBridge || !companionScope || !companionOperation ||
+          companionScope.pluginId !== companionOperation.pluginId ||
+          companionScope.generationId !== companionBridge.generationId ||
+          companionScope.callId !== message.id)) {
+      writeJson(response, 200, { jsonrpc: '2.0', id: message.id,
+        result: toolFailure('Companion invocation context is required', 'COMPANION_CONTEXT_REQUIRED') })
+      return
+    }
     const argumentsValue = params.arguments ?? {}
     if (argumentsValue === null || typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) {
       writeJson(response, 200, jsonRpcError(message.id, -32602, 'tool arguments must be an object'))
@@ -746,9 +791,14 @@ export async function apply(ctx, config = {}) {
     const completion = Promise.resolve()
       .then(() => {
         const invoke = () => ctx.tools.execute({
-          callId: `mcp-${randomUUID()}`, name: sourceToolName,
+          callId: companionScope?.callId ?? `mcp-${randomUUID()}`, name: sourceToolName,
           arguments: argumentsValue, signal: controller.signal,
         })
+        if (companionScope) return companionBridge.withInvocation({
+          ...companionScope,
+          deadline: Math.min(Date.now() + callTimeoutMs, authorization.expiresAt * 1000),
+          signal: controller.signal,
+        }, invoke)
         return resourceScope ? resourceBridge.withInvocation({
           handle: resourceScope.handle,
           deadline: Math.min(Date.now() + callTimeoutMs, authorization.expiresAt * 1000),

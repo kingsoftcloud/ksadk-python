@@ -271,31 +271,6 @@ body {
 
 /* L1: independent work surfaces always use a physical border.  Do not use
    outlines here: they are rounded differently at non-100% browser zoom. */
-:where(
-  .block:not(.runtime-resource-group),
-  .table-section,
-  .trace-list-page,
-  .wizard-content,
-  .agent-editor,
-  .authoring-mode-panel,
-  .studio-data-table,
-  .stat-strip > *,
-  .page-tabs,
-  .chat-session-sidebar,
-  .chat-conversation,
-  .chat-run-panel,
-  .trace-run-panel,
-  .trace-span-panel,
-  .trace-detail-panel,
-  .data-page-body > .empty-state,
-  .orchestration-canvas,
-  .orchestration-aside
-) {
-  outline: none;
-  border: 1px solid var(--border-card);
-  border-radius: 6px;
-  background: var(--studio-surface);
-}
 
 :where(
   .authoring-chat-column,
@@ -403,7 +378,7 @@ button:disabled {
   box-shadow: none !important;
 }
 
-.button:not(.accent):not(.tertiary),
+.button:not(.accent, .tertiary, .danger, .subtle-danger),
 .button.secondary,
 .icon-button.secondary,
 .global-header .icon-button,
@@ -441,7 +416,7 @@ button:disabled {
   color: var(--accent-strong);
 }
 
-.button:not(.accent):not(.tertiary):hover:not(:disabled),
+.button:not(.accent, .tertiary, .danger, .subtle-danger):hover:not(:disabled),
 .button.secondary:hover:not(:disabled),
 .icon-button.secondary:hover:not(:disabled),
 .global-header .icon-button:hover:not(:disabled) {
@@ -554,6 +529,7 @@ button:disabled {
 .search-field input:focus {
   border: 0;
   outline: 0;
+  padding-inline: 0;
   background: transparent;
 }
 
@@ -616,7 +592,7 @@ button:disabled {
   min-width: 0;
   align-self: start;
   display: grid;
-  grid-template-rows: 24px minmax(40px, auto) auto;
+  grid-template-rows: auto minmax(40px, auto) auto;
   align-content: start;
   gap: 6px;
 }
@@ -1533,21 +1509,6 @@ button:disabled {
 
 /* Keep ReactFlow as the rendering engine, but use the compact enterprise
    diagram syntax from KingCloud Design rather than card-like nodes. */
-.orchestration-workbench {
-  gap: 16px;
-}
-
-.orchestration-graph {
-  border: 1px solid var(--studio-border);
-  border-radius: 4px;
-  background-color: var(--kc-graph-fill);
-  background-image: radial-gradient(var(--kc-graph-dot) 0.8px, transparent 0.8px);
-  background-size: 16px 16px;
-}
-
-.orchestration-graph .react-flow__node-pipeline {
-  border-radius: 4px;
-}
 
 .pipeline-node-card {
   gap: 8px;
@@ -1571,37 +1532,6 @@ button:disabled {
   border-radius: 4px;
   color: var(--accent-strong);
   background: var(--accent-soft);
-}
-
-.orchestration-graph .react-flow__edge-path {
-  stroke: var(--kc-edge);
-  stroke-width: 1.25;
-}
-
-.orchestration-graph .react-flow__edge-textbg {
-  fill: var(--studio-surface);
-  stroke: var(--studio-border);
-  stroke-width: 1px;
-  rx: 3px;
-  ry: 3px;
-}
-
-.orchestration-graph .react-flow__controls {
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgb(32 45 56 / 10%) !important;
-}
-
-.orchestration-graph .react-flow__controls-button {
-  border-bottom: 1px solid var(--studio-border);
-}
-
-.orchestration-graph .react-flow__controls-button:last-child {
-  border-bottom: 0;
-}
-
-.orchestration-aside {
-  padding: 18px;
 }
 
 .runtime-resource-section {
@@ -1819,7 +1749,6 @@ details.build-log,
   .create-shell[data-layout="workbench"] .create-workbench,
   .agent-detail-layout,
   .detail-layout,
-  .orchestration-workbench,
   .conversation-authoring-layout,
   .authoring-inspect-grid {
     grid-template-columns: minmax(0, 1fr) !important;
@@ -2145,7 +2074,7 @@ details.build-log,
     padding: 0;
   }
 
-  #pageHeaderActions .button > span {
+  #pageHeaderActions .button > span:not(.king-icon) {
     position: absolute;
     width: 1px;
     height: 1px;

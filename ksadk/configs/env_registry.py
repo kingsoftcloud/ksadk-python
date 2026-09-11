@@ -264,8 +264,9 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_DSH_HOME",
         "plugins",
         (
-            "Directory containing the isolated DSH Profile; defaults to .agentkit/dsh-home "
-            "in the workspace."
+            "Directory containing isolated DSH Profiles; defaults to "
+            ".agentkit/dsh-homes/<pinned DSH version> in the workspace. "
+            "An existing explicit home requires a compatible version receipt before Core starts."
         ),
     ),
     EnvVarSpec(

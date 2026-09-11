@@ -497,7 +497,7 @@ public-build-check: clean-dist sync-ksadk-web-static build-studio-static
 	@uv run python scripts/write_build_provenance.py
 	@uv build
 	@$(MAKE) verify-ksadk-web-wheel-static
-	@uv run pytest tests/test_runtime_common_packaging.py -q
+	@uv run pytest tests/test_runtime_common_packaging.py tests/packaging/test_teams_distribution.py -q
 	@uv run --extra dev python -m twine check dist/*
 	@$(MAKE) open-source-audit-dist
 

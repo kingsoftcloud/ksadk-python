@@ -16,15 +16,15 @@ from uuid import uuid4
 
 from ksadk.events.session_event import SessionEventStore
 from ksadk.interaction.contracts import (
-    InteractionRecord,
     InteractionReceipt,
+    InteractionRecord,
     InteractionSubmission,
     is_terminal,
 )
 from ksadk.interaction.ledger import (
     ALREADY_RESOLVED,
-    REVISION_MISMATCH,
     REQUEST_CONFLICT,
+    REVISION_MISMATCH,
     interaction_event,
     request_digest,
     requested_event_payload,
@@ -41,6 +41,7 @@ from ksadk.kernel.contracts import (
     SessionEventEnvelope,
 )
 from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
+from ksadk.kernel.execution_grants_memory import MemoryExecutionGrantMixin
 from ksadk.kernel.state import (
     InboxState,
     assert_inbox_transition,
@@ -58,7 +59,7 @@ from ksadk.kernel.store import (
 )
 
 
-class InMemoryAgentKernelStore:
+class InMemoryAgentKernelStore(MemoryExecutionGrantMixin):
     def __init__(self, session_event_store: SessionEventStore) -> None:
         self._events = session_event_store
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -67,6 +68,8 @@ class InMemoryAgentKernelStore:
         self._accepted_seq: dict[str, int] = {}
         self._activations: dict[tuple[str, str], dict[str, Any]] = {}
         self._runs: dict[str, RunRecord] = {}
+        self._execution_grants = {}
+        self._execution_grant_operations = {}
         # Interaction ledger（Task 5）：(tenant_id, interaction_id) -> row。
         self._interactions: dict[tuple[str, str], dict[str, Any]] = {}
         self._interaction_submissions: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -91,7 +94,9 @@ class InMemoryAgentKernelStore:
     def _lease_expired(row: dict[str, Any]) -> bool:
         return row["lease_expires_at"] <= time.time()
 
-    def _check_fence(self, agent_instance_id: str, session_id: str, expected_fence: int) -> dict[str, Any]:
+    def _check_fence(
+        self, agent_instance_id: str, session_id: str, expected_fence: int
+    ) -> dict[str, Any]:
         row = self._activation_row(agent_instance_id, session_id)
         if (
             row is None
@@ -202,6 +207,12 @@ class InMemoryAgentKernelStore:
                     "duplicate",
                     message_id=existing["message_id"],
                     accepted_seq=existing["accepted_seq"],
+                )
+
+            grant_error = self._memory_admission_grant_error(command)
+            if grant_error:
+                return await self.reject_command(
+                    command, status="rejected", code=grant_error, message=grant_error,
                 )
 
             depth = sum(
@@ -356,7 +367,6 @@ class InMemoryAgentKernelStore:
             elif (
                 fencing_token is not None
                 and row["status"] == InboxState.CLAIMED
-                and row["claimed_fence"] == int(fencing_token)
             ):
                 rows.append(row)
         rows.sort(key=lambda row: row["accepted_seq"])
@@ -371,19 +381,21 @@ class InMemoryAgentKernelStore:
             raise InvalidCommandError(f"unknown message_id {message_id!r}")
         async with self._lock(row["agent_instance_id"], row["session_id"]):
             fresh = self._messages[str(message_id)]
+            activation = self._check_fence(
+                fresh["agent_instance_id"], fresh["session_id"], fencing_token
+            )
+            self._memory_require_claim_grant(fresh)
             if (
                 fresh["status"] == InboxState.CLAIMED
                 and fresh["claimed_fence"] == int(fencing_token)
             ):
                 return self._to_message(fresh)
-            activation = self._check_fence(
-                fresh["agent_instance_id"], fresh["session_id"], fencing_token
-            )
-            if fresh["status"] != InboxState.ACCEPTED:
+            if fresh["status"] not in (InboxState.ACCEPTED, InboxState.CLAIMED):
                 raise InvalidCommandError(
                     f"message {message_id!r} is not claimable at status {fresh['status']}"
                 )
-            assert_inbox_transition(InboxState(fresh["status"]), InboxState.CLAIMED)
+            if fresh["status"] == InboxState.ACCEPTED:
+                assert_inbox_transition(InboxState(fresh["status"]), InboxState.CLAIMED)
             fresh["status"] = InboxState.CLAIMED
             fresh["claimed_fence"] = int(fencing_token)
             await self._emit(
@@ -513,6 +525,7 @@ class InMemoryAgentKernelStore:
             if not candidates:
                 return None
             row = candidates[0]
+            self._memory_require_claim_grant(row)
             if row["status"] == InboxState.ACCEPTED:
                 assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
             row["status"] = InboxState.CLAIMED

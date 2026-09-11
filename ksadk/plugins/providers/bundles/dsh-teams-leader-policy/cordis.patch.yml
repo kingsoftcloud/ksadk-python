@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-teams-leader-policy
+      name: '@kingsoftcloud/dsh-teams-leader-policy'

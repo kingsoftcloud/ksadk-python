@@ -1,3 +1,4 @@
+import { SubAgentBindingsEditor, validateSubAgentBindings, type SubAgentBinding } from "../components/SubAgentBindingsEditor";
 import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { useEffect, useMemo, useState } from "react";
 import { Check, CircleAlert, Package } from "lucide-react";
@@ -30,7 +31,7 @@ export interface EditorCatalogItem {
   displayName: string;
   version: string;
   status: string;
-  contract?: { model?: string; executor?: string; materialization?: string; discoveredTools?: unknown[] };
+  contract?: { name?: string; model?: string; executor?: string; materialization?: string; discoveredTools?: unknown[] };
   health?: { toolCount?: number };
 }
 
@@ -49,6 +50,7 @@ interface AgentDetail {
         providerRef?: string;
         providerConfig?: Record<string, unknown>;
       };
+      subAgents?: SubAgentBinding[];
       instructions?: { system?: string; task?: string };
       soul?: {
         schemaVersion?: string;
@@ -242,6 +244,8 @@ export function AgentEditor({
   const [runtimeEntryPoint, setRuntimeEntryPoint] = useState("");
   const [runtimeAgentVariable, setRuntimeAgentVariable] = useState("root_agent");
   const [providerRef, setProviderRef] = useState("");
+  const [subAgents, setSubAgents] = useState<SubAgentBinding[]>([]);
+  const [subAgentsTouched, setSubAgentsTouched] = useState(false);
   const [providerConfigText, setProviderConfigText] = useState("{}");
   const [providerConsent, setProviderConsent] = useState<{ key: string; approved: boolean } | null>(null);
   const [executionStrategy, setExecutionStrategy] = useState("direct");
@@ -334,6 +338,8 @@ export function AgentEditor({
           ? bindings.modelProfileIds
           : bindings.modelProfileId ? [bindings.modelProfileId] : [];
         setDetail(payload);
+        setSubAgents(draft.spec?.subAgents || []);
+        setSubAgentsTouched(false);
         setHarnessPermission(Boolean(payload.draft?.spec?.security?.allowedPermissions?.includes("process:host-user")));
         setHarnessPermissionTouched(false);
         resetAgentForm({
@@ -579,12 +585,15 @@ export function AgentEditor({
       setVisibleSection(3);
       return;
     }
+    const subAgentError = validateSubAgentBindings(subAgents, values.runtimeType);
+    if (subAgentError) { setSaveError(subAgentError); setVisibleSection(2); return; }
     setSaving(true);
     setSaveError("");
     let updateSaved = false;
     try {
       const original = detail.draft.spec;
       const spec = JSON.parse(JSON.stringify(original));
+      if (subAgentsTouched) spec.subAgents = subAgents;
       if (values.runtimeType === "harness" && harnessPermissionTouched) {
         const retained = (spec.security?.allowedPermissions || []).filter((p: string) => p !== "process:host-user");
         spec.security = { ...spec.security, allowedPermissions: harnessPermission
@@ -1079,6 +1088,7 @@ export function AgentEditor({
             />
           </div>
         </div>
+        {runtime === "harness" && <SubAgentBindingsEditor value={subAgents} tools={visibleTools.filter(tool => selectedTools.includes(tool.resourceId) && tool.contract?.name).map(tool => ({ name: tool.contract!.name!, label: tool.displayName }))} onChange={value => { setSubAgents(value); setSubAgentsTouched(true); }} />}
         {runtime === "codex" && visibleSection === 2 && <NativePluginBindings
           key={`${agentId}-codex-plugins`}
           value={selectedPlugins.filter(binding => binding.ecosystem === "codex")}

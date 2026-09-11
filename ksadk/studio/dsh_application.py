@@ -15,7 +15,7 @@ from urllib.error import URLError
 import httpx
 from fastapi import FastAPI, Request, WebSocket
 from starlette.background import BackgroundTask
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from ksadk.studio.errors import StudioError
 from ksadk.plugins.host import PluginHostError
@@ -31,7 +31,10 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
     @app.api_route("/studio-core/", methods=["GET"])
     async def application(request: Request):
         if not authorized(request.cookies):
-            raise StudioError("LOCAL_SESSION_REQUIRED", "请从 Studio 启动链接进入", status_code=401)
+            # A fresh browser follows the normal loopback bootstrap first;
+            # the root issues the Studio cookie before entering Core.
+            target = "/" + ("?" + request.url.query if request.url.query else "")
+            return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
         try:
             lease = await studio.dsh_capabilities.connector_lease()
         except PluginHostError:

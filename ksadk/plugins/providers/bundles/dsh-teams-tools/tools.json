@@ -1,0 +1,221 @@
+[
+  {
+    "name": "team_context",
+    "description": "读取当前团队消息、成员和任务状态。",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_message",
+    "description": "发布进度，或明确请求某成员执行；wake=false仅留言，不触发执行。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "targetMemberId": {
+          "type": "string"
+        },
+        "wake": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_create_task",
+    "description": "仅Leader：创建有验收标准的任务；指定负责人即自动派发，不要再额外wake。依赖用本轮已有taskId。",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 20000,
+          "title": "Description",
+          "type": "string"
+        },
+        "ownerMemberId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ownermemberid"
+        },
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "acceptanceCriteria": {
+          "default": "提交可核验结果",
+          "maxLength": 5000,
+          "title": "Acceptancecriteria",
+          "type": "string"
+        },
+        "acceptancePolicy": {
+          "default": "human",
+          "enum": [
+            "human",
+            "result"
+          ],
+          "title": "Acceptancepolicy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "TaskCreateInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "team_wait",
+    "description": "仅Leader：持久等待一组任务验收/失败，不阻塞；调用后结束当前回复。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "taskIds"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_task_action",
+    "description": "按最新 revision 领取未分配任务，或由 Leader 分配/重试任务；不能代替人类验收。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "assign",
+            "claim",
+            "retry"
+          ]
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ownerMemberId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "action",
+        "expectedRevision"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_submit_result",
+    "description": "提交自己当前任务的可核验结果。成功Run结束及验收后才算成功。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string"
+        },
+        "artifactIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_finish",
+    "description": "仅Leader：所有任务通过验收后提交最终成果，等待群主验收。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_publish_artifact",
+    "description": "登记当前独立工作区的实际交付文件，返回有来源和哈希的产物引用。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "team_read_artifact",
+    "description": "读取本群已显式共享的不可变交付物，复制到自己工作区并返回来源与摘要。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifactId"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

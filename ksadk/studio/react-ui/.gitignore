@@ -1,0 +1,4 @@
+# Local browser verification artifacts
+/output/
+/test-results/
+/playwright-report/

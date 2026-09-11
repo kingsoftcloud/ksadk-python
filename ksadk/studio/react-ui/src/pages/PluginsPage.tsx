@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, Search, Trash2, Plus, ArrowUpRight } from "lucide-react";
 import { apiFetch } from "../api";
+import { TeamsAvailability } from "./TeamsAvailability";
 import { DshPluginWorkspace } from "../components/DshPluginWorkspace";
 import { showToast } from "../components/Toast";
 
@@ -385,6 +386,7 @@ export function PluginsPage({ refreshTick = 0 }: { refreshTick?: number }) {
       </dl></section>
     </article> : <>
       <header className="plugins-intro"><p>为 Agent 添加工具、技能和应用。</p></header>
+      <TeamsAvailability compact />
       <label className="plugin-store-search"><Search size={16}/><input aria-label="搜索插件" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>
       <section className="plugin-installed-strip"><header><h3>已安装 <small>{items.length}</small></h3><button className="plugin-text-button" onClick={() => { setSettingsPluginId(undefined); setWorkspaceOpen(true); }}>插件设置</button></header>
         <div className="plugin-installed-tabs" role="tablist" aria-label="筛选已安装插件">
