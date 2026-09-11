@@ -544,9 +544,10 @@ export default function App() {
             const response = await apiFetch("/api/v1/workspaces");
             const data = await response.json() as { items?: Array<{ name: string; path: string }> };
             const choices = (data.items || []).map(item => `${item.name}: ${item.path}`).join("\n");
-            const path = window.prompt(`选择工作区路径：\n${choices}`);
+            const path = window.prompt(`选择工作区路径（输入新目录可创建）：\n${choices}`);
             if (!path) return;
-            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path }) });
+            const create = !workspaces.some(item => item.path === path) && window.confirm("目录尚未注册，是否创建 workspace？");
+            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path, create }) });
             if (!opened.ok) throw new Error("workspace open failed");
             window.location.reload();
           } catch {
