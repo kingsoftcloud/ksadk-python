@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import Field
 
 from .application import TeamsApplication
+from .artifacts import read_workspace_artifact
 from .contracts import (
     ControlInput,
     GroupCreateInput,
@@ -363,17 +363,15 @@ def create_router(application: TeamsApplication) -> APIRouter:
             item = tx.get("artifact", artifact_id)
             if item["groupId"] != group_id:
                 raise TeamsError("artifact_forbidden", "文件不属于此团队", status=403)
-        artifact_path = Path(item["_path"]).resolve(strict=True)
         artifact_root = (application.runtime.path.parent / "artifacts").resolve()
-        try:
-            artifact_path.relative_to(artifact_root)
-        except ValueError:
-            raise TeamsError("artifact_path_forbidden", "文件不属于工作区", status=403) from None
-        return FileResponse(
-            artifact_path,
-            filename=item["name"],
+        _name, content = read_workspace_artifact(artifact_root, item["_path"])
+        return Response(
+            content=content,
             media_type=item["mediaType"],
-            headers={"X-Content-Type-Options": "nosniff"},
+            headers={
+                "Content-Disposition": f'attachment; filename="{item["name"]}"',
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     return router
