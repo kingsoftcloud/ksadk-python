@@ -92,7 +92,7 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
-from ksadk.studio.workspace_registry import WorkspaceRegistry, LinkedDirectoryPolicy
+from ksadk.studio.workspace_registry import WorkspaceRegistry, LinkedDirectoryPolicy, WorkspaceRuntimeManager
 from ksadk.studio.shared_web import StudioSharedWebBridge
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -218,7 +218,8 @@ def create_studio_app(
     csrf_token: str | None = None,
     security_enabled: bool = True,
 ) -> FastAPI:
-    studio = service or StudioService(root)
+    initial_service = service or StudioService(root)
+    studio = WorkspaceRuntimeManager(initial_service, lambda workspace_root: StudioService(workspace_root))
     session_secret = session_token or secrets.token_urlsafe(32)
     csrf_secret = csrf_token or secrets.token_urlsafe(24)
 
@@ -230,9 +231,10 @@ def create_studio_app(
             await studio.scheduler.start_if_available()
             yield
         finally:
-            await studio.scheduler.stop()
-            await studio.aclose()
-            studio.credentials.clear_session()
+            for runtime in studio.services():
+                await runtime.scheduler.stop()
+                await runtime.aclose()
+                runtime.credentials.clear_session()
 
     app = FastAPI(
         title="AgentKit Local Studio",
@@ -1041,20 +1043,14 @@ def create_studio_app(
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
-        # This endpoint only reconnects to the daemon's already-bound root.  Do
-        # not resolve or otherwise touch a caller-provided filesystem path.
-        requested = os.path.normcase(os.path.abspath(os.path.expanduser(payload.path)))
-        bound_root = os.path.normcase(str(studio.workspace.root))
-        if requested != bound_root:
-            raise StudioError(
-                "WORKSPACE_PATH_FORBIDDEN",
-                "当前 Daemon 不允许切换到启动 root 之外的工作区",
-                status_code=403,
-            )
-        record = WorkspaceRegistry().open(studio.workspace.root)
+        try:
+            record = studio.switch(payload.path, create=payload.create)
+            await studio.start()
+        except FileNotFoundError as error:
+            raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         return {
-            "name": studio.workspace.root.name,
-            "path": str(studio.workspace.root),
+            "name": record.name,
+            "path": record.path,
             "workspaceId": record.workspace_id,
         }
 

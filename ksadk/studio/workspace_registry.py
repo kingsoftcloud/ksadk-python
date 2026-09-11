@@ -68,6 +68,33 @@ class WorkspaceRegistry:
         return sorted(self._read(), key=lambda i: i.last_opened_at, reverse=True)
 
 
+class WorkspaceRuntimeManager:
+    """Keeps one isolated Studio service per workspace and proxies the active one."""
+
+    def __init__(self, initial, factory) -> None:
+        self._factory = factory
+        self._services = {_canonical(initial.workspace.root): initial}
+        self._active = _canonical(initial.workspace.root)
+
+    @property
+    def active(self):
+        return self._services[self._active]
+
+    def __getattr__(self, name):
+        return getattr(self.active, name)
+
+    def switch(self, path: str | Path, *, create: bool = False):
+        root = _canonical(path)
+        record = WorkspaceRegistry().open(root, create=create)
+        if root not in self._services:
+            self._services[root] = self._factory(root)
+        self._active = root
+        return record
+
+    def services(self):
+        return tuple(self._services.values())
+
+
 class LinkedDirectoryPolicy:
     """Persist explicit directory relationships in the private workspace config."""
 
