@@ -905,6 +905,7 @@ def create_studio_app(
             "workspace": {
                 "name": studio.workspace.root.name,
                 "path": str(studio.workspace.root),
+                "workspaceId": studio.workspace_record.workspace_id,
             },
             "operationScope": studio.deployment_operation_scope(),
             "frontend": studio.frontend_assets(),
