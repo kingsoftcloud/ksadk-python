@@ -75,6 +75,9 @@ jobs:
   test-studio-react:
     name: React Studio responsive browser gate
     runs-on: ubuntu-latest
+    # Browser navigation requires the provisioned Studio/DSH runtime. Keep
+    # the hosted runner gate opt-in while that environment is unavailable.
+    if: ${{ vars.KSADK_STUDIO_BROWSER_E2E_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v7
 
