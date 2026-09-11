@@ -386,6 +386,12 @@ class StudioService:
 
     async def start(self, *, wait_for_dsh: bool = True) -> None:
         """Start local state and optionally wait for the managed DSH profile."""
+        # Desktop workspace switching must not queue behind an in-flight DSH
+        # discovery task.  The service is already usable while that optional
+        # task finishes in the background; callers that explicitly request
+        # readiness still await the task below.
+        if self._started and not wait_for_dsh:
+            return
         async with self._start_lock:
             self._ensure_open()
             if not self._started:
