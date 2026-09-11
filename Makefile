@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-check studio-app-run studio-app-clean phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
 
 PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
 # Phase 1 runtime drills must run beside real Agent workloads in the preprod
@@ -69,6 +69,12 @@ help:
 	@echo "    make offline-macos-arm   macOS Apple Silicon 离线包"
 	@echo "    make offline-windows     Windows x64 离线包"
 	@echo "    make offline-all         打包所有平台"
+	@echo ""
+	@echo "  \033[1;32mStudio macOS 本地包:\033[0m"
+	@echo "    make studio-app-package  构建 macOS arm64 self-contained Studio 包"
+	@echo "    make studio-app-check    校验包内 KsADK/Codex/static 资源"
+	@echo "    make studio-app-run      启动包内 Studio（默认打开浏览器）"
+	@echo "    make studio-app-clean    清理 Studio 本地包"
 	@echo ""
 	@echo "  \033[1;32mAgentEngine 镜像:\033[0m"
 	@echo "    Hermes / OpenClaw / Skill Runtime 镜像已迁移到内部 agentengine-images 仓库"
@@ -819,6 +825,45 @@ build-wheel: build-frontend
 
 build-all: build-wheel
 	@echo "Build complete. Wheel is in dist/"
+
+# ============================================================
+# Studio macOS 本地 runtime bundle（第一阶段）
+# ============================================================
+
+# The native shell will consume this deterministic bundle. Keep the first
+# local target to Apple Silicon only; cross-platform app jobs belong in CI.
+STUDIO_APP_PLATFORM ?= macos
+STUDIO_APP_ARCH ?= arm64
+STUDIO_APP_DIR ?= dist/studio-app
+STUDIO_APP_BUNDLE ?= $(STUDIO_APP_DIR)/AgentKitStudio.app
+STUDIO_APP_RUNTIME ?= $(STUDIO_APP_BUNDLE)/Contents/Resources/runtime
+STUDIO_APP_PYTHON ?= 3.13
+STUDIO_APP_WORKSPACE ?= .
+
+studio-app-package: build-wheel
+	@test "$(STUDIO_APP_PLATFORM)" = "macos" || (echo "ERROR: only STUDIO_APP_PLATFORM=macos is supported locally" >&2; exit 1)
+	@test "$(STUDIO_APP_ARCH)" = "arm64" || (echo "ERROR: only STUDIO_APP_ARCH=arm64 is supported locally" >&2; exit 1)
+	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
+	@command -v sw_vers >/dev/null 2>&1 || (echo "ERROR: this target must run on macOS" >&2; exit 1)
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(VERSION)" sh scripts/package_studio_app.sh
+	@$(MAKE) --no-print-directory studio-app-check
+	@echo "✅ Studio macOS arm64 bundle: $(STUDIO_APP_BUNDLE)"
+
+studio-app-check:
+	@test -x "$(STUDIO_APP_BUNDLE)/Contents/MacOS/AgentKitStudio" || (echo "ERROR: Studio bundle is missing; run make studio-app-package" >&2; exit 1)
+	@test -x "$(STUDIO_APP_RUNTIME)/bin/python" || (echo "ERROR: bundled Python runtime is missing" >&2; exit 1)
+	@test -x "$(STUDIO_APP_RUNTIME)/bin/agentengine" || (echo "ERROR: bundled agentengine entrypoint is missing" >&2; exit 1)
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -c 'from importlib.metadata import version; print("ksadk", version("ksadk")); print("openai-codex", version("openai-codex"))'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -c 'from codex_cli_bin import bundled_codex_path; import subprocess; p=bundled_codex_path(); print("codex", p); subprocess.run([str(p), "--version"], check=True)'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -c 'import ksadk.studio; from pathlib import Path; p=Path(ksadk.studio.__file__).with_name("static")/"index.html"; assert p.is_file(), p; print("studio-static", p)'
+	@echo "✅ Studio bundle checks passed ($(STUDIO_APP_PLATFORM)/$(STUDIO_APP_ARCH))"
+
+studio-app-run: studio-app-check
+	@STUDIO_APP_WORKSPACE="$(STUDIO_APP_WORKSPACE)" open "$(STUDIO_APP_BUNDLE)"
+
+studio-app-clean:
+	@rm -rf "$(STUDIO_APP_DIR)"
+	@echo "✅ Studio local bundle cleaned"
 
 clean-frontend:
 	rm -rf $(STATIC_DIR) $(STUDIO_STATIC_DIR)
