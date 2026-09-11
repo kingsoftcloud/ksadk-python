@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -33,8 +34,11 @@ def read_workspace_artifact(root: Path, supplied_path: str) -> tuple[str, bytes]
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             os.close(directory)
             directory = child
+        filename = re.fullmatch(r"[^/\\\x00]+", path.name)
+        if filename is None:
+            raise TeamsError("artifact_path_forbidden", "文件名包含不允许的字符", status=403)
         descriptor = os.open(
-            path.name,  # lgtm[py/path-injection]
+            filename.group(0),
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=directory,
         )
