@@ -154,6 +154,7 @@ from ksadk.studio.templates import (
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
+from ksadk.studio.workspace_registry import WorkspaceRegistry
 
 _T = TypeVar("_T")
 
@@ -198,6 +199,8 @@ class StudioService:
             )
         self.workspace = Workspace(root)
         self.workspace.initialize()
+        self.workspace_registry = WorkspaceRegistry()
+        self.workspace_record = self.workspace_registry.open(self.workspace.root)
         self._startup_provider_manifests = provider_manifests
         self._startup_provider_factories = provider_factories
         self._active_provider_manifests = dict(provider_manifests)
