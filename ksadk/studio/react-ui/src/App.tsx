@@ -519,10 +519,20 @@ export default function App() {
           setSettingsSection("general");
           setSettingsOpen(true);
         }}
-        onWorkspaceSwitch={() => {
+        onWorkspaceSwitch={async () => {
           setMobileNavOpen(false);
-          setSettingsSection("general");
-          setSettingsOpen(true);
+          try {
+            const response = await apiFetch("/api/v1/workspaces");
+            const data = await response.json() as { items?: Array<{ name: string; path: string }> };
+            const choices = (data.items || []).map(item => `${item.name}: ${item.path}`).join("\n");
+            const path = window.prompt(`选择工作区路径：\n${choices}`);
+            if (!path) return;
+            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path }) });
+            if (!opened.ok) throw new Error("workspace open failed");
+            window.location.reload();
+          } catch {
+            window.alert("工作区切换失败，请确认目录已注册且 Studio 仍在运行。");
+          }
         }}
       />
 
