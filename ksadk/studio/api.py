@@ -1048,11 +1048,16 @@ def create_studio_app(
             await studio.start()
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
-        return {
+        response = {
             "name": record.name,
             "path": record.path,
             "workspaceId": record.workspace_id,
         }
+        # Preserve the legacy reconnect response shape for the daemon root;
+        # switched workspaces include the stable identity for scoped clients.
+        if os.path.normcase(record.path) == os.path.normcase(str(initial_service.workspace.root)):
+            response.pop("workspaceId", None)
+        return response
 
     @app.get("/api/v1/workspaces")
     async def list_workspaces():
