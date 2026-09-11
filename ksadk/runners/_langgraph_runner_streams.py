@@ -15,6 +15,7 @@ from langgraph.types import Command
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 from ksadk.events.runtime_event import RuntimeEvent
 from ksadk.runners.usage_accumulator import accumulate_usage
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime.timing import extract_timing
 
 if TYPE_CHECKING:
@@ -89,6 +90,7 @@ class _LangGraphStreamMixin:
         emitted_non_text_event = False
         final_output_text = ""
         final_output_timing: dict[str, Any] = {}
+        final_result_fields: dict[str, Any] = {}
         final_output_usage: dict[str, Any] = {}
         final_output_last_usage: dict[str, Any] = {}
         model_run_usages: dict[str, dict[str, Any]] = {}
@@ -412,6 +414,7 @@ class _LangGraphStreamMixin:
                     output = event.get("data", {}).get("output", {})
                     if not event.get("parent_ids"):
                         final_output_timing = extract_timing(output)
+                        final_result_fields = skill_eval_response_fields(output)
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
                         # __interrupt__ 是 LangGraph 原始 Interrupt 对象列表，
@@ -494,7 +497,7 @@ class _LangGraphStreamMixin:
 
         if not accumulated_text:
             if final_output_text:
-                final_chunk = {"output": final_output_text, "type": "final"}
+                final_chunk = {"output": final_output_text, "type": "final", **final_result_fields}
                 usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
                 last_usage = (
                     latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
@@ -510,6 +513,7 @@ class _LangGraphStreamMixin:
                 result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
                 fallback_chunk: dict[str, Any] = {
                     "output": result.get("output", ""),
+                    **skill_eval_response_fields(result),
                     "type": "final",
                 }
                 usage = self._extract_usage(result)
@@ -526,7 +530,7 @@ class _LangGraphStreamMixin:
                     yield {"type": "checkpoint", "metadata": checkpoint_metadata}
                     return
         else:
-            final_chunk = {"output": accumulated_text, "type": "final"}
+            final_chunk = {"output": accumulated_text, "type": "final", **final_result_fields}
             state_usage = await self._latest_state_usage(config)
             usage = (
                 accumulated_model_usage()
@@ -723,6 +727,7 @@ class _LangGraphStreamMixin:
         adapter = LangGraphEventAdapter()
         reducer = StreamReducer()
         accumulated_usage: dict[str, Any] = {}
+        final_result_fields: dict[str, Any] = {}
 
         # --- build stream kwargs (v3 rejects stream_mode/subgraphs) ---
         stream_kwargs: dict[str, Any] = {"version": "v3", "config": config}
@@ -856,6 +861,9 @@ class _LangGraphStreamMixin:
                 reducer.apply(event)
                 last_timestamp = float(getattr(event, "timestamp", 0.0) or last_timestamp)
                 yield event
+            # v3 exposes the final graph state after the event stream completes.
+            final_state = await run_stream.output()
+            final_result_fields = skill_eval_response_fields(final_state)
         except Exception as exc:
             error_source = SourceRef(
                 framework="langgraph",
@@ -905,7 +913,10 @@ class _LangGraphStreamMixin:
         terminal_source = SourceRef(
             framework="langgraph",
             native_run_id=run_id,
-            metadata=dict(source_metadata),
+            metadata={
+                **source_metadata,
+                **({"metrics": final_result_fields} if final_result_fields else {}),
+            },
         )
         yield RunCompleted(
             schema_version=2,

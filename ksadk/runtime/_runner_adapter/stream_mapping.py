@@ -26,6 +26,7 @@ from ksadk.conversations.runtime_observability import (
     _set_conversation_output_attributes,
     _set_conversation_span_attributes,
     _set_conversation_usage_attributes,
+    _set_skill_eval_result_attributes,
 )
 from ksadk.events.canonical import (
     ApprovalRequest,
@@ -37,6 +38,7 @@ from ksadk.events.canonical import (
     ItemCompleted,
     ItemStarted,
     ItemUpdated,
+    RunCompleted,
     RunFailed,
     RunProgress,
     RuntimeEvent,
@@ -47,6 +49,7 @@ from ksadk.events.content import DataContent, TextContent, ToolCallContent, Tool
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime.adapter import RunHandle
 from ksadk.runtime.preprocessing import PreparedRuntimeStart
+from ksadk.runtime.skill_eval_result import extract_skill_eval_result
 from ksadk.runtime.timing import extract_timing
 from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
@@ -361,6 +364,10 @@ class _RunnerStreamMappingMixin:
                         if isinstance(chunk, EventEnvelope):
                             # canonical 事件(来自 stream_canonical_events):直接转发,
                             # 追踪 output/usage 供 span 属性。
+                            if isinstance(chunk, RunCompleted):
+                                evidence = extract_skill_eval_result(chunk.source.metadata.get("metrics"))
+                                if evidence:
+                                    _set_skill_eval_result_attributes(span, evidence)
                             if isinstance(chunk, ItemCompleted) and chunk.item_kind == "message":
                                 accumulated_output = "".join(
                                     part.text
@@ -380,6 +387,9 @@ class _RunnerStreamMappingMixin:
                         if isinstance(chunk, dict):
                             chunk_type = str(chunk.get("type") or "")
                             if chunk_type == "final" and run is not None:
+                                if evidence := extract_skill_eval_result(chunk):
+                                    run.completion_metrics["skill_eval_result"] = evidence
+                                    _set_skill_eval_result_attributes(span, evidence)
                                 if timing := extract_timing(chunk):
                                     run.completion_metrics["timing"] = timing
                                 for source_key, target_key in (

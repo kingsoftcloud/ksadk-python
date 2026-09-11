@@ -6625,7 +6625,7 @@ async def test_list_session_checkpoints_without_session_id_returns_all_sessions(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("path", ["/v1/responses", "/agentengine/api/v1/RunAgent"])
-async def test_langgraph_timing_reaches_http_response(stream, path):
+async def test_langgraph_timing_reaches_http_response(stream, path, monkeypatch):
     from typing import TypedDict
 
     from langchain_core.messages import AIMessage
@@ -6633,16 +6633,31 @@ async def test_langgraph_timing_reaches_http_response(stream, path):
 
     from ksadk.runners.langgraph_runner import LangGraphRunner
 
+    from contextlib import asynccontextmanager
+    from ksadk.runtime import runner_adapter
+
+    recorded_spans = []
+
+    @asynccontextmanager
+    async def span_scope(name):
+        attributes = {}
+        recorded_spans.append(attributes)
+        yield SimpleNamespace(set_attribute=lambda key, value: attributes.__setitem__(key, value))
+
+    monkeypatch.setattr(runner_adapter, "_conversation_span_scope", span_scope)
+
     class State(TypedDict):
         messages: list
         answer: str
         timing: dict
+        skill_eval_result: dict
 
     graph = StateGraph(State)
     graph.add_node(
         "answer",
         lambda state: {
             "answer": "TIMING_OK",
+            "skill_eval_result": {"schema_version": "base_agent.skill_eval_result.v2", "run": {"trace_id": "a" * 32, "mode": "no_skill"}, "skill": {}},
             "messages": [
                 AIMessage(
                     content="TIMING_OK",
@@ -6698,6 +6713,19 @@ async def test_langgraph_timing_reaches_http_response(stream, path):
     assert payload["usage"]["total_tokens"] == 8
     assert payload["output_text"] == "TIMING_OK"
     assert "timing" not in json.dumps(payload["output"])
+
+    assert payload["skill_eval_result"]["run"]["mode"] == "no_skill"
+    assert payload["trace_id"] == "a" * 32
+    assert "skill_eval_result" not in json.dumps(payload["output"])
+    if stream:
+        deltas = [data for name, data in _sse_events(response.text) if name == "response.output_text.delta"]
+        assert "skill_eval_result" not in json.dumps(deltas)
+
+    evidence_spans = [attrs for attrs in recorded_spans if "metadata" in attrs]
+    assert evidence_spans
+    for attrs in evidence_spans:
+        assert json.loads(attrs["metadata"])["skill_eval_result"] == payload["skill_eval_result"]
+        assert attrs["langfuse.trace.output"] == "TIMING_OK"
 
 
 @pytest.mark.asyncio

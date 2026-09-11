@@ -20,6 +20,7 @@ from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
 from ksadk.runners._session_identity import LangGraphSessionIdentityMixin
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.utils import load_agent_module
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime.timing import extract_timing
 from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
@@ -1088,7 +1089,10 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             final_metadata = final_chunk.get("metadata")
             if isinstance(final_metadata, Mapping):
                 metadata = {**dict(final_metadata), **metadata}
-            result: dict[str, Any] = {"output": output_text, "raw": {"chunks": chunks}}
+            result: dict[str, Any] = {
+                "output": output_text, "raw": {"chunks": chunks},
+                **skill_eval_response_fields(final_chunk),
+            }
             usage = final_chunk.get("usage")
             if isinstance(usage, Mapping) and usage:
                 result["usage"] = dict(usage)
@@ -1172,7 +1176,10 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
                     context=native_context,
                 )
 
-            output = {"output": self._extract_output(result), "raw": result}
+            output = {
+                "output": self._extract_output(result), "raw": result,
+                **skill_eval_response_fields(result),
+            }
             if timing := extract_timing(result):
                 output["timing"] = timing
             usage = self._extract_usage(result)
@@ -1295,6 +1302,7 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         latest_config = self._latest_checkpoint_config(config)
         state_usage = await self._latest_state_usage(latest_config)
         state_output = ""
+        result_fields: dict[str, Any] = {}
         try:
             state = None
             if callable(getattr(self._agent, "aget_state", None)):
@@ -1304,12 +1312,14 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             values = getattr(state, "values", None)
             if values is not None:
                 state_output = self._extract_output(values)
+                result_fields = skill_eval_response_fields(values)
         except Exception:
             state_output = ""
         final_output = state_output or self._extract_output(latest_output)
         yield {
             "type": "final",
             "output": final_output,
+            **result_fields,
             **({"usage": state_usage} if state_usage else {}),
             **({"resume_noop": True} if not emitted_update else {}),
         }

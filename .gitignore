@@ -113,3 +113,5 @@ e2e-codex-agent/
 ksadk/studio/react-ui/node_modules/
 .agentkit/secrets.env
 agentkit.yaml
+.agentkit/config.yaml
+.agentkit/settings.yaml

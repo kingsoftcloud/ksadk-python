@@ -48,6 +48,7 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.executor import RuntimeExecutor, RuntimeStartPreparation
 from ksadk.runtime.factory import apply_runtime_start_request_defaults
 from ksadk.runtime.launch import RuntimeLaunchContext
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime.timing import normalize_timing
 from ksadk.sessions import resolve_session_service
 
@@ -656,6 +657,7 @@ async def iter_runtime_conversation_semantic_events(
                 "session_id": execution_context.get("session_id", ""),
                 "usage": projection.usage.model_dump(),
                 **({"timing": timing} if timing else {}),
+                **skill_eval_response_fields(metrics),
             }
         elif isinstance(event, RunCanceled):
             metrics = event.source.metadata.get("metrics")
@@ -665,6 +667,7 @@ async def iter_runtime_conversation_semantic_events(
                 "session_id": execution_context.get("session_id", ""),
                 "usage": projection.usage.model_dump(),
                 **({"timing": timing} if timing else {}),
+                **skill_eval_response_fields(metrics),
             }
         elif isinstance(event, RunCompleted):
             completion_metadata = dict(event.source.metadata)
@@ -697,6 +700,7 @@ async def iter_runtime_conversation_semantic_events(
                 "usage": projection.usage.model_dump(),
                 "metadata": completion_metadata,
                 **({"timing": timing} if timing else {}),
+                **skill_eval_response_fields(metrics),
             }
 
 
@@ -743,6 +747,7 @@ async def invoke_runtime_conversation_once(
     metadata: dict[str, Any] = {}
     completed = False
     timing: dict[str, Any] = {}
+    result_fields: dict[str, Any] = {}
     async for event in iter_runtime_conversation_semantic_events(**kwargs):
         event_type = event.get("type")
         if event_type == "started":
@@ -757,6 +762,7 @@ async def invoke_runtime_conversation_once(
             usage = dict(event.get("usage") or {})
             metadata = dict(event.get("metadata") or {})
             timing = normalize_timing(event.get("timing"))
+            result_fields = skill_eval_response_fields(event)
         elif event_type == "error":
             raise RuntimeError(str(event.get("message") or "Agent 运行失败"))
         elif event_type == "cancelled":
@@ -767,6 +773,7 @@ async def invoke_runtime_conversation_once(
         raise RuntimeError("runtime did not produce a completed result")
     return session_id, {
         "output_text": output_text,
+        **result_fields,
         "usage": usage,
         "metadata": metadata,
         **({"timing": timing} if timing else {}),

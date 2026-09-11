@@ -358,6 +358,16 @@ def _set_conversation_output_attributes(span: Any | None, output_text: str | Non
         _set_span_attribute(span, key, text)
 
 
+def _set_skill_eval_result_attributes(span: Any | None, result: Mapping[str, Any]) -> None:
+    """Attach structured evidence without changing trace/observation output text."""
+    payload = json.dumps({"skill_eval_result": dict(result)}, ensure_ascii=False)
+    _set_span_attribute(span, "metadata", payload)
+    _set_span_attribute(
+        span, "langfuse.trace.metadata.skill_eval_result",
+        json.dumps(dict(result), ensure_ascii=False),
+    )
+
+
 def _set_conversation_usage_attributes(
     span: Any | None,
     usage: Mapping[str, Any] | None,

@@ -40,6 +40,7 @@ from ksadk.conversations.runtime_observability import (
     _set_conversation_usage_attributes,
     _set_prompt_cache_attributes,
     _set_prompt_source_attributes,
+    _set_skill_eval_result_attributes,
     _span_feedback_metadata,
 )
 from ksadk.conversations.runtime_persistence import (
@@ -55,6 +56,7 @@ from ksadk.conversations.runtime_resume import (
     _merge_agentengine_metadata,
 )
 from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime_context import (
     TRUSTED_IDENTITY_METADATA_KEY,
     PlatformIdentityContext,
@@ -361,6 +363,9 @@ async def invoke_conversation_once(
         if last_invoke_error is not None:
             raise last_invoke_error
         result = result or {}
+        result_fields = skill_eval_response_fields(result)
+        if result_fields:
+            _set_skill_eval_result_attributes(span, result_fields["skill_eval_result"])
         output_text = strip_reasoning_markup(str(result.get("output", "")))
         result_usage = _normalize_usage_payload(result.get("usage"))
         result_last_usage = _normalize_usage_payload(
@@ -457,6 +462,7 @@ async def invoke_conversation_once(
             run_trigger=run_trigger,
         )
         result_payload: dict[str, Any] = {
+            **result_fields,
             "output_text": output_text,
             "model": model,
             "metadata": {
