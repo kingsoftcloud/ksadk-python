@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { WorkspaceContribution } from "./workspaceSlots";
-import { TeamsAvailability } from "../pages/TeamsAvailability";
+const TeamsPage = lazy(() => import("../pages/TeamsPage").then(module => ({ default: module.TeamsPage })));
 
 /** Mount/unmount a live contribution in its original DSH context. */
 export function PluginWorkspacePage({
@@ -25,7 +25,7 @@ export function PluginWorkspacePage({
   }, [pageId, contribution?.pluginId, Boolean(contribution), retry]);
   if (!contribution)
     return pageId === "teams" ? (
-      <TeamsAvailability />
+      <Suspense fallback={<p role="status">正在打开团队…</p>}><TeamsPage /></Suspense>
     ) : (
       <div className="studio-plugin-empty">
         <h2>此插件工作区尚未加载</h2>

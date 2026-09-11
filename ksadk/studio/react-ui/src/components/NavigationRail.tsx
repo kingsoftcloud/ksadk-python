@@ -152,6 +152,10 @@ export function NavigationRail({
     setOpenGroup(activeGroup);
   }, [activeGroup]);
   const showLabels = expanded || mobile;
+  const navigationPages = [
+    { id: "teams", label: "团队" },
+    ...workspacePages.filter(page => page.id !== "teams"),
+  ];
   const rail = (
     <aside
       className="studio-navigation"
@@ -228,7 +232,7 @@ export function NavigationRail({
               {showLabels && <span>Agent</span>}
             </button>
           </RailTooltip>
-          {workspacePages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}><KingIcon name={page.id === "teams" ? "users" : "all"} size={18} />{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
+          {navigationPages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}><KingIcon name={page.id === "teams" ? "users" : "all"} size={18} />{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
           {GROUPS.map((group) => {
             const open = showLabels && openGroup === group.id;
             return (
