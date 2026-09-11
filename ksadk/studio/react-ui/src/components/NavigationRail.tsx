@@ -122,8 +122,6 @@ export interface NavigationRailProps {
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
   onOpenSettings: () => void;
   onWorkspaceSwitch?: () => void;
-  workspaces?: Array<{ workspaceId: string; name: string; path: string }>;
-  onWorkspaceSelect?: (path: string) => void;
   workspaceRunCount?: number;
 }
 export function NavigationRail({
@@ -144,8 +142,6 @@ export function NavigationRail({
   onNavigate,
   onOpenSettings,
   onWorkspaceSwitch,
-  workspaces = [],
-  onWorkspaceSelect,
   workspaceRunCount = 0,
 }: NavigationRailProps) {
   const activeGroup =
@@ -198,16 +194,6 @@ export function NavigationRail({
           />
         </button>
       </RailTooltip>
-      {showLabels && workspaces.length > 1 && (
-        <select
-          className="workspace-switch-select"
-          aria-label="切换工作区"
-          value={workspacePath}
-          onChange={event => onWorkspaceSelect?.(event.target.value)}
-        >
-          {workspaces.map(item => <option key={item.workspaceId} value={item.path}>{item.name}</option>)}
-        </select>
-      )}
       <div className="studio-nav-scroll">
         <nav className="studio-nav-primary" aria-label="产品导航">
           <RailTooltip label="新对话">

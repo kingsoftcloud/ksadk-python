@@ -532,12 +532,7 @@ export default function App() {
         workspaceName={workspaceName}
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
-        workspaces={workspaces}
         workspaceRunCount={workspaceRunCount}
-        onWorkspaceSelect={async path => {
-          const response = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path }) });
-          if (response.ok) window.location.reload();
-        }}
         onNavigate={navigateFromRail}
         onOpenSettings={() => {
           setMobileNavOpen(false);
