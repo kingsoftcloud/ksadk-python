@@ -151,6 +151,16 @@ class WorkspaceRuntimeManager:
                 traces.append(item)
         return traces
 
+    def all_operations(self) -> list[dict]:
+        operations: list[dict] = []
+        for runtime in self._services.values():
+            wid = getattr(getattr(runtime, "workspace_record", None), "workspace_id", None)
+            for operation in runtime.operations.list():
+                item = operation.model_dump(by_alias=True) if hasattr(operation, "model_dump") else dict(operation)
+                item["workspaceId"] = wid
+                operations.append(item)
+        return operations
+
 
 class LinkedDirectoryPolicy:
     """Persist explicit directory relationships in the private workspace config."""

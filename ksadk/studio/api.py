@@ -1836,6 +1836,10 @@ def create_studio_app(
         """后台入口：聚合所有已打开 workspace 的运行，并保留归属。"""
         return {"items": studio.all_runs()}
 
+    @app.get("/api/v1/workspaces/operations")
+    async def list_workspace_operations():
+        return {"items": studio.all_operations()}
+
     @app.get("/api/v1/runs/{run_id}/events")
     async def run_events(
         run_id: str,

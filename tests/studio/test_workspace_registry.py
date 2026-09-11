@@ -62,6 +62,7 @@ def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
                 },
             )()
             self.workspace_record = type("Record", (), {"workspace_id": self.value})()
+            self.operations = type("Operations", (), {"list": lambda self: []})()
 
     first = FakeService(tmp_path / "a")
     manager = WorkspaceRuntimeManager(first, FakeService)
