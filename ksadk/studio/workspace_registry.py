@@ -140,6 +140,15 @@ class WorkspaceRuntimeManager:
                 continue
         return None
 
+    def runtime_for_operation(self, operation_id: str):
+        for runtime in self._services.values():
+            try:
+                runtime.operations.get(operation_id)
+                return runtime
+            except Exception:
+                continue
+        return None
+
     def all_traces(self) -> list[dict]:
         traces: list[dict] = []
         for runtime in self._services.values():

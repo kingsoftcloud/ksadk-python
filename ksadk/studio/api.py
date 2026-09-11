@@ -2313,11 +2313,17 @@ def create_studio_app(
 
     @app.get("/api/v1/operations/{operation_id}")
     async def get_operation(operation_id: str):
-        return studio.operations.get(operation_id)
+        runtime = studio.runtime_for_operation(operation_id)
+        if runtime is None:
+            raise StudioError("OPERATION_NOT_FOUND", "操作不存在", status_code=404)
+        return runtime.operations.get(operation_id)
 
     @app.post("/api/v1/operations/{operation_id}:cancel")
     async def cancel_operation(operation_id: str):
-        return studio.operations.cancel(operation_id)
+        runtime = studio.runtime_for_operation(operation_id)
+        if runtime is None:
+            raise StudioError("OPERATION_NOT_FOUND", "操作不存在", status_code=404)
+        return runtime.operations.cancel(operation_id)
 
     @app.get("/api/v1/operations/{operation_id}/events")
     async def operation_events(
@@ -2327,7 +2333,10 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        events = studio.operations.events(operation_id, after=cursor)
+        runtime = studio.runtime_for_operation(operation_id)
+        if runtime is None:
+            raise StudioError("OPERATION_NOT_FOUND", "操作不存在", status_code=404)
+        events = runtime.operations.events(operation_id, after=cursor)
         if "application/json" in request.headers.get("Accept", ""):
             return {"items": events}
         return _sse(events)
