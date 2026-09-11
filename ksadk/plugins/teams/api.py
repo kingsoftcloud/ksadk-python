@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -365,11 +366,15 @@ def create_router(application: TeamsApplication) -> APIRouter:
                 raise TeamsError("artifact_forbidden", "文件不属于此团队", status=403)
         artifact_root = (application.runtime.path.parent / "artifacts").resolve()
         _name, content = read_workspace_artifact(artifact_root, item["_path"])
+        filename = str(item["name"])
         return Response(
             content=content,
             media_type=item["mediaType"],
             headers={
-                "Content-Disposition": f'attachment; filename="{item["name"]}"',
+                "Content-Disposition": (
+                    'attachment; filename="artifact"; '
+                    f"filename*=UTF-8''{quote(filename, safe='')}"
+                ),
                 "X-Content-Type-Options": "nosniff",
             },
         )
