@@ -46,20 +46,23 @@ async function switchWorkspace() {
   const workspace = await chooseWorkspaceForSwitch();
   if (!workspace || fs.realpathSync(workspace) === runtime.workspace) return null;
   switching = true;
-  let next;
-  const previous = runtime;
   try {
-    next = await startRuntime({resources, workspace, logPath: path.join(app.getPath('logs'), 'studio-backend.log')});
-    runtime = next;
-    watchRuntime(next);
-    await window.loadURL(next.url);
-    saveWorkspace(next.workspace);
-    previous.child.kill('SIGTERM');
-    return {path: next.workspace};
+    // WorkspaceRuntimeManager owns one service per directory in this Python
+    // process. Reuse the supervised runtime instead of starting a second
+    // Python/DSH stack; the current Studio session and cookie remain valid.
+    const opened = await requestJson(runtime.port, '/api/v1/workspaces:open', {
+      method: 'POST', data: {path: workspace, create: true},
+      cookie: runtime.cookie, csrf: runtime.csrf,
+    });
+    if (opened.status !== 200) {
+      throw new Error(opened.body?.error?.message || `打开工作区失败（${opened.status}）`);
+    }
+    runtime.workspace = opened.body.path || fs.realpathSync(workspace);
+    await window.loadURL(`http://127.0.0.1:${runtime.port}/`);
+    saveWorkspace(runtime.workspace);
+    return {path: runtime.workspace};
   } catch (error) {
-    if (next) next.child.kill('SIGTERM');
-    runtime = previous;
-    dialog.showErrorBox('切换工作区失败', error.message);
+    dialog.showErrorBox('切换工作区失败', error instanceof Error ? error.message : String(error));
     return null;
   } finally { switching = false; }
 }

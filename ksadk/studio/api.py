@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import base64
 import hmac
 import json
@@ -230,20 +231,41 @@ def create_studio_app(
     )
     session_secret = session_token or secrets.token_urlsafe(32)
     csrf_secret = csrf_token or secrets.token_urlsafe(24)
+    # Cookies are scoped by host, not port.  Multiple local Studio processes
+    # (for example an App and a CLI started for another workspace) therefore
+    # used to overwrite one another's session cookie and produce intermittent
+    # LOCAL_SESSION_REQUIRED responses.  Bind the cookie name to this
+    # process's secret so each supervised Studio remains independent.
+    session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
+        session_secret.encode("utf-8")
+    ).hexdigest()[:16]
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        lazy_desktop_start = os.environ.get("KSADK_STUDIO_LAZY_START") == "1"
+        warmup: asyncio.Task[None] | None = None
         try:
-            await studio.start()
-            try:
-                await studio.active.teams_installation.enable()
-            except Exception:
-                # Teams is optional when a host has no usable DSH toolchain.
-                pass
+            await studio.start(wait_for_dsh=not lazy_desktop_start)
+
+            async def warmup_optional_plugins() -> None:
+                try:
+                    await studio.start()
+                    await studio.active.teams_installation.enable()
+                except Exception:
+                    # Teams is optional when a host has no usable DSH toolchain.
+                    pass
+
+            if lazy_desktop_start:
+                warmup = asyncio.create_task(warmup_optional_plugins())
+            else:
+                await warmup_optional_plugins()
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
         finally:
+            if warmup is not None:
+                warmup.cancel()
+                await asyncio.gather(warmup, return_exceptions=True)
             for runtime in studio.services():
                 await runtime.scheduler.stop()
                 await runtime.aclose()
@@ -396,7 +418,7 @@ def create_studio_app(
             or shared_web_api
             or responses_api
         ):
-            supplied = request.cookies.get("agentkit_studio_session") or request.headers.get(
+            supplied = request.cookies.get(session_cookie_name) or request.headers.get(
                 "X-AgentKit-Session"
             )
             if not supplied or not hmac.compare_digest(supplied, session_secret):
@@ -508,7 +530,7 @@ def create_studio_app(
         response.headers["Cache-Control"] = "no-store"
         if security_enabled:
             response.set_cookie(
-                "agentkit_studio_session",
+                session_cookie_name,
                 session_secret,
                 httponly=True,
                 samesite="strict",
@@ -917,7 +939,7 @@ def create_studio_app(
                 status_code=401,
             )
         response.set_cookie(
-            "agentkit_studio_session",
+            session_cookie_name,
             session_secret,
             httponly=True,
             samesite="strict",

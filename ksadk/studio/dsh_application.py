@@ -6,6 +6,7 @@ plugin protocol, settings store, or module loader.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 from http.cookiejar import CookieJar
 from urllib.request import HTTPCookieProcessor, ProxyHandler, build_opener
@@ -38,8 +39,12 @@ def _brand_core_document(body: bytes) -> bytes:
 
 
 def register_dsh_application(app: FastAPI, studio, *, session_secret: str, security_enabled: bool):
+    session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
+        session_secret.encode("utf-8")
+    ).hexdigest()[:16]
+
     def authorized(cookies):
-        token = cookies.get("agentkit_studio_session", "")
+        token = cookies.get(session_cookie_name, "")
         return not security_enabled or hmac.compare_digest(token, session_secret)
 
     @app.api_route("/studio-core/", methods=["GET"])

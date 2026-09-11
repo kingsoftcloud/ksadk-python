@@ -233,6 +233,8 @@ class StudioService:
             )
         self._start_lock = asyncio.Lock()
         self._started = False
+        self._dsh_startup_task: asyncio.Task[None] | None = None
+        self._dsh_ready = False
         self._closed = False
         self.configuration = WorkspaceConfiguration(
             self.workspace, overrides=configuration_overrides
@@ -382,14 +384,23 @@ class StudioService:
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
 
-    async def start(self) -> None:
-        """Bind ready managed DSH registrations before build or execution."""
-
+    async def start(self, *, wait_for_dsh: bool = True) -> None:
+        """Start local state and optionally wait for the managed DSH profile."""
         async with self._start_lock:
             self._ensure_open()
-            if self._started:
+            if not self._started:
+                await self.scheduler_runtimes.start()
+                self._started = True
+                self._dsh_startup_task = asyncio.create_task(self._initialize_dsh())
+            task = self._dsh_startup_task
+        if wait_for_dsh and task is not None:
+            await asyncio.shield(task)
+
+    async def _initialize_dsh(self) -> None:
+        async with self._start_lock:
+            self._ensure_open()
+            if self._dsh_ready:
                 return
-            await self.scheduler_runtimes.start()
             await self._bootstrap_official_dsh_defaults()
             manifests, factories, manager_refs = await self._provider_snapshot(refresh=False)
             self.plugin_compositions.replace_provider_registrations(manifests)
@@ -398,7 +409,7 @@ class StudioService:
             manager = self._dsh_provider_registration_manager
             if manager is not None and manager_refs is not None:
                 manager.mark_bound(manager_refs)
-            self._started = True
+            self._dsh_ready = True
 
     async def refresh_dsh_provider_registrations(self) -> None:
         """Rebind the exact current DSH Profile and release stale activations."""
@@ -516,6 +527,7 @@ class StudioService:
         if manager is not None and manager_refs is not None:
             manager.mark_bound(manager_refs)
         self._started = True
+        self._dsh_ready = True
 
     async def reset_dsh_capability_state(self) -> None:
         """Drop the current DSH capability/Core generation."""
@@ -1320,6 +1332,8 @@ class StudioService:
         async with self._start_lock:
             if self._closed:
                 return
+            if self._dsh_startup_task is not None and not self._dsh_startup_task.done():
+                self._dsh_startup_task.cancel()
             self._closed = True
             cleanup = asyncio.create_task(self._close_owned_plugin_services())
             interrupted = False

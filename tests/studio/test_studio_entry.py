@@ -1,4 +1,5 @@
 """Browser entry selection must never silently drop enabled workspace pages."""
+import hashlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,7 +19,10 @@ def test_enabled_profile_enters_core_after_setting_the_local_session(tmp_path, m
         response = client.get("/" + query)
         assert response.status_code == 307
         assert response.headers["location"] == "/studio-core/" + query
-        assert client.cookies.get("agentkit_studio_session") == "test-entry-session"
+        cookie_name = "agentkit_studio_session_" + hashlib.sha256(
+            b"test-entry-session"
+        ).hexdigest()[:16]
+        assert client.cookies.get(cookie_name) == "test-entry-session"
         assert "HttpOnly" in response.headers["set-cookie"]
         assert response.headers["cache-control"] == "no-store"
         check.assert_awaited_once()
