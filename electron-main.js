@@ -57,6 +57,12 @@ async function launch() {
   window = new BrowserWindow({width: 1440, height: 900, title: 'AgentKit Studio', webPreferences: {
     nodeIntegration: false, contextIsolation: true, sandbox: true, partition,
   }});
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.error(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+  });
+  window.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.error(`[renderer:load-failed] ${code} ${description} ${url}`);
+  });
   window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   window.webContents.on('will-navigate', (event, url) => {
     if (new URL(url).origin !== new URL(runtime.url).origin) event.preventDefault();
