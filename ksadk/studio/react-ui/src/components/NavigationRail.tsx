@@ -152,10 +152,9 @@ export function NavigationRail({
     setOpenGroup(activeGroup);
   }, [activeGroup]);
   const showLabels = expanded || mobile;
-  const navigationPages = [
-    { id: "teams", label: "团队" },
-    ...workspacePages.filter(page => page.id !== "teams"),
-  ];
+  // Workspace tabs are contributed by the active DSH host. Keeping this list
+  // live means unavailable plugins disappear instead of leaving a dead tab.
+  const navigationPages = workspacePages;
   const rail = (
     <aside
       className="studio-navigation"

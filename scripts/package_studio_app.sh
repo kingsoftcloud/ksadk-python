@@ -59,9 +59,8 @@ cat > "$STUDIO_APP_BUNDLE/Contents/MacOS/AgentKitStudio" <<'LAUNCHER'
 #!/bin/sh
 set -eu
 APP_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
-WORKSPACE="${STUDIO_APP_WORKSPACE:-.}"
-PORT="${STUDIO_APP_PORT:-8172}"
 export AGENTENGINE_PLUGIN_TOOLCHAIN_HOME="$APP_ROOT/Contents/Resources/plugin-toolchains"
+export PATH="$APP_ROOT/Contents/Resources/node/bin:$PATH"
 exec "$APP_ROOT/Contents/Resources/electron/Contents/MacOS/Electron" "$APP_ROOT/Contents/Resources/app" "$@"
 LAUNCHER
 chmod 0755 "$STUDIO_APP_BUNDLE/Contents/MacOS/AgentKitStudio"
@@ -87,6 +86,43 @@ cp -R "$electron_dist/Electron.app/." "$STUDIO_APP_BUNDLE/Contents/Resources/ele
 cp electron-main.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/main.js"
 cp desktop-runtime.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/desktop-runtime.js"
 cp preload.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/preload.js"
+
+# Bundle a portable Node runtime and the exact pnpm version used by DSH.
+# The Homebrew Node binary is not portable because it links to Homebrew
+# libraries; the official release binary only uses macOS system frameworks.
+node_version="${STUDIO_APP_NODE_VERSION:-22.19.0}"
+node_cache=".cache/studio-node"
+node_archive="$node_cache/node-v${node_version}-darwin-arm64.tar.gz"
+node_root="$STUDIO_APP_BUNDLE/Contents/Resources/node"
+if [ ! -f "$node_archive" ]; then
+  mkdir -p "$node_cache"
+  curl -fL --retry 3 --retry-delay 2 --retry-all-errors \
+    "https://nodejs.org/dist/v${node_version}/node-v${node_version}-darwin-arm64.tar.gz" \
+    -o "$node_archive"
+fi
+mkdir -p "$node_root"
+tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+pnpm_root="${STUDIO_APP_PNPM_ROOT:-$HOME/.cache/node/corepack/v1/pnpm/11.7.0}"
+test -f "$pnpm_root/bin/pnpm.cjs" || {
+  echo "ERROR: pnpm 11.7.0 cache is missing: $pnpm_root" >&2
+  exit 1
+}
+mkdir -p "$node_root/lib/node_modules/pnpm"
+cp -R "$pnpm_root/." "$node_root/lib/node_modules/pnpm/"
+cat > "$node_root/bin/pnpm" <<'PNPM'
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+exec "$ROOT/bin/node" "$ROOT/lib/node_modules/pnpm/bin/pnpm.cjs" "$@"
+PNPM
+chmod 0755 "$node_root/bin/pnpm"
+cat > "$node_root/bin/pnpx" <<'PNPX'
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+exec "$ROOT/bin/node" "$ROOT/lib/node_modules/pnpm/bin/pnpx.cjs" "$@"
+PNPX
+chmod 0755 "$node_root/bin/pnpx"
 
 # Bundle the exact pinned DSH CLI/Core runtime for offline provider registration.
 dsh_source="${STUDIO_APP_DSH_ROOT:-$HOME/.agentengine/plugin-toolchains/dsh/0.1.5-rc.1}"
@@ -128,6 +164,8 @@ cat > "$STUDIO_APP_BUNDLE/Contents/Resources/manifest.json" <<MANIFEST
   "ksadk_version": "$STUDIO_APP_VERSION",
   "codex_version": "0.147.0",
   "electron_version": "$electron_version",
+  "node_version": "$node_version",
+  "pnpm_version": "11.7.0",
   "platform": "macos",
   "arch": "arm64",
   "source_commit": "$(git rev-parse HEAD 2>/dev/null || echo unavailable)",

@@ -15,10 +15,16 @@ function saveWorkspace(workspace) {
   fs.mkdirSync(app.getPath('userData'), {recursive: true});
   fs.writeFileSync(preferencesPath(), JSON.stringify({workspace}, null, 2), {mode: 0o600});
 }
+function savedWorkspace() {
+  try {
+    const value = JSON.parse(fs.readFileSync(preferencesPath(), 'utf8')).workspace;
+    return typeof value === 'string' && value ? fs.realpathSync(value) : null;
+  } catch { return null; }
+}
 async function chooseWorkspace() {
   const explicit = process.env.STUDIO_APP_WORKSPACE;
   if (explicit && explicit !== '.') return fs.realpathSync(explicit);
-  return defaultWorkspace();
+  return savedWorkspace() || defaultWorkspace();
 }
 async function chooseWorkspaceForSwitch() {
   const result = await dialog.showOpenDialog({properties: ['openDirectory', 'createDirectory'], title: '打开 AgentKit Studio 工作区', buttonLabel: '打开目录'});

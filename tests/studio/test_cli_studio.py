@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -20,8 +21,8 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     opened = []
     monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", fake_run)
     monkeypatch.setattr(
-        "ksadk.cli.cmd_studio.webbrowser.open",
-        lambda url: opened.append(url),
+        "ksadk.cli.cmd_studio._open_browser_when_ready",
+        lambda url, _port: opened.append(url),
     )
 
     result = CliRunner().invoke(studio, [str(tmp_path / "workspace"), "--port", "8899"])
@@ -42,6 +43,12 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
         "harness",
         "langgraph",
     ]
+    # The production launcher waits for Uvicorn to bind before opening the
+    # browser; the helper is replaced with a test double here.
+    for _ in range(100):
+        if opened:
+            break
+        time.sleep(0.01)
     assert opened[0].startswith("http://127.0.0.1:8899/#session=")
     assert (tmp_path / "workspace/agentkit.yaml").is_file()
 

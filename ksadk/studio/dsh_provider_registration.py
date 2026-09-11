@@ -609,12 +609,10 @@ class StudioDshProviderRegistrationManager:
 
     @property
     def _default_marker_path(self) -> Path:
-        # Scope the bootstrap receipt to the owned Profile.  Older Studio
-        # builds used one workspace-wide marker while their default Profile
-        # was ``studio``.  Reusing that marker after the default moved to
-        # official Core's ``web`` Profile incorrectly skipped first-run
-        # installation and left Studio with no runnable DSH Profile.
-        return self._workspace / ".agentkit" / f"official-dsh-defaults-{self._profile}.json"
+        # A bootstrap receipt belongs to one versioned DSH home and Profile.
+        # A workspace-level receipt from an older home must not make a newly
+        # isolated home look explicitly uninstalled before its first install.
+        return self._dsh_home / f"official-dsh-defaults-{self._profile}.json"
 
     @staticmethod
     def _read_default_marker(path: Path) -> dict[str, object]:

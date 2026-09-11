@@ -550,7 +550,7 @@ export default function App() {
               path = payload.path || null;
             }
             if (!path) return;
-            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path, create: true }) });
+            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, create: true }) });
             if (!opened.ok) {
               const payload = await opened.json().catch(() => ({})) as { error?: { message?: string }; detail?: string };
               throw new Error(payload.error?.message || payload.detail || `打开工作区失败（${opened.status}）`);

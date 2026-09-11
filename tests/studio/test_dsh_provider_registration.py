@@ -256,7 +256,7 @@ def test_official_default_marker_is_scoped_to_the_owned_profile(tmp_path: Path) 
     )
 
     assert manager._default_marker_path == (  # noqa: SLF001 - migration contract
-        workspace / ".agentkit" / "official-dsh-defaults-web.json"
+        workspace / ".agentkit" / "dsh-home" / "official-dsh-defaults-web.json"
     )
     assert manager._read_default_marker(manager._default_marker_path) == {}  # noqa: SLF001
 
