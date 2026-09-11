@@ -109,4 +109,17 @@ PLIST
 if [ -f "dist/studio-app/.iconset/icon_512x512.png" ]; then
   sips -s format icns "dist/studio-app/.iconset/icon_512x512.png" --out "$STUDIO_APP_BUNDLE/Contents/Resources/AgentKitStudio.icns" >/dev/null
 fi
+cat > "$STUDIO_APP_BUNDLE/Contents/Resources/manifest.json" <<MANIFEST
+{
+  "product": "AgentKit Studio",
+  "ksadk_version": "$STUDIO_APP_VERSION",
+  "codex_version": "0.147.0",
+  "electron_version": "$electron_version",
+  "platform": "macos",
+  "arch": "arm64",
+  "source_commit": "$(git rev-parse HEAD 2>/dev/null || echo unavailable)",
+  "ksadk_web_version": "0.3.7"
+}
+MANIFEST
+
 echo "Studio bundle staged at $STUDIO_APP_BUNDLE"
