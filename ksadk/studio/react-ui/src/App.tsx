@@ -152,7 +152,8 @@ export default function App() {
   const [requestedSessionId, setRequestedSessionId] = useState(initialRoute.sessionId || "");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
-  const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
+  const [workspace, setWorkspace] = useState<{ name?: string; path?: string; workspaceId?: string } | null>(null);
+  const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>([]);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -305,6 +306,11 @@ export default function App() {
       setWorkspace(d.workspace || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => setRuntimeReady(false)).finally(() => setRuntimeChecked(true));
+  }, [refreshTick]);
+
+  useEffect(() => {
+    apiFetch("/api/v1/workspaces").then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.items) setWorkspaces(d.items); }).catch(() => undefined);
   }, [refreshTick]);
 
   const currentAgent = agents.find(a => a.metadata.id === currentAgentId);
@@ -513,6 +519,11 @@ export default function App() {
         workspaceName={workspaceName}
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
+        workspaces={workspaces}
+        onWorkspaceSelect={async path => {
+          const response = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path }) });
+          if (response.ok) window.location.reload();
+        }}
         onNavigate={navigateFromRail}
         onOpenSettings={() => {
           setMobileNavOpen(false);

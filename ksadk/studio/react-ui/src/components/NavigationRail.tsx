@@ -127,6 +127,8 @@ export interface NavigationRailProps {
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
   onOpenSettings: () => void;
   onWorkspaceSwitch?: () => void;
+  workspaces?: Array<{ workspaceId: string; name: string; path: string }>;
+  onWorkspaceSelect?: (path: string) => void;
 }
 export function NavigationRail({
   view,
@@ -145,6 +147,8 @@ export function NavigationRail({
   onNavigate,
   onOpenSettings,
   onWorkspaceSwitch,
+  workspaces = [],
+  onWorkspaceSelect,
 }: NavigationRailProps) {
   const activeGroup =
     GROUPS.find((group) => group.items.some((item) => item.id === view))?.id ||
@@ -194,6 +198,16 @@ export function NavigationRail({
             aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"}
           />
         </button>
+        {showLabels && workspaces.length > 1 && (
+          <select
+            className="workspace-switch-select"
+            aria-label="切换工作区"
+            value={workspacePath}
+            onChange={event => onWorkspaceSelect?.(event.target.value)}
+          >
+            {workspaces.map(item => <option key={item.workspaceId} value={item.path}>{item.name}</option>)}
+          </select>
+        )}
       </RailTooltip>
       <div className="studio-nav-scroll">
         <nav className="studio-nav-primary" aria-label="产品导航">
