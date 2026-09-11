@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ksadk.harness.spec import SubAgentBinding
+
 
 def _to_camel(value: str) -> str:
     head, *tail = value.split("_")
@@ -540,6 +542,27 @@ class AgentSpec(ContractModel):
     memory: MemorySpec = Field(default_factory=MemorySpec)
     security: SecuritySpec = Field(default_factory=SecuritySpec)
     evaluation: EvaluationSpec = Field(default_factory=EvaluationSpec)
+    sub_agents: tuple[SubAgentBinding, ...] = Field(default=(), max_length=32)
+
+    @model_validator(mode="after")
+    def validate_sub_agents(self) -> "AgentSpec":
+        if not self.sub_agents:
+            return self
+        if self.runtime is not None and self.runtime.type != "harness":
+            raise ValueError("subAgents 当前需要 Harness Runtime")
+        names = {sub.name for sub in self.sub_agents}
+        if len(names) != len(self.sub_agents):
+            raise ValueError("subAgents 名称不能重复")
+        dependencies = {sub.name: set(sub.depends_on) for sub in self.sub_agents}
+        if any(deps - names for deps in dependencies.values()):
+            raise ValueError("subAgents dependsOn 引用了未声明的子 Agent")
+        resolved: set[str] = set()
+        while len(resolved) < len(names):
+            ready = {name for name, deps in dependencies.items() if deps <= resolved} - resolved
+            if not ready:
+                raise ValueError("subAgents dependsOn 存在依赖环")
+            resolved.update(ready)
+        return self
 
     @model_validator(mode="after")
     def validate_memory_resource_reference(self) -> "AgentSpec":
@@ -693,6 +716,7 @@ class ResolvedAgentSpec(ContractModel):
     memory: MemorySpec
     security: SecuritySpec
     evaluation: EvaluationSpec
+    sub_agents: tuple[SubAgentBinding, ...] = Field(default=(), max_length=32)
     source_digest: str
     resolved_digest: str = ""
 

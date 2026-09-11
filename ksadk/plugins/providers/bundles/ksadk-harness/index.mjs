@@ -14,6 +14,6 @@ export function apply(ctx) {
   // The DSH Profile owns discovery and lifecycle. KsADK consumes this
   // contribution through its frozen provider-host bridge; the existing
   // RuntimeAdapter remains the execution backend during migration.
-  ctx.provide('ksadkAgentProvider', contribution)
+  ctx.provide('ksadkHarnessAgentProvider', contribution)
   ctx.effect(() => () => {})
 }

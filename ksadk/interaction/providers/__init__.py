@@ -17,6 +17,7 @@ from ksadk.interaction.provider import (
 )
 from ksadk.interaction.providers.adk import ADKInteractionProvider
 from ksadk.interaction.providers.codex import CodexInteractionProvider
+from ksadk.interaction.providers.harness import HarnessInteractionProvider
 from ksadk.interaction.providers.langgraph import LangGraphInteractionProvider
 
 
@@ -27,6 +28,7 @@ def default_interaction_providers() -> dict[str, InteractionProvider]:
         CodexInteractionProvider(),
         LangGraphInteractionProvider(),
         ADKInteractionProvider(),
+        HarnessInteractionProvider(),
     ]
     registry: dict[str, InteractionProvider] = {}
     for provider in providers:

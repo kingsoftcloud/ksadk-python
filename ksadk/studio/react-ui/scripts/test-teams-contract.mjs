@@ -1,0 +1,31 @@
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { decodeGroupSnapshot, decodeGroupEvent, decodeExecutionSnapshot, GroupReducer, groupSnapshotSchema, executionSnapshotSchema } from '@kingsoftcloud/ksadk-web/teams';
+import { TeamWorkspace } from '@kingsoftcloud/ksadk-web/teams/components';
+import { InvocationTree } from '@kingsoftcloud/ksadk-web/teams/execution';
+const studio = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const repository = resolve(studio, '../../..');
+const result = spawnSync('uv', ['run', '--no-sync', 'python', resolve(studio, 'scripts/teams-domain-fixture.py')], { cwd: repository, encoding: 'utf8', shell: false });
+if (result.status !== 0) throw new Error(result.stderr);
+const data = JSON.parse(result.stdout);
+for (const entry of data.stages) {
+  assert.equal(groupSnapshotSchema.safeParse(entry.snapshot).success, true, `${entry.stage}: ${JSON.stringify(groupSnapshotSchema.safeParse(entry.snapshot).error?.issues)}`);
+  const snapshot = decodeGroupSnapshot(entry.snapshot);
+  const html = renderToStaticMarkup(React.createElement(TeamWorkspace, { snapshot, onSend: async () => {} }));
+  assert.match(html, /跨仓契约验证/);
+}
+const reducer = new GroupReducer(decodeGroupSnapshot(data.stages[0].snapshot));
+for (const event of data.events) reducer.apply(decodeGroupEvent(event));
+assert.deepEqual(reducer.snapshot(), decodeGroupSnapshot(data.stages.at(-1).snapshot));
+assert.equal(executionSnapshotSchema.safeParse(data.execution).success, true, JSON.stringify(executionSnapshotSchema.safeParse(data.execution).error?.issues));
+const execution = decodeExecutionSnapshot(data.execution);
+assert.equal(execution.nodes.filter(node => node.kind === 'child_invocation').length, 1);
+assert.equal(execution.nodes.filter(node => node.kind === 'run').length, 2);
+assert.ok(execution.edges.some(edge => edge.kind === 'invocation'));
+assert.match(renderToStaticMarkup(React.createElement(InvocationTree, { execution })), /Review/);
+assert.equal(data.stages.at(-1).snapshot.interactions.length, 1);
+console.log(`Python domain/runtime → Web decoder/reducer/SSR: ${data.stages.length} stages, ${data.events.length} events, ${execution.nodes.length} execution nodes passed.`);

@@ -12,6 +12,11 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
     """Bind a Studio Build/session to its profile-fenced provider activation."""
 
     def __init__(self, plugin_runtime: Any, spec: StudioRunSpec) -> None:
+        self._policy_supported = (
+            spec.request_config.get("provider_runtime_type") == "harness"
+            and getattr(plugin_runtime, "execution_policy_resolver", None) is not None
+        )
+
         async def bind_delegate(session_id: str):  # type: ignore[no-untyped-def]
             return await plugin_runtime.kernel_adapter(spec, session_id=session_id)
 
@@ -28,8 +33,18 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
         # Studio wires a durable Workspace store before activating Harness.
         if self._delegate is None and self._runtime_type == "harness":
             from ksadk.harness.managed_runtime import managed_harness_capabilities
+            from ksadk.kernel.contracts import RuntimeCapability
 
-            return managed_harness_capabilities(durable=True)
+            matrix = managed_harness_capabilities(durable=True)
+            return matrix.model_copy(
+                update={
+                    "execution_policy": RuntimeCapability(
+                        supported=self._policy_supported,
+                        mode="native" if self._policy_supported else "unavailable",
+                        reason=None if self._policy_supported else "execution_policy_unavailable",
+                    ),
+                }
+            )
         return super().capabilities()
 
 

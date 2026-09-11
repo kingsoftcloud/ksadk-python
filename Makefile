@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.7"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.8"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -497,7 +497,7 @@ public-build-check: clean-dist sync-ksadk-web-static build-studio-static
 	@uv run python scripts/write_build_provenance.py
 	@uv build
 	@$(MAKE) verify-ksadk-web-wheel-static
-	@uv run pytest tests/test_runtime_common_packaging.py -q
+	@uv run pytest tests/test_runtime_common_packaging.py tests/packaging/test_teams_distribution.py -q
 	@uv run --extra dev python -m twine check dist/*
 	@$(MAKE) open-source-audit-dist
 
@@ -720,11 +720,11 @@ STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.7 release; a normal release build must
+# The shared Conversation v1 Web 0.3.8 release; a normal release build must
 # fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.7
+KSADK_WEB_VERSION ?= 0.3.8
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=

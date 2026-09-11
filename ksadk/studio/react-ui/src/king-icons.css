@@ -1,0 +1,33 @@
+/* King Design / ksc-fe/kpc. Copyright (c) 2018 Kingsoft Cloud, MIT.
+ * Source and license are retained in assets/king-design/.
+ */
+@font-face {
+  font-family: "Studio King Design Icons";
+  src: url("./assets/king-design/iconfont.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+.king-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-family: "Studio King Design Icons" !important;
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  vertical-align: middle;
+  user-select: none;
+  pointer-events: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.king-icon::before {
+  content: attr(data-glyph);
+}

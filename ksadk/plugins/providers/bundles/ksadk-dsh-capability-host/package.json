@@ -16,12 +16,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml",
-      "integrity": "sha256:70cf891711d9b6614a38a828d1196415ee9cc45ff43e933aa2105ddb3fa0e813"
+      "integrity": "sha256:c69f9d358c0aa4d16d91f39170b0ae42069a5c173d19924fe75d64c6f91e40c8"
     }
   }
 }

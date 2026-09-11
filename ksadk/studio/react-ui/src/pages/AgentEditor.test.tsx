@@ -933,3 +933,28 @@ it("does not transfer an explicit confirmation to a different Provider", async (
   expect(await screen.findByText("请先确认 AgentProvider 请求的权限")).toBeVisible();
   expect(mockedFetch.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });
+
+it("saves Harness child agents with authoritative parent tool names and retains advanced declarations", async () => {
+  mockedFetch.mockReset();
+  const child = { name: "review_helper", instructions: "Review independently", tools: [], maxTotalTokens: 4000, outputSchema: { type: "object" } };
+  const draft = { metadata: { id: "harness-team", name: "Harness Team", revision: 1 }, spec: {
+    runtime: { type: "harness" }, instructions: { system: "Delegate and review the result." },
+    bindings: { modelProfileId: "model-a", modelProfileIds: ["model-a"], tools: [{ resourceId: "tool-read", enabled: true }] },
+    subAgents: [child],
+  } };
+  mockedFetch.mockImplementation(async (_input, init) => ({ ok: true, json: async () => init?.method === "PUT" ? { metadata: { ...draft.metadata, revision: 2 }, spec: JSON.parse(String(init.body)) } : { draft } } as Response));
+  const onSaved = vi.fn();
+  render(<AgentEditor agentId="harness-team" onSaved={onSaved} catalog={[
+    { resourceId: "model-a", kind: "model", name: "model-a", displayName: "Model A", version: "1", status: "ready" },
+    { resourceId: "tool-read", kind: "tool", name: "display-alias", displayName: "读取文件", version: "1", status: "ready", contract: { name: "read_file", executor: "builtin" } },
+  ]} />);
+  await screen.findByRole("button", { name: "保存修改" });
+  fireEvent.click(screen.getByRole("button", { name: /能力绑定/ }));
+  fireEvent.click(screen.getByText("子 Agent", { selector: "summary", exact: false }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "读取文件" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
+  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  const sent = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT")!;
+  expect(JSON.parse(String(sent[1]!.body)).subAgents).toEqual([{ ...child, tools: ["read_file"] }]);
+});

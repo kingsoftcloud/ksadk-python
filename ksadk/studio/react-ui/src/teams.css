@@ -1,0 +1,437 @@
+/* Teams uses the same design tokens as Agent, resources and settings. */
+.ksadk-teams {
+  --team-bg: var(--studio-surface);
+  --team-soft: var(--surface-subtle);
+  --team-ink: var(--text-primary);
+  --team-muted: var(--studio-text-secondary);
+  --team-border: var(--studio-border);
+  --team-accent: var(--studio-accent);
+  --team-accent-soft: var(--accent-soft);
+  --team-danger: var(--danger);
+  --team-danger-soft: var(--danger-soft);
+  --team-warning: var(--warning);
+  --team-warning-soft: var(--warning-soft);
+  --team-success: var(--success);
+  --team-on-primary: var(--button-primary-text);
+  --team-primary: var(--button-primary-bg);
+  --team-primary-hover: var(--button-primary-bg-hover);
+  --team-control-radius: var(--radius-control);
+  --team-radius: var(--radius-surface);
+  --team-control-height: var(--control-height);
+  --team-shadow: var(--shadow-overlay);
+}
+.app-shell[data-view^="plugin:"] .app-main {
+  height: 100dvh;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.studio-workspace-component-root,
+.studio-plugin-page-host,
+.studio-plugin-page-surface,
+.studio-plugin-page-mount {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+.app-shell[data-view^="plugin:"] #mainContent {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.studio-plugin-loading,
+.studio-plugin-empty {
+  padding: 40px;
+  color: var(--text-secondary, #68706d);
+}
+.studio-plugin-empty {
+  margin: auto;
+  max-width: 480px;
+  text-align: center;
+}
+.studio-teams-browser {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--studio-surface);
+  color: var(--text-primary);
+}
+.studio-team-directory {
+  width: 246px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--studio-border);
+  background: var(--surface-subtle);
+}
+.studio-team-directory > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 18px 17px;
+}
+.studio-team-directory h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 5px 0 0;
+}
+.studio-teams-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  color: var(--studio-text-secondary);
+}
+.studio-beta-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.12rem 0.38rem;
+  border: 1px solid var(--team-warning);
+  border-radius: 999px;
+  color: var(--team-warning);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.studio-team-search {
+  margin: 0 14px 16px;
+  padding: 5px 10px;
+  min-height: var(--control-height);
+  border: 1px solid var(--studio-border);
+  border-radius: var(--radius-control);
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--studio-text-secondary);
+  background: var(--studio-surface);
+}
+.studio-team-search input {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  padding: 0;
+  height: auto;
+  min-width: 0;
+  width: 100%;
+  font-size: 12px;
+  background: transparent;
+}
+.studio-team-search:focus-within {
+  outline: 2px solid var(--studio-accent);
+  outline-offset: 2px;
+}
+.studio-team-list {
+  overflow: auto;
+  flex: 1;
+  padding: 0 9px;
+}
+.studio-team-list-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 13px 9px;
+  border-radius: var(--radius-control);
+  color: inherit;
+  cursor: pointer;
+  min-height: 76px;
+}
+.studio-team-list-item:hover {
+  background: var(--surface-hover);
+}
+.studio-team-list-item[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--studio-accent);
+}
+.studio-team-monogram {
+  width: 33px;
+  height: 33px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  color: var(--studio-accent);
+}
+.studio-team-list-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 1px;
+}
+.studio-team-list-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.studio-team-list-copy > span {
+  font-size: 12px;
+  color: var(--studio-text-secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.5;
+}
+.studio-team-list-copy small {
+  font-size: 11px;
+  color: var(--warning);
+}
+.studio-team-unread {
+  font-size: 11px;
+  color: var(--button-primary-text);
+  background: var(--button-primary-bg);
+  padding: 2px 5px;
+  border-radius: 20px;
+  min-width: 16px;
+  text-align: center;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.studio-team-directory > footer {
+  display: flex;
+  gap: 16px;
+  padding: 16px 18px;
+  border-top: 1px solid var(--studio-border);
+}
+.studio-team-directory > footer a,
+.studio-team-welcome > a {
+  font-size: 12px;
+  color: var(--studio-text-secondary);
+  text-decoration: none;
+}
+.studio-team-list-empty {
+  padding: 30px 12px;
+  text-align: center;
+  color: var(--studio-text-secondary);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.studio-team-list-empty p {
+  color: var(--text-primary);
+}
+.studio-team-list-error {
+  font-size: 12px;
+  padding: 8px 16px;
+  color: var(--danger);
+}
+.studio-team-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.studio-team-content > .ksadk-teams.team-workspace {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+.studio-team-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 40px 24px;
+  text-align: center;
+}
+.studio-team-welcome .studio-teams-eyebrow {
+  margin-top: 23px;
+}
+.studio-team-welcome h2 {
+  font-size: 24px;
+  margin: 12px 0 7px;
+  font-weight: 600;
+}
+.studio-team-welcome p {
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--studio-text-secondary);
+  margin: 7px 0 23px;
+}
+.studio-team-welcome > a {
+  margin-top: 19px;
+}
+.studio-teams-symbol {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: var(--radius-surface);
+  border: 1px solid var(--studio-border);
+  background: var(--accent-soft);
+  color: var(--studio-accent);
+}
+.studio-team-directory-back {
+  display: none;
+}
+.studio-teams-availability {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  max-width: 600px;
+  margin: auto;
+  padding: 40px 30px;
+  color: var(--text-primary);
+}
+.studio-teams-availability h2 {
+  font-size: 24px;
+  margin: 10px 0 13px;
+  font-weight: 600;
+}
+.studio-teams-availability p {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--studio-text-secondary);
+  margin: 0 0 23px;
+}
+.studio-teams-availability.compact {
+  padding: 20px 24px;
+  margin: 22px 0 26px;
+  max-width: none;
+  background: var(--surface-subtle);
+  border: 1px solid var(--studio-border);
+  border-radius: var(--radius-surface);
+}
+.studio-teams-availability.compact h2 {
+  font-size: 18px;
+  margin: 7px 0;
+}
+.studio-teams-availability.compact p {
+  margin-bottom: 14px;
+}
+.studio-teams-browser button:focus-visible,
+.studio-teams-browser a:focus-visible {
+  outline: 2px solid var(--studio-accent);
+  outline-offset: 2px;
+}
+.studio-team-content .team-workspace {
+  border: 0;
+  border-radius: 0;
+}
+.studio-team-content .team-chat-pane {
+  max-width: none;
+}
+.studio-team-content .team-header {
+  padding-left: 30px;
+  padding-right: 30px;
+}
+@media (max-width: 1100px) {
+  .studio-team-directory {
+    width: 212px;
+  }
+  .studio-team-directory > header {
+    padding: 21px 15px 17px;
+  }
+  .studio-team-list-item {
+    gap: 7px;
+  }
+  .studio-team-monogram {
+    width: 28px;
+    height: 28px;
+  }
+  .studio-team-content .team-header {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
+@media (max-width: 760px) {
+  .studio-team-directory {
+    width: 100%;
+    border: 0;
+  }
+  .studio-teams-browser[data-selected="true"] > .studio-team-directory {
+    display: none;
+  }
+  .studio-teams-browser[data-selected="false"] > .studio-team-content {
+    display: none;
+  }
+  .studio-team-directory-back {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+    border: 0;
+    border-bottom: 1px solid var(--studio-border);
+    background: var(--surface-subtle);
+    padding: 11px 15px;
+    font-size: 12px;
+    color: var(--studio-text-secondary);
+    text-align: left;
+  }
+  .studio-team-directory > header {
+    padding: 22px;
+  }
+  .studio-team-list-item {
+    padding: 16px 14px;
+  }
+  .studio-team-monogram {
+    width: 34px;
+    height: 34px;
+  }
+  .studio-team-list-copy strong {
+    font-size: 14px;
+  }
+  .studio-teams-availability {
+    flex-direction: column;
+    padding: 30px 22px;
+  }
+  .studio-teams-availability h2 {
+    font-size: 20px;
+  }
+}
+
+.app-shell[data-view^="plugin:"] #mainContent .studio-team-directory .studio-team-search input {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  min-height: 0;
+  height: auto;
+  background: transparent;
+}
+.studio-team-member-settings {
+  margin: 8px 0 20px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--radius-control);
+  padding: 14px;
+}
+.studio-team-member-settings legend {
+  padding: 0 5px;
+  font-size: 12px;
+  color: var(--studio-text-secondary);
+}
+.studio-team-member-settings .team-field:last-child {
+  margin-bottom: 0;
+}
+.ksadk-teams .team-policy-checkbox {
+  display: flex;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.subagent-bindings { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
+.subagent-bindings > summary { cursor: pointer; font-weight: 600; }
+.subagent-bindings > summary .helper { margin-left: 8px; font-weight: 400; }
+.subagent-binding { border: 1px solid var(--border); border-radius: var(--radius-surface); margin: 16px 0; padding: 16px; display: grid; gap: 14px; min-width: 0; }
+.subagent-binding .field { display: grid; gap: 7px; margin: 0; }
+.subagent-tools { display: grid; gap: 8px; border: 0; padding: 0; }
+.subagent-tools legend { margin-bottom: 8px; }
+.subagent-inheritance { display: flex; flex-wrap: wrap; gap: 14px; }
+.subagent-tools label, .subagent-inheritance label { display: flex; align-items: center; gap: 7px; }

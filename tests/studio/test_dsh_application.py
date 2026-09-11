@@ -11,6 +11,14 @@ from ksadk.studio import dsh_application
 from ksadk.studio.errors import StudioError
 
 
+def test_embedded_core_document_uses_agentkit_branding():
+    body = b'<html><head><link rel="icon" href="/favicon.svg"><title>DeepSeek</title></head></html>'
+    branded = dsh_application._brand_core_document(body).decode()
+    assert "<title>AgentKit Studio</title>" in branded
+    assert 'href="/favicon.ico"' in branded
+    assert "AgentKit Studio" in branded
+
+
 @pytest.fixture
 def application(monkeypatch):
     app = FastAPI()

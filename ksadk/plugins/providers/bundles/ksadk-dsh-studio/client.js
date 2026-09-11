@@ -25,6 +25,12 @@ window.__ModuleLoader__.load({
       const mounts = new Map();
       const listeners = new Set();
       const notify = () => listeners.forEach(listener => listener());
+      const workspaceListeners = new Set();
+      const notifyWorkspace = () => {
+        workspaceListeners.forEach(listener => listener());
+        notify();
+        window.dispatchEvent?.(new Event('studio:workspace-changed'));
+      };
       function packageForSection(entry) {
         const registrant = entry.registrant || entry.options.registrant;
         if (!registrant) return undefined;
@@ -49,7 +55,20 @@ window.__ModuleLoader__.load({
         subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
         attach: (id, container, close) => {
           const key = Symbol(id);
-          mounts.set(key, { id, container, close }); notify();
+          mounts.set(key, { id, container, props: { close }, slot: 'settings.section' }); notify();
+          return () => { mounts.delete(key); notify(); };
+        },
+        workspacePages: () => ctx.slots.entriesOfSlot('studio.workspace.page')
+          .filter(entry => typeof entry.options.id === 'string')
+          .sort((a, b) => (a.options.order || 0) - (b.options.order || 0))
+          .map(entry => ({ id: entry.options.id, label: sectionLabel(entry),
+            pluginId: packageForSection(entry), order: entry.options.order || 0 })),
+        subscribeWorkspace: listener => {
+          workspaceListeners.add(listener); return () => workspaceListeners.delete(listener);
+        },
+        attachWorkspace: (id, container, props = {}) => {
+          const key = Symbol(id);
+          mounts.set(key, { id, container, props, slot: 'studio.workspace.page' }); notify();
           return () => { mounts.delete(key); notify(); };
         },
       };
@@ -62,7 +81,9 @@ window.__ModuleLoader__.load({
           const redraw = () => update(value => value + 1);
           const detach = bridge.subscribe(redraw);
           const unsubscribe = ctx.slots.subscribe('settings.section', notify);
+          const unsubscribeWorkspace = ctx.slots.subscribe('studio.workspace.page', notifyWorkspace);
           window.__STUDIO_DSH__ = bridge;
+          window.dispatchEvent?.(new Event('studio:bridge-ready'));
           const mount = () => {
             if (!window.__STUDIO_APP__ || !container.current) return;
             window.removeEventListener('studio:app-ready', mount);
@@ -72,19 +93,21 @@ window.__ModuleLoader__.load({
           };
           window.addEventListener('studio:app-ready', mount); mount();
           return () => {
-            disposed = true; detach(); unsubscribe(); unmount?.();
+            disposed = true; detach(); unsubscribe(); unsubscribeWorkspace(); unmount?.();
             window.removeEventListener('studio:app-ready', mount);
             if (window.__STUDIO_DSH__ === bridge) delete window.__STUDIO_DSH__;
+            window.dispatchEvent?.(new Event('studio:workspace-changed'));
           };
         }, []);
         return createElement(Fragment, null,
           createElement('div', { ref: container, className: 'studio-native-root', style: { height: '100vh' } }, error || null),
-          ...[...mounts.values()].map(({ id, container, close }) => createPortal(
-            createElement(PluginSurfaceBoundary, { key: id }, renderSlot('settings.section', { close }, { only: id })), container, id)),
+          ...[...mounts.values()].map(({ id, container, props, slot }) => createPortal(
+            createElement(PluginSurfaceBoundary, { key: id }, renderSlot(slot, props, { only: id })), container, id)),
         );
       }
       ctx.slots.register({ name: 'root', priority: -100, children: {
         'settings.section': { kind: 'list', scope: 'root' },
+        'studio.workspace.page': { kind: 'list', scope: 'root' },
       } }, StudioRoot);
     }
     return { name: 'studio-app', inject: ['slots'], apply };
