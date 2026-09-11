@@ -22,6 +22,19 @@ from ksadk.plugins.host import PluginHostError
 
 _HOP_HEADERS = {"host", "connection", "transfer-encoding", "content-length"}
 
+_STUDIO_CORE_BRAND_SCRIPT = """<script>(() => { const title = 'AgentKit Studio'; const apply = () => { if (document.title !== title) document.title = title; }; apply(); new MutationObserver(apply).observe(document.head, { childList: true, subtree: true }); })();</script>"""
+
+
+def _brand_core_document(body: bytes) -> bytes:
+    """Keep the embedded Core document branded as AgentKit Studio."""
+    text = body.decode("utf-8", errors="replace")
+    text = text.replace("<title>DeepSeek</title>", "<title>AgentKit Studio</title>")
+    text = text.replace("href=\"/favicon.svg\"", "href=\"/favicon.ico\"")
+    marker = "</head>"
+    if marker in text and "const title = 'AgentKit Studio'" not in text:
+        text = text.replace(marker, _STUDIO_CORE_BRAND_SCRIPT + marker, 1)
+    return text.encode("utf-8")
+
 
 def register_dsh_application(app: FastAPI, studio, *, session_secret: str, security_enabled: bool):
     def authorized(cookies):
@@ -53,6 +66,7 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
             # allow urllib's URL-bearing exception into API responses/logs.
             raise StudioError("DSH_CORE_UNAVAILABLE", "插件服务连接失败，请返回 Studio 重试", status_code=503) from None
         body = body.replace(b'<base href="/">', b'<base href="/studio-core/">')
+        body = _brand_core_document(body)
         result = Response(body, media_type="text/html", headers={"Cache-Control": "no-store"})
         for cookie in cookies:
             result.set_cookie(cookie.name, cookie.value, path=cookie.path, httponly=True, samesite="strict")
