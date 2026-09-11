@@ -542,6 +542,10 @@ export default function App() {
         onWorkspaceSwitch={async () => {
           setMobileNavOpen(false);
           try {
+            if (window.studioNative?.openWorkspace) {
+              await window.studioNative.openWorkspace();
+              return;
+            }
             let path = await window.studioNative?.chooseWorkspace?.();
             if (path === undefined) {
               const picked = await apiFetch("/api/v1/workspaces:choose", { method: "POST" });
