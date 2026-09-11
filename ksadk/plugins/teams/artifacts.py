@@ -33,6 +33,9 @@ def read_workspace_artifact(root: Path, supplied_path: str) -> tuple[str, bytes]
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             os.close(directory)
             directory = child
+        # The path is constrained to a relative, non-traversing path above and
+        # the descriptor is opened beneath an O_NOFOLLOW directory fd.
+        # lgtm [py/path-injection]
         descriptor = os.open(
             path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
         )
