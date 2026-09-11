@@ -11,6 +11,7 @@ from http.cookiejar import CookieJar
 from urllib.request import HTTPCookieProcessor, ProxyHandler, build_opener
 from urllib.parse import urlsplit
 from urllib.error import URLError
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket
@@ -50,8 +51,13 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
             return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
         try:
             lease = await studio.dsh_capabilities.connector_lease()
-        except PluginHostError:
-            raise StudioError("DSH_CORE_UNAVAILABLE", "插件服务暂时不可用，请返回 Studio 重试", status_code=503) from None
+        except (PluginHostError, StudioError, OSError):
+            # Core is an optional enhancement to the local React shell. If its
+            # host is busy or unavailable, keep the Studio page usable instead
+            # of returning a JSON 503 document that renders as a blank screen.
+            path = Path(__file__).with_name("static") / "index.html"
+            body = path.read_bytes()
+            return Response(body, media_type="text/html", headers={"Cache-Control": "no-store", "X-AgentKit-Studio-Degraded": "dsh-unavailable"})
         def bootstrap():
             # urllib does not log the process-token URL at INFO like httpx.
             jar = CookieJar()
