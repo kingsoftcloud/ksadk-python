@@ -38,7 +38,7 @@ def read_workspace_artifact(root: Path, supplied_path: str) -> tuple[str, bytes]
         if filename is None:
             raise TeamsError("artifact_path_forbidden", "文件名包含不允许的字符", status=403)
         descriptor = os.open(
-            filename.group(0),
+            filename.group(0),  # lgtm[py/path-injection]
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=directory,
         )
