@@ -30,6 +30,12 @@ class WorkspaceOpenRequest(ContractModel):
     create: bool = False
 
 
+class LinkedDirectoryRequest(ContractModel):
+    path: str
+    mode: Literal["read", "write"] = "read"
+    label: str | None = Field(default=None, max_length=128)
+
+
 class CreateAgentRequest(ContractModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9-]{2,62}$")
     name: str = Field(min_length=1, max_length=128)
