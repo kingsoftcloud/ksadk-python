@@ -1800,6 +1800,10 @@ def create_studio_app(
             status=status,
         )
 
+    @app.get("/api/v1/workspaces/traces")
+    async def list_workspace_traces():
+        return {"items": studio.all_traces()}
+
     @app.get("/api/v1/traces")
     async def list_traces(
         agent_id: str | None = Query(default=None, alias="agentId"),

@@ -114,6 +114,17 @@ class WorkspaceRuntimeManager:
                 continue
         return None
 
+    def all_traces(self) -> list[dict]:
+        traces: list[dict] = []
+        for runtime in self._services.values():
+            wid = getattr(getattr(runtime, "workspace_record", None), "workspace_id", None)
+            page = runtime.event_store.list_traces_page(limit=1000)
+            for trace in page.get("items", []):
+                item = dict(trace)
+                item["workspaceId"] = wid
+                traces.append(item)
+        return traces
+
 
 class LinkedDirectoryPolicy:
     """Persist explicit directory relationships in the private workspace config."""
