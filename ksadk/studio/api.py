@@ -1581,11 +1581,17 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):
-        return await studio.run_service.pause_run(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.pause_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
-        return await studio.run_service.resume_run(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.resume_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
     async def submit_run_interaction(
@@ -1593,7 +1599,10 @@ def create_studio_app(
         interaction_id: str,
         payload: InteractionSubmitRequest,
     ):
-        return await studio.run_service.submit_interaction(
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.submit_interaction(
             run_id,
             interaction_id,
             name=payload.name,
@@ -1605,7 +1614,10 @@ def create_studio_app(
     @app.get("/api/v1/runs/{run_id}/context")
     async def get_run_context(run_id: str):
         """Runtime Context Evidence：planned/projected/actual + 精度 + ownership。"""
-        record = studio.event_store.get(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        record = runtime.event_store.get(run_id)
         plan = record.context_plan or {}
         evidence = record.prompt_evidence or {}
         return {
@@ -1770,7 +1782,10 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        events = await studio.run_service.events(run_id, after=cursor)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        events = await runtime.run_service.events(run_id, after=cursor)
         return _sse(events)
 
     @app.get("/api/v1/traces/overview")
