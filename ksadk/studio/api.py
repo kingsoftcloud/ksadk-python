@@ -515,7 +515,10 @@ def create_studio_app(
         except (StudioError, OSError, RuntimeError):
             # The optional toolchain may be absent in a plain SDK workspace.
             use_core = False
-        if use_core:
+        # The Electron shell starts the managed Core in the background. Keep
+        # the lightweight Studio shell as the immediate entry document; a
+        # plugin page can still open the official Core on demand.
+        if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
             target = "/studio-core/"
             if request.url.query:
                 target += "?" + request.url.query

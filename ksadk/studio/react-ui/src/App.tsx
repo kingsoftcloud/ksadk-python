@@ -559,7 +559,7 @@ export default function App() {
               const payload = await opened.json().catch(() => ({})) as { error?: { message?: string }; detail?: string };
               throw new Error(payload.error?.message || payload.detail || `打开工作区失败（${opened.status}）`);
             }
-            window.location.reload();
+            window.dispatchEvent(new Event("studio:directory-opened"));
           } catch (error) {
             showToast("工作区切换失败", error instanceof Error ? error.message : "无法打开所选目录。", "error");
           }

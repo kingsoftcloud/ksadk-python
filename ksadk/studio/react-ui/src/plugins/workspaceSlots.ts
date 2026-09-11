@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../api";
 
 export type WorkspaceContribution = {
   id: string;
@@ -12,6 +13,7 @@ export function useWorkspaceContributions() {
   const [pages, setPages] = useState<WorkspaceContribution[]>([]);
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    let timer: number | undefined;
     const read = () =>
       setPages(
         [...(window.__STUDIO_DSH__?.workspacePages?.() || [])].sort(
@@ -24,10 +26,29 @@ export function useWorkspaceContributions() {
       read();
     };
     bind();
+    const discoverWithoutCore = () => {
+      if (window.__STUDIO_DSH__) return;
+      void apiFetch("/api/v1/plugins/teams/lifecycle")
+        .then(response => response.ok ? response.json() : null)
+        .then(state => {
+          // The availability flag is the trusted plugin contribution gate;
+          // enabled is allowed to become ready asynchronously while the DSH
+          // host warms up. Opening the page will enter Core on demand.
+          if (state?.available) {
+            setPages([{ id: "teams", label: "Agent Teams", pluginId: "teams", order: 30 }]);
+          } else {
+            setPages(current => current.filter(page => page.id !== "teams"));
+          }
+        })
+        .catch(() => undefined);
+    };
+    discoverWithoutCore();
+    timer = window.setInterval(discoverWithoutCore, 1500);
     window.addEventListener("studio:bridge-ready", bind);
     window.addEventListener("studio:workspace-changed", read);
     return () => {
       unsubscribe?.();
+      if (timer !== undefined) window.clearInterval(timer);
       window.removeEventListener("studio:bridge-ready", bind);
       window.removeEventListener("studio:workspace-changed", read);
     };

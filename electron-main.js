@@ -58,8 +58,8 @@ async function switchWorkspace() {
       throw new Error(opened.body?.error?.message || `打开工作区失败（${opened.status}）`);
     }
     runtime.workspace = opened.body.path || fs.realpathSync(workspace);
-    await window.loadURL(`http://127.0.0.1:${runtime.port}/`);
     saveWorkspace(runtime.workspace);
+    window.webContents.send('studio:workspace-opened', {path: runtime.workspace});
     return {path: runtime.workspace};
   } catch (error) {
     dialog.showErrorBox('切换工作区失败', error instanceof Error ? error.message : String(error));
