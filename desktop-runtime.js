@@ -67,7 +67,14 @@ async function startRuntime({resources, workspace, logPath, preferredPort = 0, e
   const port = await reservePort(preferredPort);
   const token = randomBytes(32).toString('hex');
   const python = path.join(resources, 'runtime', 'bin', 'python3');
-  const childEnv = {...env, KSADK_STUDIO_SESSION_TOKEN: token, KSADK_STUDIO_LAZY_START: '1'};
+  const childEnv = {
+    ...env,
+    KSADK_STUDIO_SESSION_TOKEN: token,
+    KSADK_STUDIO_LAZY_START: '1',
+    // The runtime is inside a signed app bundle. Provider subprocesses must
+    // not create __pycache__ files under Contents/Resources after signing.
+    PYTHONDONTWRITEBYTECODE: '1',
+  };
   delete childEnv.KSADK_STUDIO_NO_SECURITY;
   delete childEnv.PYTHONPATH;
   delete childEnv.PYTHONHOME;
