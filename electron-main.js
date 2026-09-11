@@ -10,7 +10,7 @@ const partition = 'studio-' + process.pid;
 const resources = path.resolve(__dirname, '..');
 
 function preferencesPath() { return path.join(app.getPath('userData'), 'workspace.json'); }
-function defaultWorkspace() { const root = path.join(app.getPath('userData'), 'default-workspace'); fs.mkdirSync(root, {recursive: true}); return root; }
+function defaultWorkspace() { const root = path.join(app.getPath('home'), '.agentkit', 'studio-workspace'); fs.mkdirSync(root, {recursive: true}); return root; }
 function saveWorkspace(workspace) {
   fs.mkdirSync(app.getPath('userData'), {recursive: true});
   fs.writeFileSync(preferencesPath(), JSON.stringify({version: 1, source: 'user-selection', workspace}, null, 2), {mode: 0o600});

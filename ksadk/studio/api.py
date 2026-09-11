@@ -1079,12 +1079,10 @@ def create_studio_app(
             # A user-selected directory is itself the workspace. The registry
             # entry is created as part of opening it; callers do not need to
             # pre-register paths in a separate settings screen.
+            # Switching is a workspace identity operation. Do not block it on
+            # optional DSH/Profile bootstrap; the selected workspace becomes
+            # active immediately and its plugins start lazily on demand.
             record = studio.switch(payload.path, create=True)
-            await studio.start()
-            try:
-                await studio.active.teams_installation.enable()
-            except Exception:
-                pass
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         response = {
