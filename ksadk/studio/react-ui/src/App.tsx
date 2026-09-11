@@ -9,7 +9,8 @@ import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
 import { PluginsPage } from "./pages/PluginsPage";
-import { OrchestrationPage } from "./pages/OrchestrationPage";
+import { PluginWorkspacePage } from "./plugins/PluginWorkspacePage";
+import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
@@ -35,7 +36,8 @@ import {
   writeNavigationRailPreference,
   type NavigationView,
 } from "./components/NavigationRail";
-import { Bot, RefreshCw, PanelLeftClose, PanelLeftOpen, PanelRight } from "lucide-react";
+import { PanelRight } from "lucide-react";
+import { KingIcon } from "./components/KingIcon";
 
 type View = NavigationView;
 
@@ -52,14 +54,13 @@ const VIEW_TITLE: Record<View, string> = {
   "runtime-resources": "运行资源",
   plugins: "已安装插件",
   automations: "自动化",
-  orchestration: "任务编排",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
 const RESOURCE_KINDS: ResourceKind[] = [
   "model", "tool", "mcp", "skill", "knowledge-base", "memory-instance", "skill-space",
 ];
-const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "orchestration"]);
+const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
 
 function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
@@ -99,7 +100,8 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
-  const view = editingAgentId
+  const pluginPageId = parts[0] === 'workspace' && parts[1] ? decodeURIComponent(parts[1]) : ['orchestration', 'teams'].includes(parts[0]) ? 'teams' : '';
+  const view: View = pluginPageId ? `plugin:${pluginPageId}` : editingAgentId
     ? "create"
     : detailAgentId
       ? "agent-detail"
@@ -131,6 +133,7 @@ interface AgentSummary {
 }
 
 export default function App() {
+  const workspacePages = useWorkspaceContributions();
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
   const initialRoute = parseStudioLocationHash(window.location.hash);
@@ -210,7 +213,7 @@ export default function App() {
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
     setEvaluationRunId("");
-    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : `#/${v}`;
+    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : v.startsWith("plugin:") ? `#/workspace/${encodeURIComponent(v.slice(7))}` : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
@@ -467,13 +470,15 @@ export default function App() {
   }
 
   const breadcrumbParent = view === "create" || view === "agent-detail" ? "Agent" : null;
-  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : VIEW_TITLE[view];
+  const pluginPageId = view.startsWith("plugin:") ? view.slice(7) : "";
+  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : pluginPageId ? (workspacePages.find(page => page.id === pluginPageId)?.label || "插件工作区") : VIEW_TITLE[view];
 
   const workspaceName = workspace?.name || "Workspace";
   const workspacePath = workspace?.path || (runtimeReady ? "本地工作区" : "正在连接本地工作区");
   const focusedView = view === "create"
     || view === "conversations"
-    || view === "observability";
+    || view === "observability"
+    || Boolean(pluginPageId);
   const railCanExpand = viewportMode !== "compact";
   const railExpanded = railCanExpand && (railExpandedPreference ?? true);
   useEffect(() => { setMobileNavOpen(false); }, [view, resourceKind, viewportMode]);
@@ -500,6 +505,7 @@ export default function App() {
       <a className="skip-link" href="#mainContent">跳到主要内容</a>
       <div className="app-shell" data-view={view} data-viewport={viewportMode} data-focused={focusedView} data-rail={railExpanded ? "expanded" : "compact"}>
       <NavigationRail
+        workspacePages={workspacePages}
         view={view}
         resourceKind={resourceKind}
         expanded={railExpanded}
@@ -532,7 +538,7 @@ export default function App() {
               title={railExpanded ? "收起导航" : "展开导航"}
               onClick={toggleRail}
             >
-              {railExpanded ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+              <KingIcon name={railExpanded ? "left-squared" : "right-squared"} size={16} />
             </button>
           )}
           {breadcrumbParent && (
@@ -582,7 +588,7 @@ export default function App() {
             {view !== "conversations" && <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>}
             <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
             {(view !== "conversations" || railCanExpand) && <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
-              <RefreshCw size={16} />
+              <KingIcon name="refresh" size={16} />
             </button>}
             {view === "conversations" && railCanExpand && chatMounted && currentAgentId && !isCloudChat && (
               <button className="icon-button tertiary conversation-run-detail" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
@@ -644,7 +650,7 @@ export default function App() {
               {chatMounted && !isCloudChat && !currentAgentId && (
                 agentsLoaded && cloudDeploymentsLoaded ? (
                   <div className="empty-state chat-agent-empty" role="status">
-                    <span className="empty-icon"><Bot /></span>
+                    <span className="empty-icon"><KingIcon name="cpu" size={24} /></span>
                     <h2>还没有可用的会话目标</h2>
                     <p>可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。</p>
                     <div className="empty-actions">
@@ -665,7 +671,8 @@ export default function App() {
             )}
           </div>
 
-          <div style={{ display: view === "conversations" ? "none" : undefined }}>
+          {pluginPageId && <div className="studio-plugin-page-host"><PluginWorkspacePage pageId={pluginPageId} contributions={workspacePages} /></div>}
+          <div style={{ display: view === "conversations" || pluginPageId ? "none" : undefined }}>
             {view === "agents" && (
               <AgentsPage
                 agents={agents}
@@ -728,7 +735,6 @@ export default function App() {
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
-            {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} onEdit={openEdit} onOpenChat={() => enterChat(currentAgentId)} refreshTick={refreshTick} />}
           </div>
         </main>
       </div>

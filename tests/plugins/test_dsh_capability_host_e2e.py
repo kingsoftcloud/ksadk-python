@@ -13,6 +13,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from ksadk.plugins.bridges.dsh import DshProfilePluginBridge, dsh_subprocess_environment
+from ksadk.plugins.dsh_home import studio_dsh_home
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.providers.dsh_capabilities import DshProfileCapabilityHost
 
@@ -120,3 +121,63 @@ async def test_ordinary_cordis_tool_bundle_runs_through_profile_mcp(
             bridge.uninstall_plugin(PLUGIN_NAME)
         except Exception:
             pass
+
+
+@pytest.mark.asyncio
+async def test_shipped_studio_profiles_boot_with_supported_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ksadk.plugins.dsh_toolchain import DSH_VERSION
+    from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
+    from ksadk.studio.dsh_capability_service import StudioDshCapabilityService
+    from ksadk.studio.dsh_provider_registration import StudioDshProviderRegistrationManager
+
+    toolchains = tmp_path / "toolchains"
+    toolchain = DshToolchainManager(base_dir=toolchains)
+    toolchain.install()
+    monkeypatch.setenv("AGENTENGINE_PLUGIN_TOOLCHAIN_HOME", str(toolchains))
+    for key in ("KSADK_DSH_HOME", "KSADK_DSH_PROFILE", "KSADK_DSH_BIN"):
+        monkeypatch.delenv(key, raising=False)
+    workspace = tmp_path / "studio"
+    workspace.mkdir()
+    for resource_profile in (False, True):
+        manager = (
+            StudioDshProviderRegistrationManager.create_workspace_resource_default(workspace)
+            if resource_profile
+            else StudioDshProviderRegistrationManager.discover_or_create_workspace_default(
+                workspace
+            )
+        )
+        assert manager is not None
+        capability = (
+            StudioDshCapabilityService.create_workspace_resource_default(workspace)
+            if resource_profile
+            else StudioDshCapabilityService.discover_or_create_workspace_default(workspace)
+        )
+        try:
+            if not resource_profile:
+                assert await manager.bootstrap_official_codex_provider() == "installed"
+                with DshProfilePluginBridge(
+                    dsh_home=studio_dsh_home(workspace), profile="web",
+                    dsh_command=toolchain.require_command(), cwd=workspace,
+                ) as bridge:
+                    harness = bridge.install_plugin(
+                        str(shipped_harness_dsh_bundle().root), accept_host_permissions=True,
+                    )
+                    bridge.set_enabled(harness.name, enabled=True)
+            assert await manager.bootstrap_official_resource_plugins() == "installed"
+            registrations = await manager.start()
+            assert registrations.inventory.state == "ready"
+            if not resource_profile:
+                assert "plugin://io.ksadk.harness-provider@1.0.0" in registrations.manifests
+                assert "plugin://io.ksadk.codex-provider@1.0.0" in registrations.manifests
+            snapshot = await capability.capability_snapshot()
+            assert snapshot.descriptor.dsh_version == DSH_VERSION
+            assert snapshot.inventory.state == "ready"
+            names = {tool.name for tool in snapshot.tools}
+            assert {
+                "load_memory", "save_memory", "execute_skills", "search_knowledge_base",
+            } <= names
+        finally:
+            await capability.aclose()
+            await manager.aclose()

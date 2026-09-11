@@ -157,6 +157,15 @@ class CapabilityBindings(_SpecModel):
 class SubAgentBinding(_SpecModel):
     """子 Agent 声明（plan §14：多 Agent 是可选能力，经 Revision 编译）。"""
 
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        populate_by_name=True,
+        alias_generator=lambda value: (
+            value.split("_")[0] + "".join(part.capitalize() for part in value.split("_")[1:])
+        ),
+    )
+
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     instructions: str = Field(min_length=1, max_length=32_768)
     description: str = Field(default="", max_length=1024)
@@ -178,9 +187,7 @@ class SubAgentBinding(_SpecModel):
     depends_on: tuple[str, ...] = Field(default=(), max_length=32)
     #: ``propagate`` 将失败作为 Tool error 回流父 Agent；``return_error``
     #: 返回结构化失败文本，适合可选审查/检索子任务。
-    failure_policy: str = Field(
-        default="propagate", pattern=r"^(propagate|return_error|retry)$"
-    )
+    failure_policy: str = Field(default="propagate", pattern=r"^(propagate|return_error|retry)$")
     max_retries: int = Field(default=0, ge=0, le=3)
     #: Skill 属于只读知识能力，默认继承；MCP 默认不继承，避免子 Agent
     #: 在未显式授权时扩大外部系统访问面。
@@ -256,6 +263,8 @@ class HarnessSpec(_SpecModel):
     def validate_revision_ref(self) -> "HarnessSpec":
         validate_resource_ref(self.agent_revision_ref)
         names = {sub.name for sub in self.sub_agents}
+        if len(names) != len(self.sub_agents):
+            raise ValueError("sub-agent names must be unique")
         for sub in self.sub_agents:
             unknown = set(sub.depends_on) - names
             if unknown:
@@ -270,9 +279,7 @@ class HarnessSpec(_SpecModel):
         while remaining:
             ready = {name for name in remaining if dependencies[name] <= resolved}
             if not ready:
-                raise ValueError(
-                    f"sub-agent dependency cycle: {sorted(remaining)}"
-                )
+                raise ValueError(f"sub-agent dependency cycle: {sorted(remaining)}")
             resolved.update(ready)
             remaining -= ready
         return self

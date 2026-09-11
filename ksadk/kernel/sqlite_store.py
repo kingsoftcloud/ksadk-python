@@ -58,6 +58,7 @@ from ksadk.kernel.contracts import (
     SessionEventEnvelope,
 )
 from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
+from ksadk.kernel.execution_grants_sqlite import EXECUTION_GRANT_SCHEMA, SQLiteExecutionGrantMixin
 from ksadk.kernel.state import (
     InboxState,
     assert_inbox_transition,
@@ -77,7 +78,7 @@ from ksadk.sessions._local_tables import KSADK_EVENTS_TABLE, KSADK_SESSIONS_TABL
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.local_service import LocalSessionService
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kernel_inbox (
@@ -175,7 +176,7 @@ CREATE TABLE IF NOT EXISTS kernel_interaction_submissions (
 """
 
 
-class SQLiteAgentKernelStore:
+class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
     def __init__(
         self,
         db_path: str | Path,
@@ -202,7 +203,7 @@ class SQLiteAgentKernelStore:
         connection = await self._connect()
         async with self._write_lock:
             # CREATE ... IF NOT EXISTS + 整数 user_version，重复启动幂等。
-            await connection.executescript(_SCHEMA)
+            await connection.executescript(_SCHEMA + EXECUTION_GRANT_SCHEMA)
             await connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             await connection.commit()
 
@@ -257,16 +258,20 @@ class SQLiteAgentKernelStore:
         return activation
 
     async def _emit_admission(
-        self, envelope: SessionEventEnvelope, command: AgentControlCommand
+        self, envelope: SessionEventEnvelope, command: AgentControlCommand,
+        *, connection: aiosqlite.Connection | None = None,
     ) -> None:
         # admission 事实的 guard 绑定提交方 permit 引用与 command_id。
-        await self._events.append(
-            envelope,
-            guard=AdmissionWriteGuard(
-                authorization_ref=command.authorization_ref,
-                command_id=command.command_id,
-            ),
+        guard = AdmissionWriteGuard(
+            authorization_ref=command.authorization_ref,
+            command_id=command.command_id,
         )
+        service = getattr(self._events, "session_service", None)
+        if (connection is not None and isinstance(service, LocalSessionService)
+                and service.db_path == self.db_path):
+            await self._append_interaction_event_on(connection, envelope, guard)
+        else:
+            await self._events.append(envelope, guard=guard)
 
     async def _emit_activation(
         self, envelope: SessionEventEnvelope, activation: dict[str, Any], fence: int
@@ -345,6 +350,13 @@ class SQLiteAgentKernelStore:
                         accepted_seq=existing["accepted_seq"],
                     )
 
+                grant_error = await self._sqlite_admission_grant_error(connection, command)
+                if grant_error:
+                    await connection.commit()
+                    return await self.reject_command(
+                        command, status="rejected", code=grant_error, message=grant_error,
+                    )
+
                 depth_row = await self._fetchone(
                     connection,
                     "SELECT COUNT(*) AS depth FROM kernel_inbox "
@@ -404,14 +416,9 @@ class SQLiteAgentKernelStore:
                         command.model_dump_json(),
                     ),
                 )
-                # persist-before-ack：session 事件库与 kernel 库是两个独立
-                # SQLite 文件，无法共享一个事务。诚实取舍是在 kernel 事务
-                # commit 之前追加 accepted 事件：事件写入失败 -> 回滚 Inbox，
-                # 不产生 "persisted-but-untracked" 半状态，客户端可安全重试。
-                # 残余窗口：事件已追加但 kernel commit 崩溃 -> 出现一条孤儿
-                # accepted 事件而无 Inbox 行；该窗口不返回 ack，重试会重新
-                # 走完整路径（seq 单调，可能产生一条重复 accepted 事件），
-                # 不存在已 ack 但未持久化的状态。
+                # Shared local storage appends the event through this same
+                # connection, atomically with Inbox admission. Legacy external
+                # event stores retain the pre-existing persist-before-ack path.
                 await self._emit_admission(
                     control_event(
                         session_id=command.session_id,
@@ -426,6 +433,7 @@ class SQLiteAgentKernelStore:
                         causation_id=str(command.command_id),
                     ),
                     command,
+                    connection=connection,
                 )
                 await connection.commit()
             except BaseException:
@@ -559,6 +567,10 @@ class SQLiteAgentKernelStore:
                 )
                 if row is None:
                     raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                activation = await self._check_fence(
+                    connection, row["agent_instance_id"], row["session_id"], fencing_token,
+                )
+                await self._sqlite_require_claim_grant(connection, row)
                 if (
                     row["status"] == InboxState.CLAIMED.value
                     and row["claimed_fence"] == int(fencing_token)
@@ -567,12 +579,6 @@ class SQLiteAgentKernelStore:
                     message = await self.load_message(message_id)
                     assert message is not None
                     return message
-                activation = await self._check_fence(
-                    connection,
-                    row["agent_instance_id"],
-                    row["session_id"],
-                    fencing_token,
-                )
                 if row["status"] not in (
                     InboxState.ACCEPTED.value,
                     InboxState.CLAIMED.value,
@@ -714,6 +720,7 @@ class SQLiteAgentKernelStore:
                 if row is None:
                     await connection.commit()
                     return None
+                await self._sqlite_require_claim_grant(connection, row)
                 if row["status"] == InboxState.ACCEPTED.value:
                     assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
                 await connection.execute(
@@ -781,7 +788,7 @@ class SQLiteAgentKernelStore:
         connection: aiosqlite.Connection,
         agent_instance_id: str,
         session_id: str,
-        guard: ActivationWriteGuard,
+        guard: ActivationWriteGuard | AdmissionWriteGuard,
     ) -> dict[str, Any]:
         row = await self._fetchone(
             connection,

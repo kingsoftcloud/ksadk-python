@@ -118,3 +118,26 @@ CREATE TABLE IF NOT EXISTS kernel_interaction_submissions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, interaction_id, idempotency_key)
 );
+
+-- Revocable execution-grants/v1 extension. Grant lock precedes Inbox lock.
+-- Timestamps use the portable wire representation; receipts are stable JSON.
+CREATE TABLE IF NOT EXISTS kernel_execution_grants (
+  grant_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  agent_instance_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  owner_ref TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','suspended','revoked')),
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kernel_execution_grants_scope
+  ON kernel_execution_grants (tenant_id, agent_instance_id, session_id);
+CREATE TABLE IF NOT EXISTS kernel_execution_grant_operations (
+  grant_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  PRIMARY KEY (grant_id, idempotency_key)
+);

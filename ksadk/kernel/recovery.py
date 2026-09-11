@@ -31,6 +31,7 @@ from ksadk.kernel.contracts import (
     RuntimeCapabilityMatrix,
     WriteContext,
 )
+from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
 from ksadk.kernel.state import RunState, is_terminal_run
 from ksadk.kernel.store import AgentKernelStore, RunRecord, control_event
 
@@ -100,12 +101,15 @@ class RecoveryCoordinator:
         activation: ActivationLease,
         *,
         run_id: str | None = None,
+        session_id: str | None = None,
     ) -> RecoveryReport:
         fence = activation.fencing_token
         guard: WriteContext = ActivationWriteGuard(
             activation_id=activation.activation_id, fencing_token=fence
         )
-        run = await self._load_run(agent_instance_id, run_id)
+        run = await self._load_run(agent_instance_id, run_id, session_id=session_id)
+        if run is not None:
+            await self._require_session_lease(run, activation)
         if run is None or is_terminal_run(run.state):
             return await self._decide(
                 agent_instance_id,
@@ -241,6 +245,7 @@ class RecoveryCoordinator:
         activation: ActivationLease,
         *,
         reason: str = "recover_error_settled_interrupted",
+        session_id: str | None = None,
     ) -> RecoveryReport:
         """P0-1 兜底收口：``recover`` 抛错后的确定性 interrupted 决策。
 
@@ -254,7 +259,9 @@ class RecoveryCoordinator:
             activation_id=activation.activation_id,
             fencing_token=activation.fencing_token,
         )
-        run = await self._load_run(agent_instance_id, None)
+        run = await self._load_run(agent_instance_id, None, session_id=session_id)
+        if run is not None:
+            await self._require_session_lease(run, activation)
         if run is None or is_terminal_run(run.state):
             return await self._decide(
                 agent_instance_id,
@@ -384,14 +391,33 @@ class RecoveryCoordinator:
         )
 
     async def _load_run(
-        self, agent_instance_id: str, run_id: str | None
+        self, agent_instance_id: str, run_id: str | None, *, session_id: str | None
     ) -> RunRecord | None:
         if run_id is not None:
-            return await self._store.load_run(run_id)
-        finder = getattr(self._store, "find_active_run", None)
-        if finder is not None:
-            return await finder(agent_instance_id)
-        return None
+            run = await self._store.load_run(run_id)
+        else:
+            run = await self._store.find_active_run(agent_instance_id, session_id)
+        if run is not None and (
+            run.agent_instance_id != agent_instance_id
+            or (session_id is not None and run.session_id != session_id)
+        ):
+            raise InvalidCommandError("Run does not belong to the requested recovery scope")
+        return run
+
+    async def _require_session_lease(
+        self, run: RunRecord, activation: ActivationLease
+    ) -> None:
+        # Fencing counters are independent per session and commonly equal.
+        # Validate the activation identity before attaching a native execution;
+        # a matching integer alone cannot authorize another member's Run.
+        owned = await self._store.current_lease(run.agent_instance_id, run.session_id)
+        if (
+            activation.agent_instance_id != run.agent_instance_id
+            or owned is None
+            or owned.activation_id != activation.activation_id
+            or owned.fencing_token != activation.fencing_token
+        ):
+            raise StaleFenceError("recovery requires the Run's current session lease")
 
     async def _interrupt_deterministically(
         self,

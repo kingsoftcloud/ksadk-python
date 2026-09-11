@@ -15,7 +15,7 @@ import os
 import re
 import secrets
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -27,6 +27,18 @@ from ksadk.plugins.bridges.dsh import (
     DshProfileBuildSnapshot,
     DshProfilePluginBridge,
     DshProfileProjection,
+)
+from ksadk.plugins.companion_artifacts import DshCompanionArtifact, companion_artifact
+from ksadk.plugins.companions import (
+    CompanionError,
+    DshCompanionDefinition,
+    DshPluginCompanionManager,
+)
+from ksadk.plugins.dsh_home import (
+    DshHomeVersionError,
+    default_studio_dsh_home,
+    prepare_studio_dsh_home,
+    studio_dsh_home,
 )
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.host import PluginHostError
@@ -166,16 +178,71 @@ class StudioDshCapabilityService:
         self._active_calls: dict[str, _ActiveCall] = {}
         self._closed = False
         self.model_projection = None
+        self._companion_definitions: tuple[DshCompanionDefinition, ...] = ()
+        self._companion_manager: DshPluginCompanionManager | None = None
+
+    def configure_companions(self, definitions: Sequence[DshCompanionDefinition]) -> None:
+        """Configure trusted lifecycle callbacks before this Profile starts."""
+        if self._host is not None or self._closed:
+            raise CompanionError("COMPANION_CONFIGURATION_BUSY")
+        if any(item.profile != self._profile for item in definitions):
+            raise CompanionError("COMPANION_PROFILE_MISMATCH")
+        self._companion_definitions = tuple(definitions)
+
+    @property
+    def companion_manager(self) -> DshPluginCompanionManager | None:
+        return self._companion_manager
+
+    async def call_companion_tool(
+        self, plugin_id: str, principal: Any, operation: str, arguments: Mapping[str, Any],
+        *, call_id: str, deadline_ms: int = 60_000,
+    ) -> dict[str, Any]:
+        """Run an actual Cordis tool with a host-issued opaque invocation scope."""
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", call_id) or not 1 <= deadline_ms <= 120_000:
+            raise CompanionError("COMPANION_REQUEST_INVALID")
+        if _strict_json_size(arguments) > self._max_argument_bytes:
+            raise CompanionError("COMPANION_REQUEST_INVALID")
+        async with self._lock:
+            host, lease = await self._ensure_ready_locked()
+            manager = self._companion_manager
+            if manager is None or operation not in {tool.name for tool in host.descriptor.tools}:
+                raise CompanionError("COMPANION_UNAVAILABLE")
+            handle = manager.issue_invocation(
+                plugin_id, principal, operations=frozenset({operation}),
+                ttl_seconds=deadline_ms / 1000,
+            )
+            token = lease.companion_bearer_token(
+                plugin_id=plugin_id, generation_id=manager.generation_id,
+                handle=handle, tool_name=operation, call_id=call_id,
+                ttl_seconds=max(1, (deadline_ms + 999) // 1000),
+            )
+            scoped = replace(lease, _bearer_token=token, _browser_token="")
+        try:
+            result = await self._mcp_request(
+                scoped, request_id=call_id, method="tools/call",
+                params={"name": operation, "arguments": dict(arguments)},
+                timeout_seconds=deadline_ms / 1000,
+            )
+            if result.get("isError"):
+                code = result.get("_meta", {}).get("io.ksadk/dsh", {}).get("code", "")
+                raise CompanionError(code if isinstance(code, str) and re.fullmatch(
+                    r"COMPANION_[A-Z_]{1,96}", code
+                ) else "COMPANION_TOOL_FAILED")
+            value = result.get("structuredContent")
+            if not isinstance(value, dict):
+                raise CompanionError("COMPANION_RESPONSE_INVALID")
+            return value
+        except (asyncio.TimeoutError, StudioError) as error:
+            # Preserve the caller's native call_id. A retry must reuse it so
+            # the domain can look up an already committed result.
+            raise CompanionError("COMPANION_OUTCOME_UNCERTAIN") from error
+        finally:
+            manager.revoke_invocation(handle)
 
     @classmethod
     def discover_or_create_workspace_default(cls, workspace: Path) -> "StudioDshCapabilityService":
         root = workspace.resolve()
-        configured_home = os.environ.get("KSADK_DSH_HOME", "").strip()
-        dsh_home = (
-            Path(configured_home).expanduser()
-            if configured_home
-            else root / ".agentkit" / "dsh-home"
-        )
+        dsh_home = studio_dsh_home(root)
         profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
@@ -195,7 +262,7 @@ class StudioDshCapabilityService:
         command = (str(Path(configured_bin).expanduser()),) if configured_bin else None
         return cls(
             root,
-            dsh_home=root / ".agentkit" / "dsh-home",
+            dsh_home=default_studio_dsh_home(root),
             profile="agentkit-resources",
             dsh_command=command,
             mount_studio_app=False,
@@ -591,9 +658,33 @@ class StudioDshCapabilityService:
         # A restarted Core must never inherit workers or resource handles from
         # the previous generation, including when the restart subsequently fails.
         self._resource_generation_snapshot = None
+        await self._close_companions_locked()
         await self._close_resource_supervisor_locked()
         generation_id = f"dshgen_{secrets.token_urlsafe(24)}"
         try:
+            definitions = []
+            for definition in self._companion_definitions:
+                packages = set(definition.components.values())
+                present = packages.intersection(projection.bundles)
+                if present and present != packages:
+                    raise CompanionError("COMPANION_GRAPH_INCOMPLETE")
+                if present:
+                    definitions.append(definition)
+            if definitions:
+                command = await asyncio.to_thread(self._resolve_command)
+                artifacts = await asyncio.to_thread(
+                    self._capture_companion_artifacts, command, definitions, projection,
+                )
+                manager = DshPluginCompanionManager(
+                    profile=self._profile, generation_id=generation_id,
+                    definitions=tuple(definitions),
+                    artifacts=artifacts,
+                )
+                self._companion_manager = manager
+                await manager.start_broker()
+                await host.configure_companions(manager.configuration)
+            elif self._companion_definitions:
+                await host.configure_companions(None)
             if "@kingsoftcloud/dsh-platform-resources" in projection.bundles:
                 ledger = await asyncio.to_thread(
                     OperationLedger, self._workspace / ".agentkit" / "resource-operations"
@@ -612,18 +703,28 @@ class StudioDshCapabilityService:
             ):
                 raise self._protocol_error()
             await self._initialize_lease(lease)
+            if self._companion_manager is not None:
+                verified = await asyncio.to_thread(
+                    self._capture_companion_artifacts, command, definitions, projection,
+                )
+                if verified != artifacts:
+                    raise CompanionError("COMPANION_ARTIFACT_CHANGED_DURING_BOOT")
+                await self._companion_manager.confirm_core_ready()
         except StudioError as error:
             self._lease = None
+            await self._close_companions_locked()
             await self._close_resource_supervisor_locked()
             if error.code == "DSH_CAPABILITY_PROTOCOL_INVALID":
                 await self._dispose_generation_locked()
             raise
         except (PluginHostError, OSError, ValueError) as error:
             self._lease = None
+            await self._close_companions_locked()
             await self._close_resource_supervisor_locked()
             raise self._unavailable(error) from error
         except BaseException:
             self._lease = None
+            await self._close_companions_locked()
             await self._close_resource_supervisor_locked()
             raise
         self._lease = lease
@@ -805,7 +906,10 @@ class StudioDshCapabilityService:
 
     def _resolve_command(self) -> tuple[str, ...]:
         try:
+            prepare_studio_dsh_home(self._dsh_home)
             return tuple(DshToolchainManager().require_command(self._explicit_dsh_executable))
+        except DshHomeVersionError as error:
+            raise self._unavailable(error) from error
         except Exception as error:
             raise StudioError(
                 "DSH_CAPABILITY_HOST_UNAVAILABLE",
@@ -836,6 +940,34 @@ class StudioDshCapabilityService:
                 return any(item.enabled for item in bridge.list_plugins())
         except Exception as error:
             raise self._unavailable(error) from error
+
+    def _capture_companion_artifacts(
+        self,
+        command: Sequence[str],
+        definitions: Sequence[DshCompanionDefinition],
+        projection: DshProfileProjection,
+    ) -> dict[str, DshCompanionArtifact]:
+        with self._bridge_factory(
+            dsh_home=self._dsh_home,
+            profile=self._profile,
+            dsh_command=command,
+            cwd=self._workspace,
+        ) as bridge:
+            with bridge._profile_transaction(exclusive=False):
+                snapshot = bridge.snapshot_for_build()
+                if snapshot.projection != projection:
+                    raise CompanionError("COMPANION_ARTIFACT_PROFILE_MISMATCH")
+                inventory = bridge.list_plugins()
+                return {
+                    definition.plugin_id: companion_artifact(
+                        plugin_id=definition.plugin_id,
+                        components=definition.components,
+                        snapshot=snapshot,
+                        inventory=inventory,
+                        sources=definition.artifact_sources,
+                    )
+                    for definition in definitions
+                }
 
     def _verify_resource_build_snapshot(
         self, command: Sequence[str], expected: DshProfileBuildSnapshot
@@ -902,6 +1034,11 @@ class StudioDshCapabilityService:
     async def _dispose_generation_locked(self) -> None:
         await self._finish_cleanup(self._dispose_generation_owned_locked())
 
+    async def _close_companions_locked(self) -> None:
+        manager, self._companion_manager = self._companion_manager, None
+        if manager is not None:
+            await manager.close()
+
     async def _dispose_generation_owned_locked(self) -> None:
         """Finish generation teardown before propagating caller cancellation."""
 
@@ -914,7 +1051,10 @@ class StudioDshCapabilityService:
         self._generation_id = None
         self._active_calls.clear()
         try:
-            await self._close_resource_supervisor_locked()
+            try:
+                await self._close_companions_locked()
+            finally:
+                await self._close_resource_supervisor_locked()
         finally:
             if active:
                 await asyncio.gather(
@@ -1091,6 +1231,11 @@ class StudioDshCapabilityService:
 
     @staticmethod
     def _unavailable(error: BaseException) -> StudioError:
+        if isinstance(error, DshHomeVersionError):
+            return StudioError(
+                "DSH_HOME_VERSION_UNVERIFIED", str(error), status_code=409,
+                details=error.diagnostic,
+            )
         reason = getattr(error, "code", None)
         return StudioError(
             "DSH_CAPABILITY_HOST_UNAVAILABLE",

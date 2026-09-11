@@ -13,7 +13,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
 from ksadk.kernel.contracts import (
@@ -23,6 +23,14 @@ from ksadk.kernel.contracts import (
     SessionEventEnvelope,
 )
 from ksadk.kernel.state import InboxState, RunState
+
+if TYPE_CHECKING:
+    from ksadk.kernel.execution_grants import (
+        ExecutionGrantBarrier,
+        ExecutionGrantRecord,
+        ExecutionGrantSpec,
+        GrantState,
+    )
 
 
 def now_utc() -> datetime:
@@ -190,6 +198,19 @@ class AgentKernelStore(Protocol):
     async def accept_command(
         self, command: AgentControlCommand, *, queue_limit: int
     ) -> AgentControlReceipt: ...
+
+    async def ensure_execution_grant(
+        self, spec: ExecutionGrantSpec
+    ) -> ExecutionGrantRecord: ...
+
+    async def get_execution_grant(
+        self, spec: ExecutionGrantSpec
+    ) -> ExecutionGrantBarrier | None: ...
+
+    async def set_execution_grant_state(
+        self, spec: ExecutionGrantSpec, state: GrantState, *,
+        expected_revision: int, idempotency_key: str,
+    ) -> ExecutionGrantBarrier: ...
 
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int

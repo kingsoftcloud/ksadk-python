@@ -13,6 +13,6 @@ export const name = 'ksadk-codex-provider'
 export function apply(ctx) {
   // DSH owns package/Profile lifecycle. The fixed KsADK bridge retains the
   // existing Codex App Server backend and never executes package supplied argv.
-  ctx.provide('ksadkAgentProvider', contribution)
+  ctx.provide('ksadkCodexAgentProvider', contribution)
   ctx.effect(() => () => {})
 }

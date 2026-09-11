@@ -335,6 +335,34 @@ class DshMcpConnectorLease:
 
         return {"Authorization": f"Bearer {self._bearer_token}"}
 
+    def companion_bearer_token(
+        self, *, plugin_id: str, generation_id: str, handle: str,
+        tool_name: str, call_id: str, ttl_seconds: int = 60,
+    ) -> str:
+        """Sign only an opaque Python grant and one exact native tool call."""
+        if (not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", plugin_id)
+            or not re.fullmatch(r"dshgen_[A-Za-z0-9_-]{24,96}", generation_id)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", handle)
+            or not _TOOL_NAME.fullmatch(tool_name)
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", call_id)
+            or not 1 <= ttl_seconds <= 120):
+            raise ValueError("invalid companion invocation scope")
+        payload = {
+            "v": 3, "profileDigest": self.profile_digest,
+            "pluginId": plugin_id, "generationId": generation_id,
+            "handle": handle, "callId": call_id,
+            "aliases": {tool_name: tool_name},
+            "exp": int(time.time()) + ttl_seconds,
+            "jti": secrets.token_urlsafe(24),
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+        message = f"ks3.{encoded}"
+        signature = base64.urlsafe_b64encode(
+            hmac.new(self._bearer_token.encode(), message.encode(), hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+        return f"{message}.{signature}"
+
     def resource_bearer_token(self, tool_aliases: Mapping[str, str], resource_leases) -> str:
         """Mint scope v2 from host-issued, activation-bound resource leases."""
         from ksadk.resource_runtime.leases import ResourceLease
@@ -632,6 +660,7 @@ class DshProfileCapabilityHost:
         self._core_token_future: asyncio.Future[str] | None = None
         self._runtime_dir: Path | None = None
         self._resource_socket_path: Path | None = None
+        self._companion_configuration: dict[str, Any] | None = None
         self._lease: DshMcpConnectorLease | None = None
         self._descriptor: DshProfileCapabilityDescriptor | None = None
         self._stdout_tail: deque[str] = deque(maxlen=64)
@@ -705,6 +734,11 @@ class DshProfileCapabilityHost:
                         "KSADK_DSH_VERSION": self._projection.host_version,
                     }
                 )
+                environment.pop("KSADK_DSH_COMPANION_CONFIGURATION", None)
+                if self._companion_configuration is not None:
+                    environment["KSADK_DSH_COMPANION_CONFIGURATION"] = json.dumps(
+                        self._companion_configuration, separators=(",", ":")
+                    )
                 process = await asyncio.create_subprocess_exec(
                     *self._command,
                     "--profile",
@@ -856,6 +890,26 @@ class DshProfileCapabilityHost:
             self._state = "stopped"
             self._resource_socket_path = path
 
+    async def configure_companions(self, configuration: Mapping[str, Any] | None) -> None:
+        """Bind private companion IPC to the next Core generation."""
+        import stat
+
+        if configuration is not None:
+            path = Path(str(configuration.get("socketPath", "")))
+            if (not path.is_absolute() or path.is_symlink()
+                or not stat.S_ISSOCK(path.stat().st_mode)
+                or path.stat().st_mode & 0o077 or path.parent.stat().st_mode & 0o077):
+                raise PluginHostError(
+                    "dsh_companion_socket_invalid", "Companion IPC must be private"
+                )
+        async with self._lifecycle_lock:
+            if self._disposed:
+                raise PluginHostError("dsh_companion_host_disposed", "Companion host is disposed")
+            if self._process is not None:
+                await self._terminate()
+            self._state = "stopped"
+            self._companion_configuration = dict(configuration) if configuration else None
+
     def _overlay_text(self) -> str:
         entrypoint = json.dumps(self._bundle.entrypoint.as_uri())
         overlay = (
@@ -875,6 +929,13 @@ class DshProfileCapabilityHost:
                 "- id: dsh-platform-resources\n"
                 "  config:\n"
                 f"    socketPath: {json.dumps(str(self._resource_socket_path))}\n"
+            )
+        if self._companion_configuration is not None:
+            companion = self._bundle.root.parent / "ksadk-dsh-companion-host" / "index.mjs"
+            overlay += (
+                "- insert:\n"
+                "    - id: ksadk-plugin-companions\n"
+                f"      name: {json.dumps(companion.as_uri())}\n"
             )
         if self._studio_index is not None:
             app = self._bundle.root.parent / "ksadk-dsh-studio" / "index.mjs"

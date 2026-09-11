@@ -33,6 +33,12 @@ from ksadk.kernel.contracts import (
     SessionEventSubscription,
 )
 from ksadk.kernel.errors import InvalidPermitError
+from ksadk.kernel.execution_grants import (
+    ExecutionGrantBarrier,
+    ExecutionGrantRecord,
+    ExecutionGrantSpec,
+    GrantState,
+)
 from ksadk.kernel.mapping import (
     CapabilityProvider,
     capability_of,
@@ -88,6 +94,31 @@ class AgentKernel:
         """
 
         return self._capabilities()
+
+    async def ensure_execution_grant(self, spec: ExecutionGrantSpec) -> ExecutionGrantRecord:
+        """Trusted host port; the host MUST authorize the owner and exact scope.
+
+        A grant does not replace AgentControlPermit. Existing sessions may have
+        several independent grants, e.g. distinct scheduled occurrences.
+        """
+        return await self._store.ensure_execution_grant(spec)
+
+    async def get_execution_grant(self, spec: ExecutionGrantSpec) -> ExecutionGrantBarrier | None:
+        """Read current durable state for an already-authorized host scope."""
+        return await self._store.get_execution_grant(spec)
+
+    async def set_execution_grant_state(
+        self, spec: ExecutionGrantSpec, state: GrantState, *,
+        expected_revision: int, idempotency_key: str,
+    ) -> ExecutionGrantBarrier:
+        """Serialize suspension/revocation with start qualification.
+
+        The returned receipt is durable and idempotent. A revoked grant is
+        irreversible; qualified commands still require normal Run control.
+        """
+        return await self._store.set_execution_grant_state(
+            spec, state, expected_revision=expected_revision, idempotency_key=idempotency_key,
+        )
 
     # ---------------------------------------------------------------- submit
 

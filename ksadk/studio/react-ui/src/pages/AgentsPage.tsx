@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, Bot } from "lucide-react";
+import { KingIcon } from "../components/KingIcon";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MoreActionsMenu } from "../components/MoreActionsMenu";
@@ -157,7 +157,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
     <div className="page-container agents-page" data-layout="data">
       <PageHeaderActions>
         <button className="button accent" type="button" disabled={!runtimeReady} onClick={onCreate}>
-          <Plus size={16} /><span>创建 Agent</span>
+          <KingIcon name="add" size={16} /><span>创建 Agent</span>
         </button>
       </PageHeaderActions>
 
@@ -180,7 +180,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
           </header>
           <div className="section-toolbar">
             <div className="search-field">
-              <Search size={15} />
+              <KingIcon name="search" size={15} />
               <input type="search" placeholder="搜索 Agent 名称或 ID" aria-label="搜索 Agent" value={query} onChange={e => setQuery(e.target.value)} />
             </div>
             <StudioSelect
@@ -204,7 +204,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
             onRowActivate={agent => onDetail(agent.metadata.id)}
             rowAriaLabel={agent => `${agent.metadata.name} ${agent.metadata.id}`}
             empty={{
-              icon: <Bot size={24} />,
+              icon: <KingIcon name="cpu" size={24} />,
               title: query || statusFilter ? "没有匹配的 Agent" : "还没有 Agent",
               description: query || statusFilter
                 ? "调整搜索词或状态筛选。"

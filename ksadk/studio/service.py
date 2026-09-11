@@ -103,6 +103,7 @@ from ksadk.studio.contracts import (
     DiagnosticSeverity,
     Operation,
     OperationKind,
+    OperationStatus,
     RunEvent,
     RunStatus,
     RuntimeRef,
@@ -230,6 +231,7 @@ class StudioService:
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False
+        self._profile_maintenance = False
         self.configuration = WorkspaceConfiguration(
             self.workspace, overrides=configuration_overrides
         )
@@ -352,6 +354,17 @@ class StudioService:
             self.workspace,
             runtime_registry=self.scheduler_runtimes,
         )
+        from ksadk.studio.execution_host import StudioExecutionHost
+        from ksadk.studio.teams_installation import StudioTeamsInstallation
+        from ksadk.studio.workspace_plugins import WorkspacePluginRegistry
+
+        self.workspace_plugins = WorkspacePluginRegistry()
+        self.execution_host = StudioExecutionHost(
+            self.scheduler_runtimes,
+            state_path=self.workspace.resolve(".agentkit/plugin-runtime/execution-host.sqlite"),
+        )
+        self.plugin_runs.execution_policy_resolver = self.execution_host
+        self.teams_installation = StudioTeamsInstallation(self)
         from ksadk.studio.scheduler_assistant import StudioScheduleAssistant
 
         self.run_service.schedule_assistant = StudioScheduleAssistant(self)
@@ -374,6 +387,7 @@ class StudioService:
             self._ensure_open()
             if self._started:
                 return
+            await self.scheduler_runtimes.start()
             await self._bootstrap_official_dsh_defaults()
             manifests, factories, manager_refs = await self._provider_snapshot(refresh=False)
             self.plugin_compositions.replace_provider_registrations(manifests)
@@ -389,14 +403,22 @@ class StudioService:
 
         async with self._start_lock:
             self._ensure_open()
-            safe_to_resume = False
+            await self.execution_host.set_admission_open(False)
+            await self.scheduler_runtimes.set_admission_open(False)
+            self._profile_maintenance = True
+            safe_to_resume = True
             try:
+                await self._require_profile_idle()
+                safe_to_resume = False
                 await self.plugin_runs.suspend_admission()
                 await self.reset_dsh_capability_state()
                 await self._bind_dsh_provider_registrations_locked(refresh=True)
                 await self._refresh_dsh_catalog_resource(required=False)
                 safe_to_resume = True
             finally:
+                self._profile_maintenance = not safe_to_resume
+                await self.execution_host.set_admission_open(safe_to_resume)
+                await self.scheduler_runtimes.set_admission_open(safe_to_resume)
                 if safe_to_resume:
                     await self.plugin_runs.resume_admission()
 
@@ -408,8 +430,13 @@ class StudioService:
 
         async with self._start_lock:
             self._ensure_open()
-            safe_to_resume = False
+            await self.execution_host.set_admission_open(False)
+            await self.scheduler_runtimes.set_admission_open(False)
+            self._profile_maintenance = True
+            safe_to_resume = True
             try:
+                await self._require_profile_idle()
+                safe_to_resume = False
                 await self.plugin_runs.suspend_admission()
                 await self.reset_dsh_capability_state()
                 try:
@@ -435,8 +462,41 @@ class StudioService:
                 safe_to_resume = True
                 return result
             finally:
+                self._profile_maintenance = not safe_to_resume
+                await self.execution_host.set_admission_open(safe_to_resume)
+                await self.scheduler_runtimes.set_admission_open(safe_to_resume)
                 if safe_to_resume:
                     await self.plugin_runs.resume_admission()
+
+    async def _require_profile_idle(self) -> None:
+        pending = await self.scheduler_runtimes.unsettled_sessions()
+        active_operations = [
+            operation for operation in self.operations.list()
+            if operation.status in {OperationStatus.QUEUED, OperationStatus.RUNNING}
+        ]
+        if pending or active_operations:
+            raise StudioError("DSH_PROFILE_IN_USE",
+                "仍有执行或审批正在进行，请结束执行后再变更插件 Profile", status_code=409)
+
+    def _require_direct_session(self, session_id: str | None) -> None:
+        if self._profile_maintenance:
+            raise StudioError("DSH_PROFILE_MAINTENANCE", "插件宿主正在维护", status_code=503)
+        if session_id:
+            from ksadk.studio.execution_host import ExecutionHostError
+
+            try:
+                self.execution_host.require_unreserved_session(session_id)
+            except ExecutionHostError as error:
+                raise StudioError(error.code, str(error), status_code=error.status) from error
+
+    def _require_direct_run(self, run_id: str) -> None:
+        from ksadk.studio.execution_host import ExecutionHostError
+
+        self._require_direct_session(None)
+        try:
+            self.execution_host.require_unreserved_run(run_id)
+        except ExecutionHostError as error:
+            raise StudioError(error.code, str(error), status_code=error.status) from error
 
     async def _bind_dsh_provider_registrations_locked(self, *, refresh: bool) -> None:
         if self._dsh_provider_registration_manager is None:
@@ -774,6 +834,7 @@ class StudioService:
         sending provider-specific fields to every Runtime.
         """
 
+        self._require_direct_session(session_id)
         spec = self.resolve_run_spec(build_id)
         runtime_type = spec.launch_context.runtime_type.strip().lower()
         runtime_mode: Literal["native", "translated"] = (
@@ -1205,6 +1266,7 @@ class StudioService:
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
+        self._require_direct_session(session_id)
         return self.codex_agents.submit_run(
             build_id,
             user_input,
@@ -1223,6 +1285,7 @@ class StudioService:
     async def delete_session(self, session_id: str) -> None:
         from ksadk.studio.errors import not_found
 
+        self._require_direct_session(session_id)
         runs = self.event_store.list_runs(session_id=session_id)
         session = await self.session_service.get_session_metadata(session_id)
         if not runs and session is None:
@@ -1261,7 +1324,10 @@ class StudioService:
 
         await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
-        owned = [self.plugin_runs.aclose, self.dsh_capabilities.aclose]
+        owned = [
+            self.workspace_plugins.close, self.plugin_runs.aclose, self.dsh_capabilities.aclose,
+            self.scheduler_runtimes.close, self.execution_host.close,
+        ]
         if self.resource_dsh_capabilities is not self.dsh_capabilities:
             owned.append(self.resource_dsh_capabilities.aclose)
         if self._dsh_provider_registration_manager is not None:
@@ -1286,6 +1352,7 @@ class StudioService:
             )
 
     async def _require_runtime_session(self, session_id: str) -> None:
+        self._require_direct_session(session_id)
         if await self.session_service.get_session_metadata(session_id) is None:
             raise StudioError(
                 "SESSION_NOT_FOUND",
@@ -2130,6 +2197,7 @@ class StudioService:
         runtime_input: Any = None,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
+        self._require_direct_session(session_id)
         try:
             self.codex_builds.get(build_id)
         except Exception as exc:
@@ -2440,6 +2508,7 @@ class StudioService:
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
+        self._require_direct_session(session_id)
         async def runner(_operation_id: str):
             return await self.run_build(
                 build_id,
@@ -2480,6 +2549,7 @@ class StudioService:
         """Execute any immutable Studio Build through the canonical executor."""
 
         await self.start()
+        self._require_direct_session(session_id)
         spec = self.resolve_run_spec(
             build_id,
             model=model,

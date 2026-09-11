@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "ExecutionGrantCommand": {
+      "properties": {
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "command_id": {
+          "title": "Command Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "inbox_state": {
+          "title": "Inbox State",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "run_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run State"
+        }
+      },
+      "required": [
+        "message_id",
+        "command_id",
+        "idempotency_key",
+        "inbox_state"
+      ],
+      "title": "ExecutionGrantCommand",
+      "type": "object"
+    },
+    "ExecutionGrantRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "grant_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Grant Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "agent_instance_id": {
+          "minLength": 1,
+          "title": "Agent Instance Id",
+          "type": "string"
+        },
+        "session_id": {
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "owner_ref": {
+          "minLength": 1,
+          "title": "Owner Ref",
+          "type": "string"
+        },
+        "state": {
+          "default": "active",
+          "enum": [
+            "active",
+            "suspended",
+            "revoked"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "revision": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "grant_id",
+        "tenant_id",
+        "agent_instance_id",
+        "session_id",
+        "owner_ref",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ExecutionGrantRecord",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "grant": {
+      "$ref": "#/$defs/ExecutionGrantRecord"
+    },
+    "queued_message_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Queued Message Ids",
+      "type": "array"
+    },
+    "in_flight_message_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "In Flight Message Ids",
+      "type": "array"
+    },
+    "discarded_message_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Discarded Message Ids",
+      "type": "array"
+    },
+    "settled_message_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Settled Message Ids",
+      "type": "array"
+    },
+    "commands": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ExecutionGrantCommand"
+      },
+      "title": "Commands",
+      "type": "array"
+    }
+  },
+  "required": [
+    "grant"
+  ],
+  "title": "ExecutionGrantBarrier",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.ksadk.io/agent-kernel/execution-grants/v1/barrier.schema.json"
+}

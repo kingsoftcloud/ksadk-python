@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -466,14 +466,28 @@ def create_studio_app(
         )
 
     @app.get("/")
-    async def index():
-        path = static_root / "index.html"
-        html = path.read_text(encoding="utf-8")
-        # Vite filenames are content hashed and index.html is no-store. Keep
-        # entry module URLs byte-for-byte identical to their internal imports:
-        # adding a query only to the HTML entry makes browsers evaluate that
-        # module again when a lazy chunk imports the unversioned URL.
-        response = Response(content=html, media_type="text/html")
+    async def index(request: Request):
+        # Workspace navigation is contributed by the official Core client.
+        # Opening the standalone React shell with enabled plugins silently
+        # hides those pages. Select the host from Profile metadata, without
+        # starting Core just to decide which entry to serve.
+        try:
+            use_core = await studio.dsh_capabilities.has_enabled_profile_plugins()
+        except (StudioError, OSError, RuntimeError):
+            # The optional toolchain may be absent in a plain SDK workspace.
+            use_core = False
+        if use_core:
+            target = "/studio-core/"
+            if request.url.query:
+                target += "?" + request.url.query
+            # Browsers inherit the original fragment across this redirect,
+            # preserving Agent/session/group deep links and CLI bootstrap.
+            response = RedirectResponse(target, status_code=307)
+        else:
+            path = static_root / "index.html"
+            html = path.read_text(encoding="utf-8")
+            # Keep hashed module URLs identical to internal lazy imports.
+            response = Response(content=html, media_type="text/html")
         response.headers["Cache-Control"] = "no-store"
         if security_enabled:
             response.set_cookie(
@@ -488,7 +502,10 @@ def create_studio_app(
 
     @app.get("/favicon.ico")
     async def favicon():
-        return Response(status_code=204)
+        return Response(
+            content='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#1677ff"/><path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>',
+            media_type="image/svg+xml",
+        )
 
     async def runtime_model_catalog():
         api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
@@ -774,6 +791,7 @@ def create_studio_app(
                 data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
             elif action == "SubmitInteraction":
                 run_id = str(payload.get("RunId") or "")
+                studio._require_direct_run(run_id)
                 interaction_id = str(payload.get("InteractionId") or "")
                 resolved = await studio.run_service.submit_interaction(
                     run_id,
@@ -1540,14 +1558,17 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
     async def cancel_run(run_id: str):
+        studio._require_direct_run(run_id)
         return await studio.run_service.cancel_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):
+        studio._require_direct_run(run_id)
         return await studio.run_service.pause_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
+        studio._require_direct_run(run_id)
         return await studio.run_service.resume_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
@@ -1556,6 +1577,7 @@ def create_studio_app(
         interaction_id: str,
         payload: InteractionSubmitRequest,
     ):
+        studio._require_direct_run(run_id)
         return await studio.run_service.submit_interaction(
             run_id,
             interaction_id,
@@ -2213,6 +2235,7 @@ def create_studio_app(
     register_memory_routes(app, studio)
     register_resource_connection_routes(app, studio)
     register_plugin_routes(app, studio)
+    app.mount("/api/v1", studio.workspace_plugins.api, name="workspace-plugin-api")
 
     from ksadk.studio.dsh_application import register_dsh_application
 

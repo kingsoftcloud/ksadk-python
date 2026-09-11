@@ -709,6 +709,7 @@ async def test_compaction_rejects_active_and_foreign_sessions(tmp_path):
         SimpleNamespace(
             event_store=store,
             run_service=SimpleNamespace(_active_sessions=set()),
+            _require_direct_session=lambda _session_id: None,
         )
     )
     with pytest.raises(StudioError) as active:

@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-teams-tools
+      name: '@kingsoftcloud/dsh-teams-tools'

@@ -19,7 +19,6 @@ execution（同一 client 实例）；control lookup 永远按 durable run id。
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -36,6 +35,7 @@ from ksadk.interaction.provider import (
     UnavailableInteractionProvider,
 )
 from ksadk.interaction.providers import default_interaction_providers
+from ksadk.kernel.approval_presentation import approval_presentation
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -53,6 +53,11 @@ from ksadk.kernel.errors import (
     InvalidCommandError,
     StaleFenceError,
     UnsupportedControlError,
+)
+from ksadk.kernel.execution_grants import (
+    ExecutionGrantBlocked,
+    execution_grant_id,
+    execution_grant_run_id,
 )
 from ksadk.kernel.mapping import COMMAND_HANDLERS, RESUME_TARGET_KINDS
 from ksadk.kernel.state import RunState
@@ -252,27 +257,31 @@ class AgentKernelWorker:
         # enqueue，此时其后的 interrupt/pause/steer 等控制命令必须能越过
         # 该 enqueue 作用于 active Run。只处理当前 activation 持有 lease 的
         # session，避免跨 session 抢占。
-        eligible = None
+        suspended_enqueue = False
         for message in sorted(pending, key=lambda m: m.accepted_seq):
             if session_id is not None and message.session_id != session_id:
                 continue
             lease = await self._store.current_lease(agent_instance_id, message.session_id)
             if lease is None or lease.activation_id != activation.activation_id:
-                continue  # 该 session 归其它 activation（或无人）持有
-            if message.command is None:  # pragma: no cover - defensive
+                continue
+            if message.command is None:
                 continue
             if message.command.command_type == "enqueue":
                 active = await self._store.find_active_run(agent_instance_id, message.session_id)
-                if active is not None:
-                    continue  # enqueue 保持排队
-            eligible = message
-            break
-        if eligible is None:
-            return WorkResult(outcome="idle")
-
-        claimed = await self._store.claim_message(eligible.message_id, fence)
-        result = await self._execute_claim(claimed.command, activation)
-        return result
+                if active is not None or suspended_enqueue:
+                    continue
+            try:
+                # Store claim and execution-grant validation share one atomic
+                # transaction. A prior list/read is never start authorization.
+                claimed = await self._store.claim_message(message.message_id, fence)
+            except ExecutionGrantBlocked as error:
+                if error.grant_state in {"suspended", "queued", "busy"}:
+                    # Preserve enqueue FIFO while still letting cancel/resume
+                    # controls behind the suspended command reach active work.
+                    suspended_enqueue = True
+                continue
+            return await self._execute_claim(claimed.command, activation)
+        return WorkResult(outcome="idle")
 
     # ------------------------------------------------------------- execution
 
@@ -387,7 +396,21 @@ class AgentKernelWorker:
 
         fence = activation.fencing_token
         guard = ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence)
-        run_id = new_message_id()
+        grant_id = execution_grant_id(command)
+        run_id = execution_grant_run_id(command) if grant_id else new_message_id()
+        if grant_id:
+            previous = await self._store.load_run(run_id)
+            if previous is not None:
+                # Once start may have reached the provider, neither a lost ACK
+                # nor takeover may invent a second model run. Normal recovery
+                # attaches durable handles; a handle-less pending start is
+                # uncertain and requires attention, never an automatic replay.
+                if previous.state == RunState.PENDING:
+                    await self._store.save_run_transition(previous.model_copy(update={
+                        "state": RunState.INTERRUPTED,
+                        "reason": "execution_start_uncertain",
+                    }), expected_fence=fence)
+                return run_id
         adapter = self._adapter_factory()
         pending = RunRecord(
             run_id=run_id,
@@ -401,6 +424,7 @@ class AgentKernelWorker:
             # back to one occurrence without matching text or wall-clock time.
             metadata={
                 "command_id": str(command.command_id),
+                **({"execution_grant_id": grant_id} if grant_id else {}),
                 "source_kind": command.source.kind,
                 "source_ref": command.source.ref,
                 "correlation_id": command.correlation_id,
@@ -475,6 +499,14 @@ class AgentKernelWorker:
                     ),
                     **continuation_metadata,
                     **conversation_metadata,
+                    # Opaque policy reference is supplied only by a trusted
+                    # ingress. The Provider resolves and reauthorizes it for
+                    # this exact Run; Kernel owns no plugin policy semantics.
+                    **(
+                        {"execution_policy_ref": command.payload["execution_policy_ref"]}
+                        if isinstance(command.payload.get("execution_policy_ref"), str)
+                        else {}
+                    ),
                 },
             )
         )
@@ -774,7 +806,7 @@ class AgentKernelWorker:
         """Persist one framework interaction as the durable ledger authority."""
 
         from ksadk.events.canonical import ApprovalRequest, InteractionRequested
-        from ksadk.interaction.contracts import InteractionPresentation, InteractionRecord
+        from ksadk.interaction.contracts import InteractionRecord
 
         assert isinstance(event, InteractionRequested)
         presentation = None
@@ -790,25 +822,7 @@ class AgentKernelWorker:
                 "required": ["decision"],
             }
             native_target = {"call_id": event.request.call_id or event.interaction_id}
-            detail = event.request.detail if isinstance(event.request.detail, Mapping) else {}
-            visible_arguments = {
-                key: detail[key]
-                for key in ("command", "cwd", "reason", "grantRoot", "proposedExecpolicyAmendment")
-                if key in detail and detail[key] is not None
-            }
-            presentation = InteractionPresentation(
-                title={
-                    "command_execution": "run_command",
-                    "file_change": "apply_patch",
-                    "permissions": "request_permission",
-                    "dynamic_tool_call": "tool_call",
-                }.get(event.request.kind, event.request.kind),
-                description=json.dumps(
-                    {"arguments": visible_arguments},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            )
+            presentation = approval_presentation(event.request)
         else:
             request_schema = dict(event.request.schema_)
             # Codex maps the native JSON-RPC request id to a stable canonical

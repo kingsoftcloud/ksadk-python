@@ -32,9 +32,10 @@ async def invoke_graph_with_control(
         controller.before_model()
         raise RunControlStop(controller.stop_reason or "wall_time_hard_limit")
     try:
-        async with asyncio.timeout(remaining):
-            return await graph.ainvoke(invoke_input, config=config)
-    except TimeoutError as exc:
+        return await asyncio.wait_for(
+            graph.ainvoke(invoke_input, config=config), timeout=remaining
+        )
+    except (TimeoutError, asyncio.TimeoutError) as exc:
         controller.stop_reason = "wall_time_hard_limit"
         controller.budget_exhausted = True
         raise RunControlStop("wall_time_hard_limit") from exc

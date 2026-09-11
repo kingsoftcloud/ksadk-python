@@ -30,9 +30,11 @@ from ksadk.harness.skill_runtime import SkillManifest, SkillRuntime
 from ksadk.harness.spec import (
     CapabilityBinding,
     CapabilityBindings,
+    ExecutionStrategySpec,
     HarnessSpec,
     ModelBinding,
     PromptSpec,
+    SubAgentBinding,
 )
 from ksadk.harness.tools import HarnessTool, load_mcp_tools
 
@@ -48,6 +50,7 @@ async def build_managed_provider_adapter(
     checkpoint_dsn: str | None = None,
     tool_contracts: dict[str, Any] | None = None,
     bundle_root: Path | None = None,
+    execution_policy_resolver: Any = None,
 ) -> ManagedHarnessRuntimeAdapter:
     """Assemble the DSH contributions behind the canonical Harness adapter.
 
@@ -64,7 +67,8 @@ async def build_managed_provider_adapter(
 
     tool_workspace = (
         Path(state_dir) / "tool-workspaces" / hashlib.sha256(agent_name.encode()).hexdigest()
-        if state_dir is not None else workspace_root
+        if state_dir is not None
+        else workspace_root
     )
     if bundle_root is not None and tool_workspace.resolve().is_relative_to(bundle_root.resolve()):
         if any(
@@ -73,13 +77,24 @@ async def build_managed_provider_adapter(
         ):
             raise ValueError("内置 Tool 需要 Bundle 之外的可写 state_dir，不能修改不可变运行包")
     tools, approvals = assemble_python_tools(
-        bundle_root or workspace_root, tool_contracts or {}, workspace_root=tool_workspace,
+        bundle_root or workspace_root,
+        tool_contracts or {},
+        workspace_root=tool_workspace,
         mcp_server_names=frozenset(item.name for item in config.mcp_tools),
     )
     spec = HarnessSpec(
         agent_revision_ref=f"agent-revision://{agent_id}@1",
         model=ModelBinding(profile_ref=f"model-profile://{model_name}@1"),
         prompt=PromptSpec(instructions=config.prompt),
+        sub_agents=tuple(
+            SubAgentBinding.model_validate(item)
+            for item in (tool_contracts or {}).get(
+                "subAgents", (tool_contracts or {}).get("sub_agents", ())
+            )
+        ),
+        execution_strategy=ExecutionStrategySpec(
+            config=dict((tool_contracts or {}).get("execution", {}).get("harnessConfig", {}))
+        ),
         capabilities=CapabilityBindings(
             mcp_bindings=mcp_bindings,
             skill_bindings=tuple(
@@ -118,6 +133,7 @@ async def build_managed_provider_adapter(
         durable=bool(stack and stack.durable),
         shared_across_pods=bool(checkpoint_dsn),
         transports=transports,
+        execution_policy_resolver=execution_policy_resolver,
     )
     adapter._checkpoint_stack = stack  # noqa: SLF001 - 生命周期由激活层托管
     adapter._run_store = stack.run_store if stack is not None else None  # noqa: SLF001
