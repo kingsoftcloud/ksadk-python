@@ -8,6 +8,8 @@ import hmac
 import json
 import os
 import secrets
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1095,6 +1097,32 @@ def create_studio_app(
         if os.path.normcase(record.path) == os.path.normcase(str(initial_service.workspace.root)):
             response.pop("workspaceId", None)
         return response
+
+    @app.post("/api/v1/workspaces:choose")
+    async def choose_workspace_directory():
+        """Open the host folder chooser for a local Web Studio session."""
+        if sys.platform != "darwin":
+            raise StudioError(
+                "WORKSPACE_PICKER_UNAVAILABLE",
+                "当前系统没有可用的原生目录选择器，请输入目录路径",
+                status_code=501,
+            )
+        script = (
+            'tell application "System Events" to set selectedFolder to choose folder '
+            'with prompt "选择 AgentKit Studio 工作区"\n'
+            'POSIX path of selectedFolder'
+        )
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {"path": None, "cancelled": True}
+        path = result.stdout.strip()
+        return {"path": path or None, "cancelled": not bool(path)}
 
     @app.get("/api/v1/workspaces")
     async def list_workspaces():
@@ -2379,7 +2407,13 @@ def create_studio_app(
     register_memory_routes(app, studio)
     register_resource_connection_routes(app, studio)
     register_plugin_routes(app, studio)
-    app.mount("/api/v1", studio.workspace_plugins.api, name="workspace-plugin-api")
+    async def workspace_plugin_api(scope, receive, send):
+        # The plugin registry belongs to the active workspace. Mounting the
+        # initial service registry directly would keep lifecycle/routes pinned
+        # to the first folder after a workspace switch.
+        await studio.active.workspace_plugins.api(scope, receive, send)
+
+    app.mount("/api/v1", workspace_plugin_api, name="workspace-plugin-api")
 
     from ksadk.studio.dsh_application import register_dsh_application
 
