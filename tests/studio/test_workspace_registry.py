@@ -12,6 +12,7 @@ def test_registry_assigns_stable_identity_and_tracks_recent(tmp_path: Path) -> N
     second = registry.open(root / ".")
     assert first.workspace_id == second.workspace_id
     assert registry.list()[0].path == str(root.resolve())
+    assert (home / "workspaces.json").stat().st_mode & 0o077 == 0
 
 
 def test_linked_directory_policy_round_trip_and_remove(tmp_path: Path) -> None:

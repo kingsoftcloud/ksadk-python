@@ -49,6 +49,10 @@ class WorkspaceRegistry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"version": 1, "items": [asdict(i) for i in items]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
         os.replace(tmp, self.path)
 
     def open(self, path: Path | str, *, create: bool = False) -> WorkspaceRecord:
@@ -159,6 +163,10 @@ class LinkedDirectoryPolicy:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"version": 1, "items": [asdict(x) for x in items]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
         os.replace(tmp, self.path)
         return item
 
