@@ -364,8 +364,9 @@ def create_router(application: TeamsApplication) -> APIRouter:
             if item["groupId"] != group_id:
                 raise TeamsError("artifact_forbidden", "文件不属于此团队", status=403)
         artifact_path = Path(item["_path"]).resolve(strict=True)
+        artifact_root = (application.runtime.path.parent / "artifacts").resolve()
         try:
-            artifact_path.relative_to(application.workspace_root)
+            artifact_path.relative_to(artifact_root)
         except ValueError:
             raise TeamsError("artifact_path_forbidden", "文件不属于工作区", status=403) from None
         return FileResponse(
