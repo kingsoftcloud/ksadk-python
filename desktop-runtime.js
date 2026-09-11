@@ -4,6 +4,7 @@ const {randomBytes} = require('node:crypto');
 const {spawn} = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 
 async function reservePort(preferred = 0) {
   const server = net.createServer();
@@ -74,6 +75,7 @@ async function startRuntime({resources, workspace, logPath, preferredPort = 0, e
     // The runtime is inside a signed app bundle. Provider subprocesses must
     // not create __pycache__ files under Contents/Resources after signing.
     PYTHONDONTWRITEBYTECODE: '1',
+    PYTHONPYCACHEPREFIX: path.join(os.tmpdir(), 'agentkit-studio-pycache'),
   };
   delete childEnv.KSADK_STUDIO_NO_SECURITY;
   delete childEnv.PYTHONPATH;
