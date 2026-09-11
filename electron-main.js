@@ -1,4 +1,4 @@
-const {app, BrowserWindow, dialog, Menu, nativeImage} = require('electron');
+const {app, BrowserWindow, dialog, Menu, nativeImage, ipcMain} = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const {startRuntime, requestJson} = require('./desktop-runtime');
@@ -24,6 +24,7 @@ async function chooseWorkspaceForSwitch() {
   const result = await dialog.showOpenDialog({properties: ['openDirectory', 'createDirectory'], title: '打开 AgentKit Studio 工作区', buttonLabel: '打开目录'});
   return result.canceled ? null : result.filePaths[0];
 }
+ipcMain.handle('studio:choose-workspace', chooseWorkspaceForSwitch);
 async function switchWorkspace() {
   const workspace = await chooseWorkspaceForSwitch();
   if (!workspace || !runtime) return;
@@ -56,6 +57,7 @@ async function launch() {
   });
   window = new BrowserWindow({width: 1440, height: 900, title: 'AgentKit Studio', webPreferences: {
     nodeIntegration: false, contextIsolation: true, sandbox: true, partition,
+    preload: path.join(__dirname, 'preload.js'),
   }});
   window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     console.error(`[renderer:${level}] ${message} (${sourceId}:${line})`);

@@ -85,6 +85,7 @@ mkdir -p "$STUDIO_APP_BUNDLE/Contents/Resources/electron" "$STUDIO_APP_BUNDLE/Co
 cp -R "$electron_dist/Electron.app/." "$STUDIO_APP_BUNDLE/Contents/Resources/electron/"
 cp electron-main.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/main.js"
 cp desktop-runtime.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/desktop-runtime.js"
+cp preload.js "$STUDIO_APP_BUNDLE/Contents/Resources/app/preload.js"
 cat > "$STUDIO_APP_BUNDLE/Contents/Resources/app/package.json" <<'JSON'
 {"name":"agentkit-studio-shell","version":"1.0.0","main":"main.js"}
 JSON

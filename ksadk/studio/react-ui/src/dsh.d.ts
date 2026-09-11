@@ -1,6 +1,7 @@
 export {};
 declare global {
   interface Window {
+    studioNative?: { chooseWorkspace?(): Promise<string | null> };
     __STUDIO_DSH_BOOT__?: boolean;
     __STUDIO_APP__?: { mount(container: HTMLElement): Promise<() => void>; mountWorkspace(componentId: string, container: HTMLElement, props?: Record<string, unknown>): Promise<() => void> };
     __STUDIO_DSH__?: {

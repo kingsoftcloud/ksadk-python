@@ -9,12 +9,16 @@ export type WorkspaceContribution = {
 
 /** Navigation comes from live DSH contributions; no domain page is registered here. */
 export function useWorkspaceContributions() {
-  const [pages, setPages] = useState<WorkspaceContribution[]>([]);
+  const [pages, setPages] = useState<WorkspaceContribution[]>([
+    { id: "teams", label: "Agent Teams", pluginId: "builtin", order: 10 },
+  ]);
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     const read = () =>
       setPages(
-        [...(window.__STUDIO_DSH__?.workspacePages?.() || [])].sort(
+        [{ id: "teams", label: "Agent Teams", pluginId: "builtin", order: 10 }, ...(window.__STUDIO_DSH__?.workspacePages?.() || [])]
+          .filter((item, index, all) => all.findIndex(candidate => candidate.id === item.id) === index)
+          .sort(
           (a, b) => (a.order || 0) - (b.order || 0),
         ),
       );

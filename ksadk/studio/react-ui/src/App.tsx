@@ -547,13 +547,9 @@ export default function App() {
         onWorkspaceSwitch={async () => {
           setMobileNavOpen(false);
           try {
-            const response = await apiFetch("/api/v1/workspaces");
-            const data = await response.json() as { items?: Array<{ name: string; path: string }> };
-            const choices = (data.items || []).map(item => `${item.name}: ${item.path}`).join("\n");
-            const path = window.prompt(`选择工作区路径（输入新目录可创建）：\n${choices}`);
+            const path = await window.studioNative?.chooseWorkspace?.();
             if (!path) return;
-            const create = !workspaces.some(item => item.path === path) && window.confirm("目录尚未注册，是否创建 workspace？");
-            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path, create }) });
+            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", body: JSON.stringify({ path, create: true }) });
             if (!opened.ok) throw new Error("workspace open failed");
             window.location.reload();
           } catch {
