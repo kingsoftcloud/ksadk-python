@@ -13,12 +13,13 @@ function preferencesPath() { return path.join(app.getPath('userData'), 'workspac
 function defaultWorkspace() { const root = path.join(app.getPath('userData'), 'default-workspace'); fs.mkdirSync(root, {recursive: true}); return root; }
 function saveWorkspace(workspace) {
   fs.mkdirSync(app.getPath('userData'), {recursive: true});
-  fs.writeFileSync(preferencesPath(), JSON.stringify({workspace}, null, 2), {mode: 0o600});
+  fs.writeFileSync(preferencesPath(), JSON.stringify({version: 1, source: 'user-selection', workspace}, null, 2), {mode: 0o600});
 }
 function savedWorkspace() {
   try {
-    const value = JSON.parse(fs.readFileSync(preferencesPath(), 'utf8')).workspace;
-    return typeof value === 'string' && value ? fs.realpathSync(value) : null;
+    const value = JSON.parse(fs.readFileSync(preferencesPath(), 'utf8'));
+    if (value?.version !== 1 || value?.source !== 'user-selection' || typeof value.workspace !== 'string' || !value.workspace) return null;
+    return fs.realpathSync(value.workspace);
   } catch { return null; }
 }
 async function chooseWorkspace() {
