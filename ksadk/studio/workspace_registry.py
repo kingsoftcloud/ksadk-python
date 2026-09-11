@@ -104,7 +104,7 @@ class WorkspaceRuntimeManager:
             workspace_id = getattr(runtime, "workspace_record", None)
             workspace_id = getattr(workspace_id, "workspace_id", None)
             for run in runtime.event_store.list_runs():
-                item = dict(run)
+                item = run.model_dump(by_alias=True) if hasattr(run, "model_dump") else dict(run)
                 item["workspaceId"] = workspace_id
                 runs.append(item)
         return runs
