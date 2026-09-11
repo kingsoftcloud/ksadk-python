@@ -32,6 +32,8 @@ def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
         def __init__(self, root):
             self.workspace = type("Workspace", (), {"root": Path(root)})()
             self.value = Path(root).name
+            self.event_store = type("Events", (), {"list_runs": lambda self: [{"runId": "r"}]})()
+            self.workspace_record = type("Record", (), {"workspace_id": self.value})()
 
     first = FakeService(tmp_path / "a")
     manager = WorkspaceRuntimeManager(first, FakeService)
@@ -41,3 +43,4 @@ def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
     assert len(manager.services()) == 2
     assert manager.services()[0] is first
     assert record.path.endswith("/b")
+    assert {item["workspaceId"] for item in manager.all_runs()} == {"a", "b"}

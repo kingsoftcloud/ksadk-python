@@ -1746,6 +1746,11 @@ def create_studio_app(
     async def list_runs(session_id: str | None = Query(default=None, alias="sessionId")):
         return {"items": studio.event_store.list_runs(session_id=session_id)}
 
+    @app.get("/api/v1/workspaces/runs")
+    async def list_workspace_runs():
+        """后台入口：聚合所有已打开 workspace 的运行，并保留归属。"""
+        return {"items": studio.all_runs()}
+
     @app.get("/api/v1/runs/{run_id}/events")
     async def run_events(
         run_id: str,

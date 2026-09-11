@@ -94,6 +94,17 @@ class WorkspaceRuntimeManager:
     def services(self):
         return tuple(self._services.values())
 
+    def all_runs(self) -> list[dict]:
+        runs: list[dict] = []
+        for runtime in self._services.values():
+            workspace_id = getattr(runtime, "workspace_record", None)
+            workspace_id = getattr(workspace_id, "workspace_id", None)
+            for run in runtime.event_store.list_runs():
+                item = dict(run)
+                item["workspaceId"] = workspace_id
+                runs.append(item)
+        return runs
+
 
 class LinkedDirectoryPolicy:
     """Persist explicit directory relationships in the private workspace config."""
