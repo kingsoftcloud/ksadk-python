@@ -380,8 +380,10 @@ class StudioDshProviderRegistrationManager:
             installed = {item.name: item for item in bridge.list_plugins()}
             current = installed.get(SHIPPED_CODEX_DSH_PACKAGE)
             if current is None:
-                if marker_payload.get("codexProviderApplied") is True:
-                    return "skipped"
+                # A stale marker only records that an older bootstrap ran; it
+                # is not proof that the package is still present.  Profiles
+                # can be migrated or edited by DSH, so restore the shipped
+                # default whenever the official package has disappeared.
                 current = bridge.install_plugin(str(shipped.root), accept_host_permissions=True)
                 if current.name != SHIPPED_CODEX_DSH_PACKAGE:
                     raise StudioDshProviderRegistrationError(
