@@ -1086,6 +1086,18 @@ def create_studio_app(
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404)
         return {"removed": LinkedDirectoryPolicy(studio.workspace.root).remove(path)}
 
+    @app.get("/api/v1/workspaces/{workspace_id}/linked-directories/authorize")
+    async def authorize_linked_directory(
+        workspace_id: str,
+        path: str,
+        operation: Literal["read", "write"] = "read",
+    ):
+        record = next((r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None)
+        if record is None or os.path.normcase(record.path) != os.path.normcase(str(studio.workspace.root)):
+            raise StudioError("WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404)
+        allowed = LinkedDirectoryPolicy(studio.workspace.root).authorize(path, operation)
+        return {"path": path, "operation": operation, "allowed": allowed}
+
     @app.get("/api/v1/codex/manifest")
     async def get_codex_manifest():
         return studio.codex_manifest_state()
