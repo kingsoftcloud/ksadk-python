@@ -27,6 +27,21 @@ def test_linked_directory_policy_round_trip_and_remove(tmp_path: Path) -> None:
     assert policy.list() == []
 
 
+def test_linked_directory_policy_authorizes_read_and_explicit_write(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    linked = tmp_path / "linked"
+    workspace.mkdir()
+    linked.mkdir()
+    policy = LinkedDirectoryPolicy(workspace)
+    policy.set(linked, "read")
+    assert policy.authorize(workspace / "agent.py", "write")
+    assert policy.authorize(linked / "source.py", "read")
+    assert not policy.authorize(linked / "source.py", "write")
+    policy.set(linked, "write")
+    assert policy.authorize(linked / "source.py", "write")
+    assert not policy.authorize(tmp_path / "outside.txt", "read")
+
+
 def test_runtime_manager_keeps_isolated_services(tmp_path: Path) -> None:
     class FakeService:
         def __init__(self, root):

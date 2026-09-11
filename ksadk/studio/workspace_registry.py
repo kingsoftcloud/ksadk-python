@@ -169,3 +169,15 @@ class LinkedDirectoryPolicy:
         if changed:
             self.path.write_text(json.dumps({"version": 1, "items": [asdict(x) for x in items]}, ensure_ascii=False, indent=2), encoding="utf-8")
         return changed
+
+    def authorize(self, path: Path | str, operation: Literal["read", "write"] = "read") -> bool:
+        """Return whether an explicit file operation is covered by this policy."""
+        target = _canonical(path)
+        workspace_root = self.path.parent.parent.resolve()
+        if target == workspace_root or workspace_root in target.parents:
+            return True
+        for item in self.list():
+            root = _canonical(item.path)
+            if target == root or root in target.parents:
+                return operation == "read" or item.mode == "write"
+        return False
