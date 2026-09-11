@@ -114,6 +114,15 @@ class WorkspaceRuntimeManager:
                 continue
         return None
 
+    def runtime_for_session(self, session_id: str):
+        for runtime in self._services.values():
+            try:
+                if runtime.event_store.list_runs(session_id=session_id):
+                    return runtime
+            except Exception:
+                continue
+        return None
+
     def all_traces(self) -> list[dict]:
         traces: list[dict] = []
         for runtime in self._services.values():

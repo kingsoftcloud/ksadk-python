@@ -1671,7 +1671,10 @@ def create_studio_app(
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
-        await studio.delete_session(session_id)
+        runtime = studio.runtime_for_session(session_id)
+        if runtime is None:
+            raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
+        await runtime.delete_session(session_id)
         return Response(status_code=204)
 
     @app.get("/api/v1/sessions/{session_id}/events")
@@ -1681,7 +1684,10 @@ def create_studio_app(
         invocation_id: str | None = Query(default=None, alias="invocationId"),
         limit: int = Query(default=100, ge=1, le=500),
     ):
-        return await studio.trajectory_page(
+        runtime = studio.runtime_for_session(session_id)
+        if runtime is None:
+            raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
+        return await runtime.trajectory_page(
             session_id,
             before_seq_id=before_seq_id,
             invocation_id=invocation_id,
@@ -1695,10 +1701,13 @@ def create_studio_app(
         after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
         invocation_id: str | None = Query(default=None, alias="invocationId"),
     ):
-        await studio._require_runtime_session(session_id)
+        runtime = studio.runtime_for_session(session_id)
+        if runtime is None:
+            raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
+        await runtime._require_runtime_session(session_id)
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after_seq_id
-        stream = studio.stream_trajectory(
+        stream = runtime.stream_trajectory(
             session_id,
             cursor,
             invocation_id=invocation_id,
