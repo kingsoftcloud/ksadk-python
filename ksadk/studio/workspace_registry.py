@@ -86,8 +86,9 @@ class WorkspaceRegistry:
 class WorkspaceRuntimeManager:
     """Keeps one isolated Studio service per workspace and proxies the active one."""
 
-    def __init__(self, initial, factory) -> None:
+    def __init__(self, initial, factory, *, registry: WorkspaceRegistry | None = None) -> None:
         self._factory = factory
+        self._registry = registry or WorkspaceRegistry()
         self._lock = RLock()
         self._services = {_canonical(initial.workspace.root): initial}
         self._active = _canonical(initial.workspace.root)
@@ -102,7 +103,7 @@ class WorkspaceRuntimeManager:
     def switch(self, path: str | Path, *, create: bool = False):
         root = _canonical(path)
         with self._lock:
-            record = WorkspaceRegistry().open(root, create=create)
+            record = self._registry.open(root, create=create)
             if root not in self._services:
                 self._services[root] = self._factory(root)
             self._active = root

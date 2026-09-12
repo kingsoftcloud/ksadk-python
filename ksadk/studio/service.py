@@ -374,6 +374,7 @@ class StudioService:
         self.run_service.schedule_assistant = StudioScheduleAssistant(self)
         self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
         self._cloud_gateway_override = cloud_gateway
+        self._profile_maintenance = False
         self.cloud = CloudDeploymentService(
             self.workspace,
             gateway=cloud_gateway or self._configured_cloud_gateway(),

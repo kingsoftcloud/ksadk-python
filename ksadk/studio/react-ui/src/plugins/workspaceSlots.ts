@@ -31,11 +31,10 @@ export function useWorkspaceContributions() {
       void apiFetch("/api/v1/plugins/teams/lifecycle")
         .then(response => response.ok ? response.json() : null)
         .then(state => {
-          // The availability flag is the trusted plugin contribution gate;
-          // enabled is allowed to become ready asynchronously while the DSH
-          // host warms up. Opening the page will enter Core on demand.
-          if (state?.available) {
-            setPages([{ id: "teams", label: "Agent Teams", pluginId: "teams", order: 30 }]);
+          // A tab represents a usable contribution, so an installed but
+          // disabled/unhealthy plugin must not leave a dead navigation entry.
+          if (state?.available && state?.enabled && state?.health === "ready") {
+            setPages([{ id: "teams", label: "团队", pluginId: "teams", order: 30 }]);
           } else {
             setPages(current => current.filter(page => page.id !== "teams"));
           }

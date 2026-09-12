@@ -30,6 +30,7 @@ from ksadk.studio.dsh_provider_registration import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
+from ksadk.plugins.dsh_home import default_studio_dsh_home, prepare_studio_dsh_home
 
 
 class _Reasoner:
@@ -49,6 +50,7 @@ class _Reasoner:
 
 def _managed_profile(tmp_path: Path, monkeypatch) -> Path:
     home = tmp_path / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     installed = profile / "node_modules" / "@kingsoftcloud" / "ksadk-harness-provider"
     installed.parent.mkdir(parents=True)
@@ -169,6 +171,7 @@ async def test_client_only_dsh_profile_does_not_block_studio_startup(
     tmp_path: Path, monkeypatch
 ) -> None:
     home = tmp_path / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     profile.mkdir(parents=True)
     installed = profile / "node_modules" / "@example" / "studio-client"
@@ -265,7 +268,9 @@ def test_owned_default_profile_repairs_legacy_hoisted_layout(tmp_path: Path, mon
     monkeypatch.delenv("KSADK_DSH_HOME", raising=False)
     monkeypatch.delenv("KSADK_DSH_PROFILE", raising=False)
     workspace = tmp_path / "workspace"
-    profile = workspace / ".agentkit/dsh-home/profiles/web"
+    home = default_studio_dsh_home(workspace)
+    prepare_studio_dsh_home(home)
+    profile = home / "profiles/web"
     profile.mkdir(parents=True)
     (profile / "pnpm-workspace.yaml").write_text("nodeLinker: hoisted\n")
     calls = []
@@ -276,7 +281,7 @@ def test_owned_default_profile_repairs_legacy_hoisted_layout(tmp_path: Path, mon
 
     manager = StudioDshProviderRegistrationManager(
         workspace,
-        dsh_home=workspace / ".agentkit/dsh-home",
+        dsh_home=home,
         profile="web",
         dsh_command=("dsh",),
     )

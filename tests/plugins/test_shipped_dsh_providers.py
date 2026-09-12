@@ -43,6 +43,7 @@ def test_official_providers_share_one_fixed_descriptor_host() -> None:
 
     assert codex[:-1] == harness[:-1]
     assert codex[-2] == "ksadk.plugins.providers.dsh_descriptor_host"
+    assert codex[1] == "-B"
     assert codex[-1] == "codex"
     assert harness[-1] == "harness"
     assert shipped_codex_dsh_bundle().package_name == SHIPPED_CODEX_DSH_PACKAGE

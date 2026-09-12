@@ -243,29 +243,37 @@ def create_studio_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         lazy_desktop_start = os.environ.get("KSADK_STUDIO_LAZY_START") == "1"
-        warmup: asyncio.Task[None] | None = None
-        try:
-            await studio.start(wait_for_dsh=not lazy_desktop_start)
+        warmups: set[asyncio.Task[None]] = set()
 
-            async def warmup_optional_plugins() -> None:
+        def schedule_runtime_warmup(runtime: StudioService) -> None:
+            async def warm_runtime() -> None:
                 try:
-                    await studio.start()
-                    await studio.active.teams_installation.enable()
+                    await runtime.start()
+                    await runtime.teams_installation.enable()
                 except Exception:
                     # Teams is optional when a host has no usable DSH toolchain.
                     pass
 
+            task = asyncio.create_task(warm_runtime())
+            warmups.add(task)
+            task.add_done_callback(warmups.discard)
+
+        try:
+            app.state.runtime_warmups = schedule_runtime_warmup
+            await studio.start(wait_for_dsh=not lazy_desktop_start)
             if lazy_desktop_start:
-                warmup = asyncio.create_task(warmup_optional_plugins())
+                schedule_runtime_warmup(studio.active)
             else:
-                await warmup_optional_plugins()
+                await studio.active.teams_installation.enable()
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
         finally:
-            if warmup is not None:
-                warmup.cancel()
-                await asyncio.gather(warmup, return_exceptions=True)
+            app.state.runtime_warmups = None
+            for task in tuple(warmups):
+                task.cancel()
+            if warmups:
+                await asyncio.gather(*warmups, return_exceptions=True)
             for runtime in studio.services():
                 await runtime.scheduler.stop()
                 await runtime.aclose()
@@ -363,7 +371,7 @@ def create_studio_app(
 
     static_root = Path(__file__).with_name("static")
     shared_web = StudioSharedWebBridge(studio)
-    cloud_web = CloudSharedWebBridge(studio.cloud)
+    cloud_web = CloudSharedWebBridge(studio)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
 
@@ -1113,7 +1121,13 @@ def create_studio_app(
             # for the optional toolchain. Without this step the active service
             # has no provider snapshot, so the first Codex/Teams action would
             # incorrectly report "Provider 未注册" until a process restart.
-            await studio.active.start(wait_for_dsh=False)
+            runtime = studio.active
+            await runtime.start(wait_for_dsh=False)
+            # Warm the selected runtime itself.  Capturing ``runtime`` avoids
+            # a race where a later switch enables Teams in the wrong workspace.
+            lifespan_state = getattr(app.state, "runtime_warmups", None)
+            if lifespan_state is not None:
+                lifespan_state(runtime)
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         response = {

@@ -76,8 +76,16 @@ def _timestamp(value: Any) -> str:
 class CloudSharedWebBridge:
     """Shared-web action semantics backed by the cloud-chat proxy."""
 
-    def __init__(self, cloud: CloudDeploymentService) -> None:
-        self.cloud = cloud
+    def __init__(self, cloud: CloudDeploymentService | Any) -> None:
+        # The desktop can keep several workspace runtimes alive while the
+        # active workspace changes.  Resolve the cloud service per request so
+        # an awaited call cannot continue against the previous workspace.
+        self._cloud_or_manager = cloud
+
+    @property
+    def cloud(self) -> CloudDeploymentService:
+        active = getattr(self._cloud_or_manager, "active", None)
+        return getattr(active, "cloud", self._cloud_or_manager)
 
     @staticmethod
     def require_session_id(payload: dict[str, Any]) -> str:
