@@ -264,7 +264,12 @@ def create_studio_app(
             if lazy_desktop_start:
                 schedule_runtime_warmup(studio.active)
             else:
-                await studio.active.teams_installation.enable()
+                try:
+                    await studio.active.teams_installation.enable()
+                except Exception:
+                    # An unavailable optional DSH authority must not prevent
+                    # the core Studio API from starting.
+                    pass
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
