@@ -235,6 +235,7 @@ class StudioService:
         self._started = False
         self._dsh_startup_task: asyncio.Task[None] | None = None
         self._dsh_ready = False
+        self._teams_bootstrapping = False
         self._closed = False
         self.configuration = WorkspaceConfiguration(
             self.workspace, overrides=configuration_overrides
@@ -402,6 +403,22 @@ class StudioService:
             task = self._dsh_startup_task
         if wait_for_dsh and task is not None:
             await asyncio.shield(task)
+            # Complete the optional official plugin bootstrap before callers
+            # resolve/build an Agent.  Enabling Teams contributes its provider
+            # registration to the immutable Codex Bundle fingerprint; doing
+            # this after the first build would make the same Agent resolve to
+            # a different Build during the API lifespan startup.
+            teams = getattr(self, "teams_installation", None)
+            if teams is not None and not self._teams_bootstrapping:
+                try:
+                    self._teams_bootstrapping = True
+                    await teams.enable()
+                except Exception:
+                    # DSH/Teams is optional on hosts without a usable local
+                    # authority.  Core Studio startup remains available.
+                    pass
+                finally:
+                    self._teams_bootstrapping = False
 
     async def _initialize_dsh(self) -> None:
         async with self._start_lock:
