@@ -146,6 +146,7 @@ PUBLIC_TEST_FILES = {
     "tests/packaging/test_phase2_release_candidate_gate.py",
     "tests/packaging/test_phase2_release_preflight.py",
     "tests/packaging/test_write_build_provenance.py",
+    "tests/packaging/test_teams_distribution.py",
     "tests/plugins/__init__.py",
     "tests/plugins/test_codex_manifest.py",
     "tests/plugins/test_codex_plugin_bridge.py",
