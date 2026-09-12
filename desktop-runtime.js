@@ -17,7 +17,7 @@ async function reservePort(preferred = 0) {
   return port;
 }
 
-function requestJson(port, route, {method = 'GET', data, cookie, csrf} = {}) {
+function requestJson(port, route, {method = 'GET', data, cookie, csrf, timeoutMs = 10000} = {}) {
   return new Promise((resolve, reject) => {
     const body = data === undefined ? undefined : JSON.stringify(data);
     const headers = {};
@@ -35,7 +35,7 @@ function requestJson(port, route, {method = 'GET', data, cookie, csrf} = {}) {
         catch { reject(new Error('Invalid JSON from ' + route)); }
       });
     });
-    req.setTimeout(2000, () => req.destroy(new Error('Studio request timed out')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('Studio request timed out')));
     req.on('error', reject);
     req.end(body);
   });

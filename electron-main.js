@@ -52,7 +52,7 @@ async function switchWorkspace() {
     // Python/DSH stack; the current Studio session and cookie remain valid.
     const opened = await requestJson(runtime.port, '/api/v1/workspaces:open', {
       method: 'POST', data: {path: workspace, create: true},
-      cookie: runtime.cookie, csrf: runtime.csrf,
+      cookie: runtime.cookie, csrf: runtime.csrf, timeoutMs: 30000,
     });
     if (opened.status !== 200) {
       throw new Error(opened.body?.error?.message || `打开工作区失败（${opened.status}）`);
@@ -67,19 +67,7 @@ async function switchWorkspace() {
   } finally { switching = false; }
 }
 ipcMain.handle('studio:open-workspace', switchWorkspace);
-async function launch() {
-  const icon = nativeImage.createFromPath(path.join(resources, 'AgentKitStudio.icns'));
-  if (!icon.isEmpty() && app.dock) app.dock.setIcon(icon);
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    {label: 'AgentKit Studio', submenu: [{role: 'about'}, {type: 'separator'}, {role: 'quit'}]},
-    {label: '工作区', submenu: [{label: '打开工作区…', accelerator: 'CmdOrCtrl+O', click: switchWorkspace}]},
-    {role: 'editMenu'}, {role: 'viewMenu'}, {role: 'windowMenu'},
-  ]));
-  const workspace = await chooseWorkspace();
-  const logPath = path.join(app.getPath('logs'), 'studio-backend.log');
-  runtime = await startRuntime({resources, workspace, logPath, preferredPort: Number(process.env.STUDIO_APP_PORT || 0)});
-  if (workspace !== defaultWorkspace()) saveWorkspace(workspace);
-  watchRuntime(runtime);
+function createWindow() {
   window = new BrowserWindow({width: 1440, height: 900, title: 'AgentKit Studio', webPreferences: {
     nodeIntegration: false, contextIsolation: true, sandbox: true, partition,
     preload: path.join(__dirname, 'preload.js'),
@@ -92,8 +80,30 @@ async function launch() {
   });
   window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   window.webContents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== new URL(runtime.url).origin) event.preventDefault();
+    if (runtime && new URL(url).origin !== new URL(runtime.url).origin) event.preventDefault();
   });
+  return window;
+}
+async function showLoadingWindow() {
+  await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html>
+    <meta charset="utf-8"><style>html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f5f7fa;color:#1f2937;font:16px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card{text-align:center}.mark{margin:auto auto 18px;width:56px;height:56px;border-radius:16px;background:#1683e8;color:#fff;display:grid;place-items:center;font-size:30px;font-weight:700;box-shadow:0 8px 24px #1683e844}.hint{color:#64748b;margin-top:8px}</style>
+    <main class="card"><div class="mark">K</div><strong>AgentKit Studio</strong><div class="hint">正在启动本地运行时…</div></main>`));
+}
+async function launch() {
+  const icon = nativeImage.createFromPath(path.join(resources, 'AgentKitStudio.icns'));
+  if (!icon.isEmpty() && app.dock) app.dock.setIcon(icon);
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {label: 'AgentKit Studio', submenu: [{role: 'about'}, {type: 'separator'}, {role: 'quit'}]},
+    {label: '工作区', submenu: [{label: '打开工作区…', accelerator: 'CmdOrCtrl+O', click: switchWorkspace}]},
+    {role: 'editMenu'}, {role: 'viewMenu'}, {role: 'windowMenu'},
+  ]));
+  createWindow();
+  await showLoadingWindow();
+  const workspace = await chooseWorkspace();
+  const logPath = path.join(app.getPath('logs'), 'studio-backend.log');
+  runtime = await startRuntime({resources, workspace, logPath, preferredPort: Number(process.env.STUDIO_APP_PORT || 0)});
+  if (workspace !== defaultWorkspace()) saveWorkspace(workspace);
+  watchRuntime(runtime);
   await window.loadURL(runtime.url);
 }
 if (!app.requestSingleInstanceLock()) app.quit();
