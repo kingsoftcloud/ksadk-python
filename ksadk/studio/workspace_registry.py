@@ -139,6 +139,17 @@ class WorkspaceRuntimeManager:
                     return runtime
             except Exception:
                 continue
+            # A newly created local session has no Run yet, but it is still a
+            # valid routing target for replay and SSE.  Consult the local
+            # session index before declaring it missing.
+            try:
+                session = runtime.session_service._get_session_sync(  # type: ignore[attr-defined]
+                    session_id, include_events=False
+                )
+                if session is not None:
+                    return runtime
+            except Exception:
+                continue
         return None
 
     def runtime_for_operation(self, operation_id: str):
