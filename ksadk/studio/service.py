@@ -235,7 +235,6 @@ class StudioService:
         self._started = False
         self._dsh_startup_task: asyncio.Task[None] | None = None
         self._dsh_ready = False
-        self._teams_bootstrapping = False
         self._closed = False
         self.configuration = WorkspaceConfiguration(
             self.workspace, overrides=configuration_overrides
@@ -385,6 +384,7 @@ class StudioService:
         self.evaluation_storage = EvaluationStorage(self.workspace.resolve(".agentkit/evaluations"))
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
+        self._current_codex_builds: dict[str, CodexBuildRecord] = {}
 
     async def start(self, *, wait_for_dsh: bool = True) -> None:
         """Start local state and optionally wait for the managed DSH profile."""
@@ -403,22 +403,6 @@ class StudioService:
             task = self._dsh_startup_task
         if wait_for_dsh and task is not None:
             await asyncio.shield(task)
-            # Complete the optional official plugin bootstrap before callers
-            # resolve/build an Agent.  Enabling Teams contributes its provider
-            # registration to the immutable Codex Bundle fingerprint; doing
-            # this after the first build would make the same Agent resolve to
-            # a different Build during the API lifespan startup.
-            teams = getattr(self, "teams_installation", None)
-            if teams is not None and not self._teams_bootstrapping:
-                try:
-                    self._teams_bootstrapping = True
-                    await teams.enable()
-                except Exception:
-                    # DSH/Teams is optional on hosts without a usable local
-                    # authority.  Core Studio startup remains available.
-                    pass
-                finally:
-                    self._teams_bootstrapping = False
 
     async def _initialize_dsh(self) -> None:
         async with self._start_lock:
@@ -942,14 +926,24 @@ class StudioService:
         await self.start()
         if self.is_codex_agent(agent_id):
             self.codex_agent_detail(agent_id)
+            manifest_snapshot = self.codex_manifests.load(agent_id)
+            cached = self._current_codex_builds.get(agent_id)
+            if cached is not None and cached.manifest_sha256 == manifest_snapshot.manifest_sha256:
+                try:
+                    return self.codex_builds.get(cached.id)
+                except StudioError:
+                    self._current_codex_builds.pop(agent_id, None)
             builds = [
                 record
                 for record in self.codex_builds.list()
                 if record.agent_name == agent_id and self.codex_builder.is_current(record)
             ]
             if builds:
+                self._current_codex_builds[agent_id] = builds[0]
                 return builds[0]
-            return await asyncio.to_thread(self.codex_builder.build, agent_id)
+            built = await asyncio.to_thread(self.codex_builder.build, agent_id)
+            self._current_codex_builds[agent_id] = built
+            return built
         draft = self.drafts.get(agent_id)
         composition_required = self.plugin_compositions.required_for(draft)
         resources_required = resource_build_required(draft)
@@ -1256,12 +1250,14 @@ class StudioService:
         name: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.create(
+        created = self.codex_agents.create(
             agent_id=agent_id,
             spec=spec,
             name=name,
             labels=labels,
         )
+        self._current_codex_builds.pop(agent_id, None)
+        return created
 
     def update_codex_agent(
         self,
@@ -1271,15 +1267,18 @@ class StudioService:
         expected_revision: int,
         name: str | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.update(
+        updated = self.codex_agents.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
             name=name,
         )
+        self._current_codex_builds.pop(agent_id, None)
+        return updated
 
     def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
         self.codex_agents.delete(agent_id, purge=purge)
+        self._current_codex_builds.pop(agent_id, None)
 
     def codex_agent_detail(self, agent_id: str | None = None) -> dict:
         return self.codex_agents.detail(agent_id)
