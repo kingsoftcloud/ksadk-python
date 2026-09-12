@@ -64,7 +64,9 @@ class StudioScheduledKernelRegistry(StudioBuildKernelRegistry):
         await self.ensure_session(
             entry.target.build_id,
             command.session_id,
-            command.tenant_id,
+            # Studio sessions are owned by the authenticated local principal;
+            # the scheduler tenant is an authority scope, not a user id.
+            "local-user",
             title=f"定时任务 · {prompt[:40]}" if has_prompt else None,
             metadata={
                 "title_source": "scheduler",
