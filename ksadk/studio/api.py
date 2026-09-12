@@ -249,15 +249,9 @@ def create_studio_app(
             async def warm_runtime() -> None:
                 try:
                     await runtime.start()
-                    # A workspace with immutable Builds already has a bound
-                    # provider contract.  Re-registering an optional plugin
-                    # during desktop startup would invalidate that contract
-                    # and make the first Scheduler/Chat request fail.  Fresh
-                    # workspaces still receive the default Teams bootstrap.
-                    if not runtime.codex_builds.list() and not runtime.builds.list():
-                        await runtime.teams_installation.enable()
                 except Exception:
-                    # Teams is optional when a host has no usable DSH toolchain.
+                    # Runtime warmup is best effort; core Studio remains usable
+                    # while optional DSH capability discovery is unavailable.
                     pass
 
             task = asyncio.create_task(warm_runtime())
