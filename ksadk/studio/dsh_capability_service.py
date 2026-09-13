@@ -292,8 +292,31 @@ class StudioDshCapabilityService:
                     "DSH capability service 已关闭",
                     status_code=503,
                 )
+            # This check is used by the HTTP entry point only to choose the
+            # initial document.  Starting a Node/DSH bridge here made every
+            # fresh page and workspace switch wait several seconds.  The
+            # managed state file is the same source consumed by
+            # ``DshProfilePluginBridge.list_plugins``; read it directly and
+            # fall back to the validated bridge only for legacy/incomplete
+            # profiles.
+            fast = self._profile_has_enabled_plugins_from_state()
+            if fast is not None:
+                return fast
             command = await asyncio.to_thread(self._resolve_command)
             return await asyncio.to_thread(self._profile_has_enabled_plugins, command)
+
+    def _profile_has_enabled_plugins_from_state(self) -> bool | None:
+        """Return enabled state without invoking npm/Node, or ``None`` if unavailable."""
+        manifest_path = self._dsh_home / "profiles" / self._profile / ".ksadk-dsh-plugins.json"
+        try:
+            state = json.loads(manifest_path.read_text(encoding="utf-8"))
+            order = state.get("order")
+            disabled = set(state.get("disabled") or ())
+            if not isinstance(order, list) or not all(isinstance(item, str) for item in order):
+                return None
+            return any(item not in disabled for item in order)
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+            return None
 
     def capture_resource_build_snapshot(self) -> DshProfileBuildSnapshot:
         """Capture immutable Profile inputs for a caller-owned Build staging area.

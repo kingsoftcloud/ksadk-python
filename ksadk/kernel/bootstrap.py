@@ -571,9 +571,7 @@ class AgentKernelRuntime:
                 exc,
             )
         try:
-            await self.recovery.settle_interrupted(
-                self.config.agent_instance_id, lease, session_id=session_id
-            )
+            await self.recovery.settle_interrupted(self.config.agent_instance_id, lease)
             # 主恢复失败但 durable interrupted 兜底收口成功：半恢复状态，
             # 运维需要可见（事件流里会出现确定性的 interrupted 收口）。
             logger.warning(
@@ -791,9 +789,7 @@ def build_agent_kernel_runtime(
                 tenant_id=session_service.tenant_id,
                 workspace_id=session_service.workspace_id,
             )
-            kernel_store: AgentKernelStore = PostgresAgentKernelStore(
-                pool, event_log, tenant_id=session_service.tenant_id
-            )
+            kernel_store: AgentKernelStore = PostgresAgentKernelStore(pool, event_log)
             # typed RuntimeEvent 写路径走 fenced store：每个
             # ActivationWriteGuard append 在同一事务验证 activation 行。
             events = PostgresFencedSessionEventStore(kernel_store)  # type: ignore[arg-type]
@@ -1002,9 +998,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
             tenant_id=session_service.tenant_id,
             workspace_id=session_service.workspace_id,
         )
-        store: AgentKernelStore = PostgresAgentKernelStore(
-            pool, event_log, tenant_id=session_service.tenant_id, owns_pool=True
-        )
+        store: AgentKernelStore = PostgresAgentKernelStore(pool, event_log, owns_pool=True)
         await store.ensure_schema()
         session_events: Any = PostgresFencedSessionEventStore(store)
         nonce_store: Any = PostgresNonceStore(pool)

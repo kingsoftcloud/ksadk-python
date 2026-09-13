@@ -240,14 +240,12 @@ class KsADKHarnessProviderRuntime:
         reasoner: HarnessReasoner,
         state_dir: str | None = None,
         checkpoint_dsn: str | None = None,
-        execution_policy_resolver: Any = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
         self._reasoner = reasoner
         self._state_dir = state_dir
         self._checkpoint_dsn = checkpoint_dsn
-        self._execution_policy_resolver = execution_policy_resolver
         self._ready = False
         self._disposed = False
         self._last_inventory: HarnessProviderInventory | None = None
@@ -364,7 +362,6 @@ class KsADKHarnessProviderRuntime:
                 mcp_cleanup=mcp_cleanup.pop_all(),
                 state_dir=self._state_dir,
                 checkpoint_dsn=self._checkpoint_dsn,
-                execution_policy_resolver=self._execution_policy_resolver,
             )
 
 
@@ -406,7 +403,6 @@ class KsADKHarnessProviderFactory:
             reasoner=reasoner,
             state_dir=str(state_dir) if state_dir else None,
             checkpoint_dsn=str(checkpoint_dsn) if checkpoint_dsn else None,
-            execution_policy_resolver=services.get("execution_policy_resolver"),
         )
         return self.runtime
 
@@ -426,7 +422,6 @@ class KsADKHarnessActivation:
         inventory: HarnessProviderInventory,
         state_dir: str | None = None,
         checkpoint_dsn: str | None = None,
-        execution_policy_resolver: Any = None,
         mcp_cleanup: AsyncExitStack | None = None,
     ) -> None:
         self._bundle = bundle
@@ -440,7 +435,6 @@ class KsADKHarnessActivation:
         self._inventory = inventory
         self._state_dir = state_dir
         self._checkpoint_dsn = checkpoint_dsn
-        self._execution_policy_resolver = execution_policy_resolver
         self._checkpoint_stack: Any | None = None
         self._mcp_cleanup = mcp_cleanup
         self._mcp_cleanup_lock = asyncio.Lock()
@@ -536,7 +530,6 @@ class KsADKHarnessActivation:
                 bundle_root=self._bundle.root,
                 state_dir=self._state_dir,
                 checkpoint_dsn=self._checkpoint_dsn,
-                execution_policy_resolver=self._execution_policy_resolver,
             )
             self._checkpoint_stack = getattr(self._kernel_adapter, "_checkpoint_stack", None)
         return self._kernel_adapter

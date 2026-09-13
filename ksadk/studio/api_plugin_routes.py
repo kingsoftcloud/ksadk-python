@@ -546,10 +546,8 @@ def _dsh_error(error: Exception) -> StudioError:
 def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     """Register only DSH Profile and Codex App Server lifecycle routes."""
 
-    codex_home, codex_mode = _studio_codex_home(studio)
-    dsh_home, dsh_profile, dsh_command, dsh_mode = _studio_dsh_options(studio)
-
     def public_dsh(item: DshPluginInventory, host: DshBridgeHost) -> dict[str, Any]:
+        _, _, _, dsh_mode = _studio_dsh_options(studio.active)
         return _public_dsh_inventory(
             item,
             host=host,
@@ -558,6 +556,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
         )
 
     def call_dsh(operation: Callable[[DshProfilePluginBridge], Any], *, write: bool = False) -> Any:
+        dsh_home, dsh_profile, dsh_command, _ = _studio_dsh_options(studio.active)
         try:
             # Even a read-only bridge creates its synchronization directory.
             # Fence an empty home first so that lockfile cannot make our own
@@ -603,6 +602,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     async def list_codex_plugins(
         installed_only: bool = Query(default=False), force_refetch: bool = Query(default=False)
     ):
+        codex_home, codex_mode = _studio_codex_home(studio.active)
         try:
             async with CodexAppServerPluginBridge(codex_home=codex_home) as bridge:
                 items = await bridge.list_plugins(force_refetch=force_refetch)
@@ -632,6 +632,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     async def get_codex_plugin(
         plugin_id: str, marketplace_name: str | None = Query(default=None, max_length=256)
     ):
+        codex_home, codex_mode = _studio_codex_home(studio.active)
         try:
             async with CodexAppServerPluginBridge(codex_home=codex_home) as bridge:
                 detail = await bridge.read_plugin(plugin_id, marketplace_name=marketplace_name)
@@ -647,6 +648,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.post("/api/v1/plugin-ecosystems/codex/plugins/{plugin_id}:snapshot")
     async def snapshot_codex_plugin(plugin_id: str, payload: CodexPluginSnapshotRequest):
+        codex_home, codex_mode = _studio_codex_home(studio.active)
         """Explicitly admit already-installed host bytes into the workspace store."""
 
         try:
@@ -673,6 +675,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.post("/api/v1/plugin-ecosystems/codex/plugins/{plugin_id}:install")
     async def install_codex_plugin(plugin_id: str, payload: CodexPluginInstallRequest):
+        codex_home, codex_mode = _studio_codex_home(studio.active)
         if not payload.accept_undeclared_permissions:
             raise _codex_error(CodexPluginApprovalRequired("approval required"))
         try:
@@ -757,6 +760,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.delete("/api/v1/plugin-ecosystems/codex/plugins/{plugin_id}", status_code=204)
     async def uninstall_codex_plugin(plugin_id: str):
+        codex_home, codex_mode = _studio_codex_home(studio.active)
         try:
             async with CodexAppServerPluginBridge(codex_home=codex_home) as bridge:
                 await bridge.uninstall_plugin(plugin_id)
@@ -766,6 +770,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.get("/api/v1/plugin-ecosystems/dsh/plugins")
     async def list_dsh_plugins():
+        dsh_home, dsh_profile, _, dsh_mode = _studio_dsh_options(studio.active)
         try:
             host, items = await asyncio.to_thread(call_dsh, lambda bridge: bridge.list_plugins())
             return {
@@ -789,6 +794,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.get("/api/v1/plugin-ecosystems/dsh/profile")
     async def get_dsh_profile_projection():
+        _, dsh_profile, _, dsh_mode = _studio_dsh_options(studio.active)
         host, projection = await asyncio.to_thread(
             call_dsh, lambda bridge: bridge.project_profile(), write=True,
         )

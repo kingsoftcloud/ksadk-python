@@ -145,7 +145,10 @@ def shipped_dsh_host_command(
     executable = str(python_executable or sys.executable).strip()
     if not executable or "\x00" in executable:
         raise PluginHostError(spec.error_code("host_invalid"), "Python host executable is invalid")
-    return executable, "-m", "ksadk.plugins.providers.dsh_descriptor_host", spec.key
+    # The descriptor host is launched as a child of the signed desktop
+    # runtime.  ``-B`` keeps Python from creating __pycache__ files inside the
+    # app bundle (which would invalidate its code signature after launch).
+    return executable, "-B", "-m", "ksadk.plugins.providers.dsh_descriptor_host", spec.key
 
 
 class _ExecutionRuntime(Protocol):

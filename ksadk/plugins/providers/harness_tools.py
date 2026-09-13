@@ -72,8 +72,7 @@ def _supervised_script(script: str) -> str:
     Cooperative cleanup in the parent cannot run after a hard kill. This is
     lifecycle cleanup for trusted host tools, not a sandbox or an undo promise.
     """
-    return (
-        f"""
+    return f"""
 import os, signal, threading, time
 _supervisor_pid = {os.getpid()}
 def _check_supervisor():
@@ -85,9 +84,7 @@ def _watch_supervisor():
         time.sleep(0.05)
 _check_supervisor()
 threading.Thread(target=_watch_supervisor, daemon=True).start()
-"""
-        + script
-    )
+""" + script
 
 
 def validate_tool_executor(contract: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -126,10 +123,7 @@ def _plain(value: Any) -> Any:
 
 
 def assemble_python_tools(
-    root: Path,
-    resolved: dict[str, Any],
-    *,
-    workspace_root: Path | None = None,
+    root: Path, resolved: dict[str, Any], *, workspace_root: Path | None = None,
     mcp_server_names: frozenset[str] = frozenset(),
 ):
     """Load descriptors only; source code runs after the engine's approval gate."""
@@ -137,8 +131,7 @@ def assemble_python_tools(
     approvals: set[str] = set()
     granted = set(resolved.get("security", {}).get("allowedPermissions", []))
     bound_mcp = {
-        item.get("name")
-        for item in resolved.get("capabilities", {}).get("mcpServers", ())
+        item.get("name") for item in resolved.get("capabilities", {}).get("mcpServers", ())
         if item.get("enabled", True)
     }
     for contract in resolved.get("capabilities", {}).get("tools", []):
@@ -190,43 +183,28 @@ def assemble_python_tools(
             if descriptor is None:
                 command = [_EXECUTE, str(path), contract["callableName"]]
             else:
-                # Trusted SDK code only. Approval is owned by the Managed Loop;
-                # do not ask a second time inside the builtin gateway.
-                from ksadk.harness.execution_policy import current_execution_policy
                 from ksadk.runtime_context import get_current_tool_execution_context_or_default
                 from ksadk.toolsets.workspace_identity import identity_workspace_root
 
-                policy = current_execution_policy()
-                effective_workspace = (
-                    policy.workspace_root
-                    if policy and policy.workspace_root is not None
-                    else workspace_root or root
-                )
-                execution_root = effective_workspace.resolve()
+                # Trusted SDK code only. Approval is owned by the Managed Loop;
+                # do not ask a second time inside the builtin gateway.
+                execution_root = (workspace_root or root).resolve()
                 execution_root.mkdir(parents=True, exist_ok=True)
                 env = dict(
-                    os.environ,
-                    KSADK_TOOL_APPROVAL_MODE="full",
+                    os.environ, KSADK_TOOL_APPROVAL_MODE="full",
                     KSADK_PROJECT_DIR=str(execution_root),
                     AGENTENGINE_UI_DIR=str(execution_root / ".harness-tools" / "ui"),
                 )
-                # The host policy already supplies the authorized Run scope.
-                # Keep relative file paths identical across builtin and host
-                # artifact tools; a second nested scope breaks that contract.
-                scoped_root = (
-                    execution_root
-                    if policy and policy.workspace_root is not None
-                    else identity_workspace_root(
-                        effective_workspace / ".harness-tools" / "workspace"
-                    ).resolve()
-                )
+                scoped_root = identity_workspace_root(
+                    (workspace_root or root) / ".harness-tools" / "workspace"
+                ).resolve()
                 command = [
                     _EXECUTE_BUILTIN,
                     str(Path(__file__).resolve().parents[3]),
                     str(scoped_root),
                     contract["name"],
                     str(
-                        effective_workspace
+                        (workspace_root or root)
                         / ".harness-tools"
                         / "state"
                         / (hashlib.sha256(str(scoped_root).encode()).hexdigest() + ".sqlite")
@@ -247,26 +225,22 @@ def assemble_python_tools(
                 env=env,
                 start_new_session=True,
             )
-            async def exchange():
-                process.stdin.write(json.dumps(arguments).encode())
-                await process.stdin.drain()
-                process.stdin.close()
-                output = bytearray()
-                while chunk := await process.stdout.read(65536):
-                    output.extend(chunk)
-                    if len(output) > 1_048_576:
-                        raise ValueError("Tool 输出超过 1 MiB 限制")
-                await process.wait()
-                if process.returncode:
-                    raise RuntimeError(
-                        f"Tool {contract['name']} 执行失败，请检查参数与运行环境"
-                    )
-                return json.loads(output)
-
             try:
-                return await asyncio.wait_for(
-                    exchange(), timeout=contract.get("timeoutSeconds", 20)
-                )
+                async with asyncio.timeout(contract.get("timeoutSeconds", 20)):
+                    process.stdin.write(json.dumps(arguments).encode())
+                    await process.stdin.drain()
+                    process.stdin.close()
+                    output = bytearray()
+                    while chunk := await process.stdout.read(65536):
+                        output.extend(chunk)
+                        if len(output) > 1_048_576:
+                            raise ValueError("Tool 输出超过 1 MiB 限制")
+                    await process.wait()
+                    if process.returncode:
+                        raise RuntimeError(
+                            f"Tool {contract['name']} 执行失败，请检查参数与运行环境"
+                        )
+                    return json.loads(output)
             finally:
                 if process.returncode is None:
                     os.killpg(process.pid, signal.SIGKILL)

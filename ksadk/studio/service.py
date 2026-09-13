@@ -155,6 +155,7 @@ from ksadk.studio.templates import (
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
+from ksadk.studio.workspace_registry import WorkspaceRegistry
 
 _T = TypeVar("_T")
 
@@ -199,6 +200,8 @@ class StudioService:
             )
         self.workspace = Workspace(root)
         self.workspace.initialize()
+        self.workspace_registry = WorkspaceRegistry()
+        self.workspace_record = self.workspace_registry.open(self.workspace.root)
         self._startup_provider_manifests = provider_manifests
         self._startup_provider_factories = provider_factories
         self._active_provider_manifests = dict(provider_manifests)
@@ -230,8 +233,9 @@ class StudioService:
             )
         self._start_lock = asyncio.Lock()
         self._started = False
+        self._dsh_startup_task: asyncio.Task[None] | None = None
+        self._dsh_ready = False
         self._closed = False
-        self._profile_maintenance = False
         self.configuration = WorkspaceConfiguration(
             self.workspace, overrides=configuration_overrides
         )
@@ -370,6 +374,7 @@ class StudioService:
         self.run_service.schedule_assistant = StudioScheduleAssistant(self)
         self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
         self._cloud_gateway_override = cloud_gateway
+        self._profile_maintenance = False
         self.cloud = CloudDeploymentService(
             self.workspace,
             gateway=cloud_gateway or self._configured_cloud_gateway(),
@@ -379,15 +384,31 @@ class StudioService:
         self.evaluation_storage = EvaluationStorage(self.workspace.resolve(".agentkit/evaluations"))
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
+        self._current_codex_builds: dict[str, CodexBuildRecord] = {}
 
-    async def start(self) -> None:
-        """Bind ready managed DSH registrations before build or execution."""
-
+    async def start(self, *, wait_for_dsh: bool = True) -> None:
+        """Start local state and optionally wait for the managed DSH profile."""
+        # Desktop workspace switching must not queue behind an in-flight DSH
+        # discovery task.  The service is already usable while that optional
+        # task finishes in the background; callers that explicitly request
+        # readiness still await the task below.
+        if self._started and not wait_for_dsh:
+            return
         async with self._start_lock:
             self._ensure_open()
-            if self._started:
+            if not self._started:
+                await self.scheduler_runtimes.start()
+                self._started = True
+                self._dsh_startup_task = asyncio.create_task(self._initialize_dsh())
+            task = self._dsh_startup_task
+        if wait_for_dsh and task is not None:
+            await asyncio.shield(task)
+
+    async def _initialize_dsh(self) -> None:
+        async with self._start_lock:
+            self._ensure_open()
+            if self._dsh_ready:
                 return
-            await self.scheduler_runtimes.start()
             await self._bootstrap_official_dsh_defaults()
             manifests, factories, manager_refs = await self._provider_snapshot(refresh=False)
             self.plugin_compositions.replace_provider_registrations(manifests)
@@ -396,7 +417,7 @@ class StudioService:
             manager = self._dsh_provider_registration_manager
             if manager is not None and manager_refs is not None:
                 manager.mark_bound(manager_refs)
-            self._started = True
+            self._dsh_ready = True
 
     async def refresh_dsh_provider_registrations(self) -> None:
         """Rebind the exact current DSH Profile and release stale activations."""
@@ -514,6 +535,7 @@ class StudioService:
         if manager is not None and manager_refs is not None:
             manager.mark_bound(manager_refs)
         self._started = True
+        self._dsh_ready = True
 
     async def reset_dsh_capability_state(self) -> None:
         """Drop the current DSH capability/Core generation."""
@@ -596,6 +618,17 @@ class StudioService:
             if result in {"installed", "already_enabled"}:
                 logging.getLogger(__name__).info(
                     "official Codex DSH provider bootstrap: %s", result
+                )
+        try:
+            harness_result = await manager.bootstrap_official_harness_provider()
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "official Harness DSH provider bootstrap skipped: %s", error
+            )
+        else:
+            if harness_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official Harness DSH provider bootstrap: %s", harness_result
                 )
         try:
             resource_result = await manager.bootstrap_official_resource_plugins()
@@ -893,14 +926,24 @@ class StudioService:
         await self.start()
         if self.is_codex_agent(agent_id):
             self.codex_agent_detail(agent_id)
+            manifest_snapshot = self.codex_manifests.load(agent_id)
+            cached = self._current_codex_builds.get(agent_id)
+            if cached is not None and cached.manifest_sha256 == manifest_snapshot.manifest_sha256:
+                try:
+                    return self.codex_builds.get(cached.id)
+                except StudioError:
+                    self._current_codex_builds.pop(agent_id, None)
             builds = [
                 record
                 for record in self.codex_builds.list()
                 if record.agent_name == agent_id and self.codex_builder.is_current(record)
             ]
             if builds:
+                self._current_codex_builds[agent_id] = builds[0]
                 return builds[0]
-            return await asyncio.to_thread(self.codex_builder.build, agent_id)
+            built = await asyncio.to_thread(self.codex_builder.build, agent_id)
+            self._current_codex_builds[agent_id] = built
+            return built
         draft = self.drafts.get(agent_id)
         composition_required = self.plugin_compositions.required_for(draft)
         resources_required = resource_build_required(draft)
@@ -1207,12 +1250,14 @@ class StudioService:
         name: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.create(
+        created = self.codex_agents.create(
             agent_id=agent_id,
             spec=spec,
             name=name,
             labels=labels,
         )
+        self._current_codex_builds.pop(agent_id, None)
+        return created
 
     def update_codex_agent(
         self,
@@ -1222,15 +1267,18 @@ class StudioService:
         expected_revision: int,
         name: str | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.update(
+        updated = self.codex_agents.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
             name=name,
         )
+        self._current_codex_builds.pop(agent_id, None)
+        return updated
 
     def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
         self.codex_agents.delete(agent_id, purge=purge)
+        self._current_codex_builds.pop(agent_id, None)
 
     def codex_agent_detail(self, agent_id: str | None = None) -> dict:
         return self.codex_agents.detail(agent_id)
@@ -1307,6 +1355,8 @@ class StudioService:
         async with self._start_lock:
             if self._closed:
                 return
+            if self._dsh_startup_task is not None and not self._dsh_startup_task.done():
+                self._dsh_startup_task.cancel()
             self._closed = True
             cleanup = asyncio.create_task(self._close_owned_plugin_services())
             interrupted = False

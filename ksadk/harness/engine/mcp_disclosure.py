@@ -633,9 +633,6 @@ class McpDisclosureBridge:
                 "结果已丢弃，不会写回上下文"
             )
         name = f"mcp_{server_id}_{tool_name}"
-        from ksadk.harness.engine import budgets
-
-        budgets.check(run, "artifacts")
         try:
             record = self._artifact_store.save(
                 run_id=run_id,
@@ -643,7 +640,6 @@ class McpDisclosureBridge:
                 content=content.encode("utf-8"),
                 mime=mime,
             )
-            budgets.spend(run, "artifacts")
         except (OSError, ValueError) as exc:
             raise McpDisclosureError(
                 f"MCP {server_id!r} 的 Tool {tool_name!r} 结果 {size} 字节 "
