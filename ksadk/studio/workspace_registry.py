@@ -152,6 +152,32 @@ class WorkspaceRuntimeManager:
                 continue
         return None
 
+    def is_reserved_session(self, session_id: str) -> bool:
+        for runtime in self._services.values():
+            db = getattr(getattr(runtime, "execution_host", None), "_db", None)
+            if db is None:
+                continue
+            row = db.execute(
+                "SELECT 1 FROM plugin_session_scopes WHERE session_id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if row:
+                return True
+        return False
+
+    def is_reserved_run(self, run_id: str) -> bool:
+        for runtime in self._services.values():
+            db = getattr(getattr(runtime, "execution_host", None), "_db", None)
+            if db is None:
+                continue
+            row = db.execute(
+                "SELECT 1 FROM execution_policy_refs WHERE run_id = ? LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if row:
+                return True
+        return False
+
     def runtime_for_operation(self, operation_id: str):
         for runtime in self._services.values():
             try:

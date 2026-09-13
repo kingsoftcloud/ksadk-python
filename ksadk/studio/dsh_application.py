@@ -42,9 +42,10 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
     session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
         session_secret.encode("utf-8")
     ).hexdigest()[:16]
+    legacy_session_cookie_name = "agentkit_studio_session"
 
     def authorized(cookies):
-        token = cookies.get(session_cookie_name, "")
+        token = cookies.get(session_cookie_name) or cookies.get(legacy_session_cookie_name, "")
         return not security_enabled or hmac.compare_digest(token, session_secret)
 
     @app.api_route("/studio-core/", methods=["GET"])

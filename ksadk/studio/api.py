@@ -239,6 +239,7 @@ def create_studio_app(
     session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
         session_secret.encode("utf-8")
     ).hexdigest()[:16]
+    legacy_session_cookie_name = "agentkit_studio_session"
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -425,8 +426,10 @@ def create_studio_app(
             or shared_web_api
             or responses_api
         ):
-            supplied = request.cookies.get(session_cookie_name) or request.headers.get(
-                "X-AgentKit-Session"
+            supplied = (
+                request.cookies.get(session_cookie_name)
+                or request.cookies.get(legacy_session_cookie_name)
+                or request.headers.get("X-AgentKit-Session")
             )
             if not supplied or not hmac.compare_digest(supplied, session_secret):
                 return _error_response(
@@ -541,6 +544,14 @@ def create_studio_app(
         if security_enabled:
             response.set_cookie(
                 session_cookie_name,
+                session_secret,
+                httponly=True,
+                samesite="strict",
+                secure=False,
+                path="/",
+            )
+            response.set_cookie(
+                legacy_session_cookie_name,
                 session_secret,
                 httponly=True,
                 samesite="strict",
@@ -950,6 +961,14 @@ def create_studio_app(
             )
         response.set_cookie(
             session_cookie_name,
+            session_secret,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
+        response.set_cookie(
+            legacy_session_cookie_name,
             session_secret,
             httponly=True,
             samesite="strict",
@@ -1720,6 +1739,8 @@ def create_studio_app(
 
     @app.get("/api/v1/runs/{run_id}")
     async def get_run(run_id: str):
+        if studio.is_reserved_run(run_id):
+            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1727,6 +1748,8 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
     async def cancel_run(run_id: str):
+        if studio.is_reserved_run(run_id):
+            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1734,6 +1757,8 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):
+        if studio.is_reserved_run(run_id):
+            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1741,6 +1766,8 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
+        if studio.is_reserved_run(run_id):
+            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1752,6 +1779,8 @@ def create_studio_app(
         interaction_id: str,
         payload: InteractionSubmitRequest,
     ):
+        if studio.is_reserved_run(run_id):
+            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1824,6 +1853,8 @@ def create_studio_app(
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
+        if studio.is_reserved_session(session_id):
+            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
         runtime = studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
@@ -1837,6 +1868,8 @@ def create_studio_app(
         invocation_id: str | None = Query(default=None, alias="invocationId"),
         limit: int = Query(default=100, ge=1, le=500),
     ):
+        if studio.is_reserved_session(session_id):
+            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
         runtime = studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
@@ -1854,6 +1887,8 @@ def create_studio_app(
         after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
         invocation_id: str | None = Query(default=None, alias="invocationId"),
     ):
+        if studio.is_reserved_session(session_id):
+            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
         runtime = studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
