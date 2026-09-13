@@ -35,6 +35,11 @@ from ksadk.harness.context_engine import HarnessContextEngine
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine, memory_checkpointer
 from ksadk.harness.events import EventType
 from ksadk.harness.events import RuntimeEvent as HarnessEvent
+from ksadk.harness.execution_policy import (
+    ExecutionPolicy,
+    ExecutionPolicyResolver,
+    apply_execution_policy,
+)
 from ksadk.harness.reasoner import HarnessReasoner
 from ksadk.harness.skill_composition import compose_engine
 from ksadk.harness.spec import HarnessSpec
@@ -84,12 +89,14 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         engine: ManagedLangGraphEngine | None = None,
         durable: bool = False,
         shared_across_pods: bool = False,
+        execution_policy_resolver: ExecutionPolicyResolver | None = None,
     ) -> None:
         super().__init__(ManagedHarnessRuntime(durable=durable))
         self._spec = spec
         self._workspace_root = Path(workspace_root)
         self._durable = durable
         self._shared_across_pods = shared_across_pods
+        self._execution_policy_resolver = execution_policy_resolver
         self._engine = engine or compose_engine(
             spec,
             reasoner=reasoner,
@@ -102,7 +109,42 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         self._run_store: Any | None = None
 
     def capabilities(self) -> RuntimeCapabilityMatrix:
-        return managed_harness_capabilities(durable=self._durable)
+        return managed_harness_capabilities(durable=self._durable).model_copy(
+            update={
+                "execution_policy": RuntimeCapability(
+                    supported=self._execution_policy_resolver is not None,
+                    mode="native" if self._execution_policy_resolver is not None else "unavailable",
+                    reason=(
+                        None
+                        if self._execution_policy_resolver is not None
+                        else "execution_policy_resolver_unavailable"
+                    ),
+                )
+            }
+        )
+
+    async def _execution_options(self, request: StartRequest) -> tuple[Any, dict[str, Any]]:
+        ref = request.metadata.get("execution_policy_ref")
+        if ref is None:
+            return await self._ensure_compiled(), {}
+        if not isinstance(ref, str) or not ref.strip() or self._execution_policy_resolver is None:
+            raise UnsupportedControlError("execution policy reference requires a host resolver")
+        policy = await self._execution_policy_resolver.resolve(ref, request=request)
+        if not isinstance(policy, ExecutionPolicy):
+            raise ValueError("execution policy resolver returned an invalid policy")
+        collisions = set(policy.tools) & (
+            set(self._engine._tools) | {binding.name for binding in self._spec.sub_agents}
+        )
+        if collisions:
+            raise ValueError(f"execution policy tool collision: {sorted(collisions)}")
+        spec = apply_execution_policy(self._spec, policy)
+        tools = {**self._engine._tools, **policy.tools}
+        return await self._engine.compile(spec, tools=tools), {
+            "tools": tools,
+            "execution_policy": policy,
+            "execution_policy_resolver": self._execution_policy_resolver,
+            "execution_policy_request": request,
+        }
 
     def _persist_durable_handle(self, handle: RunHandle, status: str = "running") -> None:
         if self._run_store is None:
@@ -120,14 +162,26 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
                 f"managed Harness run {handle.run_id!r} has no durable checkpoint backend"
             )
         if handle.runtime_type != "harness":
-            raise ValueError(
-                f"managed Harness cannot attach {handle.runtime_type!r} handle"
-            )
+            raise ValueError(f"managed Harness cannot attach {handle.runtime_type!r} handle")
         if handle.run_id in self._external_handles:
             return handle
-        compiled = await self._ensure_compiled()
+        request = StartRequest(
+            input="",
+            agent_id=handle.native_ref.get("agent_id"),
+            user_id=str(handle.native_ref.get("user_id") or "unknown"),
+            session_id=handle.session_id,
+            metadata=(
+                {
+                    "execution_policy_ref": handle.native_ref["execution_policy_ref"],
+                    "run_id": handle.native_ref.get("execution_policy_run_id") or handle.run_id,
+                }
+                if "execution_policy_ref" in handle.native_ref
+                else {}
+            ),
+        )
+        compiled, options = await self._execution_options(request)
         internal_handle = handle.model_copy(update={"runtime_type": "managed-langgraph"})
-        internal = await self._engine.attach(internal_handle, compiled)
+        internal = await self._engine.attach(internal_handle, compiled, **options)
         self._external_handles[handle.run_id] = internal
         return handle
 
@@ -164,7 +218,7 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         await self._ensure_compiled()
 
     async def start(self, request: StartRequest) -> RunHandle:
-        compiled = await self._ensure_compiled()
+        compiled, options = await self._execution_options(request)
         conversation = request.conversation_preprocessing()
         metadata = dict(request.metadata)
         if conversation is not None and conversation.messages:
@@ -178,7 +232,18 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
             if max_input is not None:
                 metadata["context_window_tokens"] = max_input + reserve_output
         internal_request = request.model_copy(update={"metadata": metadata})
-        internal = await self._engine.start(internal_request, compiled)
+        internal = await self._engine.start(internal_request, compiled, **options)
+        if "execution_policy_ref" in metadata:
+            internal = internal.model_copy(
+                update={
+                    "native_ref": {
+                        **internal.native_ref,
+                        "execution_policy_ref": metadata["execution_policy_ref"],
+                        "execution_policy_run_id": metadata.get("run_id") or internal.run_id,
+                    }
+                }
+            )
+            self._engine._runs[internal.run_id].handle = internal
         external = internal.model_copy(update={"runtime_type": "harness"})
         self._external_handles[external.run_id] = internal
         self._persist_durable_handle(external)
@@ -209,9 +274,14 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
             # Studio submits action-shaped data; the loop consumes a decision
             # string. Unknown/missing decisions never become an approval.
             normalized = {
-                "approve": "approved", "approved": "approved",
-                "reject": "denied", "rejected": "denied", "deny": "denied",
-                "denied": "denied", "cancel": "denied", "canceled": "denied",
+                "approve": "approved",
+                "approved": "approved",
+                "reject": "denied",
+                "rejected": "denied",
+                "deny": "denied",
+                "denied": "denied",
+                "cancel": "denied",
+                "canceled": "denied",
             }.get(decision if isinstance(decision, str) else "", "denied")
             payload = payload.model_copy(update={"data": normalized})
         internal = await self._engine.resume(self._internal_handle(handle), target, payload)
@@ -268,16 +338,20 @@ def _project_event(event: HarnessEvent) -> list[Any]:
     """Project one rich Harness event to one or more canonical v2 events."""
 
     rich = event.to_v2()
-    run_id = str(rich.run_id or rich.invocation_id)
-    scope_id = stable_scope_id("ksadk", run_id, str(rich.scope_id or rich.agent_id))
+    native_run_id = str(rich.run_id or rich.invocation_id)
+    run_id = str(rich.invocation_id)
+    is_child = bool(rich.parent_run_id and rich.parent_run_id != native_run_id)
+    scope_id = stable_scope_id("ksadk", native_run_id, str(rich.scope_id or rich.agent_id))
     source = SourceRef(
         framework="ksadk",
         native_event_id=rich.event_id,
-        native_run_id=run_id,
+        native_run_id=native_run_id,
         metadata={
             "native_event_type": rich.event_type,
             "agent_id": rich.agent_id,
             "session_id": rich.session_id,
+            "parent_run_id": rich.parent_run_id,
+            "native_seq": rich.payload.get("source_seq", rich.seq_id),
         },
     )
 
@@ -292,7 +366,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
             "run_id": run_id,
             "scope_id": scope_id,
             "parent_scope_id": (
-                stable_scope_id("ksadk", run_id, rich.parent_scope_id)
+                stable_scope_id("ksadk", rich.parent_run_id or native_run_id, rich.parent_scope_id)
                 if rich.parent_scope_id
                 else None
             ),
@@ -301,6 +375,36 @@ def _project_event(event: HarnessEvent) -> list[Any]:
 
     run_item = stable_item_id("ksadk", run_id, "$run")
     payload = rich.payload
+    if is_child and (
+        rich.event_type.startswith("run.") or rich.event_type == EventType.APPROVAL_REQUESTED
+    ):
+        # Kernel owns the outer Run. Preserve typed native lifecycle facts in a
+        # child scope without ever issuing a terminal/interaction for the root.
+        item_id = stable_item_id("ksadk", native_run_id, "status", rich.event_id)
+        return [
+            ItemCompleted(
+                **envelope("item.completed", item_id, "status-0"),
+                item_id=item_id,
+                item_kind="status",
+                snapshot=ContentSnapshot(
+                    parts=(
+                        TextContent(
+                            part_id="status-0",
+                            text=json.dumps(
+                                {
+                                    "event": rich.event_type,
+                                    "child_run_id": native_run_id,
+                                    "parent_run_id": rich.parent_run_id,
+                                    "details": payload,
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                            ),
+                        ),
+                    )
+                ),
+            )
+        ]
     if rich.event_type == EventType.RUN_STARTED:
         return [RunStarted(**envelope("run.started", run_item, "run"), status="running")]
     if rich.event_type == EventType.RUN_COMPLETED:
@@ -339,8 +443,11 @@ def _project_event(event: HarnessEvent) -> list[Any]:
                 **envelope("run.interrupted", run_item, "run"),
                 status="interrupted",
                 reason=str(payload.get("reason") or "harness_interrupted"),
-                interaction_id=(str(payload.get("approval_id") or f"ap-{run_id}")
-                                if payload.get("reason") == "tool_approval" else None),
+                interaction_id=(
+                    str(payload.get("approval_id") or f"ap-{run_id}")
+                    if payload.get("reason") == "tool_approval"
+                    else None
+                ),
             )
         ]
     if rich.event_type == EventType.USAGE_REPORTED:
@@ -372,9 +479,9 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         ]
     if rich.event_type in {EventType.TEXT_COMPLETED, EventType.REASONING_COMPLETED}:
         kind = "message" if rich.event_type == EventType.TEXT_COMPLETED else "reasoning"
-        phase = "final_answer" if kind == "message" else "commentary"
+        phase = "final_answer" if kind == "message" and not is_child else "commentary"
         item_id = (
-            stable_item_id("ksadk", run_id, "message", "final")
+            stable_item_id("ksadk", native_run_id, "message", "final")
             if kind == "message"
             else stable_item_id("ksadk", run_id, kind, rich.event_id)
         )
@@ -400,7 +507,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         call_id = str(payload.get("call_id") or rich.event_id)
         name = str(payload.get("name") or "tool")
         if rich.event_type == EventType.TOOL_CALL_BEGIN:
-            item_id = stable_item_id("ksadk", run_id, "tool_call", call_id)
+            item_id = stable_item_id("ksadk", native_run_id, "tool_call", call_id)
             part_id = "tool-call-0"
             content: Any = ToolCallContent(
                 part_id=part_id,
@@ -410,7 +517,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
             )
             item_kind = "tool_call"
         else:
-            item_id = stable_item_id("ksadk", run_id, "tool_result", call_id)
+            item_id = stable_item_id("ksadk", native_run_id, "tool_result", call_id)
             part_id = "tool-result-0"
             content = ToolResultContent(
                 part_id=part_id,
@@ -479,15 +586,15 @@ def managed_harness_capabilities(*, durable: bool) -> RuntimeCapabilityMatrix:
         return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
 
     durable_capability = (
-        available()
-        if durable
-        else unavailable("managed_harness_checkpoint_is_process_local")
+        available() if durable else unavailable("managed_harness_checkpoint_is_process_local")
     )
     return RuntimeCapabilityMatrix(
         cancel=available(),
         pause=unavailable("managed_harness_pause_not_implemented"),
         resume=available(),
-        submit_interaction=unavailable("managed_harness_uses_checkpoint_resume"),
+        # The Kernel's Interaction command routes through the declared
+        # durable-resume provider; it does not call adapter.submit().
+        submit_interaction=durable_capability,
         attach=durable_capability,
         steer=unavailable("runtime_no_native_steer"),
         inject=unavailable("runtime_no_native_inject"),

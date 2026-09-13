@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from ksadk.harness.events import EventType, RuntimeEvent
@@ -122,6 +122,11 @@ class ToolCallInput:
     dependencies: dict[str, tuple[str, ...]] = field(default_factory=dict)
     max_parallelism: int = 1
     tenant_id: str = "default"
+    live_event_sink: Callable[[RuntimeEvent], RuntimeEvent] | None = None
+    succeeded: frozenset[str] = frozenset()
+    cancelled_call_ids: frozenset[str] = frozenset()
+    policy_agent_id: str | None = None
+    control_exceptions: tuple[type[BaseException], ...] = ()
 
 
 @dataclass
@@ -157,8 +162,8 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
     out = ToolCallOutput(working_context=inp.working_context)
     seq = inp.seq_start
     runtime = inp.capability_runtime
-    succeeded: set[str] = set()
-    cancelled_call_ids: set[str] = set()
+    succeeded: set[str] = set(inp.succeeded)
+    cancelled_call_ids: set[str] = set(inp.cancelled_call_ids)
 
     for pending_index, pending in enumerate(inp.pending_tool_calls):
         call_id, name = pending["call_id"], pending["name"]
@@ -172,8 +177,13 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     EventType.TOOL_CALL_BEGIN,
                     inp,
                     seq,
-                    {"call_id": call_id, "name": name, "args": arguments, "skipped": True,
-                     "reliability": reliability_payload},
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "args": arguments,
+                        "skipped": True,
+                        "reliability": reliability_payload,
+                    },
                 )
             )
             seq += 1
@@ -182,16 +192,24 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     EventType.TOOL_CALL_END,
                     inp,
                     seq,
-                    {"call_id": call_id, "name": name,
-                     "error": "cancelled by fail-fast sibling failure",
-                     "error_category": "cancelled_by_fail_fast",
-                     "receipt_committed": False, "skipped": True,
-                     "reliability": reliability_payload},
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": "cancelled by fail-fast sibling failure",
+                        "error_category": "cancelled_by_fail_fast",
+                        "receipt_committed": False,
+                        "skipped": True,
+                        "reliability": reliability_payload,
+                    },
                 )
             )
             out.new_messages.append(
-                {"role": "tool", "tool_call_id": call_id, "name": name,
-                 "content": "[error] cancelled by fail-fast sibling failure"}
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": "[error] cancelled by fail-fast sibling failure",
+                }
             )
             continue
         missing_dependencies = [
@@ -296,31 +314,35 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
 
         # 2. 决策：统一 Policy 优先；未注入时回退静态 approval_required 集合。
         decision = APPROVED
-        dynamic_requires = (
-            inp.approval_decider is not None and inp.approval_decider(name, arguments)
+        dynamic_requires = inp.approval_decider is not None and inp.approval_decider(
+            name, arguments
         )
         if runtime is not None:
             policy_decision = runtime.decide(
                 tenant_id=inp.tenant_id,
                 user_id=inp.user_id,
-                agent_id=inp.agent_id,
+                agent_id=inp.policy_agent_id or inp.agent_id,
                 tool_name=name,
                 arguments=arguments,
             )
             if policy_decision.action == "deny":
                 decision = f"policy-denied: {policy_decision.reason}"
-            elif policy_decision.action == "require_approval" or dynamic_requires:
+            elif (
+                policy_decision.action == "require_approval"
+                or dynamic_requires
+                or name in inp.approval_required
+            ):
                 if inp.approval_resolver is not None:
                     decision = inp.approval_resolver.request(
                         call_id=call_id, name=name, arguments=arguments
                     )
                 else:
                     decision = f"policy-denied: approval required ({policy_decision.reason})"
-        elif (
-            name in inp.approval_required or dynamic_requires
-        ) and inp.approval_resolver is not None:
-            decision = inp.approval_resolver.request(
-                call_id=call_id, name=name, arguments=arguments
+        elif name in inp.approval_required or dynamic_requires:
+            decision = (
+                inp.approval_resolver.request(call_id=call_id, name=name, arguments=arguments)
+                if inp.approval_resolver is not None
+                else "approval resolver unavailable"
             )
 
         if decision != APPROVED:
@@ -401,6 +423,8 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
+            if isinstance(exc, inp.control_exceptions):
+                raise
             category = str(getattr(exc, "category", "") or "")
             seq += 1
             out.events.append(
@@ -430,9 +454,7 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                 out.working_context = record_tool_failure(
                     out.working_context, name=name, error=f"{type(exc).__name__}: {exc}"
                 )
-            if inp.stop_on_error_decider is not None and inp.stop_on_error_decider(
-                name, arguments
-            ):
+            if inp.stop_on_error_decider is not None and inp.stop_on_error_decider(name, arguments):
                 for skipped in inp.pending_tool_calls[pending_index + 1 :]:
                     skipped_call_id = str(skipped["call_id"])
                     skipped_name = str(skipped["name"])
@@ -469,9 +491,7 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     "call_id": call_id,
                     "name": name,
                     "result": result,
-                    "receipt_committed": bool(
-                        runtime is not None and runtime.receipt_enabled
-                    ),
+                    "receipt_committed": bool(runtime is not None and runtime.receipt_enabled),
                     "reliability": reliability_payload,
                 },
             )
@@ -513,108 +533,53 @@ def _parallel_batch_allowed(inp: ToolCallInput) -> bool:
 
 
 async def _execute_parallel_batch(inp: ToolCallInput) -> ToolCallOutput:
-    """并行执行一批只读调用，按原输入顺序生成确定性事件与消息。"""
+    """Stream explicitly safe calls as they execute; retain input-order results."""
     semaphore = asyncio.Semaphore(inp.max_parallelism)
 
-    async def invoke_one(pending: dict[str, Any]) -> tuple[Any | None, Exception | None]:
+    async def invoke_one(pending):
         async with semaphore:
-            try:
-                value = await _invoke(
-                    inp.tool_executor,
-                    pending["name"],
-                    pending["arguments"],
-                    context=ToolExecutionContext(
-                        run_id=inp.run_id,
-                        call_id=pending["call_id"],
-                    ),
+
+            def live(event):
+                event = event.model_copy(update={"payload": {**event.payload, "parallel": True}})
+                return inp.live_event_sink(event) if inp.live_event_sink else event
+
+            return await execute_tool_calls(
+                replace(
+                    inp,
+                    pending_tool_calls=(pending,),
+                    parallel_safe_decider=None,
+                    working_context=None,
+                    seq_start=0,
+                    live_event_sink=live,
                 )
-                return value, None
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                return None, exc
+            )
 
     results = await asyncio.gather(*(invoke_one(pending) for pending in inp.pending_tool_calls))
     out = ToolCallOutput(working_context=inp.working_context)
     seq = inp.seq_start
-    for pending, (result, error) in zip(inp.pending_tool_calls, results, strict=True):
-        call_id, name, arguments = (
-            pending["call_id"],
-            pending["name"],
-            pending["arguments"],
-        )
-        reliability_payload = _resolve_reliability(inp, name, arguments).to_event_payload()
-        seq += 1
-        out.events.append(
-            _event(
-                EventType.TOOL_CALL_BEGIN,
-                inp,
-                seq,
-                {
-                    "call_id": call_id,
-                    "name": name,
-                    "args": arguments,
-                    "parallel": True,
-                    "reliability": reliability_payload,
-                },
-            )
-        )
-        seq += 1
-        if error is not None:
-            error_text = f"{type(error).__name__}: {error}"
-            category = str(getattr(error, "category", "") or "")
-            out.events.append(
-                _event(
-                    EventType.TOOL_CALL_END,
-                    inp,
-                    seq,
-                    {
-                        "call_id": call_id,
-                        "name": name,
-                        "error": error_text,
-                        **({"error_category": category} if category else {}),
-                        "parallel": True,
-                        "receipt_committed": False,
-                        "reliability": reliability_payload,
-                    },
-                )
-            )
-            result_text = f"[error] {error_text}"
-            if out.working_context is not None:
-                out.working_context = record_tool_failure(
-                    out.working_context, name=name, error=error_text
-                )
-        else:
-            result_text = (
-                result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-            )
-            out.events.append(
-                _event(
-                    EventType.TOOL_CALL_END,
-                    inp,
-                    seq,
-                    {
-                        "call_id": call_id,
-                        "name": name,
-                        "result": result,
-                        "parallel": True,
-                        "receipt_committed": False,
-                        "reliability": reliability_payload,
-                    },
-                )
-            )
-            if out.working_context is not None:
-                out.working_context = record_tool_result(
-                    out.working_context, name=name, result_text=result_text
-                )
-        out.new_messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "name": name,
-                "content": result_text,
-            }
-        )
+    for result in results:
+        for event in result.events:
+            if inp.live_event_sink is None:
+                seq += 1
+                event = event.model_copy(update={"seq_id": seq})
+            out.events.append(event)
+        out.new_messages.extend(result.new_messages)
+        if out.working_context is not None:
+            for event in result.events:
+                if event.event_type != EventType.TOOL_CALL_END:
+                    continue
+                if event.payload.get("error"):
+                    out.working_context = record_tool_failure(
+                        out.working_context,
+                        name=event.payload["name"],
+                        error=event.payload["error"],
+                    )
+                else:
+                    out.working_context = record_tool_result(
+                        out.working_context,
+                        name=event.payload["name"],
+                        result_text=json.dumps(event.payload.get("result"), ensure_ascii=False),
+                    )
     return out
 
 
@@ -660,7 +625,7 @@ def _event(
     *,
     phase: str | None = None,
 ) -> RuntimeEvent:
-    return RuntimeEvent.create(
+    event = RuntimeEvent.create(
         event_type,
         agent_id=inp.agent_id,
         user_id=inp.user_id,
@@ -670,6 +635,7 @@ def _event(
         payload=payload,
         phase=phase,
     )
+    return inp.live_event_sink(event) if inp.live_event_sink is not None else event
 
 
 __all__ = [
