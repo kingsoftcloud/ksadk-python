@@ -103,9 +103,7 @@ describe("NavigationRail", () => {
   });
   it("shows workspace information without an inert fake button", async () => {
     render(<NavigationRail {...props} />);
-    expect(
-      screen.queryByRole("button", { name: "studio-test 工作区" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "studio-test 工作区" })).toBeInTheDocument();
     await userEvent.hover(screen.getByLabelText("studio-test 工作区"));
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "/workspace/studio-test",

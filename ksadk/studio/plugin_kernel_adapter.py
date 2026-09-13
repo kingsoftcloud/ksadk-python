@@ -33,18 +33,8 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
         # Studio wires a durable Workspace store before activating Harness.
         if self._delegate is None and self._runtime_type == "harness":
             from ksadk.harness.managed_runtime import managed_harness_capabilities
-            from ksadk.kernel.contracts import RuntimeCapability
 
-            matrix = managed_harness_capabilities(durable=True)
-            return matrix.model_copy(
-                update={
-                    "execution_policy": RuntimeCapability(
-                        supported=self._policy_supported,
-                        mode="native" if self._policy_supported else "unavailable",
-                        reason=None if self._policy_supported else "execution_policy_unavailable",
-                    ),
-                }
-            )
+            return managed_harness_capabilities(durable=True)
         return super().capabilities()
 
 

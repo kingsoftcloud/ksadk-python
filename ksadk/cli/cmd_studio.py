@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import socket
+import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -74,6 +77,19 @@ _CLOUD_CONTROL_ENV_KEYS = (
 _STUDIO_ENV_FILE_KEYS = (*_MODEL_ENV_KEYS, *_CLOUD_CONTROL_ENV_KEYS)
 # 别名归一：两者任一有值时，把另一个也设上，保证下游无论读哪个都命中。
 _MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
+
+
+def _open_browser_when_ready(url: str, port: int, *, timeout: float = 90.0) -> None:
+    """Open Studio only after Uvicorn accepts loopback connections."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                webbrowser.open(url)
+                return
+        except OSError:
+            time.sleep(0.2)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -189,7 +205,12 @@ def studio(
         print_success("构建与运行均在本地执行")
         print_info("按 Ctrl+C 停止")
         if not no_open:
-            webbrowser.open(launch_url)
+            threading.Thread(
+                target=_open_browser_when_ready,
+                args=(launch_url, port),
+                daemon=True,
+                name="studio-browser-launcher",
+            ).start()
         # 业务日志（ksadk.*）走 root handler，同样带 filename:lineno。
         logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
         uvicorn.run(

@@ -13,11 +13,11 @@ import math
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ksadk._str_enum import StrEnum
 from ksadk.harness.events import EventType, RuntimeEvent
 
 

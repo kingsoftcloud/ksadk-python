@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
+from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.studio.errors import StudioError
 
 SETTINGS_ENV = {
@@ -38,6 +39,7 @@ class WorkspaceConfiguration:
         self.path = workspace.resolve(".agentkit/config.yaml")
         self.overrides = dict(overrides or {})
         self.inherited = dict(os.environ)
+        self.global_defaults = get_env_from_global_config()
         self.dotenv = {
             key: value
             for key, value in dotenv_values(workspace.resolve(".env")).items()
@@ -136,6 +138,8 @@ class WorkspaceConfiguration:
         for key, env in SETTINGS_ENV.items():
             if env == name and key in data["settings"]:
                 return str(data["settings"][key]), "workspace"
+        if self.global_defaults.get(name):
+            return self.global_defaults[name], "global"
         if self.inherited.get(name):
             return self.inherited[name], "environment"
         if self.dotenv.get(name):
@@ -143,7 +147,14 @@ class WorkspaceConfiguration:
         return None, "missing"
 
     def resolve_candidates(self, names: list[str]) -> tuple[str | None, str]:
-        ranked = {"env-file": 0, "workspace": 1, "environment": 2, "dotenv": 3, "missing": 4}
+        ranked = {
+            "env-file": 0,
+            "workspace": 1,
+            "global": 2,
+            "environment": 3,
+            "dotenv": 4,
+            "missing": 5,
+        }
         candidates = [(self.resolve(name), i) for i, name in enumerate(names)]
         (value, source), index = min(candidates, key=lambda item: (ranked[item[0][1]], item[1]))
         return value, source + ("-alias" if value and index else "")
@@ -151,7 +162,7 @@ class WorkspaceConfiguration:
     def environment(self) -> dict[str, str]:
         with _LOCK:
             data = self._read()
-        values = {**self.dotenv, **self.inherited}
+        values = {**self.dotenv, **self.global_defaults, **self.inherited}
         for key, name in SETTINGS_ENV.items():
             if key in data["settings"]:
                 values[name] = str(data["settings"][key])
