@@ -276,6 +276,13 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "studio",
     ),
     EnvVarSpec(
+        "KSADK_STUDIO_LAZY_START",
+        "studio",
+        "Internal desktop startup mode; keep the Studio window responsive while optional DSH warmup runs.",
+        "0",
+        documented=False,
+    ),
+    EnvVarSpec(
         "KSADK_STUDIO_NO_SECURITY",
         "studio",
         "Disable Studio loopback session and CSRF checks for controlled tests only.",

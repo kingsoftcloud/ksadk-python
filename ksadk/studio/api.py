@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import base64
 import hmac
 import json
 import os
 import secrets
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -42,6 +45,7 @@ from ksadk.studio.api_contracts import (
     CreateAgentRequest,
     ImportRootRequest,
     InteractionSubmitRequest,
+    LinkedDirectoryRequest,
     ProjectInspectRequest,
     PromptCompileRequest,
     QuickAuthoringRequest,
@@ -92,6 +96,11 @@ from ksadk.studio.contracts import (
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
+from ksadk.studio.workspace_registry import (
+    LinkedDirectoryPolicy,
+    WorkspaceRegistry,
+    WorkspaceRuntimeManager,
+)
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
@@ -216,21 +225,58 @@ def create_studio_app(
     csrf_token: str | None = None,
     security_enabled: bool = True,
 ) -> FastAPI:
-    studio = service or StudioService(root)
+    initial_service = service or StudioService(root)
+    studio = WorkspaceRuntimeManager(
+        initial_service, lambda workspace_root: StudioService(workspace_root)
+    )
     session_secret = session_token or secrets.token_urlsafe(32)
     csrf_secret = csrf_token or secrets.token_urlsafe(24)
+    # Cookies are scoped by host, not port.  Multiple local Studio processes
+    # (for example an App and a CLI started for another workspace) therefore
+    # used to overwrite one another's session cookie and produce intermittent
+    # LOCAL_SESSION_REQUIRED responses.  Bind the cookie name to this
+    # process's secret so each supervised Studio remains independent.
+    session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
+        session_secret.encode("utf-8")
+    ).hexdigest()[:16]
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        lazy_desktop_start = os.environ.get("KSADK_STUDIO_LAZY_START") == "1"
+        warmups: set[asyncio.Task[None]] = set()
+
+        def schedule_runtime_warmup(runtime: StudioService) -> None:
+            async def warm_runtime() -> None:
+                try:
+                    await runtime.start()
+                except Exception:
+                    # Runtime warmup is best effort; core Studio remains usable
+                    # while optional DSH capability discovery is unavailable.
+                    pass
+
+            task = asyncio.create_task(warm_runtime())
+            warmups.add(task)
+            task.add_done_callback(warmups.discard)
+
         try:
-            await studio.start()
+            app.state.runtime_warmups = schedule_runtime_warmup
+            await studio.start(wait_for_dsh=not lazy_desktop_start)
+            # Optional plugin activation must not hold the HTTP listener closed
+            # while DSH starts subprocesses or acquires an authority lease.
+            schedule_runtime_warmup(studio.active)
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
         finally:
-            await studio.scheduler.stop()
-            await studio.aclose()
-            studio.credentials.clear_session()
+            app.state.runtime_warmups = None
+            for task in tuple(warmups):
+                task.cancel()
+            if warmups:
+                await asyncio.gather(*warmups, return_exceptions=True)
+            for runtime in studio.services():
+                await runtime.scheduler.stop()
+                await runtime.aclose()
+                runtime.credentials.clear_session()
 
     app = FastAPI(
         title="AgentKit Local Studio",
@@ -324,7 +370,7 @@ def create_studio_app(
 
     static_root = Path(__file__).with_name("static")
     shared_web = StudioSharedWebBridge(studio)
-    cloud_web = CloudSharedWebBridge(studio.cloud)
+    cloud_web = CloudSharedWebBridge(studio)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
 
@@ -379,7 +425,7 @@ def create_studio_app(
             or shared_web_api
             or responses_api
         ):
-            supplied = request.cookies.get("agentkit_studio_session") or request.headers.get(
+            supplied = request.cookies.get(session_cookie_name) or request.headers.get(
                 "X-AgentKit-Session"
             )
             if not supplied or not hmac.compare_digest(supplied, session_secret):
@@ -476,7 +522,10 @@ def create_studio_app(
         except (StudioError, OSError, RuntimeError):
             # The optional toolchain may be absent in a plain SDK workspace.
             use_core = False
-        if use_core:
+        # The Electron shell starts the managed Core in the background. Keep
+        # the lightweight Studio shell as the immediate entry document; a
+        # plugin page can still open the official Core on demand.
+        if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
             target = "/studio-core/"
             if request.url.query:
                 target += "?" + request.url.query
@@ -491,7 +540,7 @@ def create_studio_app(
         response.headers["Cache-Control"] = "no-store"
         if security_enabled:
             response.set_cookie(
-                "agentkit_studio_session",
+                session_cookie_name,
                 session_secret,
                 httponly=True,
                 samesite="strict",
@@ -900,7 +949,7 @@ def create_studio_app(
                 status_code=401,
             )
         response.set_cookie(
-            "agentkit_studio_session",
+            session_cookie_name,
             session_secret,
             httponly=True,
             samesite="strict",
@@ -919,6 +968,7 @@ def create_studio_app(
             "workspace": {
                 "name": studio.workspace.root.name,
                 "path": str(studio.workspace.root),
+                "workspaceId": studio.workspace_record.workspace_id,
             },
             "operationScope": studio.deployment_operation_scope(),
             "frontend": studio.frontend_assets(),
@@ -1057,20 +1107,136 @@ def create_studio_app(
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
-        # This endpoint only reconnects to the daemon's already-bound root.  Do
-        # not resolve or otherwise touch a caller-provided filesystem path.
-        requested = os.path.normcase(os.path.abspath(os.path.expanduser(payload.path)))
-        bound_root = os.path.normcase(str(studio.workspace.root))
-        if requested != bound_root:
+        try:
+            # A user-selected directory is itself the workspace. The registry
+            # entry is created as part of opening it; callers do not need to
+            # pre-register paths in a separate settings screen.
+            # Switching is a workspace identity operation. Do not block it on
+            # optional DSH/Profile bootstrap; the selected workspace becomes
+            # active immediately and its plugins start lazily on demand.
+            record = studio.switch(payload.path, create=True)
+            # A newly selected workspace has a fresh StudioService. Start its
+            # local state and schedule DSH/provider discovery without waiting
+            # for the optional toolchain. Without this step the active service
+            # has no provider snapshot, so the first Codex/Teams action would
+            # incorrectly report "Provider 未注册" until a process restart.
+            runtime = studio.active
+            await runtime.start(wait_for_dsh=False)
+            # Warm the selected runtime itself.  Capturing ``runtime`` avoids
+            # a race where a later switch enables Teams in the wrong workspace.
+            lifespan_state = getattr(app.state, "runtime_warmups", None)
+            if lifespan_state is not None:
+                lifespan_state(runtime)
+        except FileNotFoundError as error:
+            raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
+        response = {
+            "name": record.name,
+            "path": record.path,
+            "workspaceId": record.workspace_id,
+        }
+        # Preserve the legacy reconnect response shape for the daemon root;
+        # switched workspaces include the stable identity for scoped clients.
+        if os.path.normcase(record.path) == os.path.normcase(str(initial_service.workspace.root)):
+            response.pop("workspaceId", None)
+        return response
+
+    @app.post("/api/v1/workspaces:choose")
+    async def choose_workspace_directory():
+        """Open the host folder chooser for a local Web Studio session."""
+        if sys.platform != "darwin":
             raise StudioError(
-                "WORKSPACE_PATH_FORBIDDEN",
-                "当前 Daemon 不允许切换到启动 root 之外的工作区",
-                status_code=403,
+                "WORKSPACE_PICKER_UNAVAILABLE",
+                "当前系统没有可用的原生目录选择器，请输入目录路径",
+                status_code=501,
+            )
+        script = (
+            'tell application "System Events" to set selectedFolder to choose folder '
+            'with prompt "选择 AgentKit Studio 工作区"\n'
+            'POSIX path of selectedFolder'
+        )
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {"path": None, "cancelled": True}
+        path = result.stdout.strip()
+        return {"path": path or None, "cancelled": not bool(path)}
+
+    @app.get("/api/v1/workspaces")
+    async def list_workspaces():
+        active_path = os.path.normcase(str(studio.workspace.root))
+        items = []
+        for record in WorkspaceRegistry().list():
+            item = record.__dict__.copy()
+            item["active"] = os.path.normcase(record.path) == active_path
+            items.append(item)
+        return {"items": items}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/linked-directories")
+    async def add_linked_directory(workspace_id: str, payload: LinkedDirectoryRequest):
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
+        item = LinkedDirectoryPolicy(studio.workspace.root).set(
+            payload.path, payload.mode, payload.label
+        )
+        return item.__dict__
+
+    @app.get("/api/v1/workspaces/{workspace_id}/linked-directories")
+    async def list_linked_directories(workspace_id: str):
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
             )
         return {
-            "name": studio.workspace.root.name,
-            "path": str(studio.workspace.root),
+            "items": [item.__dict__ for item in LinkedDirectoryPolicy(studio.workspace.root).list()]
         }
+
+    @app.delete("/api/v1/workspaces/{workspace_id}/linked-directories")
+    async def remove_linked_directory(workspace_id: str, path: str):
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
+        return {"removed": LinkedDirectoryPolicy(studio.workspace.root).remove(path)}
+
+    @app.get("/api/v1/workspaces/{workspace_id}/linked-directories/authorize")
+    async def authorize_linked_directory(
+        workspace_id: str,
+        path: str,
+        operation: Literal["read", "write"] = "read",
+    ):
+        record = next(
+            (r for r in WorkspaceRegistry().list() if r.workspace_id == workspace_id), None
+        )
+        if record is None or os.path.normcase(record.path) != os.path.normcase(
+            str(studio.workspace.root)
+        ):
+            raise StudioError(
+                "WORKSPACE_NOT_FOUND", "工作区不存在或不属于当前 Studio", status_code=404
+            )
+        allowed = LinkedDirectoryPolicy(studio.workspace.root).authorize(path, operation)
+        return {"path": path, "operation": operation, "allowed": allowed}
 
     @app.get("/api/v1/codex/manifest")
     async def get_codex_manifest():
@@ -1554,22 +1720,31 @@ def create_studio_app(
 
     @app.get("/api/v1/runs/{run_id}")
     async def get_run(run_id: str):
-        return studio.event_store.get(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return runtime.event_store.get(run_id)
 
     @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
     async def cancel_run(run_id: str):
-        studio._require_direct_run(run_id)
-        return await studio.run_service.cancel_run(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.cancel_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):
-        studio._require_direct_run(run_id)
-        return await studio.run_service.pause_run(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.pause_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
-        studio._require_direct_run(run_id)
-        return await studio.run_service.resume_run(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.resume_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
     async def submit_run_interaction(
@@ -1577,8 +1752,10 @@ def create_studio_app(
         interaction_id: str,
         payload: InteractionSubmitRequest,
     ):
-        studio._require_direct_run(run_id)
-        return await studio.run_service.submit_interaction(
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        return await runtime.run_service.submit_interaction(
             run_id,
             interaction_id,
             name=payload.name,
@@ -1590,7 +1767,10 @@ def create_studio_app(
     @app.get("/api/v1/runs/{run_id}/context")
     async def get_run_context(run_id: str):
         """Runtime Context Evidence：planned/projected/actual + 精度 + ownership。"""
-        record = studio.event_store.get(run_id)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        record = runtime.event_store.get(run_id)
         plan = record.context_plan or {}
         evidence = record.prompt_evidence or {}
         return {
@@ -1644,7 +1824,10 @@ def create_studio_app(
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
-        await studio.delete_session(session_id)
+        runtime = studio.runtime_for_session(session_id)
+        if runtime is None:
+            raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
+        await runtime.delete_session(session_id)
         return Response(status_code=204)
 
     @app.get("/api/v1/sessions/{session_id}/events")
@@ -1654,7 +1837,10 @@ def create_studio_app(
         invocation_id: str | None = Query(default=None, alias="invocationId"),
         limit: int = Query(default=100, ge=1, le=500),
     ):
-        return await studio.trajectory_page(
+        runtime = studio.runtime_for_session(session_id)
+        if runtime is None:
+            raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
+        return await runtime.trajectory_page(
             session_id,
             before_seq_id=before_seq_id,
             invocation_id=invocation_id,
@@ -1668,10 +1854,13 @@ def create_studio_app(
         after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
         invocation_id: str | None = Query(default=None, alias="invocationId"),
     ):
-        await studio._require_runtime_session(session_id)
+        runtime = studio.runtime_for_session(session_id)
+        if runtime is None:
+            raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
+        await runtime._require_runtime_session(session_id)
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after_seq_id
-        stream = studio.stream_trajectory(
+        stream = runtime.stream_trajectory(
             session_id,
             cursor,
             invocation_id=invocation_id,
@@ -1742,6 +1931,15 @@ def create_studio_app(
     async def list_runs(session_id: str | None = Query(default=None, alias="sessionId")):
         return {"items": studio.event_store.list_runs(session_id=session_id)}
 
+    @app.get("/api/v1/workspaces/runs")
+    async def list_workspace_runs():
+        """后台入口：聚合所有已打开 workspace 的运行，并保留归属。"""
+        return {"items": studio.all_runs()}
+
+    @app.get("/api/v1/workspaces/operations")
+    async def list_workspace_operations():
+        return {"items": studio.all_operations()}
+
     @app.get("/api/v1/runs/{run_id}/events")
     async def run_events(
         run_id: str,
@@ -1750,7 +1948,10 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        events = await studio.run_service.events(run_id, after=cursor)
+        runtime = studio.runtime_for_run(run_id)
+        if runtime is None:
+            raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        events = await runtime.run_service.events(run_id, after=cursor)
         return _sse(events)
 
     @app.get("/api/v1/traces/overview")
@@ -1764,6 +1965,10 @@ def create_studio_app(
             agent_id=agent_id,
             status=status,
         )
+
+    @app.get("/api/v1/workspaces/traces")
+    async def list_workspace_traces():
+        return {"items": studio.all_traces()}
 
     @app.get("/api/v1/traces")
     async def list_traces(
@@ -2208,11 +2413,17 @@ def create_studio_app(
 
     @app.get("/api/v1/operations/{operation_id}")
     async def get_operation(operation_id: str):
-        return studio.operations.get(operation_id)
+        runtime = studio.runtime_for_operation(operation_id)
+        if runtime is None:
+            raise StudioError("OPERATION_NOT_FOUND", "操作不存在", status_code=404)
+        return runtime.operations.get(operation_id)
 
     @app.post("/api/v1/operations/{operation_id}:cancel")
     async def cancel_operation(operation_id: str):
-        return studio.operations.cancel(operation_id)
+        runtime = studio.runtime_for_operation(operation_id)
+        if runtime is None:
+            raise StudioError("OPERATION_NOT_FOUND", "操作不存在", status_code=404)
+        return runtime.operations.cancel(operation_id)
 
     @app.get("/api/v1/operations/{operation_id}/events")
     async def operation_events(
@@ -2222,7 +2433,10 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        events = studio.operations.events(operation_id, after=cursor)
+        runtime = studio.runtime_for_operation(operation_id)
+        if runtime is None:
+            raise StudioError("OPERATION_NOT_FOUND", "操作不存在", status_code=404)
+        events = runtime.operations.events(operation_id, after=cursor)
         if "application/json" in request.headers.get("Accept", ""):
             return {"items": events}
         return _sse(events)
@@ -2235,7 +2449,13 @@ def create_studio_app(
     register_memory_routes(app, studio)
     register_resource_connection_routes(app, studio)
     register_plugin_routes(app, studio)
-    app.mount("/api/v1", studio.workspace_plugins.api, name="workspace-plugin-api")
+    async def workspace_plugin_api(scope, receive, send):
+        # The plugin registry belongs to the active workspace. Mounting the
+        # initial service registry directly would keep lifecycle/routes pinned
+        # to the first folder after a workspace switch.
+        await studio.active.workspace_plugins.api(scope, receive, send)
+
+    app.mount("/api/v1", workspace_plugin_api, name="workspace-plugin-api")
 
     from ksadk.studio.dsh_application import register_dsh_application
 

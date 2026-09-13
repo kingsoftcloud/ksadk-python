@@ -77,7 +77,24 @@ export async function initializeStudioSession(): Promise<void> {
       credentials: "same-origin",
     });
     if (!response.ok) {
-      throw new Error("本地 Studio 会话已失效，请重新启动服务。");
+      // A copied/stale launch URL can outlive a Studio restart. Recover the
+      // current process cookie before rendering a shell that would otherwise
+      // spam LOCAL_SESSION_REQUIRED on every API call.
+      await nativeFetch("/", { credentials: "same-origin" }).catch(() => undefined);
+      const bootstrap = await nativeFetch("/api/v1/system/bootstrap", {
+        credentials: "same-origin",
+      });
+      if (!bootstrap.ok) {
+        throw new Error("本地 Studio 会话已失效，请重新启动服务。");
+      }
+      const payload = await bootstrap.json();
+      csrfToken = payload.csrfToken || "";
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+      return;
     }
 
     const payload = await response.json();
@@ -90,9 +107,18 @@ export async function initializeStudioSession(): Promise<void> {
     return;
   }
 
-  const bootstrap = await nativeFetch("/api/v1/system/bootstrap", {
+  let bootstrap = await nativeFetch("/api/v1/system/bootstrap", {
     credentials: "same-origin",
   });
+  if (!bootstrap.ok && bootstrap.status === 401) {
+    // Directly opening /studio-core/ or restoring a browser partition can
+    // skip the root response that sets the current process cookie. Re-enter
+    // the root once, then retry bootstrap before the shell starts requests.
+    await nativeFetch("/", { credentials: "same-origin" }).catch(() => undefined);
+    bootstrap = await nativeFetch("/api/v1/system/bootstrap", {
+      credentials: "same-origin",
+    });
+  }
   if (!bootstrap.ok) return;
   const payload = await bootstrap.json();
   csrfToken = payload.csrfToken || "";

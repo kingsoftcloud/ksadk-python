@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@kingsoftcloud/ksadk-web/styles";
 import { mountWorkspace } from "./plugins/workspaceRegistry";
@@ -12,6 +12,31 @@ import "./plugins.css";
 import "./layout-simplification.css";
 import "./mobile-resource-lists.css";
 import "./teams.css";
+import "@kingsoftcloud/ksadk-web/teams/styles";
+
+function WorkspaceApp() {
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => {
+    const opened = () => {
+      // A Core document owns a workspace-specific plugin context. Return to
+      // the lightweight shell when leaving that context; normal workspace
+      // navigation only remounts the local UI, never the Python process.
+      if (window.__STUDIO_DSH__) {
+        window.location.assign("/");
+        return;
+      }
+      window.history.replaceState(null, "", "/#/agents");
+      setGeneration(value => value + 1);
+    };
+    const unsubscribe = window.studioNative?.onWorkspaceOpened?.(opened);
+    window.addEventListener("studio:directory-opened", opened);
+    return () => {
+      unsubscribe?.();
+      window.removeEventListener("studio:directory-opened", opened);
+    };
+  }, []);
+  return <App key={generation} />;
+}
 
 async function mount(container: HTMLElement) {
   initializeStudioTheme();
@@ -25,7 +50,7 @@ async function mount(container: HTMLElement) {
   const root = createRoot(container);
   root.render(
     <StrictMode>
-      <App />
+      <WorkspaceApp />
     </StrictMode>,
   );
   return () => root.unmount();

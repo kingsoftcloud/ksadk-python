@@ -58,7 +58,6 @@ class ReasonInput:
     #: 可选实时事件出口。流式引擎用它在模型调用尚未结束时交付 started/delta；
     #: 事件仍保留在 ReasonOutput，供非流式调用方与审计使用。
     live_event_sink: Callable[[RuntimeEvent], None] | None = None
-    before_attempt: Callable[[], None] | None = None
 
 
 @dataclass
@@ -140,14 +139,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         raise ReasoningLimitError(f"reasoning exceeded {inp.max_turns} turns")
 
     seq = inp.seq_start
-
-    class _LiveEvents(list):
-        def append(self, event):
-            super().append(event)
-            if inp.live_event_sink is not None:
-                inp.live_event_sink(event)
-
-    out = ReasonOutput(events=_LiveEvents())
+    out = ReasonOutput()
 
     candidates = tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
     turn: HarnessReasoningTurn | None = None
@@ -162,8 +154,6 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             if total_attempt >= inp.provider_policy.total_attempt_budget:
                 stop = True
                 break
-            if inp.before_attempt is not None:
-                inp.before_attempt()
             total_attempt += 1
             attempted_models.append(model_ref)
             event_meta = {
@@ -176,6 +166,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             seq += 1
             started_event = _event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta)
             out.events.append(started_event)
+            if inp.live_event_sink is not None:
+                inp.live_event_sink(started_event)
             try:
                 if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
                     text_parts: list[str] = []
@@ -200,6 +192,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 {"text": item["text_delta"]},
                             )
                             out.events.append(delta_event)
+                            if inp.live_event_sink is not None:
+                                inp.live_event_sink(delta_event)
                         if "reasoning_delta" in item:
                             seq += 1
                             reasoning_event = _event(
@@ -210,6 +204,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 phase="commentary",
                             )
                             out.events.append(reasoning_event)
+                            if inp.live_event_sink is not None:
+                                inp.live_event_sink(reasoning_event)
                         if "turn" in item:
                             turn = item["turn"]
                 else:

@@ -499,14 +499,6 @@ class AgentKernelWorker:
                     ),
                     **continuation_metadata,
                     **conversation_metadata,
-                    # Opaque policy reference is supplied only by a trusted
-                    # ingress. The Provider resolves and reauthorizes it for
-                    # this exact Run; Kernel owns no plugin policy semantics.
-                    **(
-                        {"execution_policy_ref": command.payload["execution_policy_ref"]}
-                        if isinstance(command.payload.get("execution_policy_ref"), str)
-                        else {}
-                    ),
                 },
             )
         )

@@ -338,8 +338,6 @@ export function AgentEditor({
           ? bindings.modelProfileIds
           : bindings.modelProfileId ? [bindings.modelProfileId] : [];
         setDetail(payload);
-        setSubAgents(draft.spec?.subAgents || []);
-        setSubAgentsTouched(false);
         setHarnessPermission(Boolean(payload.draft?.spec?.security?.allowedPermissions?.includes("process:host-user")));
         setHarnessPermissionTouched(false);
         resetAgentForm({
@@ -593,7 +591,6 @@ export function AgentEditor({
     try {
       const original = detail.draft.spec;
       const spec = JSON.parse(JSON.stringify(original));
-      if (subAgentsTouched) spec.subAgents = subAgents;
       if (values.runtimeType === "harness" && harnessPermissionTouched) {
         const retained = (spec.security?.allowedPermissions || []).filter((p: string) => p !== "process:host-user");
         spec.security = { ...spec.security, allowedPermissions: harnessPermission
