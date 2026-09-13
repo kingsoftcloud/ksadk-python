@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { WorkspaceContribution } from "./workspaceSlots";
 import { TeamsAvailability } from "../pages/TeamsAvailability";
+import { apiFetch } from "../api";
 
 /** Mount/unmount a live contribution in its original DSH context. */
 export function PluginWorkspacePage({
@@ -17,6 +18,16 @@ export function PluginWorkspacePage({
   useEffect(() => {
     setError("");
     if (!contribution || !host.current) return;
+    if (!window.__STUDIO_DSH__) {
+      let cancelled = false;
+      void apiFetch("/api/v1/plugin-ecosystems/dsh/core/session", { method: "POST" })
+        .then(response => {
+          if (!response.ok) throw new Error("插件服务尚未就绪，请稍后重试");
+          if (!cancelled) window.location.assign("/studio-core/?workspacePage=teams#/workspace/teams");
+        })
+        .catch(cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)); });
+      return () => { cancelled = true; };
+    }
     try {
       return window.__STUDIO_DSH__?.attachWorkspace?.(pageId, host.current, {});
     } catch (cause) {

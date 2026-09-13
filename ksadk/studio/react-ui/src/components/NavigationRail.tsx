@@ -121,6 +121,8 @@ export interface NavigationRailProps {
   onHistoryHostChange?: (host: HTMLDivElement | null) => void;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
   onOpenSettings: () => void;
+  onWorkspaceSwitch?: () => void;
+  workspaceRunCount?: number;
 }
 export function NavigationRail({
   view,
@@ -139,6 +141,8 @@ export function NavigationRail({
   onHistoryHostChange,
   onNavigate,
   onOpenSettings,
+  onWorkspaceSwitch,
+  workspaceRunCount = 0,
 }: NavigationRailProps) {
   const activeGroup =
     GROUPS.find((group) => group.items.some((item) => item.id === view))?.id ||
@@ -148,6 +152,9 @@ export function NavigationRail({
     setOpenGroup(activeGroup);
   }, [activeGroup]);
   const showLabels = expanded || mobile;
+  // Workspace tabs are contributed by the active DSH host. Keeping this list
+  // live means unavailable plugins disappear instead of leaving a dead tab.
+  const navigationPages = workspacePages;
   const rail = (
     <aside
       className="studio-navigation"
@@ -174,18 +181,21 @@ export function NavigationRail({
           </button>
         )}
       </div>
-      <RailTooltip label={workspacePath}>
-        <div
-          className="studio-nav-workspace"
+      <RailTooltip label={`${workspacePath}（切换工作区）`}>
+        <button
+          type="button"
+          className="studio-nav-workspace workspace-switcher"
           aria-label={`${workspaceName} 工作区`}
+          onClick={onWorkspaceSwitch}
         >
           <KingIcon name="folder" size={15} />
           {showLabels && <span>{workspaceName}</span>}
+          {showLabels && workspaceRunCount > 0 && <small aria-label={`${workspaceRunCount} 个后台任务`}>{workspaceRunCount}</small>}
           <i
             data-ready={runtimeReady}
             aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"}
           />
-        </div>
+        </button>
       </RailTooltip>
       <div className="studio-nav-scroll">
         <nav className="studio-nav-primary" aria-label="产品导航">
@@ -221,7 +231,7 @@ export function NavigationRail({
               {showLabels && <span>Agent</span>}
             </button>
           </RailTooltip>
-          {workspacePages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}><KingIcon name={page.id === "teams" ? "users" : "all"} size={18} />{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
+          {navigationPages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}><KingIcon name={page.id === "teams" ? "users" : "all"} size={18} />{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
           {GROUPS.map((group) => {
             const open = showLabels && openGroup === group.id;
             return (

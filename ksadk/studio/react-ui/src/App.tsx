@@ -19,7 +19,7 @@ import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
-import { ToastRegion } from "./components/Toast";
+import { ToastRegion, showToast } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
 import { useStudioViewportMode } from "./useStudioViewportMode";
 import { useStudioTheme } from "./useStudioTheme";
@@ -155,7 +155,9 @@ export default function App() {
   const [requestedSessionId, setRequestedSessionId] = useState(initialRoute.sessionId || "");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
-  const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
+  const [workspace, setWorkspace] = useState<{ name?: string; path?: string; workspaceId?: string } | null>(null);
+  const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>([]);
+  const [workspaceRunCount, setWorkspaceRunCount] = useState(0);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -308,6 +310,17 @@ export default function App() {
       setWorkspace(d.workspace || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => setRuntimeReady(false)).finally(() => setRuntimeChecked(true));
+  }, [refreshTick]);
+
+  useEffect(() => {
+    apiFetch("/api/v1/workspaces/runs").then(r => r.ok ? r.json() : null)
+      .then(d => setWorkspaceRunCount(Array.isArray(d?.items) ? d.items.filter((item: any) => ["running", "pending", "input-required", "paused"].includes(item.status)).length : 0))
+      .catch(() => undefined);
+  }, [refreshTick]);
+
+  useEffect(() => {
+    apiFetch("/api/v1/workspaces").then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.items) setWorkspaces(d.items); }).catch(() => undefined);
   }, [refreshTick]);
 
   const currentAgent = agents.find(a => a.metadata.id === currentAgentId);
@@ -471,9 +484,9 @@ export default function App() {
 
   const breadcrumbParent = view === "create" || view === "agent-detail" ? "Agent" : null;
   const pluginPageId = view.startsWith("plugin:") ? view.slice(7) : "";
-  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : pluginPageId ? (workspacePages.find(page => page.id === pluginPageId)?.label || "插件工作区") : VIEW_TITLE[view];
+  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : pluginPageId ? (workspacePages.find(page => page.id === pluginPageId)?.label || (pluginPageId === "teams" ? "团队" : "插件工作区")) : VIEW_TITLE[view];
 
-  const workspaceName = workspace?.name || "Workspace";
+  const workspaceName = workspace?.path?.endsWith("/default-workspace") ? "未打开工作区" : (workspace?.name || "未打开工作区");
   const workspacePath = workspace?.path || (runtimeReady ? "本地工作区" : "正在连接本地工作区");
   const focusedView = view === "create"
     || view === "conversations"
@@ -519,11 +532,37 @@ export default function App() {
         workspaceName={workspaceName}
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
+        workspaceRunCount={workspaceRunCount}
         onNavigate={navigateFromRail}
         onOpenSettings={() => {
           setMobileNavOpen(false);
           setSettingsSection("general");
           setSettingsOpen(true);
+        }}
+        onWorkspaceSwitch={async () => {
+          setMobileNavOpen(false);
+          try {
+            if (window.studioNative?.openWorkspace) {
+              await window.studioNative.openWorkspace();
+              return;
+            }
+            let path = await window.studioNative?.chooseWorkspace?.();
+            if (path === undefined) {
+              const picked = await apiFetch("/api/v1/workspaces:choose", { method: "POST" });
+              const payload = await picked.json() as { path?: string | null; error?: { message?: string } };
+              if (!picked.ok) throw new Error(payload.error?.message || "当前环境无法打开目录选择器");
+              path = payload.path || null;
+            }
+            if (!path) return;
+            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, create: true }) });
+            if (!opened.ok) {
+              const payload = await opened.json().catch(() => ({})) as { error?: { message?: string }; detail?: string };
+              throw new Error(payload.error?.message || payload.detail || `打开工作区失败（${opened.status}）`);
+            }
+            window.dispatchEvent(new Event("studio:directory-opened"));
+          } catch (error) {
+            showToast("工作区切换失败", error instanceof Error ? error.message : "无法打开所选目录。", "error");
+          }
         }}
       />
 

@@ -62,6 +62,8 @@ class WorkspacePluginRegistry:
                 try:
                     await (plugin.enable() if payload.enabled else plugin.disable())
                 except Exception as error:
+                    import logging
+                    logging.getLogger(__name__).exception("workspace plugin lifecycle failed: %s", plugin_id)
                     code = getattr(error, "code", "plugin_lifecycle_failed")
                     messages = {
                         "DSH_PROFILE_IN_USE": (
@@ -77,7 +79,7 @@ class WorkspacePluginRegistry:
                             "error": {
                                 "code": code,
                                 "message": messages.get(
-                                    code, "插件未能完成装配，请查看插件状态后重试"
+                                    code, str(error) or "插件未能完成装配，请查看插件状态后重试"
                                 ),
                             }
                         },
