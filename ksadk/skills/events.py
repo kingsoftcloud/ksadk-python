@@ -57,6 +57,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "artifact_ref",
         "agent_step_id",
         "availability",
+        "backend",
         "cache_hit",
         "candidate_count",
         "candidate_skill_ids",
@@ -66,6 +67,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "selected_skill_ids",
         "selection_receipt_id",
         "size_bytes",
+        "cleanup_scope",
     }
 )
 

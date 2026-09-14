@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 from pathlib import Path
 
+from ksadk._process import terminate_process_group
 from ksadk.sandbox.base import SandboxCommandResult, SandboxInputFile, SandboxSession
 
 
@@ -78,11 +78,11 @@ class LocalProcessSandboxSession:
                 exit_code=process.returncode,
             )
         except subprocess.TimeoutExpired as exc:
+            terminate_process_group(process)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except Exception:
-                pass
-            stdout, stderr = process.communicate()
+                stdout, stderr = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = exc.stdout, exc.stderr
             return SandboxCommandResult(
                 stdout=_coerce_output(stdout or exc.stdout),
                 stderr=_coerce_output(stderr or exc.stderr) + "\ncommand timed out",

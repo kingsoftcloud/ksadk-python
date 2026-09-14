@@ -52,7 +52,11 @@ def test_real_subprocess_executes_locked_script_with_reference_file(tmp_path, mo
     monkeypatch.setenv("KSADK_LOCAL_SKILLS_DIR", str(pinned.root_dir.parent))
     monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("KSADK_SELECTED_SKILL_NAMES", "unbound-skill")
-    result = LocalProcessSkillRuntimeBackend(Path(agent.__file__)).run_workflow(
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result = LocalProcessSkillRuntimeBackend(
+        Path(agent.__file__), artifact_directory=artifacts
+    ).run_workflow(
         "run pinned-test",
         skill_space_ids=[],
         session_id="test-session",

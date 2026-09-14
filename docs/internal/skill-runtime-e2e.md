@@ -42,7 +42,9 @@ Skill Runtime 变量：
 - `KSADK_SKILL_RUNTIME_TEMPLATE_ID`：`KSADK_SANDBOX_TEMPLATE_ID` 的兼容别名。
 - `KSADK_SKILL_RUNTIME_TIMEOUT`：workflow 超时秒数。
 - `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS`：远程 Skill Runtime 是否允许出网的兼容变量。
-- `KSADK_SKILL_WORKDIR`：sandbox agent 内部执行 workflow 的工作目录。
+- `KSADK_SKILL_WORKDIR`：直接运行 runtime agent 时是 workflow 工作目录；
+  `local_process` backend 把它解释为调用方持有的父目录，每次调用都会在其下创建
+  唯一请求目录，并把该请求的 `work/` 注入子进程，调用结束后删除整个请求目录。
 - `KSADK_SKILL_ARTIFACT_PROJECT`：最小 artifact workflow 的项目目录名。
 - `KSADK_SKILL_SERVICE_URL`：Skill Service API base URL。
 - `KSADK_SKILL_SERVICE_TOKEN`：可选 bearer token，只能作为 secret 注入。
@@ -51,6 +53,13 @@ Skill Runtime 变量：
 - `KSADK_SKILL_SERVICE_API_VERSION`：Skill Center KOP API 版本。预发 Skill Center 当前使用 `2024-06-12`，不要复用 Sandbox KOP 的 `2026-04-01`。
 
 当前实现通过 `ksadk.sandbox` 调用 E2B SDK。Sandbox KOP 中的 `GetSandboxInstanceList` 等接口应作为未来 `ksyun_sandbox_kop` backend 或控制面集成，不和 E2B SDK backend 混在一起。
+
+`local_process` 共享宿主文件系统和网络，只用于明确允许本地进程执行的场景，
+不表示隔离沙箱。`LocalProcessSkillRuntimeBackend(..., artifact_directory=...)` 会在
+调用方持有的产物父目录下交付经过边界与大小校验的快照；请求目录、包副本、解包
+目录、工作目录和进程临时目录都会在交付后清理。省略 `artifact_directory`
+时，非空 `output_files` 位于 SDK 新建的临时交付目录，
+调用方读取完成后负责删除该交付目录；空产物不会留下交付目录。
 
 Skill Center 直连 REST 地址可用于 OpenAPI 校验：
 

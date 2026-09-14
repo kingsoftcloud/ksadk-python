@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -520,30 +518,28 @@ def test_e2b_backend_writes_request_file_instead_of_shell_quoting_long_prompt():
 
 
 def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_path: Path):
-    calls: list[dict[str, object]] = []
     agent = tmp_path / "agent.py"
-    agent.write_text("print('agent')", encoding="utf-8")
-
-    def fake_run(args, **kwargs):
-        request_path = Path(args[-1])
-        calls.append(
-            {
-                "args": args,
-                "request": json.loads(request_path.read_text(encoding="utf-8")),
-                "env": kwargs["env"],
-            }
-        )
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=0,
-            stdout=(
-                'workflow_result={"output_files":["/tmp/report.md"],'
-                '"output_text":"local report","status":"ok"}\n'
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr("ksadk.skills.runtime.backends.local.subprocess.run", fake_run)
+    agent.write_text(
+        """import json, os, sys
+from pathlib import Path
+request_path = Path(sys.argv[sys.argv.index('--request-file') + 1])
+probe = {
+    'request': json.loads(request_path.read_text()),
+    'selected': os.environ.get('KSADK_SELECTED_SKILL_NAMES'),
+    'workdir': os.environ.get('KSADK_SKILL_WORKDIR'),
+    'tmpdir': os.environ.get('TMPDIR'),
+    'cwd': os.getcwd(),
+    'blocked': [name for name in ('OTEL_EXPORTER_OTLP_ENDPOINT', 'TRACEPARENT',
+                                  'LANGFUSE_SECRET_KEY', 'OTEL_EXPORTER_OTLP_HEADERS')
+                if name in os.environ],
+}
+print('probe=' + json.dumps(probe, sort_keys=True))
+print('workflow_result=' + json.dumps({
+    'output_files': [], 'output_text': 'local report', 'status': 'ok'
+}, sort_keys=True))
+""",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example")
     monkeypatch.setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "not-for-sandbox")
@@ -554,21 +550,30 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
         skill_space_ids=["ss-1"],
         skill_names=["demo-skill"],
         session_id="sess-1",
-        env={"OTEL_EXPORTER_OTLP_HEADERS": "attempted-override"},
+        env={
+            "OTEL_EXPORTER_OTLP_HEADERS": "attempted-override",
+            "KSADK_SKILL_WORKDIR": str(tmp_path / "requests"),
+        },
     )
 
-    assert calls[0]["args"][:3] == [sys.executable, "-u", str(agent)]
-    assert calls[0]["args"][3] == "--request-file"
-    assert calls[0]["request"] == {
+    probe = json.loads(
+        next(
+            line.split("=", 1)[1]
+            for line in result.stdout.splitlines()
+            if line.startswith("probe=")
+        )
+    )
+    assert probe["request"] == {
         "workflow_prompt": "build artifact",
         "skill_names": ["demo-skill"],
     }
-    assert calls[0]["env"]["KSADK_SELECTED_SKILL_NAMES"] == "demo-skill"
-    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in calls[0]["env"]
-    assert "TRACEPARENT" not in calls[0]["env"]
-    assert "LANGFUSE_SECRET_KEY" not in calls[0]["env"]
-    assert "OTEL_EXPORTER_OTLP_HEADERS" not in calls[0]["env"]
-    assert result.output_files == ["/tmp/report.md"]
+    assert probe["selected"] == "demo-skill"
+    assert probe["blocked"] == []
+    assert probe["cwd"] == probe["workdir"]
+    assert Path(probe["workdir"]).name == "work"
+    assert Path(probe["tmpdir"]).name == "tmp"
+    assert list((tmp_path / "requests").iterdir()) == []
+    assert result.output_files == []
     assert result.output_text == "local report"
     assert result.workflow_status == "ok"
     assert result.executed_skill == ""
@@ -577,17 +582,16 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
 
 def test_local_process_backend_recovers_skill_event_sidecar(monkeypatch, tmp_path: Path):
     agent = tmp_path / "agent.py"
-    agent.write_text("print('agent')", encoding="utf-8")
     event = SkillEvent.create(
         "skill.load.completed", status="completed", skill_invocation_id="inv-1"
     )
-
-    def fake_run(args, **kwargs):
-        event_path = Path(kwargs["env"]["KSADK_SKILL_EVENT_FILE"])
-        event_path.write_text(json.dumps(event.to_dict()) + "\n", encoding="utf-8")
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
-
-    monkeypatch.setattr("ksadk.skills.runtime.backends.local.subprocess.run", fake_run)
+    agent.write_text(
+        "import json, os\n"
+        f"event = json.loads({json.dumps(json.dumps(event.to_dict()))})\n"
+        "open(os.environ['KSADK_SKILL_EVENT_FILE'], 'w').write(json.dumps(event) + '\\n')\n"
+        "print('workflow_result=' + json.dumps({'output_files': [], 'status': 'ok'}))\n",
+        encoding="utf-8",
+    )
 
     result = LocalProcessSkillRuntimeBackend(agent_path=agent).run_workflow(
         "build artifact", skill_space_ids=["ss-1"], session_id="sess-1"
@@ -598,5 +602,7 @@ def test_local_process_backend_recovers_skill_event_sidecar(monkeypatch, tmp_pat
         "skill.load.completed",
         "sandbox.session.cleaned_up",
     ]
-    assert result.skill_events[1] == replace(event, runtime_id="local:sess-1")
-    assert result.skill_events[1].runtime_id == "local:sess-1"
+    assert result.skill_events[1] == replace(event, runtime_id=result.runtime_id)
+    assert result.runtime_id.startswith("local:sess-1:")
+    assert result.sandbox["backend"] == "local_process"
+    assert result.sandbox["cleanup_scope"] == "request_directory"

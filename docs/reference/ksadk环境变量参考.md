@@ -254,7 +254,7 @@
 | `KSADK_SELECTED_SKILL_NAMES` | Runtime agent | 否 | 未设置 | 无 | 否 | Runner / Runtime agent | 否 | `execute_skills` 选中的 skill 名称列表，Runtime agent 优先按它下载。 |
 | `KSADK_SKILL_ALLOW_HASH_MISMATCH` | Runtime agent / PackageStore | 否 | `false` | 无 | 否 | 调试 / 兼容旧包 | 否 | 允许 ContentHash 校验失败后以 unverified cache 加载旧 skill 包；生产不建议开启。 |
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
-| `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
+| `KSADK_SKILL_WORKDIR` | Runtime agent / local_process backend | 否 | 直接运行 agent 时为系统临时目录下 `ksadk-skill-workflow`；backend 未配置时使用系统临时父目录 | 无 | 否 | Runtime agent / 开发者 | 否 | 直接运行 agent 时是 workflow 工作目录；`local_process` backend 配置时是调用方持有的请求父目录。backend 每次在其下创建唯一请求目录，将其中 `work/` 注入 agent，并在产物交付后删除请求目录，不复用旧工作目录。 |
 | `KSADK_SKILL_OUTPUT_DIR` | Runtime agent workflow | 否 | `KSADK_SKILL_WORKDIR/artifacts` | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的产物输出目录。 |
 | `KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES` | Runtime agent | 否 | `65536` | 无 | 否 | 平台 / 开发者 | 否 | 返回给外层 Agent 的文本产物总字节上限；取值限制在 `0` 到 `1048576`。 |
 | `KSADK_SKILL_ROOT_DIR` | Runtime agent workflow | 否 | 当前执行 skill 根目录 | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的 skill 根目录。 |
