@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -94,6 +95,14 @@ from ksadk.studio.contracts import (
     OperationStatus,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.native_documents import (
+    NativeDocumentActionRequest,
+    document_metadata,
+    is_local_desktop_request,
+    perform_document_action,
+)
+from ksadk.studio.run_activity import register_activity_routes
+from ksadk.studio.run_documents import read_document
 from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
 from ksadk.studio.workspace_registry import (
@@ -106,8 +115,6 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
     "/api/v1/system/health",
     "/api/v1/system/session",
-    "/api/v1/system/bootstrap",
-    "/v1/responses",
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -233,11 +240,6 @@ def create_studio_app(
     )
     session_secret = session_token or secrets.token_urlsafe(32)
     csrf_secret = csrf_token or secrets.token_urlsafe(24)
-    # Cookies are scoped by host, not port.  Multiple local Studio processes
-    # (for example an App and a CLI started for another workspace) therefore
-    # used to overwrite one another's session cookie and produce intermittent
-    # LOCAL_SESSION_REQUIRED responses.  Bind the cookie name to this
-    # process's secret so each supervised Studio remains independent.
     session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
         session_secret.encode("utf-8")
     ).hexdigest()[:16]
@@ -373,6 +375,7 @@ def create_studio_app(
 
     static_root = Path(__file__).with_name("static")
     shared_web = StudioSharedWebBridge(studio)
+    register_activity_routes(app, studio, resolve_run_id=shared_web.resolve_run_reference)
     cloud_web = CloudSharedWebBridge(studio)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
@@ -426,7 +429,7 @@ def create_studio_app(
         if security_enabled and (
             (studio_api and request.url.path not in _PUBLIC_API_PATHS)
             or shared_web_api
-            or (responses_api and request.url.path not in _PUBLIC_API_PATHS)
+            or responses_api
         ):
             supplied = (
                 request.cookies.get(session_cookie_name)
@@ -527,9 +530,6 @@ def create_studio_app(
         except (StudioError, OSError, RuntimeError):
             # The optional toolchain may be absent in a plain SDK workspace.
             use_core = False
-        # The Electron shell starts the managed Core in the background. Keep
-        # the lightweight Studio shell as the immediate entry document; a
-        # plugin page can still open the official Core on demand.
         if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
             target = "/studio-core/"
             if request.url.query:
@@ -565,7 +565,11 @@ def create_studio_app(
     @app.get("/favicon.ico")
     async def favicon():
         return Response(
-            content='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#1677ff"/><path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>',
+            content=(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+                '<rect width="32" height="32" rx="8" fill="#1677ff"/>'
+                '<path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>'
+            ),
             media_type="image/svg+xml",
         )
 
@@ -1132,22 +1136,14 @@ def create_studio_app(
             # A user-selected directory is itself the workspace. The registry
             # entry is created as part of opening it; callers do not need to
             # pre-register paths in a separate settings screen.
-            # Switching is a workspace identity operation. Do not block it on
-            # optional DSH/Profile bootstrap; the selected workspace becomes
-            # active immediately and its plugins start lazily on demand.
             record = studio.switch(payload.path, create=True)
-            # A newly selected workspace has a fresh StudioService. Start its
-            # local state and schedule DSH/provider discovery without waiting
-            # for the optional toolchain. Without this step the active service
-            # has no provider snapshot, so the first Codex/Teams action would
-            # incorrectly report "Provider 未注册" until a process restart.
+            # Start local state immediately, but keep optional DSH/Profile
+            # discovery off the workspace-switch response path.
             runtime = studio.active
             await runtime.start(wait_for_dsh=False)
-            # Warm the selected runtime itself.  Capturing ``runtime`` avoids
-            # a race where a later switch enables Teams in the wrong workspace.
-            lifespan_state = getattr(app.state, "runtime_warmups", None)
-            if lifespan_state is not None:
-                lifespan_state(runtime)
+            schedule_runtime_warmup = getattr(app.state, "runtime_warmups", None)
+            if schedule_runtime_warmup is not None:
+                schedule_runtime_warmup(runtime)
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         response = {
@@ -1741,8 +1737,6 @@ def create_studio_app(
 
     @app.get("/api/v1/runs/{run_id}")
     async def get_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1750,29 +1744,26 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
     async def cancel_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
         return await runtime.run_service.cancel_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
         return await runtime.run_service.pause_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
         return await runtime.run_service.resume_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
@@ -1781,8 +1772,6 @@ def create_studio_app(
         interaction_id: str,
         payload: InteractionSubmitRequest,
     ):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1855,9 +1844,7 @@ def create_studio_app(
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
-        if studio.is_reserved_session(session_id):
-            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
-        runtime = studio.runtime_for_session(session_id)
+        runtime = await studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
         await runtime.delete_session(session_id)
@@ -1870,9 +1857,7 @@ def create_studio_app(
         invocation_id: str | None = Query(default=None, alias="invocationId"),
         limit: int = Query(default=100, ge=1, le=500),
     ):
-        if studio.is_reserved_session(session_id):
-            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
-        runtime = studio.runtime_for_session(session_id)
+        runtime = await studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
         return await runtime.trajectory_page(
@@ -1889,9 +1874,7 @@ def create_studio_app(
         after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
         invocation_id: str | None = Query(default=None, alias="invocationId"),
     ):
-        if studio.is_reserved_session(session_id):
-            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
-        runtime = studio.runtime_for_session(session_id)
+        runtime = await studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
         await runtime._require_runtime_session(session_id)
@@ -1976,6 +1959,35 @@ def create_studio_app(
     @app.get("/api/v1/workspaces/operations")
     async def list_workspace_operations():
         return {"items": studio.all_operations()}
+
+    @app.get("/api/v1/runs/{run_id}/documents/metadata")
+    def run_document_metadata(run_id: str, path: str, request: Request):
+        return document_metadata(studio, run_id, path, local=is_local_desktop_request(request))
+
+    @app.post("/api/v1/runs/{run_id}/documents/actions")
+    def run_document_action(run_id: str, payload: NativeDocumentActionRequest, request: Request):
+        return perform_document_action(
+            studio, run_id, payload, local=is_local_desktop_request(request)
+        )
+
+    @app.get("/api/v1/runs/{run_id}/documents/content")
+    def run_document(run_id: str, path: str, preview: bool = False):
+        file_path, content = read_document(studio, run_id, path)
+        if preview:
+            return JSONResponse(
+                {"name": file_path.name, "content": content},
+                headers={"Cache-Control": "no-store"},
+            )
+        return Response(
+            content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''"
+                + quote(file_path.name),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/v1/runs/{run_id}/events")
     async def run_events(

@@ -1,0 +1,27 @@
+.harness-timeline { min-height: 0; flex: 1; overflow-y: auto; padding: 15px 16px 24px; }
+.harness-turn { max-width: 64rem; margin: 0 auto; }
+.harness-shared-message[data-slot="message-list"] { overflow: visible; flex: none; padding: 0; }
+.harness-shared-message[data-slot="message-list"] > div:first-child { padding-bottom: 0; }
+/* The pinned shared list owns global banners/scroll chrome after its content.
+   Chunk rendering suppresses those siblings; the host renders one StatusBanner. */
+.harness-shared-message[data-slot="message-list"] > :not(:first-child) { display: none; }
+.harness-activity { margin: 2px auto 14px; padding: 0 16px; max-width: 60rem; font-size: 13px; color: var(--text-secondary, #64748b); }
+.harness-activity-row { margin: 2px 0; }
+.harness-activity-row > summary { display: flex; align-items: center; gap: 7px; padding: 6px 3px; cursor: pointer; list-style: none; border-radius: 4px; line-height: 1.5; }
+.harness-activity-row > summary::-webkit-details-marker { display: none; }
+.harness-activity-row > summary:hover { color: var(--text-primary, #1e293b); background: var(--muted, #f7f8fa); }
+.harness-activity-row > summary:focus-visible { outline: 2px solid #8ca9c9; outline-offset: 2px; }
+.harness-activity-row > summary > svg { flex-shrink: 0; }
+.harness-activity-row[open] > summary .activity-chevron { transform: rotate(90deg); }
+.activity-label { overflow-wrap: anywhere; }
+.activity-status { flex-shrink: 0; font-size: 12px; opacity: .8; margin-left: 4px; }
+.harness-activity-row[data-status="failed"] > summary { color: #b42318; }
+.harness-activity-detail { border-left: 1px solid var(--border, #e1e7ef); padding: 2px 12px 5px; margin: 2px 0 7px 10px; line-height: 1.8; }
+.harness-activity-detail ul { padding-left: 16px; margin: 2px 0; }
+.harness-activity-detail li { margin: 4px 0; overflow-wrap: anywhere; }
+.harness-activity-detail p { margin: 3px 0; }
+.harness-activity-detail a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.harness-activity-note { font-size: 12px; opacity: .8; margin-left: 24px; }
+.activity-spin { animation: activity-spin 1.4s linear infinite; }
+@keyframes activity-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .activity-spin { animation: none; } }

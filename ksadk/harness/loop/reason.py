@@ -141,13 +141,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
 
     seq = inp.seq_start
 
-    class _LiveEvents(list):
-        def append(self, event):
-            super().append(event)
-            if inp.live_event_sink is not None:
-                inp.live_event_sink(event)
-
-    out = ReasonOutput(events=_LiveEvents())
+    out = ReasonOutput()
 
     candidates = tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
     turn: HarnessReasoningTurn | None = None
@@ -176,6 +170,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             seq += 1
             started_event = _event(EventType.MODEL_CALL_STARTED, inp, seq, event_meta)
             out.events.append(started_event)
+            if inp.live_event_sink is not None:
+                inp.live_event_sink(started_event)
             try:
                 if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
                     text_parts: list[str] = []
@@ -200,6 +196,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 {"text": item["text_delta"]},
                             )
                             out.events.append(delta_event)
+                            if inp.live_event_sink is not None:
+                                inp.live_event_sink(delta_event)
                         if "reasoning_delta" in item:
                             seq += 1
                             reasoning_event = _event(
@@ -210,6 +208,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 phase="commentary",
                             )
                             out.events.append(reasoning_event)
+                            if inp.live_event_sink is not None:
+                                inp.live_event_sink(reasoning_event)
                         if "turn" in item:
                             turn = item["turn"]
                 else:
@@ -241,22 +241,23 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                     else 0
                 )
                 seq += 1
-                out.events.append(
-                    _event(
-                        EventType.MODEL_CALL_FAILED,
-                        inp,
-                        seq,
-                        {
-                            **event_meta,
-                            "error": safe_model_error_message(exc),
-                            "error_type": type(exc).__name__,
-                            "failure_category": failure.kind.value,
-                            "status_code": failure.status_code,
-                            "action": action.value,
-                            "retry_delay_ms": delay_ms,
-                        },
-                    )
+                failed_event = _event(
+                    EventType.MODEL_CALL_FAILED,
+                    inp,
+                    seq,
+                    {
+                        **event_meta,
+                        "error": safe_model_error_message(exc),
+                        "error_type": type(exc).__name__,
+                        "failure_category": failure.kind.value,
+                        "status_code": failure.status_code,
+                        "action": action.value,
+                        "retry_delay_ms": delay_ms,
+                    },
                 )
+                out.events.append(failed_event)
+                if inp.live_event_sink is not None:
+                    inp.live_event_sink(failed_event)
                 if action == ModelFailureAction.RETRY:
                     if delay_ms:
                         await asyncio.sleep(delay_ms / 1000)

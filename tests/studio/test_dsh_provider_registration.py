@@ -10,6 +10,8 @@ import pytest
 
 from ksadk.harness.reasoner import HarnessReasoningTurn
 from ksadk.plugins.bridges.dsh import DshPluginInventory, DshProfileProjection
+from ksadk.plugins.dsh_home import default_studio_dsh_home, prepare_studio_dsh_home
+from ksadk.plugins.dsh_toolchain import DSH_VERSION
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.plugins.providers.legacy_catalog import legacy_harness_agent_provider_manifest
 from ksadk.studio.contracts import (
@@ -30,7 +32,6 @@ from ksadk.studio.dsh_provider_registration import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
-from ksadk.plugins.dsh_home import default_studio_dsh_home, prepare_studio_dsh_home
 
 
 class _Reasoner:
@@ -68,7 +69,7 @@ def _managed_profile(tmp_path: Path, monkeypatch) -> Path:
     executable.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        "  *--version*) echo 0.1.1-rc.2;;\n"
+        f"  *--version*) echo {DSH_VERSION};;\n"
         "  *--dump-config*) echo 'profile: studio; harness: 1.0.0';;\n"
         "  *) exit 2;;\n"
         "esac\n",
@@ -202,7 +203,7 @@ async def test_client_only_dsh_profile_does_not_block_studio_startup(
     executable.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        "  *--version*) echo 0.1.1-rc.2;;\n"
+        f"  *--version*) echo {DSH_VERSION};;\n"
         "  *--dump-config*) echo 'profile: studio; client: 1.0.0';;\n"
         "  *) exit 2;;\n"
         "esac\n",
@@ -262,6 +263,18 @@ def test_official_default_marker_is_scoped_to_the_owned_profile(tmp_path: Path) 
         workspace / ".agentkit" / "dsh-home" / "official-dsh-defaults-web.json"
     )
     assert manager._read_default_marker(manager._default_marker_path) == {}  # noqa: SLF001
+
+
+def test_new_core_home_does_not_reuse_old_profile_bootstrap_receipt(tmp_path):
+    old = tmp_path / ".agentkit" / "official-dsh-defaults-agentkit-resources.json"
+    old.parent.mkdir()
+    old.write_text(json.dumps({"platformResourcesApplied": True}))
+    manager = StudioDshProviderRegistrationManager(
+        tmp_path, dsh_home=default_studio_dsh_home(tmp_path),
+        profile="agentkit-resources", dsh_command=("dsh",),
+    )
+    assert manager._read_default_marker(manager._default_marker_path) == {}
+    assert json.loads(old.read_text()) == {"platformResourcesApplied": True}
 
 
 def test_owned_default_profile_repairs_legacy_hoisted_layout(tmp_path: Path, monkeypatch) -> None:

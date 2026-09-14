@@ -380,10 +380,8 @@ class StudioDshProviderRegistrationManager:
             installed = {item.name: item for item in bridge.list_plugins()}
             current = installed.get(SHIPPED_CODEX_DSH_PACKAGE)
             if current is None:
-                # A stale marker only records that an older bootstrap ran; it
-                # is not proof that the package is still present.  Profiles
-                # can be migrated or edited by DSH, so restore the shipped
-                # default whenever the official package has disappeared.
+                if marker_payload.get("codexProviderApplied") is True:
+                    return "skipped"
                 current = bridge.install_plugin(str(shipped.root), accept_host_permissions=True)
                 if current.name != SHIPPED_CODEX_DSH_PACKAGE:
                     raise StudioDshProviderRegistrationError(
@@ -418,19 +416,27 @@ class StudioDshProviderRegistrationManager:
             )
         return result
 
-    async def bootstrap_official_harness_provider(self) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+    async def bootstrap_official_harness_provider(
+        self,
+    ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
         """Install and preflight the wheel-owned Harness provider in the managed profile."""
         if not self._owns_workspace_default_profile:
             return "skipped"
         async with self._lock:
             return await asyncio.to_thread(self._bootstrap_official_harness_provider_sync)
 
-    def _bootstrap_official_harness_provider_sync(self) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+    def _bootstrap_official_harness_provider_sync(
+        self,
+    ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
         if not self._owns_workspace_default_profile:
             return "skipped"
+        prepare_studio_dsh_home(self._dsh_home)
         command = self._dsh_command or DshToolchainManager().require_command()
         shipped = shipped_harness_dsh_bundle()
-        with self._bridge_factory(dsh_home=self._dsh_home, profile=self._profile, dsh_command=command, cwd=self._workspace) as bridge:
+        with self._bridge_factory(
+            dsh_home=self._dsh_home, profile=self._profile,
+            dsh_command=command, cwd=self._workspace,
+        ) as bridge:
             self._repair_owned_profile_layout(bridge)
             installed = {item.name: item for item in bridge.list_plugins()}
             current = installed.get(SHIPPED_HARNESS_DSH_PACKAGE)
@@ -439,8 +445,12 @@ class StudioDshProviderRegistrationManager:
                 result = "installed"
             else:
                 result = "already_enabled" if current.enabled else "disabled"
-            if current.name != SHIPPED_HARNESS_DSH_PACKAGE or current.version != SHIPPED_HARNESS_PROVIDER_VERSION:
-                raise StudioDshProviderRegistrationError("harness_dsh_bundle_not_active", "the official Harness DSH Bundle version is not supported")
+            if (current.name != SHIPPED_HARNESS_DSH_PACKAGE
+                    or current.version != SHIPPED_HARNESS_PROVIDER_VERSION):
+                raise StudioDshProviderRegistrationError(
+                    "harness_dsh_bundle_not_active",
+                    "the official Harness DSH Bundle version is not supported",
+                )
             if result == "installed" and not current.enabled:
                 current = bridge.set_enabled(SHIPPED_HARNESS_DSH_PACKAGE, enabled=True)
             if not current.enabled:
@@ -611,9 +621,9 @@ class StudioDshProviderRegistrationManager:
 
     @property
     def _default_marker_path(self) -> Path:
-        # A bootstrap receipt belongs to one versioned DSH home and Profile.
-        # A workspace-level receipt from an older home must not make a newly
-        # isolated home look explicitly uninstalled before its first install.
+        # An old Core home's "already installed" receipt cannot suppress
+        # installation in a fresh version-isolated home. Keep explicit
+        # uninstall/disable decisions local to their actual Profile and Core.
         return self._dsh_home / f"official-dsh-defaults-{self._profile}.json"
 
     @staticmethod

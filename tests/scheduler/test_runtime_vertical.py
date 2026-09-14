@@ -437,7 +437,7 @@ async def test_runtime_failure_is_a_typed_terminal_not_an_accepted_success(
         failed = await _wait_for_terminal(engine, store, task.task_id, accepted.occurrence_id)
 
         assert failed.state == "failed"
-        assert failed.error_code == "harness_failed"
+        assert failed.error_code == "HARNESS_EXECUTION_FAILED"
         assert failed.detail == "fixture reasoner exploded"
         assert failed.completed_at is not None
         events = await RuntimeEventStore(runtime.session_events).list(

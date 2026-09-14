@@ -131,7 +131,9 @@ def test_cloud_account_credentials_persist_and_bridge_to_env(tmp_path, monkeypat
     用于 Studio -> agentengine-server 的 V4 签名请求(X-Ksc-Account-Id /
     X-Ksc-User-uuid 由 AgentEngineClient 从 AK/SK 反查或 env 注入)。
     """
-    for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "KSYUN_ACCOUNT_ID"):
+    monkeypatch.setattr("ksadk.studio.configuration.get_env_from_global_config", lambda: {})
+    for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "KSYUN_ACCOUNT_ID",
+                "KS3_ACCESS_KEY", "KS3_SECRET_KEY"):
         monkeypatch.delenv(key, raising=False)
     studio = StudioService(tmp_path / "ws")
 

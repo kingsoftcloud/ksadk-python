@@ -1,0 +1,12 @@
+.run-file-menu-anchor { position: fixed; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.run-file-menu { z-index: 110; min-width: 215px; max-width: min(360px, calc(100vw - 16px)); border: 1px solid var(--border, #ddd); background: var(--surface, #fff); color: var(--text-primary, #222); border-radius: 10px; padding: 5px; box-shadow: 0 8px 32px #0002; font-size: 13px; }
+.run-file-menu-title { padding: 7px 9px; color: var(--text-secondary, #64748b); display: flex; gap: 7px; overflow-wrap: anywhere; }
+.run-file-menu-item { display: flex; align-items: center; gap: 8px; justify-content: flex-start; padding: 8px 10px; border-radius: 5px; outline: none; cursor: default; text-decoration: none; color: inherit; }
+.run-file-menu-item[aria-haspopup] > svg:last-child { margin-left: auto; }
+.run-file-menu-item[data-highlighted] { background: var(--muted, #eff3f8); }
+.run-file-menu-item[data-disabled] { opacity: .4; }
+.run-file-menu-separator { height: 1px; background: var(--border, #e5e7eb); margin: 4px; }
+.run-file-menu-note { max-width: 280px; padding: 8px 10px; color: var(--text-secondary, #64748b); font-size: 12px; }
+.run-file-notice { position: absolute; bottom: 125px; left: 50%; transform: translateX(-50%); z-index: 100; max-width: min(600px, 85%); padding: 10px 15px; border: 1px solid var(--border, #ddd); border-radius: 8px; background: var(--surface, #fff); box-shadow: 0 4px 18px #0001; font-size: 13px; overflow-wrap: anywhere; }
+.run-file-notice.error { color: #b42318; }
+.run-file-notice button { margin-left: 12px; border: 0; background: transparent; color: inherit; cursor: pointer; }

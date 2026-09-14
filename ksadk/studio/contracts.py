@@ -162,6 +162,10 @@ class ToolContract(ContractModel):
     )
     permissions: list[str] = Field(default_factory=list)
     timeout_seconds: int = Field(default=20, ge=1, le=3600)
+    # Optional deterministic per-Run budget. The Managed Harness reserves one
+    # slot immediately before execution, so model retries and process restarts
+    # cannot bypass the limit.
+    max_calls_per_run: int | None = Field(default=None, ge=1, le=100_000)
     side_effect: Literal["none", "read", "write", "external"] = "none"
     approval: Literal["never", "always", "policy"] = "never"
     executor: Literal["builtin", "mcp", "deferred", "python"] = "builtin"

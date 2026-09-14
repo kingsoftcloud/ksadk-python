@@ -42,18 +42,19 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
         "KSADK_DSH_CORE_TOKEN",
         "KSADK_DSH_PROFILE_DIGEST",
         "KSADK_DSH_COMPANION_CONFIGURATION",
-            "KSADK_DSH_VERSION",
-            # Generated per-model secret references passed only to the DSH child.
-            "KSADK_STUDIO_MODEL_",
-            "KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID",
-            # Activation and managed-resource values generated for one child
-            # process. They are capability leases, not user configuration.
-            "KSADK_ACTIVATION_MCP_TOKEN_",
-            "KSADK_PLATFORM_RESOURCE_AGENT_ID",
-            "KSADK_PLATFORM_RESOURCE_KINDS",
-            "KSADK_PLATFORM_RESOURCE_MEMORY_WRITE",
-            "KSADK_PLATFORM_RESOURCE_SUBJECT",
-        }
+        "KSADK_DSH_VERSION",
+        # Generated per-model secret references passed only to the DSH child.
+        "KSADK_STUDIO_MODEL_",
+        "KSADK_HARNESS_AGENT_PROVIDER_PLUGIN_ID",
+        "KSADK_WEB_SEARCH",  # Documented environment-name prefix.
+        # Activation and managed-resource values generated for one child
+        # process. They are capability leases, not user configuration.
+        "KSADK_ACTIVATION_MCP_TOKEN_",
+        "KSADK_PLATFORM_RESOURCE_AGENT_ID",
+        "KSADK_PLATFORM_RESOURCE_KINDS",
+        "KSADK_PLATFORM_RESOURCE_MEMORY_WRITE",
+        "KSADK_PLATFORM_RESOURCE_SUBJECT",
+    }
     assert _source_ksadk_env_names() - non_environment_symbols <= registry_names
 
 
@@ -62,7 +63,9 @@ def test_env_registry_docs_cover_registered_names():
     # internal design documents are not included in clean public exports.
     doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
 
-    missing = [item.name for item in ENV_VAR_REGISTRY if item.documented and item.name not in doc_text]
+    missing = [
+        item.name for item in ENV_VAR_REGISTRY if item.documented and item.name not in doc_text
+    ]
     assert not missing, f"Public environment reference is missing: {', '.join(missing)}"
 
 

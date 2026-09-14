@@ -688,7 +688,7 @@ def test_static_studio_shell_is_served(tmp_path: Path):
     assert legacy_script.status_code == 404
 
 
-def test_api_workspace_connection_is_bound_to_daemon_root(tmp_path: Path):
+def test_api_workspace_reconnect_preserves_shape_and_can_switch(tmp_path: Path):
     app = create_studio_app(tmp_path, security_enabled=False)
     with TestClient(app) as client:
         connected = client.post(
@@ -701,12 +701,13 @@ def test_api_workspace_connection_is_bound_to_daemon_root(tmp_path: Path):
             "path": str(tmp_path.resolve()),
         }
 
-        rejected = client.post(
+        switched = client.post(
             "/api/v1/workspaces:open",
-            json={"path": str(tmp_path.parent)},
+            json={"path": str(tmp_path / "second")},
         )
-        assert rejected.status_code == 403
-        assert rejected.json()["error"]["code"] == "WORKSPACE_PATH_FORBIDDEN"
+        assert switched.status_code == 200
+        assert switched.json()["workspaceId"]
+        assert switched.json()["path"] == str((tmp_path / "second").resolve())
 
 
 def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path):

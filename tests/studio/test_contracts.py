@@ -68,3 +68,13 @@ def test_context_reserves_less_than_input_budget():
 def test_tool_contract_rejects_invalid_timeout():
     with pytest.raises(ValidationError):
         ToolContract(name="echo", version="1.0.0", timeout_seconds=0)
+
+
+def test_tool_contract_accepts_camel_case_per_run_quota():
+    tool = ToolContract.model_validate(
+        {"name": "search", "version": "1", "maxCallsPerRun": 15}
+    )
+    assert tool.max_calls_per_run == 15
+    assert tool.model_dump(by_alias=True)["maxCallsPerRun"] == 15
+    with pytest.raises(ValidationError):
+        ToolContract(name="search", version="1", max_calls_per_run=0)

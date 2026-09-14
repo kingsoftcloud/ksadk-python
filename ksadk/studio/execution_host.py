@@ -164,12 +164,15 @@ class StudioExecutionHost:
         )
 
     def require_unreserved_run(self, run_id: str) -> None:
-        if self._db.execute(
-            "SELECT 1 FROM execution_policy_refs WHERE run_id=?", (run_id,)
-        ).fetchone():
+        if self.is_reserved_run(run_id):
             raise ExecutionHostError(
                 "plugin_run_control_required", "该执行由插件管理，请从插件页面操作"
             )
+
+    def is_reserved_run(self, run_id: str) -> bool:
+        return bool(self._db.execute(
+            "SELECT 1 FROM execution_policy_refs WHERE run_id=?", (run_id,)
+        ).fetchone())
 
     @staticmethod
     def _grant(scope: PluginExecutionScope, target: Any, grant_id: str) -> ExecutionGrantSpec:

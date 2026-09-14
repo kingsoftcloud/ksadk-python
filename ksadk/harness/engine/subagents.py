@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 from ksadk.harness.engine import budgets
 from ksadk.harness.engine.base import ExecutionEngineError
@@ -19,7 +19,7 @@ from ksadk.harness.subagent import (
 from ksadk.runtime import ResumePayload, ResumeTarget, RunHandle, StartRequest
 
 
-class ChildApprovalPending(Exception):
+class ChildApprovalPending(BaseException):
     """Return a checkpointable child wait to the parent graph routing node."""
 
     def __init__(self, detail):
@@ -39,6 +39,10 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
     child_agent = f"{parent_run.state.agent_id}:{sub.name}"
     checkpoint_session = f"{parent_run.state.session_id}:sub:{sub.name}:{call_id or 'delegation'}"
     spec = child_spec(parent_run.compiled.spec, sub)
+    if sub.max_total_tokens == 0 or (
+        sub.max_artifacts == 0 and sub.meta.get("requires_artifacts")
+    ):
+        raise SubAgentExecutionError("budget_exhausted", "sub-agent budget is 0")
     policy = parent_run.execution_policy
     child_context = (
         policy.child_system_context
@@ -70,6 +74,13 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
     spec = spec.model_copy(
         update={"execution_strategy": spec.execution_strategy.model_copy(update={"config": config})}
     )
+    artifact_store = getattr(engine._mcp_disclosure, "_artifact_store", None)
+    if artifact_store is not None and sub.max_artifacts is not None:
+        from ksadk.harness.artifact_store import BudgetedArtifactStore
+
+        artifact_store = BudgetedArtifactStore(
+            artifact_store, run_id=child_id, max_artifacts=sub.max_artifacts
+        )
     child_engine = ManagedLangGraphEngine(
         reasoner=engine._reasoner,
         checkpointer=engine._checkpointer,
@@ -81,10 +92,11 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
         memory_runtime=engine._memory_runtime,
         skill_runtime=engine._skill_runtime if sub.inherit_skills else None,
         mcp_runtime=engine._mcp_runtime if sub.inherit_mcp else None,
-        artifact_store=getattr(engine._mcp_disclosure, "_artifact_store", None),
+        artifact_store=artifact_store,
         mcp_offload_policy=engine._mcp_disclosure._offload_policy,
         max_reasoning_turns=min(sub.max_turns, engine._max_reasoning_turns),
     )
+    child_engine._inherited_policy_tool_names = parent_run.policy_tool_names & set(sub.tools)
     compiled = await child_engine.compile(spec)
     request = StartRequest(
         input=task,
@@ -104,6 +116,9 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
             "invocation_id": child_id,
             "parent_run_id": parent_run.handle.run_id,
             "checkpoint_session_id": checkpoint_session,
+            "authorization_agent_id": parent_run.request.metadata.get(
+                "authorization_agent_id", parent_run.state.agent_id
+            ),
         },
     )
     candidate = RunHandle(
@@ -121,6 +136,7 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
             "user_id": parent_run.state.user_id,
             "agent_id": child_agent,
             "parent_run_id": parent_run.handle.run_id,
+            "authorization_agent_id": request.metadata["authorization_agent_id"],
         },
     )
     options = dict(
@@ -139,6 +155,9 @@ async def open_child(*, engine, parent_run, sub, task, call_id):
     if handle is None:
         handle = await child_engine.start(request, compiled, **options)
     child_run = child_engine._runs[handle.run_id]
+    child_run.request = child_run.request.model_copy(update={
+        "metadata": {**child_run.request.metadata, **request.metadata}
+    })
     budgets.adopt_child(parent_run, child_run)
     active[call_id] = (child_engine, handle)
     return child_engine, handle, recovered
@@ -161,9 +180,12 @@ async def execute_subagent(*, engine, parent_run, sub, task, call_id):
         resequence_child_events(parent_run, [event], observe=True)
         if event.event_type == "text.completed" and event.phase == "final_answer":
             final_text = str(event.payload.get("text") or "")
-        if event.event_type == "run.failed":
+        if event.event_type == "run.failed" and not failure:
             failure = str(event.payload.get("error") or "child run failed")
             category = str(event.payload.get("error_category") or "child_failed")
+        if (event.event_type == "tool.call.end"
+                and event.payload.get("error_category") == "budget_exhausted"):
+            failure, category = str(event.payload["error"]), "budget_exhausted"
 
     try:
         while not child_run.done:
@@ -185,6 +207,7 @@ async def execute_subagent(*, engine, parent_run, sub, task, call_id):
                     "child_call_id": child_run.pending_approval_call_id,
                     "child_handle": handle.model_dump(mode="json"),
                     "child_approval": info,
+                    "child_spec": asdict(sub),
                 }
                 resolved = parent_run.child_approval_decision
                 if not resolved:
@@ -220,6 +243,8 @@ async def execute_subagent(*, engine, parent_run, sub, task, call_id):
             async def consume_segment():
                 async for event in child_engine.stream(handle):
                     forward(event)
+                    if category == "budget_exhausted" and not child_run.done:
+                        await child_engine.cancel(handle)
 
             await asyncio.wait_for(consume_segment(), timeout=remaining_seconds)
             if child_run.state.status is RunStatus.AWAITING_APPROVAL:
@@ -305,6 +330,16 @@ async def restore_pending_child(engine, run):
     if info.get("kind") != "child_tool":
         return
     sub = run.sub_agents.get(str(info.get("name") or ""))
+    if sub is None and info.get("child_spec"):
+        from ksadk.harness.spec import SubAgentBinding
+        from ksadk.harness.subagent import SubAgentSpec
+
+        declaration = dict(info["child_spec"])
+        metadata = declaration.pop("meta", {})
+        sub = replace(
+            SubAgentSpec.from_binding(SubAgentBinding.model_validate(declaration)),
+            meta=metadata,
+        )
     if sub is None:
         raise ExecutionEngineError("pending child definition is unavailable")
     await open_child(engine=engine, parent_run=run, sub=sub, task="", call_id=str(info["call_id"]))

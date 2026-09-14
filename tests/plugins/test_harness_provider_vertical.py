@@ -309,6 +309,53 @@ def _host(
 
 
 @pytest.mark.asyncio
+async def test_host_policy_reaches_factory_activation_and_managed_run(tmp_path):
+    from ksadk.harness.execution_policy import ExecutionPolicy
+    from ksadk.plugins.host import PluginExecutionContext
+    from ksadk.runtime import StartRequest
+
+    class Resolver:
+        async def resolve(self, ref, *, request):
+            assert ref == "fixture-policy" and request.user_id == "fixture-user"
+            return ExecutionPolicy(system_context="host policy context")
+
+    class Reasoner:
+        async def complete(self, *, prompt, **kwargs):
+            assert "host policy context" in prompt
+            return HarnessReasoningTurn(final_text="policy applied")
+
+    registry, profile = _composition()
+    bundle = _write_bundle(tmp_path / "bundle", registry, profile)
+    resolver = Resolver()
+    factory = KsADKHarnessProviderFactory(reasoner=Reasoner())
+    runtime = await factory.stage(
+        _manifest("io.ksadk.harness-provider", definition="agent.provider/v1",
+                  slot="agent.execution", digit="1"),
+        profile=profile,
+        services={"execution_policy_resolver": resolver, "harness_state_dir": tmp_path / "state"},
+    )
+    await runtime.start()
+    activation = await runtime.prepare(
+        bundle, capabilities=PluginExecutionContext("profile", "lock", ()),
+    )
+    await activation.start()
+    try:
+        adapter = await activation.runtime_adapter()
+        assert adapter.capabilities().execution_policy.supported
+        handle = await adapter.start(StartRequest(
+            input="go", user_id="fixture-user", session_id="fixture-session",
+            agent_id="weather-agent",
+            metadata={"execution_policy_ref": "fixture-policy"},
+        ))
+        events = [event async for event in adapter.stream(handle)]
+        assert events[-1].event_type == "run.completed"
+        assert adapter._engine._runs[handle.run_id].execution_policy_resolver is resolver
+    finally:
+        await activation.dispose()
+        await runtime.dispose()
+
+
+@pytest.mark.asyncio
 async def test_harness_provider_real_multiturn_mcp_skill_inventory_and_dispose(
     tmp_path: Path,
 ) -> None:

@@ -130,6 +130,7 @@ async def test_one_shot_children_have_distinct_clients_homes_threads_and_replay(
             {
                 "cwd": str(Path.cwd().resolve()),
                 "sandbox_read_only": True,
+                "sandbox": "read-only",
                 "approval_mode": "deny_all",
                 "ephemeral": True,
                 "model": "fixture-model",
@@ -151,6 +152,27 @@ async def test_one_shot_children_have_distinct_clients_homes_threads_and_replay(
     assert all(client.closed == 1 for client in factory.clients)
     assert all(not home.exists() for home in factory.homes)
     assert (await provider.status(first)).state == "disposed"
+
+
+@pytest.mark.asyncio
+async def test_coding_child_can_be_scoped_to_workspace_write() -> None:
+    factory = _Factory()
+    provider = CodexOneShotSubagentProvider(
+        project_dir=Path.cwd(),
+        sandbox_read_only=False,
+        client_factory=factory,
+    )
+    handle = await provider.spawn(_request())
+    await provider.result(handle)
+
+    assert factory.clients[0].start_configs[0] == {
+        "cwd": str(Path.cwd().resolve()),
+        "sandbox_read_only": False,
+        "sandbox": "workspace-write",
+        "approval_mode": "deny_all",
+        "ephemeral": True,
+    }
+    await provider.dispose(handle)
 
 
 @pytest.mark.asyncio
@@ -176,6 +198,38 @@ async def test_cancel_interrupts_native_turn_and_dispose_closes_child() -> None:
     await provider.dispose(handle)
     assert client.closed == 1
     assert not home.exists()
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_terminal_when_native_interrupt_hangs(monkeypatch) -> None:
+    from ksadk.plugins.subagent_providers import codex as codex_provider
+
+    class HangingInterruptClient(_FakeCodexClient):
+        async def interrupt_active_turn(self, thread_id: str) -> bool:
+            self.interrupts.append(thread_id)
+            await asyncio.Event().wait()
+            return True
+
+    client: HangingInterruptClient | None = None
+
+    def factory(_home: Path) -> HangingInterruptClient:
+        nonlocal client
+        client = HangingInterruptClient(1, blocked=True)
+        return client
+
+    monkeypatch.setattr(codex_provider, "_NATIVE_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    provider = CodexOneShotSubagentProvider(project_dir=Path.cwd(), client_factory=factory)
+    handle = await provider.spawn(
+        _request(policy=SubagentPolicy(timeout_seconds=1))
+    )
+
+    result = await asyncio.wait_for(provider.result(handle), timeout=2)
+
+    assert result.state == "failed"
+    assert result.error_code == "codex_child_timeout"
+    assert client is not None
+    assert client.interrupts == [client.thread_id]
+    await provider.dispose(handle)
 
 
 @pytest.mark.asyncio

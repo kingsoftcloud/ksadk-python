@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ksadk.studio.workspace_registry import (
@@ -17,6 +18,23 @@ def test_registry_assigns_stable_identity_and_tracks_recent(tmp_path: Path) -> N
     assert first.workspace_id == second.workspace_id
     assert registry.list()[0].path == str(root.resolve())
     assert (home / "workspaces.json").stat().st_mode & 0o077 == 0
+
+
+def test_concurrent_registry_instances_preserve_every_workspace(tmp_path: Path) -> None:
+    home = tmp_path / "registry"
+    roots = [tmp_path / f"project-{index}" for index in range(24)]
+    for root in roots:
+        root.mkdir()
+
+    def open_project(root):
+        return WorkspaceRegistry(home).open(root)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(open_project, roots))
+    assert {record.path for record in WorkspaceRegistry(home).list()} == {
+        str(root.resolve()) for root in roots
+    }
+    assert not list(home.glob(".workspaces-*"))
 
 
 def test_linked_directory_policy_round_trip_and_remove(tmp_path: Path) -> None:

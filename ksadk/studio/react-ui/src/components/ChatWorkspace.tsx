@@ -8,6 +8,8 @@ import { ApiFacadeImpl } from "@kingsoftcloud/ksadk-web/runtime";
 import { apiFetch } from "../api";
 import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
+import { useRunDocumentActions } from "./RunDocumentActions";
 
 export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
@@ -73,6 +75,8 @@ export function ChatWorkspace({
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
+  const documents = useRunDocumentActions();
+  const Timeline = chat.agentFramework === "harness" ? CompactHarnessTimeline : AgentConversationTimeline;
   const startedNewChatRequest = useRef(0);
   useEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
@@ -272,6 +276,8 @@ export function ChatWorkspace({
       data-agent-id={agentId}
       data-integrated-history={integratedHistory}
       data-integrated-header={Boolean(headerHost)}
+      onClickCapture={documents.onClickCapture}
+      onContextMenuCapture={documents.onContextMenuCapture}
     >
       {integratedHistory ? (historyHost ? createPortal(history, historyHost) : null) : history}
 
@@ -298,9 +304,13 @@ export function ChatWorkspace({
           </div>
         ) : (
           <>
-            <AgentConversationTimeline
+            <Timeline
               className="studio-chat-timeline"
               agentName={agentName}
+              messages={chat.messages}
+              isStreaming={chat.isStreaming}
+              activity={chat.activity}
+              sessionId={chat.currentSessionId}
               emptyState={(
                 <div className="studio-conversation-welcome">
                   <p>{agentName}</p>
@@ -357,6 +367,7 @@ export function ChatWorkspace({
       ) : null}
 
       {!active ? <span hidden data-testid="studio-chat-inactive" /> : null}
+      {documents.ui}
     </div>
   );
 }
