@@ -14,6 +14,16 @@ from ksadk.codex.client import AsyncCodexClient  # noqa: E402  (importorskip 守
 from ksadk.model_proxy.detect import ModelCapabilities  # noqa: E402
 
 
+def test_client_constructor_applies_proxy_through_instance():
+    """Exercise the bound call used by real Studio startup, not just class calls."""
+    from openai_codex import CodexConfig
+
+    cfg = CodexConfig(env={"KSADK_CODEX_USE_PROXY": "0"})
+    client = AsyncCodexClient(cfg)
+    assert client._proxy is None
+    asyncio.run(client.close())
+
+
 def test_proxy_default_off(monkeypatch):
     """未设 KSADK_CODEX_USE_PROXY 时原样返回,不注入(历史路径与基线测试不受影响)。"""
     from openai_codex import CodexConfig

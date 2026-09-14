@@ -13,6 +13,7 @@ import pytest
 import ksadk.runtime as runtime_api
 from ksadk.codex.client import CodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
+from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime import factory as runtime_factory
@@ -61,6 +62,7 @@ class _FactoryRunner(BaseRunner):
     ("runtime_type", "adapter_type"),
     [
         ("codex", CodexRuntimeAdapter),
+        ("harness", ManagedHarnessRuntimeAdapter),
         ("adk", ADKRuntimeAdapter),
         ("langgraph", LangGraphRuntimeAdapter),
     ],
@@ -88,7 +90,7 @@ def test_default_registry_creates_expected_adapter_from_launch_context(
         runtime_type=runtime_type,
         project_dir=tmp_path,
         detection=detection,
-        config={"model": "model-a"},
+        config={"model": "model-a", "prompt": "You are a test agent."},
         services=services,
     )
 
@@ -99,8 +101,10 @@ def test_default_registry_creates_expected_adapter_from_launch_context(
     if runtime_type == "codex":
         assert adapter._client is client
         assert runner_calls == []
-    else:
+    elif runtime_type != "harness":
         assert runner_calls == [(detection, str(tmp_path))]
+    else:
+        assert runner_calls == []
 
 
 def test_create_runtime_adapter_uses_canonical_default_registry(tmp_path: Path) -> None:
@@ -162,7 +166,7 @@ def test_codex_home_uses_runtime_state_when_code_bundle_is_read_only(
     """Managed Code bundles are read-only, but Codex still needs isolated state."""
 
     project_dir = tmp_path / "read-only-code"
-    blocked_home = project_dir / ".agentkit" / "codex-home"
+    blocked_home = project_dir / ".agentkit" / "codex-homes" / "unscoped"
     state_dir = tmp_path / "runtime-state"
     original_mkdir = Path.mkdir
 
@@ -176,8 +180,9 @@ def test_codex_home_uses_runtime_state_when_code_bundle_is_read_only(
     monkeypatch.delenv("KSADK_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setenv("KSADK_SESSION_PATH", str(state_dir / "sessions.sqlite"))
 
-    assert runtime_factory._isolated_codex_home(project_dir) == state_dir / "codex-home"
-    assert (state_dir / "codex-home").is_dir()
+    expected_home = state_dir / "codex-homes" / "unscoped"
+    assert runtime_factory._isolated_codex_home(project_dir) == expected_home
+    assert expected_home.is_dir()
 
 
 def test_framework_factory_requires_detection_without_injected_runner(
@@ -187,3 +192,30 @@ def test_framework_factory_requires_detection_without_injected_runner(
 
     with pytest.raises(ValueError, match="detection"):
         runtime_api.create_runtime_adapter(context)
+
+
+def test_declared_native_plugins_cannot_silently_disappear_on_hosted_launch(tmp_path: Path) -> None:
+    config = {
+        "plugins": [
+            {
+                "pluginRef": "plugin://example.plugin@1.0.0",
+                "ecosystem": "codex",
+                "enabled": True,
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="交付快照"):
+        runtime_api.build_default_runtime_registry().create(
+            runtime_api.RuntimeLaunchContext(
+                runtime_type="codex",
+                project_dir=tmp_path,
+                config=config,
+                services=runtime_api.RuntimeServices(
+                    codex_client_factory=lambda: _FactoryCodexClient()
+                ),
+            )
+        )
+
+
+def test_disabled_native_plugins_do_not_require_bootstrap() -> None:
+    assert runtime_factory._codex_plugin_bootstrap({"plugins": [{"enabled": False}]}) is None

@@ -83,8 +83,20 @@ def managed_runtime(manifest_path: Path, port: int, host: str) -> None:
     """Serve one mounted, declarative ``agentengine.yaml`` in hosted mode."""
 
     manifest_path = manifest_path.resolve()
-    _load_managed_runtime_manifest(manifest_path)
+    manifest = _load_managed_runtime_manifest(manifest_path)
     work_dir = _prepare_writable_runtime_dir(manifest_path)
+    from ksadk.plugins.delivery import prepare_cloud_plugins
+
+    try:
+        prepare_cloud_plugins(manifest, work_dir)
+    except Exception as exc:
+        # Transport exceptions can contain signed URLs; keep startup logs secret-free.
+        import httpx
+
+        detail = "artifact transport failed" if isinstance(exc, httpx.HTTPError) else str(exc)
+        raise click.ClickException(
+            "plugin delivery failed before runtime startup: " + detail
+        ) from None
     # The command is a production process entrypoint, never a local UI action.
     # ``web`` owns the RuntimeAdapter composition, while no_open prevents an
     # accidental browser launch if this container is ever run with a display.

@@ -1,27 +1,22 @@
+import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
-  Bot,
   Boxes,
   ChartSpline,
   Clock3,
   ClipboardCheck,
   CloudUpload,
-  Folder,
-  MessagesSquare,
-  MessageSquare,
   PackageCheck,
   Plug,
-  Puzzle,
   ServerCog,
-  Settings,
-  Workflow,
   type LucideIcon,
 } from "lucide-react";
+import { KingIcon, type KingIconName } from "./KingIcon";
+import type { WorkspaceContribution } from "../plugins/workspaceSlots";
 import type { ResourceKind } from "../pages/ResourcesPage";
 
 export const NAVIGATION_RAIL_PREFERENCE_KEY = "agentkit.studio.rail-expanded";
-
 export type NavigationView =
   | "agents"
   | "create"
@@ -32,53 +27,41 @@ export type NavigationView =
   | "deployments"
   | "observability"
   | "evaluations"
-  | "channels"
   | "runtime-resources"
   | "plugins"
   | "automations"
-  | "orchestration"
-  | "extension";
+  | `plugin:${string}`;
 
-export interface ExtensionNavigationItem {
+const GROUPS: Array<{
   id: string;
   label: string;
-  path: string;
-}
-
-interface NavigationItem {
-  id: NavigationView;
-  label: string;
-  icon: LucideIcon;
-  kind?: ResourceKind;
-  beta?: boolean;
-}
-
-const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
+  icon: KingIconName;
+  items: Array<{
+    id: NavigationView;
+    label: string;
+    icon: LucideIcon;
+  }>;
+}> = [
   {
-    group: "创作",
+    id: "resources",
+    label: "资源库",
+    icon: "folder",
     items: [
-      { id: "agents", label: "Agent", icon: Bot },
-      { id: "conversations", label: "会话", icon: MessagesSquare },
-    ],
-  },
-  {
-    group: "资源",
-    items: [
-      { id: "resources", label: "工程资源", icon: Boxes },
+      { id: "resources", label: "模型与工具", icon: Boxes },
       { id: "runtime-resources", label: "运行资源", icon: ServerCog },
-      { id: "plugins", label: "插件", icon: Plug, beta: true },
+      { id: "plugins", label: "插件", icon: Plug },
     ],
   },
   {
-    group: "交付与运行",
+    id: "runs",
+    label: "运行中心",
+    icon: "panel",
     items: [
       { id: "builds", label: "构建", icon: PackageCheck },
       { id: "deployments", label: "部署", icon: CloudUpload },
-      { id: "automations", label: "自动化", icon: Clock3, beta: true },
-      { id: "orchestration", label: "编排", icon: Workflow, beta: true },
+      { id: "automations", label: "自动化", icon: Clock3 },
       { id: "observability", label: "可观测", icon: ChartSpline },
-      { id: "evaluations", label: "评测", icon: ClipboardCheck, beta: true },
-      { id: "channels", label: "消息渠道", icon: MessageSquare },
+      { id: "evaluations", label: "评测", icon: ClipboardCheck },
     ],
   },
 ];
@@ -91,30 +74,23 @@ export function readNavigationRailPreference(): boolean | null {
     return null;
   }
 }
-
 export function writeNavigationRailPreference(expanded: boolean): void {
   try {
-    window.localStorage.setItem(NAVIGATION_RAIL_PREFERENCE_KEY, String(expanded));
+    window.localStorage.setItem(
+      NAVIGATION_RAIL_PREFERENCE_KEY,
+      String(expanded),
+    );
   } catch {
-    // 无持久化能力时，调用方仍保留当前 React 状态。
+    /* The current choice remains available without persistence. */
   }
 }
-
-function isItemActive(
-  item: NavigationItem,
-  view: NavigationView,
-  resourceKind: ResourceKind,
-): boolean {
-  return (
-    (
-      view === item.id
-      && (item.id !== "resources" || item.kind == null || item.kind === resourceKind)
-    )
-    || ((view === "agent-detail" || view === "create") && item.id === "agents")
-  );
-}
-
-function RailTooltip({ label, children }: { label: string; children: ReactNode }) {
+function RailTooltip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   return (
     <Tooltip.Root>
       <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
@@ -130,125 +106,234 @@ function RailTooltip({ label, children }: { label: string; children: ReactNode }
 
 export interface NavigationRailProps {
   view: NavigationView;
+  workspacePages?: WorkspaceContribution[];
   resourceKind: ResourceKind;
   expanded: boolean;
   workspaceName: string;
   workspacePath: string;
   runtimeReady: boolean;
+  mobile?: boolean;
+  mobileOpen?: boolean;
+  onMobileOpenChange?: (open: boolean) => void;
+  onExpand?: () => void;
+  onStartChat?: () => void;
+  chatStreaming?: boolean;
+  onHistoryHostChange?: (host: HTMLDivElement | null) => void;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
-  extensionItems?: readonly ExtensionNavigationItem[];
-  activeExtensionPath?: string;
-  onNavigateExtension?: (item: ExtensionNavigationItem) => void;
   onOpenSettings: () => void;
+  onWorkspaceSwitch?: () => void;
+  workspaceRunCount?: number;
 }
-
 export function NavigationRail({
   view,
+  workspacePages = [],
   resourceKind,
   expanded,
   workspaceName,
   workspacePath,
   runtimeReady,
+  mobile = false,
+  mobileOpen = false,
+  onMobileOpenChange,
+  onExpand,
+  onStartChat,
+  chatStreaming = false,
+  onHistoryHostChange,
   onNavigate,
-  extensionItems = [],
-  activeExtensionPath = "",
-  onNavigateExtension = () => undefined,
   onOpenSettings,
+  onWorkspaceSwitch,
+  workspaceRunCount = 0,
 }: NavigationRailProps) {
-  return (
-    <Tooltip.Provider delayDuration={320} skipDelayDuration={120}>
-      <aside className="sidebar navigation-rail" data-state={expanded ? "expanded" : "compact"}>
-        <div className="product">
-          <span className="product-mark" aria-hidden="true">K</span>
-          <span className="product-copy"><strong>AgentKit</strong><span>Studio</span></span>
-        </div>
-
-        <RailTooltip label={workspacePath}>
+  const activeGroup =
+    GROUPS.find((group) => group.items.some((item) => item.id === view))?.id ||
+    "";
+  const [openGroup, setOpenGroup] = useState(activeGroup);
+  useEffect(() => {
+    setOpenGroup(activeGroup);
+  }, [activeGroup]);
+  const showLabels = expanded || mobile;
+  // Workspace tabs are contributed by the active DSH host. Keeping this list
+  // live means unavailable plugins disappear instead of leaving a dead tab.
+  const navigationPages = workspacePages;
+  const rail = (
+    <aside
+      className="studio-navigation"
+      data-state={showLabels ? "expanded" : "compact"}
+      aria-label="工作区导航"
+    >
+      <div className="studio-nav-brand">
+        <span className="studio-nav-mark" aria-hidden="true">
+          K
+        </span>
+        {showLabels && (
+          <strong>
+            AgentKit <span>Studio</span>
+          </strong>
+        )}
+        {mobile && (
           <button
-            className="workspace-switcher"
             type="button"
-            aria-label={`${workspaceName} 工作区`}
-            aria-disabled={!runtimeReady}
+            className="icon-button tertiary"
+            aria-label="关闭导航"
+            onClick={() => onMobileOpenChange?.(false)}
           >
-            <span className="workspace-mark"><Folder size={16} /></span>
-            <span className="workspace-copy"><strong>{workspaceName}</strong></span>
+            <KingIcon name="close" size={18} />
           </button>
-        </RailTooltip>
-
-        <nav className="primary-nav" aria-label="产品导航">
-          {NAVIGATION_GROUPS.map(group => (
-            <div key={group.group} className="nav-group">
-              <div className="nav-label">{group.group}</div>
-              {group.items.map(item => {
-                const Icon = item.icon;
-                const active = isItemActive(item, view, resourceKind);
-                const button = (
-                  <button
-                    key={`${item.id}-${item.label}`}
-                    className={`nav-item${active ? " active" : ""}`}
-                    type="button"
-                    aria-label={item.label}
-                    aria-current={active ? "page" : undefined}
-                    onClick={() => onNavigate(
-                      item.id,
-                      item.id === "resources" ? (item.kind || resourceKind) : item.kind,
-                    )}
-                  >
-                    <Icon size={18} />
-                    <span>{item.label}</span>
-                    {item.beta && <span className="nav-beta-badge" title="Beta">Beta</span>}
-                  </button>
-                );
-                return expanded ? button : (
-                  <RailTooltip key={`${item.id}-${item.label}`} label={item.label}>
-                    {button}
-                  </RailTooltip>
-                );
-              })}
-            </div>
-          ))}
-          {extensionItems.length > 0 && (
-            <div className="nav-group" data-testid="dsh-extension-navigation">
-              <div className="nav-label">插件</div>
-              {extensionItems.map(item => {
-                const active = view === "extension" && activeExtensionPath === item.path;
-                const button = (
-                  <button
-                    key={item.id}
-                    className={`nav-item${active ? " active" : ""}`}
-                    type="button"
-                    aria-label={item.label}
-                    aria-current={active ? "page" : undefined}
-                    onClick={() => onNavigateExtension(item)}
-                  >
-                    <Puzzle size={18} />
-                    <span>{item.label}</span>
-                  </button>
-                );
-                return expanded ? button : (
-                  <RailTooltip key={item.id} label={item.label}>{button}</RailTooltip>
-                );
-              })}
-            </div>
-          )}
-        </nav>
-
-        <div className="sidebar-footer">
-          <RailTooltip label="本地用户">
-            <span className="user-avatar" aria-label="本地用户">A</span>
-          </RailTooltip>
-          <RailTooltip label="设置">
+        )}
+      </div>
+      <RailTooltip label={`${workspacePath}（切换工作区）`}>
+        <button
+          type="button"
+          className="studio-nav-workspace workspace-switcher"
+          aria-label={`${workspaceName} 工作区`}
+          onClick={onWorkspaceSwitch}
+        >
+          <KingIcon name="folder" size={15} />
+          {showLabels && <span>{workspaceName}</span>}
+          {showLabels && workspaceRunCount > 0 && <small aria-label={`${workspaceRunCount} 个后台任务`}>{workspaceRunCount}</small>}
+          <i
+            data-ready={runtimeReady}
+            aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"}
+          />
+        </button>
+      </RailTooltip>
+      <div className="studio-nav-scroll">
+        <nav className="studio-nav-primary" aria-label="产品导航">
+          <RailTooltip label="新对话">
             <button
-              className="icon-button tertiary"
               type="button"
-              aria-label="设置"
-              onClick={onOpenSettings}
+              className={`studio-nav-link${view === "conversations" ? " active" : ""}`}
+              aria-label="新对话"
+              disabled={chatStreaming}
+              aria-current={view === "conversations" ? "page" : undefined}
+              onClick={() => {
+                if (onStartChat) onStartChat();
+                else onNavigate("conversations");
+              }}
             >
-              <Settings size={16} />
+              <KingIcon name="message" size={18} />
+              {showLabels && <span>新对话</span>}
             </button>
           </RailTooltip>
-        </div>
-      </aside>
+          <RailTooltip label="Agent">
+            <button
+              type="button"
+              className={`studio-nav-link${["agents", "create", "agent-detail"].includes(view) ? " active" : ""}`}
+              aria-label="Agent"
+              aria-current={
+                ["agents", "create", "agent-detail"].includes(view)
+                  ? "page"
+                  : undefined
+              }
+              onClick={() => onNavigate("agents")}
+            >
+              <KingIcon name="cpu" size={18} />
+              {showLabels && <span>Agent</span>}
+            </button>
+          </RailTooltip>
+          {navigationPages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}><KingIcon name={page.id === "teams" ? "users" : "all"} size={18} />{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
+          {GROUPS.map((group) => {
+            const open = showLabels && openGroup === group.id;
+            return (
+              <div key={group.id} className="studio-nav-group">
+                <RailTooltip label={group.label}>
+                  <button
+                    type="button"
+                    className={`studio-nav-link${activeGroup === group.id ? " active" : ""}`}
+                    aria-label={group.label}
+                    aria-expanded={open}
+                    aria-controls={`studio-nav-${group.id}`}
+                    onClick={() => {
+                      if (!showLabels) onExpand?.();
+                      setOpenGroup(open ? "" : group.id);
+                    }}
+                  >
+                    <KingIcon name={group.icon} size={18} />
+                    {showLabels && (
+                      <>
+                        <span>{group.label}</span>
+                        <KingIcon
+                          name="down"
+                          size={14}
+                          className="studio-nav-chevron"
+                          data-open={open}
+                        />
+                      </>
+                    )}
+                  </button>
+                </RailTooltip>
+                <div
+                  id={`studio-nav-${group.id}`}
+                  className="studio-nav-children"
+                  hidden={!open}
+                >
+                  {group.items.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`studio-nav-link${view === item.id ? " active" : ""}`}
+                      aria-current={view === item.id ? "page" : undefined}
+                      onClick={() =>
+                        onNavigate(
+                          item.id,
+                          item.id === "resources" ? resourceKind : undefined,
+                        )
+                      }
+                    >
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </nav>
+        <div
+          className="studio-nav-history"
+          ref={onHistoryHostChange}
+          hidden={!showLabels}
+        />
+      </div>
+      <div className="studio-nav-footer">
+        <RailTooltip label="设置">
+          <button
+            type="button"
+            className="studio-nav-link"
+            aria-label="设置"
+            onClick={onOpenSettings}
+          >
+            <KingIcon name="settings" size={18} />
+            {showLabels && <span>设置</span>}
+          </button>
+        </RailTooltip>
+      </div>
+    </aside>
+  );
+
+  return (
+    <Tooltip.Provider delayDuration={320} skipDelayDuration={120}>
+      {mobile ? (
+        <Dialog.Root open={mobileOpen} onOpenChange={onMobileOpenChange}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="studio-nav-overlay" />
+            <Dialog.Content
+              className="studio-nav-dialog"
+              aria-describedby={undefined}
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                document
+                  .querySelector<HTMLButtonElement>(".rail-toggle")
+                  ?.focus();
+              }}
+            >
+              <Dialog.Title className="sr-only">工作区导航</Dialog.Title>
+              {rail}
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+      ) : (
+        rail
+      )}
     </Tooltip.Provider>
   );
 }

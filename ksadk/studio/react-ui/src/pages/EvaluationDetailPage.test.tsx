@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -14,6 +14,26 @@ function response(payload: unknown, ok = true): Response {
 
 describe("EvaluationDetailPage", () => {
   beforeEach(() => mockedFetch.mockReset());
+
+  it("refreshes a terminal evaluation without restarting or cancelling it", async () => {
+    let title = "原评测名称";
+    mockedFetch.mockImplementation(async () => response({
+      id: "eval_1", operationId: "op_1", status: "PASSED", createdAt: "2026-08-18T00:00:00Z",
+      completedAt: "2026-08-18T00:00:02Z", evalset: { name: title, caseCount: 1 },
+      target: { kind: "a2a", label: "A2A Agent" }, evaluators: ["response_contract@v1"],
+      progress: null, summary: null, hasReport: false, error: null, report: null,
+    }));
+    const props = { runId: "eval_1", onBack: vi.fn() };
+    const view = render(<EvaluationDetailPage {...props} refreshTick={0} />);
+    expect(await screen.findByRole("heading", { name: "原评测名称" })).toBeInTheDocument();
+    title = "刷新后的评测名称";
+    mockedFetch.mockClear();
+    view.rerender(<EvaluationDetailPage {...props} refreshTick={1} />);
+    expect(await screen.findByRole("heading", { name: "刷新后的评测名称" })).toBeInTheDocument();
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(1));
+    expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-runs/eval_1", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(mockedFetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
 
   it("shows running progress and cancels the operation", async () => {
     const user = userEvent.setup();
@@ -42,7 +62,7 @@ describe("EvaluationDetailPage", () => {
     render(<EvaluationDetailPage runId="eval_1" onBack={vi.fn()} />);
 
     expect(await screen.findByText("2 / 3")).toBeInTheDocument();
-    expect(screen.getByText("case-2")).toBeInTheDocument();
+    expect(screen.getByText("当前 Case：case-2")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "取消评测" }));
     expect(mockedFetch).toHaveBeenCalledWith(
       "/api/v1/operations/op_1:cancel",
@@ -141,7 +161,11 @@ describe("EvaluationDetailPage", () => {
 
     render(<EvaluationDetailPage runId="eval_2" onBack={vi.fn()} />);
 
-    expect(await screen.findByRole("heading", { name: "数据集快照" })).toBeInTheDocument();
+    const configuration = await screen.findByText("评测配置与数据集");
+    expect(configuration.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("heading", { name: "输入与预期" })).toBeVisible();
+    await userEvent.setup().click(configuration);
+    expect(screen.getByRole("heading", { name: "数据集快照" })).toBeVisible();
     expect(screen.getByText("多轮上下文回归数据集")).toBeInTheDocument();
     expect(screen.getByText("sha256:dataset-snapshot")).toBeInTheDocument();
     expect(screen.getByText("Turn 1")).toBeInTheDocument();

@@ -19,6 +19,7 @@ const inertBackground = new Map<HTMLElement, boolean>();
 const BACKGROUND_SELECTORS = [
   ".skip-link",
   ".sidebar",
+  ".studio-navigation",
   ".global-header",
   "#mainContent",
 ];
@@ -101,9 +102,6 @@ function ModalLayer({
 
   useEffect(() => {
     if (!open) return undefined;
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
     return registerModalLayer(registrationRef.current);
   }, [open]);
 
@@ -115,6 +113,11 @@ function ModalLayer({
           className={className}
           role={role}
           aria-busy={closeDisabled || undefined}
+          onOpenAutoFocus={() => {
+            previousFocusRef.current = document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+          }}
           onEscapeKeyDown={event => {
             event.preventDefault();
             event.stopPropagation();

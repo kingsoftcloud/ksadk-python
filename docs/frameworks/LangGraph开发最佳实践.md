@@ -172,9 +172,7 @@ messages-based 图适合快速迁移。但如果你的业务需要稳定消费�
 
 ```python
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-
+    # 只把新一轮请求投影成业务 State。resume 不经过此 hook。
     return {
         "query": payload["input"],
         "history": session_context["history"],
@@ -210,11 +208,11 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 | 平台身份 | `session_context["platform_context"]` |
 | 知识库上下文 | `session_context["kb_context"]` |
 | 长期记忆上下文 | `session_context["memory_context"]` |
-| 是否断点恢复 | `session_context["is_resume"]`，只建议在 adapter 中判断，用来返回 resume payload |
+| 是否断点恢复 | 由 runtime 内部识别；resume 不经过 `ksadk_prepare_state` |
 
 不要在业务代码里读取平台内部 event store 来拼 history。平台已经把可喂给模型的历史投影成 `history`。
 
-如果你的图使用 LangGraph `interrupt()`，`session_context["is_resume"]` 为 `True` 时，`ksadk_prepare_state` 的返回值会作为 `Command(resume=...)` 的值传回 interrupt 调用点，而不是作为新的 graph state 注入。因此推荐在 resume 分支直接返回 `payload["input"]`，不要继续返回完整业务 state。
+如果你的图使用 LangGraph `interrupt()`，当前 runner 在 resume 路径不会再次调用 `ksadk_prepare_state`，而是直接解包 `ksadk_resume.value` 并构造 `Command(resume=...)`。hook 只负责新一轮请求的 State 投影。
 
 ## 8. 附件、OCR 和图片
 
@@ -303,14 +301,7 @@ LangGraph 原生支持在图节点中调用 `interrupt()` 暂停，并在下一�
 | conversation runtime | 记录 `approval_request / approval_response`，向 runner 传 `resume=True` |
 | LangGraphRunner | 薄适配：把 `resume=True` 转成 `Command(resume=...)` |
 
-如果你定义了 `ksadk_prepare_state`，resume 请求也会经过这个 hook。此时 hook 的返回值就是 `Command(resume=...)` 里的 `resume` 值。推荐写法是：
-
-```python
-def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-    return build_normal_state(payload, session_context)
-```
+`ksadk_prepare_state` 只负责新一轮请求的 State 投影。resume 请求由 runtime 识别；LangGraphRunner 会从 `ksadk_resume.value` 解包实际值，并构造 `Command(resume=...)`。业务代码只需在 `interrupt()` 返回后解析自己的业务 value。
 
 业务代码不应该：
 
@@ -514,9 +505,6 @@ def answer(state: AgentState) -> AgentState:
 
 
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-
     return {
         "query": payload.get("input", ""),
         "history": session_context.get("history", []),
@@ -544,29 +532,61 @@ workflow.add_edge("answer", END)
 root_agent = workflow.compile()
 ```
 
-## 14. 常见反模式
+## 14. 托管 PostgreSQL checkpoint 接入
 
-### 14.1 在业务代码里猜是否 resume
+动态开启 PostgreSQL 持久化时，KsADK 不会改写已经 compiled graph 的私有属性。项目如需让
+平台安全注入 `AsyncPostgresSaver`，必须在 `entry_point` 模块顶层导出唯一 factory：
+
+```python
+workflow = StateGraph(AgentState)
+# add_node / add_edge ...
+
+root_agent = workflow.compile()
+
+
+def ksadk_graph_factory(*, checkpointer):
+    return workflow.compile(checkpointer=checkpointer)
+```
+
+运行时规则：
+
+- `root_agent` 已携带持久化 Postgres saver 时直接复用，不重新编译。
+- 设置 `KSADK_LANGGRAPH_AUTO_CHECKPOINT=1` 且提供 PostgreSQL DSN 时，Runner 创建连接池、
+  执行 saver `setup()`，再调用 factory，并使用稳定 Agent namespace。
+- graph 没有持久化 saver 且没有 factory 时继续运行原 graph，但 bootstrap 返回
+  `LANGGRAPH_FACTORY_REQUIRED`，不宣称支持 `time_travel`。
+- memory saver 和内存 SQLite 返回 `CHECKPOINTER_NOT_DURABLE`。
+- factory、依赖或数据库初始化失败时不替换原 graph；Runtime 关闭时释放连接池。
+
+托管 Code Runtime 会包含 `langgraph-checkpoint-postgres`、`psycopg` 和 pool 依赖。自定义
+Container 不会在启动时执行 `pip install`，镜像需要自行预装这些依赖。
+
+该能力只对配置完成后的新运行生效；不迁移已有内存 checkpoint，也不保证非幂等外部工具在
+恢复后不会重复执行。
+
+## 15. 常见反模式
+
+### 15.1 在业务代码里猜是否 resume
 
 不要通过读取数据库、检查上一轮输出文本、解析 event store 来判断是否恢复。平台会把恢复请求转成 `resume=True`。
 
-### 14.2 让客户端直接传 LangGraph Command
+### 15.2 让客户端直接传 LangGraph Command
 
 外部协议应该是 JSON。`Command(resume=...)` 是 Python / LangGraph runner 内部调用形态，不应该暴露给客户端。
 
-### 14.3 依赖 LangGraph 内部状态结构
+### 15.3 依赖 LangGraph 内部状态结构
 
 不要依赖 `state.tasks[*].interrupts` 这类内部结构做业务判断。LangGraph 版本升级后这些结构可能变化。
 
-### 14.4 把 `HumanMessage.content` 当成永远是字符串
+### 15.4 把 `HumanMessage.content` 当成永远是字符串
 
 多模态模型下它可能是 content block 列表。除非你明确在做 messages-native agent，否则优先使用 `payload / session_context`。
 
-### 14.5 用 attachments 判断当前轮是否传文件
+### 15.5 用 attachments 判断当前轮是否传文件
 
 `attachments` 是最近有效附件上下文，可能来自历史 fallback。当前轮是否传文件看 `has_current_files`，当前轮附件列表看 `current_attachments`；OCR、文档抽取、压缩包摘要仍优先看对应的 `current_attachment_results` 或 `attachment_results`。
 
-## 15. 检查清单
+## 16. 检查清单
 
 上线前建议确认：
 
@@ -580,3 +600,4 @@ root_agent = workflow.compile()
 - 多模态分支读取 `model_metadata.capabilities`
 - interrupt 恢复只依赖 resume payload，不依赖平台内部事件结构
 - `/v1/responses` 恢复调用传同一个 `session_id`
+- 托管 PostgreSQL 模式在 `entry_point` 顶层导出 `ksadk_graph_factory(*, checkpointer)`

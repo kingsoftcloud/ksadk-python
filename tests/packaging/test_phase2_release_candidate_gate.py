@@ -43,7 +43,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "status": "published",
         "registry": "https://registry.npmjs.org",
         "package": "@kingsoftcloud/ksadk-web",
-        "version": "0.3.3",
+        "version": "0.3.8",
         "npmIntegrity": INTEGRITY,
         "sourceCommit": WEB_COMMIT,
     }
@@ -54,7 +54,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "helmRevision": 60,
         "webPackage": {
             "package": "@kingsoftcloud/ksadk-web",
-            "version": "0.3.3",
+            "version": "0.3.8",
             "npmIntegrity": INTEGRITY,
         },
     }
@@ -74,7 +74,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "hostedUiImage": IMAGE,
         "webPackage": {
             "package": "@kingsoftcloud/ksadk-web",
-            "version": "0.3.3",
+            "version": "0.3.8",
             "npmIntegrity": INTEGRITY,
         },
         "scenarios": {
@@ -111,6 +111,7 @@ def test_final_gate_binds_every_release_surface(tmp_path: Path) -> None:
 
     assert report["overallStatus"] == "passed"
     assert report["sourceCommit"] == COMMIT
+    assert report["webPackage"]["version"] == "0.3.8"
     assert report["webPackage"]["npmIntegrity"] == INTEGRITY
     assert report["hostedUi"]["image"] == IMAGE
     assert report["scenarios"] == {
@@ -157,4 +158,18 @@ def test_final_gate_rejects_secret_shaped_evidence(tmp_path: Path) -> None:
     _write(paths[3], payload)
 
     with pytest.raises(ReleaseCandidateGateError, match="secret-shaped evidence key"):
+        _build(paths)
+
+
+def test_final_gate_rejects_the_previous_web_release(tmp_path: Path) -> None:
+    paths = _evidence(tmp_path)
+    for index in (1, 2, 3):
+        payload = json.loads(paths[index].read_text(encoding="utf-8"))
+        if index == 1:
+            payload["version"] = "0.3.3"
+        else:
+            payload["webPackage"]["version"] = "0.3.3"
+        _write(paths[index], payload)
+
+    with pytest.raises(ReleaseCandidateGateError, match="Web package identity"):
         _build(paths)

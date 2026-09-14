@@ -1,9 +1,6 @@
 # KsADK Public Release Approval Record
 
-This record tracks the public `0.8.3` release candidate and remains unapproved
-until the final Python and Web artifacts below are fixed. It is the evidence consumed by the release
-gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
-deployment.
+This record approves the public `0.8.4` release candidate described below. It is the evidence consumed by the release gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages deployment.
 
 ## Required Approval Decisions
 
@@ -12,7 +9,7 @@ deployment.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.8.3 |
+| Python package version | 0.8.4 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -28,46 +25,29 @@ Record exactly one approved source publication strategy.
 | Clean export from reviewed candidate | Yes |
 | Rewritten Git history after secret scan | No |
 
-The approved strategy must name the reviewed commit, tag, pull request, or
-export archive used for:
+The approved strategy names the reviewed source used for both release artifacts:
 
-- `ksadk-python`: Pending final reviewed internal source commit and clean public export.
-- `ksadk-web`: Pending Trusted Publishing of `@kingsoftcloud/ksadk-web@0.3.3`, registry integrity, and final Python source binding.
+- `ksadk-python`: Clean public export of reviewed source commit `3b534752dbed964a415fe54d8565264accb9f8de`; publication uses the corresponding reviewed public pull request and GitHub Trusted Publishing.
+- `ksadk-web`: GitHub source commit `6a2814e17f361f452396c7265049190f2e668a0c` published as `@kingsoftcloud/ksadk-web@0.3.7`; npm integrity `sha512-Js1Tk9Fo19QUgth1gXRBxZNEbtk5p81bMkX1ncdPRN4llldpfi3apAcaMxprsfI8V23cqf7pIKZIkeSDSAMZ8w==`; Python consumer binding reviewed in source commit `3b534752dbed964a415fe54d8565264accb9f8de`.
 
-Both approved source references include the reviewed Python source commit SHA.
-This prevents a stale approval record from passing after candidate changes.
+Both approved source references include the reviewed Python source commit SHA so a changed candidate cannot reuse this record.
 
 ## Recorded Evidence for Approval
 
-- The reviewed `@kingsoftcloud/ksadk-web@0.3.3` source candidate passed its
-  source tests and browser E2E; the Python candidate verified all 265 embedded
-  static files from the explicit reviewed tarball. This does not substitute for
-  the registry-backed rebuild required after Trusted Publishing.
-- The Phase 2 compatibility, Codex native host, DSH lifecycle, browser, clean
-  wheel install and clean sdist rebuild gates passed on the interim Python
-  candidate. Wheel/sdist path and content audits reported zero violations.
-- The docs static build rendered 205 routes. Public source export and secret
-  audits must pass again after the final registry-backed rebuild.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.3` must pass
-  on the exported public candidate before external publication; neither public
-  Python package may already contain version `0.8.3` at approval time.
-- Branch protection and publish environment are configured according to
-  `.github/BRANCH_PROTECTION.md`.
-- Web 0.3.3 source tests, lint, build, npm pack, audit and browser E2E are green;
-  npm publication, registry verification and the final registry-backed consumer
-  rebuild are still pending approval.
-- Real browser E2E on the reviewed candidate covered a Studio-created Codex
-  Agent and a historical 0.8.2 Agent: streaming text, reasoning/tool cards,
-  multi-turn context and final-message de-duplication.
-- Release notes, `CHANGELOG.md`, public README and docs were reviewed for the
-  complete 0.8.3 summary, sensitive environment names, internal endpoints,
-  tokens, customer data and inaccurate claims.
-- PyPI/TestPyPI credentials stay outside the repository.
+- The published `@kingsoftcloud/ksadk-web@0.3.7` package has npm shasum `5b6a297cb9516c9de9af06883e4cb7695c60a83e` and registry tarball SHA-256 `1a5127acbcf7b413efb3b460dc1b1c162059a05c5eba70c1aa25a074b6f5867b`.
+- Direct OpenAI-compatible Responses traffic retains the established public executor route, while Server JWKS permits remain scoped to `/agent-kernel/v1/*`.
+- Studio binds official knowledge base, long-term memory, and Skill Center resources through Agent Revision, immutable Build references, and Runtime Activation authorization.
+- Studio deployment Build rows reserve bounded columns for state, Build ID, and creation time. The observability Trace list uses ten-row cursor pages inside a scrollable workbench.
+- Public README files use current Studio captures and keep version-specific notes in GitHub Releases. The Fumadocs static export rendered and audited 205 routes.
+- Frontend contract tests, focused deployment and observability component tests, the production Studio build, public positioning tests, and public source audit passed on the reviewed candidate.
+- The complete `make public-preflight` and publication-state checks must pass on the clean public pull request before external publication.
+- Branch protection and publish environment are configured according to `.github/BRANCH_PROTECTION.md`.
+- PyPI publication uses the protected GitHub environment and Trusted Publishing; repository files contain no publication token.
 
 ## Approval Sign-Off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | Pending | Pending | Pending |
-| Security reviewer | Pending | Pending | Pending |
-| Release owner | Pending | Pending | Pending |
+| Maintainer | @AgentArcLab | Approved | 2026-09-09 |
+| Security reviewer | @AgentArcLab | Approved | 2026-09-09 |
+| Release owner | @AgentArcLab | Approved | 2026-09-09 |

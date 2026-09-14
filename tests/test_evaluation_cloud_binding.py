@@ -42,4 +42,3 @@ def test_binding_rejects_credential_material_and_workspace_escape(tmp_path: Path
     escaped = _binding().model_copy(update={"evalset_path": "../support.yaml"})
     with pytest.raises(CloudBindingError, match="工作区"):
         store.write(escaped)
-

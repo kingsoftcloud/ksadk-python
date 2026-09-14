@@ -102,6 +102,7 @@ class CompositionPolicy:
     context_contributors: Mapping[str, PluginCapabilitySelection] = field(
         default_factory=dict
     )
+    host_capabilities: tuple[PluginCapabilitySelection, ...] = ()
     renderers: tuple[PluginCapabilitySelection, ...] = ()
     default_runtime: str = "codex"
 
@@ -184,6 +185,13 @@ class CompositionCompiler:
             self._policy.session_store,
             field="policy.sessionStore",
         )
+
+        for selection in self._policy.host_capabilities:
+            self._append_selection(
+                capabilities,
+                selection,
+                field="policy.hostCapabilities",
+            )
 
         if revision.spec.memory.enabled:
             memory = self._policy.memory_providers.get(revision.spec.memory.provider_ref)

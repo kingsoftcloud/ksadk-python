@@ -192,7 +192,7 @@ async def test_per_invocation_override(tmp_path):
     )
     events = [event async for event in app.stream(handle)]
     text = [event for event in events if event.event_type == "item.completed"][-1]
-    assert "glm-override" in str(text.snapshot.parts[0].text) and "覆盖" in str(text.snapshot.parts[0].text)
+    assert "glm-override" in str(text.snapshot) and "覆盖" in str(text.snapshot)
 
 
 def test_override_out_of_subset_rejected(tmp_path):
@@ -236,8 +236,8 @@ async def test_app_owns_one_adapter_and_start_override_is_request_local(tmp_path
     events = [event async for event in adapter.stream(handle)]
     text_events = [event for event in events if event.event_type == "item.completed"]
     assert text_events
-    assert "request-model" in str(text_events[-1].snapshot.parts[0].text)
-    assert "request-prompt" in str(text_events[-1].snapshot.parts[0].text)
+    assert "request-model" in str(text_events[-1].snapshot)
+    assert "request-prompt" in str(text_events[-1].snapshot)
 
     fastapi_app = app.build_app()
     assert isinstance(adapter, HarnessRuntimeAdapter)
@@ -291,7 +291,10 @@ async def test_harness_apps_have_distinct_session_services(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_harness_http_sessions_are_app_scoped(tmp_path):
+async def test_harness_http_sessions_are_app_scoped(tmp_path, monkeypatch):
+    from ksadk.server.routes import dependencies
+
+    monkeypatch.setattr(dependencies, "_dependencies", None)
     first = HarnessApp(
         HarnessConfig(model="m", prompt="p"), workspace_root=tmp_path / "one"
     ).build_app()

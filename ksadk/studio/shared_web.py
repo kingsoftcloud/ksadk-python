@@ -18,8 +18,13 @@ from ksadk.conversations.contracts import (
     ConversationTextPart,
     validate_conversation_input,
 )
+from ksadk.conversations.message_projection import project_session_messages
+from ksadk.events.canonical import parse_runtime_event
+from ksadk.events.canonical_store import session_event_to_runtime_event
+from ksadk.sessions.base import Session
 from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus
 from ksadk.studio.errors import StudioError, not_found
+from ksadk.studio.run_service import project_runtime_event
 from ksadk.studio.service import StudioService
 from ksadk.tools.gateway import tool_approval_capability
 
@@ -89,10 +94,12 @@ class StudioSharedWebBridge:
                     "CheckpointResumePreview": False,
                 },
                 "ApprovalPolicy": tool_approval_capability(),
+                "InteractionV1": True,
                 "WorkspaceFiles": {"Enabled": False},
                 "NativeDashboard": {"Enabled": False},
                 "NativeTerminal": {"Enabled": False},
                 "Thinking": False,
+                "ContextCompaction": self.studio.is_codex_agent(agent_id),
             },
         }
 
@@ -110,14 +117,14 @@ class StudioSharedWebBridge:
 
         return self._select_model(agent_id, str(requested or ""))
 
-    def list_sessions(
+    async def list_sessions(
         self,
         agent_id: str,
         *,
         page: int = 1,
         page_size: int = 30,
     ) -> dict[str, Any]:
-        sessions = self._sessions(agent_id)
+        sessions = await self._sessions(agent_id)
         safe_page = max(1, page)
         safe_size = min(100, max(1, page_size))
         start = (safe_page - 1) * safe_size
@@ -128,29 +135,81 @@ class StudioSharedWebBridge:
             "PageSize": safe_size,
         }
 
-    def create_session(self, agent_id: str) -> dict[str, Any]:
+    async def create_session(self, agent_id: str) -> dict[str, Any]:
         self._draft(agent_id)
         session_id = f"ses_{uuid4().hex}"
-        now = datetime.now(timezone.utc).isoformat()
-        return {
-            "Session": {
-                "SessionId": session_id,
-                "AgentId": agent_id,
-                "UserId": "local-user",
-                "Title": "新会话",
-                "CreatedAt": now,
-                "UpdatedAt": now,
-            }
-        }
+        session = await self.studio.session_service.create_session(
+            agent_id,
+            "local-user",
+            session_id,
+        )
+        return {"Session": self._session_metadata_record(session)}
 
-    def get_session(self, session_id: str) -> dict[str, Any]:
+    async def get_session(self, session_id: str) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         runs = self.studio.event_store.list_runs(session_id=session_id)
+        if runs:
+            return {"Session": self._session_record(runs)}
+        session = await self.studio.session_service.get_session_metadata(session_id)
+        if session is None:
+            raise not_found("session", session_id)
+        return {"Session": self._session_metadata_record(session)}
+
+    async def compact_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
+        from ksadk.codex.runtime import CodexRuntimeAdapter
+
+        runs = self.studio.event_store.list_runs(session_id=session_id, agent_id=agent_id)
         if not runs:
             raise not_found("session", session_id)
-        return {"Session": self._session_record(runs)}
+        latest = runs[-1]
+        if latest.runtime_type != "codex":
+            raise StudioError("COMPACTION_UNSUPPORTED", "此运行时尚未提供手动压缩", status_code=409)
+        key = (agent_id, session_id)
+        service = self.studio.run_service
+        if key in service._active_sessions or any(self._active_status(run.status) for run in runs):
+            raise StudioError(
+                "SESSION_RUN_ACTIVE", "请等待当前运行完成后压缩上下文", status_code=409
+            )
+        thread_id = str((latest.runtime_handle.get("native_ref") or {}).get("thread_id") or "")
+        if not thread_id:
+            raise StudioError(
+                "CONTEXT_UNAVAILABLE", "此会话尚无可压缩的原生上下文", status_code=409
+            )
+        service._active_sessions.add(key)
+        adapter = None
+        try:
+            spec = self.studio.resolve_run_spec(latest.build_id, model=latest.model or None)
+            adapter = self.studio.runtime_executor.create_adapter(spec.launch_context)
+            if not isinstance(adapter, CodexRuntimeAdapter):
+                raise StudioError(
+                    "COMPACTION_UNSUPPORTED", "此运行时尚未提供手动压缩", status_code=409
+                )
+            usage = await adapter.compact_session(thread_id, dict(spec.request_config))
+            last = usage.get("last") or {}
+            context_usage = {
+                "used_tokens": last.get("totalTokens"),
+                "source": "runtime",
+                "model": latest.model,
+            }
+            self.studio.event_store.append(
+                latest.id,
+                "context.compaction.completed",
+                {
+                    "trigger": "manual",
+                    "contextUsage": context_usage,
+                },
+            )
+            return {"Status": "completed", "ContextUsage": context_usage}
+        finally:
+            try:
+                if adapter is not None:
+                    await adapter.close_all()
+            finally:
+                service._active_sessions.discard(key)
 
-    def delete_session(self, session_id: str) -> dict[str, Any]:
-        self.studio.event_store.delete_session(session_id)
+    async def delete_session(self, session_id: str) -> dict[str, Any]:
+        await self.studio.delete_session(session_id)
         return {}
 
     async def list_messages(
@@ -161,6 +220,7 @@ class StudioSharedWebBridge:
         before_seq_id: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         runs = self.studio.event_store.list_runs(session_id=session_id)
         messages: list[dict[str, Any]] = []
         sequence = 0
@@ -181,13 +241,30 @@ class StudioSharedWebBridge:
                 {
                     "MessageId": f"{run.id}:assistant",
                     "Role": "assistant",
-                    "Content": {"text": self._run_output(run)},
+                    "Content": {
+                        # Run status is metadata, not an assistant reply. An
+                        # empty pending reply lets canonical reasoning/tools
+                        # restore without a synthetic status text shadowing them.
+                        "text": (
+                            run.output if self._active_status(run.status) else self._run_output(run)
+                        )
+                    },
                     "Timestamp": self._timestamp(run.completed_at or run.started_at),
                     "SeqId": sequence,
                     "InvocationId": run.id,
                     "Activities": await self._run_activities(run),
                 }
             )
+
+        extra_events = await self._untracked_runtime_events(session_id, runs)
+        if extra_events:
+            messages.extend(project_session_messages(extra_events))
+            messages.sort(key=lambda item: self._timestamp_value(item["Timestamp"]))
+            for sequence, message in enumerate(messages, 1):
+                message["SeqId"] = sequence
+                if isinstance(message["Timestamp"], (int, float)):
+                    message["Timestamp"] = self._timestamp(message["Timestamp"])
+                message.pop("StartSeqId", None)
 
         latest_seq_id = sequence
         if after_seq_id is not None:
@@ -205,6 +282,7 @@ class StudioSharedWebBridge:
         }
 
     async def list_session_events(self, session_id: str) -> dict[str, Any]:
+        self.studio._require_direct_session(session_id)
         runs = self.studio.event_store.list_runs(session_id=session_id)
         events: list[dict[str, Any]] = []
         sequence = 0
@@ -214,12 +292,31 @@ class StudioSharedWebBridge:
                 events.append(
                     {
                         "SeqId": sequence,
-                        "EventType": event.type,
+                        "EventType": self._shared_event_type(event.type, event.data),
                         "InvocationId": run.id,
-                        "Content": event.data,
+                        "Content": self._shared_event_content(event.data, run.id),
                         "Timestamp": self._timestamp(event.created_at),
                     }
                 )
+        extra_events = await self._untracked_runtime_events(session_id, runs)
+        for event in extra_events:
+            native = event["Content"]["runtime_event"]
+            event_type, content = project_runtime_event(
+                parse_runtime_event(native), session_id=session_id
+            )
+            events.append(
+                {
+                    "SeqId": 0,
+                    "EventType": self._shared_event_type(event_type, content),
+                    "InvocationId": event["InvocationId"],
+                    "Content": content,
+                    "Timestamp": self._timestamp(event["Timestamp"]),
+                }
+            )
+        if extra_events:
+            events.sort(key=lambda item: self._timestamp_value(item["Timestamp"]))
+        for sequence, event in enumerate(events, 1):
+            event["SeqId"] = sequence
         return {
             "Events": events,
             "Total": len(events),
@@ -227,19 +324,164 @@ class StudioSharedWebBridge:
             "Limit": len(events),
         }
 
+    async def _untracked_runtime_events(
+        self, session_id: str, runs: list[RunRecord]
+    ) -> list[dict[str, Any]]:
+        """Read Kernel-owned runs absent from Studio's foreground run index.
+
+        Scheduled runs already have a durable canonical transcript. Project
+        that log through the shared message contract, including in sessions
+        that also contain foreground turns, without manufacturing RunRecords.
+        """
+        tracked = {run.id for run in runs}
+        for run in runs:
+            tracked.add(str(run.runtime_handle.get("run_id") or ""))
+            for event in await self.studio.run_service.events(run.id):
+                native = event.data.get("runtimeEvent")
+                if isinstance(native, dict):
+                    tracked.add(str(native.get("run_id") or ""))
+        result = []
+        for row in await self.studio.session_service.get_events(session_id):
+            native = session_event_to_runtime_event(row)
+            if native is None or native.run_id in tracked:
+                continue
+            result.append(
+                {
+                    "EventId": native.event_id,
+                    "SessionId": session_id,
+                    "SeqId": row.seq_id,
+                    "EventType": native.event_type,
+                    "InvocationId": native.run_id,
+                    "Timestamp": row.timestamp,
+                    "Content": {"runtime_event": native.model_dump(mode="json")},
+                    "Metadata": {"ksadk_canonical_runtime_event": True},
+                }
+            )
+        return result
+
+    @staticmethod
+    def _timestamp_value(value: str | float) -> float:
+        if isinstance(value, (float, int)):
+            return value
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else 0
+
+    @staticmethod
+    def _shared_event_type(event_type: str, data: dict[str, Any]) -> str:
+        native = data.get("runtimeEvent")
+        if (
+            event_type == "run.interrupted"
+            and isinstance(native, dict)
+            and native.get("interaction_id")
+        ):
+            # A resumable interaction is waiting, not a terminal interruption.
+            return "run.waiting"
+        return event_type
+
+    @staticmethod
+    def _shared_event_content(data: dict[str, Any], run_id: str) -> dict[str, Any]:
+        """Use the public Studio run identity in shared-Web history projections.
+
+        The persisted canonical event retains the adapter's native run ID.
+        ListSessionMessages uses the Studio ID, so its event projection must
+        use the same ID or hydration retains both copies of the answer.
+        """
+        native = data.get("runtimeEvent")
+        if not isinstance(native, dict):
+            return data
+        return {**data, "runtimeEvent": {**native, "run_id": run_id}}
+
+    async def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
+        self.studio._require_direct_session(session_id)
+        run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
+        try:
+            run = self.studio.event_store.get(run_id)
+        except StudioError as error:
+            if error.code != "RUN_NOT_FOUND":
+                raise
+        else:
+            if run.session_id != session_id:
+                raise not_found("run", invocation_id)
+            return run_id
+        for row in await self.studio.session_service.get_events(session_id):
+            native = session_event_to_runtime_event(row)
+            if native is not None and native.run_id == run_id:
+                return run_id
+        raise not_found("run", invocation_id)
+
+    async def subscribe_run_events(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: int = 0,
+    ) -> AsyncIterator[str]:
+        run_id = await self.subscription_run_id(session_id, invocation_id)
+        runs = self.studio.event_store.list_runs(session_id=session_id)
+        if await self._untracked_runtime_events(session_id, runs):
+            cursor = after_seq_id
+            while True:
+                history = await self.list_session_events(session_id)
+                run_events = [
+                    event for event in history["Events"] if event["InvocationId"] == run_id
+                ]
+                for event in run_events:
+                    if event["SeqId"] > cursor:
+                        yield self._sse("message", {**event, "SessionId": session_id})
+                        cursor = event["SeqId"]
+                if any(
+                    event["EventType"]
+                    in {"run.completed", "run.failed", "run.cancelled", "run.interrupted"}
+                    for event in run_events
+                ):
+                    yield "event: done\ndata: [DONE]\n\n"
+                    return
+                yield ": ping\n\n"
+                await asyncio.sleep(0.25)
+        # Match ListSessionEvents' session cursor without rereading every old
+        # run on every live poll. Only the subscribed run can still grow.
+        offset = 0
+        for record in self.studio.event_store.list_runs(session_id=session_id):
+            if record.id == run_id:
+                break
+            offset += len(self.studio.event_store.events(record.id))
+        cursor = max(0, after_seq_id - offset)
+        while True:
+            for event in await self.studio.run_service.events(run_id, after=cursor):
+                cursor = max(cursor, event.id)
+                yield self._sse(
+                    "message",
+                    {
+                        "SeqId": offset + event.id,
+                        "SessionId": session_id,
+                        "InvocationId": invocation_id,
+                        "EventType": self._shared_event_type(event.type, event.data),
+                        "Content": self._shared_event_content(event.data, run_id),
+                        "Timestamp": self._timestamp(event.created_at),
+                    },
+                )
+            record = self.studio.event_store.get(run_id)
+            if not self._active_status(record.status):
+                yield "event: done\ndata: [DONE]\n\n"
+                return
+            yield ": ping\n\n"
+            await asyncio.sleep(0.25)
+
     def cancel_run(self, invocation_id: str) -> dict[str, Any]:
+        self.studio._require_direct_run(invocation_id)
         operation_id = self._operations_by_invocation.get(invocation_id)
         if operation_id:
             self.studio.operations.cancel(operation_id)
         return {"InvocationId": invocation_id, "Cancelled": bool(operation_id)}
 
     async def pause_run(self, invocation_id: str) -> dict[str, Any]:
+        self.studio._require_direct_run(invocation_id)
         run_id = self._run_ids_by_invocation.get(invocation_id)
         if not run_id:
             raise StudioError("RUN_NOT_READY", "运行尚未创建，请稍后重试", status_code=409)
         return await self.studio.run_service.pause_run(run_id)
 
     async def resume_run(self, invocation_id: str) -> dict[str, Any]:
+        self.studio._require_direct_run(invocation_id)
         run_id = self._run_ids_by_invocation.get(invocation_id)
         if not run_id:
             raise StudioError("RUN_NOT_FOUND", "未找到可继续的运行", status_code=404)
@@ -249,7 +491,9 @@ class StudioSharedWebBridge:
         run_id = self._response_runs.get(response_id, response_id)
         return self.studio.event_store.get(run_id).session_id
 
-    async def stream_run(self, payload: dict[str, Any]) -> AsyncIterator[str]:
+    async def stream_run(
+        self, payload: dict[str, Any], *, shared_ui: bool = False
+    ) -> AsyncIterator[str]:
         agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
@@ -257,10 +501,9 @@ class StudioSharedWebBridge:
         runtime_input = self._runtime_input(payload)
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
-        approval_mode = str(payload.get("ApprovalMode") or "")
-        collaboration_mode = str(payload.get("CollaborationMode") or "")
-        goal_objective = str(payload.get("GoalObjective") or "")
-        reasoning_effort = str(payload.get("ReasoningEffort") or "")
+        approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
+            self._request_controls(payload)
+        )
         try:
             build = await self._ensure_build(agent_id)
             self._validate_conversation_turn(
@@ -339,6 +582,15 @@ class StudioSharedWebBridge:
                         if event_name == "response.output_text.delta":
                             emitted_text += str(event_payload.get("delta") or "")
                         yield self._sse(event_name, event_payload)
+                        if (
+                            shared_ui
+                            and event_name == "a2ui.interaction"
+                            and event_payload.get("kind") in {"form", "structured_input"}
+                        ):
+                            # The shared UI restores the durable Interaction/v1
+                            # request, then subscribes to this same live run.
+                            # Leave the execution attached while input is pending.
+                            return
                 else:
                     idle_polls += 1
                     if idle_polls >= 20:
@@ -391,10 +643,9 @@ class StudioSharedWebBridge:
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
-        approval_mode = str(payload.get("ApprovalMode") or "")
-        collaboration_mode = str(payload.get("CollaborationMode") or "")
-        goal_objective = str(payload.get("GoalObjective") or "")
-        reasoning_effort = str(payload.get("ReasoningEffort") or "")
+        approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
+            self._request_controls(payload)
+        )
         build = await self._ensure_build(agent_id)
         prompt = self._input_text(payload)
         runtime_input = self._runtime_input(payload)
@@ -449,9 +700,7 @@ class StudioSharedWebBridge:
     ) -> RunRecord:
         if build is None:
             build = await self._ensure_build(agent_id)
-        bound_agent = str(
-            getattr(build, "agent_name", None) or getattr(build, "agent_id", "")
-        )
+        bound_agent = str(getattr(build, "agent_name", None) or getattr(build, "agent_id", ""))
         if bound_agent != agent_id:
             raise StudioError(
                 "CONVERSATION_BUILD_MISMATCH",
@@ -585,6 +834,23 @@ class StudioSharedWebBridge:
                         )
                     )
                     continue
+                if event.type == "approval.resolved":
+                    projected.append(
+                        (
+                            "response.ksadk.approval_resolved",
+                            {
+                                "type": "response.ksadk.approval_resolved",
+                                "approvalRequestId": event.data.get("approvalId")
+                                or event.data.get("interactionId"),
+                                "decision": event.data.get("decision")
+                                or event.data.get("name")
+                                or "approved",
+                                "revision": event.data.get("revision") or 2,
+                                "runId": run.id,
+                            },
+                        )
+                    )
+                    continue
                 item_event = self._response_item_event(event.type, event.data, starts)
                 if item_event is not None:
                     projected.append(item_event)
@@ -613,7 +879,9 @@ class StudioSharedWebBridge:
                 "status": (
                     "failed"
                     if event_type.endswith("failed") or data.get("exitCode") not in {None, 0}
-                    else "completed" if done else "in_progress"
+                    else "completed"
+                    if done
+                    else "in_progress"
                 ),
                 "action": {
                     "commands": [command],
@@ -634,17 +902,24 @@ class StudioSharedWebBridge:
                 "status": (
                     "failed"
                     if event_type.endswith("failed")
-                    else "completed" if done else "in_progress"
+                    else "completed"
+                    if done
+                    else "in_progress"
                 ),
                 "output": data.get("output") or data.get("result") or "",
             }
         elif event_type == "approval.requested":
+            approval_id = str(data.get("approvalId") or data.get("interactionId") or call_id or "")
+            detail = data.get("detail")
+            arguments = detail if isinstance(detail, dict) else {"detail": detail}
             item = {
-                "id": call_id or f"approval_{uuid4().hex}",
+                "id": approval_id or f"approval_{uuid4().hex}",
                 "call_id": call_id,
-                "type": "approval_request",
+                "type": "mcp_approval_request",
+                "name": str(data.get("kind") or started.get("tool") or "人工确认"),
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+                "run_id": str(data.get("runId") or ""),
                 "status": "in_progress",
-                "action": data,
             }
         else:
             return None
@@ -811,15 +1086,50 @@ class StudioSharedWebBridge:
                 return media_type
         return fallback
 
-    def _sessions(self, agent_id: str) -> list[dict[str, Any]]:
+    async def _sessions(self, agent_id: str) -> list[dict[str, Any]]:
+        persisted = await self.studio.session_service.list_session_metadata(
+            agent_id=agent_id,
+        )
+        records = {
+            session.id: self._session_metadata_record(session)
+            for session in persisted
+            if session.user_id in {"local-user", "local-studio"}
+            and not self.studio.execution_host.is_reserved_session(session.id)
+        }
         grouped: dict[str, list[RunRecord]] = {}
         for run in self.studio.event_store.list_runs():
             if run.agent_id != agent_id:
                 continue
             grouped.setdefault(run.session_id, []).append(run)
-        records = [self._session_record(runs) for runs in grouped.values()]
-        records.sort(key=lambda item: item["UpdatedAt"], reverse=True)
-        return records
+        for session_id, runs in grouped.items():
+            records[session_id] = self._session_record(runs)
+        ordered = list(records.values())
+        ordered.sort(key=lambda item: item["UpdatedAt"], reverse=True)
+        return ordered
+
+    def _session_metadata_record(self, session: Session) -> dict[str, Any]:
+        title = session.title
+        if not title and session.first_prompt:
+            title = self._short_title(session.first_prompt)
+        return {
+            "SessionId": session.id,
+            "AgentId": session.agent_id,
+            "UserId": session.user_id or "local-user",
+            "Title": title or "新会话",
+            "FirstPrompt": session.first_prompt,
+            "LastPrompt": session.last_prompt,
+            "CreatedAt": self._timestamp(session.created_at),
+            "UpdatedAt": self._timestamp(session.updated_at),
+            "ActiveRunStatus": "",
+            "ActiveInvocationId": "",
+            "TokenUsage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "turns": 0,
+                "last_response_id": "",
+            },
+        }
 
     def _session_record(self, runs: list[RunRecord]) -> dict[str, Any]:
         ordered = sorted(
@@ -830,6 +1140,7 @@ class StudioSharedWebBridge:
         )
         first = ordered[0]
         latest = ordered[-1]
+        active = next((run for run in reversed(ordered) if self._active_status(run.status)), None)
         usage = {
             "input_tokens": sum(run.usage.input_tokens for run in ordered),
             "output_tokens": sum(run.usage.output_tokens for run in ordered),
@@ -846,10 +1157,25 @@ class StudioSharedWebBridge:
             "LastPrompt": latest.input,
             "CreatedAt": self._timestamp(first.started_at),
             "UpdatedAt": self._timestamp(latest.completed_at or latest.started_at),
-            "ActiveRunStatus": self._active_status(latest.status),
-            "ActiveInvocationId": latest.id if latest.status == RunStatus.RUNNING else "",
+            "ActiveRunStatus": self._active_status(active.status) if active else "",
+            "ActiveInvocationId": active.id if active else "",
             "TokenUsage": usage,
+            "ContextUsage": self._context_usage(latest),
         }
+
+    def _context_usage(self, latest: RunRecord) -> dict[str, Any] | None:
+        if latest.runtime_type != "codex":
+            return None
+        for event in reversed(self.studio.event_store.events(latest.id)):
+            if event.type == "context.compaction.completed":
+                return event.data.get("contextUsage")
+        if latest.runtime_type == "codex" and latest.usage.input_tokens > 0:
+            return {
+                "used_tokens": latest.usage.input_tokens,
+                "source": "last_request",
+                "model": latest.model,
+            }
+        return None
 
     def _model_descriptor(
         self, agent_id: str, models: list[dict[str, Any]] | None = None
@@ -927,7 +1253,7 @@ class StudioSharedWebBridge:
             "id": model_name,
             "display_name": model_name,
             "source": "agentkit-studio",
-            "context_window_tokens": draft.spec.context.max_input_tokens,
+            "input_budget_tokens": draft.spec.context.max_input_tokens,
             "max_output_tokens": 2048,
             "capabilities": {
                 "function_calling": True,
@@ -952,8 +1278,8 @@ class StudioSharedWebBridge:
             "id": model_id,
             "display_name": resolved_display_name,
             "source": "agentkit-studio",
-            "context_window_tokens": metadata.get("context_window_tokens")
-            or draft.spec.context.max_input_tokens,
+            "context_window_tokens": metadata.get("context_window_tokens"),
+            "input_budget_tokens": draft.spec.context.max_input_tokens,
             "max_output_tokens": max_output_tokens,
             "capabilities": {
                 **dict(metadata.get("capabilities") or {}),
@@ -971,7 +1297,7 @@ class StudioSharedWebBridge:
             "id": model_id,
             "display_name": model_id if model_id != "unconfigured-model" else "未配置模型",
             "source": "agentkit-studio",
-            "context_window_tokens": draft.spec.context.max_input_tokens,
+            "input_budget_tokens": draft.spec.context.max_input_tokens,
             "max_output_tokens": 2048,
             "capabilities": {
                 "function_calling": True,
@@ -997,7 +1323,7 @@ class StudioSharedWebBridge:
         return self.studio.agent_detail(agent_id)["draft"]
 
     async def _run_activities(self, run: RunRecord) -> list[dict[str, Any]]:
-        activities: list[dict[str, Any]] = []
+        activities: dict[str, dict[str, Any]] = {}
         for event in await self.studio.run_service.events(run.id):
             operations = (
                 event.data.get("a2uiOperations")
@@ -1009,16 +1335,78 @@ class StudioSharedWebBridge:
             surface_id = str(
                 event.data.get("surfaceId") or event.data.get("surface_id") or f"{run.id}-surface"
             )
-            activities.append(
-                {
-                    "SeqId": event.id,
-                    "Type": event.type,
-                    "MessageId": f"{run.id}:assistant",
-                    "SurfaceId": surface_id,
-                    "Content": {"a2ui_operations": operations},
-                }
+            previous = activities.get(surface_id)
+            # Snapshot updates may repeat createSurface; only the latest full
+            # snapshot should become a history row. Delta-only batches append.
+            reset = any(isinstance(op, dict) and "createSurface" in op for op in operations)
+            previous_operations = (
+                previous["Content"]["a2ui_operations"] if previous and not reset else []
             )
-        return activities
+            activities[surface_id] = {
+                "SeqId": event.id,
+                "Type": event.type,
+                "MessageId": f"{run.id}:assistant",
+                "SurfaceId": surface_id,
+                "Content": {"a2ui_operations": [*previous_operations, *operations]},
+            }
+        return list(activities.values())
+
+    @staticmethod
+    def _request_controls(payload: dict[str, Any]) -> tuple[str, str, str, str]:
+        """Read turn controls from both legacy and shared-Web request shapes."""
+
+        metadata = payload.get("Metadata") or payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        agentengine = metadata.get("agentengine")
+        agentengine = agentengine if isinstance(agentengine, dict) else {}
+        model_options = payload.get("ModelOptions") or payload.get("model_options")
+        model_options = model_options if isinstance(model_options, dict) else {}
+
+        approval_mode = (
+            str(
+                payload.get("ApprovalMode")
+                or payload.get("approval_mode")
+                or metadata.get("approval_mode")
+                or metadata.get("approvalMode")
+                or agentengine.get("tool_approval_mode")
+                or agentengine.get("approval_mode")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        collaboration_mode = (
+            str(
+                payload.get("CollaborationMode")
+                or payload.get("collaboration_mode")
+                or metadata.get("collaboration_mode")
+                or metadata.get("collaborationMode")
+                or agentengine.get("collaboration_mode")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        goal_objective = str(
+            payload.get("GoalObjective")
+            or payload.get("goal_objective")
+            or metadata.get("goal_objective")
+            or metadata.get("goalObjective")
+            or agentengine.get("goal_objective")
+            or ""
+        ).strip()
+        reasoning_effort = (
+            str(
+                payload.get("ReasoningEffort")
+                or payload.get("reasoning_effort")
+                or model_options.get("reasoning_effort")
+                or model_options.get("reasoningEffort")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        return approval_mode, collaboration_mode, goal_objective, reasoning_effort
 
     @staticmethod
     def _input_text(payload: dict[str, Any]) -> str:
@@ -1100,7 +1488,7 @@ class StudioSharedWebBridge:
 
     @staticmethod
     def _active_status(status: RunStatus) -> str:
-        return "running" if status == RunStatus.RUNNING else ""
+        return "running" if status in {RunStatus.RUNNING, RunStatus.WAITING_INPUT} else ""
 
     @staticmethod
     def _run_output(run: RunRecord) -> str:
@@ -1108,7 +1496,8 @@ class StudioSharedWebBridge:
             return run.output
         if run.error:
             return str(run.error.get("message") or "Agent 运行失败")
-        return f"运行状态：{run.status.value}"
+        status = run.status.value if isinstance(run.status, RunStatus) else str(run.status)
+        return f"运行状态：{status}"
 
     @staticmethod
     def _short_title(value: str, limit: int = 36) -> str:
@@ -1116,8 +1505,12 @@ class StudioSharedWebBridge:
         return text if len(text) <= limit else f"{text[:limit]}..."
 
     @staticmethod
-    def _timestamp(value: datetime | None) -> str:
-        return (value or datetime.now(timezone.utc)).isoformat()
+    def _timestamp(value: datetime | float | int | None) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, (float, int)):
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+        return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
     def _sse(event: str, payload: dict[str, Any]) -> str:

@@ -18,6 +18,14 @@ import {
 import "./evaluations.css";
 
 type TargetKind = "a2a" | "local_source" | "studio_build";
+type RunFilter = "all" | "active" | "passed" | "attention";
+
+function matchesRunFilter(run: EvaluationRun, filter: RunFilter): boolean {
+  if (filter === "active") return ACTIVE_EVALUATION_STATES.has(run.status);
+  if (filter === "passed") return run.status === "PASSED";
+  if (filter === "attention") return ["FAILED", "ERROR", "INTERRUPTED", "UNAVAILABLE"].includes(run.status);
+  return true;
+}
 type EvaluatorId =
   | "response_contract@v1"
   | "runtime_budget@v1"
@@ -50,6 +58,7 @@ export function EvaluationsPage({
   const requestController = useRef<AbortController | null>(null);
   const requestSeq = useRef(0);
   const [runs, setRuns] = useState<EvaluationRun[]>([]);
+  const [runFilter, setRunFilter] = useState<RunFilter>("all");
   const [catalog, setCatalog] = useState<EvaluationCatalog>({ builds: [] });
   const [agents, setAgents] = useState<StudioAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -167,6 +176,7 @@ export function EvaluationsPage({
 
   async function submitEvaluation(event: React.FormEvent) {
     event.preventDefault();
+    if (submitting || evalsetUploading || !evalsetFile.trim() || !targetLocator.trim() || !selectedEvaluators.length) return;
     setSubmitting(true);
     setCompletionMessage("");
     try {
@@ -201,6 +211,8 @@ export function EvaluationsPage({
 
   async function importEvalset(file: File) {
     setEvalsetUploading(true);
+    // Replacing a file invalidates the previous selection, even if parsing fails.
+    setEvalsetFile("");
     setEvalsetError("");
     const body = new FormData();
     body.append("file", file);
@@ -219,40 +231,45 @@ export function EvaluationsPage({
   const columns = useMemo<StudioDataColumn<EvaluationRun>[]>(() => [
     {
       id: "evalset",
-      header: "EvalSet / Run",
+      header: "评测任务",
+      className: "evaluation-run__name",
       minWidth: 260,
-      cell: run => <><strong>{run.evalset.name || "未命名 EvalSet"}</strong><span className="resource-origin mono">{run.id}</span></>,
+      cell: run => <strong title={run.id}>{run.evalset.name || "未命名评测"}</strong>,
     },
     {
       id: "target",
-      header: "Target",
+      header: "评测目标",
+      className: "evaluation-run__target",
       minWidth: 180,
-      cell: run => <><span>{run.target.label || run.target.kind || "-"}</span><span className="resource-origin mono">{run.target.kind || "-"}</span></>,
+      cell: run => <span>{run.target.label || run.target.kind || "-"}</span>,
     },
     {
       id: "status",
       header: "状态",
+      className: "evaluation-run__status",
       width: 120,
       cell: run => <span className={`status-badge ${evaluationStatusClass(run.status)}`}>{run.status}</span>,
     },
     {
       id: "progress",
-      header: "进度 / Case",
+      header: "用例结果",
+      className: "evaluation-run__progress",
       minWidth: 150,
       cell: run => run.summary
-        ? <><strong>{run.summary.passedCases} / {run.summary.totalCases}</strong><span className="resource-origin">通过</span></>
+        ? <span><strong>{run.summary.passedCases} / {run.summary.totalCases}</strong> 通过</span>
         : run.progress
           ? <><strong>{run.progress.current} / {run.progress.total}</strong><span className="resource-origin">{run.progress.caseId || "执行中"}</span></>
           : <span>等待开始</span>,
     },
-    { id: "createdAt", header: "创建时间", minWidth: 150, cell: run => formatEvaluationDate(run.createdAt) },
-    { id: "duration", header: "耗时", width: 100, cell: evaluationElapsed },
+    { id: "createdAt", header: "创建时间", className: "evaluation-run__date", minWidth: 150, cell: run => formatEvaluationDate(run.createdAt) },
+    { id: "duration", header: "耗时", className: "evaluation-run__duration", width: 100, cell: evaluationElapsed },
   ], []);
 
-  const activeCount = runs.filter(run => ACTIVE_EVALUATION_STATES.has(run.status)).length;
-  const completedRuns = runs.filter(run => run.hasReport);
-  const passedCount = completedRuns.filter(run => run.status === "PASSED").length;
-  const abnormalCount = runs.filter(run => ["FAILED", "ERROR", "INTERRUPTED"].includes(run.status)).length;
+  const filteredRuns = runs.filter(run => matchesRunFilter(run, runFilter));
+  const runFilters: Array<{ value: RunFilter; label: string }> = [
+    { value: "all", label: "全部" }, { value: "active", label: "运行中" },
+    { value: "passed", label: "已通过" }, { value: "attention", label: "需关注" },
+  ];
   const targetLocatorLabel = targetKind === "a2a"
     ? "Agent 地址"
     : targetKind === "local_source"
@@ -269,18 +286,16 @@ export function EvaluationsPage({
 
       {completionMessage && <p className="sr-only" role="status">{completionMessage}</p>}
 
-      <section className="evaluation-page__metrics" aria-label="评测汇总">
-        <div><span>全部</span><strong>{runs.length}</strong></div>
-        <div><span>运行中</span><strong>{activeCount}</strong></div>
-        <div><span>已通过</span><strong>{passedCount}</strong></div>
-        <div><span>异常</span><strong>{abnormalCount}</strong></div>
-      </section>
+      {runs.length > 0 && <div className="evaluation-page__filters" role="group" aria-label="筛选评测状态">
+        {runFilters.map(filter => <button key={filter.value} type="button" aria-label={`${filter.label} ${runs.filter(run => matchesRunFilter(run, filter.value)).length}`} aria-pressed={runFilter === filter.value} onClick={() => setRunFilter(filter.value)}>
+          {filter.label}<span>{runs.filter(run => matchesRunFilter(run, filter.value)).length}</span>
+        </button>)}
+      </div>}
 
       <section className="evaluation-page__run-list" aria-label="评测运行">
-        <div className="evaluation-page__panel-header"><div><strong>评测运行</strong><span>{runs.length} 个任务</span></div></div>
         <StudioDataTable
           columns={columns}
-          data={runs}
+          data={filteredRuns}
           getRowId={run => run.id}
           caption="评测运行列表"
           minWidth={980}
@@ -289,14 +304,14 @@ export function EvaluationsPage({
           onRetry={() => void loadRuns()}
           onRowActivate={run => onOpenRun(run.id)}
           rowAriaLabel={run => `打开评测 ${run.evalset.name || run.id}`}
-          empty={{ icon: <Activity size={22} />, title: "还没有评测任务", description: "创建评测后即可在这里查看结果。" }}
+          empty={{ icon: <Activity size={22} />, title: runs.length ? "没有符合条件的评测" : "还没有评测任务", description: runs.length ? "选择其他状态查看任务。" : "创建评测后即可在这里查看结果。" }}
         />
       </section>
 
       {formOpen && (
         <Drawer
           title="新建评测"
-          subtitle="选择 EvalSet、Target 和评估器。任务创建后将在后台执行。"
+          subtitle="选择测试集、评测目标和评估器，开始后在后台执行。"
           wide
           closeDisabled={submitting}
           onClose={() => setFormOpen(false)}
@@ -334,9 +349,9 @@ export function EvaluationsPage({
               {evalsetError && <p className="studio-field-error" role="alert">{evalsetError}</p>}
             </FormField>
 
-            <FormField label="Target 类型" requirement="required">
+            <FormField label="评测目标" requirement="required">
               <StudioSelect
-                ariaLabel="Target 类型"
+                ariaLabel="评测目标"
                 value={targetKind}
                 options={[
                   { value: "a2a", label: "A2A Agent" },
@@ -387,7 +402,7 @@ export function EvaluationsPage({
             <FormField label="运行策略">
               <label className="checkbox-row evaluation-page__fail-fast">
                 <input type="checkbox" checked={failFast} onChange={event => setFailFast(event.target.checked)} />
-                <span><strong>Fail fast</strong><small>首个失败 Case 后停止</small></span>
+                <span><strong>失败时停止</strong><small>首个用例失败后结束评测</small></span>
               </label>
             </FormField>
 
@@ -403,7 +418,7 @@ export function EvaluationsPage({
                         event.target.checked ? [...current, option.id] : current.filter(id => id !== option.id)
                       ))}
                     />
-                    <span><strong>{option.label}</strong><small>{option.id}</small></span>
+                    <span title={option.id}><strong>{option.label}</strong></span>
                   </label>
                 ))}
               </div>

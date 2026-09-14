@@ -19,7 +19,6 @@ execution（同一 client 实例）；control lookup 永远按 durable run id。
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -36,6 +35,7 @@ from ksadk.interaction.provider import (
     UnavailableInteractionProvider,
 )
 from ksadk.interaction.providers import default_interaction_providers
+from ksadk.kernel.approval_presentation import approval_presentation
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -54,6 +54,11 @@ from ksadk.kernel.errors import (
     StaleFenceError,
     UnsupportedControlError,
 )
+from ksadk.kernel.execution_grants import (
+    ExecutionGrantBlocked,
+    execution_grant_id,
+    execution_grant_run_id,
+)
 from ksadk.kernel.mapping import COMMAND_HANDLERS, RESUME_TARGET_KINDS
 from ksadk.kernel.state import RunState
 from ksadk.kernel.store import (
@@ -62,7 +67,9 @@ from ksadk.kernel.store import (
     control_event,
     new_message_id,
 )
+from ksadk.kernel.worker_identity import prepare_worker_identity
 from ksadk.runtime.adapter import (
+    CONVERSATION_PREPROCESSING_METADATA_KEY,
     CancelResult,
     PauseResult,
     RunHandle,
@@ -75,6 +82,7 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.adapter import (
     ResumeTarget as AdapterResumeTarget,
 )
+from ksadk.runtime_context import TRUSTED_IDENTITY_METADATA_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +117,7 @@ class WorkResult:
     message_id: str | None = None
     run_id: str | None = None
     last_seq: int | None = None
+    error: Exception | None = None
 
 
 class AgentKernelWorker:
@@ -120,12 +129,14 @@ class AgentKernelWorker:
         session_events: object | None = None,
         interaction_providers: Mapping[str, InteractionProvider] | None = None,
         start_request_defaults: Mapping[str, object] | None = None,
+        session_service: object | None = None,
     ) -> None:
         self._store = store
         self._adapter_factory = adapter_factory
         # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
         # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
         self._session_events = session_events
+        self._session_service = session_service
         # Deployment-owned defaults (model, prompt and sandbox) come from the
         # admitted immutable manifest. Server may attach a bounded per-turn
         # model/approval selector to the signed command; the worker validates
@@ -246,27 +257,31 @@ class AgentKernelWorker:
         # enqueue，此时其后的 interrupt/pause/steer 等控制命令必须能越过
         # 该 enqueue 作用于 active Run。只处理当前 activation 持有 lease 的
         # session，避免跨 session 抢占。
-        eligible = None
+        suspended_enqueue = False
         for message in sorted(pending, key=lambda m: m.accepted_seq):
             if session_id is not None and message.session_id != session_id:
                 continue
             lease = await self._store.current_lease(agent_instance_id, message.session_id)
             if lease is None or lease.activation_id != activation.activation_id:
-                continue  # 该 session 归其它 activation（或无人）持有
-            if message.command is None:  # pragma: no cover - defensive
+                continue
+            if message.command is None:
                 continue
             if message.command.command_type == "enqueue":
                 active = await self._store.find_active_run(agent_instance_id, message.session_id)
-                if active is not None:
-                    continue  # enqueue 保持排队
-            eligible = message
-            break
-        if eligible is None:
-            return WorkResult(outcome="idle")
-
-        claimed = await self._store.claim_message(eligible.message_id, fence)
-        result = await self._execute_claim(claimed.command, activation)
-        return result
+                if active is not None or suspended_enqueue:
+                    continue
+            try:
+                # Store claim and execution-grant validation share one atomic
+                # transaction. A prior list/read is never start authorization.
+                claimed = await self._store.claim_message(message.message_id, fence)
+            except ExecutionGrantBlocked as error:
+                if error.grant_state in {"suspended", "queued", "busy"}:
+                    # Preserve enqueue FIFO while still letting cancel/resume
+                    # controls behind the suspended command reach active work.
+                    suspended_enqueue = True
+                continue
+            return await self._execute_claim(claimed.command, activation)
+        return WorkResult(outcome="idle")
 
     # ------------------------------------------------------------- execution
 
@@ -294,8 +309,10 @@ class AgentKernelWorker:
             )
             await self._store.discard_claim(message_id, expected_fence=fence)
             return WorkResult(outcome="completed", message_id=message_id)
-        except StaleFenceError:
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+        except StaleFenceError as error:
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
         except AgentKernelError as error:
             if error.code == RUNTIME_INTERACTION_UNAVAILABLE:
                 # typed rejection：provider 诚实声明无法原生送达回包，
@@ -316,16 +333,46 @@ class AgentKernelWorker:
                 await self._store.discard_claim(message_id, expected_fence=fence)
                 return WorkResult(outcome="completed", message_id=message_id)
             if error.retryable:
-                return WorkResult(outcome="retryable_failure", message_id=message_id)
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
-        except Exception:
+                return WorkResult(
+                    outcome="retryable_failure", message_id=message_id, error=error
+                )
+            logger.error(
+                "agent kernel command failed permanently: "
+                "agent_instance_id=%s session_id=%s command_id=%s "
+                "command_type=%s error=%s: %s",
+                command.agent_instance_id,
+                command.session_id,
+                command.command_id,
+                command.command_type,
+                type(error).__name__,
+                error,
+            )
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
+        except Exception as error:
             # 未知异常绝不 ack 为成功：消息保持 claimed。
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+            logger.exception(
+                "agent kernel command raised an unexpected exception: "
+                "agent_instance_id=%s session_id=%s command_id=%s "
+                "command_type=%s error=%s: %s",
+                command.agent_instance_id,
+                command.session_id,
+                command.command_id,
+                command.command_type,
+                type(error).__name__,
+                error,
+            )
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
 
         try:
             await self._store.complete_claim(message_id, expected_fence=fence)
-        except StaleFenceError:
-            return WorkResult(outcome="terminal_failure", message_id=message_id)
+        except StaleFenceError as error:
+            return WorkResult(
+                outcome="terminal_failure", message_id=message_id, error=error
+            )
         return WorkResult(outcome="completed", message_id=message_id, run_id=run_id)
 
     async def _message_id_for(self, command: AgentControlCommand) -> str:
@@ -349,7 +396,21 @@ class AgentKernelWorker:
 
         fence = activation.fencing_token
         guard = ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence)
-        run_id = new_message_id()
+        grant_id = execution_grant_id(command)
+        run_id = execution_grant_run_id(command) if grant_id else new_message_id()
+        if grant_id:
+            previous = await self._store.load_run(run_id)
+            if previous is not None:
+                # Once start may have reached the provider, neither a lost ACK
+                # nor takeover may invent a second model run. Normal recovery
+                # attaches durable handles; a handle-less pending start is
+                # uncertain and requires attention, never an automatic replay.
+                if previous.state == RunState.PENDING:
+                    await self._store.save_run_transition(previous.model_copy(update={
+                        "state": RunState.INTERRUPTED,
+                        "reason": "execution_start_uncertain",
+                    }), expected_fence=fence)
+                return run_id
         adapter = self._adapter_factory()
         pending = RunRecord(
             run_id=run_id,
@@ -363,6 +424,7 @@ class AgentKernelWorker:
             # back to one occurrence without matching text or wall-clock time.
             metadata={
                 "command_id": str(command.command_id),
+                **({"execution_grant_id": grant_id} if grant_id else {}),
                 "source_kind": command.source.kind,
                 "source_ref": command.source.ref,
                 "correlation_id": command.correlation_id,
@@ -396,10 +458,26 @@ class AgentKernelWorker:
         }
         if approval_mode in approval_overrides:
             request_config["approval_mode"] = approval_overrides[approval_mode]
+        effective_user_id, invocation_identity = await prepare_worker_identity(
+            command=command,
+            defaults=defaults,
+            session_service=self._session_service,
+        )
+
+        conversation_metadata = {}
+        if adapter.runtime.runtime_type == "harness" and self._session_events is not None:
+            from ksadk.kernel.worker_history import harness_conversation_messages
+
+            conversation_metadata[CONVERSATION_PREPROCESSING_METADATA_KEY] = {
+                "messages": await harness_conversation_messages(
+                    command, store=self._store, session_events=self._session_events,
+                ),
+            }
+
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
-                user_id=str(command.tenant_id or "agent-kernel"),
+                user_id=effective_user_id,
                 session_id=command.session_id,
                 agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
                 model=selected_model,
@@ -407,9 +485,28 @@ class AgentKernelWorker:
                 # durable run_id 优先传给 adapter；adapter 不认时以
                 # runtime_run_id 映射显式记录两个 ID 的对应关系。
                 metadata={
+                    **(
+                        {"session_context": command.payload["session_context"]}
+                        if "session_context" in command.payload
+                        else {}
+                    ),
                     "command_id": str(command.command_id),
                     "run_id": run_id,
+                    **(
+                        {TRUSTED_IDENTITY_METADATA_KEY: dict(invocation_identity)}
+                        if isinstance(invocation_identity, Mapping)
+                        else {}
+                    ),
                     **continuation_metadata,
+                    **conversation_metadata,
+                    # Opaque policy reference is supplied only by a trusted
+                    # ingress. The Provider resolves and reauthorizes it for
+                    # this exact Run; Kernel owns no plugin policy semantics.
+                    **(
+                        {"execution_policy_ref": command.payload["execution_policy_ref"]}
+                        if isinstance(command.payload.get("execution_policy_ref"), str)
+                        else {}
+                    ),
                 },
             )
         )
@@ -709,7 +806,7 @@ class AgentKernelWorker:
         """Persist one framework interaction as the durable ledger authority."""
 
         from ksadk.events.canonical import ApprovalRequest, InteractionRequested
-        from ksadk.interaction.contracts import InteractionPresentation, InteractionRecord
+        from ksadk.interaction.contracts import InteractionRecord
 
         assert isinstance(event, InteractionRequested)
         presentation = None
@@ -725,28 +822,20 @@ class AgentKernelWorker:
                 "required": ["decision"],
             }
             native_target = {"call_id": event.request.call_id or event.interaction_id}
-            detail = event.request.detail if isinstance(event.request.detail, Mapping) else {}
-            visible_arguments = {
-                key: detail[key]
-                for key in ("command", "cwd", "reason", "grantRoot", "proposedExecpolicyAmendment")
-                if key in detail and detail[key] is not None
-            }
-            presentation = InteractionPresentation(
-                title={
-                    "command_execution": "run_command",
-                    "file_change": "apply_patch",
-                    "permissions": "request_permission",
-                    "dynamic_tool_call": "tool_call",
-                }.get(event.request.kind, event.request.kind),
-                description=json.dumps(
-                    {"arguments": visible_arguments},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            )
+            presentation = approval_presentation(event.request)
         else:
             request_schema = dict(event.request.schema_)
-            native_target = {"call_id": event.interaction_id}
+            # Codex maps the native JSON-RPC request id to a stable canonical
+            # interaction id for replay.  The live client, however, indexes its
+            # pending callback by the original request id.  Preserve that id as
+            # the provider target or SubmitInteraction can find the durable
+            # record but cannot wake the blocked Codex callback.
+            native_call_id = (
+                event.source.native_event_id
+                or event.source.native_item_id
+                or event.interaction_id
+            )
+            native_target = {"call_id": native_call_id}
         for key in ("checkpoint_id", "thread_id"):
             value = execution.handle.native_ref.get(key)
             if value is not None:
@@ -812,7 +901,13 @@ class AgentKernelWorker:
                 kind=RESUME_TARGET_KINDS[target_dict["kind"]],
                 id=str(target_dict["id"]),
             )
-            resumed = await adapter.resume(handle, target, AdapterResumePayload(kind="free_text"))
+            resumed = await adapter.resume(
+                handle,
+                target,
+                AdapterResumePayload(
+                    kind="free_text", session_context=command.payload.get("session_context")
+                ),
+            )
             execution = self._replace_handle(execution, resumed)
             self._start_stream(
                 execution,
@@ -879,10 +974,7 @@ class AgentKernelWorker:
         # e.g. calling LangGraph checkpoint resume with a Codex live handle
         # would acknowledge a response that can never reach the original run.
         provider = execution.interaction_provider
-        if (
-            provider.provider_id != record.provider_id
-            or provider.mode == "unavailable"
-        ):
+        if provider.provider_id != record.provider_id or provider.mode == "unavailable":
             raise AgentKernelError(
                 RUNTIME_INTERACTION_UNAVAILABLE,
                 f"interaction provider {record.provider_id!r} cannot deliver "
@@ -910,6 +1002,7 @@ class AgentKernelWorker:
         context = InteractionResolveContext(
             adapter=execution.adapter,
             handle=execution.handle,
+            session_context=command.payload.get("session_context"),
             activation_id=activation.activation_id,
             fencing_token=fence,
         )

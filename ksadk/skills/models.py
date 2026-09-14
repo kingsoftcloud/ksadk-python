@@ -85,6 +85,10 @@ class SkillListResponse:
     skills: list[SkillRef]
     code: int = 0
     message: str = ""
+    total_count: int | None = None
+    truncated: bool = False
+    next_page: int | None = None
+    pagination_warning: str = ""
 
     @classmethod
     def from_payload(
@@ -94,10 +98,24 @@ class SkillListResponse:
         space_id: str = "",
         space_name: str = "",
     ) -> "SkillListResponse":
-        data = payload.get("Data") or payload.get("data") or {}
-        skills_payload = (
-            data.get("Skills") or data.get("skills") or data.get("Items") or data.get("items") or []
+        data = payload.get("Data", payload.get("data", {}))
+        if not isinstance(data, dict):
+            raise ValueError("Skill directory response must contain an object")
+        skills_payload = next(
+            (data[key] for key in ("Skills", "skills", "Items", "items") if key in data), []
         )
+        if skills_payload is None:
+            skills_payload = []
+        if not isinstance(skills_payload, list) or any(
+            not isinstance(item, dict) for item in skills_payload
+        ):
+            raise ValueError("Skill directory items must be objects")
+        total = data.get("TotalCount", data.get("total_count", payload.get("TotalCount")))
+        if total is not None:
+            if isinstance(total, str) and total.isdigit():
+                total = int(total)
+            if type(total) is not int or total < 0:
+                raise ValueError("Skill directory total count is invalid")
         return cls(
             code=int(payload.get("Code") or payload.get("code") or 0),
             message=str(payload.get("Message") or payload.get("message") or ""),
@@ -109,9 +127,13 @@ class SkillListResponse:
             skills=[
                 SkillRef.from_payload(item) for item in skills_payload if isinstance(item, dict)
             ],
+            total_count=total,
         )
 
-    def active_skills(self) -> list[SkillRef]:
+    def active_skills(self, *, allow_partial: bool = False) -> list[SkillRef]:
+        """Require callers consuming a partial directory to acknowledge it."""
+        if self.truncated and not allow_partial:
+            raise ValueError("Skill directory is incomplete; refresh or continue pagination")
         return [skill for skill in self.skills if skill.is_active]
 
 

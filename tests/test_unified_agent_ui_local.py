@@ -239,6 +239,43 @@ def _build_transport_with_runner(monkeypatch, runner):
     return facade, runner, service, transport
 
 
+@pytest.mark.asyncio
+async def test_chat_completions_stream_rejects_foreign_session_before_runner_start(
+    monkeypatch,
+):
+    _facade, runner, _service, transport = _build_transport(monkeypatch)
+    tenant_a_headers = {
+        "X-AgentEngine-Identity-Namespace": "customer-crm",
+        "X-AgentEngine-Business-Tenant-Id": "tenant-a",
+        "X-AgentEngine-Subject-Type": "user",
+        "X-AgentEngine-Subject-Id": "user-7",
+    }
+    tenant_b_headers = {
+        **tenant_a_headers,
+        "X-AgentEngine-Business-Tenant-Id": "tenant-b",
+    }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        created = await client.post(
+            "/agentengine/api/v1/CreateSession",
+            json={"AgentId": "demo-agent", "UserId": "bff", "SessionId": "session-1"},
+            headers=tenant_a_headers,
+        )
+        foreign = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "session_id": "session-1",
+                "stream": True,
+            },
+            headers=tenant_b_headers,
+        )
+
+    assert created.status_code == 200
+    assert foreign.status_code == 404
+    assert runner.invocations == []
+
+
 @pytest.fixture
 def active_trace_provider():
     provider = TracerProvider()
@@ -410,6 +447,35 @@ async def test_get_agent_ui_bootstrap_enables_tui_only_for_native_tui_frameworks
         "Mode": "tui",
         "Protocol": "ks-terminal.v1",
         "Path": "/_ksadk/terminal/ws",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_agent_ui_bootstrap_disables_terminal_for_isolated_identity(monkeypatch):
+    _, _, _, transport = _build_transport_with_runner(
+        monkeypatch,
+        _FrameworkUiRunner("openclaw"),
+    )
+    headers = {
+        "X-AgentEngine-Identity-Namespace": "customer-iam",
+        "X-AgentEngine-Business-Tenant-Id": "tenant-a",
+        "X-AgentEngine-Subject-Type": "user",
+        "X-AgentEngine-Subject-Id": "user-a",
+    }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            headers=headers,
+            json={"AgentId": "openclaw-agent"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["Data"]["Capabilities"]["NativeTerminal"] == {
+        "Enabled": False,
+        "Mode": None,
+        "Protocol": "ks-terminal.v1",
+        "Path": None,
     }
 
 
@@ -1040,12 +1106,11 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert fetched_session["Summary"] == "hello world"
     persisted_events = events.json()["Data"]["Events"]
     event_types = [item["EventType"] for item in persisted_events]
-    assert persisted_events[0]["Author"] == "user"
-    assert event_types[0] == "user_message"
+    assert persisted_events[-1]["Author"] == "user"
+    assert event_types[-1] == "user_message"
     assert "run.started" in event_types
     assert "item.completed" in event_types
     assert "run.completed" in event_types
-    assert event_types[-1] == "run_status"
     assert deleted.json()["Data"]["Deleted"] is True
 
 
@@ -1207,6 +1272,14 @@ async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cur
                 "SessionId": session.id,
             },
         )
+        wrong_agent = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "other-agent",
+                "UserId": "user-b",
+                "SessionId": session.id,
+            },
+        )
         latest = await client.post(
             "/agentengine/api/v1/ListSessionMessages",
             json={
@@ -1238,6 +1311,7 @@ async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cur
         )
 
     assert wrong_user.status_code == 404
+    assert wrong_agent.status_code == 404
     assert [item["SeqId"] for item in latest_data["Messages"]] == [7, 8]
     assert latest_data["NextCursor"] == 7
     assert [item["SeqId"] for item in older.json()["Data"]["Messages"]] == [5, 6]
@@ -1758,7 +1832,8 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
     assistant_event = next(
-        event for event in reversed(events)
+        event
+        for event in reversed(events)
         if event.event_type == "item.completed"
         and (event.content.get("runtime_event") or {}).get("item_kind") == "message"
     )

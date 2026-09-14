@@ -9,23 +9,25 @@ import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
 import { PluginsPage } from "./pages/PluginsPage";
-import { OrchestrationPage } from "./pages/OrchestrationPage";
+import { PluginWorkspacePage } from "./plugins/PluginWorkspacePage";
+import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { ChannelsPage } from "./pages/ChannelsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
+import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
-import { CloudChatWorkspace } from "./components/CloudChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
-import { ToastRegion } from "./components/Toast";
+import { ToastRegion, showToast } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
 import { useStudioViewportMode } from "./useStudioViewportMode";
 import { useStudioTheme } from "./useStudioTheme";
 import {
   mergeCloudChatTargets,
   resolveCloudChatRoute,
+  isCloudChatTargetSelectable,
   type AccountCloudAgentSummary,
   type CloudDeploymentSummary,
 } from "./cloudDeployments";
@@ -35,15 +37,8 @@ import {
   writeNavigationRailPreference,
   type NavigationView,
 } from "./components/NavigationRail";
-import { Bot, RefreshCw, PanelLeftClose, PanelLeftOpen, PanelRight } from "lucide-react";
-import { DshWorkspaceSurface } from "./dsh-runtime/DshWorkspaceSurface";
-import {
-  STUDIO_DSH_SLOTS,
-  type StudioRouteContribution,
-  useStudioDshContributions,
-} from "./dsh-runtime/studioContributions";
-import { studioDshRuntime } from "./dsh-runtime/studioDshRuntime";
-import { studioDshCompositionHost } from "./dsh-runtime/studioDshCompositionHost";
+import { PanelRight } from "lucide-react";
+import { KingIcon } from "./components/KingIcon";
 
 type View = NavigationView;
 
@@ -52,7 +47,7 @@ const VIEW_TITLE: Record<View, string> = {
   create: "创建 Agent",
   "agent-detail": "Agent 配置",
   conversations: "会话",
-  resources: "工程资源",
+  resources: "资源库",
   builds: "构建",
   deployments: "部署",
   observability: "可观测",
@@ -61,13 +56,13 @@ const VIEW_TITLE: Record<View, string> = {
   "runtime-resources": "运行资源",
   plugins: "已安装插件",
   automations: "自动化",
-  orchestration: "任务编排",
-  extension: "插件",
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
-const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
-const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "automations", "orchestration"]);
+const RESOURCE_KINDS: ResourceKind[] = [
+  "model", "tool", "mcp", "skill", "knowledge-base", "memory-instance", "skill-space",
+];
+const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
 
 function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
@@ -92,9 +87,11 @@ export function parseStudioLocationHash(hash: string): {
   editingAgentId: string;
   detailAgentId: string;
   evaluationRunId: string;
-  extensionPath: string;
+  conversationAgentId?: string;
+  sessionId?: string;
 } {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const [pathname, search = ""] = hash.replace(/^#\/?/, "").split("?");
+  const parts = pathname.split("/").filter(Boolean);
   const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
     ? decodeURIComponent(parts[1])
     : "";
@@ -105,22 +102,19 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
-  const extensionPath = parts[0] === "extensions" && parts[1]
-    ? `/extensions/${decodeURIComponent(parts[1])}`
-    : "";
-  const view = editingAgentId
+  const pluginPageId = parts[0] === 'workspace' && parts[1] ? decodeURIComponent(parts[1]) : ['orchestration', 'teams'].includes(parts[0]) ? 'teams' : '';
+  const view: View = pluginPageId ? `plugin:${pluginPageId}` : editingAgentId
     ? "create"
     : detailAgentId
       ? "agent-detail"
-      : extensionPath
-        ? "extension"
-        : VALID_VIEWS.includes(candidate)
+      : VALID_VIEWS.includes(candidate)
         ? candidate
         : "agents";
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
-  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, extensionPath };
+  const params = new URLSearchParams(search);
+  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId, ...(view === "conversations" && params.has("agentId") ? { conversationAgentId: params.get("agentId") || "", sessionId: params.get("sessionId") || "" } : {}) };
 }
 
 export function parseChatTargetValue(value: string): {
@@ -134,14 +128,6 @@ export function parseChatTargetValue(value: string): {
   return { kind, id: value.slice(separator + 1) };
 }
 
-export function shouldResetUnavailableExtension(
-  view: NavigationView,
-  extensionPath: string,
-  routes: readonly StudioRouteContribution[],
-): boolean {
-  return view === "extension" && !routes.some(route => route.path === extensionPath);
-}
-
 interface AgentSummary {
   metadata: { id: string; name: string; revision?: number; labels?: Record<string, string>; appearance?: AgentAppearance };
   spec?: { runtime?: { type?: string } };
@@ -149,20 +135,31 @@ interface AgentSummary {
 }
 
 export default function App() {
+  const workspacePages = useWorkspaceContributions();
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
   const initialRoute = parseStudioLocationHash(window.location.hash);
+  const [initialChatTarget] = useState(storedChatTarget);
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
-  const [extensionPath, setExtensionPath] = useState(initialRoute.extensionPath);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId || "");
+  const [currentAgentId, setCurrentAgentId] = useState(
+    initialRoute.detailAgentId
+      || initialRoute.editingAgentId
+      || initialRoute.conversationAgentId
+      || (initialRoute.view === "conversations" && initialChatTarget.kind === "local"
+        ? initialChatTarget.id
+        : ""),
+  );
   const [automationAgentScopeId, setAutomationAgentScopeId] = useState("");
+  const [requestedSessionId, setRequestedSessionId] = useState(initialRoute.sessionId || "");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
-  const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
+  const [workspace, setWorkspace] = useState<{ name?: string; path?: string; workspaceId?: string } | null>(null);
+  const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>([]);
+  const [workspaceRunCount, setWorkspaceRunCount] = useState(0);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -170,28 +167,19 @@ export default function App() {
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
-  const [cloudDeploymentId, setCloudDeploymentId] = useState(() => {
-    const saved = storedChatTarget();
-    return saved.kind === "cloud" ? saved.id : "";
-  });
+  const [cloudDeploymentId, setCloudDeploymentId] = useState(
+    !initialRoute.conversationAgentId && initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
+  );
   const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
+  const [newChatRequest, setNewChatRequest] = useState(0);
+  const onNewChatStarted = useCallback(() => setNewChatRequest(0), []);
+  const [conversationHeaderHost, setConversationHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [chatStreaming, setChatStreaming] = useState(false);
+  const [historyHost, setHistoryHost] = useState<HTMLDivElement | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
-  const extensionNavigation = useStudioDshContributions(
-    studioDshRuntime.contributions,
-    STUDIO_DSH_SLOTS.sidebarNavigation,
-  );
-  const extensionRoutes = useStudioDshContributions(
-    studioDshRuntime.contributions,
-    STUDIO_DSH_SLOTS.route,
-  );
-
-  useEffect(() => {
-    void studioDshCompositionHost.refresh().catch(error => {
-      console.warn("DSH Profile client graph was not activated", error);
-    });
-  }, []);
-
   useEffect(() => {
     document.body.classList.toggle("create-mode", view === "create");
     return () => document.body.classList.remove("create-mode");
@@ -205,7 +193,11 @@ export default function App() {
       setEditingAgentId(route.editingAgentId);
       setDetailAgentId(route.detailAgentId);
       setEvaluationRunId(route.evaluationRunId);
-      setExtensionPath(route.extensionPath);
+      if (route.conversationAgentId) {
+        setCurrentAgentId(route.conversationAgentId);
+        setCloudDeploymentId("");
+      }
+      setRequestedSessionId(route.sessionId || "");
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -225,8 +217,7 @@ export default function App() {
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
     setEvaluationRunId("");
-    if (v !== "extension") setExtensionPath("");
-    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : `#/${v}`;
+    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : v.startsWith("plugin:") ? `#/workspace/${encodeURIComponent(v.slice(7))}` : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
@@ -303,7 +294,9 @@ export default function App() {
       );
       setCloudDeployments(items);
       setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => (
-        item.id === previous && resolveCloudChatRoute(item).kind === "studio-session-events"
+        item.id === previous
+        && resolveCloudChatRoute(item).kind === "studio-session-events"
+        && isCloudChatTargetSelectable(item)
       )) ? previous : "");
     } catch {
       // Deployment receipts are optional for a local-only workspace.
@@ -321,6 +314,17 @@ export default function App() {
     }).catch(() => setRuntimeReady(false)).finally(() => setRuntimeChecked(true));
   }, [refreshTick]);
 
+  useEffect(() => {
+    apiFetch("/api/v1/workspaces/runs").then(r => r.ok ? r.json() : null)
+      .then(d => setWorkspaceRunCount(Array.isArray(d?.items) ? d.items.filter((item: any) => ["running", "pending", "input-required", "paused"].includes(item.status)).length : 0))
+      .catch(() => undefined);
+  }, [refreshTick]);
+
+  useEffect(() => {
+    apiFetch("/api/v1/workspaces").then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.items) setWorkspaces(d.items); }).catch(() => undefined);
+  }, [refreshTick]);
+
   const currentAgent = agents.find(a => a.metadata.id === currentAgentId);
   const runtimeState = !runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed";
   const runtimeStateLabel = !runtimeChecked ? "检查中" : runtimeReady ? "运行正常" : "连接失败";
@@ -333,7 +337,8 @@ export default function App() {
   }
 
   const studioCloudDeployments = cloudDeployments.filter(
-    item => resolveCloudChatRoute(item).kind === "studio-session-events",
+    item => resolveCloudChatRoute(item).kind === "studio-session-events"
+      && isCloudChatTargetSelectable(item),
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
@@ -480,24 +485,28 @@ export default function App() {
   }
 
   const breadcrumbParent = view === "create" || view === "agent-detail" ? "Agent" : null;
-  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : VIEW_TITLE[view];
+  const pluginPageId = view.startsWith("plugin:") ? view.slice(7) : "";
+  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : pluginPageId ? (workspacePages.find(page => page.id === pluginPageId)?.label || (pluginPageId === "teams" ? "团队" : "插件工作区")) : VIEW_TITLE[view];
 
-  const workspaceName = workspace?.name || "Workspace";
+  const workspaceName = workspace?.path?.endsWith("/default-workspace") ? "未打开工作区" : (workspace?.name || "未打开工作区");
   const workspacePath = workspace?.path || (runtimeReady ? "本地工作区" : "正在连接本地工作区");
   const focusedView = view === "create"
     || view === "conversations"
-    || view === "observability";
+    || view === "observability"
+    || Boolean(pluginPageId);
   const railCanExpand = viewportMode !== "compact";
   const railExpanded = railCanExpand && (railExpandedPreference ?? true);
+  useEffect(() => { setMobileNavOpen(false); }, [view, resourceKind, viewportMode]);
 
   function toggleRail() {
-    if (!railCanExpand) return;
+    if (!railCanExpand) { setMobileNavOpen(open => !open); return; }
     const next = !railExpanded;
     setRailExpandedPreference(next);
     writeNavigationRailPreference(next);
   }
 
   function navigateFromRail(nextView: NavigationView, kind?: ResourceKind) {
+    setMobileNavOpen(false);
     if (nextView === "conversations") enterChat();
     else if (nextView === "resources") openResources(kind || "model");
     else {
@@ -506,57 +515,71 @@ export default function App() {
     }
   }
 
-  function navigateToExtension(path: string) {
-    const route = extensionRoutes.find(item => item.path === path);
-    if (!route) return;
-    setViewState("extension");
-    setExtensionPath(path);
-    setEvaluationRunId("");
-    const nextHash = `#/extensions/${encodeURIComponent(path.replace(/^\/extensions\//, ""))}`;
-    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
-  }
-
-  const activeExtensionRoute = extensionRoutes.find(item => item.path === extensionPath);
-
-  useEffect(() => {
-    if (!shouldResetUnavailableExtension(view, extensionPath, extensionRoutes)) return;
-    setExtensionPath("");
-    setViewState("agents");
-    window.history.replaceState(null, "", "#/agents");
-  }, [extensionPath, extensionRoutes, view]);
-
   return (
     <>
       <a className="skip-link" href="#mainContent">跳到主要内容</a>
       <div className="app-shell" data-view={view} data-viewport={viewportMode} data-focused={focusedView} data-rail={railExpanded ? "expanded" : "compact"}>
       <NavigationRail
+        workspacePages={workspacePages}
         view={view}
         resourceKind={resourceKind}
         expanded={railExpanded}
+        mobile={!railCanExpand}
+        mobileOpen={mobileNavOpen}
+        onMobileOpenChange={setMobileNavOpen}
+        onExpand={() => { setRailExpandedPreference(true); writeNavigationRailPreference(true); }}
+        onHistoryHostChange={setHistoryHost}
+        chatStreaming={chatStreaming || newChatRequest !== 0}
+        onStartChat={() => { setRequestedSessionId(""); setNewChatRequest(request => request + 1); enterChat(); setMobileNavOpen(false); }}
         workspaceName={workspaceName}
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
+        workspaceRunCount={workspaceRunCount}
         onNavigate={navigateFromRail}
-        extensionItems={extensionNavigation}
-        activeExtensionPath={extensionPath}
-        onNavigateExtension={item => navigateToExtension(item.path)}
         onOpenSettings={() => {
+          setMobileNavOpen(false);
           setSettingsSection("general");
           setSettingsOpen(true);
+        }}
+        onWorkspaceSwitch={async () => {
+          setMobileNavOpen(false);
+          try {
+            if (window.studioNative?.openWorkspace) {
+              await window.studioNative.openWorkspace();
+              return;
+            }
+            let path = await window.studioNative?.chooseWorkspace?.();
+            if (path === undefined) {
+              const picked = await apiFetch("/api/v1/workspaces:choose", { method: "POST" });
+              const payload = await picked.json() as { path?: string | null; error?: { message?: string } };
+              if (!picked.ok) throw new Error(payload.error?.message || "当前环境无法打开目录选择器");
+              path = payload.path || null;
+            }
+            if (!path) return;
+            const opened = await apiFetch("/api/v1/workspaces:open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, create: true }) });
+            if (!opened.ok) {
+              const payload = await opened.json().catch(() => ({})) as { error?: { message?: string }; detail?: string };
+              throw new Error(payload.error?.message || payload.detail || `打开工作区失败（${opened.status}）`);
+            }
+            window.dispatchEvent(new Event("studio:directory-opened"));
+          } catch (error) {
+            showToast("工作区切换失败", error instanceof Error ? error.message : "无法打开所选目录。", "error");
+          }
         }}
       />
 
       <div className="app-main">
         <header className={`global-header${breadcrumbParent ? " nested" : ""}`} aria-label="当前页面">
-          {railCanExpand && (
+          {(
             <button
               className="icon-button tertiary rail-toggle"
               type="button"
-              aria-label={railExpanded ? "收起导航" : "展开导航"}
+              aria-label={(railExpanded || mobileNavOpen) ? "收起导航" : "展开导航"}
+              aria-expanded={railExpanded || mobileNavOpen}
               title={railExpanded ? "收起导航" : "展开导航"}
               onClick={toggleRail}
             >
-              {railExpanded ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+              <KingIcon name={railExpanded ? "left-squared" : "right-squared"} size={16} />
             </button>
           )}
           {breadcrumbParent && (
@@ -577,16 +600,13 @@ export default function App() {
               )}
             </div>
           )}
-          {!breadcrumbParent && (
+          {!breadcrumbParent && view !== "conversations" && (
             <div className="header-identity">
-              <span>工作区 · {workspaceName}</span>
-              {view === "conversations"
-                ? <strong>{breadcrumbTitle}</strong>
-                : <h1>{breadcrumbTitle}</h1>}
+              <h1>{breadcrumbTitle}</h1>
             </div>
           )}
           <div className="header-actions">
-            <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
+            <div ref={setConversationHeaderHost} id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
             {view === "conversations" ? (
               <StudioSelect
                 className="header-agent-selector conversation-target-selector"
@@ -608,14 +628,18 @@ export default function App() {
             )}
             {view !== "conversations" && <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>}
             <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
-            <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
-              <RefreshCw size={16} />
-            </button>
-            {view === "conversations" && chatMounted && currentAgentId && !isCloudChat && (
+            {(view !== "conversations" || railCanExpand) && <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
+              <KingIcon name="refresh" size={16} />
+            </button>}
+            {view === "conversations" && railCanExpand && chatMounted && currentAgentId && !isCloudChat && (
               <button className="icon-button tertiary conversation-run-detail" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
                 <PanelRight size={16} />
               </button>
             )}
+            {view === "conversations" && !railCanExpand && <MoreActionsMenu label="对话操作" items={[
+              { label: "刷新", onSelect: () => setRefreshTick(t => t + 1) },
+              ...(chatMounted && currentAgentId && !isCloudChat ? [{ label: "运行详情", onSelect: () => setRunPanelOpen(v => !v) }] : []),
+            ]}/>}
             <div id="pageHeaderActions" className="page-header-page-actions" data-testid="page-header-actions" />
           </div>
         </header>
@@ -625,9 +649,15 @@ export default function App() {
           <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
               {chatMounted && isCloudChat && selectedCloudDeployment && (
-                <CloudChatWorkspace
+                <ChatWorkspace
+                  newChatRequest={newChatRequest}
+                  onNewChatStarted={onNewChatStarted}
+                  onStreamingChange={setChatStreaming}
+                  integratedHistory
+                  historyHost={historyHost}
+                  headerHost={conversationHeaderHost}
+                  onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   key={selectedCloudDeployment.id}
-                  deploymentId={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   active={view === "conversations"}
@@ -636,12 +666,21 @@ export default function App() {
               )}
               {chatMounted && !isCloudChat && currentAgentId && (
                 <ChatWorkspace
+                  newChatRequest={newChatRequest}
+                  onNewChatStarted={onNewChatStarted}
+                  onStreamingChange={setChatStreaming}
+                  integratedHistory
+                  historyHost={historyHost}
+                  headerHost={conversationHeaderHost}
+                  onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   key={currentAgentId}
                   agentId={currentAgentId}
+                  requestedSessionId={requestedSessionId}
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
+                  onSessionChanged={setConversationSessionId}
                   onConfigureAgent={() => openEdit(currentAgentId)}
                   onOpenSettings={() => {
                     setSettingsSection("credentials");
@@ -650,25 +689,31 @@ export default function App() {
                 />
               )}
               {chatMounted && !isCloudChat && !currentAgentId && (
-                <div className="empty-state chat-agent-empty" role="status">
-                  <span className="empty-icon"><Bot /></span>
-                  <h2>{agentsLoaded && cloudDeploymentsLoaded ? "还没有可用的会话目标" : "正在载入会话目标"}</h2>
-                  <p>{agentsLoaded && cloudDeploymentsLoaded ? "可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。" : "正在同步本地工作区与账号云端 Agent…"}</p>
-                  {agentsLoaded && cloudDeploymentsLoaded && (
+                agentsLoaded && cloudDeploymentsLoaded ? (
+                  <div className="empty-state chat-agent-empty" role="status">
+                    <span className="empty-icon"><KingIcon name="cpu" size={24} /></span>
+                    <h2>还没有可用的会话目标</h2>
+                    <p>可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。</p>
                     <div className="empty-actions">
                       <button className="primary-button" type="button" onClick={openCreate}>创建本地 Agent</button>
                       <button className="button secondary" type="button" onClick={() => setView("deployments")}>查看云端 Agent</button>
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="chat-target-loading" role="status" aria-label="正在同步会话目标">
+                    <i />
+                    <span>正在同步会话目标…</span>
+                  </div>
+                )
               )}
             </div>
             {runPanelOpen && chatMounted && currentAgentId && !isCloudChat && (
-              <ChatRunPanel agentId={currentAgentId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
+              <ChatRunPanel agentId={currentAgentId} sessionId={conversationSessionId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
             )}
           </div>
 
-          <div style={{ display: view === "conversations" ? "none" : undefined }}>
+          {pluginPageId && <div className="studio-plugin-page-host"><PluginWorkspacePage pageId={pluginPageId} contributions={workspacePages} /></div>}
+          <div style={{ display: view === "conversations" || pluginPageId ? "none" : undefined }}>
             {view === "agents" && (
               <AgentsPage
                 agents={agents}
@@ -678,12 +723,13 @@ export default function App() {
                 onCreate={openCreate}
                 onDetail={openDetail}
                 onChat={enterChat}
-                onBuild={() => setView("builds")}
+                onBuild={id => { setCurrentAgentId(id); setView("builds"); }}
                 onChanged={loadAgents}
               />
             )}
             {view === "create" && (
               <CreatePage
+                workspacePath={workspace?.path}
                 editingAgentId={editingAgentId || undefined}
                 viewportMode={viewportMode}
                 onAgentsChanged={loadAgents}
@@ -699,18 +745,20 @@ export default function App() {
             )}
             {view === "agent-detail" && detailAgentId && (
               <AgentDetailPage
+                refreshTick={refreshTick}
                 agentId={detailAgentId}
                 onBack={() => setView("agents")}
                 onChat={enterChat}
-                onBuild={() => setView("builds")}
+                onBuild={() => { setCurrentAgentId(detailAgentId); setView("builds"); }}
                 onEdit={openEdit}
                 onChanged={loadAgents}
               />
             )}
             {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
-            {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
+            {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} refreshTick={refreshTick} />}
             {view === "deployments" && (
               <DeploymentsPage
+                refreshTick={refreshTick}
                 onCreate={openCreate}
                 onOpenChat={enterCloudChat}
                 onSelectBuild={() => setView("builds")}
@@ -723,16 +771,12 @@ export default function App() {
               <EvaluationsPage refreshTick={refreshTick} onOpenRun={openEvaluationRun} />
             )}
             {view === "evaluations" && evaluationRunId && (
-              <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} />
+              <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} refreshTick={refreshTick} />
             )}
             {view === "channels" && <ChannelsPage refreshTick={refreshTick} />}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
-            {view === "plugins" && <PluginsPage />}
-            {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} />}
-            {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
-            {view === "extension" && activeExtensionRoute && (
-              <DshWorkspaceSurface currentAgentId={currentAgentId} route={activeExtensionRoute} />
-            )}
+            {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
+            {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
           </div>
         </main>
       </div>

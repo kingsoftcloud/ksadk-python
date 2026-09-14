@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -151,6 +151,39 @@ describe("ObservabilityPage trajectory integration", () => {
     const metrics = await screen.findByRole("region", { name: "Trace 指标" });
     expect(within(metrics).getByText("5")).toBeInTheDocument();
     expect(within(metrics).getByText("2 输入 · 3 输出")).toBeInTheDocument();
+  });
+
+  it("pages trace results in readable ten-row batches", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiFetch).mockImplementation(input => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/agents")) return response({ items: [] });
+      if (url.startsWith("/api/v1/traces/overview")) return response({ buckets: [] });
+      if (url.startsWith("/api/v1/traces?")) {
+        const page = url.includes("cursor=page-2") ? 2 : 1;
+        return response({
+          items: [{
+            traceId: `trace-${page}`,
+            runId: `run-${page}`,
+            status: "completed",
+            startedAt: "2026-08-17T00:00:00Z",
+            spanCount: 1,
+          }],
+          total: 11,
+          nextCursor: page === 1 ? "page-2" : null,
+        });
+      }
+      return response({});
+    });
+
+    render(<ObservabilityPage refreshTick={0} />);
+
+    expect(document.querySelector("#traceExplorer")).toHaveAttribute("data-scroll-mode", "workbench");
+    expect(await screen.findByText("第 1 页 · 1–1 / 11 条")).toBeVisible();
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/traces\?.*limit=10/));
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 页 · 11–11 / 11 条")).toBeVisible();
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(expect.stringContaining("cursor=page-2"));
   });
 
   it.each([
@@ -366,7 +399,7 @@ describe("ObservabilityPage trajectory integration", () => {
     render(<ObservabilityPage refreshTick={0} />);
 
     await user.click(await screen.findByRole("button", { name: "查看详情" }));
-    expect(await screen.findByRole("tab", { name: "Spans" })).toHaveAttribute(
+    expect(await screen.findByRole("tab", { name: "概览" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -440,4 +473,34 @@ describe("ObservabilityPage trajectory integration", () => {
       "error",
     );
   });
+  it("refreshes the selected trace and keeps its active details tab", async () => {
+    const user = userEvent.setup();
+    const view = render(<ObservabilityPage refreshTick={0} />);
+    expect(await screen.findByRole("region", { name: "运行概览" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "查看详情" }));
+    await user.click(await screen.findByRole("tab", { name: "属性" }));
+    expect(screen.queryByRole("region", { name: "运行概览" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+    vi.mocked(apiFetch).mockClear();
+    view.rerender(<ObservabilityPage refreshTick={1} />);
+    await waitFor(() => expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/api/v1/traces/trace-1"));
+    expect(screen.getByRole("tab", { name: "属性" })).toHaveAttribute("aria-selected", "true");
+    expect(vi.mocked(apiFetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "调用详情操作" }));
+    expect(screen.getByRole("menuitem", { name: "复制 traceparent" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "复制 Raw OTLP" })).toBeVisible();
+  });
+
+  it("keeps the list available and shows an error when a trace cannot be read", async () => {
+    const user = userEvent.setup();
+    const fetchSuccess = vi.mocked(apiFetch).getMockImplementation()!;
+    vi.mocked(apiFetch).mockImplementation((input, init) => String(input) === "/api/v1/traces/trace-1"
+      ? Promise.resolve(new Response("{}", { status: 404 })) : fetchSuccess(input, init));
+    render(<ObservabilityPage refreshTick={0} />);
+    await user.click(await screen.findByRole("button", { name: "查看详情" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("调用详情加载失败（404）");
+    expect(screen.getByRole("table", { name: "Trace 列表" })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Trace 指标" })).not.toBeInTheDocument();
+  });
+
 });

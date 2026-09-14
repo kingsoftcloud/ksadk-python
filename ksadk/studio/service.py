@@ -8,10 +8,11 @@ import json
 import logging
 import os
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Literal, TypeVar, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -43,6 +44,7 @@ from ksadk.evaluation.studio_build_adapter import (
 from ksadk.events.store import RuntimeEventStore
 from ksadk.observability.session_log import SessionLogError, export_session_log
 from ksadk.observability.trajectory import encode_sse, project_trajectory_event
+from ksadk.plugins.bundle_security import BundleSecurityError
 from ksadk.plugins.contracts import PluginManifest
 from ksadk.plugins.providers.legacy import LegacyHarnessSource
 from ksadk.plugins.providers.legacy_catalog import (
@@ -82,8 +84,11 @@ from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
     CodexManifestRepository,
 )
+from ksadk.studio.codex_plugin_store import CodexPluginSnapshotStore
+from ksadk.studio.codex_provider_build import CodexProviderBuildManager
 from ksadk.studio.codex_run import CodexRunSpecResolver
 from ksadk.studio.compiler import AgentCompiler
+from ksadk.studio.configuration import SETTINGS_ENV, WorkspaceConfiguration
 from ksadk.studio.contracts import (
     AgentAppearance,
     AgentBindings,
@@ -92,13 +97,20 @@ from ksadk.studio.contracts import (
     AgentTemplateComposeRequest,
     AgentTemplateComposition,
     BuildStatus,
+    BundleManifest,
     DeploymentRequest,
+    Diagnostic,
+    DiagnosticSeverity,
     Operation,
     OperationKind,
+    OperationStatus,
     RunEvent,
     RunStatus,
     RuntimeRef,
     ToolContract,
+)
+from ksadk.studio.dsh_capability_service import (
+    StudioDshCapabilityService,
 )
 from ksadk.studio.dsh_provider_registration import (
     StudioDshProviderRegistrationError,
@@ -113,8 +125,18 @@ from ksadk.studio.model_profile_service import test_model_profile_connection
 from ksadk.studio.operations import OperationManager
 from ksadk.studio.plugin_composition import StudioPluginCompositionCompiler
 from ksadk.studio.plugin_runtime import StudioPluginRuntime
-from ksadk.studio.repository import AgentDraftRepository, BuildRepository, load_yaml_file
+from ksadk.studio.repository import AgentDraftRepository, BuildRepository
+from ksadk.studio.resource_authority import (
+    ResourceAuthorityPolicy,
+    SignedKnowledgeResourceAuthority,
+    resource_authority_policy_from_environment,
+)
+from ksadk.studio.resource_build_admission import (
+    admit_resource_build,
+    resource_build_required,
+)
 from ksadk.studio.resource_catalog import LocalResourceCatalog
+from ksadk.studio.resource_connections import ResourceConnectionRepository
 from ksadk.studio.run_service import StudioRunService, StudioRunSpec
 from ksadk.studio.runtime_catalog import inspect_runtime_catalog
 from ksadk.studio.runtime_source import materialize_generated_runtime_source
@@ -129,9 +151,13 @@ from ksadk.studio.templates import (
     compose_research_agent,
     default_agent_spec,
     list_agent_templates,
+    with_harness_provider_permissions,
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
+from ksadk.studio.workspace_registry import WorkspaceRegistry
+
+_T = TypeVar("_T")
 
 _TRAJECTORY_KEEPALIVE_SECONDS = 15.0
 _EVALUATION_TARGET_LABELS = {
@@ -162,6 +188,9 @@ class StudioService:
         plugin_provider_factories: Mapping[str, Any] | None = None,
         legacy_harness_sources: Sequence[LegacyHarnessSource] = (),
         dsh_provider_registration_manager: StudioDshProviderRegistrationManager | None = None,
+        dsh_capability_service: StudioDshCapabilityService | None = None,
+        resource_authority_policy: ResourceAuthorityPolicy | None = None,
+        configuration_overrides: dict[str, str] | None = None,
     ) -> None:
         provider_manifests = dict(plugin_provider_manifests or {})
         provider_factories = dict(plugin_provider_factories or {})
@@ -171,6 +200,8 @@ class StudioService:
             )
         self.workspace = Workspace(root)
         self.workspace.initialize()
+        self.workspace_registry = WorkspaceRegistry()
+        self.workspace_record = self.workspace_registry.open(self.workspace.root)
         self._startup_provider_manifests = provider_manifests
         self._startup_provider_factories = provider_factories
         self._active_provider_manifests = dict(provider_manifests)
@@ -180,14 +211,57 @@ class StudioService:
                 self.workspace.root
             )
         )
+        self.dsh_capabilities = (
+            dsh_capability_service
+            or StudioDshCapabilityService.discover_or_create_workspace_default(self.workspace.root)
+        )
+        if (
+            dsh_capability_service is not None
+            or os.environ.get("KSADK_DSH_HOME", "").strip()
+            or os.environ.get("KSADK_DSH_PROFILE", "").strip()
+        ):
+            self._resource_dsh_provider_registration_manager = None
+            self.resource_dsh_capabilities = self.dsh_capabilities
+        else:
+            self._resource_dsh_provider_registration_manager = (
+                StudioDshProviderRegistrationManager.create_workspace_resource_default(
+                    self.workspace.root
+                )
+            )
+            self.resource_dsh_capabilities = (
+                StudioDshCapabilityService.create_workspace_resource_default(self.workspace.root)
+            )
         self._start_lock = asyncio.Lock()
         self._started = False
+        self._dsh_startup_task: asyncio.Task[None] | None = None
+        self._dsh_ready = False
+        self._closed = False
+        self.configuration = WorkspaceConfiguration(
+            self.workspace, overrides=configuration_overrides
+        )
+        self._resource_authority_policy_override = resource_authority_policy
         self._apply_persisted_settings()
         self.avatar_assets = AgentAvatarAssetStore(self.workspace)
         self.conversation_attachments = ConversationAttachmentStore(self.workspace)
         self.drafts = AgentDraftRepository(self.workspace)
         self.catalog = LocalResourceCatalog(self.workspace)
         self.builds = BuildRepository(self.workspace)
+        self.credentials = (
+            credential_resolver
+            or getattr(model_client, "credential_resolver", None)
+            or CredentialResolver(self.workspace, configuration=self.configuration)
+        )
+        self.resource_connections = ResourceConnectionRepository(self.workspace, self.credentials)
+        effective_resource_policy = (
+            resource_authority_policy
+            if resource_authority_policy is not None
+            else resource_authority_policy_from_environment(self.configuration.environment())
+        )
+        self.resource_authority = (
+            SignedKnowledgeResourceAuthority(self.resource_connections, effective_resource_policy)
+            if effective_resource_policy is not None
+            else None
+        )
         self.validator = AgentValidator()
         self.builder = AgentBundleBuilder(
             self.workspace,
@@ -209,6 +283,8 @@ class StudioService:
         self.codex_manifests = CodexManifestRepository(self.workspace)
         self.codex_builds = CodexBuildRepository(self.workspace)
         self.codex_drafts = CodexDraftRepository(self.workspace)
+        self.codex_plugin_snapshots = CodexPluginSnapshotStore(self.workspace)
+        self.codex_provider_builds = CodexProviderBuildManager(self)
         codex_builder_kwargs = {}
         if codex_runtime_inspector is not None:
             codex_builder_kwargs["runtime_inspector"] = codex_runtime_inspector
@@ -218,6 +294,10 @@ class StudioService:
             build_repository=self.codex_builds,
             resource_catalog=self.catalog,
             draft_repository=self.codex_drafts,
+            plugin_snapshot_store=self.codex_plugin_snapshots,
+            resource_connections=self.resource_connections,
+            provider_build=self.codex_provider_builds.prepare,
+            provider_validate=self.codex_provider_builds.bundle_root,
             **codex_builder_kwargs,
         )
         self.runtime_executor = runtime_executor or RuntimeExecutor(
@@ -230,17 +310,15 @@ class StudioService:
             session_service=self.session_service,
             runtime_events=self.runtime_events,
         )
-        self.credentials = (
-            credential_resolver
-            or getattr(model_client, "credential_resolver", None)
-            or CredentialResolver(self.workspace)
-        )
         self.codex_runs = CodexRunSpecResolver(
             self.workspace,
             build_repository=self.codex_builds,
             manifest_repository=self.codex_manifests,
             credential_resolver=self.credentials,
             resource_catalog=self.catalog,
+            draft_repository=self.codex_drafts,
+            plugin_snapshot_store=self.codex_plugin_snapshots,
+            provider_bundle_resolver=self.codex_provider_builds.bundle_root,
         )
         self.framework_runs = FrameworkRunSpecResolver(
             self.workspace,
@@ -256,10 +334,17 @@ class StudioService:
             session_service=self.session_service,
             model_client=self.model_client,
             secret_resolver=self.credentials,
+            codex_local_launch_resolver=self.codex_provider_builds.native_launch,
+            runtime_executor=self.runtime_executor,
             harness_reasoner=harness_reasoner,
             provider_manifests=provider_manifests,
             provider_factories=provider_factories,
             legacy_harness_sources=legacy_harness_sources,
+            dsh_capability_service=self.dsh_capabilities,
+            resource_dsh_capability_service=self.resource_dsh_capabilities,
+            resource_authority=self.resource_authority,
+            resource_connections=self.resource_connections,
+            resource_actor_ref="local-user",
         )
         self.run_service.plugin_runtime = self.plugin_runs
         self.scheduler_runtimes = StudioScheduledKernelRegistry(
@@ -267,13 +352,29 @@ class StudioService:
             resolve_adapter_provider=self._scheduler_adapter_provider,
             session_service=self.session_service,
             runtime_executor=self.runtime_executor,
+            state_dir=self.workspace.resolve(".agentkit/plugin-runtime/state"),
         )
         self.scheduler = StudioSchedulerService(
             self.workspace,
             runtime_registry=self.scheduler_runtimes,
         )
+        from ksadk.studio.execution_host import StudioExecutionHost
+        from ksadk.studio.teams_installation import StudioTeamsInstallation
+        from ksadk.studio.workspace_plugins import WorkspacePluginRegistry
+
+        self.workspace_plugins = WorkspacePluginRegistry()
+        self.execution_host = StudioExecutionHost(
+            self.scheduler_runtimes,
+            state_path=self.workspace.resolve(".agentkit/plugin-runtime/execution-host.sqlite"),
+        )
+        self.plugin_runs.execution_policy_resolver = self.execution_host
+        self.teams_installation = StudioTeamsInstallation(self)
+        from ksadk.studio.scheduler_assistant import StudioScheduleAssistant
+
+        self.run_service.schedule_assistant = StudioScheduleAssistant(self)
         self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
         self._cloud_gateway_override = cloud_gateway
+        self._profile_maintenance = False
         self.cloud = CloudDeploymentService(
             self.workspace,
             gateway=cloud_gateway or self._configured_cloud_gateway(),
@@ -283,12 +384,30 @@ class StudioService:
         self.evaluation_storage = EvaluationStorage(self.workspace.resolve(".agentkit/evaluations"))
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
+        self._current_codex_builds: dict[str, CodexBuildRecord] = {}
 
-    async def start(self) -> None:
-        """Bind ready managed DSH registrations before build or execution."""
-
+    async def start(self, *, wait_for_dsh: bool = True) -> None:
+        """Start local state and optionally wait for the managed DSH profile."""
+        # Desktop workspace switching must not queue behind an in-flight DSH
+        # discovery task.  The service is already usable while that optional
+        # task finishes in the background; callers that explicitly request
+        # readiness still await the task below.
+        if self._started and not wait_for_dsh:
+            return
         async with self._start_lock:
-            if self._started:
+            self._ensure_open()
+            if not self._started:
+                await self.scheduler_runtimes.start()
+                self._started = True
+                self._dsh_startup_task = asyncio.create_task(self._initialize_dsh())
+            task = self._dsh_startup_task
+        if wait_for_dsh and task is not None:
+            await asyncio.shield(task)
+
+    async def _initialize_dsh(self) -> None:
+        async with self._start_lock:
+            self._ensure_open()
+            if self._dsh_ready:
                 return
             await self._bootstrap_official_dsh_defaults()
             manifests, factories, manager_refs = await self._provider_snapshot(refresh=False)
@@ -298,29 +417,192 @@ class StudioService:
             manager = self._dsh_provider_registration_manager
             if manager is not None and manager_refs is not None:
                 manager.mark_bound(manager_refs)
-            self._started = True
+            self._dsh_ready = True
 
     async def refresh_dsh_provider_registrations(self) -> None:
         """Rebind the exact current DSH Profile and release stale activations."""
 
         async with self._start_lock:
-            if self._dsh_provider_registration_manager is None:
-                self._dsh_provider_registration_manager = (
-                    StudioDshProviderRegistrationManager.discover_or_create_workspace_default(
-                        self.workspace.root
-                    )
+            self._ensure_open()
+            await self.execution_host.set_admission_open(False)
+            await self.scheduler_runtimes.set_admission_open(False)
+            self._profile_maintenance = True
+            safe_to_resume = True
+            try:
+                await self._require_profile_idle()
+                safe_to_resume = False
+                await self.plugin_runs.suspend_admission()
+                await self.reset_dsh_capability_state()
+                await self._bind_dsh_provider_registrations_locked(refresh=True)
+                await self._refresh_dsh_catalog_resource(required=False)
+                safe_to_resume = True
+            finally:
+                self._profile_maintenance = not safe_to_resume
+                await self.execution_host.set_admission_open(safe_to_resume)
+                await self.scheduler_runtimes.set_admission_open(safe_to_resume)
+                if safe_to_resume:
+                    await self.plugin_runs.resume_admission()
+
+    async def reconfigure_dsh_profile(
+        self,
+        operation: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        """Run one Profile mutation while all Agent admission is suspended."""
+
+        async with self._start_lock:
+            self._ensure_open()
+            await self.execution_host.set_admission_open(False)
+            await self.scheduler_runtimes.set_admission_open(False)
+            self._profile_maintenance = True
+            safe_to_resume = True
+            try:
+                await self._require_profile_idle()
+                safe_to_resume = False
+                await self.plugin_runs.suspend_admission()
+                await self.reset_dsh_capability_state()
+                try:
+                    result = await operation()
+                except BaseException as mutation_error:
+                    if (
+                        isinstance(mutation_error, StudioError)
+                        and mutation_error.code == "DSH_PROFILE_RECOVERY_REQUIRED"
+                    ):
+                        raise
+                    try:
+                        await self._bind_dsh_provider_registrations_locked(refresh=True)
+                        await self._refresh_dsh_catalog_resource(required=False)
+                        safe_to_resume = True
+                    except Exception as recovery_error:  # noqa: BLE001
+                        logging.getLogger(__name__).warning(
+                            "DSH provider recovery after mutation failure skipped: %s",
+                            recovery_error,
+                        )
+                    raise
+                await self._bind_dsh_provider_registrations_locked(refresh=True)
+                await self._refresh_dsh_catalog_resource(required=False)
+                safe_to_resume = True
+                return result
+            finally:
+                self._profile_maintenance = not safe_to_resume
+                await self.execution_host.set_admission_open(safe_to_resume)
+                await self.scheduler_runtimes.set_admission_open(safe_to_resume)
+                if safe_to_resume:
+                    await self.plugin_runs.resume_admission()
+
+    async def _require_profile_idle(self) -> None:
+        pending = await self.scheduler_runtimes.unsettled_sessions()
+        active_operations = [
+            operation for operation in self.operations.list()
+            if operation.status in {OperationStatus.QUEUED, OperationStatus.RUNNING}
+        ]
+        if pending or active_operations:
+            raise StudioError("DSH_PROFILE_IN_USE",
+                "仍有执行或审批正在进行，请结束执行后再变更插件 Profile", status_code=409)
+
+    def _require_direct_session(self, session_id: str | None) -> None:
+        if self._profile_maintenance:
+            raise StudioError("DSH_PROFILE_MAINTENANCE", "插件宿主正在维护", status_code=503)
+        if session_id:
+            from ksadk.studio.execution_host import ExecutionHostError
+
+            try:
+                self.execution_host.require_unreserved_session(session_id)
+            except ExecutionHostError as error:
+                raise StudioError(error.code, str(error), status_code=error.status) from error
+
+    def _require_direct_run(self, run_id: str) -> None:
+        from ksadk.studio.execution_host import ExecutionHostError
+
+        self._require_direct_session(None)
+        try:
+            self.execution_host.require_unreserved_run(run_id)
+        except ExecutionHostError as error:
+            raise StudioError(error.code, str(error), status_code=error.status) from error
+
+    async def _bind_dsh_provider_registrations_locked(self, *, refresh: bool) -> None:
+        if self._dsh_provider_registration_manager is None:
+            self._dsh_provider_registration_manager = (
+                StudioDshProviderRegistrationManager.discover_or_create_workspace_default(
+                    self.workspace.root
                 )
-            await self._bootstrap_official_dsh_defaults()
-            if self._started:
-                await self.plugin_runs.aclose()
-            manifests, factories, manager_refs = await self._provider_snapshot(refresh=True)
-            self.plugin_compositions.replace_provider_registrations(manifests)
-            self.plugin_runs.replace_provider_registrations(manifests, factories)
-            self._active_provider_manifests = manifests
-            manager = self._dsh_provider_registration_manager
-            if manager is not None and manager_refs is not None:
-                manager.mark_bound(manager_refs)
-            self._started = True
+            )
+        await self._bootstrap_official_dsh_defaults()
+        manifests, factories, manager_refs = await self._provider_snapshot(refresh=refresh)
+        self.plugin_compositions.replace_provider_registrations(manifests)
+        self.plugin_runs.replace_provider_registrations(manifests, factories)
+        self._active_provider_manifests = manifests
+        manager = self._dsh_provider_registration_manager
+        if manager is not None and manager_refs is not None:
+            manager.mark_bound(manager_refs)
+        self._started = True
+        self._dsh_ready = True
+
+    async def reset_dsh_capability_state(self) -> None:
+        """Drop the current DSH capability/Core generation."""
+
+        self.catalog.clear_dsh_profile_mcp()
+        await self.dsh_capabilities.refresh()
+
+    async def refresh_dsh_catalog_resource(self):  # type: ignore[no-untyped-def]
+        """Validate and publish the current DSH Profile as a bindable MCP."""
+
+        _snapshot, resource = await self.dsh_capability_catalog_snapshot()
+        return resource
+
+    async def dsh_capability_catalog_snapshot(self):  # type: ignore[no-untyped-def]
+        """Atomically snapshot and publish one current DSH generation."""
+
+        async with self._start_lock:
+            self._ensure_open()
+            snapshot = await self.dsh_capabilities.capability_snapshot()
+            resource = self.catalog.replace_dsh_profile_mcp(snapshot.descriptor)
+            return snapshot, resource
+
+    async def ensure_dsh_catalog_available(self) -> None:
+        """Publish an explicitly enabled DSH Profile for the generic selector.
+
+        The normal Studio startup remains side-effect free for legacy users.
+        The generic MCP catalog request performs only a profile metadata check;
+        it starts the managed capability host when the user has already enabled
+        at least one DSH plugin.
+        """
+
+        async with self._start_lock:
+            self._ensure_open()
+            existing = self.catalog.list(kind="mcp", source="provider", limit=200)
+            if any(item.contract.get("materialization") == "dsh-profile" for item in existing):
+                return
+            checker = getattr(self.dsh_capabilities, "has_enabled_profile_plugins", None)
+            if checker is None:
+                return
+            try:
+                enabled = await checker()
+            except Exception as error:  # noqa: BLE001 - optional ecosystem boundary
+                logging.getLogger(__name__).warning("DSH catalog discovery skipped: %s", error)
+                return
+            if enabled:
+                await self._refresh_dsh_catalog_resource(required=False)
+
+    @asynccontextmanager
+    async def dsh_profile_read_transaction(self) -> AsyncIterator[None]:
+        """Fence a UI grant read against Profile mutation and shutdown."""
+
+        async with self._start_lock:
+            self._ensure_open()
+            yield
+
+    async def _refresh_dsh_catalog_resource(self, *, required: bool):  # type: ignore[no-untyped-def]
+        try:
+            snapshot = await self.dsh_capabilities.capability_snapshot()
+            return self.catalog.replace_dsh_profile_mcp(snapshot.descriptor)
+        except Exception as error:  # noqa: BLE001 - optional ecosystem boundary
+            self.catalog.clear_dsh_profile_mcp()
+            if required:
+                raise
+            logging.getLogger(__name__).warning(
+                "DSH capability catalog publication skipped: %s", error
+            )
+            return None
 
     async def _bootstrap_official_dsh_defaults(self) -> None:
         manager = self._dsh_provider_registration_manager
@@ -332,9 +614,47 @@ class StudioService:
             logging.getLogger(__name__).warning(
                 "official DSH provider bootstrap skipped: %s", error
             )
+        else:
+            if result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official Codex DSH provider bootstrap: %s", result
+                )
+        try:
+            harness_result = await manager.bootstrap_official_harness_provider()
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "official Harness DSH provider bootstrap skipped: %s", error
+            )
+        else:
+            if harness_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official Harness DSH provider bootstrap: %s", harness_result
+                )
+        try:
+            resource_result = await manager.bootstrap_official_resource_plugins()
+        except Exception as error:  # optional DSH must fail closed to legacy paths
+            logging.getLogger(__name__).warning(
+                "official DSH resource bootstrap skipped: %s", error
+            )
+        else:
+            if resource_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official platform resource DSH bootstrap: %s", resource_result
+                )
+        resource_manager = self._resource_dsh_provider_registration_manager
+        if resource_manager is None:
             return
-        if result in {"installed", "already_enabled"}:
-            logging.getLogger(__name__).info("official Codex DSH provider bootstrap: %s", result)
+        try:
+            resource_result = await resource_manager.bootstrap_official_resource_plugins()
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "official resource execution Profile bootstrap skipped: %s", error
+            )
+        else:
+            if resource_result in {"installed", "already_enabled"}:
+                logging.getLogger(__name__).info(
+                    "official resource execution Profile bootstrap: %s", resource_result
+                )
 
     async def _provider_snapshot(
         self, *, refresh: bool
@@ -453,19 +773,29 @@ class StudioService:
         """Resolve one immutable Build through its only compatible resolver."""
 
         try:
+            self.codex_builds.get(build_id)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+        else:
+            # The record exists in the Codex repository. Any later resolution
+            # error belongs to that Build and must remain actionable; a nested
+            # 404 (for example a missing plugin snapshot) is not evidence that
+            # this is a framework Build.
             return self.codex_runs.resolve(
                 build_id,
                 model=model,
                 sandbox=sandbox,
                 approval_mode=approval_mode,
             )
-        except Exception as exc:
-            if getattr(exc, "status_code", None) != 404:
-                raise
         framework_build = self.builds.get(build_id)
         runtime_type = framework_build.runtime_type.strip().lower()
         if runtime_type in {"harness", "plugin"}:
-            return self.plugin_runs.resolve(build_id, model=model)
+            return self.plugin_runs.resolve(
+                build_id,
+                model=model,
+                approval_mode=approval_mode,
+            )
         return self.framework_runs.resolve(
             build_id,
             model=model,
@@ -537,6 +867,7 @@ class StudioService:
         sending provider-specific fields to every Runtime.
         """
 
+        self._require_direct_session(session_id)
         spec = self.resolve_run_spec(build_id)
         runtime_type = spec.launch_context.runtime_type.strip().lower()
         runtime_mode: Literal["native", "translated"] = (
@@ -595,21 +926,33 @@ class StudioService:
         await self.start()
         if self.is_codex_agent(agent_id):
             self.codex_agent_detail(agent_id)
+            manifest_snapshot = self.codex_manifests.load(agent_id)
+            cached = self._current_codex_builds.get(agent_id)
+            if cached is not None and cached.manifest_sha256 == manifest_snapshot.manifest_sha256:
+                try:
+                    return self.codex_builds.get(cached.id)
+                except StudioError:
+                    self._current_codex_builds.pop(agent_id, None)
             builds = [
                 record
                 for record in self.codex_builds.list()
                 if record.agent_name == agent_id and self.codex_builder.is_current(record)
             ]
             if builds:
+                self._current_codex_builds[agent_id] = builds[0]
                 return builds[0]
-            return await asyncio.to_thread(self.codex_builder.build, agent_id)
+            built = await asyncio.to_thread(self.codex_builder.build, agent_id)
+            self._current_codex_builds[agent_id] = built
+            return built
         draft = self.drafts.get(agent_id)
         composition_required = self.plugin_compositions.required_for(draft)
+        resources_required = resource_build_required(draft)
         for record in self.builds.list_for_agent(agent_id):
             if record.status == BuildStatus.SUCCEEDED:
-                if composition_required and (
+                if (composition_required or resources_required) and (
                     record.source_revision != draft.metadata.revision
-                    or not self._build_has_composition(record)
+                    or (composition_required and not self._build_has_composition(record))
+                    or (resources_required and not self._build_has_resources(record))
                 ):
                     continue
                 if composition_required:
@@ -638,7 +981,44 @@ class StudioService:
 
     def _build_agent_bundle(self, draft: AgentDraft):
         composition = self.plugin_compositions.compile_if_required(draft)
-        record = self.builder.build(draft, composition=composition)
+        resource_build = None
+        if resource_build_required(draft):
+            dsh_profile = self.resource_dsh_capabilities.capture_resource_build_snapshot()
+            resource_build = admit_resource_build(
+                draft,
+                authority=self.resource_authority,
+                connections=self.resource_connections,
+                dsh_profile=dsh_profile,
+            )
+        try:
+            record = self.builder.build(
+                draft,
+                composition=composition,
+                resource_build=resource_build,
+            )
+        except BundleSecurityError as error:
+            first = error.findings[0]
+            reason = {
+                "literal-secret-field": "明文凭证",
+                "url-credentials": "含账号信息的 URL",
+                "local-home-path": "本机用户目录路径",
+                "invalid-structured-input": "无法解析的结构化数据",
+            }.get(first.kind, "敏感内容")
+            raise StudioError(
+                "BUNDLE_SECURITY_REJECTED",
+                f"AgentBundle 安全检查未通过：{first.path} 检测到{reason}",
+                status_code=422,
+                details={
+                    "securityFindings": [
+                        {
+                            "path": finding.path,
+                            "kind": finding.kind,
+                            "field": finding.field,
+                        }
+                        for finding in error.findings
+                    ]
+                },
+            ) from error
         if composition is not None:
             self.plugin_compositions.bind_build(
                 composition,
@@ -666,6 +1046,26 @@ class StudioService:
                 and manifest.get("compositionProfileDigest")
                 and "composition-profile.json" in names
                 and "plugin-lock.json" in names
+            )
+        except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile):
+            return False
+
+    def _build_has_resources(self, record: Any) -> bool:
+        if (
+            not record.artifact_path
+            or not record.resource_build_digest
+            or not record.resource_snapshot_digest
+        ):
+            return False
+        try:
+            archive = self.workspace.resolve(record.artifact_path, must_exist=True)
+            with zipfile.ZipFile(archive) as bundle:
+                manifest = BundleManifest.model_validate_json(bundle.read("manifest.json"))
+                names = frozenset(bundle.namelist())
+            return bool(
+                manifest.resource_build_digest == record.resource_build_digest
+                and manifest.resource_snapshot_digest == record.resource_snapshot_digest
+                and "platform-resources/resource-build.json" in names
             )
         except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile):
             return False
@@ -714,6 +1114,7 @@ class StudioService:
                 field="sessionId",
             )
         if continuity == "continue_session":
+            await self._require_schedule_session_owner(agent_id, session_id)
             self._require_schedule_continuation(runtime, spec.launch_context.runtime_type)
         task = ScheduledTask(
             task_id=f"sched-{uuid4().hex[:20]}",
@@ -735,6 +1136,29 @@ class StudioService:
             continuity=continuity,
         )
         return self.scheduler.create_task(task)
+
+    async def _require_schedule_session_owner(self, agent_id: str, session_id: str | None) -> None:
+        session = (
+            await self.session_service.get_session_metadata(session_id) if session_id else None
+        )
+        if session is None or session.agent_id != agent_id:
+            raise StudioError(
+                "SCHEDULE_SESSION_INVALID",
+                "请选择该智能体已有的会话。",
+                status_code=422,
+                field="sessionId",
+            )
+
+    async def validate_schedule_session(
+        self, agent_id: str, continuity: str, session_id: str | None, build_id: str | None
+    ) -> None:
+        if continuity != "continue_session":
+            return
+        await self._require_schedule_session_owner(agent_id, session_id)
+        await self.scheduler_runtimes.ensure_build(build_id, expected_agent_id=agent_id)
+        runtime = self.scheduler_runtimes.runtime_for_build(build_id)
+        spec = self.resolve_run_spec(build_id)
+        self._require_schedule_continuation(runtime, spec.launch_context.runtime_type)
 
     @staticmethod
     def _require_schedule_continuation(runtime: Any, runtime_type: str) -> None:
@@ -826,12 +1250,14 @@ class StudioService:
         name: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.create(
+        created = self.codex_agents.create(
             agent_id=agent_id,
             spec=spec,
             name=name,
             labels=labels,
         )
+        self._current_codex_builds.pop(agent_id, None)
+        return created
 
     def update_codex_agent(
         self,
@@ -841,15 +1267,18 @@ class StudioService:
         expected_revision: int,
         name: str | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.update(
+        updated = self.codex_agents.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
             name=name,
         )
+        self._current_codex_builds.pop(agent_id, None)
+        return updated
 
     def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
         self.codex_agents.delete(agent_id, purge=purge)
+        self._current_codex_builds.pop(agent_id, None)
 
     def codex_agent_detail(self, agent_id: str | None = None) -> dict:
         return self.codex_agents.detail(agent_id)
@@ -885,6 +1314,7 @@ class StudioService:
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
+        self._require_direct_session(session_id)
         return self.codex_agents.submit_run(
             build_id,
             user_input,
@@ -903,8 +1333,10 @@ class StudioService:
     async def delete_session(self, session_id: str) -> None:
         from ksadk.studio.errors import not_found
 
+        self._require_direct_session(session_id)
         runs = self.event_store.list_runs(session_id=session_id)
-        if not runs:
+        session = await self.session_service.get_session_metadata(session_id)
+        if not runs and session is None:
             raise not_found("session", session_id)
         if any(run.status == RunStatus.RUNNING for run in runs):
             raise StudioError(
@@ -920,11 +1352,57 @@ class StudioService:
     async def aclose(self) -> None:
         """Release local provider activations and supervised plugin processes."""
 
-        await self.plugin_runs.aclose()
+        async with self._start_lock:
+            if self._closed:
+                return
+            if self._dsh_startup_task is not None and not self._dsh_startup_task.done():
+                self._dsh_startup_task.cancel()
+            self._closed = True
+            cleanup = asyncio.create_task(self._close_owned_plugin_services())
+            interrupted = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    interrupted = True
+            cleanup.result()
+            if interrupted:
+                raise asyncio.CancelledError
+
+    async def _close_owned_plugin_services(self) -> None:
+        from ksadk.studio.provider_recovery import detach_recovered_runs
+
+        await detach_recovered_runs(self.run_service)
+        first_error: BaseException | None = None
+        owned = [
+            self.workspace_plugins.close, self.plugin_runs.aclose, self.dsh_capabilities.aclose,
+            self.scheduler_runtimes.close, self.execution_host.close,
+        ]
+        if self.resource_dsh_capabilities is not self.dsh_capabilities:
+            owned.append(self.resource_dsh_capabilities.aclose)
         if self._dsh_provider_registration_manager is not None:
-            await self._dsh_provider_registration_manager.aclose()
+            owned.append(self._dsh_provider_registration_manager.aclose)
+        if self._resource_dsh_provider_registration_manager is not None:
+            owned.append(self._resource_dsh_provider_registration_manager.aclose)
+        for close in owned:
+            try:
+                await close()
+            except BaseException as error:  # cleanup must continue
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise StudioError(
+                "STUDIO_SERVICE_CLOSED",
+                "Studio service 已关闭",
+                status_code=503,
+            )
 
     async def _require_runtime_session(self, session_id: str) -> None:
+        self._require_direct_session(session_id)
         if await self.session_service.get_session_metadata(session_id) is None:
             raise StudioError(
                 "SESSION_NOT_FOUND",
@@ -1498,6 +1976,8 @@ class StudioService:
         )
         selected = runtime or resolved_spec.runtime
         resolved_spec.runtime = selected
+        if selected is not None and selected.type == "harness" and spec is None:
+            resolved_spec = with_harness_provider_permissions(resolved_spec)
         if selected is not None and selected.type == "codex":
             return cast(
                 AgentDraft,
@@ -1623,6 +2103,88 @@ class StudioService:
             return detail["validation"]
         return self.validator.validate(draft, level=level)
 
+    async def resource_binding_status(self, agent_id: str, *, activation_id: str) -> dict:
+        # Check workspace ownership, but never project the mutable draft as runtime state.
+        await asyncio.to_thread(self.agent_detail, agent_id)
+        status = await self.dsh_capabilities.resource_runtime_status(
+            agent_id=agent_id,
+            activation_id=activation_id,
+        )
+        if status is None:
+            raise StudioError(
+                "RESOURCE_ACTIVATION_NOT_FOUND",
+                "未找到此 Agent 的资源运行实例",
+                status_code=404,
+            )
+        return status
+
+    def validate_resource_bindings(self, agent_id: str, *, expected_revision: int) -> dict:
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+        from ksadk.studio.resource_binding_validation import resource_binding_diagnostics
+
+        draft = self.agent_detail(agent_id)["draft"]
+        if draft.metadata.revision != expected_revision:
+            raise StudioError(
+                "AGENT_REVISION_CONFLICT",
+                "资源校验版本与当前 Agent 不一致",
+                status_code=409,
+            )
+        diagnostics = resource_binding_diagnostics(
+            draft.spec.bindings.plugins,
+            draft.spec.memory,
+            self.resource_connections,
+        )
+        configs = [
+            (index, config)
+            for index, binding in enumerate(draft.spec.bindings.plugins)
+            if binding.enabled
+            for config in [
+                resource_plugin_config(
+                    binding.plugin_ref,
+                    binding.ecosystem,
+                    binding.config,
+                    enabled=True,
+                )
+            ]
+            if config is not None
+        ]
+        verified = []
+        if (
+            self.resource_authority is not None
+            and configs
+            and not any(item.severity == DiagnosticSeverity.ERROR for item in diagnostics)
+        ):
+            for index, config in configs:
+                try:
+                    verified.append(self.resource_authority.admit(config))
+                except StudioError as error:
+                    diagnostics.append(
+                        Diagnostic(
+                            severity=DiagnosticSeverity.ERROR,
+                            code=error.code,
+                            message=error.message,
+                            field=error.field or f"spec.bindings.plugins[{index}].config.binding",
+                        )
+                    )
+            current = self.agent_detail(agent_id)["draft"]
+            if current.metadata.revision != draft.metadata.revision:
+                raise StudioError(
+                    "AGENT_REVISION_CONFLICT",
+                    "资源校验期间 Agent 已变更，请刷新后重试",
+                    status_code=409,
+                )
+        authorization_verified = bool(configs) and len(verified) == len(configs)
+        if authorization_verified:
+            diagnostics = [
+                item for item in diagnostics if item.code != "RESOURCE_AUTHORITY_UNVERIFIED"
+            ]
+        return {
+            "revision": draft.metadata.revision,
+            "valid": not any(item.severity == "error" for item in diagnostics),
+            "authorizationVerified": authorization_verified,
+            "diagnostics": [item.model_dump(by_alias=True, mode="json") for item in diagnostics],
+        }
+
     def submit_studio_build(
         self,
         agent_id: str,
@@ -1685,6 +2247,7 @@ class StudioService:
         runtime_input: Any = None,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
+        self._require_direct_session(session_id)
         try:
             self.codex_builds.get(build_id)
         except Exception as exc:
@@ -1995,6 +2558,7 @@ class StudioService:
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
+        self._require_direct_session(session_id)
         async def runner(_operation_id: str):
             return await self.run_build(
                 build_id,
@@ -2035,6 +2599,7 @@ class StudioService:
         """Execute any immutable Studio Build through the canonical executor."""
 
         await self.start()
+        self._require_direct_session(session_id)
         spec = self.resolve_run_spec(
             build_id,
             model=model,
@@ -2500,6 +3065,12 @@ class StudioService:
                 runner=managed_runtime_runner,
             )
 
+        # Do not turn a stale URL or a deleted Agent's Build into an accepted
+        # operation that can only fail later in the worker.  The Codex lookup
+        # above intentionally falls back to framework builds, so establish
+        # that the fallback record exists before returning HTTP 202.
+        self.builds.get(build_id)
+
         async def runner(_operation_id: str):
             return await self.cloud.deploy(build_id, request)
 
@@ -2646,41 +3217,68 @@ class StudioService:
             "cloudCredential": opaque(f"{region}\0{access_key}"),
         }
 
+    @staticmethod
+    def frontend_assets() -> dict[str, Any]:
+        import re
+
+        entry = Path(__file__).with_name("static") / "index.html"
+        if not entry.is_file():
+            return {"entryAssets": []}
+        assets = re.findall(
+            r'(?:src|href)="(/static/assets/[^"<>]+\.(?:js|css))"',
+            entry.read_text(encoding="utf-8"),
+        )
+        return {"entryAssets": [Path(asset).name for asset in assets]}
+
     def get_settings(self) -> dict[str, Any]:
-        path = self.workspace.resolve(".agentkit/settings.yaml")
-        data: dict[str, Any] = {}
-        if path.is_file():
-            try:
-                data = load_yaml_file(path) or {}
-            except Exception:
-                data = {}
+        data = self.configuration.settings()
+        environment = self.configuration.environment()
         defaults = {
-            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
+            "sandbox": environment.get("KSADK_CODEX_SANDBOX", "workspace-write-auto"),
             "buildAfterCreate": True,
             "codexProxy": current_proxy_mode(),
-            "cloudRegion": os.environ.get(
-                "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "cn-beijing-6")
+            "cloudRegion": environment.get(
+                "AGENTENGINE_REGION", environment.get("KSYUN_REGION", "cn-beijing-6")
             ),
-            "cloudBucket": os.environ.get("KS3_BUCKET", ""),
-            "cloudAccountId": (os.environ.get("KSYUN_ACCOUNT_ID", "").strip()),
+            "cloudServerUrl": environment.get("AGENTENGINE_SERVER_URL", ""),
+            "cloudBucket": environment.get("KS3_BUCKET", ""),
+            "cloudAccountId": (environment.get("KSYUN_ACCOUNT_ID", "").strip()),
             # AK/SK 不回显(避免本地 UI 回传 secret);只暴露配置状态。
             # 已配置 = 启动环境或已持久化 settings 里 AK+SK 齐全。
             "cloudAccountConfigured": bool(
-                (os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")).strip()
+                (
+                    environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
+                ).strip()
                 and (
-                    os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+                    environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
                 ).strip()
             ),
             "cloudSignedAccountConfigured": bool(
-                (os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")).strip()
+                (
+                    environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
+                ).strip()
                 and (
-                    os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+                    environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
                 ).strip()
             ),
-            "traceContent": os.environ.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
+            "traceContent": environment.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
         }
         defaults.update({k: v for k, v in data.items() if k in defaults and v is not None})
-        defaults["codexProxy"] = normalize_proxy_mode(defaults.get("codexProxy"))
+        for key, name in SETTINGS_ENV.items():
+            if key in defaults:
+                value, _source = self.configuration.resolve(name)
+                if value is not None:
+                    defaults[key] = value
+        defaults["configurationSources"] = {
+            key: self.configuration.resolve(name)[1] for key, name in SETTINGS_ENV.items()
+        }
+        defaults["platformResourceMissingFields"] = [
+            key
+            for key in ("cloudAccessKey", "cloudSecretKey", "cloudServerUrl")
+            if not self.configuration.resolve(SETTINGS_ENV[key])[0]
+        ]
+        defaults["platformResourcesConfigured"] = self.resource_authority is not None
+        defaults["codexProxy"] = normalize_proxy_mode(environment.get("KSADK_CODEX_USE_PROXY"))
         return defaults
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2690,6 +3288,7 @@ class StudioService:
             "codexProxy",
             "cloudRegion",
             "cloudBucket",
+            "cloudServerUrl",
             "traceContent",
             # 云账号:AK/SK 留空 = 不修改(保留已存值);AccountID 可单独更新。
             "cloudAccessKey",
@@ -2718,35 +3317,102 @@ class StudioService:
             raise StudioError("SETTINGS_INVALID", "sandbox 取值非法", status_code=422)
         if "codexProxy" in data and data["codexProxy"] not in {"auto", "forced", "direct"}:
             raise StudioError("SETTINGS_INVALID", "codexProxy 取值非法", status_code=422)
-        path = self.workspace.resolve(".agentkit/settings.yaml")
-        self.workspace.atomic_write_yaml(path, data)
-        # env 桥接用落盘后的全量数据:局部更新(只改 AccountID)时,
-        # 已持久化的 AK/SK 也要继续桥接,否则签名凭证丢失。
+        for key in (
+            "cloudAccessKey",
+            "cloudSecretKey",
+            "cloudAccountId",
+            "cloudRegion",
+            "cloudBucket",
+            "cloudServerUrl",
+        ):
+            if key in data:
+                if (
+                    not isinstance(data[key], str)
+                    or len(data[key]) > 2048
+                    or any(ord(c) < 32 for c in data[key])
+                ):
+                    raise StudioError(
+                        "SETTINGS_INVALID", "配置值格式无效", status_code=422, field=key
+                    )
+                data[key] = data[key].strip()
+        if data.get("cloudServerUrl"):
+            from ksadk.studio.resource_authority import _canonical_endpoint
+
+            try:
+                data["cloudServerUrl"] = _canonical_endpoint(
+                    data["cloudServerUrl"],
+                    allow_loopback_http=False,
+                    allow_ksyun_internal_http=True,
+                )
+            except ValueError as error:
+                raise StudioError(
+                    "SETTINGS_INVALID",
+                    "控制面地址必须是有效的 HTTPS 服务地址",
+                    status_code=422,
+                    field="cloudServerUrl",
+                ) from error
+        if (
+            "cloudAccessKey" in data
+            and data["cloudAccessKey"] != self.configuration.resolve("KSYUN_ACCESS_KEY")[0]
+        ):
+            if not data.get("cloudSecretKey"):
+                raise StudioError(
+                    "SETTINGS_INVALID",
+                    "切换 Access Key 时请同时填写对应的 Secret Key",
+                    status_code=422,
+                    field="cloudSecretKey",
+                )
+            data.setdefault("cloudAccountId", "")
+        candidate_environment = self.configuration.environment()
+        for key, name in SETTINGS_ENV.items():
+            if key in data and name not in self.configuration.overrides:
+                candidate_environment[name] = str(data[key])
         try:
-            persisted = load_yaml_file(path) or {}
-        except Exception:
-            persisted = data
-        self._apply_settings_to_env(persisted if isinstance(persisted, dict) else data)
+            candidate_policy = (
+                self._resource_authority_policy_override
+                or resource_authority_policy_from_environment(candidate_environment)
+            )
+        except ValueError as error:
+            raise StudioError(
+                "SETTINGS_INVALID", "云端连接配置无效，请检查控制面地址和区域", status_code=422
+            ) from error
+        self.plugin_runs.check_configuration_mutable()
+        self.configuration.update_settings(data)
+        self._apply_persisted_settings()
+        self.resource_authority = (
+            SignedKnowledgeResourceAuthority(self.resource_connections, candidate_policy)
+            if candidate_policy is not None
+            else None
+        )
+        self.plugin_runs.replace_resource_authority(self.resource_authority)
         if self._cloud_gateway_override is None:
             self.cloud.gateway = self._configured_cloud_gateway()
         return self.get_settings()
 
-    def _apply_persisted_settings(self) -> None:
-        """启动时把 settings.yaml 回填到进程环境。
+    async def apply_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Drain old credentials/leases before making a new account visible."""
+        async with self._start_lock:
+            if self.run_service.has_active_runs():
+                raise StudioError(
+                    "SETTINGS_RUNTIME_BUSY", "请等待当前运行结束后再保存设置", status_code=409
+                )
+            try:
+                await self.plugin_runs.suspend_admission()
+                return self.update_settings(payload)
+            finally:
+                await self.plugin_runs.resume_admission()
 
-        update_settings 只在 PUT 时桥接 env;重启后 env 丢失,运行解析
-        (如 _resolve_sandbox 读 KSADK_CODEX_SANDBOX)会回落默认,表现为
-        「设置页显示 workspace-write-auto,实际运行 read-only」。
-        """
-        path = self.workspace.resolve(".agentkit/settings.yaml")
-        if not path.is_file():
-            return
-        try:
-            data = load_yaml_file(path) or {}
-        except Exception:
-            return
-        if isinstance(data, dict):
-            self._apply_settings_to_env(data)
+    def _apply_persisted_settings(self) -> None:
+        data = self.configuration.settings()
+        environment = self.configuration.environment()
+        self._apply_settings_to_env(data)
+        for name in (
+            *SETTINGS_ENV.values(),
+            *self.configuration.dotenv,
+            *self.configuration.overrides,
+        ):
+            if name in environment:
+                os.environ[name] = environment[name]
 
     @staticmethod
     def _apply_settings_to_env(data: dict[str, Any]) -> None:
@@ -2773,34 +3439,43 @@ class StudioService:
         if data.get("cloudAccountId"):
             os.environ["KSYUN_ACCOUNT_ID"] = str(data["cloudAccountId"])
 
-    @staticmethod
-    def _configured_cloud_gateway() -> CloudDeploymentGateway:
+    def _configured_cloud_gateway(self) -> CloudDeploymentGateway:
         """Compose the existing signed Code deployment path from process-only credentials."""
 
+        environment = self.configuration.environment()
         access_key = (
-            os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")
+            environment.get("KSYUN_ACCESS_KEY") or environment.get("KS3_ACCESS_KEY", "")
         ).strip()
         secret_key = (
-            os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+            environment.get("KSYUN_SECRET_KEY") or environment.get("KS3_SECRET_KEY", "")
         ).strip()
-        region = os.environ.get("AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "")).strip()
-        if not all((access_key, secret_key, region)):
+        configured_region = environment.get(
+            "AGENTENGINE_REGION", environment.get("KSYUN_REGION", "")
+        ).strip()
+        environment_region = environment.get("KSYUN_REGION", "").strip()
+        logical_region = (
+            "pre-online" if environment_region.lower() == "pre-online" else configured_region
+        )
+        if not all((access_key, secret_key, logical_region)):
             return UnavailableCloudGateway()
         control_client = AgentEngineClient(
-            region=region,
+            base_url=environment.get("AGENTENGINE_SERVER_URL") or None,
+            region=logical_region,
             access_key=access_key,
             secret_key=secret_key,
         )
-        stream_base_url = os.environ.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
-        if not stream_base_url and region.lower() == "pre-online":
+        is_preonline = logical_region.lower() == "pre-online"
+        stream_base_url = environment.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
+        if not stream_base_url and is_preonline:
             # The pre-online KOP response path currently buffers SSE until
-            # EOF.  Its internal Server ingress validates the same V4
-            # signature and preserves the RunAgent streaming response.
+            # EOF, and KOP may not yet publish newly deployed native Action
+            # names.  Its internal Server ingress validates the same V4
+            # signature for RunAgent, ManagedRuntime, and plugin delivery.
             stream_base_url = "http://agent-api-pre.kspmas-internal.ksyun.com"
         stream_client = (
             AgentEngineClient(
                 base_url=stream_base_url,
-                region=region,
+                region=logical_region,
                 access_key=access_key,
                 secret_key=secret_key,
             )
@@ -2808,10 +3483,11 @@ class StudioService:
             else control_client
         )
         return DirectAgentEngineCloudDeploymentGateway(
-            region=region,
+            region=logical_region,
             client=control_client,
             stream_client=stream_client,
-            bucket=os.environ.get("KS3_BUCKET", "").strip() or None,
+            managed_runtime_client=stream_client if is_preonline else None,
+            bucket=environment.get("KS3_BUCKET", "").strip() or None,
             ks3_credentials={
                 "access_key": access_key,
                 "secret_key": secret_key,

@@ -83,6 +83,39 @@ async def test_sqlite_store_control_events_share_session_log(store):
     assert all(event.family == "control" and event.family_version == 1 for event in events)
 
 
+async def test_sqlite_store_supports_worker_selection_and_rejection_ports(store):
+    """The local durable store must implement every port used by Kernel/Worker."""
+
+    from tests.kernel.store_conformance import SESSION, command, lease_request
+
+    accepted = await store.accept_command(command("worker-port", "hello"), queue_limit=4)
+    loaded = await store.load_by_idempotency(SESSION, "worker-port")
+    assert loaded is not None and loaded.message_id == str(accepted.message_id)
+
+    lease = await store.acquire_activation(lease_request("act-worker-port"))
+    pending = await store.list_pending(
+        "agent-1", SESSION, fencing_token=lease.fencing_token
+    )
+    assert [item.message_id for item in pending] == [str(accepted.message_id)]
+    claimed = await store.claim_message(str(accepted.message_id), lease.fencing_token)
+    assert claimed.status.value == "claimed"
+    await store.discard_claim(
+        str(accepted.message_id), expected_fence=lease.fencing_token
+    )
+    discarded = await store.load_message(str(accepted.message_id))
+    assert discarded is not None and discarded.status.value == "discarded"
+
+    rejected_command = command("rejected-port", "blocked")
+    receipt = await store.reject_command(
+        rejected_command,
+        status="unsupported",
+        code="test_unsupported",
+        message="not supported",
+    )
+    assert receipt.status == "unsupported"
+    assert await store.load_by_idempotency(SESSION, "rejected-port") is None
+
+
 class _FlakyEventStore:
     """第一步成功、之后 append 全部抛错的 SessionEventStore 包装。"""
 

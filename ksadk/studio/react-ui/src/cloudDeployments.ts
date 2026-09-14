@@ -11,7 +11,12 @@ export interface CloudDeploymentSummary {
   chatRoutingReason?: CloudChatRoutingReason;
   versionId?: string;
   updatedAt?: string;
-  creatorName?: string;
+  creatorName?: string | null;
+  kernelReady?: boolean | null;
+  deploymentPhase?: string;
+  statusMessage?: string;
+  kernelReason?: string;
+  kernelObservedAt?: string;
   source?: "receipt" | "account";
 }
 
@@ -27,7 +32,12 @@ export interface AccountCloudAgentSummary {
   chatRoutingReason?: CloudChatRoutingReason;
   versionId?: string;
   updatedAt?: string;
-  creatorName?: string;
+  creatorName?: string | null;
+  kernelReady?: boolean | null;
+  deploymentPhase?: string;
+  statusMessage?: string;
+  kernelReason?: string;
+  kernelObservedAt?: string;
 }
 
 export type CloudChatRouteKind = "studio-session-events" | "official-dashboard";
@@ -39,6 +49,28 @@ export type CloudChatRoutingReason =
 export interface CloudChatRoute {
   kind: CloudChatRouteKind;
   reason: CloudChatRoutingReason;
+}
+
+const CLOUD_CHAT_UNAVAILABLE_STATUSES = new Set([
+  "CREATING",
+  "DEPLOYING",
+  "ADMITTING",
+  "PENDING",
+  "DELETING",
+  "DELETED",
+]);
+
+/**
+ * Historical agents do not publish AgentKernel readiness, so availability
+ * remains lifecycle-based. A newly submitted deployment stays on the
+ * deployment page until it leaves the transient provisioning phase. Failed
+ * Agents remain selectable so their durable conversation history is not lost.
+ */
+export function isCloudChatTargetSelectable(
+  target: Pick<CloudDeploymentSummary, "status">,
+): boolean {
+  const status = String(target.status || "").trim().toUpperCase();
+  return !status || !CLOUD_CHAT_UNAVAILABLE_STATUSES.has(status);
 }
 
 const NATIVE_DASHBOARD_FRAMEWORKS = new Set(["hermes", "openclaw"]);
@@ -157,7 +189,12 @@ export function mergeCloudChatTargets(
       chatRoutingReason: account?.chatRoutingReason || item.chatRoutingReason,
       versionId: account?.versionId || item.versionId,
       updatedAt: account?.updatedAt || item.updatedAt,
-      creatorName: account?.creatorName || item.creatorName,
+      creatorName: account?.creatorName !== undefined ? account.creatorName : item.creatorName,
+      kernelReady: account?.kernelReady ?? item.kernelReady,
+      deploymentPhase: account?.deploymentPhase || item.deploymentPhase,
+      statusMessage: account?.statusMessage || item.statusMessage,
+      kernelReason: account?.kernelReason || item.kernelReason,
+      kernelObservedAt: account?.kernelObservedAt || item.kernelObservedAt,
       source: "receipt" as const,
     };
   });
@@ -179,6 +216,11 @@ export function mergeCloudChatTargets(
       versionId: item.versionId,
       updatedAt: item.updatedAt,
       creatorName: item.creatorName,
+      kernelReady: item.kernelReady,
+      deploymentPhase: item.deploymentPhase,
+      statusMessage: item.statusMessage,
+      kernelReason: item.kernelReason,
+      kernelObservedAt: item.kernelObservedAt,
       source: "account" as const,
     }];
   });

@@ -32,6 +32,9 @@ def resolve_memory_provider(provider_ref: str) -> MemoryProviderLike:
     """
     ref = str(provider_ref or "").strip().lower()
 
+    if ref.startswith("binding://"):
+        raise ValueError("RESOURCE_MEMORY_BINDING_REQUIRES_ACTIVATION")
+
     if ref in ("local-inmemory", "inmemory"):
         from ksadk.memory.adk.backends.inmemory_ltm_backend import (
             InMemoryLTMBackend,
@@ -59,6 +62,11 @@ def resolve_memory_provider(provider_ref: str) -> MemoryProviderLike:
         from ksadk.memory.service import LongTermMemoryService
 
         return LongTermMemoryService.from_env()
+
+    if ref in ("local-postgres", "postgres"):
+        from ksadk.memory.providers.local_postgres import PostgresMemoryProvider
+
+        return PostgresMemoryProvider()
 
     # 默认：持久 SQLite（local-default / local-sqlite / 未知 ref）
     from ksadk.memory.providers.local_sqlite import (

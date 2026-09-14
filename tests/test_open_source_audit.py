@@ -212,7 +212,7 @@ def test_wheel_audit_blocks_hosted_ui_bundle_and_zread_snapshot():
     ]
 
 
-def test_public_and_package_audits_block_editable_studio_source():
+def test_public_allows_build_inputs_but_packages_exclude_editable_studio_source():
     audit = _load_audit_module()
     paths = [
         "ksadk/studio/react-ui/src/App.tsx",
@@ -221,7 +221,8 @@ def test_public_and_package_audits_block_editable_studio_source():
         "ksadk/studio/static/assets/app.js",
     ]
 
-    for target in ("public-repo", "sdist", "wheel"):
+    assert audit.audit_paths("public-repo", paths).ok
+    for target in ("sdist", "wheel"):
         result = audit.audit_paths(target, paths)
         assert [violation.rule for violation in result.violations] == [
             "studio-frontend-source",
@@ -407,7 +408,7 @@ def test_content_audit_blocks_private_doc_domains_and_secret_shapes(tmp_path):
     ]
 
 
-def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_services(tmp_path):
+def test_content_audit_allows_supported_internal_endpoints_but_blocks_other_services(tmp_path):
     audit = _load_audit_module()
     (tmp_path / "aicp.py").write_text(
         "\n".join(
@@ -415,6 +416,8 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
                 'AICP_PUBLIC = "aicp.api.ksyun.com"',
                 'AICP_INTERNAL = "aicp.internal.api.ksyun.com"',
                 'AICP_INNER = "aicp.inner.api.ksyun.com"',
+                'IAM_INTERNAL = "iam.internal.api.ksyun.com"',
+                'IAM_INNER = "iam.inner.api.ksyun.com"',
             ]
         ),
         encoding="utf-8",

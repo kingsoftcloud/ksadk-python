@@ -93,16 +93,11 @@ export function StudioDataTable<TData extends RowData>({
     getRowId,
   });
 
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-
-  function toggleRowExpanded(rowId: string) {
-    setExpandedRows(prev => {
-      const next = new Set(prev);
-      if (next.has(rowId)) next.delete(rowId);
-      else next.add(rowId);
-      return next;
-    });
-  }
+  const activateFromKeyboard = (event: KeyboardEvent<HTMLTableRowElement>, row: TData) => {
+    if (!onRowActivate || !event.currentTarget.contains(event.target as Node) || isInteractiveTarget(event.target) || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    onRowActivate(row);
+  };
 
   const pageStart = pagination && data.length
     ? pagination.pageIndex * pagination.pageSize + 1
@@ -114,7 +109,7 @@ export function StudioDataTable<TData extends RowData>({
   return (
     <div className="studio-data-table" aria-busy={loading || undefined} data-state={loading ? "loading" : error ? "error" : data.length ? "ready" : "empty"}>
       <div className="studio-data-table-scroll data-scroll-region">
-        {!loading && !error && (
+        {!loading && !error && data.length > 0 && (
           <table style={{ minWidth: cssSize(minWidth) }}>
             {caption && <caption className="sr-only">{caption}</caption>}
             <thead>
@@ -136,52 +131,25 @@ export function StudioDataTable<TData extends RowData>({
               ))}
             </thead>
             <tbody>
-              {table.getRowModel().rows.map(row => {
-                const isExpanded = expandedRows.has(row.id);
-                const expandable = Boolean(expandRowContent);
-                return (
-                  <Fragment key={row.id}>
-                    <tr
-                      className={expandable ? "is-expandable" : onRowActivate ? "is-interactive" : undefined}
-                      tabIndex={expandable || onRowActivate ? 0 : undefined}
-                      aria-label={rowAriaLabel?.(row.original)}
-                      aria-expanded={expandable ? isExpanded : undefined}
-                      onKeyDown={event => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        if (isInteractiveTarget(event.target)) return;
-                        event.preventDefault();
-                        if (expandable) toggleRowExpanded(row.id);
-                        else onRowActivate?.(row.original);
-                      }}
-                      onClick={event => {
-                        if (isInteractiveTarget(event.target)) return;
-                        if (expandable) toggleRowExpanded(row.id);
-                        else onRowActivate?.(row.original);
-                      }}
-                    >
-                      {row.getAllCells().map((cell, index) => (
-                        <td key={cell.id} className={columns[index]?.className}>
-                          {index === 0 && expandable && (
-                            <ChevronRight
-                              size={14}
-                              className={`studio-data-table-expand-chevron${isExpanded ? " is-expanded" : ""}`}
-                              aria-hidden="true"
-                            />
-                          )}
-                          <table.FlexRender cell={cell} />
-                        </td>
-                      ))}
-                    </tr>
-                    {expandable && isExpanded && expandRowContent && (
-                      <tr className="studio-data-table-expanded-row">
-                        <td colSpan={columns.length}>
-                          {expandRowContent(row.original)}
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
+              {table.getRowModel().rows.map(row => (
+                <tr
+                  key={row.id}
+                  className={onRowActivate ? "is-interactive" : undefined}
+                  tabIndex={onRowActivate ? 0 : undefined}
+                  aria-label={rowAriaLabel?.(row.original)}
+                  onKeyDown={event => activateFromKeyboard(event, row.original)}
+                  onClick={event => {
+                    // Portaled menus still bubble through React's row component tree.
+                    if (onRowActivate && event.currentTarget.contains(event.target as Node) && !isInteractiveTarget(event.target)) onRowActivate(row.original);
+                  }}
+                >
+                  {row.getAllCells().map((cell, index) => (
+                    <td key={cell.id} className={columns[index]?.className}>
+                      <table.FlexRender cell={cell} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
@@ -223,7 +191,7 @@ export function StudioDataTable<TData extends RowData>({
         )}
       </div>
 
-      {pagination && !loading && !error && (
+      {pagination && (pagination.total > 0 || pagination.pageIndex > 0) && !loading && !error && (
         <footer className="studio-data-table-pagination">
           <span>
             第 {pagination.pageIndex + 1} 页 · {pageStart}–{pageEnd} / {pagination.total} 条

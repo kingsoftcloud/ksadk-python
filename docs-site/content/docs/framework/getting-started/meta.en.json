@@ -1,0 +1,13 @@
+{
+  "title": "Getting Started",
+  "pages": [
+    "index",
+    "quickstart",
+    "configuration",
+    "project-structure",
+    "why-ksadk",
+    "concepts",
+    "architecture",
+    "comparison"
+  ]
+}

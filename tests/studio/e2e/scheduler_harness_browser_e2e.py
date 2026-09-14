@@ -10,6 +10,7 @@ below.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ from urllib.request import Request, urlopen
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
+from ksadk.plugins.dsh_home import prepare_studio_dsh_home
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.studio.contracts import AgentSpec
 from ksadk.studio.service import StudioService
@@ -32,10 +34,51 @@ AGENT_NAME = "Scheduler Harness Agent"
 CONTINUE_SESSION_ID = "scheduler-harness-continuation"
 
 
+class SchedulingChatStub(DeterministicChatCompletionsStub):
+    """Replace only external model inference; all tool effects are production."""
+
+    def _respond(self, path, authorization, payload):
+        response = super()._respond(path, authorization, payload)
+        names = [item.get("function", {}).get("name") for item in payload.get("tools", [])]
+        if "studio_schedule" not in names:
+            return response
+        text = payload["messages"][-1]["content"]
+        interval = "每7分钟" in text
+        intent = {
+            "action": "create",
+            "display_name": "服务巡检" if interval else "每日简报",
+            "prompt": "检查服务状态" if interval else "生成昨日工作日报",
+            "schedule": {"kind": "interval", "everySeconds": 420, "timezone": "Asia/Shanghai"}
+            if interval
+            else {"kind": "cron", "expression": "0 10 * * *", "timezone": "Asia/Shanghai"},
+        }
+        response["choices"][0].update(
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "schedule-intent",
+                            "type": "function",
+                            "function": {
+                                "name": "studio_schedule",
+                                "arguments": json.dumps(intent, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+        return response
+
+
 def _managed_harness_profile(workspace: Path) -> dict[str, str]:
     """Install the wheel-owned Bundle behind a deterministic DSH CLI seam."""
 
     home = workspace / ".agentkit" / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     installed = profile / "node_modules" / "@kingsoftcloud" / "ksadk-harness-provider"
     installed.parent.mkdir(parents=True)
@@ -44,11 +87,7 @@ def _managed_harness_profile(workspace: Path) -> dict[str, str]:
         json.dumps(
             {
                 "dependencies": {"@kingsoftcloud/ksadk-harness-provider": "1.0.0"},
-                "dsh": {
-                    "profile": {
-                        "bundles": ["@kingsoftcloud/ksadk-harness-provider"]
-                    }
-                },
+                "dsh": {"profile": {"bundles": ["@kingsoftcloud/ksadk-harness-provider"]}},
             }
         ),
         encoding="utf-8",
@@ -132,19 +171,22 @@ def _create_task(
     if global_create.is_visible():
         global_create.click()
     else:
-        page.get_by_role("button", name="新建任务", exact=True).click()
-    form = page.locator(".automation-form")
+        page.get_by_role("button", name="新建定时任务", exact=True).click()
+    form = page.get_by_role("dialog")
     expect(form).to_be_visible()
-    form.locator("label", has_text="Agent").locator("select").select_option(AGENT_ID)
-    form.get_by_placeholder("例如：工作日销售日报").fill(name)
-    form.get_by_placeholder("例如：生成昨日销售摘要并列出异常").fill(f"执行 {name}")
-    form.locator("label", has_text="触发方式").locator("select").select_option("interval")
-    form.locator("label", has_text="间隔（秒）").locator("input").fill("3600")
-    form.locator("label", has_text="会话").locator("select").select_option(continuity)
+    if form.get_by_label("交给谁").is_enabled():
+        form.get_by_label("交给谁").select_option(AGENT_ID)
+    form.get_by_label("任务名称", exact=True).fill(name)
+    form.get_by_label("任务说明", exact=True).fill(f"执行 {name}")
+    form.get_by_role("button", name="固定间隔", exact=True).click()
+    form.get_by_role("spinbutton", name="每隔").fill("60")
+    form.get_by_role("combobox", name="对话方式").select_option(continuity)
     if continuity == "continue_session":
-        form.get_by_placeholder("选择或粘贴可恢复的本地 Session").fill(session_id)
+        form.get_by_role("combobox", name="选择会话").select_option(session_id)
     form.get_by_role("button", name="创建任务", exact=True).click()
-    row = page.get_by_role("row", name=f"查看定时任务 {name} 的详情")
+    page.locator(".automation-detail").wait_for()
+    page.get_by_role("dialog").get_by_role("button", name="关闭", exact=True).click()
+    row = page.get_by_role("button", name=f"查看定时任务 {name} 的详情")
     expect(row).to_be_visible()
     task = next(
         item
@@ -216,7 +258,7 @@ def _assert_harness_vertical(
     model: DeterministicChatCompletionsStub,
 ) -> None:
     page.goto(f"{base_url}/#/automations", wait_until="networkidle")
-    expect(page.get_by_role("heading", name="自动化 / 定时任务")).to_be_visible()
+    expect(page.get_by_role("heading", name="自动化", exact=True, level=1)).to_be_visible()
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
 
     new_task = _create_task(
@@ -231,12 +273,12 @@ def _assert_harness_vertical(
     assert new_occurrences[0]["sessionId"].startswith("sched-occ_")
     assert new_occurrences[0]["runId"]
     page.reload(wait_until="networkidle")
-    page.get_by_role("row", name="查看定时任务 Harness 新会话 的详情").click()
-    page.get_by_role("button", name="删除", exact=True).click()
+    page.get_by_role("button", name="查看定时任务 Harness 新会话 的详情").click()
+    page.get_by_role("button", name="删除任务", exact=True).click()
     page.get_by_role("alertdialog", name="删除定时任务「Harness 新会话」？").get_by_role(
         "button", name="删除任务", exact=True
     ).click()
-    expect(page.get_by_text("还没有定时任务", exact=True)).to_be_visible()
+    expect(page.get_by_text("新建任务，安排下一次执行", exact=True)).to_be_visible()
 
     continue_task = _create_task(
         page,
@@ -254,7 +296,7 @@ def _assert_harness_vertical(
     after_seq = replay["page"]["latestSeqId"]
     assert after_seq > 0
     page.reload(wait_until="networkidle")
-    page.get_by_role("row", name="查看定时任务 Harness 继续会话 的详情").click()
+    page.get_by_role("button", name="查看定时任务 Harness 继续会话 的详情").click()
     _start_browser_sse(page, CONTINUE_SESSION_ID, after_seq)
     page.locator(".automation-detail").get_by_role("button", name="立即运行", exact=True).click()
     continued = _wait_terminal(base_url, continue_task["taskId"], expected_count=2)
@@ -273,7 +315,13 @@ def _assert_harness_vertical(
     assert all(item.path == "/v1/chat/completions" for item in requests)
     assert all(item.authorization == "Bearer harness-fixture-key" for item in requests)
     assert len(requests[0].payload["messages"]) == 2
-    assert requests[2].payload["messages"] == [
+    # LiteLLM may serialize an unset optional name as null. Preserve exact
+    # message count, order, roles, content and every other wire field.
+    messages = [
+        {key: value for key, value in message.items() if key != "name" or value is not None}
+        for message in requests[2].payload["messages"]
+    ]
+    assert messages == [
         {
             "role": "system",
             "content": (
@@ -287,11 +335,61 @@ def _assert_harness_vertical(
     ], requests
 
 
+def _assert_conversation_scheduling(page: Page, base_url: str) -> None:
+    page.goto(f"{base_url}/#/conversations?agentId={AGENT_ID}", wait_until="domcontentloaded")
+    composer = page.get_by_role("textbox", name="发送消息…", exact=True)
+    expect(composer).to_be_enabled()
+    for text, name in (
+        ("每天10点帮我生成昨日工作日报", "每日简报"),
+        ("每7分钟帮我检查服务状态", "服务巡检"),
+    ):
+        composer.fill(text)
+        page.get_by_role("button", name="发送消息").click()
+        expect(page.get_by_text(f"已创建定时任务「{name}」。", exact=False)).to_be_visible(
+            timeout=20000
+        )
+        expect(page.get_by_role("button", name="停止生成")).to_have_count(0)
+    tasks = _json(base_url, "/api/v1/schedules")["items"]
+    daily = next(task for task in tasks if task["displayName"] == "每日简报")
+    interval = next(task for task in tasks if task["displayName"] == "服务巡检")
+    assert daily["schedule"]["expression"] == "0 10 * * *"
+    assert interval["schedule"]["everySeconds"] == 420
+    page.goto(f"{base_url}/#/automations", wait_until="domcontentloaded")
+    card = page.get_by_role("button", name="查看定时任务 每日简报 的详情")
+    expect(card).to_be_visible()
+    artifacts = os.getenv("KSADK_SCHEDULER_E2E_ARTIFACT_DIR")
+    if artifacts:
+        Path(artifacts).mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(Path(artifacts) / "automation-board.png"), full_page=True)
+    card.click()
+    page.get_by_role("button", name="编辑", exact=True).click()
+    expect(page.get_by_label("执行时间", exact=True)).to_have_value("10:00")
+    if artifacts:
+        page.screenshot(path=str(Path(artifacts) / "automation-editor.png"), full_page=True)
+    page.get_by_role("button", name="取消", exact=True).click()
+    page.get_by_role("button", name="立即运行", exact=True).click()
+    terminal = _wait_terminal(base_url, daily["taskId"], expected_count=1)[0]
+    assert terminal["state"] == "succeeded", terminal
+    page.get_by_role("link", name="查看会话与结果").click()
+    expect(page.get_by_text("scheduled harness result 6", exact=True)).to_be_visible(timeout=15000)
+    assert f"sessionId={terminal['sessionId']}" in page.url
+    expect(page.locator(".chat-session-main[aria-current=true]")).to_contain_text(
+        "定时任务 · 生成昨日工作日报"
+    )
+    page.reload(wait_until="networkidle")
+    expect(page.get_by_text("scheduled harness result 6", exact=True)).to_be_visible(timeout=15000)
+    expect(page.locator(".chat-session-main[aria-current=true]")).to_contain_text(
+        "定时任务 · 生成昨日工作日报"
+    )
+    if artifacts:
+        page.screenshot(path=str(Path(artifacts) / "automation-result.png"), full_page=True)
+
+
 def main() -> None:
     with TemporaryDirectory(prefix="ksadk-scheduler-harness-browser-") as temp_dir:
         workspace = Path(temp_dir)
         environment = _managed_harness_profile(workspace)
-        with DeterministicChatCompletionsStub() as model:
+        with SchedulingChatStub() as model:
             runtime_environment = {
                 **environment,
                 "KSADK_AGENT_KERNEL": "1",
@@ -308,6 +406,10 @@ def main() -> None:
                     runtime=spec.runtime,
                 )
 
+            asyncio.run(
+                service.session_service.create_session(AGENT_ID, "local-user", CONTINUE_SESSION_ID)
+            )
+
             with (
                 patch.dict(os.environ, runtime_environment),
                 studio_server(workspace, service=service) as base_url,
@@ -319,6 +421,7 @@ def main() -> None:
                     page_errors: list[str] = []
                     page.on("pageerror", lambda error: page_errors.append(str(error)))
                     _assert_harness_vertical(page, base_url, model)
+                    _assert_conversation_scheduling(page, base_url)
                     assert page_errors == [], f"Uncaught React page errors: {page_errors}"
                 finally:
                     browser.close()

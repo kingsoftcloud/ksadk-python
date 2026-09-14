@@ -151,6 +151,18 @@ class BaseRunner(ABC):
             },
         }
 
+    async def prepare_runtime_capabilities(self) -> None:
+        """Prepare optional async resources required for capability discovery."""
+        return None
+
+    async def refresh_runtime_capabilities(self) -> None:
+        """Refresh transient resources used for capability discovery.
+
+        The default implementation preserves compatibility for runners whose
+        capability preparation is either synchronous or permanently stable.
+        """
+        await self.prepare_runtime_capabilities()
+
     async def close(self) -> None:
         """释放 runner 持有的运行期资源。"""
         return None
@@ -193,7 +205,9 @@ class BaseRunner(ABC):
         return kwargs
 
     @staticmethod
-    def build_native_context(platform_context: Any) -> dict[str, Any] | None:
+    def build_native_context(
+        platform_context: Any, *, context_schema: Any = None
+    ) -> dict[str, Any] | None:
         if not isinstance(platform_context, dict):
             return None
         native_context = {
@@ -201,6 +215,20 @@ class BaseRunner(ABC):
             for key in ("agent_id", "user_id", "session_id")
             if platform_context.get(key) is not None
         }
+        from typing import get_args, get_type_hints
+        from ksadk.session_context import SessionContext
+
+        try:
+            fields = get_type_hints(context_schema) if context_schema is not None else {}
+        except (TypeError, NameError):
+            fields = {}
+        session_type = fields.get("session")
+        if session_type is SessionContext or set(get_args(session_type)) == {
+            SessionContext,
+            type(None),
+        }:
+            native_context = {key: value for key, value in native_context.items() if key in fields}
+            native_context["session"] = SessionContext.from_payload(platform_context.get("session"))
         return native_context or None
 
     @staticmethod

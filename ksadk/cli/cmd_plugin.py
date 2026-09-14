@@ -41,10 +41,9 @@ def _codex_home() -> Path:
 
 
 def _dsh_home() -> Path:
-    configured = os.environ.get(DSH_HOME_ENV, "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return Path.cwd() / ".agentkit" / "dsh-home"
+    from ksadk.plugins.dsh_home import studio_dsh_home
+
+    return studio_dsh_home(Path.cwd())
 
 
 def _dsh_command() -> tuple[str, ...] | None:
@@ -55,7 +54,7 @@ def _dsh_command() -> tuple[str, ...] | None:
 
 
 def _dsh_profile() -> str:
-    return os.environ.get(DSH_PROFILE_ENV, "").strip() or "ksadk"
+    return os.environ.get(DSH_PROFILE_ENV, "").strip() or "web"
 
 
 def _codex_inventory_payload(value: Any) -> dict[str, Any]:
@@ -125,14 +124,24 @@ def _call_codex(operation):
         )
 
 
-def _call_dsh(operation):
+def _call_dsh(operation, *, write: bool = False):
     """Run one bounded DSH Profile lifecycle request from the synchronous CLI."""
 
     from ksadk.plugins.bridges.dsh import DshProfilePluginBridge
+    from ksadk.plugins.dsh_home import (
+        DshHomeVersionError,
+        dsh_home_diagnostic,
+        prepare_studio_dsh_home,
+    )
 
     try:
+        home = _dsh_home()
+        # The bridge creates Profile lock directories even for catalog reads.
+        # Fence a fresh home first; an existing legacy catalog remains readable.
+        if write or dsh_home_diagnostic(home)["status"] == "new":
+            prepare_studio_dsh_home(home)
         with DshProfilePluginBridge(
-            dsh_home=_dsh_home(),
+            dsh_home=home,
             profile=_dsh_profile(),
             dsh_command=_dsh_command(),
         ) as bridge:
@@ -140,7 +149,30 @@ def _call_dsh(operation):
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as err:
+        if isinstance(err, DshHomeVersionError):
+            abort_with_cli_error(
+                CLIError(
+                    code=err.code,
+                    message=f"DSH 目录版本未经验证。{err.diagnostic['recovery']}",
+                    exit_code=EXIT_CODE_VALIDATION,
+                    details=err.diagnostic,
+                ),
+                context="Plugin",
+            )
         name = type(err).__name__
+        if name == "DshToolchainUnavailableError":
+            abort_with_cli_error(
+                CLIError(
+                    code="dsh_toolchain_unavailable",
+                    message="DSH 插件开发工具链不可用",
+                    exit_code=EXIT_CODE_VALIDATION,
+                    details={
+                        "hint": "运行 `agentengine plugin toolchain install` 安装受管理 DSH 工具链",
+                        "reason": str(err),
+                    },
+                ),
+                context="Plugin",
+            )
         code = (
             "dsh_plugin_not_found"
             if name == "DshPluginNotFoundError"
@@ -165,6 +197,7 @@ def _call_dsh(operation):
                 exit_code=(
                     EXIT_CODE_RESOLUTION if code == "dsh_plugin_not_found" else EXIT_CODE_VALIDATION
                 ),
+                details={"reason": str(err)},
             ),
             context="Plugin",
         )
@@ -172,6 +205,8 @@ def _call_dsh(operation):
 
 def _call_dsh_developer(operation):
     """Run one bounded standard DSH bundle development operation."""
+
+    import re
 
     from ksadk.plugins.dsh_toolchain import (
         DshPluginPackError,
@@ -182,8 +217,28 @@ def _call_dsh_developer(operation):
         DshToolchainVersionMismatchError,
     )
 
+    _VERSION_PAIR = re.compile(
+        r"expected (?:pnpm|DSH) (?P<expected>[0-9A-Za-z.\-]+), got (?P<actual>[0-9A-Za-z.\-]+)"
+    )
+
+    def _toolchain_error_details(err: Exception) -> dict:
+        details: dict = {}
+        if isinstance(err, DshToolchainVersionMismatchError):
+            match = _VERSION_PAIR.search(str(err))
+            if match:
+                details["expected"] = match.group("expected")
+                details["actual"] = match.group("actual")
+            details["hint"] = (
+                "使用 corepack 启用固定版本 pnpm（corepack enable 后重试），"
+                "或安装 pnpm 11.7.0 并设置 AGENTENGINE_PNPM_BIN 指向该可执行文件"
+            )
+        elif isinstance(err, DshToolchainUnavailableError):
+            details["hint"] = "运行 `agentengine plugin toolchain install` 安装受管理 DSH 工具链"
+        return details
+
     try:
         return operation()
+
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as err:
@@ -211,6 +266,12 @@ def _call_dsh_developer(operation):
         stage = getattr(err, "stage", None)
         if isinstance(stage, str) and stage:
             details["stage"] = stage
+        details.update(_toolchain_error_details(err))
+        diagnostic = getattr(err, "diagnostic", None)
+        if isinstance(err, DshPluginSourceError):
+            diagnostic = str(err)
+        if isinstance(diagnostic, str) and diagnostic:
+            details["reason"] = diagnostic
         abort_with_cli_error(
             CLIError(
                 code=code,
@@ -528,7 +589,7 @@ def install_dsh_plugin(source: str, accept_host_permissions: bool) -> None:
             context="Plugin",
         )
     host, item = _call_dsh(
-        lambda bridge: bridge.install_plugin(source, accept_host_permissions=True)
+        lambda bridge: bridge.install_plugin(source, accept_host_permissions=True), write=True
     )
     payload = {
         "item": _dsh_inventory_payload(item),
@@ -545,7 +606,7 @@ def install_dsh_plugin(source: str, accept_host_permissions: bool) -> None:
 def enable_dsh_plugin(plugin_name: str) -> None:
     """在 DSH Profile 中启用已安装的 bundle。"""
 
-    host, item = _call_dsh(lambda bridge: bridge.set_enabled(plugin_name, enabled=True))
+    host, item = _call_dsh(lambda bridge: bridge.set_enabled(plugin_name, enabled=True), write=True)
     payload = {
         "item": _dsh_inventory_payload(item),
         "host": {"id": host.host_id, "version": host.version, "available": True},
@@ -561,7 +622,9 @@ def enable_dsh_plugin(plugin_name: str) -> None:
 def disable_dsh_plugin(plugin_name: str) -> None:
     """从 DSH Profile 组合中停用 bundle，但保留已安装包。"""
 
-    host, item = _call_dsh(lambda bridge: bridge.set_enabled(plugin_name, enabled=False))
+    host, item = _call_dsh(
+        lambda bridge: bridge.set_enabled(plugin_name, enabled=False), write=True
+    )
     payload = {
         "item": _dsh_inventory_payload(item),
         "host": {"id": host.host_id, "version": host.version, "available": True},
@@ -592,7 +655,7 @@ def update_dsh_plugin(plugin_name: str, accept_host_permissions: bool) -> None:
             context="Plugin",
         )
     host, item = _call_dsh(
-        lambda bridge: bridge.update_plugin(plugin_name, accept_host_permissions=True)
+        lambda bridge: bridge.update_plugin(plugin_name, accept_host_permissions=True), write=True
     )
     payload = {
         "item": _dsh_inventory_payload(item),
@@ -609,7 +672,7 @@ def update_dsh_plugin(plugin_name: str, accept_host_permissions: bool) -> None:
 def uninstall_dsh_plugin(plugin_name: str) -> None:
     """从 DSH Profile 卸载一个 bundle。"""
 
-    host, _ = _call_dsh(lambda bridge: bridge.uninstall_plugin(plugin_name))
+    host, _ = _call_dsh(lambda bridge: bridge.uninstall_plugin(plugin_name), write=True)
     payload = {
         "ecosystem": "dsh",
         "integrationMode": "bridged",
@@ -629,7 +692,7 @@ def uninstall_dsh_plugin(plugin_name: str) -> None:
 def dsh_profile_info() -> None:
     """预检并显示当前 DSH Profile 的无 Secret 配置摘要。"""
 
-    host, projection = _call_dsh(lambda bridge: bridge.project_profile())
+    host, projection = _call_dsh(lambda bridge: bridge.project_profile(), write=True)
     payload = {
         "profile": projection.model_dump(mode="json", by_alias=True),
         "host": {"id": host.host_id, "version": host.version, "available": True},

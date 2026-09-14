@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-platform-resources
+      name: '@kingsoftcloud/dsh-platform-resources'

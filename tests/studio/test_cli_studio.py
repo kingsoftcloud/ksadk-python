@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -20,8 +21,8 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     opened = []
     monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", fake_run)
     monkeypatch.setattr(
-        "ksadk.cli.cmd_studio.webbrowser.open",
-        lambda url: opened.append(url),
+        "ksadk.cli.cmd_studio._open_browser_when_ready",
+        lambda url, _port: opened.append(url),
     )
 
     result = CliRunner().invoke(studio, [str(tmp_path / "workspace"), "--port", "8899"])
@@ -39,8 +40,15 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     assert captured["app"].state.studio_service.runtime_executor.registered_runtime_types() == [
         "adk",
         "codex",
+        "harness",
         "langgraph",
     ]
+    # The production launcher waits for Uvicorn to bind before opening the
+    # browser; the helper is replaced with a test double here.
+    for _ in range(100):
+        if opened:
+            break
+        time.sleep(0.01)
     assert opened[0].startswith("http://127.0.0.1:8899/#session=")
     assert (tmp_path / "workspace/agentkit.yaml").is_file()
 
@@ -170,7 +178,7 @@ def test_studio_cli_loads_allowlisted_model_and_cloud_control_env_and_forces_cod
             )
 
 
-def test_explicit_env_file_overrides_inherited_cloud_identity_only_for_studio_process(
+def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_process(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -207,7 +215,7 @@ def test_explicit_env_file_overrides_inherited_cloud_identity_only_for_studio_pr
 
     assert result.exit_code == 0
     assert active_environment == {
-        "OPENAI_API_KEY": "shell-model-key",
+        "OPENAI_API_KEY": "file-model-key",
         "KSYUN_ACCESS_KEY": "file-cloud-access",
         "KSYUN_SECRET_KEY": "file-cloud-secret",
         "KSYUN_REGION": "pre-online",
@@ -216,3 +224,38 @@ def test_explicit_env_file_overrides_inherited_cloud_identity_only_for_studio_pr
     assert __import__("os").environ["KSYUN_ACCESS_KEY"] == "shell-cloud-access"
     assert __import__("os").environ["KSYUN_SECRET_KEY"] == "shell-cloud-secret"
     assert __import__("os").environ["KSYUN_REGION"] == "online"
+
+
+def test_explicit_proxy_and_base_url_alias_override_saved_and_inherited_values(
+    tmp_path, monkeypatch
+):
+    from ksadk.studio.configuration import WorkspaceConfiguration
+    from ksadk.studio.workspace import Workspace
+
+    WorkspaceConfiguration(Workspace(tmp_path)).update_settings({"codexProxy": "direct"})
+    env_file = tmp_path / "override.env"
+    env_file.write_text("OPENAI_API_BASE=https://explicit.example/v1\n")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://inherited.example/v1")
+    captured = {}
+
+    def capture(app, **kwargs):
+        import os
+
+        service = app.state.studio_service
+        captured["proxy"] = service.get_settings()["codexProxy"]
+        captured["base"] = os.environ["OPENAI_BASE_URL"]
+        captured["alias"] = os.environ["OPENAI_API_BASE"]
+        captured["saved"] = service.configuration.settings()["codexProxy"]
+
+    monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", capture)
+    for mode in ("forced", "auto"):
+        result = CliRunner().invoke(
+            studio, [str(tmp_path), "--no-open", "--env-file", str(env_file), "--codex-proxy", mode]
+        )
+        assert result.exit_code == 0, result.output
+        assert captured == {
+            "proxy": mode,
+            "base": "https://explicit.example/v1",
+            "alias": "https://explicit.example/v1",
+            "saved": "direct",
+        }

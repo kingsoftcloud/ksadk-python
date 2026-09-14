@@ -15,6 +15,7 @@ import { FileDropzone } from "../components/ui/FileDropzone";
 import { FormField } from "../components/ui/FormField";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { PythonToolExample } from "../components/PythonToolExample";
+import { PlatformResourcesPage } from "../components/PlatformResourceBindings";
 import {
   StudioDataTable,
   type StudioDataColumn,
@@ -38,7 +39,8 @@ import {
   type SkillImportSummary,
 } from "../skillBatchImport";
 
-export type ResourceKind = "model" | "tool" | "mcp" | "skill";
+export type ResourceKind = "model" | "tool" | "mcp" | "skill" | "knowledge-base" | "memory-instance" | "skill-space";
+type CatalogResourceKind = Exclude<ResourceKind, "knowledge-base" | "memory-instance" | "skill-space">;
 
 export interface ResItem {
   resourceId: string;
@@ -58,8 +60,11 @@ export interface ResItem {
 const KIND_META: Record<ResourceKind, { title: string; description: string; addLabel: string; headings: [string, string, string]; icon: any }> = {
   model: { title: "模型", description: "管理模型端点和凭据引用。", addLabel: "配置模型", headings: ["发现来源", "上下文窗口", "输入模态"], icon: Cpu },
   tool: { title: "Tool", description: "管理结构化 Tool Contract、权限和审批策略。", addLabel: "添加 Python Tool", headings: ["来源", "Tool 分组", "权限 / 边界"], icon: Wrench },
-  mcp: { title: "MCP", description: "连接、探测并复用 MCP Server。", addLabel: "添加资源", headings: ["来源", "版本", "说明"], icon: Network },
+  mcp: { title: "MCP", description: "连接、探测并复用 MCP Server。", addLabel: "连接 MCP", headings: ["来源", "版本", "说明"], icon: Network },
   skill: { title: "Skill", description: "安装版本化 Skill，并在构建时锁定内容摘要。", addLabel: "发现 Skill", headings: ["来源", "版本", "说明"], icon: Sparkles },
+  "knowledge-base": { title: "知识库", description: "管理可绑定到 Agent Revision 的云端知识库。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Database },
+  "memory-instance": { title: "记忆库", description: "管理长期记忆实例。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Database },
+  "skill-space": { title: "Skill Center", description: "管理云端 Skill Space。", addLabel: "连接金山云", headings: ["区域", "状态", "说明"], icon: Sparkles },
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -88,7 +93,7 @@ function formatByteCount(value: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+function CatalogResourcesPage({ kind, onKindChange, refreshTick }: { kind: CatalogResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
   const [catalog, setCatalog] = useState<ResItem[]>([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -201,6 +206,9 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
     setShowTool(true);
   }
 
+  const hasFilters = Boolean(search.trim() || statusFilter || sourceFilter);
+  function clearFilters() { setSearch(""); setStatusFilter(""); setSourceFilter(""); }
+
   const meta = KIND_META[kind];
   const columns = useMemo<StudioDataColumn<ResItem>[]>(() => [
     { id: "name", header: "名称", minWidth: 190, className: "resource-name-column", headerClassName: "resource-name-column", cell: item => <ResourceNameCell item={item} /> },
@@ -285,6 +293,9 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
             ]}
             onValueChange={value => setStatusFilter(value === "__all__" ? "" : value)}
           />
+          <details className="resource-filter-details">
+            <summary>更多选项{sourceFilter || sort !== "default" || pageSize !== DEFAULT_RESOURCE_PAGE_SIZE ? " · 已设置" : ""}</summary>
+            <div className="resource-filter-fields">
           <StudioSelect
             className="compact-select"
             ariaLabel="筛选资源来源"
@@ -320,6 +331,9 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
             ]}
             onValueChange={value => setPageSize(Number(value))}
           />
+            </div>
+          </details>
+          {hasFilters && (loading || catalog.length > 0 || loadError) && <button className="button tertiary small" type="button" onClick={clearFilters}>清除筛选</button>}
         </div>
         <StudioDataTable
           columns={columns}
@@ -332,8 +346,9 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
           onRetry={reloadCurrent}
           empty={{
             icon: <Database size={20} />,
-            title: "没有匹配的资源",
-            description: "调整筛选条件，或添加一个新的工程资源。",
+            title: hasFilters ? "没有匹配的资源" : `还没有${meta.title}`,
+            description: hasFilters ? "试试其他搜索词或清除筛选。" : `点击右上角「${meta.addLabel}」开始添加。`,
+            action: hasFilters ? <button className="button secondary" type="button" onClick={clearFilters}>清除筛选</button> : undefined,
           }}
           pagination={{
             pageIndex,
@@ -371,6 +386,19 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
       )}
     </div>
   );
+}
+
+const PLATFORM_RESOURCE_KINDS = new Set<ResourceKind>(["knowledge-base", "memory-instance", "skill-space"]);
+
+export function ResourcesPage(props: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
+  if (PLATFORM_RESOURCE_KINDS.has(props.kind)) {
+    return <PlatformResourcesPage
+      kind={props.kind as "knowledge-base" | "memory-instance" | "skill-space"}
+      onKindChange={props.onKindChange}
+      refreshTick={props.refreshTick}
+    />;
+  }
+  return <CatalogResourcesPage {...props} kind={props.kind as CatalogResourceKind} />;
 }
 
 /* ================= 资源表格单元格 ================= */
@@ -490,9 +518,9 @@ export function ModelCredentialDrawer({ model, onClose, onChanged }: {
   const statusDesc = status == null
     ? "检查当前 Runtime 是否已经获得模型凭证。"
     : source === "session"
-      ? "凭证已持久保存到工作区，重启后仍生效，所有 Agent 可复用。"
+      ? "当前工作区中引用此凭证的 Agent 可复用。"
       : source === "environment"
-        ? "凭证由 Studio 启动环境变量提供，可以用新的会话凭证临时覆盖。"
+        ? "凭证由启动环境变量提供，可保存新值覆盖当前工作区的使用配置。"
         : "输入 API Key 后即可在本地运行当前模型。";
 
   async function save(testConnection: boolean, values: CredentialValueFormValues) {
@@ -525,7 +553,7 @@ export function ModelCredentialDrawer({ model, onClose, onChanged }: {
       onClose();
       showToast(
         testConnection ? "模型连接测试通过" : "模型凭证已保存",
-        testConnection ? `${model.displayName} · ${latency} ms` : "凭证已持久保存到工作区，所有 Agent 可复用。",
+        testConnection ? `${model.displayName} · ${latency} ms` : "凭证已保存到当前工作区。",
       );
     } catch (e: any) {
       setError({
@@ -544,7 +572,7 @@ export function ModelCredentialDrawer({ model, onClose, onChanged }: {
       const res = await apiFetch(`/api/v1/credentials/${encodeURIComponent(name)}`, { method: "DELETE" });
       if (!res.ok) throw new Error(await errorMessage(res, "凭证清除失败"));
       onChanged?.();
-      showToast("会话凭证已清除", model.displayName);
+      showToast("已保存凭证已清除", model.displayName);
       onClose();
     } catch (e: any) {
       setError({ title: "凭证清除失败", message: e.message });
@@ -556,13 +584,13 @@ export function ModelCredentialDrawer({ model, onClose, onChanged }: {
     <FormProvider {...credentialForm}>
     <Drawer
       title="配置模型凭证"
-      subtitle="凭证只保存在当前 Studio 会话，不写入 Agent 或 Bundle。"
+      subtitle="凭证保存到当前工作区，不写入 Agent 或 Bundle。"
       onClose={onClose}
       footer={
         <>
           {source === "session" && (
             <button className="button secondary" type="button" onClick={remove} disabled={busy !== ""}>
-              {busy === "remove" ? "正在清除" : "清除会话凭证"}
+              {busy === "remove" ? "正在清除" : "清除已保存凭证"}
             </button>
           )}
           <span className="drawer-footer-spacer" />
@@ -591,7 +619,7 @@ export function ModelCredentialDrawer({ model, onClose, onChanged }: {
         </div>
       </div>
 
-      <FormField label="API Key" requirement={configured ? "optional" : "required"} htmlFor="modelCredValue" hint="保存后立即生效；关闭 Studio 后自动清除，需要持久化时可通过启动环境变量注入。" error={credentialForm.formState.errors.value?.message}>
+      <FormField label="API Key" requirement={configured ? "optional" : "required"} htmlFor="modelCredValue" hint={configured ? "留空保留现有凭证。" : "输入此模型使用的 API Key。"} error={credentialForm.formState.errors.value?.message}>
         <input
           id="modelCredValue"
           type="password"
@@ -764,7 +792,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       <FormField label="接口地址" requirement="required" htmlFor="amEndpoint" hint="支持主机、/v1、Chat Completions 或 Responses 地址；智能探测会自动归一化。" error={modelForm.formState.errors.endpointUrl?.message}>
         <div>
         {wireApi && <span className="tag">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
-        <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+        <div className="model-endpoint-actions">
           <div className="segmented-control">
             <button type="button" className={addressMode === "endpoint" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "endpoint")}>完整 endpointUrl</button>
             <button type="button" className={addressMode === "base" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "base")}>baseUrl</button>
@@ -794,7 +822,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
             placeholder="MY_MODEL_API_KEY"
           />
         </FormField>
-        <FormField label="API Key 值" requirement="optional" htmlFor="amApiKey" hint="仅保存到当前 Studio 会话；留空则从启动环境读取。" error={modelForm.formState.errors.apiKey?.message}>
+        <FormField label="API Key 值" requirement="optional" htmlFor="amApiKey" hint="保存到当前工作区；留空则使用现有凭证或启动环境变量。" error={modelForm.formState.errors.apiKey?.message}>
           <input id="amApiKey" type="password" autoComplete="new-password" placeholder="留空则从环境读取" {...modelForm.register("apiKey")} />
         </FormField>
       </div>
@@ -841,10 +869,14 @@ export function McpConnectDrawer({ onClose, onConnected }: { onClose: () => void
     if (!raw) return;
     let parsed: any;
     try { parsed = JSON.parse(raw); } catch { showToast("配置解析失败", "请粘贴有效的 JSON", "error"); return; }
-    const servers = parsed.mcpServers || parsed.mcp_servers || parsed;
+    const isRecord = (value: unknown): value is Record<string, any> =>
+      value !== null && typeof value === "object" && !Array.isArray(value);
+    if (!isRecord(parsed)) { showToast("配置解析失败", "未找到 MCP server 定义", "error"); return; }
+    const servers = parsed.mcpServers ?? parsed.mcp_servers ?? parsed;
+    if (!isRecord(servers)) { showToast("配置解析失败", "未找到 MCP server 定义", "error"); return; }
     const firstKey = Object.keys(servers)[0];
     const server = servers[firstKey];
-    if (!server || typeof server !== "object") { showToast("配置解析失败", "未找到 MCP server 定义", "error"); return; }
+    if (!isRecord(server)) { showToast("配置解析失败", "未找到 MCP server 定义", "error"); return; }
     mcpForm.setValue("name", firstKey, { shouldValidate: true });
     mcpForm.setValue("displayName", server.name || firstKey, { shouldValidate: true });
     if (server.description) mcpForm.setValue("description", server.description);
@@ -914,7 +946,7 @@ export function McpConnectDrawer({ onClose, onConnected }: { onClose: () => void
     <FormProvider {...mcpForm}>
     <Drawer
       title="连接 MCP Server"
-      subtitle="保存后执行探测，再回到 Agent 能力选择。"
+      subtitle="连接后可在 Agent 中使用。"
       onClose={onClose}
       footer={
         <>
@@ -973,7 +1005,7 @@ export function McpConnectDrawer({ onClose, onConnected }: { onClose: () => void
       <FormField label="API Key 环境变量名" requirement="optional" htmlFor="mcpApiKey" error={mcpForm.formState.errors.apiKeyName?.message}>
         <input id="mcpApiKey" className="mono" placeholder="KSC_AIPRO_API_KEY" {...mcpForm.register("apiKeyName")} />
       </FormField>
-      <FormField label="API Key 值" requirement="optional" htmlFor="mcpApiKeyValue" hint="仅保存到当前 Studio 会话；留空则从环境变量读取。" error={mcpForm.formState.errors.apiKeyValue?.message}>
+      <FormField label="API Key 值" requirement="optional" htmlFor="mcpApiKeyValue" hint="保存到当前工作区；留空则使用现有凭证或环境变量。" error={mcpForm.formState.errors.apiKeyValue?.message}>
         <input id="mcpApiKeyValue" type="password" autoComplete="new-password" placeholder="留空则从环境变量读取" {...mcpForm.register("apiKeyValue")} />
       </FormField>
       <FormField label="说明" requirement="optional" htmlFor="mcpDescription" error={mcpForm.formState.errors.description?.message}>
@@ -1045,7 +1077,7 @@ function ResourceDetailDrawer({ item, onClose }: { item: ResItem; onClose: () =>
         {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{String(v)}</dd></div>)}
       </dl>
       <div className="inspector-title inspector-title-spaced">说明</div>
-      <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
+      <p style={{ margin: 0, color: "var(--studio-text-secondary)", fontSize: "var(--font-size-meta)", lineHeight: "var(--line-height-body)" }}>
         {item.description || contract.description || "未提供说明"}
       </p>
       {item.kind === "skill" && item.source === "local" && (
@@ -1208,7 +1240,7 @@ function SkillDiscoveryDrawer({
   return (
     <Drawer
       title="发现本地 Skill"
-      subtitle="默认扫描工作区及允许的 Claude、Codex、Agent 用户目录；扫描只产生候选，确认后才导入。"
+      subtitle="扫描本地 Skill，选择后导入。"
       wide
       closeDisabled={committing}
       onClose={onClose}
@@ -1428,7 +1460,7 @@ function PythonToolDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: 
     <FormProvider {...pythonForm}>
     <Drawer
       title="添加 Python Tool"
-      subtitle="源码先复制进 Catalog 并锁定 SHA-256，构建时进入不可变 Runtime 快照。"
+      subtitle="从 Python 文件导入可复用工具。"
       onClose={onClose}
       footer={
         <>

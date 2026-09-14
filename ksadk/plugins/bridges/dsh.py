@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -28,7 +29,15 @@ try:
 except ImportError:  # pragma: no cover - DSH production hosts are Unix
     fcntl = None  # type: ignore[assignment]
 
+import yaml
 from pydantic import BaseModel, ConfigDict
+
+from ksadk.plugins.dsh_installation_digest import (
+    DshInstallationDigestError,
+    installation_digest,
+)
+
+_COMMAND_TIMEOUT_SECONDS = 120
 
 
 def _to_camel(value: str) -> str:
@@ -52,18 +61,6 @@ class DshBridgeHost(_DshModel):
     available: Literal[True] = True
 
 
-class DshClientBundle(_DshModel):
-    """One validated browser half from an installed DSH package."""
-
-    platform: Literal["web"] = "web"
-    digest: str
-    content_bytes: int
-    external: tuple[str, ...] = ()
-    inject: tuple[str, ...] = ()
-    compatible: bool
-    incompatibility_reason: str = ""
-
-
 class DshPluginInventory(_DshModel):
     ecosystem: Literal["dsh"] = "dsh"
     integration_mode: Literal["bridged"] = "bridged"
@@ -75,10 +72,11 @@ class DshPluginInventory(_DshModel):
     requested_spec: str
     source_digest: str | None = None
     source_kind: Literal["directory", "tgz"] | None = None
+    client_extension: bool = False
+    settings_integration: bool = False
     installed: Literal[True] = True
     enabled: bool
     permissions_declared: Literal[False] = False
-    client_bundle: DshClientBundle | None = None
     risk_disclosures: tuple[str, ...] = (
         "DSH packages and install scripts run with the native host user privileges.",
         "DSH bundle manifests do not declare a complete runtime permission set.",
@@ -91,6 +89,19 @@ class DshProfileProjection(_DshModel):
     config_digest: str
     config_bytes: int
     host_version: str
+
+
+class DshProfileBuildSnapshot(_DshModel):
+    """Credential-free identity of the actual local profile execution inputs."""
+
+    projection: DshProfileProjection
+    dependency_lock_digest: str
+    installation_digest: str
+
+    @property
+    def digest(self) -> str:
+        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
 class DshBridgeError(RuntimeError):
@@ -113,6 +124,10 @@ class DshPluginMutationError(DshBridgeError):
     pass
 
 
+class DshProfileRecoveryError(DshPluginMutationError):
+    """The owner must keep run admission suspended until profile recovery."""
+
+
 class _CommandResult(_DshModel):
     stdout: str = ""
     stderr: str = ""
@@ -122,13 +137,16 @@ CommandRunner = Callable[[Sequence[str], Path, Mapping[str, str]], _CommandResul
 
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _PACKAGE_NAME = re.compile(r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+$")
+_PINNED_REGISTRY_SOURCE = re.compile(
+    r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+@"
+    r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 _HOST_VERSION = re.compile(r"\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b")
 _STATE_FILE = ".ksadk-dsh-plugins.json"
 _IMMUTABLE_SOURCE_DIR = "immutable-plugin-sources"
 _SNAPSHOT_FILES = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", _STATE_FILE)
+_WEB_PROFILE_BUILTINS = ("@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app")
 _MAX_JSON_BYTES = 2 * 1024 * 1024
-_MAX_CLIENT_BUNDLE_BYTES = 8 * 1024 * 1024
-_STUDIO_CLIENT_EXTERNALS = frozenset({"react"})
 _PROFILE_LOCK_DIR = "profile-locks"
 _DSH_SUBPROCESS_ENV_KEYS = (
     "PATH",
@@ -163,6 +181,26 @@ _DSH_SUBPROCESS_ENV_KEYS = (
     "COMSPEC",
     "PATHEXT",
 )
+
+
+def validate_dsh_registry_source(source: str) -> str:
+    """Return one exact, credential-free npm registry package coordinate."""
+
+    value = source.strip()
+    if not _PINNED_REGISTRY_SOURCE.fullmatch(value):
+        raise ValueError(
+            "DSH registry source must be <package>@<exact-semver>; "
+            "Git URLs, tags, and ranges are not allowed"
+        )
+    return value
+
+
+def validate_dsh_registry_request(source: str) -> str:
+    """Accept a package name for latest resolution, or an exact coordinate."""
+    value = source.strip()
+    if len(value) <= 214 and not value.startswith("-") and _PACKAGE_NAME.fullmatch(value):
+        return value
+    return validate_dsh_registry_source(value)
 
 
 def dsh_subprocess_environment(*, dsh_home: Path | None = None) -> dict[str, str]:
@@ -205,6 +243,12 @@ class _PreparedSource:
     artifact: str
 
 
+@dataclass(frozen=True)
+class _ProfileSnapshot:
+    files: Mapping[str, bytes | None]
+    node_modules_existed: bool
+
+
 class DshProfilePluginBridge:
     """Manage DSH bundles in one isolated Profile with rollback and preflight."""
 
@@ -212,7 +256,7 @@ class DshProfilePluginBridge:
         self,
         *,
         dsh_home: Path,
-        profile: str = "ksadk",
+        profile: str = "web",
         dsh_command: Sequence[str] | None = None,
         command_runner: CommandRunner | None = None,
         cwd: Path | None = None,
@@ -276,6 +320,14 @@ class DshProfilePluginBridge:
             package = self._read_package(name)
             if package is None or self._bundle_patch(package) is None:
                 continue
+            dsh = package.get("dsh")
+            client = dsh.get("client") if isinstance(dsh, dict) else None
+            inject = client.get("inject") if isinstance(client, dict) else None
+            client_inject = (
+                tuple(item for item in inject if isinstance(item, str))
+                if isinstance(inject, list)
+                else ()
+            )
             receipt = state["sources"].get(name)
             items.append(
                 DshPluginInventory(
@@ -289,8 +341,12 @@ class DshProfilePluginBridge:
                     requested_spec=requested_spec,
                     source_digest=receipt["digest"] if receipt is not None else None,
                     source_kind=receipt["kind"] if receipt is not None else None,
+                    client_extension=isinstance(client, dict),
+                    settings_integration=any(
+                        "client-ui-settings" in item or "client-ui-slots" in item
+                        for item in client_inject
+                    ),
                     enabled=name in active and name not in set(state["disabled"]),
-                    client_bundle=self._client_bundle_metadata(name, package),
                 )
             )
         return tuple(sorted(items, key=lambda item: (item.display_name.casefold(), item.name)))
@@ -314,6 +370,7 @@ class DshProfilePluginBridge:
                 "explicit approval is required"
             )
         self._validate_source(source)
+        source = self._resolve_install_source(source.strip())
         with self._profile_transaction(exclusive=True):
             self._require_package_mutation_rollback(new_profile_allowed=True)
             snapshot = self._snapshot()
@@ -492,36 +549,141 @@ class DshProfilePluginBridge:
                 host_version=self.host.version,
             )
 
-    def read_client_bundle(self, name: str, *, expected_digest: str) -> bytes:
-        """Read one immutable browser artifact after revalidating Profile inventory."""
+    def migrate_to_isolated_layout(
+        self,
+        *,
+        accept_host_permissions: bool = False,
+        recover_external_dependency_links: bool = False,
+    ) -> None:
+        """Migrate a stopped profile; the caller owns Core/admission suspension.
 
+        Keep an independent byte copy for rollback: a frozen reinstall of the
+        old layout can itself hit the pinned pnpm shutdown defect. Studio-owned
+        profiles may also repair an isolated tree polluted by a legacy Core
+        module-fallback cache.
+        """
+        if not accept_host_permissions:
+            raise DshPluginApprovalRequired("Profile migration may run package install scripts")
+        with self._profile_transaction(exclusive=True):
+            self._require_package_mutation_rollback(new_profile_allowed=False)
+            manifest = self._read_manifest()
+            self._verify_source_receipts(manifest, self._read_state(manifest))
+            settings_path = self._profile_root / "pnpm-workspace.yaml"
+            settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                raise DshPluginMutationError("Invalid package-manager settings")
+            node_linker = settings.get("nodeLinker")
+            if node_linker not in {"hoisted", "isolated"}:
+                raise DshPluginMutationError(
+                    "Only hoisted or isolated profiles can use this migration"
+                )
+            modules = self._profile_root / "node_modules"
+            if modules.is_symlink() or not modules.is_dir():
+                raise DshPluginMutationError("Profile installation is not a real directory")
+            # A normal migration only accepts a closed tree. Studio may repair
+            # its own legacy hoisted Profile when pnpm linked a dependency to
+            # an ambient store: move that tree atomically instead of reading or
+            # following the external target, then reinstall from the frozen lock.
+            moved_unsafe_tree = False
+            try:
+                original_digest = installation_digest(modules)
+            except DshInstallationDigestError as error:
+                if (
+                    not recover_external_dependency_links
+                    or str(error) != "DSH dependency link escapes the installed tree"
+                ):
+                    raise
+                original_digest = None
+                moved_unsafe_tree = True
+            if node_linker == "isolated" and not moved_unsafe_tree:
+                self._preflight()
+                return
+            fallback = self._profile_root / ".dsh-module-fallback"
+            if fallback.exists() and (fallback.is_symlink() or not fallback.is_dir()):
+                raise DshPluginMutationError("DSH module fallback is not a real directory")
+            snapshot = self._snapshot()
+            root = tempfile.mkdtemp(prefix=".layout-backup-", dir=self._profile_root)
+            preserve_backup = False
+            try:
+                backup = Path(root) / "node_modules"
+                fallback_backup = Path(root) / "module-fallback"
+                if moved_unsafe_tree:
+                    os.replace(modules, backup)
+                else:
+                    shutil.copytree(modules, backup, symlinks=True)
+                    if installation_digest(backup) != original_digest:
+                        raise DshPluginMutationError("Profile installation backup did not verify")
+                fallback_moved = fallback.is_dir()
+                if fallback_moved:
+                    os.replace(fallback, fallback_backup)
+                original_files = Path(root) / "profile-files"
+                original_files.mkdir(mode=0o700)
+                for name, content in snapshot.files.items():
+                    if content is not None:
+                        original_path = original_files / name
+                        original_path.write_bytes(content)
+                        original_path.chmod(0o600)
+                try:
+                    if not moved_unsafe_tree:
+                        shutil.rmtree(modules)
+                    settings["nodeLinker"] = "isolated"
+                    settings_path.write_text(yaml.safe_dump(settings), encoding="utf-8")
+                    settings_path.chmod(0o600)
+                    self._plugin_command("install", "--frozen-lockfile")
+                    current_lock = (self._profile_root / "pnpm-lock.yaml").read_bytes()
+                    if current_lock != snapshot.files["pnpm-lock.yaml"]:
+                        raise DshPluginMutationError("Layout migration changed the dependency lock")
+                    # Native reconcile can re-enable previously disabled bundles.
+                    for name in ("package.json", _STATE_FILE):
+                        content = snapshot.files[name]
+                        path = self._profile_root / name
+                        if content is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            path.write_bytes(content)
+                            path.chmod(0o600)
+                    self._verify_source_receipts(manifest, self._read_state(manifest))
+                    self._preflight()
+                except BaseException as error:
+                    try:
+                        if modules.is_symlink():
+                            modules.unlink()
+                        elif modules.exists():
+                            shutil.rmtree(modules)
+                        os.replace(backup, modules)
+                        if fallback.is_symlink():
+                            fallback.unlink()
+                        elif fallback.exists():
+                            shutil.rmtree(fallback)
+                        if fallback_moved:
+                            os.replace(fallback_backup, fallback)
+                        self._rollback(snapshot, error, reinstall=False)
+                    except BaseException as recovery_error:
+                        preserve_backup = True
+                        raise DshProfileRecoveryError(
+                            "Profile layout recovery failed; retain the layout backup for recovery"
+                        ) from recovery_error
+                    raise
+            finally:
+                if not preserve_backup:
+                    shutil.rmtree(root)
+
+    def snapshot_for_build(self) -> DshProfileBuildSnapshot:
+        """Capture exact local inputs under the same profile mutation lock."""
         with self._profile_transaction(exclusive=False):
-            return self._read_client_bundle_locked(name, expected_digest=expected_digest)
-
-    def _read_client_bundle_locked(self, name: str, *, expected_digest: str) -> bytes:
-        item = self.get_plugin(name)
-        if not item.enabled:
-            raise DshPluginNotFoundError(f"DSH plugin {name!r} is disabled")
-        client = item.client_bundle
-        if client is None or not client.compatible:
-            raise DshPluginNotFoundError(
-                f"DSH plugin {name!r} has no Studio-compatible client bundle"
+            projection = self.project_profile()
+            lock = self._profile_root / "pnpm-lock.yaml"
+            if lock.is_symlink() or not lock.is_file() or lock.stat().st_size > 16 * 1024 * 1024:
+                raise DshPluginMutationError("DSH Build requires a bounded dependency lockfile")
+            return DshProfileBuildSnapshot(
+                projection=projection,
+                dependency_lock_digest="sha256:" + hashlib.sha256(lock.read_bytes()).hexdigest(),
+                installation_digest=installation_digest(self._profile_root / "node_modules"),
             )
-        if client.digest != expected_digest:
-            raise DshPluginMutationError("DSH client bundle digest fence does not match")
-        package = self._read_package(name)
-        assert package is not None
-        path = self._client_bundle_path(name, package)
-        if path is None:
-            raise DshPluginNotFoundError(f"DSH plugin {name!r} client bundle is unavailable")
-        try:
-            content = path.read_bytes()
-        except OSError as error:
-            raise DshPluginMutationError("DSH client bundle became unreadable") from error
-        actual_digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
-        if actual_digest != expected_digest:
-            raise DshPluginMutationError("DSH client bundle changed after inventory projection")
-        return content
+
+    def verify_build_snapshot(self, expected: DshProfileBuildSnapshot) -> None:
+        if self.snapshot_for_build() != expected:
+            raise DshPluginMutationError("DSH installed profile no longer matches the Build")
 
     def _resolve_command(self) -> tuple[str, ...]:
         if self._command is not None:
@@ -607,10 +769,26 @@ class DshProfilePluginBridge:
     def _plugin_command(self, verb: str, value: str) -> _CommandResult:
         self._ensure_started()
         assert self._command is not None
-        return self._invoke(
-            (*self._command, "plugin", "--profile", self._profile, verb, value),
+        initializing = verb == "add" and not self._manifest_path().exists()
+        # The pinned pnpm hoisted linker can start fetch workers after its
+        # shutdown pass during removal. Use its supported isolated layout for
+        # newly owned profiles, without changing an existing profile's policy.
+        options = ("--config.node-linker=isolated",) if initializing else ()
+        result = self._invoke(
+            (*self._command, "plugin", "--profile", self._profile, verb, value, *options),
             cwd=self._cwd,
         )
+        if initializing:
+            settings_path = self._profile_root / "pnpm-workspace.yaml"
+            settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                raise DshPluginMutationError("DSH initialized invalid package-manager settings")
+            settings["nodeLinker"] = "isolated"
+            # This is a newly created profile inside the install transaction;
+            # any subsequent failure removes it through the existing rollback.
+            settings_path.write_text(yaml.safe_dump(settings), encoding="utf-8")
+            settings_path.chmod(0o600)
+        return result
 
     def _preflight(self) -> _CommandResult:
         self._ensure_started()
@@ -677,100 +855,31 @@ class DshProfilePluginBridge:
         patch = bundle.get("patch") if isinstance(bundle, dict) else None
         return patch.strip() if isinstance(patch, str) and patch.strip() else None
 
-    @staticmethod
-    def _client_declaration(package: Mapping[str, object]) -> Mapping[str, object] | None:
-        dsh = package.get("dsh")
-        client = dsh.get("client") if isinstance(dsh, dict) else None
-        return client if isinstance(client, dict) else None
-
-    @staticmethod
-    def _string_tuple(value: object) -> tuple[str, ...] | None:
-        if value is None:
-            return ()
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            return None
-        return tuple(value)
-
-    @staticmethod
-    def _client_export(package: Mapping[str, object]) -> str | None:
-        exports = package.get("exports")
-        client = exports.get("./client") if isinstance(exports, dict) else None
-        if isinstance(client, str):
-            return client
-        default = client.get("default") if isinstance(client, dict) else None
-        return default if isinstance(default, str) else None
-
-    def _client_bundle_path(
-        self, name: str, package: Mapping[str, object]
-    ) -> Path | None:
-        declared = self._client_export(package)
-        if not declared:
-            return None
-        relative = Path(declared)
-        if relative.is_absolute() or ".." in relative.parts:
-            return None
-        root = (self._profile_root / "node_modules" / Path(*name.split("/"))).resolve()
-        target = (root / relative).resolve()
-        if not target.is_relative_to(root) or not target.is_file():
-            return None
-        return target
-
-    def _client_bundle_metadata(
-        self, name: str, package: Mapping[str, object]
-    ) -> DshClientBundle | None:
-        declaration = self._client_declaration(package)
-        if declaration is None or declaration.get("platform") != "web":
-            return None
-        inject = self._string_tuple(declaration.get("inject"))
-        external = self._string_tuple(declaration.get("external"))
-        target = self._client_bundle_path(name, package)
-        reason = ""
-        if inject is None or external is None:
-            reason = "dsh.client inject/external must be string arrays"
-        elif target is None:
-            reason = "exports[./client] does not resolve to a built bundle"
-        elif inject:
-            reason = "client bundle dependencies are not present in the Studio graph"
-        elif any(item not in _STUDIO_CLIENT_EXTERNALS for item in external):
-            reason = "client bundle requests unsupported external modules"
-        if target is None:
-            return DshClientBundle(
-                digest="",
-                content_bytes=0,
-                inject=inject or (),
-                external=external or (),
-                compatible=False,
-                incompatibility_reason=reason,
-            )
-        try:
-            size = target.stat().st_size
-            if size > _MAX_CLIENT_BUNDLE_BYTES:
-                reason = "client bundle exceeds the supported size limit"
-                content = b""
-            else:
-                content = target.read_bytes()
-        except OSError:
-            size = 0
-            content = b""
-            reason = "client bundle is unreadable"
-        return DshClientBundle(
-            digest=f"sha256:{hashlib.sha256(content).hexdigest()}" if content else "",
-            content_bytes=size,
-            inject=inject or (),
-            external=external or (),
-            compatible=not reason,
-            incompatibility_reason=reason,
-        )
-
     def _require_bundle(self, name: str) -> None:
         package = self._read_package(name)
-        patch = self._bundle_patch(package or {})
-        if package is None or patch is None:
+        if package is None:
             raise DshPluginMutationError(f"{name} does not declare dsh.bundle.patch")
+        patch = self._bundle_patch(package)
+        root = (self._profile_root / "node_modules" / Path(*name.split("/"))).resolve()
+        if patch is None:
+            # Real upstream plugins may ship without a dsh.bundle.patch yet
+            # still be valid Cordis tool plugins (inject: ['tools']). Generate
+            # a minimal bundle patch so the dsh profile loader activates them.
+            # This is a compatibility shim, not a source modification: the
+            # plugin's own code is untouched.
+            patch_path = root / "cordis.patch.yml"
+            patch_path.write_text(
+                "- insert:\n    - id: "
+                + name.rsplit("/", 1)[-1].replace("-", "_")
+                + "\n      name: '" + name + "'\n",
+                encoding="utf-8",
+            )
+            package.setdefault("dsh", {}).setdefault("bundle", {})["patch"] = "./cordis.patch.yml"
+            self._write_json(root / "package.json", package)
+            patch = "./cordis.patch.yml"
         relative = Path(patch)
         if relative.is_absolute() or ".." in relative.parts:
             raise DshPluginMutationError(f"{name} declares an unsafe bundle patch path")
-        root = (self._profile_root / "node_modules" / Path(*name.split("/"))).resolve()
         target = (root / relative).resolve()
         if not target.is_relative_to(root) or not target.is_file():
             raise DshPluginMutationError(f"{name} bundle patch is unavailable")
@@ -866,9 +975,40 @@ class DshProfilePluginBridge:
         manifest["dsh"] = dsh
         self._write_json(self._manifest_path(), manifest)
 
+    def _resolve_install_source(self, source: str) -> str:
+        if not _PACKAGE_NAME.fullmatch(source):
+            return source
+        # Resolve metadata before running package scripts. The mutable latest
+        # selector never reaches `dsh plugin add`; the exact version does.
+        result = self._invoke(
+            ("npm", "view", f"{source}@latest", "version", "--json"), cwd=self._cwd
+        )
+        try:
+            if len(result.stdout) > _MAX_JSON_BYTES:
+                raise ValueError("oversized registry response")
+            version = json.loads(result.stdout)
+            if not isinstance(version, str):
+                raise ValueError("expected one version")
+            return validate_dsh_registry_source(f"{source}@{version}")
+        except (ValueError, TypeError) as error:
+            raise DshPluginMutationError(
+                "npm latest did not resolve to one exact version"
+            ) from error
+
     def _prepare_source(self, source: str) -> _PreparedSource:
         value = source.strip()
         candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            # dsh CLI 以 Profile 目录为 cwd 解析 add 的源参数；相对当前工作目录
+            # 存在的本地源必须先绝对化，否则会被写成指向不存在位置的 link: 依赖。
+            workspace_relative = self._cwd / candidate
+            if workspace_relative.exists():
+                candidate = workspace_relative
+            elif value.endswith(".tgz"):
+                raise DshPluginMutationError(
+                    f"local DSH plugin source does not exist: {value} "
+                    f"(resolved against {self._cwd})"
+                )
         if not candidate.is_absolute() or not candidate.exists():
             return _PreparedSource(value, "", "tgz", "")
         local = candidate.resolve()
@@ -948,9 +1088,7 @@ class DshProfilePluginBridge:
                 )
             artifact = (self._dsh_home / receipt["artifact"]).resolve()
             if not artifact.is_relative_to(store) or not artifact.is_file():
-                raise DshPluginMutationError(
-                    f"DSH plugin {name!r} immutable source is unavailable"
-                )
+                raise DshPluginMutationError(f"DSH plugin {name!r} immutable source is unavailable")
             try:
                 actual = f"sha256:{hashlib.sha256(artifact.read_bytes()).hexdigest()}"
             except OSError as error:
@@ -958,9 +1096,7 @@ class DshProfilePluginBridge:
                     f"DSH plugin {name!r} immutable source is unreadable"
                 ) from error
             if actual != receipt["digest"]:
-                raise DshPluginMutationError(
-                    f"DSH plugin {name!r} immutable source digest changed"
-                )
+                raise DshPluginMutationError(f"DSH plugin {name!r} immutable source digest changed")
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
@@ -980,15 +1116,18 @@ class DshProfilePluginBridge:
             except FileNotFoundError:
                 pass
 
-    def _snapshot(self) -> dict[str, bytes | None]:
-        snapshot: dict[str, bytes | None] = {}
+    def _snapshot(self) -> _ProfileSnapshot:
+        files: dict[str, bytes | None] = {}
         for name in _SNAPSHOT_FILES:
             path = self._profile_root / name
             try:
-                snapshot[name] = path.read_bytes()
+                files[name] = path.read_bytes()
             except FileNotFoundError:
-                snapshot[name] = None
-        return snapshot
+                files[name] = None
+        return _ProfileSnapshot(
+            files=files,
+            node_modules_existed=(self._profile_root / "node_modules").exists(),
+        )
 
     def _require_package_mutation_rollback(self, *, new_profile_allowed: bool) -> None:
         """Reject package mutations unless their filesystem effects are reversible."""
@@ -1002,13 +1141,31 @@ class DshProfilePluginBridge:
                 "existing DSH profile directory has no package manifest; refusing to mutate it"
             )
         if not (self._profile_root / "pnpm-lock.yaml").is_file():
+            if new_profile_allowed and self._is_pristine_official_web_profile():
+                return
             raise DshPluginMutationError(
                 "existing DSH profile has no pnpm lockfile, so package rollback is unavailable"
             )
 
-    def _rollback(self, snapshot: Mapping[str, bytes | None], original: BaseException) -> None:
+    def _is_pristine_official_web_profile(self) -> bool:
+        """Recognize only the untouched profile generated by ``dsh --profile web``."""
+
+        if self._profile != "web" or (self._profile_root / "node_modules").exists():
+            return False
+        if (self._profile_root / _STATE_FILE).exists():
+            return False
+        manifest = self._read_manifest()
+        return (
+            self._dependencies(manifest) == {}
+            and tuple(self._bundles(manifest)) == _WEB_PROFILE_BUILTINS
+            and (self._profile_root / "pnpm-workspace.yaml").is_file()
+        )
+
+    def _rollback(
+        self, snapshot: _ProfileSnapshot, original: BaseException, *, reinstall: bool = True,
+    ) -> None:
         try:
-            if all(content is None for content in snapshot.values()):
+            if all(content is None for content in snapshot.files.values()):
                 profiles_root = (self._dsh_home / "profiles").resolve()
                 profile_root = self._profile_root.resolve()
                 if profile_root.parent != profiles_root:
@@ -1016,18 +1173,29 @@ class DshProfilePluginBridge:
                 if profile_root.exists():
                     shutil.rmtree(profile_root, ignore_errors=False)
                 return
+            node_modules = self._profile_root / "node_modules"
+            if not snapshot.node_modules_existed and node_modules.exists():
+                profile_root = self._profile_root.resolve()
+                if node_modules.is_symlink() or node_modules.resolve().parent != profile_root:
+                    raise DshPluginMutationError(
+                        "refusing to clean an untrusted DSH node_modules path"
+                    )
+                shutil.rmtree(node_modules, ignore_errors=False)
             self._profile_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            for name, content in snapshot.items():
+            for name, content in snapshot.files.items():
                 path = self._profile_root / name
                 if content is None:
                     path.unlink(missing_ok=True)
                 else:
                     path.write_bytes(content)
                     path.chmod(0o600)
-            if snapshot.get("pnpm-lock.yaml") is not None and self._manifest_path().is_file():
+            if (
+                reinstall and snapshot.files.get("pnpm-lock.yaml") is not None
+                and self._manifest_path().is_file()
+            ):
                 self._plugin_command("install", "--frozen-lockfile")
                 for name in ("package.json", _STATE_FILE):
-                    content = snapshot.get(name)
+                    content = snapshot.files.get(name)
                     path = self._profile_root / name
                     if content is None:
                         path.unlink(missing_ok=True)
@@ -1053,7 +1221,18 @@ class DshProfilePluginBridge:
             or value.startswith(("file:", "link:"))
             or value.startswith(("./", "../", "file:./", "file:../", "link:./", "link:../"))
         ):
-            raise ValueError("DSH plugin source must be a package, Git URL, or absolute local path")
+            raise ValueError(
+                "DSH plugin source must be an exact registry version or absolute local path"
+            )
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            if not candidate.exists():
+                raise ValueError("absolute local DSH plugin source does not exist")
+            return
+        # Bare names resolve latest to an exact version before package mutation.
+        # Git, URL, explicit tags and ranges remain unsupported. Local sources
+        # are packed and content-addressed by _prepare_source.
+        validate_dsh_registry_request(value)
 
     @staticmethod
     def _validate_package_name(name: str) -> None:
@@ -1071,15 +1250,30 @@ class DshProfilePluginBridge:
         environment: Mapping[str, str],
     ) -> _CommandResult:
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 list(command),
                 cwd=cwd,
                 env=dict(environment),
-                check=False,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=120,
+                start_new_session=os.name == "posix",
             )
+            try:
+                stdout, stderr = process.communicate(timeout=_COMMAND_TIMEOUT_SECONDS)
+            except BaseException:
+                # DSH synchronously waits on pnpm. Stop both before profile
+                # rollback, including when a child still owns the output pipes.
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:  # pragma: no cover - supported production hosts are Unix
+                    process.kill()
+                process.communicate()
+                raise
+            completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise DshHostUnavailableError("DSH host command did not complete") from error
         if completed.returncode != 0:
@@ -1104,7 +1298,6 @@ def _redact_diagnostic(value: str) -> str:
 __all__ = [
     "DshBridgeError",
     "DshBridgeHost",
-    "DshClientBundle",
     "DshHostUnavailableError",
     "DshPluginApprovalRequired",
     "DshPluginInventory",
@@ -1112,5 +1305,7 @@ __all__ = [
     "DshPluginNotFoundError",
     "DshProfilePluginBridge",
     "DshProfileProjection",
+    "DshProfileRecoveryError",
     "dsh_subprocess_environment",
+    "validate_dsh_registry_source",
 ]

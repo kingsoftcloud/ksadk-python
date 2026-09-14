@@ -13,6 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
+from ksadk.plugins.providers.legacy_catalog import CODEX_AGENT_PROVIDER_PLUGIN_ID
 from ksadk.studio.authoring import AgentAuthoringService, ConversationProposal
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
@@ -27,7 +28,7 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.identifiers import generate_agent_slug, is_generated_agent_slug
-from ksadk.studio.templates import default_agent_spec
+from ksadk.studio.templates import default_agent_spec, with_harness_provider_permissions
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,6 +76,16 @@ def _deduplicated_bindings(resource_ids: list[str]) -> list[CapabilityBinding]:
         seen.add(normalized)
         result.append(CapabilityBinding(resource_id=normalized))
     return result
+
+
+def _uses_codex_native_tools(runtime: RuntimeRef | None) -> bool:
+    if runtime is None:
+        return False
+    return runtime.type == "codex" or (
+        runtime.type == "plugin"
+        and bool(runtime.provider_ref)
+        and runtime.provider_ref.startswith(f"plugin://{CODEX_AGENT_PROVIDER_PLUGIN_ID}@")
+    )
 
 
 def _inject_managed_bindings(
@@ -218,9 +229,7 @@ class StudioAuthoringCoordinator:
             ),
             "请根据已确认的需求完成 Agent，并在部署前检查配置和权限。",
         )
-        previous_instructions = (
-            previous_proposal.spec.instructions if previous_proposal else None
-        )
+        previous_instructions = previous_proposal.spec.instructions if previous_proposal else None
         fallback_payload = {
             "name": previous_proposal.name if previous_proposal else "待确认 Agent",
             "slug": previous_proposal.slug if previous_proposal else "conversation-agent",
@@ -257,9 +266,7 @@ class StudioAuthoringCoordinator:
                 "active": True,
                 "reason": _LOCAL_FALLBACK_REASON.get(reason_code, "model-unavailable"),
             },
-            "usage": Usage(source="local-fallback").model_dump(
-                by_alias=True, mode="json"
-            ),
+            "usage": Usage(source="local-fallback").model_dump(by_alias=True, mode="json"),
         }
 
     def create(
@@ -312,6 +319,11 @@ class StudioAuthoringCoordinator:
                     canonical_runtime.version = proposed_runtime.version
                     canonical_runtime.detection = proposed_runtime.detection
             resolved.runtime = canonical_runtime
+            if runtime_type == "harness" and spec is None:
+                resolved = with_harness_provider_permissions(resolved)
+            if _uses_codex_native_tools(canonical_runtime):
+                resolved.bindings = resolved.bindings.model_copy(update={"tools": []})
+                resolved.capabilities = resolved.capabilities.model_copy(update={"tools": []})
             if description:
                 resolved.description = description
             draft = self.studio.create_studio_agent(
@@ -599,7 +611,7 @@ class StudioAuthoringCoordinator:
             getattr(model, "endpoint_url", "-"),
         )
         normalized_runtime_type = str(runtime_type or "").strip().lower()
-        if normalized_runtime_type not in {"codex", "adk", "langgraph"}:
+        if normalized_runtime_type not in {"harness", "codex", "adk", "langgraph"}:
             raise StudioError(
                 "AGENT_RUNTIME_INVALID",
                 "对话构建 Runtime 仅支持 Codex、ADK 或 LangGraph",
@@ -686,8 +698,7 @@ class StudioAuthoringCoordinator:
             if exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
                 raise
             LOGGER.warning(
-                "conversation authoring patch invalid; returning local fallback: "
-                "modelProfileId=%s",
+                "conversation authoring patch invalid; returning local fallback: modelProfileId=%s",
                 model_profile_id,
             )
             self._record_conversation_stage(request_id, "done")
@@ -711,9 +722,7 @@ class StudioAuthoringCoordinator:
                 proposal,
                 model_spec=model_spec,
                 bindings=bindings,
-            ).model_dump(
-                by_alias=True, mode="json"
-            ),
+            ).model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,
             "authoringMode": "chat",
             "usage": response.usage.model_dump(by_alias=True, mode="json"),
@@ -773,9 +782,7 @@ class StudioAuthoringCoordinator:
                 result.proposal,
                 model_spec=model_spec,
                 bindings=bindings,
-            ).model_dump(
-                by_alias=True, mode="json"
-            ),
+            ).model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,
             "authoringMode": "codex",
             "usage": result.usage.model_dump(by_alias=True, mode="json"),

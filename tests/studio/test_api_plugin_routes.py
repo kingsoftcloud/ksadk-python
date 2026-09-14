@@ -1,7 +1,5 @@
 """Studio exposes DSH and Codex plugin lifecycles only."""
 
-import hashlib
-import json
 import os
 from pathlib import Path
 
@@ -77,6 +75,11 @@ def test_dsh_options_keep_explicit_binary_above_managed_toolchain(
 def test_plugin_page_uses_ready_managed_dsh_without_manual_binary_env(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from unittest.mock import AsyncMock
+
+    # This case tests an empty profile, not first-launch installation. Keep it
+    # independent of the developer machine's real managed DSH toolchain.
+    monkeypatch.setattr(StudioService, "_bootstrap_official_dsh_defaults", AsyncMock())
     managed = tmp_path / "managed-dsh"
     managed.write_text(
         "#!/bin/sh\n"
@@ -109,10 +112,9 @@ def test_plugin_page_uses_ready_managed_dsh_without_manual_binary_env(
         "homeMode": "workspace-isolated",
     }
     items = response.json()["items"]
-    assert len(items) == 1
-    assert items[0]["pluginId"] == "@kingsoftcloud/ksadk-codex-provider"
-    assert items[0]["displayName"] == "@kingsoftcloud/ksadk-codex-provider"
-    assert items[0]["enabled"] is True
+    # An available Core binary does not imply an installed Provider. This
+    # fixture exposes --version only and intentionally has no profile lock.
+    assert items == []
 
 
 def test_dsh_options_fall_back_to_bridge_path_lookup_when_managed_is_unavailable(
@@ -140,80 +142,3 @@ def test_dsh_options_fall_back_to_bridge_path_lookup_when_managed_is_unavailable
         response = client.get("/api/v1/plugin-ecosystems/dsh/plugins")
     assert response.json()["host"]["available"] is True
     assert response.json()["host"]["version"] == "0.1.0"
-
-
-def test_dsh_profile_projects_and_serves_only_enabled_digest_fenced_client_bundle(
-    tmp_path: Path, monkeypatch
-) -> None:
-    dsh_home = tmp_path / "dsh-home"
-    profile = dsh_home / "profiles" / "studio"
-    plugin_name = "@example/studio-client"
-    package = profile / "node_modules" / "@example" / "studio-client"
-    profile.mkdir(parents=True)
-    (profile / "package.json").write_text(
-        json.dumps(
-            {
-                "dependencies": {plugin_name: "1.0.0"},
-                "dsh": {"profile": {"bundles": [plugin_name]}},
-            }
-        ),
-        encoding="utf-8",
-    )
-    package.mkdir(parents=True)
-    (package / "package.json").write_text(
-        json.dumps(
-            {
-                "name": plugin_name,
-                "version": "1.0.0",
-                "exports": {"./client": {"default": "./lib/client.js"}},
-                "dsh": {
-                    "bundle": {"patch": "./cordis.patch.yml"},
-                    "client": {"platform": "web", "external": ["react"]},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    (package / "cordis.patch.yml").write_text("[]\n", encoding="utf-8")
-    client = (
-        b'window.__ModuleLoader__.load({id:"@example/studio-client",'
-        b"factory:()=>({apply(){}})})"
-    )
-    (package / "lib").mkdir()
-    (package / "lib" / "client.js").write_bytes(client)
-    dsh = tmp_path / "dsh-fixture"
-    dsh.write_text(
-        "#!/bin/sh\n"
-        'case "$*" in\n'
-        "  *--version*) echo 0.1.2-alpha.1;;\n"
-        "  *--dump-config*) echo 'graph: fixture';;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    dsh.chmod(0o700)
-    monkeypatch.setenv("KSADK_DSH_HOME", str(dsh_home))
-    monkeypatch.setenv("KSADK_DSH_BIN", str(dsh))
-
-    with TestClient(
-        create_studio_app(tmp_path, session_token=_SESSION, csrf_token=_CSRF)
-    ) as client_api:
-        _login(client_api)
-        projection = client_api.get("/api/v1/plugin-ecosystems/dsh/profile")
-        assert projection.status_code == 200
-        bundle = projection.json()["clientBundles"][0]
-        assert bundle["pluginId"] == plugin_name
-        assert bundle["compatible"] is True
-        assert bundle["digest"] == f"sha256:{hashlib.sha256(client).hexdigest()}"
-
-        artifact = client_api.get(bundle["url"])
-        assert artifact.status_code == 200
-        assert artifact.content == client
-        assert artifact.headers["x-content-type-options"] == "nosniff"
-
-        disabled = client_api.post(
-            "/api/v1/plugin-ecosystems/dsh/plugins/@example/studio-client:disable",
-            headers={"X-CSRF-Token": _CSRF},
-        )
-        assert disabled.status_code == 200
-        assert client_api.get("/api/v1/plugin-ecosystems/dsh/profile").json()["clientBundles"] == []
-        assert client_api.get(bundle["url"]).status_code == 404

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, Plug, Puzzle, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, AlertCircle, Box, CheckCircle2, CircleOff, LoaderCircle, Search, Trash2, Plus, ArrowUpRight } from "lucide-react";
 import { apiFetch } from "../api";
-import { PageHeaderActions } from "../components/PageHeaderPortal";
+import { TeamsAvailability } from "./TeamsAvailability";
+import { DshPluginWorkspace } from "../components/DshPluginWorkspace";
 import { showToast } from "../components/Toast";
-import { studioDshCompositionHost } from "../dsh-runtime/studioDshCompositionHost";
 
 interface HostState { available: boolean; version?: string | null; }
 interface Capabilities { skills?: string[]; mcpServers?: string[]; hooks?: string[]; apps?: string[]; scheduledTasks?: string[]; }
 interface PluginRuntimeState { state?: string; providerRef?: string | null; provider_ref?: string | null; errorCode?: string | null; error_code?: string | null; }
-interface PluginClientBundle { compatible?: boolean; inject?: string[]; }
+interface PluginPresentation { displayName?: string; shortDescription?: string; longDescription?: string; developerName?: string; category?: string; logoUrl?: string; logoUrlDark?: string; composerIconUrl?: string; defaultPrompt?: string[]; capabilities?: string[]; websiteUrl?: string; privacyPolicyUrl?: string; termsOfServiceUrl?: string; }
 export type PluginLifecycleState = "installed" | "enabled" | "ready" | "bound" | "failed";
 export interface InstalledPlugin {
   ecosystem: "dsh" | "codex";
@@ -28,8 +28,10 @@ export interface InstalledPlugin {
   riskDisclosures: string[];
   host?: HostState;
   description?: string | null;
+  clientExtension?: boolean;
+  settingsIntegration?: boolean;
   capabilities?: Capabilities;
-  clientBundle?: PluginClientBundle | null;
+  interface?: PluginPresentation;
 }
 
 export function normalizeInstalledPlugin(payload: any): InstalledPlugin {
@@ -82,8 +84,10 @@ export function normalizeInstalledPlugin(payload: any): InstalledPlugin {
     riskDisclosures: Array.isArray(item.riskDisclosures) ? item.riskDisclosures : [],
     host: item.host,
     description: payload?.description || item.description,
+    clientExtension: item.clientExtension === true,
+    settingsIntegration: item.settingsIntegration === true,
     capabilities: payload?.capabilities || item.capabilities,
-    clientBundle: item.clientBundle || item.client_bundle,
+    interface: item.interface || {},
   };
 }
 
@@ -93,6 +97,15 @@ const keyOf = (item: InstalledPlugin) => [
   item.pluginId,
   item.resolvedVersion || "host-managed",
 ].join(":");
+const isOfficialCodex = (item: InstalledPlugin) => item.ecosystem === 'codex' &&
+  ['openai-curated', 'openai-curated-remote', 'openai-primary-runtime', 'openai-bundled'].includes(item.marketplaceName || '');
+const isKsADKOfficial = (item: InstalledPlugin) => item.pluginId.startsWith('@kingsoftcloud/');
+type InstalledPluginFilter = 'all' | 'ksadk' | 'dsh' | 'codex';
+
+/** A Profile mutation replaces Core's runtime and browser session together. */
+function reconnectCore() {
+  if (window.__STUDIO_DSH__) window.location.reload();
+}
 const label = (item: InstalledPlugin) => item.ecosystem === "dsh" ? "DeepSeek Harness 插件" : "Codex 官方插件";
 const curatedPluginIdentity: Record<string, { title: string; publisher: string; kind: string; summary: string }> = {
   "@kingsoftcloud/ksadk-codex-provider": {
@@ -110,6 +123,7 @@ function pluginTitle(item: InstalledPlugin) {
   return name.replace(/^(ksadk-|dsh-)/, "").split(/[-_.]+/).map(part => part ? `${part[0].toUpperCase()}${part.slice(1)}` : "").join(" ");
 }
 function pluginPublisher(item: InstalledPlugin) {
+  if (item.interface?.developerName) return item.interface.developerName;
   const curated = curatedPluginIdentity[item.pluginId];
   if (curated) return curated.publisher;
   const scope = item.pluginId.match(/^(@[^/]+)\//)?.[1];
@@ -119,7 +133,8 @@ function pluginKind(item: InstalledPlugin) {
   const curated = curatedPluginIdentity[item.pluginId];
   if (curated) return curated.kind;
   if (item.providerRef) return "Agent Provider";
-  if (item.clientBundle?.compatible || (item.capabilities?.apps || []).length) return "界面扩展";
+  if (item.clientExtension) return "界面扩展";
+  if ((item.capabilities?.apps || []).length) return "界面扩展";
   if ((item.capabilities?.skills || []).length || (item.capabilities?.mcpServers || []).length) return "Agent 能力";
   return item.ecosystem === "dsh" ? "Harness 扩展" : "工作台扩展";
 }
@@ -153,7 +168,8 @@ const stateLabel: Record<PluginLifecycleState, string> = {
 
 function PluginState({ item }: { item: InstalledPlugin }) {
   const Icon = item.failed ? AlertCircle : item.state === "installed" ? CircleOff : CheckCircle2;
-  return <span className="plugin-state" data-state={item.state}><Icon size={13}/> {stateLabel[item.state]}</span>;
+  const label = item.ecosystem === "codex" && item.state === "enabled" ? "已安装" : stateLabel[item.state];
+  return <span className="plugin-state" data-state={item.state}><Icon size={13}/> {label}</span>;
 }
 
 function PluginUsage({ item }: { item: InstalledPlugin }) {
@@ -162,10 +178,13 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
     ...(item.capabilities?.skills || []),
     ...(item.capabilities?.mcpServers || []),
   ];
-  const hasUiContribution = Boolean(
-    item.clientBundle?.compatible || (item.capabilities?.apps || []).length,
-  );
-  if (!item.providerRef && bindableCapabilities.length === 0 && !hasUiContribution) return null;
+  const hasUiContribution = Boolean((item.capabilities?.apps || []).length);
+  if (
+    item.ecosystem !== "dsh"
+    && !item.providerRef
+    && bindableCapabilities.length === 0
+    && !hasUiContribution
+  ) return null;
   return <section className="plugin-detail-section" aria-label="贡献能力与使用方式">
     <h3>贡献能力与使用方式</h3>
     {item.providerRef && <>
@@ -173,23 +192,39 @@ function PluginUsage({ item }: { item: InstalledPlugin }) {
       <p className="plugin-detail-muted">{isReadyProvider ? "在创建或编辑 Agent 时从 Runtime 选择器使用。" : "Provider 尚未就绪，暂不能用于创建 Agent。"}</p>
       {isReadyProvider && <p><a className="button secondary" href="#/create">去创建 Agent</a></p>}
     </>}
-    {hasUiContribution && <p className="plugin-detail-muted">界面扩展启用后会自动出现在插件声明的页面、侧栏或 Tab。</p>}
-    {bindableCapabilities.length > 0 && <>
-      <p className="plugin-detail-muted">Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。</p>
+    {item.ecosystem === "dsh" && !item.providerRef && item.settingsIntegration && <p className="plugin-detail-muted">插件提供的设置页面可直接在 Studio 的插件设置中使用。</p>}
+    {item.ecosystem === "dsh" && !item.providerRef && item.clientExtension && !item.settingsIntegration && <p className="plugin-detail-muted">这是 DSH Core 会话界面扩展，会在插件定义的交互状态下显示。插件未声明独立设置页，因此不会新增左侧设置标签。</p>}
+    {item.ecosystem === "dsh" && !item.providerRef && !item.clientExtension && <p className="plugin-detail-muted">此插件扩展 DSH Core 运行能力，未提供独立 Studio 设置页。</p>}
+    {(bindableCapabilities.length > 0 || (item.ecosystem === "codex" && hasUiContribution)) && <>
+      <p className="plugin-detail-muted">{item.ecosystem === "codex" ? "在 Agent 编辑页的「能力绑定 → 绑定插件」选择此插件，保存并生成配置快照后，在新会话中使用。" : "Skill 与 MCP 能力需在 Agent 编辑页绑定后使用。"}</p>
       <p><a className="button secondary" href="#/agents">去 Agent 列表绑定</a></p>
     </>}
+    {item.ecosystem === "codex" && hasUiContribution && <p className="plugin-detail-muted">此插件包含应用连接。安装和绑定会加载技能；实际操作应用还需要在运行环境中完成 Codex 账户登录及对应应用授权，模型 API Key 不代替应用授权。</p>}
   </section>;
 }
 
-export function PluginsPage() {
+function PluginIcon({ item, large = false }: { item: InstalledPlugin; large?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const url = item.interface?.logoUrl || item.interface?.composerIconUrl;
+  useEffect(() => setFailed(false), [url]);
+  return <span className={`plugin-store-icon${large ? ' large' : ''}`}>
+    {url && /^(https:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);base64,)/.test(url) && !failed ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)}/> : <span>{pluginTitle(item).replace(/^@/, '').slice(0, 2).toUpperCase()}</span>}
+  </span>;
+}
+
+export function PluginsPage({ refreshTick = 0 }: { refreshTick?: number }) {
+  const [workspaceOpen, setWorkspaceOpen] = useState(() => new URLSearchParams(window.location.search).has('pluginSettings'));
+  const [settingsPluginId, setSettingsPluginId] = useState<string | undefined>(() => new URLSearchParams(window.location.search).get('pluginSettings') || undefined);
   const [items, setItems] = useState<InstalledPlugin[]>([]);
   const [codexCatalog, setCodexCatalog] = useState<InstalledPlugin[]>([]);
   const [hosts, setHosts] = useState<Record<string, HostState | undefined>>({});
   const [selectedKey, setSelectedKey] = useState("");
+  const [detail, setDetail] = useState<{ key: string; item: InstalledPlugin } | null>(null);
   const [source, setSource] = useState("");
   const [accepted, setAccepted] = useState(false);
   const [codexAccepted, setCodexAccepted] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [installedFilter, setInstalledFilter] = useState<InstalledPluginFilter>('all');
   const [marketplaceTab, setMarketplaceTab] = useState<"codex" | "dsh">("codex");
   const [busy, setBusy] = useState("load");
   const [error, setError] = useState("");
@@ -207,13 +242,27 @@ export function PluginsPage() {
       setItems(next);
       setCodexCatalog(codexItems.filter((item: InstalledPlugin) => !item.installed));
       setHosts({ dsh: dsh.host, codex: codex.host });
-      if (!selectedKey && next[0]) setSelectedKey(keyOf(next[0]));
     } catch (cause: any) { setError(cause?.message || "插件状态加载失败"); }
     finally { setBusy(""); }
-  }, [selectedKey]);
+  }, []);
 
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const selected = useMemo(() => items.find(item => keyOf(item) === selectedKey) || null, [items, selectedKey]);
+  useEffect(() => { void load(); }, [load, refreshTick]);
+  const selectedSummary = useMemo(() => [...items, ...codexCatalog].find(item => keyOf(item) === selectedKey) || null, [items, codexCatalog, selectedKey]);
+  const selected = detail?.key === selectedKey && selectedSummary
+    ? { ...detail.item, ...selectedSummary, capabilities: detail.item.capabilities, interface: { ...selectedSummary.interface, ...detail.item.interface } }
+    : selectedSummary;
+  useEffect(() => {
+    if (selectedSummary?.ecosystem !== 'codex') return;
+    const controller = new AbortController();
+    const query = new URLSearchParams({ marketplace_name: selectedSummary.marketplaceName || '' });
+    void apiFetch(`/api/v1/plugin-ecosystems/codex/plugins/${encodeURIComponent(selectedSummary.pluginId)}?${query}`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error(responseError(await response.json(), '插件详情加载失败'));
+        const item = normalizeInstalledPlugin(await response.json());
+        if (!controller.signal.aborted) setDetail({ key: selectedKey, item });
+      }).catch(cause => { if (!controller.signal.aborted) setError(cause.message || '插件详情加载失败'); });
+    return () => controller.abort();
+  }, [selectedKey, selectedSummary]);
   const catalogGroups = useMemo(() => {
     const query = catalogQuery.trim().toLowerCase();
     const filtered = codexCatalog.filter(item => !query || [
@@ -223,14 +272,17 @@ export function PluginsPage() {
       .map(category => ({ category, items: filtered.filter(item => pluginCategory(item) === category) }))
       .filter(group => group.items.length > 0);
   }, [catalogQuery, codexCatalog]);
-
-  async function refreshDshClientGraph() {
-    try {
-      await studioDshCompositionHost.refresh();
-    } catch (cause: any) {
-      showToast("插件状态已更新", cause?.message || "界面扩展装载失败，已保留原界面");
-    }
-  }
+  const installedItems = useMemo(() => {
+    const query = catalogQuery.trim().toLowerCase();
+    return items.filter(item => {
+      if (installedFilter === 'ksadk' && !isKsADKOfficial(item)) return false;
+      if (installedFilter === 'dsh' && (item.ecosystem !== 'dsh' || isKsADKOfficial(item))) return false;
+      if (installedFilter === 'codex' && item.ecosystem !== 'codex') return false;
+      return !query || [
+        pluginTitle(item), pluginPublisher(item), pluginSummary(item), item.pluginId,
+      ].some(value => value.toLowerCase().includes(query));
+    });
+  }, [catalogQuery, installedFilter, items]);
 
   async function installDsh() {
     if (!accepted || !source.trim()) return;
@@ -245,13 +297,13 @@ export function PluginsPage() {
       const installed = normalizeInstalledPlugin(payload);
       setSelectedKey(keyOf(installed)); setAccepted(false); setSource("");
       showToast(installed.enabled ? "插件已安装" : "已安装，待启用", installed.displayName || installed.pluginId); await load();
-      await refreshDshClientGraph();
+      reconnectCore();
     } catch (cause: any) { setError(cause?.message || "DSH 插件安装失败"); }
     finally { setBusy(""); }
   }
 
   async function installCodex(item: InstalledPlugin) {
-    if (!codexAccepted) return;
+    if (!isOfficialCodex(item) && !codexAccepted) return;
     setBusy(`codex:${keyOf(item)}`); setError("");
     try {
       const response = await apiFetch(`/api/v1/plugin-ecosystems/codex/plugins/${encodeURIComponent(item.pluginId)}:install`, {
@@ -261,6 +313,7 @@ export function PluginsPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(responseError(payload, "Codex 插件安装失败"));
       const installed = normalizeInstalledPlugin(payload);
+      setSelectedKey(keyOf(installed));
       setCodexAccepted(false); showToast(installed.enabled ? "插件已安装" : "已安装，待启用", installed.displayName || installed.pluginId); await load();
     } catch (cause: any) { setError(cause?.message || "Codex 插件安装失败"); }
     finally { setBusy(""); }
@@ -275,7 +328,7 @@ export function PluginsPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(responseError(payload, "DSH 插件状态更新失败"));
       await load();
-      await refreshDshClientGraph();
+      reconnectCore();
     } catch (cause: any) { setError(cause?.message || "DSH 插件状态更新失败"); }
     finally { setBusy(""); }
   }
@@ -290,29 +343,71 @@ export function PluginsPage() {
         throw new Error(responseError(payload, "插件卸载失败"));
       }
       setSelectedKey(""); await load();
-      if (item.ecosystem === "dsh") await refreshDshClientGraph();
+      if (item.ecosystem === 'dsh') reconnectCore();
     } catch (cause: any) { setError(cause?.message || "插件卸载失败"); }
     finally { setBusy(""); }
   }
 
-  return <div className="page-container plugins-page" data-layout="document">
-    <PageHeaderActions><button className="icon-button tertiary" aria-label="刷新插件" onClick={() => void load()}><RefreshCw size={16}/></button></PageHeaderActions>
-    <header className="plugins-intro">
-      <div><h2>插件</h2><p>安装、启用和使用分开管理；只有已启用的插件才会投影给匹配的 Agent Provider。</p></div>
-      <div className="plugins-hosts" aria-label="插件宿主状态"><span className="plugin-bridge-badge" data-state={hosts.dsh?.available ? "available" : "unavailable"}>{hosts.dsh?.available ? `DSH ${hosts.dsh.version || ""}` : "DSH 不可用"}</span><span className="plugin-bridge-badge" data-state={hosts.codex?.available ? "available" : "unavailable"}>{hosts.codex?.available ? `Codex ${hosts.codex.version || ""}` : "Codex 不可用"}</span></div>
-    </header>
-    {error && <div className="form-error" role="alert">{error}</div>}
-    <div className="plugins-workspace"><section className="plugin-list-panel block"><div className="section-heading"><div className="section-heading-copy"><h2>已安装</h2><p>{busy === "load" ? "正在读取" : `${items.length} 个插件`}</p></div></div><div className="plugin-list">{items.map(item => <button key={keyOf(item)} className={`plugin-list-item${keyOf(item) === selectedKey ? " selected" : ""}`} aria-current={keyOf(item) === selectedKey ? "true" : undefined} onClick={() => setSelectedKey(keyOf(item))}><span className="plugin-avatar" data-ecosystem={item.ecosystem}>{item.ecosystem === "dsh" ? <Puzzle size={17}/> : <Plug size={17}/>}</span><span className="plugin-list-identity"><strong>{pluginTitle(item)}</strong><small>{pluginPublisher(item)} · {pluginKind(item)}</small><em>{pluginSummary(item)}</em></span><PluginState item={item}/></button>)}{!busy && !items.length && <div className="plugin-list-empty"><Plug size={19}/><span>还没有安装插件</span></div>}</div></section>
-      <aside className="plugin-detail-panel block" aria-label="插件详情">{selected ? <><header className="plugin-detail-header"><span className="plugin-avatar large" data-ecosystem={selected.ecosystem}>{selected.ecosystem === "dsh" ? <Puzzle size={20}/> : <Plug size={20}/>}</span><div><h2>{pluginTitle(selected)}</h2><p>{pluginPublisher(selected)} · {pluginKind(selected)}</p></div><PluginState item={selected}/></header><p className="plugin-detail-summary">{pluginSummary(selected)}</p>{selected.failed && selected.errorCode && <p className="form-error" role="status">{selected.errorCode}</p>}<PluginUsage item={selected}/><details className="plugin-technical-details"><summary>技术信息</summary><dl><div><dt>插件标识</dt><dd>{selected.pluginId}</dd></div><div><dt>版本</dt><dd>{selected.resolvedVersion || "由宿主解析"}</dd></div><div><dt>来源</dt><dd>{label(selected)}</dd></div></dl></details><div className="plugin-detail-actions">{selected.ecosystem === "dsh" && <button className="button secondary" disabled={Boolean(busy)} onClick={() => void toggle(selected)}>{selected.enabled ? "停用" : "启用"}</button>}<button className="button danger" disabled={Boolean(busy)} onClick={() => void uninstall(selected)}><Trash2 size={15}/>卸载</button></div></> : <div className="plugin-detail-empty"><Plug size={22}/><strong>选择一个插件</strong><span>从下方添加插件后，可在这里查看状态与可用能力。</span></div>}</aside>
-    </div>
-    <section className="plugin-marketplace block">
-      <div className="plugin-marketplace-heading"><div><h2>发现插件</h2><p>{marketplaceTab === "codex" ? <><span>兼容格式 · 生命周期由 Codex App Server 管理</span><small>安装后仍需按 Agent 显式授权。</small></> : <><span>默认插件格式 · 当前 DSH Profile</span><small>安装到当前工作区，可随后启用并绑定给 Agent。</small></>}</p></div>{marketplaceTab === "codex" && <label className="plugin-search"><Search size={16}/><span className="sr-only">搜索插件</span><input value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>}</div>
-      <div className="plugin-marketplace-tabs" role="tablist" aria-label="插件市场"><button type="button" role="tab" aria-selected={marketplaceTab === "codex"} onClick={() => setMarketplaceTab("codex")}>Codex 插件</button><button type="button" role="tab" aria-selected={marketplaceTab === "dsh"} onClick={() => setMarketplaceTab("dsh")}>DeepSeek Harness 插件</button></div>
-      {marketplaceTab === "codex" ? busy === "load" ? <div className="plugin-marketplace-loading"><LoaderCircle className="animate-spin" size={18}/><span>正在读取 Codex 插件目录…</span></div> : codexCatalog.length > 0 ? <>
-        <label className={`codex-risk-confirmation${codexAccepted ? " accepted" : ""}`}><AlertCircle size={18}/><input type="checkbox" checked={codexAccepted} onChange={event => setCodexAccepted(event.target.checked)}/><span><strong>安装前确认权限</strong><small>Codex 插件由 App Server 以当前用户权限管理，请确认插件来源可信。</small></span><em>{codexAccepted ? "已确认" : "勾选后可安装"}</em></label>
-        <div className="plugin-category-list" aria-label="可安装 Codex 插件">{catalogGroups.map(group => <section className="plugin-category" key={group.category}><h3>{group.category}</h3><div className="plugin-marketplace-list">{group.items.map(item => <div className="plugin-marketplace-row" key={keyOf(item)}><span className="plugin-avatar" data-ecosystem="codex"><Plug size={16}/></span><span><strong>{pluginTitle(item)}</strong><small>{pluginPublisher(item)} · {pluginKind(item)}</small><em>{pluginSummary(item)}</em></span><button className="button secondary small" disabled={!codexAccepted || Boolean(busy)} onClick={() => void installCodex(item)}>{busy === `codex:${keyOf(item)}` ? <LoaderCircle className="animate-spin" size={15}/> : "安装"}</button></div>)}</div></section>)}</div>
-        {!catalogGroups.length && <p className="plugin-discovery-empty">没有匹配的插件。</p>}
-      </> : <p className="plugin-discovery-empty">当前没有可安装的 Codex 插件。</p> : <div className="plugin-dsh-market"><div className="plugin-dsh-market-copy"><span className="plugin-avatar" data-ecosystem="dsh"><Puzzle size={18}/></span><div><strong>从来源安装</strong><p>支持 npm 包、Git 地址或本地路径，适合官方、私有插件与本地开发。</p></div></div><div className="plugin-source-form"><label className="sr-only" htmlFor="dshSource">DSH 插件来源</label><input id="dshSource" value={source} onChange={event => setSource(event.target.value)} placeholder="npm 包、Git 地址或本地路径"/><button className="button secondary" disabled={!accepted || !source.trim() || Boolean(busy)} onClick={() => void installDsh()}>{busy === "install" ? <LoaderCircle className="animate-spin" size={15}/> : <Box size={15}/>}安装到 Profile</button></div><label className="plugin-source-confirmation"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)}/><span>我已知悉：DSH 包及安装脚本以当前系统用户权限运行。</span></label></div>}
-    </section>
+  if (workspaceOpen) return <DshPluginWorkspace pluginId={settingsPluginId} onBack={() => {
+    setWorkspaceOpen(false);
+    const url = new URL(window.location.href); url.searchParams.delete('pluginSettings');
+    window.history.replaceState(null, '', url);
+    void load();
+  }}/>;
+
+  const permissionChoice = <label className="plugin-install-consent"><input type="checkbox" checked={codexAccepted} onChange={event => setCodexAccepted(event.target.checked)}/>我信任此插件来源，允许以当前用户权限安装</label>;
+  const select = (item: InstalledPlugin) => { setSelectedKey(keyOf(item)); setCodexAccepted(false); };
+  const detailDescription = (selected?.interface?.longDescription || selected?.description || '').trim();
+  const showDetailDescription = selected && detailDescription && detailDescription.replace(/\s+/g, ' ') !== pluginSummary(selected).replace(/\s+/g, ' ');
+  return <div className="page-container plugins-page plugin-store" data-layout="document">
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {selected ? <article className="plugin-product" aria-label="插件详情">
+      <button className="plugin-back" onClick={() => { setSelectedKey(''); setCodexAccepted(false); }}><ArrowLeft size={15}/>插件</button>
+      <PluginIcon item={selected} large/>
+      <header><div><h2>{pluginTitle(selected)}</h2><p>{pluginSummary(selected)}</p></div>
+        <div className="plugin-product-actions">
+          {selected.installed ? <><PluginState item={selected}/>{selected.ecosystem === 'dsh' && <button className="button secondary" disabled={Boolean(busy)} onClick={() => void toggle(selected)}>{selected.enabled ? '停用' : '启用'}</button>}<button className="icon-button tertiary" aria-label="卸载" disabled={Boolean(busy)} onClick={() => void uninstall(selected)}><Trash2 size={16}/></button></>
+            : <button className="button primary" disabled={(!isOfficialCodex(selected) && !codexAccepted) || Boolean(busy)} onClick={() => void installCodex(selected)}>{busy ? <LoaderCircle className="animate-spin" size={16}/> : <Plus size={16}/>}安装</button>}
+        </div>
+      </header>
+      {!selected.installed && !isOfficialCodex(selected) && permissionChoice}
+      {!!selected.interface?.defaultPrompt?.length && <div className="plugin-examples" aria-label="使用示例">{selected.interface.defaultPrompt.map(prompt => <p key={prompt}><span>{prompt}</span><ArrowUpRight size={16}/></p>)}</div>}
+      {showDetailDescription && <p className="plugin-long-description">{detailDescription}</p>}
+      {selected.ecosystem === 'dsh' && selected.enabled && !selected.providerRef && selected.settingsIntegration && <button className="button secondary" onClick={() => { setSettingsPluginId(selected.pluginId); setWorkspaceOpen(true); }}>打开插件设置<ArrowUpRight size={15}/></button>}
+      {selected.failed && <p className="form-error">{selected.errorCode || '插件当前不可用'}</p>}
+      <PluginUsage item={selected}/>
+      <section className="plugin-product-info"><h3>信息</h3><dl>
+        <div><dt>开发者</dt><dd>{pluginPublisher(selected)}</dd></div>
+        <div><dt>类别</dt><dd>{selected.interface?.category || pluginKind(selected)}</dd></div>
+        {!!selected.interface?.capabilities?.length && <div><dt>功能</dt><dd>{selected.interface.capabilities.join('、')}</dd></div>}
+        <div><dt>版本</dt><dd>{selected.resolvedVersion || '由宿主管理'}</dd></div>
+        <div><dt>生态</dt><dd>{label(selected)}</dd></div>
+        {([['websiteUrl', '网站'], ['privacyPolicyUrl', '隐私政策'], ['termsOfServiceUrl', '服务条款']] as const).map(([key, title]) => selected.interface?.[key] && <div key={key}><dt>{title}</dt><dd><a href={selected.interface[key]} target="_blank" rel="noreferrer"><ArrowUpRight size={15}/><span className="sr-only">{title}</span></a></dd></div>)}
+      </dl></section>
+    </article> : <>
+      <header className="plugins-intro"><p>为 Agent 添加工具、技能和应用。</p></header>
+      <TeamsAvailability compact />
+      <label className="plugin-store-search"><Search size={16}/><input aria-label="搜索插件" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="搜索插件"/></label>
+      <section className="plugin-installed-strip"><header><h3>已安装 <small>{items.length}</small></h3><button className="plugin-text-button" onClick={() => { setSettingsPluginId(undefined); setWorkspaceOpen(true); }}>插件设置</button></header>
+        <div className="plugin-installed-tabs" role="tablist" aria-label="筛选已安装插件">
+          {([
+            ['all', '全部'], ['ksadk', 'KsADK 官方'], ['dsh', 'DSH 插件'], ['codex', 'Codex 插件'],
+          ] as const).map(([value, title]) => <button key={value} role="tab" aria-selected={installedFilter === value} onClick={() => setInstalledFilter(value)}>{title}</button>)}
+        </div>
+        <div className="plugin-installed-items">{installedItems.map(item => <button key={keyOf(item)} aria-label={pluginTitle(item)} title={pluginTitle(item)} onClick={() => select(item)}><PluginIcon item={item}/><span>{pluginTitle(item)}</span></button>)}</div>
+        {!installedItems.length && <p className="plugin-installed-empty">当前分类没有匹配的已安装插件。</p>}
+      </section>
+      <div className="plugin-marketplace-tabs" role="tablist" aria-label="插件市场"><button role="tab" aria-selected={marketplaceTab === 'codex'} onClick={() => setMarketplaceTab('codex')}>Codex 插件</button><button role="tab" aria-selected={marketplaceTab === 'dsh'} onClick={() => setMarketplaceTab('dsh')}>DeepSeek Harness 插件</button></div>
+      {marketplaceTab === 'codex' ? <div className="plugin-category-list" aria-label="可安装 Codex 插件">
+        {busy === 'load' && <p role="status"><LoaderCircle className="animate-spin" size={16}/>正在读取插件…</p>}
+        {catalogGroups.map(group => <section className="plugin-category" key={group.category}><h3>{group.category}</h3><div className="plugin-discovery-grid">
+          {group.items.map(item => <button className="plugin-discovery-item" key={keyOf(item)} onClick={() => select(item)}><PluginIcon item={item}/><span><strong>{pluginTitle(item)}</strong><small>{pluginSummary(item)}</small></span><Plus size={16}/></button>)}
+        </div></section>)}
+        {!catalogGroups.length && busy !== 'load' && <p className="plugin-discovery-empty">{hosts.codex?.available ? '没有匹配的插件。' : 'Codex 插件服务当前不可用，请稍后刷新。'}</p>}
+      </div> : <section className="plugin-source-panel"><h3>从来源添加</h3><p>输入 npm 包名安装最新版本，也可用 @版本号指定版本。</p>
+        <div className="plugin-source-form"><label className="sr-only" htmlFor="dshSource">DSH 插件来源</label><input id="dshSource" value={source} onChange={event => setSource(event.target.value)} placeholder="@xmanrui/dsh-im"/><button className="button secondary" disabled={!accepted || !source.trim() || Boolean(busy)} onClick={() => void installDsh()}>{busy === 'install' ? <LoaderCircle className="animate-spin" size={15}/> : <Box size={15}/>}安装</button></div>
+        <label className="plugin-install-consent"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)}/>我已知悉：DSH 包及安装脚本以当前系统用户权限运行。</label>
+      </section>}
+    </>}
   </div>;
 }

@@ -21,5 +21,6 @@ def test_langgraph_projects_can_bind_agentengine_toolsets_before_graph_compile(m
         "list_skill_spaces",
         "search_skills",
         "load_skill",
+        "preview_skill",
         "execute_skills",
     ]

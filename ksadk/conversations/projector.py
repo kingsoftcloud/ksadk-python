@@ -139,6 +139,17 @@ def project_conversation_item(
         if isinstance(event, ItemCompleted):
             operation = "completed"
             lifecycle = "completed"
+    elif _is_codex_user_message(event):
+        # ``userMessage`` is a transcript item.  Its item completion must not
+        # be mistaken for completion of the containing Codex turn.
+        kind = "user_message"
+        schema = "conversation.item.user_message/v1"
+        payload = {"text": _codex_user_message_text(_item_snapshot(event))}
+        if isinstance(event, ItemSnapshotReplaced):
+            operation = "replace"
+        if isinstance(event, ItemCompleted):
+            operation = "completed"
+            lifecycle = "completed"
     elif (
         isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted))
         and event.item_kind == "artifact"
@@ -192,6 +203,7 @@ def project_conversation_item(
         )
         payload = {
             "interactionId": event.interaction_id,
+            "callId": getattr(event.request, "call_id", None),
             "kind": getattr(event.request, "kind", event.interaction_kind),
             "detail": getattr(event.request, "detail", None),
             "prompt": getattr(event.request, "prompt", None),
@@ -217,23 +229,29 @@ def project_conversation_item(
         kind = "progress"
         schema = "conversation.item.progress/v1"
         if isinstance(event, RunProgress):
-            payload = {"progress": event.progress, "message": event.message}
+            payload = {
+                "status": "running",
+                "progress": event.progress,
+                "message": event.message,
+            }
         elif isinstance(event, RunInterrupted):
-            payload = {"reason": event.reason or ""}
+            payload = {"status": "interrupted", "reason": event.reason or ""}
             operation = "completed"
             lifecycle = "completed"
         elif isinstance(event, RunCompleted):
+            payload = {"status": "completed"}
             operation = "completed"
             lifecycle = "completed"
         else:
-            payload = {"status": "started"}
+            payload = {"status": "running"}
     elif isinstance(event, (RunFailed, RunCanceled)):
         kind = "error"
         operation = "completed"
         lifecycle = "failed"
         schema = "conversation.item.error/v1"
         payload = {
-            "error": event.error.message if isinstance(event, RunFailed) else event.reason or ""
+            "status": "failed" if isinstance(event, RunFailed) else "canceled",
+            "error": event.error.message if isinstance(event, RunFailed) else event.reason or "",
         }
     elif isinstance(event, (ContinuationCreated, ContinuationResumed)):
         kind = "progress"
@@ -507,9 +525,7 @@ def _item_snapshot(
 def _artifact_payload(snapshot: ContentSnapshot | None) -> dict[str, Any]:
     if snapshot is None:
         return {}
-    artifact = next(
-        (part for part in snapshot.parts if isinstance(part, ArtifactContent)), None
-    )
+    artifact = next((part for part in snapshot.parts if isinstance(part, ArtifactContent)), None)
     if artifact is None:
         return {}
     return {
@@ -533,6 +549,22 @@ def _goal_payload(snapshot: ContentSnapshot | None) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else wrapped
 
 
+def _codex_user_message_text(snapshot: ContentSnapshot | None) -> str:
+    value = _data_payload(snapshot).get("data")
+    if not isinstance(value, Mapping):
+        return ""
+    content = value.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, (list, tuple)):
+        return ""
+    return "".join(
+        str(part["text"])
+        for part in content
+        if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+    )
+
+
 def _is_codex_plan_item(event: RuntimeEvent) -> bool:
     return (
         isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted))
@@ -550,8 +582,16 @@ def _is_codex_goal_item(event: RuntimeEvent) -> bool:
         isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted))
         and event.item_kind == "data"
         and event.source.framework == "codex"
-        and event.source.metadata.get("method")
-        in {"thread/goal/updated", "thread/goal/cleared"}
+        and event.source.metadata.get("method") in {"thread/goal/updated", "thread/goal/cleared"}
+    )
+
+
+def _is_codex_user_message(event: RuntimeEvent) -> bool:
+    return (
+        isinstance(event, (ItemStarted, ItemUpdated, ItemSnapshotReplaced, ItemCompleted))
+        and event.item_kind == "data"
+        and event.source.framework == "codex"
+        and event.source.metadata.get("native_item_kind") == "userMessage"
     )
 
 

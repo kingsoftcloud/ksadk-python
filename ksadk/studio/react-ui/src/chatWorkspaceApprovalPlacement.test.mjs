@@ -4,29 +4,24 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const source = readFileSync(resolve(import.meta.dirname, "components/ChatWorkspace.tsx"), "utf8");
-const composerSource = readFileSync(resolve(import.meta.dirname, "components/ChatComposer.tsx"), "utf8");
 
-test("pending approval is rendered above the composer while history is read-only", () => {
-  assert.match(source, /function ComposerInteractionTray/);
-  assert.match(source, /surface\.interaction\?\.status === "pending"/);
-  assert.match(source, /surface\.interaction\?\.status !== "pending"/);
-  assert.ok(
-    source.indexOf("<ComposerInteractionTray") < source.indexOf("<ChatComposer"),
-    "pending interaction tray must precede the composer",
-  );
+test("the shared timeline receives approval and HITL handlers", () => {
+  assert.match(source, /onRespondToApproval=\{chat\.respondToApproval\}/);
+  assert.match(source, /onSubmitAguiAction=\{chat\.submitAguiAction\}/);
+  assert.match(source, /interactionRecords=\{chat\.interactionRecords\}/);
 });
 
-test("the shared composer owns the approval control without native selects", () => {
-  assert.match(composerSource, /ApprovalModeMenu/);
-  assert.doesNotMatch(composerSource, /<select/);
+test("the shared composer owns pending interactions and turn policy", () => {
+  assert.match(source, /<AgentConversationComposer/);
+  assert.match(source, /pendingInteractions=\{chat\.pendingInteractions\}/);
+  assert.match(source, /onRespondInteraction=/);
+  assert.match(source, /approvalPolicy=\{chat\.uiCapabilities\.ApprovalPolicy\}/);
+  assert.match(source, /thinkingEnabled=\{Boolean\(chat\.uiCapabilities\.Thinking\)\}/);
 });
 
-test("the local conversation exposes mobile history, semantic headings, and output guidance", () => {
+test("the Studio shell retains responsive session navigation", () => {
   assert.match(source, /chat-session-mobile-trigger/);
   assert.match(source, /chat-session-mobile-close/);
   assert.match(source, /aria-expanded=\{sessionPanelOpen\}/);
-  assert.match(source, /<h1>\{agentName\}<\/h1>/);
-  assert.match(source, /aria-busy=\{isGenerating\}/);
-  assert.match(source, /AI 生成内容可能不准确，请核对关键结论与工具操作/);
-  assert.match(source, /chat-code-header/);
+  assert.match(source, /<h1>\{conversationTitle\}<\/h1>/);
 });

@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ksadk.harness.spec import SubAgentBinding
+
 
 def _to_camel(value: str) -> str:
     head, *tail = value.split("_")
@@ -107,9 +109,40 @@ class MCPServerRef(CapabilityRef):
     args: list[str] = Field(default_factory=list)
     endpoint_url: str | None = None
     env_refs: dict[str, str] = Field(default_factory=dict)
+    # ``dsh-profile`` is resolved at PluginHost activation time.  Only the
+    # immutable profile/inventory identity is allowed into an Agent Build;
+    # the loopback endpoint and bearer token remain process-scoped lease data.
+    materialization: Literal["dsh-profile"] | None = None
+    profile: str | None = None
+    profile_digest: str | None = None
+    descriptor_digest: str | None = None
+    inventory_digest: str | None = None
 
     @model_validator(mode="after")
     def validate_transport(self) -> "MCPServerRef":
+        dynamic_fields = (
+            self.profile,
+            self.profile_digest,
+            self.descriptor_digest,
+            self.inventory_digest,
+        )
+        if self.materialization == "dsh-profile":
+            if self.transport != "http":
+                raise ValueError("DSH Profile MCP 必须使用运行时 HTTP 租约")
+            if self.endpoint_url or self.command or self.args or self.env_refs:
+                raise ValueError("DSH Profile MCP 不能持久化 endpoint、命令或环境变量")
+            if not all(dynamic_fields):
+                raise ValueError("DSH Profile MCP 必须锁定 Profile 与能力摘要")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.profile or ""):
+                raise ValueError("DSH Profile 名称无效")
+            if any(
+                not re.fullmatch(r"sha256:[0-9a-f]{64}", value or "")
+                for value in dynamic_fields[1:]
+            ):
+                raise ValueError("DSH Profile MCP 摘要无效")
+            return self
+        if any(value is not None for value in dynamic_fields):
+            raise ValueError("静态 MCP 不能声明 DSH Profile 运行时字段")
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP 必须配置 command")
         if self.transport in {"http", "sse"} and not self.endpoint_url:
@@ -198,6 +231,53 @@ class CapabilityBinding(ContractModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class NativePluginBinding(ContractModel):
+    """Immutable component selection from a host-managed native plugin."""
+
+    ecosystem: Literal["codex", "dsh"]
+    plugin_ref: str = Field(min_length=12, max_length=256)
+    snapshot_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    components: list[str] = Field(min_length=1, max_length=128)
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("plugin_ref")
+    @classmethod
+    def validate_plugin_ref(cls, value: str) -> str:
+        if not re.fullmatch(
+            r"plugin://[a-z0-9]+(?:[._-][a-z0-9]+)*@"
+            r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            value,
+        ):
+            raise ValueError("插件绑定必须使用 plugin://<id>@<exact-version>")
+        return value
+
+    @field_validator("components")
+    @classmethod
+    def validate_components(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("插件组件不能重复")
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", component)
+            for component in value
+        ):
+            raise ValueError("插件组件 ID 无效")
+        return value
+
+    @field_validator("config")
+    @classmethod
+    def validate_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _reject_clear_runtime_secrets(value, path="pluginBinding.config")
+        return value
+
+    @model_validator(mode="after")
+    def validate_platform_resource_config(self) -> "NativePluginBinding":
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+        resource_plugin_config(self.plugin_ref, self.ecosystem, self.config, enabled=self.enabled)
+        return self
+
+
 class AgentBindings(ContractModel):
     model_profile_id: str | None = None
     model_profile_ids: list[str] = Field(default_factory=list)
@@ -206,6 +286,7 @@ class AgentBindings(ContractModel):
     tools: list[CapabilityBinding] = Field(default_factory=list)
     mcp_servers: list[CapabilityBinding] = Field(default_factory=list)
     skills: list[CapabilityBinding] = Field(default_factory=list)
+    plugins: list[NativePluginBinding] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_model_profiles(self) -> "AgentBindings":
@@ -219,6 +300,12 @@ class AgentBindings(ContractModel):
             and self.model_profile_id not in self.model_profile_ids
         ):
             raise ValueError("默认 modelProfileId 必须包含在 modelProfileIds 中")
+        plugin_refs = [binding.plugin_ref for binding in self.plugins if binding.enabled]
+        if len(plugin_refs) != len(set(plugin_refs)):
+            raise ValueError("启用的插件绑定不能重复 pluginRef")
+        from ksadk.resource_runtime.plugin_config import validate_resource_plugin_bindings
+
+        validate_resource_plugin_bindings(self.plugins)
         return self
 
 
@@ -418,9 +505,7 @@ class RuntimeRef(ContractModel):
         return self
 
 
-_RUNTIME_SECRET_KEY = re.compile(
-    r"(?:secret|password|token|api[_-]?key)", re.IGNORECASE
-)
+_RUNTIME_SECRET_KEY = re.compile(r"(?:secret|password|token|api[_-]?key)", re.IGNORECASE)
 _RUNTIME_SECRET_REF_PREFIXES = (
     "secret://",
     "env://",
@@ -436,9 +521,7 @@ def _reject_clear_runtime_secrets(value: Any, *, path: str = "providerConfig") -
         for key, child in value.items():
             child_path = f"{path}.{key}"
             if _RUNTIME_SECRET_KEY.search(str(key)) and child is not None:
-                if not isinstance(child, str) or not child.startswith(
-                    _RUNTIME_SECRET_REF_PREFIXES
-                ):
+                if not isinstance(child, str) or not child.startswith(_RUNTIME_SECRET_REF_PREFIXES):
                     raise ValueError(f"{child_path} 必须保存 Secret 引用，不能保存明文")
             _reject_clear_runtime_secrets(child, path=child_path)
     elif isinstance(value, list):
@@ -459,6 +542,48 @@ class AgentSpec(ContractModel):
     memory: MemorySpec = Field(default_factory=MemorySpec)
     security: SecuritySpec = Field(default_factory=SecuritySpec)
     evaluation: EvaluationSpec = Field(default_factory=EvaluationSpec)
+    sub_agents: tuple[SubAgentBinding, ...] = Field(default=(), max_length=32)
+
+    @model_validator(mode="after")
+    def validate_sub_agents(self) -> "AgentSpec":
+        if not self.sub_agents:
+            return self
+        if self.runtime is not None and self.runtime.type != "harness":
+            raise ValueError("subAgents 当前需要 Harness Runtime")
+        names = {sub.name for sub in self.sub_agents}
+        if len(names) != len(self.sub_agents):
+            raise ValueError("subAgents 名称不能重复")
+        dependencies = {sub.name: set(sub.depends_on) for sub in self.sub_agents}
+        if any(deps - names for deps in dependencies.values()):
+            raise ValueError("subAgents dependsOn 引用了未声明的子 Agent")
+        resolved: set[str] = set()
+        while len(resolved) < len(names):
+            ready = {name for name, deps in dependencies.items() if deps <= resolved} - resolved
+            if not ready:
+                raise ValueError("subAgents dependsOn 存在依赖环")
+            resolved.update(ready)
+        return self
+
+    @model_validator(mode="after")
+    def validate_memory_resource_reference(self) -> "AgentSpec":
+        if not self.memory.enabled or not self.memory.provider_ref.startswith("binding://"):
+            return self
+        from ksadk.resource_runtime.plugin_config import resource_plugin_config
+
+        binding_id = self.memory.provider_ref.removeprefix("binding://")
+        for binding in self.bindings.plugins:
+            if not binding.enabled:
+                continue
+            resource = resource_plugin_config(
+                binding.plugin_ref, binding.ecosystem, binding.config, enabled=True
+            )
+            if resource is not None and resource.binding.id == binding_id:
+                if resource.binding.resource.kind != "memory-instance":
+                    raise ValueError("Memory providerRef must reference a memory-instance binding")
+                if self.memory.scopes != ["user"]:
+                    raise ValueError("Platform memory requires explicit scopes: [user]")
+                return self
+        raise ValueError("Memory providerRef references a missing or disabled resource binding")
 
 
 _AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
@@ -591,6 +716,7 @@ class ResolvedAgentSpec(ContractModel):
     memory: MemorySpec
     security: SecuritySpec
     evaluation: EvaluationSpec
+    sub_agents: tuple[SubAgentBinding, ...] = Field(default=(), max_length=32)
     source_digest: str
     resolved_digest: str = ""
 
@@ -638,6 +764,14 @@ class BundleManifest(ContractModel):
     composition_mode: Literal["legacy", "composed"] | None = None
     composition_profile_digest: str | None = None
     hosted_kernel_requirement_digest: str = ""
+    resource_build_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    resource_snapshot_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
     bundle_digest: str = ""
@@ -648,6 +782,10 @@ class BundleManifest(ContractModel):
             raise ValueError("composed Bundle v2 requires compositionProfileDigest")
         if self.composition_mode == "legacy" and self.composition_profile_digest:
             raise ValueError("legacy Bundle v2 cannot declare compositionProfileDigest")
+        if bool(self.resource_build_digest) != bool(self.resource_snapshot_digest):
+            raise ValueError(
+                "resourceBuildDigest and resourceSnapshotDigest must be declared together"
+            )
         return self
 
     @property
@@ -680,6 +818,14 @@ class BuildRecord(ContractModel):
     source_digest: str = ""
     runtime_lock: dict[str, Any] = Field(default_factory=dict)
     bundle_digest: str = ""
+    resource_build_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    resource_snapshot_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     artifact_path: str | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -854,6 +1000,10 @@ class DeploymentRequest(ContractModel):
 
 
 class DeploymentRecord(ContractModel):
+    # Identity observed when the cloud Agent was created, never inferred from
+    # whichever credentials happen to be configured when history is read.
+    created_by_name: str | None = None
+    created_by_user_id: str | None = None
     id: str
     build_id: str
     bundle_digest: str

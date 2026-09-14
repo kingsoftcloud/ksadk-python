@@ -13,7 +13,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
 from ksadk.kernel.contracts import (
@@ -23,6 +23,14 @@ from ksadk.kernel.contracts import (
     SessionEventEnvelope,
 )
 from ksadk.kernel.state import InboxState, RunState
+
+if TYPE_CHECKING:
+    from ksadk.kernel.execution_grants import (
+        ExecutionGrantBarrier,
+        ExecutionGrantRecord,
+        ExecutionGrantSpec,
+        GrantState,
+    )
 
 
 def now_utc() -> datetime:
@@ -54,6 +62,9 @@ def command_digest(command: AgentControlCommand) -> str:
     canonical["source"] = source
 
     payload = dict(canonical.get("payload") or {})
+    # Admission derives this immutable snapshot from the current session. A
+    # retry after a tag update must still resolve to the first accepted command.
+    payload.pop("session_context", None)
     if command.command_type == "submit_interaction":
         payload.pop("token_ref", None)
     canonical["payload"] = payload
@@ -188,9 +199,42 @@ class AgentKernelStore(Protocol):
         self, command: AgentControlCommand, *, queue_limit: int
     ) -> AgentControlReceipt: ...
 
+    async def ensure_execution_grant(
+        self, spec: ExecutionGrantSpec
+    ) -> ExecutionGrantRecord: ...
+
+    async def get_execution_grant(
+        self, spec: ExecutionGrantSpec
+    ) -> ExecutionGrantBarrier | None: ...
+
+    async def set_execution_grant_state(
+        self, spec: ExecutionGrantSpec, state: GrantState, *,
+        expected_revision: int, idempotency_key: str,
+    ) -> ExecutionGrantBarrier: ...
+
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int
     ) -> InboxMessage | None: ...
+
+    async def list_messages(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> list[InboxMessage]: ...
+
+    async def list_pending(
+        self,
+        agent_instance_id: str,
+        session_id: str | None = None,
+        *,
+        fencing_token: int | None = None,
+    ) -> list[InboxMessage]: ...
+
+    async def claim_message(
+        self, message_id: str, fencing_token: int
+    ) -> InboxMessage: ...
+
+    async def discard_claim(
+        self, message_id: str, *, expected_fence: int
+    ) -> None: ...
 
     async def complete_claim(self, message_id: str, *, expected_fence: int) -> None: ...
 
@@ -217,6 +261,32 @@ class AgentKernelStore(Protocol):
     ) -> RunRecord: ...
 
     async def load_message(self, message_id: str) -> InboxMessage | None: ...
+
+    async def load_by_idempotency(
+        self, session_id: str, idempotency_key: str
+    ) -> InboxMessage | None: ...
+
+    async def reject_command(
+        self,
+        command: AgentControlCommand,
+        *,
+        status: str,
+        code: str,
+        message: str,
+        retryable: bool = False,
+    ) -> AgentControlReceipt: ...
+
+    async def inbox_depth(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> int: ...
+
+    async def find_active_run(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> RunRecord | None: ...
+
+    async def current_lease(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> ActivationLease | None: ...
 
 
 __all__ = [

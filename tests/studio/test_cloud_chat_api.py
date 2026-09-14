@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -264,6 +265,58 @@ class _Uploader:
         pass
 
 
+def test_cloud_interaction_uses_the_same_stream_transport_as_run_agent() -> None:
+    control_client = _CloudClient()
+    stream_client = _CloudClient()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=control_client,
+        stream_client=stream_client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep-interaction",
+        build_id="build-interaction",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="version-interaction",
+        status="READY",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+        agent_id="ar-interaction",
+    )
+
+    result = asyncio.run(
+        gateway.submit_deployment_chat_interaction(
+            deployment,
+            session_id="sess-interaction",
+            run_id="run-interaction",
+            interaction_id="int-interaction",
+            expected_revision=1,
+            action="approve",
+            response={"decision": "approve"},
+            idempotency_key="interaction:int-interaction:revision-1",
+        )
+    )
+
+    assert result == {"receipt_status": "accepted"}
+    assert control_client.calls == []
+    assert stream_client.calls == [
+        (
+            "SubmitInteraction",
+            {
+                "agent_id": "ar-interaction",
+                "session_id": "sess-interaction",
+                "run_id": "run-interaction",
+                "interaction_id": "int-interaction",
+                "expected_revision": 1,
+                "action": "approve",
+                "response": {"decision": "approve"},
+                "idempotency_key": "interaction:int-interaction:revision-1",
+            },
+        )
+    ]
+
+
 def _client_with_receipt(
     tmp_path: Path,
     cloud_client: _CloudClient | None = None,
@@ -317,7 +370,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
         )
         events = client.get(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/events",
-            params={"afterSeqId": 4},
+            params={"afterSeqId": 4, "offset": 200},
         )
         sent = client.post(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
@@ -370,12 +423,13 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
         ("CreateSession", {"AgentId": "ar-receipt-bound"}),
         (
             "ListSessionMessages",
-            {
-                "agent_id": "ar-receipt-bound",
-                "session_id": "sess-existing",
-                "after_seq_id": 4,
-                "limit": 100,
-            },
+                {
+                    "agent_id": "ar-receipt-bound",
+                    "session_id": "sess-existing",
+                    "after_seq_id": 4,
+                    "before_seq_id": None,
+                    "limit": 100,
+                },
         ),
         (
             "ListSessionEvents",
@@ -383,6 +437,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
                 "agent_id": "ar-receipt-bound",
                 "session_id": "sess-existing",
                 "after_seq_id": 4,
+                "offset": 200,
                 "limit": 200,
             },
         ),
@@ -589,7 +644,7 @@ def test_delete_deployment_uses_receipt_bound_agent_and_removes_local_receipt(
         "agentId": "ar-receipt-bound",
         "deletedReceiptIds": ["dep-cloud-chat"],
     }
-    assert remaining.json() == {"items": []}
+    assert remaining.json() == {"items": [], "currentIdentity": None}
     assert cloud.calls == [("DeleteAgent", {"AgentId": "ar-receipt-bound"})]
 
 
@@ -630,6 +685,11 @@ def test_account_cloud_agent_without_receipt_supports_directory_chat_dashboard_a
         "instanceId": None,
         "versionId": "version-existing-code",
         "updatedAt": "2026-08-24T10:00:00Z",
+        "kernelReady": None,
+        "deploymentPhase": None,
+        "statusMessage": None,
+        "kernelReason": None,
+        "kernelObservedAt": None,
     }
     assert sessions.status_code == 200
     assert sessions.json()["sessions"][0]["session_id"] == "sess-existing"

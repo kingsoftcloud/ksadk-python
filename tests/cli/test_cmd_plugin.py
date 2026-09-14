@@ -29,6 +29,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginInventory,
     DshProfileProjection,
 )
+from ksadk.plugins.dsh_toolchain import DshPluginSourceError
 
 ensure_global_cli_options(plugin)
 
@@ -73,6 +74,37 @@ def test_plugin_help_exposes_only_dsh_default_and_codex_compatibility() -> None:
     assert "codex" in lowered
 
 
+def test_validate_reports_actionable_dsh_source_error(monkeypatch) -> None:
+    def reject_unpinned_source(self, source: str):
+        del self, source
+        raise DshPluginSourceError(
+            "DSH registry source must be <package>@<exact-semver>; "
+            "Git URLs, tags, and ranges are not allowed"
+        )
+
+    monkeypatch.setattr(
+        "ksadk.plugins.dsh_toolchain.DshPluginDeveloper.validate",
+        reject_unpinned_source,
+    )
+
+    result = CliRunner().invoke(
+        plugin,
+        ["--output", "json", "validate", "@xmanrui/dsh-im"],
+    )
+
+    assert result.exit_code == EXIT_CODE_VALIDATION
+    assert json.loads(result.output)["error"] == {
+        "code": "dsh_plugin_source_invalid",
+        "message": "DSH 插件源码不是有效的标准 Bundle",
+        "details": {
+            "reason": (
+                "DSH registry source must be <package>@<exact-semver>; "
+                "Git URLs, tags, and ranges are not allowed"
+            )
+        },
+    }
+
+
 def test_missing_dsh_host_is_a_typed_failure(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         plugin,
@@ -84,11 +116,9 @@ def test_missing_dsh_host_is_a_typed_failure(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == EXIT_CODE_VALIDATION
-    assert json.loads(result.output)["error"] == {
-        "code": "dsh_plugin_host_unavailable",
-        "message": "DSH 插件宿主当前不可用",
-        "details": {},
-    }
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "dsh_toolchain_unavailable"
+    assert "agentengine plugin toolchain install" in error["details"]["hint"]
 
 
 def _codex_cli_inventory(*, installed: bool = False) -> CodexPluginInventory:
@@ -304,7 +334,7 @@ class _FakeDshCLIHost:
             bundles=("@deepseek-ai/dsh-base",),
             config_digest="sha256:" + "a" * 64,
             config_bytes=128,
-            host_version="0.1.1-rc.2",
+            host_version="0.1.2-rc.1",
         )
 
 
@@ -322,7 +352,7 @@ def test_top_level_dsh_lifecycle_and_explicit_alias_are_identical(
         _FakeDshCLIHost,
     )
     dsh = tmp_path / "dsh"
-    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.1-rc.2'\n", encoding="utf-8")
+    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.2-rc.1'\n", encoding="utf-8")
     dsh.chmod(0o755)
     environment = {
         DSH_HOME_ENV: str(tmp_path / "dsh-home"),
@@ -407,3 +437,87 @@ def test_top_level_dsh_lifecycle_and_explicit_alias_are_identical(
     assert json.loads(removed.output)["installed"] is False
     assert set(_FakeDshCLIHost.homes) == {tmp_path / "dsh-home"}
     assert set(_FakeDshCLIHost.profiles) == {"studio"}
+
+
+def test_toolchain_version_mismatch_error_carries_actionable_guidance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """pnpm/DSH 版本不匹配的报错必须包含期望与实际版本及可执行修复路径。"""
+
+    from ksadk.plugins import dsh_toolchain
+
+    class _MismatchManager:
+        def install(self):
+            raise dsh_toolchain.DshToolchainVersionMismatchError(
+                "expected pnpm 11.7.0, got 11.22.0"
+            )
+
+    monkeypatch.setattr(dsh_toolchain, "DshToolchainManager", _MismatchManager)
+    result = CliRunner().invoke(plugin, ["--output", "json", "toolchain", "install"])
+
+    assert result.exit_code == EXIT_CODE_VALIDATION
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "dsh_toolchain_version_mismatch"
+    details = error["details"]
+    assert details["expected"] == "11.7.0"
+    assert details["actual"] == "11.22.0"
+    assert "AGENTENGINE_PNPM_BIN" in details["hint"]
+    assert "corepack" in details["hint"]
+
+
+def test_toolchain_unavailable_error_suggests_install_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """工具链未安装的报错必须提示 agentengine plugin toolchain install。"""
+
+    from ksadk.plugins import dsh_toolchain
+
+    class _UnavailableManager:
+        def install(self):
+            raise dsh_toolchain.DshToolchainUnavailableError(
+                "managed DSH toolchain is not installed"
+            )
+
+    monkeypatch.setattr(dsh_toolchain, "DshToolchainManager", _UnavailableManager)
+    result = CliRunner().invoke(plugin, ["--output", "json", "toolchain", "install"])
+
+    assert result.exit_code == EXIT_CODE_VALIDATION
+    error = json.loads(result.output)["error"]
+    assert "agentengine plugin toolchain install" in error["details"]["hint"]
+
+
+def test_bridge_operation_with_missing_toolchain_suggests_install_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """依赖工具链的插件操作在工具链缺失时必须给出安装指引，而非宿主不可用。"""
+
+    from ksadk.plugins import dsh_toolchain
+
+    class _MissingToolchainBridge:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            raise dsh_toolchain.DshToolchainUnavailableError(
+                "managed DSH toolchain is not installed"
+            )
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        "ksadk.plugins.bridges.dsh.DshProfilePluginBridge", _MissingToolchainBridge
+    )
+    result = CliRunner().invoke(
+        plugin,
+        ["--output", "json", "list"],
+        env={
+            DSH_BIN_ENV: str(tmp_path / "missing-dsh"),
+            DSH_HOME_ENV: str(tmp_path / "dsh-home"),
+        },
+    )
+
+    assert result.exit_code == EXIT_CODE_VALIDATION
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "dsh_toolchain_unavailable"
+    assert "agentengine plugin toolchain install" in error["details"]["hint"]

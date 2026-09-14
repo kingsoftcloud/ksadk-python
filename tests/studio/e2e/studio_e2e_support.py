@@ -48,7 +48,10 @@ def studio_server(
     thread.start()
     base_url = f"http://127.0.0.1:{port}"
     try:
-        for _ in range(100):
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if not thread.is_alive():
+                raise AssertionError("Studio server thread exited before becoming healthy")
             try:
                 with urlopen(f"{base_url}/api/v1/system/health", timeout=0.2) as response:
                     if response.status == 200:
@@ -56,8 +59,33 @@ def studio_server(
             except OSError:
                 time.sleep(0.05)
         else:
-            raise AssertionError("Studio server did not start")
+            raise AssertionError(
+                "Studio server did not become healthy within 30 seconds "
+                f"(started={server.started}, thread_alive={thread.is_alive()})"
+            )
         yield base_url
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def open_navigation(page):
+    navigation = page.get_by_role("navigation", name="产品导航")
+    if not navigation.is_visible():
+        page.get_by_role("button", name="展开导航", exact=True).click()
+    return navigation
+
+
+def navigate(page, label: str) -> None:
+    navigation = open_navigation(page)
+    if label in {"模型与工具", "运行资源", "插件"}:
+        group = "资源库"
+    elif label in {"构建", "部署", "自动化", "编排", "可观测", "评测"}:
+        group = "运行中心"
+    else:
+        group = ""
+    if group:
+        button = navigation.get_by_role("button", name=group, exact=True)
+        if button.get_attribute("aria-expanded") != "true":
+            button.click()
+    navigation.get_by_role("button", name=label, exact=True).click()

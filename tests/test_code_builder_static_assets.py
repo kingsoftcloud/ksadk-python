@@ -159,6 +159,10 @@ def test_code_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path):
     (tmp_path / ".env.local").write_text("LOCAL_SECRET=secret\n", encoding="utf-8")
     (tmp_path / ".env.example").write_text("OPENAI_API_KEY=\n", encoding="utf-8")
 
+    private_dir = tmp_path / ".agentkit"
+    private_dir.mkdir(exist_ok=True)
+    (private_dir / "config.yaml").write_text("secrets: {MODEL_KEY: fixture-private}\n")
+
     builder = CodeBuilder(tmp_path)
     builder.build_dir.mkdir(parents=True, exist_ok=True)
     builder.deps_dir.mkdir(parents=True, exist_ok=True)
@@ -177,6 +181,7 @@ def test_code_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path):
     with zipfile.ZipFile(zip_path) as zf:
         names = set(zf.namelist())
 
+    assert ".agentkit/config.yaml" not in names
     assert ".env" not in names
     assert ".env.local" not in names
     assert ".env.example" in names

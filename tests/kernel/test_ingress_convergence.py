@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -98,6 +99,22 @@ class Harness:
         monkeypatch.setenv("KSADK_AGENT_KERNEL", "1")
         # 注册进程级 kernel（monkeypatch 会在 teardown 还原为 None）。
         monkeypatch.setattr(ingress, "_kernel", self.kernel, raising=True)
+        # Studio additionally verifies that the process Kernel is bound to the
+        # exact Agent/runtime before submitting.  Supply that production shape
+        # while keeping the test's RecordingKernel as the control plane.
+        from ksadk.studio.run_service import StudioRunService
+
+        kernel_runtime = SimpleNamespace(
+            config=SimpleNamespace(
+                tenant_id=TENANT,
+                agent_instance_id=AGENT_INSTANCE,
+            )
+        )
+        monkeypatch.setattr(
+            StudioRunService,
+            "_kernel_runtime_for_spec",
+            staticmethod(lambda _spec: kernel_runtime),
+        )
 
     @property
     def submit_count(self) -> int:
@@ -166,7 +183,10 @@ class Harness:
             deps.resolve_session_service = self._orig_resolve_session_service
 
     async def _invoke_agui(self, session_id: str, idempotency_key: str) -> Any:
-        from ag_ui.core import RunAgentInput
+        agui_core = pytest.importorskip(
+            "ag_ui.core", reason="AG-UI optional dependency is not installed"
+        )
+        RunAgentInput = agui_core.RunAgentInput
 
         from ksadk.agui.agent import KsadkAGUIAgent
 
@@ -298,6 +318,23 @@ async def test_kernel_disabled_by_default(monkeypatch):
     monkeypatch.delenv("KSADK_AGENT_KERNEL", raising=False)
     assert not ingress.kernel_ingress_enabled()
     assert not ingress.kernel_route_active()
+
+
+def test_hosted_runtime_keeps_public_compatibility_routes_off_local_permits(
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    monkeypatch.setenv(
+        "AGENT_CONTROL_JWKS_URL",
+        "https://server.internal/agent-control/jwks",
+    )
+    ingress.set_agent_kernel(object())
+    try:
+        assert ingress.kernel_ingress_enabled()
+        assert not ingress.kernel_route_active()
+    finally:
+        ingress.clear_agent_kernel()
 
 
 def test_map_run_request_carries_runtime_options_model():

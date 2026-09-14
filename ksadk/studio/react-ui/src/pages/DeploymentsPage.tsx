@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, CloudUpload, ExternalLink, MessagesSquare, Package, RefreshCw } from "lucide-react";
 import { apiFetch } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -35,7 +35,8 @@ interface Deployment {
     | "native-runtime-without-session-event-chat-capability"
     | "studio-compatible-framework";
   updatedAt?: string;
-  creatorName?: string;
+  creatorName?: string | null;
+  createdByName?: string;
 }
 
 interface StudioCloudAgentSummary extends AccountCloudAgentSummary {
@@ -148,7 +149,7 @@ function mergeCloudProjection(
     chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
     versionId: account.versionId || deployment.versionId,
     updatedAt: account.updatedAt || deployment.updatedAt,
-    creatorName: account.creatorName || deployment.creatorName,
+    creatorName: account.creatorName !== undefined ? account.creatorName : deployment.creatorName,
   };
 }
 
@@ -395,12 +396,14 @@ function formatUpdatedAt(value?: string): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
-export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
+export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild, refreshTick = 0 }: {
+  refreshTick?: number;
   onCreate: () => void;
   onOpenChat: (deployment: CloudDeploymentSummary) => void;
   onSelectBuild: () => void;
 }) {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [credentialUserName, setCredentialUserName] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
@@ -419,6 +422,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState("");
   const operationControllers = useRef(new Set<AbortController>());
+  const previousRefreshTick = useRef(refreshTick);
+  const previousCreateRoute = useRef<string | null>(null);
 
   useEffect(() => () => {
     for (const controller of operationControllers.current) controller.abort();
@@ -445,6 +450,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       ]);
       if (!receiptResponse.ok) throw new Error(`读取部署记录失败（${receiptResponse.status}）`);
       const receiptPayload = await receiptResponse.json();
+      if (!signal?.aborted) setCredentialUserName(String(receiptPayload.currentIdentity?.userName || ""));
       const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
       const receipts: Deployment[] = Array.isArray(receiptPayload.items) ? receiptPayload.items : [];
       const receiptAgentIds = [...new Set(receipts.flatMap(item => (
@@ -469,7 +475,15 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         item.agentId ? [[item.agentId, item] as const] : []
       )));
       for (const detail of accountDetails) {
-        if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
+        if (detail?.agentId) {
+          const listed = accountByAgentId.get(detail.agentId);
+          accountByAgentId.set(detail.agentId, {
+            ...listed, ...detail,
+            // Older GetAgent responses substitute the owning account ID for
+            // a missing creator. ListAgents preserves the recorded value.
+            creatorName: listed?.creatorName !== undefined ? listed.creatorName : detail.creatorName,
+          });
+        }
       }
       const accountItems = [...accountByAgentId.values()];
       const receiptById = new Map(receipts.map(item => [item.id, item]));
@@ -516,14 +530,24 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [load, refreshTick]);
+
+  // Refresh server facts in place; opening a detail again would reset the
+  // user's pending rollback selection. Creation forms keep their current draft.
+  useEffect(() => {
+    if (previousRefreshTick.current === refreshTick) return;
+    previousRefreshTick.current = refreshTick;
+    if (!detail || updating || rollbackBusy) return;
+    const controller = new AbortController();
+    void openDetail(detail.deployment, false, controller.signal, true);
+    return () => controller.abort();
+  }, [refreshTick, detail?.deployment.id, updating, rollbackBusy]);
 
   useEffect(() => {
     const syncDetailRoute = () => {
       const create = deploymentCreateSelection();
-      setCreateSelection(create);
+      setCreateSelection(current => current?.agentId === create?.agentId && current?.buildId === create?.buildId ? current : create);
       if (create) {
-        setSelectedBuildId(create.buildId);
         setDetail(null);
         return;
       }
@@ -545,7 +569,11 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   }, [deployments, detail?.deployment.id]);
 
   useEffect(() => {
-    if (!createSelection) return;
+    if (!createSelection) { previousCreateRoute.current = null; return; }
+    const routeKey = `${createSelection.agentId}:${createSelection.buildId}`;
+    const preserveBuildSelection = previousCreateRoute.current === routeKey;
+    previousCreateRoute.current = routeKey;
+    if (!preserveBuildSelection) setSelectedBuildId(createSelection.buildId);
     let cancelled = false;
     setCreateLoading(true);
     setCreateError("");
@@ -560,7 +588,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         const agentPayload = await agentsResponse.json();
         const settings = settingsResponse.ok ? await settingsResponse.json() : {};
         const agents = Array.isArray(agentPayload.items) ? agentPayload.items : [];
-        const details = await Promise.all(agents.map(async (summary: any) => {
+        const routeAgents = createSelection.agentId
+          ? agents.filter((summary: any) => (
+              String(summary?.metadata?.id || "").trim() === createSelection.agentId
+            ))
+          : agents;
+        const details = await Promise.all(routeAgents.map(async (summary: any) => {
           const agentId = String(summary?.metadata?.id || "").trim();
           if (!agentId) return null;
           const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`);
@@ -593,6 +626,9 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           if (buildResponse.ok) {
             const build = await buildResponse.json();
             const agentId = String(build.agentId || createSelection.agentId || "").trim();
+            if (createSelection.agentId && agentId !== createSelection.agentId) {
+              throw new Error(`Build ${createSelection.buildId} 不属于当前 Agent`);
+            }
             const agentResponse = agentId
               ? await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`)
               : null;
@@ -612,6 +648,9 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             }
           }
         }
+        if (createSelection.agentId) {
+          candidates = candidates.filter(build => build.agentId === createSelection.agentId);
+        }
         if (cancelled) return;
         setCloudRegion(String(settings.cloudRegion || "").trim());
         setDeployableBuilds(candidates);
@@ -624,11 +663,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           // If the URL-pinned build is stale (isCurrent===false), prefer the most
           // recent current build so the user doesn't silently deploy a stale
           // revision and hit 409 BUILD_NOT_CURRENT.
-          if (requested.isCurrent === false && firstCurrent) {
-            setSelectedBuildId(firstCurrent.id);
-          } else {
-            setSelectedBuildId(createSelection.buildId);
-          }
+          setSelectedBuildId(current => {
+            if (preserveBuildSelection && candidates.some((build: BuildCandidate) => build.id === current)) return current;
+            return requested.isCurrent === false && firstCurrent ? firstCurrent.id : createSelection.buildId;
+          });
         } else {
           // Prefer the most recent current build; fall back to current selection or first candidate.
           setSelectedBuildId(current => {
@@ -643,13 +681,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       }
     })();
     return () => { cancelled = true; };
-  }, [createSelection?.agentId, createSelection?.buildId]);
+  }, [createSelection?.agentId, createSelection?.buildId, refreshTick]);
 
-  const summary = useMemo(() => ({
-    ready: deployments.filter(item => deploymentState(item.status) === "ready").length,
-    pending: deployments.filter(item => deploymentState(item.status) === "pending").length,
-    failed: deployments.filter(item => deploymentState(item.status) === "failed").length,
-  }), [deployments]);
 
   async function refresh(deployment: Deployment) {
     setRefreshing(current => new Set(current).add(deployment.id));
@@ -736,14 +769,16 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     };
   }
 
-  async function openDetail(deployment: Deployment, navigate = true, signal?: AbortSignal) {
+  async function openDetail(deployment: Deployment, navigate = true, signal?: AbortSignal, preserveSelection = false) {
     if (signal?.aborted) return;
     if (navigate) {
       window.history.pushState(null, "", `#/deployments/${encodeURIComponent(deployment.id)}`);
     }
-    setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], versions: [], currentVersionId: "", loading: true, error: "" });
-    setSelectedRollbackVersionId("");
-    setRollbackConfirmOpen(false);
+    if (!preserveSelection) {
+      setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], versions: [], currentVersionId: "", loading: true, error: "" });
+      setSelectedRollbackVersionId("");
+      setRollbackConfirmOpen(false);
+    }
     const versionsPromise = deployment.agentId
       ? loadCloudVersions(deployment.agentId, signal)
       : Promise.resolve({ items: [], currentVersionId: "" } as CloudVersionCatalog);
@@ -767,7 +802,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
           versionId: account.versionId || deployment.versionId,
           updatedAt: account.updatedAt || deployment.updatedAt,
-          creatorName: account.creatorName || deployment.creatorName,
+          creatorName: account.creatorName !== undefined ? account.creatorName : deployment.creatorName,
         };
         const versions = await versionsPromise;
         if (signal?.aborted) return;
@@ -1012,6 +1047,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
   if (createSelection) {
     const selectedBuild = deployableBuilds.find(build => build.id === selectedBuildId);
+    const routeAgentName = selectedBuild?.agentName || deployableBuilds[0]?.agentName;
     return (
       <div className="delivery-page deployment-create-page" data-layout="document">
         <PageHeaderActions>
@@ -1023,11 +1059,11 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           </button>
         </PageHeaderActions>
         <div className="delivery-intro">
-          <div><h2>部署到云端</h2><p>选择一个已成功的 Build，由 Studio 提交统一云端部署操作。</p></div>
+          <div><h2>{routeAgentName ? `部署 ${routeAgentName}` : "部署到云端"}</h2><p>选择已完成的构建，部署为可访问的云端 Agent。</p></div>
         </div>
         {createError && <div className="form-error" role="alert">{createError}</div>}
         <section className="delivery-block" aria-label="选择部署 Build">
-          <h2>选择 Build</h2><p>ManagedRuntime 使用已校验声明；ADK、LangGraph 等代码 Agent 使用不可变 Code Bundle。</p>
+          <h2>选择构建</h2>
           {createLoading ? <p>正在读取可部署 Build…</p> : deployableBuilds.length ? (
             <div className="deployment-version-list" role="radiogroup" aria-label="可部署 Build">
               {deployableBuilds.map(build => (
@@ -1057,11 +1093,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             </div>
           )}
           {selectedBuild && (
-            <div className="api-contract" aria-label="部署提交摘要">
+            <div className="deployment-selection-summary" aria-label="部署提交摘要">
               <div><span>Agent</span><strong>{selectedBuild.agentName || selectedBuild.agentId}</strong></div>
               <div><span>Build</span><code>{selectedBuild.id}</code></div>
-              <div><span>制品</span><strong>{selectedBuild.artifactType === "ManagedRuntime" ? "ManagedRuntime 声明" : "Code Bundle"}</strong></div>
-              <div><span>目标</span><strong>云端</strong></div>
+
             </div>
           )}
         </section>
@@ -1091,16 +1126,6 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <button className="button secondary" type="button" onClick={closeDetail}>
             <ArrowLeft size={15} /><span>返回云端 Agent</span>
           </button>
-          {Boolean(detail.deployment.agentId) && (
-            <button
-              className="button secondary"
-              type="button"
-              onClick={() => setRollbackConfirmOpen(true)}
-              disabled={!selectedRollbackVersion?.canRollback || updating || rollbackBusy}
-            >
-              {rollbackBusy ? "回滚中…" : selectedRollbackVersion ? "回滚到所选版本" : "选择版本回滚"}
-            </button>
-          )}
           {canUpdate && (
             <button className="button secondary" type="button" onClick={() => void updateToBuild(detail.deployment, latestBuild.id)} disabled={updating}>
               {updating ? "更新中…" : "部署最新 Build"}
@@ -1123,38 +1148,33 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         </PageHeaderActions>
 
         <div className="delivery-intro deployment-detail-heading">
-          <button className="button tertiary compact" type="button" onClick={closeDetail} aria-label="返回云端 Agent">
-            <ArrowLeft size={16} />
-          </button>
           <div>
             <h2>{detail.deployment.agentName || detail.sourceAgentName || "云端 Agent"}</h2>
             <p>{detail.deployment.agentId || detail.deployment.id}</p>
           </div>
         </div>
 
+        <div className="deployment-current-summary" role="region" aria-label="当前部署摘要">
+          <span className="delivery-status-badge" data-state={deploymentState(detail.deployment.status)}>{deploymentLabel(detail.deployment.status)}</span>
+          <span>当前版本 <strong>{currentCloudVersion?.versionName || currentCloudVersion?.tag || detail.deployment.versionId || "尚未返回"}</strong></span>
+          <span>{detail.deployment.framework || detail.deployment.artifactId}</span>
+          <span>更新于 {formatUpdatedAt(detail.deployment.updatedAt)}</span>
+        </div>
         {detail.error && <div className="form-error" role="alert">{detail.error}</div>}
         <section className="delivery-block" aria-label="云端 Agent 详情">
-          <div className="api-contract" aria-label="云端部署事实">
-            <div><span>名称</span><strong>{detail.deployment.agentName || detail.sourceAgentName}</strong></div>
-            <div><span>来源</span><strong>{hasReceipt ? "Studio 部署记录" : "账号云端 Agent"}</strong></div>
-            <div><span>创建子账号</span><strong>{detail.deployment.creatorName || "-"}</strong></div>
-            <div><span>状态</span><strong>{deploymentLabel(detail.deployment.status)}</strong></div>
-            <div><span>云端 Agent</span><code>{detail.deployment.agentId || "尚未返回"}</code></div>
-            <div><span>类型</span><code>{detail.deployment.framework || detail.deployment.artifactId || "尚未返回"}</code></div>
-            <div><span>Endpoint</span><code>{detail.deployment.endpoint || "尚未返回"}</code></div>
-            {detail.deployment.instanceId && <div><span>实例</span><code>{detail.deployment.instanceId}</code></div>}
-            {hasReceipt && <div><span>当前 Build</span><code>{detail.deployment.buildId}</code></div>}
-            <div>
-              <span>当前版本</span>
-              <code title={currentCloudVersion?.versionId || detail.deployment.versionId || undefined}>
-                {currentCloudVersion?.versionName || currentCloudVersion?.tag || detail.deployment.versionId || "尚未返回"}
-              </code>
-            </div>
-            <div><span>更新时间</span><code>{formatUpdatedAt(detail.deployment.updatedAt)}</code></div>
-            {hasReceipt && <div><span>Bundle</span><code title={detail.deployment.bundleDigest}>{detail.deployment.bundleDigest}</code></div>}
-          </div>
           {detail.deployment.agentId ? <section className="deployment-version-history" aria-label="云端版本历史">
-            <div><h3>云端版本历史</h3><p>版本状态与可回滚性来自云端 Server</p></div>
+            <div className="deployment-version-heading"><div><h3>云端版本历史</h3><p>选择历史版本后可以回滚。</p></div>
+          {Boolean(detail.deployment.agentId) && (
+            <button
+              className="button secondary"
+              type="button"
+              onClick={() => setRollbackConfirmOpen(true)}
+              disabled={!selectedRollbackVersion?.canRollback || updating || rollbackBusy}
+            >
+              {rollbackBusy ? "回滚中…" : selectedRollbackVersion ? "回滚到所选版本" : "选择版本回滚"}
+            </button>
+          )}
+            </div>
             {detail.loading ? <p>正在读取版本…</p> : (
               <div className="deployment-version-list" role="radiogroup" aria-label="选择回滚版本">
                 <div className="deployment-version-header" aria-hidden="true">
@@ -1186,11 +1206,33 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
               </div>
             )}
           </section> : <div className="callout"><div><strong>缺少云端 Agent ID</strong><p>当前记录无法查询 Server 版本历史，因此不开放版本回滚。</p></div></div>}
+          <details className="deployment-technical-details">
+            <summary>部署配置与标识</summary>
+          <div className="api-contract" aria-label="云端部署事实">
+            <div><span>名称</span><strong>{detail.deployment.agentName || detail.sourceAgentName}</strong></div>
+            <div><span>来源</span><strong>{hasReceipt ? "Studio 部署记录" : "账号云端 Agent"}</strong></div>
+            <div><span>创建子账号</span><strong>{detail.deployment.creatorName || "创建人未记录"}</strong></div>
+            <div><span>状态</span><strong>{deploymentLabel(detail.deployment.status)}</strong></div>
+            <div><span>云端 Agent</span><code>{detail.deployment.agentId || "尚未返回"}</code></div>
+            <div><span>类型</span><code>{detail.deployment.framework || detail.deployment.artifactId || "尚未返回"}</code></div>
+            <div><span>Endpoint</span><code>{detail.deployment.endpoint || "尚未返回"}</code></div>
+            {detail.deployment.instanceId && <div><span>实例</span><code>{detail.deployment.instanceId}</code></div>}
+            {hasReceipt && <div><span>当前 Build</span><code>{detail.deployment.buildId}</code></div>}
+            <div>
+              <span>当前版本</span>
+              <code title={currentCloudVersion?.versionId || detail.deployment.versionId || undefined}>
+                {currentCloudVersion?.versionName || currentCloudVersion?.tag || detail.deployment.versionId || "尚未返回"}
+              </code>
+            </div>
+            <div><span>更新时间</span><code>{formatUpdatedAt(detail.deployment.updatedAt)}</code></div>
+            {hasReceipt && <div><span>Bundle</span><code title={detail.deployment.bundleDigest}>{detail.deployment.bundleDigest}</code></div>}
+          </div>
+          </details>
         </section>
         {rollbackConfirmOpen && selectedRollbackVersion && (
           <ConfirmDialog
             title="确认回滚云端 Agent？"
-            description={`当前云端版本 ${currentCloudVersion?.versionName || detail.deployment.versionId || "未知"}（${currentCloudVersion?.versionId || detail.deployment.versionId || "未知"}）将回滚到 ${selectedRollbackVersion.versionName || selectedRollbackVersion.tag || "目标版本"}（${selectedRollbackVersion.versionId}）。系统将调用 Server RollbackVersion，并在提交后重新读取 Agent 与版本列表。`}
+            description={`当前云端版本 ${currentCloudVersion?.versionName || detail.deployment.versionId || "未知"}（${currentCloudVersion?.versionId || detail.deployment.versionId || "未知"}）将回滚到 ${selectedRollbackVersion.versionName || selectedRollbackVersion.tag || "目标版本"}（${selectedRollbackVersion.versionId}）。回滚会改变当前云端 Agent 使用的版本。`}
             confirmText="确认回滚"
             danger={false}
             busy={rollbackBusy}
@@ -1215,19 +1257,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
       {error && <div className="form-error" role="alert">{error}</div>}
 
-      <section className="delivery-stat-strip compact-delivery-summary" aria-label="部署摘要">
-        <div><span className="stat-label" title="同一 Agent 的多次部署按 Agent 聚合">云端 Agent</span><strong>{deployments.length}</strong></div>
-        <div><span className="stat-label">运行中</span><strong>{summary.ready}</strong></div>
-        <div><span className="stat-label">部署中</span><strong>{summary.pending}</strong></div>
-        <div><span className="stat-label">异常</span><strong>{summary.failed}</strong></div>
-      </section>
 
       {loading ? <div className="delivery-empty-state"><p>正在读取云端 Agent…</p></div> : !deployments.length ? (
         <div className="delivery-empty-state">
           <CloudUpload size={24} /><h2>还没有云端 Agent</h2>
-          <p>可以从 Agent 详情构建并部署到云端。</p>
+          <p>准备好本地 Agent 后，点击右上角「部署 Agent」。</p>
           <div className="delivery-empty-actions">
-            <button className="button accent" type="button" onClick={() => navigateToStudioHash("#/deployments/new")}>部署 Agent</button>
             <button className="button secondary" type="button" onClick={onCreate}>创建 Agent</button>
           </div>
         </div>
@@ -1254,10 +1289,16 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
                   <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong>{deployment.source === "receipt" && <small>Studio 部署记录</small>}</td>
-                  <td>{deployment.creatorName || "-"}</td>
+                  <td>{deployment.creatorName || deployment.createdByName || (
+                    deployment.source === "receipt" && credentialUserName
+                      ? <span title="当前工作区 AK/SK 对应的身份；历史创建人未记录">
+                        {credentialUserName}<small>当前凭证</small>
+                      </span>
+                      : "创建人未记录"
+                  )}</td>
                   <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
                   <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
-                  <td className="delivery-row-actions">
+                  <td><div className="delivery-row-actions">
                     {deploymentState(deployment.status) === "ready" && deployment.agentId && (
                       <button
                         className="button secondary compact"
@@ -1289,7 +1330,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           : []),
                       ]}
                     />
-                  </td>
+                  </div></td>
                 </tr>;
               })}</tbody>
             </table>

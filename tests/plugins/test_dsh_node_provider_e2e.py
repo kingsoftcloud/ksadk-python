@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from ksadk.plugins.bridges.dsh import DshPluginMutationError, DshProfilePluginBridge
 from ksadk.plugins.bundle import ResolvedPluginBundle
 from ksadk.plugins.contracts import CompositionProfile
+from ksadk.plugins.dsh_home import prepare_studio_dsh_home
 from ksadk.plugins.dsh_toolchain import DshToolchainManager
 from ksadk.plugins.host import PluginExecutionContext, PluginHost, PluginHostError
 from ksadk.plugins.providers.dsh import (
@@ -110,6 +111,7 @@ def test_normal_studio_discovers_runs_and_releases_external_node_provider(
     toolchain.install()
     dsh_home = tmp_path / "dsh-home"
     profile_name = "studio-node-e2e"
+    prepare_studio_dsh_home(dsh_home)
     with DshProfilePluginBridge(
         dsh_home=dsh_home,
         profile=profile_name,
@@ -157,7 +159,9 @@ def test_normal_studio_discovers_runs_and_releases_external_node_provider(
         assert manager is not None
         assert manager.inventory.state == "bound"
         assert manager.inventory.packages[0].state == "bound"
-        assert manager.host_pids
+        # Discovery is bounded: the registration process must be released
+        # before Studio begins any provider execution in its own event loop.
+        assert manager.host_pids == ()
         plugin_inventory = client.get("/api/v1/plugin-ecosystems/dsh/plugins").json()
         assert plugin_inventory["items"][0]["runtimeState"] == {
             "state": "bound",

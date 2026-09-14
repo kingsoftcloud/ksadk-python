@@ -72,6 +72,135 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("creates Harness through the manual wizard and preserves composed Tool bindings", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation(async (input, init) => {
+      const result = await base(input, init);
+      if (String(input) === "/api/v1/agent-templates/blank:compose") {
+        const payload = await result.json();
+        payload.spec.bindings.tools = [{ resourceId: "tool-review" }];
+        payload.spec.capabilities = { tools: ["tool-review"] };
+        return response(payload);
+      }
+      return result;
+    });
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: "KsADK Harness" }));
+    expect(screen.getByText("本地运行：已授权 · 高级权限").closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getByText("本地运行：已授权 · 高级权限"));
+    expect(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ })).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    expect(await screen.findByText("请先确认 KsADK Harness 本机执行权限")).toBeVisible();
+    expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
+    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(await screen.findByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByRole("button", { name: "一键优化 Prompt" });
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.runtimeType).toBe("harness");
+      expect(request.spec.security.allowedPermissions).toContain("process:host-user");
+      expect(request.spec.bindings.tools).toEqual([{ resourceId: "tool-review" }]);
+      expect(request.spec.capabilities.tools).toEqual(["tool-review"]);
+    });
+  });
+
+  it("defaults the shipped Codex permission and saves it with the Agent", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input) === "/api/v1/agent-providers"
+      ? Promise.resolve(response({ items: [{
+        providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider",
+        resolvedVersion: "1.0.0", displayName: "Codex", state: "enabled",
+        compatible: true, selectable: true, permissions: ["process:host-user"], isolation: "sidecar",
+        configSchemaDeclared: false, secretFields: [],
+      }] })) : base(input, init));
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
+    expect(consent).toBeChecked();
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(await screen.findByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByRole("button", { name: "一键优化 Prompt" });
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.runtimeType).toBe("codex");
+      expect(request.spec.security.allowedPermissions).toEqual(["process:host-user"]);
+    });
+  });
+
+  it("does not reuse native Codex consent when switching to a different runtime Provider", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    const common = { resolvedVersion: "1.0.0", state: "enabled", compatible: true, selectable: true,
+      isolation: "sidecar", configSchemaDeclared: false, secretFields: [] };
+    mockedFetch.mockImplementation((input, init) => String(input) === "/api/v1/agent-providers"
+      ? Promise.resolve(response({ items: [
+        { ...common, providerRef: "plugin://io.example.remote@1.0.0", pluginId: "io.example.remote", displayName: "Remote", permissions: ["network:private"] },
+        { ...common, providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider", displayName: "Codex", permissions: ["process:host-user"] },
+      ] })) : base(input, init));
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "Answer with evidence.");
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: /DSH AgentProvider/ }));
+    expect(screen.getByRole("checkbox", { name: /确认 Provider 请求/ })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    expect(await screen.findByText("请先确认 AgentProvider 请求的权限。")).toBeVisible();
+    expect(mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick")).toBeUndefined();
+  });
+
+  it('disables incompatible DSH MCP choices and explains why', async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input).includes('/catalog/resources')
+      ? Promise.resolve(response({ items: [model, {
+        resourceId: 'mcp-dsh', kind: 'mcp', displayName: 'DSH Profile: web',
+        contract: { materialization: 'dsh-profile' }, health: { toolCount: 0 },
+      }] })) : base(input, init));
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await userEvent.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), '你是一个本地验证助手，请简洁回答。');
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await userEvent.click(await screen.findByRole('button', { name: '选择 MCP Server' }));
+    const option = screen.getByRole('option', { name: /DSH Profile/ });
+    expect(option).toHaveAttribute('aria-disabled', 'true');
+    expect(option).toHaveTextContent('尚未接入');
+  });
+
+  it('shows backend binding errors even when their spec field is not a visible form input', async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input) === '/api/v1/authoring/quick'
+      ? Promise.resolve({ ok: false, status: 422, json: async () => ({ error: {
+        field: 'spec.runtime.type', message: 'DSH Profile MCP 当前只支持 Harness Runtime',
+      } }) } as Response) : base(input, init));
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await userEvent.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), '你是一个本地验证助手，请简洁回答。');
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await userEvent.click(await screen.findByRole('button', { name: '选择模型' }));
+    await userEvent.click(screen.getByRole('option', { name: /Local Test Model/ }));
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await screen.findByRole('button', { name: '一键优化 Prompt' });
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await userEvent.click(screen.getByRole('button', { name: '创建 Agent' }));
+    expect(await screen.findByText('DSH Profile MCP 当前只支持 Harness Runtime')).toBeVisible();
+  });
+
   it("uses the global Agent breadcrumb instead of duplicating a back action in the header", () => {
     render(
       <CreatePage
@@ -98,7 +227,7 @@ describe("CreatePage quick authoring", () => {
     );
 
     await user.type(
-      screen.getByPlaceholderText(/你是一名企业技术支持助手/),
+      screen.getByRole("textbox", { name: /Agent 目标与要求/ }),
       "你是一个本地验证助手，请简洁回答。",
     );
     await user.click(screen.getByRole("button", { name: "继续" }));
@@ -140,6 +269,7 @@ describe("CreatePage quick authoring", () => {
     await user.click(screen.getByRole("button", { name: "继续" }));
     expect(screen.getByText("创建后立即校验 YAML 声明并打开会话")).toBeInTheDocument();
     expect(screen.getByText("只冻结 YAML 和 runtime 摘要；部署时不会上传代码包。")).toBeInTheDocument();
+    expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
     await user.click(screen.getByRole("button", { name: "创建 Agent" }));
 
     await waitFor(() => {
@@ -200,7 +330,7 @@ describe("CreatePage quick authoring", () => {
     });
 
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    await user.type(screen.getByPlaceholderText(/你是一名企业技术支持助手/), "使用外部 Provider 完成任务。");
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "使用外部 Provider 完成任务。");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /Example Provider · Plugin/ }));
     expect(await screen.findByRole("combobox", { name: "AgentProvider" })).toHaveTextContent("Example Provider");
@@ -230,8 +360,88 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("uses Codex native tools instead of offering KsADK built-in Tools", async () => {
+    const user = userEvent.setup();
+    const provider = {
+      providerRef: "plugin://io.ksadk.codex-provider@1.0.0",
+      pluginId: "@kingsoftcloud/ksadk-codex-provider",
+      resolvedVersion: "1.0.0",
+      displayName: "Codex",
+      state: "enabled",
+      compatible: true,
+      selectable: true,
+      reason: null,
+      permissions: [],
+      isolation: "sidecar",
+      configSchemaDeclared: false,
+      secretFields: [],
+    };
+    const tool = {
+      resourceId: "tool:builtin:read-file",
+      kind: "tool",
+      name: "read-file",
+      displayName: "读取文件",
+      version: "1.0.0",
+      status: "ready",
+      source: "builtin",
+    };
+    mockedFetch.mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model, tool] });
+      if (path === "/api/v1/catalog/models") return response({ items: [] });
+      if (path === "/api/v1/agent-providers") return response({ items: [provider] });
+      if (path === "/api/v1/credentials/OPENAI_API_KEY") return response({ configured: true });
+      if (path === "/api/v1/agent-templates/blank:compose") {
+        return response({
+          spec: {
+            instructions: { system: "Codex provider agent.", task: "" },
+            bindings: {
+              modelProfileId: model.resourceId,
+              modelProfileIds: [model.resourceId],
+              tools: [{ resourceId: tool.resourceId }],
+              skills: [],
+              mcpServers: [],
+            },
+            capabilities: { tools: [{ name: "invented-tool" }] },
+          },
+        });
+      }
+      if (path === "/api/v1/authoring/quick") {
+        return response({ metadata: { id: "codex-provider-agent", revision: 1 } });
+      }
+      if (path === "/api/v1/agents/codex-provider-agent/builds") return response({ id: "codex-provider-build" });
+      if (path === "/api/v1/operations/codex-provider-build") return response({ status: "SUCCEEDED" });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "使用 Codex 完成任务。");
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(screen.getByRole("option", { name: /Codex · Plugin/ }));
+    await user.click(screen.getByRole("button", { name: "继续" }));
+
+    expect(await screen.findByText("Codex 使用原生工具，不绑定 KsADK 内置 Tool")).toBeVisible();
+    expect(screen.queryByText("Tool 与权限")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "选择模型" }));
+    await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await screen.findByDisplayValue("Codex provider agent.");
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+
+    await waitFor(() => {
+      const createCall = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      const request = JSON.parse(String(createCall?.[1]?.body));
+      expect(request.spec.bindings.tools).toEqual([]);
+      expect(request.spec.capabilities.tools).toEqual([]);
+    });
+  });
+
   it("uses the authoring model to optimize both the system prompt and task contract", async () => {
     const user = userEvent.setup();
+    let releaseOptimization!: () => void;
+    const optimizationGate = new Promise<void>(resolve => { releaseOptimization = resolve; });
     mockedFetch.mockImplementation(async (input) => {
       const path = String(input);
       if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model] });
@@ -257,6 +467,7 @@ describe("CreatePage quick authoring", () => {
         });
       }
       if (path === "/api/v1/authoring/conversations:compose") {
+        await optimizationGate;
         return response({
           proposal: {
             name: "销售日报 Agent",
@@ -286,7 +497,7 @@ describe("CreatePage quick authoring", () => {
     await user.clear(nameInput);
     await user.type(nameInput, "销售日报 Agent");
     await user.type(
-      screen.getByPlaceholderText(/你是一名企业技术支持助手/),
+      screen.getByRole("textbox", { name: /Agent 目标与要求/ }),
       "根据聊天记录生成销售日报，不得编造。",
     );
     await user.click(screen.getByRole("button", { name: "继续" }));
@@ -298,6 +509,13 @@ describe("CreatePage quick authoring", () => {
 
     await screen.findByDisplayValue("你是销售助手。");
     await user.click(screen.getByRole("button", { name: "一键优化 Prompt" }));
+
+    const workingButton = await screen.findByRole("button", { name: "正在优化" });
+    expect(workingButton).toBeDisabled();
+    expect(workingButton).toHaveClass("is-working");
+    expect(workingButton).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("正在使用生成模型优化角色与任务契约，通常需要几十秒");
+    releaseOptimization();
 
     await waitFor(() => {
       expect(mockedFetch).toHaveBeenCalledWith(
@@ -361,6 +579,12 @@ describe("CreatePage quick authoring", () => {
       const path = String(input);
       if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model] });
       if (path === "/api/v1/catalog/models") return response({ items: [] });
+      if (path === "/api/v1/agent-providers") return response({ items: [{
+        providerRef: "plugin://io.ksadk.codex-provider@1.0.0", pluginId: "io.ksadk.codex-provider",
+        resolvedVersion: "1.0.0", displayName: "Codex", state: "enabled",
+        compatible: true, selectable: true, permissions: ["process:host-user"], isolation: "sidecar",
+        configSchemaDeclared: false, secretFields: [],
+      }] });
       if (path === "/api/v1/credentials/OPENAI_API_KEY") return response({ configured: true });
       if (path === "/api/v1/authoring/conversations:compose") {
         return response({ proposal, requiresConfirmation: true });
@@ -391,7 +615,8 @@ describe("CreatePage quick authoring", () => {
     await screen.findByDisplayValue("Review releases.");
     expect(screen.queryByText(/1\.0元/)).not.toBeInTheDocument();
     expect(screen.queryByText(/models\.example\.test\/v1\/models/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "确认并创建 Revision" }));
+    expect(screen.getByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "确认创建 Agent" }));
 
     await waitFor(() => {
       const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
@@ -409,7 +634,7 @@ describe("CreatePage quick authoring", () => {
       expect(request.spec.execution.maxSteps).toBe(24);
       expect(request.spec.context.maxInputTokens).toBe(64000);
       expect(request.spec.memory.providerRef).toBe("memory-release");
-      expect(request.spec.security.allowedPermissions).toEqual(["repo:read"]);
+      expect(request.spec.security.allowedPermissions).toEqual(["process:host-user", "repo:read"]);
       expect(request.spec.evaluation.suiteRefs).toEqual(["release-suite"]);
       expect(onCreated).toHaveBeenCalledWith("release-agent-created");
     });
@@ -457,7 +682,8 @@ describe("CreatePage quick authoring", () => {
 
     await user.click(screen.getByRole("tab", { name: /对话构建/ }));
     await waitFor(() => {
-      expect(screen.getByText("从对话开始")).toBeVisible();
+      expect(screen.getByText("从一句需求开始")).toBeVisible();
+      expect(screen.queryByRole("complementary", { name: "Agent 草稿" })).not.toBeInTheDocument();
       expect(screen.getByText(/Codex · 1 个模型/)).toBeVisible();
     });
     expect(screen.queryByRole("region", { name: "draft-patch.json 源码" })).not.toBeInTheDocument();
@@ -554,5 +780,60 @@ describe("CreatePage conversation authoring stages", () => {
     expect(input).toHaveValue("第一行\n第二行");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(requestBody?.messages.at(-1)?.content).toBe("第一行\n第二行"));
+  });
+});
+
+describe("CreatePage inspection freshness", () => {
+  beforeEach(() => {
+    mockedFetch.mockReset();
+    mockedFetch.mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("projects:inspect")) {
+        const body = JSON.parse(String(init?.body));
+        return response({ inspectionToken: `token-${body.path}`, projectPath: body.path, name: "Detected Agent", runtimeType: "adk", entryPoint: "agent.py" });
+      }
+      if (path.includes("imports:inspect")) return { ok: false, json: async () => ({ error: { message: "Agent YAML 无法解析" } }) } as Response;
+      return response({ items: [] });
+    });
+  });
+  it("invalidates a checked project when its path changes and requires another inspection", async () => {
+    const user = userEvent.setup(); render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await user.click(screen.getByRole("tab", { name: "项目识别" }));
+    await user.click(screen.getByRole("button", { name: "检测项目" }));
+    await screen.findByText("检测完成");
+    expect(screen.getByRole("button", { name: "确认创建 Agent" })).toBeEnabled();
+    expect(screen.getByText("查看完整检查结果").closest("details")).not.toHaveAttribute("open");
+    await user.clear(screen.getByRole("textbox", { name: /工作区相对路径/ }));
+    await user.type(screen.getByRole("textbox", { name: /工作区相对路径/ }), "other-project");
+    expect(screen.queryByRole("button", { name: "确认创建 Agent" })).not.toBeInTheDocument();
+    expect(mockedFetch.mock.calls.some(([path]) => String(path).includes(":commit"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "检测项目" }));
+    await screen.findByText("检测完成");
+    expect(screen.getByText("other-project")).toBeVisible();
+  });
+  it("ignores an inspection response that arrives after the path changed", async () => {
+    let resolveInspection!: (value: Response) => void;
+    const base = mockedFetch.getMockImplementation()!;
+    mockedFetch.mockImplementation((input, init) => String(input).includes("projects:inspect")
+      ? new Promise(resolve => { resolveInspection = resolve; }) : base(input, init));
+    const user = userEvent.setup(); render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await user.click(screen.getByRole("tab", { name: "项目识别" }));
+    await user.click(screen.getByRole("button", { name: "检测项目" }));
+    await user.type(screen.getByRole("textbox", { name: /工作区相对路径/ }), "/other");
+    resolveInspection(response({ inspectionToken: "stale", runtimeType: "adk", name: "stale project" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "检测项目" })).toBeEnabled());
+    expect(screen.queryByText("检测完成")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认创建 Agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /工作区相对路径/ })).toHaveValue("./other");
+  });
+  it("disables empty inspection and clears import errors when changing mode", async () => {
+    const user = userEvent.setup(); render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()}/>);
+    await user.click(screen.getByRole("tab", { name: "导入" }));
+    expect(screen.getByRole("button", { name: "只读检查" })).toBeDisabled();
+    await user.upload(screen.getByLabelText("选择 Agent YAML 或 ZIP"), new File(["invalid"], "bad.yaml", { type: "application/yaml" }));
+    await user.click(screen.getByRole("button", { name: "只读检查" }));
+    await screen.findByText("Agent YAML 无法解析");
+    await user.click(screen.getByRole("tab", { name: "项目识别" }));
+    expect(screen.queryByText("Agent YAML 无法解析")).not.toBeInTheDocument();
   });
 });

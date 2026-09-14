@@ -1,128 +1,41 @@
-"""AgentKernel adapter for an immutable Studio PluginHost Build."""
+"""Studio wiring for the provider-neutral PluginHost Kernel adapter."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ksadk.kernel.contracts import InjectPayload, SteerPayload
-from ksadk.kernel.errors import UnsupportedControlError
-from ksadk.runtime import (
-    BaseRuntime,
-    CancelResult,
-    CheckpointDescriptor,
-    PauseResult,
-    ResumePayload,
-    ResumeTarget,
-    RunHandle,
-    RuntimeAdapter,
-    StartRequest,
-)
+from ksadk.plugins.kernel_adapter import PluginKernelAdapter
 from ksadk.studio.run_service import StudioRunSpec
 
 
-class _PluginKernelRuntime(BaseRuntime):
-    def __init__(self, runtime_type: str) -> None:
-        self.runtime_type = runtime_type
-
-    def native_capabilities(self) -> dict[str, Any]:
-        return {
-            "provider_owned": True,
-            "runtime_adapter": True,
-            "session_continuity": {"durable": False, "scope": "process"},
-        }
-
-
-class StudioPluginKernelAdapter(RuntimeAdapter):
-    """Lazily bind one Worker run to its profile-fenced provider activation."""
+class StudioPluginKernelAdapter(PluginKernelAdapter):
+    """Bind a Studio Build/session to its profile-fenced provider activation."""
 
     def __init__(self, plugin_runtime: Any, spec: StudioRunSpec) -> None:
-        super().__init__(_PluginKernelRuntime(spec.launch_context.runtime_type))
-        self._plugin_runtime = plugin_runtime
-        self._spec = spec
-        self._delegate: RuntimeAdapter | None = None
-
-    async def start(self, request: StartRequest) -> RunHandle:
-        delegate = await self._plugin_runtime.kernel_adapter(
-            self._spec,
-            session_id=request.session_id,
+        self._policy_supported = (
+            spec.request_config.get("provider_runtime_type") == "harness"
+            and getattr(plugin_runtime, "execution_policy_resolver", None) is not None
         )
-        if not isinstance(delegate, RuntimeAdapter):
-            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
-        self._delegate = delegate
-        metadata = dict(request.metadata)
-        if not metadata.get("invocation_id") and metadata.get("run_id"):
-            metadata["invocation_id"] = metadata["run_id"]
-        return await delegate.start(request.model_copy(update={"metadata": metadata}))
 
-    def stream(self, handle: RunHandle):  # type: ignore[no-untyped-def]
-        return self._require_delegate().stream(handle)
+        async def bind_delegate(session_id: str):  # type: ignore[no-untyped-def]
+            return await plugin_runtime.kernel_adapter(spec, session_id=session_id)
 
-    async def cancel(self, handle: RunHandle) -> CancelResult:
-        return await self._require_delegate().cancel(handle)
+        async def release_binding(session_id: str) -> None:
+            await plugin_runtime.close_session_if_dynamic(spec, session_id)
 
-    async def pause(self, handle: RunHandle) -> PauseResult:
-        return await self._require_delegate().pause(handle)
-
-    async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
-        await self._require_delegate().submit(handle, payload)
-
-    async def resume(
-        self,
-        handle: RunHandle,
-        target: ResumeTarget,
-        payload: ResumePayload | None,
-    ) -> RunHandle:
-        return await self._require_delegate().resume(handle, target, payload)
-
-    async def attach(self, handle: RunHandle) -> RunHandle:
-        delegate = await self._plugin_runtime.kernel_adapter(
-            self._spec,
-            session_id=handle.session_id,
+        super().__init__(
+            runtime_type=spec.launch_context.runtime_type,
+            bind_delegate=bind_delegate,
+            release_binding=release_binding,
         )
-        if not isinstance(delegate, RuntimeAdapter):
-            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
-        self._delegate = delegate
-        return await delegate.attach(handle)
-
-    async def steer(self, handle: RunHandle, payload: SteerPayload) -> None:
-        await self._require_delegate().steer(handle, payload)
-
-    async def inject(self, handle: RunHandle, payload: InjectPayload) -> None:
-        await self._require_delegate().inject(handle, payload)
-
-    async def checkpoint(self, handle: RunHandle) -> CheckpointDescriptor:
-        return await self._require_delegate().checkpoint(handle)
-
-    async def durable_restore(self, handle: RunHandle) -> RunHandle:
-        delegate = await self._plugin_runtime.kernel_adapter(
-            self._spec,
-            session_id=handle.session_id,
-        )
-        if not isinstance(delegate, RuntimeAdapter):
-            raise RuntimeError("AgentProvider returned an invalid RuntimeAdapter")
-        self._delegate = delegate
-        return await delegate.durable_restore(handle)
-
-    def is_handle_attached(self, handle: RunHandle) -> bool:
-        return self._delegate is not None and self._delegate.is_handle_attached(handle)
-
-    async def close(self, handle: RunHandle) -> None:
-        await self._require_delegate().close(handle)
 
     def capabilities(self):  # type: ignore[no-untyped-def]
-        # Before ``start`` the provider activation is async and not yet bound.
-        # Keep admission conservative; enqueue remains available and the live
-        # execution delegates supported controls after binding.
-        if self._delegate is None:
-            return super().capabilities()
-        return self._delegate.capabilities()
+        # Studio wires a durable Workspace store before activating Harness.
+        if self._delegate is None and self._runtime_type == "harness":
+            from ksadk.harness.managed_runtime import managed_harness_capabilities
 
-    def _require_delegate(self) -> RuntimeAdapter:
-        if self._delegate is None:
-            raise UnsupportedControlError(
-                "PluginHost RuntimeAdapter has not started a provider activation"
-            )
-        return self._delegate
+            return managed_harness_capabilities(durable=True)
+        return super().capabilities()
 
 
 __all__ = ["StudioPluginKernelAdapter"]

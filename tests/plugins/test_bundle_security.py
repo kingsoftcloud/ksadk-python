@@ -62,6 +62,28 @@ def test_bundle_security_rejects_literal_deployment_configuration(
     assert {finding.kind for finding in captured.value.findings} == {expected_kind}
 
 
+def test_bundle_security_allows_local_paths_in_packaged_skill_reference_data(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bundle"
+    reference = root / "capabilities/skills/design/references/upstream-sync/provenance.json"
+    reference.parent.mkdir(parents=True)
+    reference.write_text(
+        json.dumps({"promptBundle": "/Users/example/source/design-system"}),
+        encoding="utf-8",
+    )
+
+    assert_bundle_security(root)
+
+    (reference.parent / "credential.json").write_text(
+        json.dumps({"apiKey": "literal-key"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(BundleSecurityError) as captured:
+        assert_bundle_security(root)
+    assert {finding.kind for finding in captured.value.findings} == {"literal-secret-field"}
+
+
 def test_bundle_security_rejects_high_confidence_runtime_key(tmp_path: Path) -> None:
     root = tmp_path / "bundle"
     runtime = root / "runtime"
@@ -153,6 +175,23 @@ def test_builder_rejects_secret_in_runtime_snapshot(tmp_path: Path) -> None:
         studio.builder.build(draft)
     dist = tmp_path / "dist"
     assert not dist.exists() or not list(dist.rglob("agent-bundle.zip"))
+
+
+def test_studio_build_reports_the_rejected_bundle_file(tmp_path: Path) -> None:
+    studio, draft = _new_langgraph_draft(tmp_path)
+    source = studio.workspace.resolve("agents/bundle-security/source")
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "agent.py").write_text(
+        "api_key = 'sk-abcdefghijklmnopqrstuvwxyz012345'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StudioError) as captured:
+        studio._build_agent_bundle(draft)
+
+    assert captured.value.code == "BUNDLE_SECURITY_REJECTED"
+    assert "runtime/agent.py" in captured.value.message
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in captured.value.message
 
 
 def test_v2_resolver_rechecks_security_without_changing_v1_compatibility(tmp_path: Path) -> None:

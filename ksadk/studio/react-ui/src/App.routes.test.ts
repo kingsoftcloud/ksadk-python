@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   parseChatTargetValue,
   parseStudioLocationHash,
-  shouldResetUnavailableExtension,
 } from "./App";
 
 describe("Studio route parsing", () => {
@@ -27,19 +26,14 @@ describe("Studio route parsing", () => {
     });
   });
 
-  it("keeps DSH extension deep links only while their live route contribution exists", () => {
-    expect(parseStudioLocationHash("#/extensions/tasks")).toMatchObject({
-      view: "extension",
-      extensionPath: "/extensions/tasks",
-    });
-    const routes = [{
-      id: "tasks.route",
-      path: "/extensions/tasks",
-      title: "Tasks",
-      workspaceTabId: "tasks.tab",
-    }];
-    expect(shouldResetUnavailableExtension("extension", "/extensions/tasks", routes)).toBe(false);
-    expect(shouldResetUnavailableExtension("extension", "/extensions/tasks", [])).toBe(true);
+  it("routes live plugin workspaces and migrates the old orchestration entry", () => {
+    expect(parseStudioLocationHash("#/workspace/teams?groupId=g")).toMatchObject({ view: "plugin:teams" });
+    expect(parseStudioLocationHash("#/orchestration")).toMatchObject({ view: "plugin:teams" });
+    expect(parseStudioLocationHash("#/workspace/another-plugin")).toMatchObject({ view: "plugin:another-plugin" });
+  });
+
+  it("falls back from retired in-process extension routes", () => {
+    expect(parseStudioLocationHash("#/extensions/tasks")).toMatchObject({ view: "agents" });
   });
 
   it("preserves an account-scoped CLI Agent id when selecting a cloud chat target", () => {

@@ -233,9 +233,7 @@ LangGraph 的完整开发写法已经内化到框架专属文档：
 
 ```python
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-
+    # resume 由 runtime 处理；hook 只投影新一轮 State。
     return {
         "query": payload["input"],
         "history": session_context["history"],

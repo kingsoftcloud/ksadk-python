@@ -44,11 +44,10 @@ test("keeps the resource catalogue inside the bounded data-page scroll contract"
   assert.match(responsive, /\.app-shell \.table-data-body \.data-scroll-region\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
 });
 
-test("derives interactive AI surfaces from tokens in both light and dark themes", () => {
+test("derives conversation surfaces from tokens in both light and dark themes", () => {
   assert.match(finalLayer, /:root:not\(\.dark\)\s*\{/);
   assert.match(finalLayer, /:root\.dark\s*\{/);
   assert.match(finalLayer, /background:\s*var\(--kc-user-bubble\)/);
-  assert.match(finalLayer, /background-color:\s*var\(--kc-graph-fill\)/);
 });
 
 test("uses soft borders for the creation workbench and blue only for selection", () => {
@@ -57,18 +56,18 @@ test("uses soft borders for the creation workbench and blue only for selection",
   // obsolete literal from the reference branch.
   assert.match(tokens, /--border-card:\s*#[0-9a-f]{6};/i);
   assert.match(tokens, /--border-strong:\s*#[0-9a-f]{6};/i);
-  assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.create-shell \.template-card\.selected\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.authoring-mode-tabs button\.active,[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.wizard-step \.step-number\s*\{[\s\S]*?border:\s*1px solid var\(--border-strong\)/);
-  assert.match(finalLayer, /\.global-header \.crumb\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.global-header \.crumb\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
 });
 
 test("resets browser button chrome and gives shared selection controls soft borders", () => {
   assert.match(finalLayer, /button\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?border:\s*0;/);
   assert.match(finalLayer, /\.page-tabs button,[\s\S]*?\.segmented-control button\s*\{[\s\S]*?border:\s*1px solid transparent;/);
   assert.match(finalLayer, /\.page-tabs button\[aria-selected="true"\],[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
-  assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.chat-session-main\s*\{[\s\S]*?border:\s*1px solid transparent;/);
 });
 
@@ -95,8 +94,10 @@ test("keeps Lucide geometry square instead of overriding component dimensions gl
 
 test("keeps cloud versions in a bounded compact grid instead of native radio geometry", () => {
   assert.match(foundation, /\.deployment-version-list\s*\{[\s\S]*?max-height:\s*430px;[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;/);
-  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:/);
+  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:\s*minmax\(160px, 1fr\) minmax\(112px, max-content\) minmax\(180px, 216px\) minmax\(136px, max-content\);/);
   assert.match(foundation, /\.deployment-version-name\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(foundation, /\.deployment-version-state,[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(foundation, /\.deployment-version-option\s*>\s*code\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
   assert.doesNotMatch(foundation, /\.deployment-version-option\s*>\s*input/);
 });
 
