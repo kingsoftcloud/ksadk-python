@@ -700,7 +700,7 @@ def test_openai_responses_model_selects_real_bound_codex_model(tmp_path: Path) -
     ("approval_mode", "sandbox", "codex_approval"),
     [
         ("ask", "workspace-write", "manual"),
-        ("risk", "workspace-write", "auto_review"),
+        ("risk", "workspace-write", "manual"),
         ("full", "full-access", "deny_all"),
     ],
 )

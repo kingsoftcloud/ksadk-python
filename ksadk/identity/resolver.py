@@ -99,6 +99,24 @@ def _should_retry_intranet(error: Exception | None) -> bool:
     return "InnerAccountCanOnlyAccessThroughIntranet" in str(error)
 
 
+def iam_endpoint_candidates(primary: str) -> tuple[str, ...]:
+    """Return the configured IAM endpoint followed by the inner-account fallback.
+
+    Keep endpoint selection in one place so callers that need strict identity
+    verification and callers that only enrich request headers cannot drift.
+    The fallback is attempted only after the primary request reports the
+    explicit inner-account error.
+    """
+    normalized = str(primary or "").strip() or "https://iam.api.ksyun.com"
+    intranet = "http://iam.inner.api.ksyun.com"
+    return (normalized,) if normalized == intranet else (normalized, intranet)
+
+
+def is_inner_account_error(error: Exception | None) -> bool:
+    """Whether an IAM failure explicitly requires the intranet endpoint."""
+    return _should_retry_intranet(error)
+
+
 # ---------------------------------------------------------------------------
 # ksyun SDK 惰性导入
 # ---------------------------------------------------------------------------
