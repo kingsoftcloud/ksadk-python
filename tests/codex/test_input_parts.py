@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from openai_codex import ImageInput, MentionInput, TextInput
 
-from ksadk.codex.runtime import _build_run_input, _materialize_inline_file
+from ksadk.plugins.providers.codex_turn import CodexTurnProjector
 from ksadk.runtime.adapter import StartRequest
 
 
@@ -22,7 +22,8 @@ def test_codex_turn_preserves_text_image_and_inline_file_parts():
         agent_id="agent-1",
     )
 
-    result = _build_run_input(request, request.input)
+    projector = CodexTurnProjector()
+    result = projector.project(request, None).input
 
     assert isinstance(result, list)
     assert isinstance(result[0], TextInput)
@@ -42,15 +43,16 @@ def test_codex_turn_preserves_text_image_and_inline_file_parts():
 
 
 def test_inline_file_materialization_is_bounded_and_sanitizes_filename():
-    path = _materialize_inline_file(
+    projector = CodexTurnProjector()
+    path = projector._materialize_file(
         "data:text/plain;base64,aGVsbG8=", "../../customer notes.txt"
     )
 
     assert path is not None
     assert path.name == "customer-notes.txt"
     assert path.read_bytes() == b"hello"
-    raw_base64_path = _materialize_inline_file("aGVsbG8=", "raw.txt")
+    raw_base64_path = projector._materialize_file("aGVsbG8=", "raw.txt")
     assert raw_base64_path is not None
     assert raw_base64_path.read_bytes() == b"hello"
-    assert _materialize_inline_file("not-a-data-url", "bad.txt") is None
-    assert _materialize_inline_file("data:text/plain;base64,%%%", "bad.txt") is None
+    assert projector._materialize_file("not-a-data-url", "bad.txt") is None
+    assert projector._materialize_file("data:text/plain;base64,%%%", "bad.txt") is None

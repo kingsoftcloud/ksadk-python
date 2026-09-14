@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 
@@ -29,7 +30,8 @@ def check(run: Any, kind: str, cost: int = 1) -> None:
 
     value = limit(run, kind)
     if value is not None and run.budget_usage.get(kind, 0) + cost > value:
-        raise SubAgentExecutionError("budget_exhausted", f"{kind} budget {value} exhausted")
+        label = "tool-call" if kind == "tools" else kind
+        raise SubAgentExecutionError("budget_exhausted", f"{label} budget {value} exhausted")
     if run.budget_parent is not None:
         check(run.budget_parent, kind, cost)
 
@@ -61,13 +63,22 @@ def adopt_child(parent: Any, child: Any) -> None:
     child.budget_parent = parent
 
 
+def account_elapsed(run: Any) -> None:
+    if run.execution_started_at is not None:
+        now = time.monotonic()
+        run.execution_elapsed_seconds += now - run.execution_started_at
+        run.execution_started_at = now
+
+
 def snapshot(run: Any) -> dict[str, Any]:
+    account_elapsed(run)
     return {
         "elapsed_seconds": run.execution_elapsed_seconds,
         "artifact_refs": list(run.artifact_refs),
         "usage": dict(run.budget_usage),
         "children": {key: dict(value) for key, value in run.child_budget_usage.items()},
         "tool_calls": sorted(run.budget_tool_calls),
+        "dynamic_calls": sorted(run.dynamic_calls),
     }
 
 
@@ -83,6 +94,7 @@ def restore(run: Any, value: dict[str, Any]) -> None:
         for kind, cost in usage.items():
             current[kind] = max(current.get(kind, 0), int(cost))
     run.budget_tool_calls.update(value.get("tool_calls", ()))
+    run.dynamic_calls.update(value.get("dynamic_calls", ()))
     if run.controller is not None:
         for kind, attribute in (
             ("tools", "tool_calls"),

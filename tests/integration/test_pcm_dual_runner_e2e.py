@@ -14,24 +14,65 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from ksadk.plugins.providers.codex import CodexAgentProviderFactory
 from ksadk.studio.api import create_studio_app
+from ksadk.studio.codex_provider_build import CODEX_PROVIDER_REF
+from ksadk.studio.contracts import ModelSpec
 from ksadk.studio.service import StudioService
+from tests.plugins.test_codex_provider_vertical import (
+    _provider_manifest,
+    _StrictCodexBackend,
+    _StrictCodexClient,
+)
 from tests.studio.runtime_adapter_fixtures import (
     RuntimeFixture,
     standard_codex_events,
 )
 from tests.studio.test_codex_api import _inspector
 
+_MODEL_PROFILE_ID = "model:local:fixture-model:1.0.0"
+
 
 @pytest.fixture()
 def studio(tmp_path):
+    backend = _StrictCodexBackend()
+
+    def client(config=None):
+        backend.configs.append(config)
+        return _StrictCodexClient(backend)
+
+    provider_manifest = _provider_manifest()
+    provider_manifest = provider_manifest.model_copy(
+        update={
+            "spec": provider_manifest.spec.model_copy(update={"isolation": "sidecar"})
+        }
+    )
+    provider_manifests = {CODEX_PROVIDER_REF: provider_manifest}
     service = StudioService(
         tmp_path,
         codex_runtime_inspector=_inspector,
         runtime_executor=RuntimeFixture(
             standard_codex_events, runtime_types=("codex", "langgraph")
         ).executor,
+        plugin_provider_manifests=provider_manifests,
+        plugin_provider_factories={
+            CODEX_PROVIDER_REF: CodexAgentProviderFactory(codex_client_factory=client)
+        },
     )
+    service._started = True  # The in-process provider fixture replaces DSH startup.
+    model_profile = service.catalog.create_model_profile(
+        name="fixture-model",
+        display_name="Fixture Model",
+        version="1.0.0",
+        description="In-process PCM integration fixture",
+        spec=ModelSpec(
+            provider="openai-compatible",
+            model="fixture-model",
+            base_url="https://fixture.invalid/v1",
+            credential_ref="env://FIXTURE_MODEL_KEY",
+        ),
+    )
+    assert model_profile.resource_id == _MODEL_PROFILE_ID
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
     with TestClient(app) as c:
         yield c, service
@@ -66,7 +107,7 @@ def test_codex_manifest_contains_pcm_fields(studio):
                     "system": "你是助手",
                     "task": "用 uv",
                 },
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "context": {
                     "ownership": "auto",
                     "rollout": {
@@ -115,7 +156,7 @@ def test_codex_build_then_run_check_memory_evidence(studio):
                         "system": "你是助手",
                         "task": "根据用户输入给出简洁、可执行的答复",
                     },
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "context": {
                     "rollout": {
                         "contextEngine": "shadow",
@@ -207,7 +248,7 @@ def test_langgraph_agent_detail_contains_pcm_fields(studio):
                     "system": "你是助手",
                     "task": "用 uv",
                 },
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "model": {
                     "model": "test",
                     "credentialRef": "env://OPENAI_API_KEY",
@@ -261,7 +302,7 @@ def test_build_immutability_after_draft_change(studio):
                     "system": "你是助手",
                     "task": "",
                 },
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "context": {
                     "maxInputTokens": 4096,
                     "reserveOutputTokens": 512,
@@ -330,7 +371,7 @@ def test_studio_recall_events_written_to_eventstore(studio):
                     "system": "你是助手",
                     "task": "",
                 },
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "context": {
                     "rollout": {
                         "contextEngine": "shadow",
@@ -417,7 +458,7 @@ def test_langgraph_build_run_context_evidence(studio):
                     "system": "你是助手",
                     "task": "用 uv",
                 },
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "model": {
                     "model": "test",
                     "credentialRef": "env://OPENAI_API_KEY",
@@ -484,10 +525,7 @@ def test_langgraph_build_run_context_evidence(studio):
 
 def test_codex_runspec_memory_fields_from_manifest(studio):
     """Codex: Manifest PCM memory 字段进入 RunSpec（通过 codex_run 解析）。"""
-    from ksadk.studio.codex_run import CodexRunSpecResolver
-
     c, svc = studio
-    ws = svc.workspace
 
     # 创建 codex agent with memory.enabled=True
     c.post(
@@ -501,7 +539,7 @@ def test_codex_runspec_memory_fields_from_manifest(studio):
                 "runtime": {"type": "codex", "version": "0.144.4"},
                 "description": "x",
                 "instructions": {"system": "你是助手", "task": ""},
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "context": {
                     "rollout": {
                         "contextEngine": "shadow",
@@ -528,13 +566,7 @@ def test_codex_runspec_memory_fields_from_manifest(studio):
     build_id = op["resourceId"]
 
     # 用 CodexRunSpecResolver 解析 build → 检查 request_config 的 Memory 字段
-    resolver = CodexRunSpecResolver(
-        ws,
-        build_repository=svc.codex_builds,
-        manifest_repository=svc.codex_manifests,
-        draft_repository=svc.codex_drafts,
-    )
-    spec = resolver.resolve(build_id)
+    spec = svc.codex_runs.resolve(build_id)
     rc = spec.request_config
     assert rc.get("memory_enabled") is True, (
         f"memory_enabled should be True, got {rc.get('memory_enabled')}"
@@ -605,7 +637,7 @@ def test_studio_recall_with_fake_provider(studio, monkeypatch):
                 "runtime": {"type": "codex", "version": "0.144.4"},
                 "description": "x",
                 "instructions": {"system": "你是助手", "task": ""},
-                "bindings": {},
+                "bindings": {"modelProfileId": _MODEL_PROFILE_ID},
                 "context": {
                     "rollout": {
                         "contextEngine": "shadow",

@@ -568,7 +568,10 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                 if row is None:
                     raise InvalidCommandError(f"unknown message_id {message_id!r}")
                 activation = await self._check_fence(
-                    connection, row["agent_instance_id"], row["session_id"], fencing_token,
+                    connection,
+                    row["agent_instance_id"],
+                    row["session_id"],
+                    fencing_token,
                 )
                 await self._sqlite_require_claim_grant(connection, row)
                 if (

@@ -24,6 +24,7 @@ from ksadk.events.canonical_store import session_event_to_runtime_event
 from ksadk.sessions.base import Session
 from ksadk.studio.contracts import OperationStatus, RunRecord, RunStatus
 from ksadk.studio.errors import StudioError, not_found
+from ksadk.studio.run_documents import link_run_documents
 from ksadk.studio.run_service import project_runtime_event
 from ksadk.studio.service import StudioService
 from ksadk.tools.gateway import tool_approval_capability
@@ -246,7 +247,13 @@ class StudioSharedWebBridge:
                         # empty pending reply lets canonical reasoning/tools
                         # restore without a synthetic status text shadowing them.
                         "text": (
-                            run.output if self._active_status(run.status) else self._run_output(run)
+                            link_run_documents(
+                                self.studio,
+                                run,
+                                run.output
+                                if self._active_status(run.status)
+                                else self._run_output(run),
+                            )
                         )
                     },
                     "Timestamp": self._timestamp(run.completed_at or run.started_at),
@@ -294,7 +301,7 @@ class StudioSharedWebBridge:
                         "SeqId": sequence,
                         "EventType": self._shared_event_type(event.type, event.data),
                         "InvocationId": run.id,
-                        "Content": self._shared_event_content(event.data, run.id),
+                        "Content": self._presentation_event_content(event.data, run),
                         "Timestamp": self._timestamp(event.created_at),
                     }
                 )
@@ -390,6 +397,29 @@ class StudioSharedWebBridge:
             return data
         return {**data, "runtimeEvent": {**native, "run_id": run_id}}
 
+    def _presentation_event_content(self, data: dict[str, Any], run: RunRecord) -> dict[str, Any]:
+        content = self._shared_event_content(data, run.id)
+        native = content.get("runtimeEvent")
+        if run.runtime_type != "harness" or not isinstance(native, dict):
+            return content
+        native = dict(native)
+        native_type = native.get("source", {}).get("metadata", {}).get("native_event_type")
+        if native_type == "run.progress" and native.get("item_kind") == "message":
+            # Progress is an activity, never assistant answer prose. This also
+            # repairs historical runs without rewriting their audit transcript.
+            native["item_kind"] = "reasoning"
+        if native_type == "text.completed" and native.get("snapshot"):
+            native["snapshot"] = {
+                **native["snapshot"],
+                "parts": [
+                    {**part, "text": link_run_documents(self.studio, run, part["text"])}
+                    if part.get("content_type") == "text"
+                    else part
+                    for part in native["snapshot"].get("parts", [])
+                ],
+            }
+        return {**content, "runtimeEvent": native}
+
     async def subscription_run_id(self, session_id: str, invocation_id: str) -> str:
         self.studio._require_direct_session(session_id)
         run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
@@ -455,7 +485,9 @@ class StudioSharedWebBridge:
                         "SessionId": session_id,
                         "InvocationId": invocation_id,
                         "EventType": self._shared_event_type(event.type, event.data),
-                        "Content": self._shared_event_content(event.data, run_id),
+                        "Content": self._presentation_event_content(
+                            event.data, self.studio.event_store.get(run_id)
+                        ),
                         "Timestamp": self._timestamp(event.created_at),
                     },
                 )
@@ -491,20 +523,28 @@ class StudioSharedWebBridge:
         run_id = self._response_runs.get(response_id, response_id)
         return self.studio.event_store.get(run_id).session_id
 
+    def resolve_run_reference(self, reference: str) -> str:
+        """Resolve a live Responses invocation without guessing the latest run."""
+        return (
+            self._run_ids_by_invocation.get(reference)
+            or self._response_runs.get(reference)
+            or reference
+        )
+
     async def stream_run(
         self, payload: dict[str, Any], *, shared_ui: bool = False
     ) -> AsyncIterator[str]:
-        agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
-        prompt = self._input_text(payload)
-        runtime_input = self._runtime_input(payload)
-        model = self._select_model(agent_id, str(payload.get("Model") or ""))
-        model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
-        approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
-            self._request_controls(payload)
-        )
         try:
+            agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
+            prompt = self._input_text(payload)
+            runtime_input = self._runtime_input(payload)
+            model = self._select_model(agent_id, str(payload.get("Model") or ""))
+            model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
+            approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
+                self._request_controls(payload)
+            )
             build = await self._ensure_build(agent_id)
             self._validate_conversation_turn(
                 build_id=build.id,
@@ -782,9 +822,14 @@ class StudioSharedWebBridge:
                     delta = str(event.data.get("text") or event.data.get("delta") or "")
                     if not delta:
                         continue
+                    native = event.data.get("runtimeEvent") or {}
+                    is_activity = run.runtime_type == "harness" and (
+                        native.get("source", {}).get("metadata", {}).get("native_event_type")
+                        == "run.progress"
+                    )
                     event_name = (
                         "response.output_text.delta"
-                        if event.type == "message.delta"
+                        if event.type == "message.delta" and not is_activity
                         else "response.reasoning_summary_text.delta"
                     )
                     projected.append(
@@ -793,7 +838,7 @@ class StudioSharedWebBridge:
                             self._response_delta_payload(
                                 event_name,
                                 invocation_id=invocation_id,
-                                delta=delta,
+                                delta=f"\n{delta}\n" if is_activity else delta,
                             ),
                         )
                     )
@@ -956,8 +1001,8 @@ class StudioSharedWebBridge:
             "delta": delta,
         }
 
-    @staticmethod
     def _response_payload(
+        self,
         run: RunRecord,
         *,
         model: str,
@@ -977,7 +1022,7 @@ class StudioSharedWebBridge:
                     "content": [
                         {
                             "type": "output_text",
-                            "text": run.output,
+                            "text": link_run_documents(self.studio, run, run.output),
                             "annotations": [],
                         }
                     ],

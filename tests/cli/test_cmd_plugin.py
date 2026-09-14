@@ -29,7 +29,7 @@ from ksadk.plugins.bridges.dsh import (
     DshPluginInventory,
     DshProfileProjection,
 )
-from ksadk.plugins.dsh_toolchain import DshPluginSourceError
+from ksadk.plugins.dsh_toolchain import DSH_VERSION, DshPluginSourceError
 
 ensure_global_cli_options(plugin)
 
@@ -334,7 +334,7 @@ class _FakeDshCLIHost:
             bundles=("@deepseek-ai/dsh-base",),
             config_digest="sha256:" + "a" * 64,
             config_bytes=128,
-            host_version="0.1.2-rc.1",
+            host_version=DSH_VERSION,
         )
 
 
@@ -352,7 +352,7 @@ def test_top_level_dsh_lifecycle_and_explicit_alias_are_identical(
         _FakeDshCLIHost,
     )
     dsh = tmp_path / "dsh"
-    dsh.write_text("#!/bin/sh\necho 'dsh 0.1.2-rc.1'\n", encoding="utf-8")
+    dsh.write_text(f"#!/bin/sh\necho 'dsh {DSH_VERSION}'\n", encoding="utf-8")
     dsh.chmod(0o755)
     environment = {
         DSH_HOME_ENV: str(tmp_path / "dsh-home"),
@@ -363,7 +363,12 @@ def test_top_level_dsh_lifecycle_and_explicit_alias_are_identical(
 
     canonical = runner.invoke(plugin, ["--output", "json", "list"], env=environment)
     alias = runner.invoke(plugin, ["--output", "json", "dsh", "list"], env=environment)
-    assert canonical.exit_code == alias.exit_code == 0
+    assert canonical.exit_code == alias.exit_code == 0, (
+        canonical.output,
+        alias.output,
+        canonical.exception,
+        alias.exception,
+    )
     assert json.loads(canonical.output) == json.loads(alias.output)
     assert json.loads(canonical.output)["items"][0]["integrationMode"] == "bridged"
 

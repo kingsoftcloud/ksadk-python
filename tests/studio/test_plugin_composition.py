@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from ksadk.plugins.dsh_home import prepare_studio_dsh_home
+from ksadk.plugins.dsh_toolchain import DSH_VERSION
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.plugins.providers.legacy_catalog import builtin_agent_provider_manifests
 from ksadk.studio.contracts import (
@@ -54,6 +56,7 @@ def _skill_zip() -> bytes:
 
 def _managed_harness_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     installed = profile / "node_modules" / "@kingsoftcloud" / "ksadk-harness-provider"
     installed.parent.mkdir(parents=True)
@@ -71,7 +74,7 @@ def _managed_harness_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     executable.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        "  *--version*) echo 0.1.1-rc.2;;\n"
+        f"  *--version*) echo {DSH_VERSION};;\n"
         "  *--dump-config*) echo 'profile: studio; harness: 1.0.0';;\n"
         "  *) exit 2;;\n"
         "esac\n",
@@ -136,6 +139,40 @@ async def test_harness_build_writes_profile_lock_and_catalog_resources(
     assert compatibility["blockingReasons"] == []
     assert studio.resolve_run_spec(record.id).plugin_bundle_root is not None
     await studio.aclose()
+
+
+@pytest.mark.asyncio
+async def test_current_build_is_rebuilt_when_provider_lock_changes(tmp_path, monkeypatch):
+    _managed_harness_profile(tmp_path, monkeypatch)
+    studio = StudioService(tmp_path)
+    studio.create_agent(
+        agent_id="harness-agent", name="Harness Agent",
+        spec=AgentSpec(
+            runtime=RuntimeRef(type="harness"), model=_model(),
+            instructions=Instructions(system="Verify immutable plugin lock."),
+            security=_security().model_copy(update={"allowed_permissions": ["process:host-user"]}),
+        ),
+    )
+    try:
+        old = await studio.ensure_current_build("harness-agent")
+        archive = studio.workspace.resolve(old.artifact_path)
+        original = archive.read_bytes()
+        assert (await studio.ensure_current_build("harness-agent")).id == old.id
+        manifests = dict(studio._active_provider_manifests)
+        ref, manifest = next(iter(manifests.items()))
+        manifests[ref] = manifest.model_copy(update={"spec": manifest.spec.model_copy(
+            update={"provenance": manifest.spec.provenance.model_copy(
+                update={"digest": "sha256:" + "9" * 64}
+            )}
+        )})
+        studio.plugin_compositions.replace_provider_registrations(manifests)
+        new = await studio.ensure_current_build("harness-agent")
+        assert new.id != old.id
+        assert new.source_revision == old.source_revision
+        assert (await studio.ensure_current_build("harness-agent")).id == new.id
+        assert archive.read_bytes() == original
+    finally:
+        await studio.aclose()
 
 
 @pytest.mark.asyncio

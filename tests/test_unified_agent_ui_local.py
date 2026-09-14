@@ -1756,7 +1756,9 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
             current_event = line.removeprefix("event: ")
         elif line.startswith("data: ") and current_event == "response.output_item.added":
             added_indexes.append(json.loads(line.removeprefix("data: "))["output_index"])
-    assert added_indexes == [0, 1, 2, 3]
+    # Reasoning, function call and assistant message each own one output item.
+    # Tool results use the dedicated ksadk event and do not create a phantom item.
+    assert added_indexes == [0, 1, 2]
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-responses-stream"
     assert await service.get_session("sess-responses-stream") is not None

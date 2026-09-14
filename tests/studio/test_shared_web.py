@@ -374,6 +374,34 @@ def test_shared_chat_explains_unbound_model_profile(tmp_path: Path):
     assert "API Key 只提供访问凭证" in stream
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"Messages": []}, "请输入消息后再发送"),
+        ({"Messages": "invalid"}, "会话输入格式无效"),
+        ({"Model": "not-bound"}, "请求模型未绑定到当前 Agent Build"),
+        ({"AgentId": "missing-agent"}, "agent 不存在"),
+    ],
+)
+async def test_stream_preflight_errors_are_not_empty_responses(tmp_path, extra, message):
+    studio = StudioService(tmp_path)
+    studio.create_agent(agent_id="demo-agent", name="Demo Agent")
+    payload = {
+        "AgentId": "demo-agent",
+        "InvocationId": "resp-invalid-input",
+        "Messages": [{"role": "user", "content": "你好"}],
+        **extra,
+    }
+    try:
+        events = [event async for event in StudioSharedWebBridge(studio).stream_run(payload)]
+        assert len(events) == 1
+        assert "event: response.failed" in events[0]
+        assert message in events[0]
+    finally:
+        await studio.aclose()
+
+
 def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path):
     model_client = RecordingModelClient()
     runtime_fixture = RuntimeFixture(

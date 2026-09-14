@@ -147,22 +147,14 @@ def child_spec(parent_spec: HarnessSpec, sub: SubAgentSpec) -> HarnessSpec:
     """由父 Spec 派生子 Spec（同模型绑定，独立指令）。"""
     # Skill 是只读知识能力，默认继承；MCP 可能触达外部系统，只有 Revision
     # 明确授权时才继承，防止委派扩大权限面。
-    config = dict(parent_spec.execution_strategy.config)
-    config.pop("run_control", None)  # Parent controller owns tree-wide acceptance.
-    for key in ("max_tool_calls", "max_artifacts", "max_total_tokens"):
-        own = getattr(sub, key)
-        inherited = config.get(key)
-        config[key] = (
-            min(own, int(inherited))
-            if own is not None and inherited is not None
-            else (own if own is not None else inherited)
-        )
     return HarnessSpec(
         agent_revision_ref=parent_spec.agent_revision_ref,
         model=parent_spec.model,
         prompt=PromptSpec(instructions=sub.instructions),
         capabilities=CapabilityBindings(
-            skill_bindings=(parent_spec.capabilities.skill_bindings if sub.inherit_skills else ()),
+            skill_bindings=(
+                parent_spec.capabilities.skill_bindings if sub.inherit_skills else ()
+            ),
             mcp_bindings=(parent_spec.capabilities.mcp_bindings if sub.inherit_mcp else ()),
         ),
         context_policy=parent_spec.context_policy,
@@ -170,7 +162,13 @@ def child_spec(parent_spec: HarnessSpec, sub: SubAgentSpec) -> HarnessSpec:
         approval_policy=parent_spec.approval_policy,
         sandbox_policy=parent_spec.sandbox_policy,
         observability_policy=parent_spec.observability_policy,
-        execution_strategy=ExecutionStrategySpec(config=config),
+        execution_strategy=ExecutionStrategySpec(
+            config={
+                "max_tool_calls": sub.max_tool_calls,
+                "max_artifacts": sub.max_artifacts,
+                "max_total_tokens": sub.max_total_tokens,
+            }
+        ),
     )
 
 
@@ -182,7 +180,11 @@ async def run_subagent(
     task: str,
     call_id: str = "",
 ) -> tuple[dict[str, Any], list[RuntimeEvent]]:
-    """Run a governed child; stream its events as they happen into the parent."""
+    """运行子 Agent 到完成，返回 (最终文本, 以父 seq 重排的子事件)。
+
+    子事件信封：invocation_id 同父 Run（单一审计流），agent_id 为
+    ``{父agent_id}:{子名}``（事件树按 agent 分组展示子 Agent）。
+    """
     from ksadk.harness.engine.subagents import execute_subagent
 
     return await execute_subagent(
@@ -201,32 +203,36 @@ class SubAgentExecutionError(RuntimeError):
 def resequence_child_events(
     parent_run: Any, events: list[RuntimeEvent], *, observe: bool = False
 ) -> None:
-    """Project child identity into one ordered parent stream, preserving native evidence."""
+    """把缓冲的子事件按父 seq 重排后并入父流（tool.call 事件之后统一落盘）。"""
     for ev in events:
         parent_run.seq += 1
         payload = dict(ev.payload)
-        native_run_id = ev.run_id or ev.invocation_id
-        is_child = native_run_id != parent_run.handle.run_id
         if ev.event_type in {"agent.started", "agent.completed"}:
             payload.setdefault("parent_agent_id", parent_run.state.agent_id)
-        payload.setdefault("source_event_id", ev.event_id)
-        payload.setdefault("source_seq", ev.seq_id)
         parent_run.events.append(
-            ev.model_copy(
-                update={
-                    "invocation_id": parent_run.handle.run_id,
-                    "seq_id": parent_run.seq,
-                    "payload": payload,
-                    "run_id": native_run_id,
-                    "scope_id": f"agent:{ev.agent_id}",
-                    "parent_scope_id": f"agent:{parent_run.state.agent_id}" if is_child else None,
-                    "parent_run_id": parent_run.handle.run_id if is_child else None,
-                }
+            RuntimeEvent.create(
+                ev.event_type,
+                agent_id=ev.agent_id,
+                user_id=ev.user_id,
+                session_id=ev.session_id,
+                # v1 invocation_id 保持父审计流兼容；v2 run_id 保留独立子 Run。
+                invocation_id=parent_run.handle.run_id,
+                seq_id=parent_run.seq,
+                payload=payload,
+                phase=ev.phase,
+                run_id=ev.run_id or ev.invocation_id,
+                scope_id=ev.scope_id or f"agent:{ev.agent_id}",
+                parent_scope_id=ev.parent_scope_id or f"agent:{parent_run.state.agent_id}",
+                parent_run_id=ev.parent_run_id or parent_run.handle.run_id,
             )
         )
-        if observe and parent_run.controller is not None:
-            parent_run.control_events.append(ev)
-            parent_run.controller.observe(ev)
+
+        if observe:
+            projected = parent_run.events[-1]
+            if parent_run.controller is not None:
+                parent_run.control_events.append(projected)
+                parent_run.controller.observe(projected)
+            parent_run.observed_event_ids.add(projected.event_id)
 
 
 __all__ = [

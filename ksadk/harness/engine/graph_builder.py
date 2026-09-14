@@ -13,10 +13,13 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from ksadk.harness.engine import budgets
 from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.engine.langgraph import _GraphState
 from ksadk.harness.engine.mcp_disclosure import MCP_CALL_TOOL_TOOL, McpDisclosureCursors
+from ksadk.harness.engine.policy_runtime import revalidate_policy
 from ksadk.harness.engine.spans import wrap_node_span
+from ksadk.harness.engine.subagents import ChildApprovalPending
 from ksadk.harness.events import EventType
 from ksadk.harness.loop import (
     ModelFailoverExhausted,
@@ -36,23 +39,23 @@ def build_graph(engine, run):
     def _restore_controller(state: _GraphState) -> None:
         if run.controller is not None and state.get("run_control"):
             run.controller.restore(state["run_control"])
+        budgets.restore(run, state.get("budget") or {})
 
     def _capture_control_event(event) -> ControlAction:
-        if event.event_type == EventType.ARTIFACT_CREATED:
-            ref = str(event.payload.get("uri") or event.payload.get("artifact_uri") or "")
-            if ref and ref not in run.artifact_refs:
-                run.artifact_refs.append(ref)
+        if event.event_id in run.observed_event_ids:
+            return ControlAction.CONTINUE
+        run.observed_event_ids.add(event.event_id)
         if event.event_type == EventType.USAGE_REPORTED:
-            from ksadk.harness.engine import budgets
-
-            budgets.spend(
-                run,
-                "tokens",
-                int(event.payload.get("input_tokens") or 0)
-                + int(event.payload.get("output_tokens") or 0),
-            )
-            budgets.spend(run, "input_tokens", int(event.payload.get("input_tokens") or 0))
-            budgets.spend(run, "output_tokens", int(event.payload.get("output_tokens") or 0))
+            input_tokens = int(event.payload.get("input_tokens") or 0)
+            output_tokens = int(event.payload.get("output_tokens") or 0)
+            budgets.spend(run, "tokens", int(event.payload.get("total_tokens") or
+                                             input_tokens + output_tokens))
+            budgets.spend(run, "input_tokens", input_tokens)
+            budgets.spend(run, "output_tokens", output_tokens)
+        if event.event_type == EventType.ARTIFACT_CREATED:
+            uri = str(event.payload.get("uri") or "")
+            if uri and uri not in run.artifact_refs:
+                run.artifact_refs.append(uri)
         if run.controller is None:
             return ControlAction.CONTINUE
         if not any(item.event_id == event.event_id for item in run.control_events):
@@ -61,13 +64,19 @@ def build_graph(engine, run):
         return decision.action
 
     def _before_model(state: _GraphState) -> None:
-        if run.controller is None:
-            return
         _restore_controller(state)
+        if run.controller is None:
+            budgets.check(run, "tokens", 0)
+            budgets.check(run, "models")
+            budgets.spend(run, "models")
+            return
         decision = run.controller.before_model()
         if decision.action == ControlAction.STOP:
             state["run_control"] = run.controller.snapshot()
             raise RunControlStop(decision.reason)
+        budgets.check(run, "tokens", 0)
+        budgets.check(run, "models")
+        budgets.spend(run, "models")
         guidance = run.controller.take_execution_instruction()
         if guidance:
             state["messages"].append({"role": "system", "content": guidance})
@@ -102,9 +111,7 @@ def build_graph(engine, run):
         state["run_control"] = run.controller.snapshot()
 
     async def reason(state: _GraphState) -> _GraphState:
-        from ksadk.harness.engine import budgets
-
-        await engine._check_execution_policy(run)
+        await revalidate_policy(engine, run)
         _before_model(state)
         state["turn_count"] += 1
         # 收口 5：Turn 区间事件（模型/工具/usage 事件按 seq 落在区间内）。
@@ -137,6 +144,7 @@ def build_graph(engine, run):
                 from ksadk.harness.subagent import SubAgentExecutionError
 
                 used = max(
+                    int(state.get("usage_tokens") or 0),
                     run.budget_usage.get("tokens", 0),
                     run.controller.total_tokens if run.controller is not None else 0,
                 )
@@ -144,12 +152,6 @@ def build_graph(engine, run):
                     count_tokens(str(message.get("content") or "")) for message in state["messages"]
                 ) + count_tokens(spec.prompt.instructions or "")
                 remaining = int(max_total_tokens) - used - estimated_input
-                ancestor = run.budget_parent
-                while ancestor is not None:
-                    parent_remaining = budgets.remaining(ancestor, "tokens")
-                    if parent_remaining is not None:
-                        remaining = min(remaining, parent_remaining - estimated_input)
-                    ancestor = ancestor.budget_parent
                 if remaining < 1:
                     if run.controller is not None:
                         run.controller.stop_reason = "total_tokens_hard_limit"
@@ -158,7 +160,7 @@ def build_graph(engine, run):
                         raise RunControlStop("total_tokens_hard_limit")
                     raise SubAgentExecutionError(
                         "budget_exhausted",
-                        "execution token budget exhausted before model invocation "
+                        "sub-agent token budget exhausted before model invocation "
                         f"(limit={max_total_tokens}, used={used}, "
                         f"estimated_input={estimated_input})",
                     )
@@ -172,33 +174,38 @@ def build_graph(engine, run):
             ).strip().lower() in {"1", "true", "yes", "on"}
 
             def _live_event_sink(event):
-                if event.event_type == EventType.USAGE_REPORTED and run.context_manifest:
-                    event.payload["manifest_id"] = run.context_manifest.manifest_id
-                    run.context_manifest = run.context_manifest.with_actual(
-                        input_tokens=int(event.payload.get("input_tokens") or 0),
-                        output_tokens=int(event.payload.get("output_tokens") or 0),
-                        usage_ref=event.event_id,
-                    )
                 run.events.append(event)
                 run.seq = max(run.seq, event.seq_id)
                 _capture_control_event(event)
 
-            def _before_attempt():
-                budgets.check(run, "models")
-                budgets.spend(run, "models")
+            closing_turn = state["turn_count"] >= engine._max_reasoning_turns and any(
+                message.get("role") == "tool" for message in state["messages"]
+            )
+            instructions = spec.prompt.instructions or ""
+            if closing_turn:
+                instructions += (
+                    "\n\n这是本次执行的最后一轮。请停止调用工具，直接基于已有证据给出"
+                    "当前最佳答案，并明确仍未验证的事项。"
+                )
+            available_tools = (
+                list(run.tools.values())
+                + engine._skill_disclosure.tools(run.skill_catalog)
+                + engine._mcp_disclosure.tools(run.mcp_catalog)
+                + list(run.sub_agents.values())
+                + (
+                    [engine._delegation_runtime]
+                    if engine._delegation_runtime is not None
+                    else []
+                )
+            )
 
             return ReasonInput(
                 model_ref=spec.model.profile_ref,
                 fallback_model_refs=spec.model.fallback_profile_refs,
                 provider_policy=spec.model.provider_policy,
-                instructions=spec.prompt.instructions or "",
+                instructions=instructions,
                 messages=state["messages"],
-                tools=(
-                    list(run.tools.values())
-                    + engine._skill_disclosure.tools(run.skill_catalog)
-                    + engine._mcp_disclosure.tools(run.mcp_catalog)
-                    + list(run.sub_agents.values())
-                ),
+                tools=[] if closing_turn else available_tools,
                 reasoner=engine._reasoner,
                 agent_id=run.state.agent_id,
                 user_id=run.state.user_id,
@@ -208,8 +215,7 @@ def build_graph(engine, run):
                 max_turns=engine._max_reasoning_turns,
                 max_output_tokens=max_output_tokens,
                 streaming=streaming,
-                live_event_sink=_live_event_sink,
-                before_attempt=_before_attempt,
+                live_event_sink=_live_event_sink if streaming else None,
             )
 
         try:
@@ -319,12 +325,10 @@ def build_graph(engine, run):
         return state
 
     async def tool_calls(state: _GraphState) -> _GraphState:
-        from langgraph.errors import GraphInterrupt
-
-        from ksadk.harness.engine.subagents import ChildApprovalPending
-
-        run.child_approval_decision = state.pop("child_approval_decision", None)
-
+        await revalidate_policy(engine, run)
+        _restore_controller(state)
+        run.child_approval_decision = state.get("child_approval_decision")
+        state["child_approval_decision"] = {}
         class _GraphApprovalResolver:
             # LangGraph interrupt 同步语义：首次抛 GraphInterrupt，resume 后返回审批决定。
             def request(self, *, call_id, name, arguments):  # type: ignore[no-untyped-def]
@@ -377,6 +381,122 @@ def build_graph(engine, run):
         pending_tool_calls = order_subagent_tool_calls(
             list(state["pending_tool_calls"]), run.sub_agents
         )
+        def _parallel_safe(name, arguments):
+            sub = run.sub_agents.get(name)
+            if sub is not None:
+                return not (sub.tools or (sub.inherit_skills and run.skill_catalog)
+                            or (sub.inherit_mcp and run.mcp_catalog))
+            return bool(
+                engine._delegation_runtime is not None
+                and engine._delegation_runtime.is_tool(name)
+                and not run.approval_required and engine._capability_runtime is None
+            )
+
+        # Commit sequential siblings at separate checkpoint boundaries. Only
+        # children proven unable to request approval may share a parallel node.
+        parallel = len(pending_tool_calls) > 1 and engine._capability_runtime is None and all(
+            _parallel_safe(p["name"], p["arguments"])
+            and p["name"] not in run.approval_required
+            and not (run.sub_agents.get(p["name"]) and run.sub_agents[p["name"]].depends_on)
+            for p in pending_tool_calls
+        ) and spec.execution_strategy.config.get("subagent_failure_mode", "partial") != "fail_fast"
+        remaining_calls = [] if parallel else pending_tool_calls[1:]
+        pending_tool_calls = pending_tool_calls if parallel else pending_tool_calls[:1]
+        # Chat only needs an aggregate lifecycle signal. Provider selection,
+        # child labels and task bodies remain available in the execution trace
+        # and tool receipts, but are deliberately not expanded into one visible
+        # progress card per child.
+        delegation_calls = (
+            [
+                pending
+                for pending in pending_tool_calls
+                if engine._delegation_runtime is not None
+                and engine._delegation_runtime.is_tool(str(pending.get("name") or ""))
+            ]
+            if engine._delegation_runtime is not None
+            else []
+        )
+        delegation_labels: list[str] = []
+        ordinary_calls = [
+            pending for pending in pending_tool_calls if pending not in delegation_calls
+        ]
+
+        def _emit_tool_progress(status: str) -> None:
+            if not ordinary_calls:
+                return
+            tools = [str(pending.get("name") or "tool") for pending in ordinary_calls]
+            lowered = " ".join(tools).lower()
+            activity_kind = (
+                "write"
+                if any(token in lowered for token in ("write", "edit", "save"))
+                else "search"
+                if "search" in lowered
+                else "fetch"
+                if "fetch" in lowered
+                else "read"
+                if any(token in lowered for token in ("read", "list"))
+                else "command"
+                if any(token in lowered for token in ("command", "shell", "exec"))
+                else "tool"
+            )
+            batch_id = ":".join(
+                str(pending.get("call_id") or index)
+                for index, pending in enumerate(ordinary_calls, start=1)
+            )
+            # Repeated search/fetch/read turns are useful trace evidence but
+            # become dozens of duplicate chat rows during long research. Keep
+            # one public lifecycle per human activity class.
+            if status == "running":
+                if activity_kind in run.public_tool_activity_kinds:
+                    return
+                run.public_tool_activity_kinds.add(activity_kind)
+                run.public_tool_activity_batches.add(batch_id)
+            elif batch_id not in run.public_tool_activity_batches:
+                return
+            progress_event = engine._event(
+                run,
+                EventType.RUN_PROGRESS,
+                {
+                    "kind": "tool.batch",
+                    "status": status,
+                    "count": len(ordinary_calls),
+                    "batch_id": batch_id,
+                    "activity_kind": activity_kind,
+                    # Tool arguments and results stay in Trace/receipts.  The
+                    # chat surface only receives stable capability names and
+                    # turns them into human activity summaries.
+                    "tools": tools,
+                },
+            )
+            run.events.append(progress_event)
+            _capture_control_event(progress_event)
+
+        def _emit_delegation_progress(status: str) -> None:
+            if not delegation_calls:
+                return
+            progress_event = engine._event(
+                run,
+                EventType.RUN_PROGRESS,
+                {
+                    "kind": "delegation.batch",
+                    "status": status,
+                    "count": len(delegation_calls),
+                    "labels": delegation_labels,
+                },
+            )
+            run.events.append(progress_event)
+            _capture_control_event(progress_event)
+
+        if delegation_calls:
+            delegation_labels = [
+                engine._delegation_runtime.public_label(
+                    dict(pending.get("arguments") or {}),
+                    call_id=str(pending.get("call_id") or ""),
+                )
+                for pending in delegation_calls
+            ]
+            _emit_delegation_progress("running")
+        _emit_tool_progress("running")
         has_subagent_dependencies = any(
             run.sub_agents[name].depends_on
             for name in (str(call.get("name") or "") for call in pending_tool_calls)
@@ -385,47 +505,30 @@ def build_graph(engine, run):
         subagent_failure_mode = str(
             run.compiled.spec.execution_strategy.config.get("subagent_failure_mode", "partial")
         )
-        # Each governed call commits its own checkpoint. A later child approval
-        # therefore cannot replay a completed sibling or an earlier side effect.
-        current_calls = pending_tool_calls[:1]
-        from ksadk.harness.engine import budgets
-
-        if (
-            not has_subagent_dependencies
-            and subagent_failure_mode != "fail_fast"
-            and run.controller is None
-            and engine._capability_runtime is None
-            and run.execution_policy is None
-            and all(
-                budgets.limit(run, kind) is None
-                for kind in ("models", "tools", "tokens", "artifacts")
-            )
-            and all(
-                (child := run.sub_agents.get(call["name"])) is not None
-                and not child.tools
-                and not child.inherit_skills
-                and not child.inherit_mcp
-                for call in pending_tool_calls
-            )
-        ):
-            current_calls = pending_tool_calls
-
         def _live_tool_event(event):
+            if (event.event_type == EventType.TOOL_CALL_BEGIN
+                    and str(event.payload.get("call_id") or "") in run.budget_tool_calls):
+                return  # The same pending delegate resumes; it does not start twice.
             run.seq += 1
-            event = event.model_copy(update={"seq_id": run.seq})
+            event.seq_id = run.seq
             run.events.append(event)
             _capture_control_event(event)
-            return event
 
         try:
             out = await execute_tool_calls(
                 ToolCallInput(
-                    pending_tool_calls=current_calls,
+                    pending_tool_calls=pending_tool_calls,
                     approval_required=frozenset(run.approval_required),
                     approval_decider=_mcp_approval_decider,
                     parallel_safe_decider=(
                         lambda name, _arguments: (
-                            name in run.sub_agents
+                            (
+                                name in run.sub_agents and _parallel_safe(name, _arguments)
+                                or (
+                                    engine._delegation_runtime is not None
+                                    and engine._delegation_runtime.is_tool(name)
+                                )
+                            )
                             and not has_subagent_dependencies
                             and subagent_failure_mode != "fail_fast"
                         )
@@ -435,7 +538,13 @@ def build_graph(engine, run):
                             subagent_failure_mode == "fail_fast" and name in run.sub_agents
                         )
                     ),
-                    cancel_pending_decider=lambda name, _arguments: name in run.sub_agents,
+                    cancel_pending_decider=lambda name, _arguments: (
+                        name in run.sub_agents
+                        or (
+                            engine._delegation_runtime is not None
+                            and engine._delegation_runtime.is_tool(name)
+                        )
+                    ),
                     dependencies={
                         name: tuple(spec.depends_on)
                         for name, spec in run.sub_agents.items()
@@ -446,6 +555,10 @@ def build_graph(engine, run):
                     ),
                     capability_runtime=engine._capability_runtime,
                     tenant_id=engine._tenant_id,
+                    authorization_agent_id=run.request.metadata.get("authorization_agent_id"),
+                    succeeded_tools=frozenset(state.get("tool_batch_succeeded") or ()),
+                    prior_failure=bool(state.get("tool_batch_failed")),
+                    live_event_sink=_live_tool_event,
                     approval_resolver=_GraphApprovalResolver(),
                     tool_executor=_EngineToolExecutor(),
                     agent_id=run.state.agent_id,
@@ -454,27 +567,34 @@ def build_graph(engine, run):
                     run_id=run.handle.run_id,
                     seq_start=run.seq,
                     working_context=run.state.working_context,
-                    live_event_sink=_live_tool_event,
-                    succeeded=frozenset(state.get("tool_batch_succeeded") or ()),
-                    policy_agent_id=(
-                        run.budget_parent.state.agent_id
-                        if run.budget_parent is not None
-                        else run.state.agent_id
-                    ),
-                    control_exceptions=(GraphInterrupt, RunControlStop, ChildApprovalPending),
-                    cancelled_call_ids=frozenset(
-                        str(call["call_id"])
-                        for call in current_calls
-                        if state.get("tool_batch_failed")
-                        and subagent_failure_mode == "fail_fast"
-                        and call["name"] in run.sub_agents
-                    ),
                 )
             )
-        except ChildApprovalPending as pending:
-            state["child_approval"] = pending.detail
+        except ChildApprovalPending as exc:
+            state["child_approval"] = exc.detail
             state["route"] = "child_approval"
+            state["budget"] = budgets.snapshot(run)
             return state
+        except BaseException:
+            _emit_delegation_progress("failed")
+            _emit_tool_progress("failed")
+            raise
+        for ev in out.events:
+            _capture_control_event(ev)
+            if ev.event_type == EventType.TOOL_CALL_END:
+                if not ev.payload.get("error"):
+                    state.setdefault("tool_batch_succeeded", []).append(ev.payload["name"])
+                elif (
+                    subagent_failure_mode == "fail_fast"
+                    and ev.payload.get("name") in run.sub_agents
+                ):
+                    state["tool_batch_failed"] = True
+        tool_errors = any(
+            event.event_type == EventType.TOOL_CALL_END and event.payload.get("error")
+            for event in out.events
+            if str(event.payload.get("name") or "")
+            not in {str(call.get("name") or "") for call in delegation_calls}
+        )
+        _emit_tool_progress("failed" if tool_errors else "completed")
         # 收口 6：子 Agent 事件统一重排并入（tool.call.begin/end 之后）。
         from ksadk.harness.subagent import resequence_child_events
 
@@ -482,21 +602,31 @@ def build_graph(engine, run):
         for event in child_events:
             _capture_control_event(event)
         resequence_child_events(run, child_events)
+        subagent_events = engine._pending_subagent_events.pop(run.handle.run_id, {})
+        for pending in pending_tool_calls:
+            pending_events = subagent_events.get(str(pending.get("call_id") or ""), [])
+            for event in pending_events:
+                _capture_control_event(event)
+            resequence_child_events(
+                run,
+                pending_events,
+            )
+        if delegation_calls:
+            delegated_call_ids = {str(pending.get("call_id") or "") for pending in delegation_calls}
+            failed = any(
+                event.event_type == EventType.TOOL_CALL_END
+                and str(event.payload.get("call_id") or "") in delegated_call_ids
+                and bool(event.payload.get("error"))
+                for event in out.events
+            )
+            _emit_delegation_progress("failed" if failed else "completed")
         state["messages"].extend(out.new_messages)
         if out.working_context is not None:
             run.state.working_context = out.working_context
-        succeeded = set(state.get("tool_batch_succeeded") or ())
-        for event in out.events:
-            if event.event_type == EventType.TOOL_CALL_END:
-                if not event.payload.get("error"):
-                    succeeded.add(str(event.payload.get("name") or ""))
-                elif str(event.payload.get("name") or "") in run.sub_agents:
-                    state["tool_batch_failed"] = True
-        state["tool_batch_succeeded"] = sorted(succeeded)
-        state["pending_tool_calls"] = pending_tool_calls[len(current_calls) :]
+        state["pending_tool_calls"] = remaining_calls
         state["mcp_listed"] = sorted(cursors.listed)
         state["mcp_schema_read"] = sorted(cursors.schema_read)
-        state["route"] = "tool_calls" if state["pending_tool_calls"] else out.route
+        state["route"] = "tool_calls" if remaining_calls else out.route
         if run.controller is not None:
             if (
                 run.controller.replan_reason
@@ -518,19 +648,16 @@ def build_graph(engine, run):
             state["run_control"] = run.controller.snapshot()
         return state
 
+    def route(state: _GraphState) -> str:
+        return state["route"]
+
     def child_approval(state: _GraphState) -> _GraphState:
         info = state["child_approval"]
         decision = interrupt(info)
-        state["child_approval_decision"] = {
-            "child_run_id": info["child_run_id"],
-            "child_call_id": info["child_call_id"],
-            "decision": decision,
-        }
+        state["child_approval_decision"] = {**info, "decision": decision}
+        state["child_approval"] = {}
         state["route"] = "tool_calls"
         return state
-
-    def route(state: _GraphState) -> str:
-        return state["route"]
 
     async def plan_node(state: _GraphState) -> _GraphState:
         """plan-execute 拓扑的规划节点：一次无工具模型调用产出执行计划。"""
@@ -543,6 +670,17 @@ def build_graph(engine, run):
         )
         state["messages"].append(
             {"role": "assistant", "content": "【执行计划】\n" + (turn.final_text or "")}
+        )
+        run.events.append(
+            engine._event(
+                run,
+                EventType.RUN_PROGRESS,
+                {
+                    "kind": "plan",
+                    "status": "in_progress",
+                    "message": turn.final_text or "计划已生成",
+                },
+            )
         )
         return state
 
@@ -583,6 +721,8 @@ def build_graph(engine, run):
     }
     plan = run.compiled.plan
     builder = StateGraph(_GraphState)
+    builder.add_node("child_approval", child_approval)
+    builder.add_edge("child_approval", "tool_calls")
     for node in plan.nodes:
         if node == "final":
             continue  # final 是出口，不是图节点。
@@ -590,11 +730,6 @@ def build_graph(engine, run):
         if impl is None:
             raise ExecutionEngineError(f"引擎不支持拓扑节点: {node!r}")
         builder.add_node(node, impl)
-    if "tool_calls" in plan.nodes:
-        builder.add_node(
-            "child_approval", wrap_node_span(engine, run, "child_approval", child_approval)
-        )
-        builder.add_edge("child_approval", "tool_calls")
     edges = plan.edges or ()
     successors_of = {src: [dst for s, dst in edges if s == src] for src, _ in edges}
     # 入口：无入边的节点接 START（保持 plan.nodes 顺序稳定）。
@@ -616,11 +751,9 @@ def build_graph(engine, run):
         if src == "reason":
             continue  # 已由条件边覆盖。
         if src == "tool_calls":
-            builder.add_conditional_edges(
-                "tool_calls",
-                route,
-                {"tool_calls": "tool_calls", "reason": dst, "child_approval": "child_approval"},
-            )
+            builder.add_conditional_edges("tool_calls", route, {
+                "tool_calls": "tool_calls", "child_approval": "child_approval", "reason": dst,
+            })
             continue
         if dst == "final":
             if src in node_impls and src != "reason":

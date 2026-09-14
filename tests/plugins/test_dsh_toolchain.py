@@ -50,6 +50,8 @@ class _InstallRunner:
                 f"        version: {DSH_VERSION}\n",
                 encoding="utf-8",
             )
+            with (cwd / "pnpm-lock.yaml").open("a", encoding="utf-8") as lock:
+                lock.write(f"packages:\n  '{DSH_PACKAGE}@{DSH_VERSION}': {{}}\n")
             return CommandResult()
         if argv[1:3] == ("install", "--frozen-lockfile"):
             target = cwd / "node_modules" / DSH_PACKAGE / "lib" / "bin.js"
@@ -150,7 +152,7 @@ def test_managed_toolchain_reports_actual_dsh_version_mismatch(tmp_path: Path) -
     manager.root.mkdir(parents=True)
     manager._write_install_manifest(manager.root)
     (manager.root / "pnpm-lock.yaml").write_text(
-        f"'{DSH_PACKAGE}': {DSH_VERSION}\n",
+        f"packages:\n  '{DSH_PACKAGE}@{DSH_VERSION}': {{}}\n",
         encoding="utf-8",
     )
     target = manager.root / "node_modules" / DSH_PACKAGE / "lib" / "bin.js"
@@ -260,7 +262,7 @@ def test_toolchain_rejects_executable_that_escapes_managed_root(tmp_path: Path) 
     manager.root.mkdir(parents=True)
     manager._write_install_manifest(manager.root)
     (manager.root / "pnpm-lock.yaml").write_text(
-        f"'{DSH_PACKAGE}': {DSH_VERSION}\n",
+        f"packages:\n  '{DSH_PACKAGE}@{DSH_VERSION}': {{}}\n",
         encoding="utf-8",
     )
     outside = _fake_executable(tmp_path, "outside-dsh")

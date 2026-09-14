@@ -956,7 +956,7 @@ async def test_resilient_canonical_write_rejects_capability_mismatch_before_dual
     assert await primary.get_events("capability-mismatch") == []
 
 
-async def test_resilient_canonical_write_rejects_two_capable_backends_before_dual_write():
+async def test_resilient_canonical_write_uses_primary_as_single_authority():
     primary = InMemorySessionService()
     fallback = InMemorySessionService()
     service = ResilientSessionService(primary, fallback=fallback)
@@ -972,11 +972,11 @@ async def test_resilient_canonical_write_rejects_two_capable_backends_before_dua
         status="running",
     )
 
-    with pytest.raises(RuntimeError, match="atomic runtime_event.seq"):
-        await RuntimeEventStore(service).append_one("dual-capable", event)
+    persisted = await RuntimeEventStore(service).append_one("dual-capable", event)
 
+    assert persisted.seq == 1
     assert await fallback.get_events("dual-capable") == []
-    assert await primary.get_events("dual-capable") == []
+    assert len(await primary.get_events("dual-capable")) == 1
 
 
 async def test_resilient_invocation_read_uses_hydrated_live_authority():

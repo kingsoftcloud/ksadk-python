@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from ksadk.events.canonical import ItemCompleted, RunCompleted, RunStarted, UsageReported
+from ksadk.events.canonical import (
+    InteractionRequested,
+    ItemCompleted,
+    RunCompleted,
+    RunStarted,
+    UsageReported,
+)
 from ksadk.events.content import TextContent
 from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
 from ksadk.harness.reasoner import HarnessReasoningTurn
@@ -35,7 +41,7 @@ async def test_studio_approval_shape_is_normalized(decision, expected):
     assert engine.resume.call_args.args[2].data == expected
 
 
-def test_tool_error_projection_preserves_result_and_error():
+def test_tool_error_projection_keeps_only_safe_trace_status():
     from ksadk.harness.events import EventType, RuntimeEvent
     from ksadk.harness.managed_runtime import _project_event
 
@@ -52,8 +58,40 @@ def test_tool_error_projection_preserves_result_and_error():
     )
     projected = _project_event(event)
     first = projected[0].model_dump(mode="json", exclude_none=True)
-    assert first["initial"]["parts"][0]["result"] == {"error": "server not bound"}
-    assert first["initial"]["parts"][0]["is_error"] is True
+    assert first["item_kind"] == "status"
+    text = first["snapshot"]["parts"][0]["text"]
+    assert '"status":"failed"' in text
+    assert "server not bound" not in text
+
+
+def test_approval_projection_omits_document_body_and_keeps_target_path():
+    from ksadk.harness.events import EventType, RuntimeEvent
+    from ksadk.harness.managed_runtime import _project_event
+
+    event = RuntimeEvent(
+        event_id="approval-event",
+        timestamp=1.0,
+        user_id="user",
+        seq_id=1,
+        event_type=EventType.APPROVAL_REQUESTED,
+        agent_id="agent",
+        session_id="session",
+        invocation_id="run",
+        payload={
+            "approval_id": "approval",
+            "call_id": "call",
+            "kind": "tool",
+            "detail": {
+                "name": "write_workspace_file",
+                "args": {"path": "report.md", "content": "private report body"},
+            },
+        },
+    )
+    projected = _project_event(event)
+    assert isinstance(projected[0], InteractionRequested)
+    detail = projected[0].request.detail
+    assert detail == {"name": "write_workspace_file", "args": {"path": "report.md"}}
+    assert "private report body" not in repr(projected[0])
 
 
 class _Reasoner:
@@ -159,7 +197,7 @@ async def test_managed_adapter_passes_studio_conversation_history(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_managed_adapter_emits_reasoning_item_events(tmp_path):
+async def test_managed_adapter_keeps_private_reasoning_out_of_chat(tmp_path):
     class _ReasoningReasoner(_Reasoner):
         async def complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
             del model, prompt, tools, max_output_tokens
@@ -192,5 +230,10 @@ async def test_managed_adapter_emits_reasoning_item_events(tmp_path):
         for event in events
         if isinstance(event, ItemCompleted) and event.item_kind == "reasoning"
     ]
-    assert reasoning, "managed adapter did not emit reasoning item events"
-    assert reasoning[-1].snapshot.parts[0].text == "先检查历史，再回答。"
+    assert reasoning == []
+    status = [
+        event
+        for event in events
+        if isinstance(event, ItemCompleted) and event.item_kind == "status"
+    ]
+    assert any("先检查历史，再回答。" in event.snapshot.parts[0].text for event in status)

@@ -76,6 +76,9 @@ def test_disabled_and_unrelated_plugins_do_not_require_resource_connections(tmp_
 
 async def test_resource_validation_api_uses_saved_revision_and_never_claims_authorization(tmp_path):
     studio = StudioService(tmp_path)
+    # This case tests offline declaration validation, not a configured host's
+    # optional live authority admission (covered separately).
+    studio.resource_authority = None
     draft = studio.drafts.create(
         agent_id="resource-agent",
         name="Resource Agent",

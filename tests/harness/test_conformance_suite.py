@@ -21,6 +21,25 @@ def test_compliant_no_tool_stream_passes():
     assert report.ok, [f"{v.rule}: {v.detail}" for v in report.violations]
 
 
+def test_parallel_children_have_independent_lifecycle_and_call_namespaces():
+    make = make_event_factory()
+    events = [make(EventType.RUN_STARTED, {"status": "running"})]
+    for kind in (EventType.RUN_STARTED, EventType.MODEL_CALL_STARTED,
+                 EventType.MODEL_CALL_COMPLETED, EventType.RUN_COMPLETED):
+        for child in ("child-one", "child-two"):
+            events.append(make(
+                kind, {"status": "completed" if kind == EventType.RUN_COMPLETED else "running",
+                       "model": "fixture-model"},
+                run_id=child, scope_id=f"agent:{child}", parent_run_id="run-1",
+            ))
+    events.append(make(EventType.RUN_COMPLETED, {"status": "completed"}))
+    assert run_conformance_suite(events).ok
+    duplicate = events[-2].model_copy(update={"seq_id": events[-1].seq_id})
+    events[-1].seq_id += 1
+    events.insert(-1, duplicate)
+    assert any(v.rule == "lifecycle" for v in run_conformance_suite(events).violations)
+
+
 def test_compliant_single_tool_stream_passes():
     make = make_event_factory()
     report = run_conformance_suite(compliant_single_tool_events(make))
