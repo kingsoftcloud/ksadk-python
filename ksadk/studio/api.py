@@ -106,6 +106,8 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
     "/api/v1/system/health",
     "/api/v1/system/session",
+    "/api/v1/system/bootstrap",
+    "/v1/responses",
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -424,7 +426,7 @@ def create_studio_app(
         if security_enabled and (
             (studio_api and request.url.path not in _PUBLIC_API_PATHS)
             or shared_web_api
-            or responses_api
+            or (responses_api and request.url.path not in _PUBLIC_API_PATHS)
         ):
             supplied = (
                 request.cookies.get(session_cookie_name)

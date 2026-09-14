@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -466,6 +466,21 @@ function formatChatTime(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function formatChatDate(iso: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const isSameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (isSameDay(date, today)) return "今天";
+  if (isSameDay(date, yesterday)) return "昨天";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 function parsePayload(payload: Record<string, unknown> | string): Record<string, unknown> {
   if (typeof payload === "string") {
     try {
@@ -559,7 +574,8 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
  const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
   const [actionKind, setActionKind] = useState<"approve" | "reject" | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const chatBodyRef = useRef<HTMLDivElement>(null);
 
   const [qrTarget, setQrTarget] = useState<Channel | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
@@ -853,7 +869,7 @@ async function submitChannel(event: React.FormEvent) {
       minWidth: 240,
       cell: ch => (
         <>
-          <span className="channel-platform-tag" aria-hidden="true">{PLATFORM_BADGE[ch.Channel]}</span>
+          <span className="channel-platform-tag" data-platform={ch.Channel} aria-hidden="true">{PLATFORM_BADGE[ch.Channel]}</span>
           <strong>{CHANNEL_LABELS[ch.Channel]} · {ch.ChannelAccountId}</strong>
           <span className="resource-origin mono">{ch.Id}</span>
         </>
@@ -869,13 +885,13 @@ async function submitChannel(event: React.FormEvent) {
       id: "dmPolicy",
       header: "私聊策略",
       width: 100,
-      cell: ch => <span className="channel-policy-tag">{DM_POLICY_LABELS[ch.DmPolicy]}</span>,
+      cell: ch => <span className="channel-policy-tag" data-policy={ch.DmPolicy}>{DM_POLICY_LABELS[ch.DmPolicy]}</span>,
     },
     {
       id: "groupPolicy",
       header: "群聊策略",
       width: 100,
-      cell: ch => <span className="channel-policy-tag">{GROUP_POLICY_LABELS[ch.GroupPolicy]}</span>,
+      cell: ch => <span className="channel-policy-tag" data-policy={ch.GroupPolicy}>{GROUP_POLICY_LABELS[ch.GroupPolicy]}</span>,
     },
     {
       id: "requireMention",
@@ -928,7 +944,7 @@ async function submitChannel(event: React.FormEvent) {
       minWidth: 180,
       cell: pr => (
         <>
-          <span className="channel-platform-tag" aria-hidden="true">{PLATFORM_BADGE[pr.Channel]}</span>
+          <span className="channel-platform-tag" data-platform={pr.Channel} aria-hidden="true">{PLATFORM_BADGE[pr.Channel]}</span>
           <span>{CHANNEL_LABELS[pr.Channel]} · {pr.ChannelAccountId}</span>
         </>
       ),
@@ -990,7 +1006,7 @@ async function submitChannel(event: React.FormEvent) {
       minWidth: 180,
       cell: bd => (
         <>
-          <span className="channel-platform-tag" aria-hidden="true">{PLATFORM_BADGE[bd.Channel]}</span>
+          <span className="channel-platform-tag" data-platform={bd.Channel} aria-hidden="true">{PLATFORM_BADGE[bd.Channel]}</span>
           <span>{CHANNEL_LABELS[bd.Channel]} · {bd.ChannelAccountId}</span>
         </>
       ),
@@ -1067,7 +1083,7 @@ async function submitChannel(event: React.FormEvent) {
       minWidth: 160,
       cell: msg => (
         <>
-          <span className="channel-platform-tag" aria-hidden="true">{PLATFORM_BADGE[msg.Channel]}</span>
+          <span className="channel-platform-tag" data-platform={msg.Channel} aria-hidden="true">{PLATFORM_BADGE[msg.Channel]}</span>
           <span>{CHANNEL_LABELS[msg.Channel]} · {msg.ChannelAccountId}</span>
         </>
       ),
@@ -1180,6 +1196,12 @@ async function submitChannel(event: React.FormEvent) {
     () => conversations.find(c => c.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
   );
+
+  useEffect(() => {
+    if (chatBodyRef.current) {
+      chatBodyRef.current.scrollTop = chatBodyRef.current.scrollHeight;
+    }
+  }, [selectedConversationId, selectedConversation?.messages.length]);
 
   // // ── Metrics ────────────────────────────────────────────────────────────────
 
@@ -1326,7 +1348,7 @@ async function submitChannel(event: React.FormEvent) {
                     onClick={() => setSelectedConversationId(conv.id)}
                   >
                     <div className="channels-page__chat-item-avatar">
-                      <span className="channel-platform-tag">{PLATFORM_BADGE[conv.channel]}</span>
+                      <span className="channel-platform-tag" data-platform={conv.channel}>{PLATFORM_BADGE[conv.channel]}</span>
                     </div>
                     <div className="channels-page__chat-item-body">
                       <div className="channels-page__chat-item-top">
@@ -1351,7 +1373,7 @@ async function submitChannel(event: React.FormEvent) {
               <>
                 <div className="channels-page__chat-header">
                   <div className="channels-page__chat-header-info">
-                    <span className="channel-platform-tag">{PLATFORM_BADGE[selectedConversation.channel]}</span>
+                    <span className="channel-platform-tag" data-platform={selectedConversation.channel}>{PLATFORM_BADGE[selectedConversation.channel]}</span>
                     <span className="channels-page__chat-header-name">{selectedConversation.title}</span>
                     <span className="channels-page__chat-header-meta">
                       {CHANNEL_LABELS[selectedConversation.channel]} · {selectedConversation.channelAccountId}
@@ -1360,18 +1382,31 @@ async function submitChannel(event: React.FormEvent) {
                   </div>
                   <span className="channels-page__chat-header-count">{selectedConversation.messageCount} 条消息</span>
                 </div>
-                <div className="channels-page__chat-body">
-                  {selectedConversation.messages.map(msg => (
-                    <div key={msg.Id} className={`channels-page__chat-bubble ${msg.Direction}`}>
-                      <div className="channels-page__chat-bubble-content">{messagePreview(msg)}</div>
-                      <div className="channels-page__chat-bubble-time">{formatChatTime(msg.CreatedAt)}</div>
-                      {msg.Error && (
-                        <div className="channels-page__chat-bubble-error">
-                          <span className="badge" data-state="failed">{msg.Error}</span>
+                <div className="channels-page__chat-body" ref={chatBodyRef}>
+                  {selectedConversation.messages.map((msg, idx) => {
+                    const prevMsg = idx > 0 ? selectedConversation.messages[idx - 1] : null;
+                    const showDateSep = !prevMsg || formatChatDate(prevMsg.CreatedAt) !== formatChatDate(msg.CreatedAt);
+                    const sender = msg.Direction === "inbound" ? messageSender(msg) : "";
+                    return (
+                      <div key={msg.Id}>
+                        {showDateSep && (
+                          <div className="channels-page__chat-date-sep">{formatChatDate(msg.CreatedAt)}</div>
+                        )}
+                        <div className={`channels-page__chat-bubble ${msg.Direction}`}>
+                          {msg.Direction === "inbound" && sender && (
+                            <div className="channels-page__chat-bubble-sender">{sender}</div>
+                          )}
+                          <div className="channels-page__chat-bubble-content">{messagePreview(msg)}</div>
+                          <div className="channels-page__chat-bubble-time">{formatChatTime(msg.CreatedAt)}</div>
+                          {msg.Error && (
+                            <div className="channels-page__chat-bubble-error">
+                              <span className="badge" data-state="failed">{msg.Error}</span>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
               </>
             ) : (
@@ -1402,6 +1437,7 @@ async function submitChannel(event: React.FormEvent) {
           )}
        >
           <form id="channel-create-form" className="channels-page__create-form" onSubmit={submitChannel}>
+            {/* Step 1: 平台选择 */}
             <div className="channels-page__form-section">
               <div className="channels-page__form-section-title" data-step="1">选择平台</div>
               <div className="channels-page__platform-cards">
@@ -1412,7 +1448,7 @@ async function submitChannel(event: React.FormEvent) {
                     className={`channels-page__platform-card${form.Channel === value ? " selected" : ""}`}
                     onClick={() => setForm(prev => ({ ...prev, Channel: value }))}
                   >
-                    <span className="channels-page__platform-card-icon"><Icon size={20} /></span>
+                    <span className="channels-page__platform-card-icon"><Icon size={22} /></span>
                     <span className="channels-page__platform-card-text">
                       <span className="channels-page__platform-card-name">{label}</span>
                       <span className="channels-page__platform-card-desc">{desc}</span>
@@ -1422,61 +1458,79 @@ async function submitChannel(event: React.FormEvent) {
                 ))}
               </div>
             </div>
+
+            {/* Step 2: 接入配置 - 使用统一栅格 */}
             <div className="channels-page__form-section">
               <div className="channels-page__form-section-title" data-step="2">接入配置</div>
-              <FormField label="渠道账号 ID" htmlFor="channel-account-id" requirement="required">
-                <input
-                  id="channel-account-id"
-                  value={form.ChannelAccountId}
-                  onChange={event => setForm(prev => ({ ...prev, ChannelAccountId: event.target.value }))}
-                  placeholder="如：wps-default"
-                  required
-                />
-              </FormField>
-              <div className="channels-page__form-row">
-                <FormField label="App ID" htmlFor="channel-app-id" requirement={isEdit ? "optional" : "required"}>
-                  <input
-                    id="channel-app-id"
-                    value={form.AppId}
-                    onChange={event => setForm(prev => ({ ...prev, AppId: event.target.value }))}
-                    placeholder={isEdit ? "留空则不修改" : "平台分配的应用 ID"}
-                  />
-                </FormField>
-                <FormField label="App Secret" htmlFor="channel-app-secret" requirement={isEdit ? "optional" : "required"}>
-                  <input
-                    id="channel-app-secret"
-                    type="password"
-                    value={form.AppSecret}
-                    onChange={event => setForm(prev => ({ ...prev, AppSecret: event.target.value }))}
-                    placeholder={isEdit ? "留空则不修改" : "平台分配的应用密钥"}
-                  />
-                </FormField>
+              <div className="channels-page__form-grid">
+                <div className="channels-page__form-col-12">
+                  <FormField label="渠道账号 ID" htmlFor="channel-account-id" requirement="required">
+                    <input
+                      id="channel-account-id"
+                      value={form.ChannelAccountId}
+                      onChange={event => setForm(prev => ({ ...prev, ChannelAccountId: event.target.value }))}
+                      placeholder="如：wps-default"
+                      required
+                    />
+                  </FormField>
+                </div>
+                <div className="channels-page__form-col-6">
+                  <FormField label="App ID" htmlFor="channel-app-id" requirement={isEdit ? "optional" : "required"}>
+                    <input
+                      id="channel-app-id"
+                      value={form.AppId}
+                      onChange={event => setForm(prev => ({ ...prev, AppId: event.target.value }))}
+                      placeholder={isEdit ? "留空则不修改" : "平台分配的应用 ID"}
+                    />
+                  </FormField>
+                </div>
+                <div className="channels-page__form-col-6">
+                  <FormField label="App Secret" htmlFor="channel-app-secret" requirement={isEdit ? "optional" : "required"}>
+                    <input
+                      id="channel-app-secret"
+                      type="password"
+                      value={form.AppSecret}
+                      onChange={event => setForm(prev => ({ ...prev, AppSecret: event.target.value }))}
+                      placeholder={isEdit ? "留空则不修改" : "平台分配的应用密钥"}
+                    />
+                  </FormField>
+                </div>
               </div>
             </div>
+
+            {/* Step 3: Agent 绑定 */}
             <div className="channels-page__form-section">
               <div className="channels-page__form-section-title" data-step="3">Agent 绑定</div>
-              <FormField label="Agent" htmlFor="channel-agent" requirement="required">
-                <StudioSelect
-                  id="channel-agent"
-                  ariaLabel="绑定 Agent"
-                  options={agentOptions}
-                  value={form.AgentId}
-                  placeholder="选择要绑定的 Agent"
-                  onValueChange={value => setForm(prev => ({ ...prev, AgentId: value }))}
-                />
-              </FormField>
-              <label className="channel-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={form.Enabled}
-                  onChange={event => setForm(prev => ({ ...prev, Enabled: event.target.checked }))}
-                />
-                <span>
-                  <strong>启用渠道</strong>
-                  <small>停用后渠道不再接收和发送消息</small>
-                </span>
-              </label>
+              <div className="channels-page__form-grid">
+                <div className="channels-page__form-col-12">
+                  <FormField label="Agent" htmlFor="channel-agent" requirement="required">
+                    <StudioSelect
+                      id="channel-agent"
+                      ariaLabel="绑定 Agent"
+                      options={agentOptions}
+                      value={form.AgentId}
+                      placeholder="选择要绑定的 Agent"
+                      onValueChange={value => setForm(prev => ({ ...prev, AgentId: value }))}
+                    />
+                  </FormField>
+                </div>
+                <div className="channels-page__form-col-6">
+                  <label className="channel-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={form.Enabled}
+                      onChange={event => setForm(prev => ({ ...prev, Enabled: event.target.checked }))}
+                    />
+                    <span>
+                      <strong>启用渠道</strong>
+                      <small>停用后渠道不再接收和发送消息</small>
+                    </span>
+                  </label>
+                </div>
+              </div>
             </div>
+
+            {/* 高级设置 */}
             <div className="channels-page__advanced-toggle">
               <button
                 type="button"
@@ -1494,55 +1548,76 @@ async function submitChannel(event: React.FormEvent) {
             </div>
             {advancedOpen && (
               <div className="channels-page__advanced-body">
-                <div className="channels-page__form-row">
-                  <FormField label="私聊策略">
-                    <StudioSelect
-                      ariaLabel="私聊策略"
-                      value={form.DmPolicy}
-                      options={DM_POLICY_OPTIONS}
-                      onValueChange={value => setForm(prev => ({ ...prev, DmPolicy: value as DmPolicy }))}
-                    />
-                  </FormField>
-                  <FormField label="群聊策略">
-                    <StudioSelect
-                      ariaLabel="群聊策略"
-                      value={form.GroupPolicy}
-                      options={GROUP_POLICY_OPTIONS}
-                      onValueChange={value => setForm(prev => ({ ...prev, GroupPolicy: value as GroupPolicy }))}
+                {/* 策略设置 */}
+                <div className="channels-page__advanced-section">
+                  <div className="channels-page__advanced-section-title">策略设置</div>
+                  <div className="channels-page__form-grid">
+                    <div className="channels-page__form-col-6">
+                      <FormField label="私聊策略">
+                        <StudioSelect
+                          ariaLabel="私聊策略"
+                          value={form.DmPolicy}
+                          options={DM_POLICY_OPTIONS}
+                          onValueChange={value => setForm(prev => ({ ...prev, DmPolicy: value as DmPolicy }))}
+                        />
+                      </FormField>
+                    </div>
+                    <div className="channels-page__form-col-6">
+                      <FormField label="群聊策略">
+                        <StudioSelect
+                          ariaLabel="群聊策略"
+                          value={form.GroupPolicy}
+                          options={GROUP_POLICY_OPTIONS}
+                          onValueChange={value => setForm(prev => ({ ...prev, GroupPolicy: value as GroupPolicy }))}
+                        />
+                      </FormField>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 会话设置 */}
+                <div className="channels-page__advanced-section">
+                  <div className="channels-page__advanced-section-title">会话设置</div>
+                  <div className="channels-page__form-grid">
+                    <div className="channels-page__form-col-6">
+                      <FormField label="会话隔离">
+                        <StudioSelect
+                          ariaLabel="会话隔离"
+                          value={form.SessionScope}
+                          options={SESSION_SCOPE_OPTIONS}
+                          onValueChange={value => setForm(prev => ({ ...prev, SessionScope: value as SessionScope }))}
+                        />
+                      </FormField>
+                    </div>
+                    <div className="channels-page__form-col-6">
+                      <label className="channel-toggle-row channel-toggle-row--compact">
+                        <input
+                          type="checkbox"
+                          checked={form.RequireMention}
+                          onChange={event => setForm(prev => ({ ...prev, RequireMention: event.target.checked }))}
+                        />
+                        <span>
+                          <strong>要求 @机器人</strong>
+                          <small>群聊中需 @机器人才会触发响应</small>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 扩展配置 */}
+                <div className="channels-page__advanced-section">
+                  <FormField label="扩展配置" htmlFor="channel-config-json" hint="JSON 格式的扩展配置，默认为空对象 {}">
+                    <textarea
+                      id="channel-config-json"
+                      value={form.ConfigJson}
+                      onChange={event => setForm(prev => ({ ...prev, ConfigJson: event.target.value }))}
+                      placeholder="{}"
+                      rows={4}
+                      className="channels-page__config-textarea"
                     />
                   </FormField>
                 </div>
-                <div className="channels-page__form-row">
-                  <FormField label="会话隔离">
-                    <StudioSelect
-                      ariaLabel="会话隔离"
-                      value={form.SessionScope}
-                      options={SESSION_SCOPE_OPTIONS}
-                      onValueChange={value => setForm(prev => ({ ...prev, SessionScope: value as SessionScope }))}
-                    />
-                  </FormField>
-                </div>
-                <label className="channel-toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={form.RequireMention}
-                    onChange={event => setForm(prev => ({ ...prev, RequireMention: event.target.checked }))}
-                  />
-                  <span>
-                    <strong>要求 @机器人</strong>
-                    <small>群聊中用户必须 @机器人才会触发响应</small>
-                  </span>
-                </label>
-                <FormField label="扩展配置" htmlFor="channel-config-json" hint="JSON 格式的扩展配置，默认为空对象 {}">
-                  <textarea
-                    id="channel-config-json"
-                    value={form.ConfigJson}
-                    onChange={event => setForm(prev => ({ ...prev, ConfigJson: event.target.value }))}
-                    placeholder="{}"
-                    rows={3}
-                    className="channels-page__config-textarea"
-                  />
-                </FormField>
               </div>
             )}
           </form>
