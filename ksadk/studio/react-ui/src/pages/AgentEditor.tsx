@@ -352,6 +352,8 @@ export function AgentEditor({
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedTools((bindings.tools || []).map((item: { resourceId: string }) => item.resourceId));
+        setSubAgents(draft.spec?.subAgents || []);
+        setSubAgentsTouched(false);
         setSelectedPlugins(bindings.plugins || []);
         setRuntimeProjectPath(String(draft.spec?.runtime?.projectPath || "."));
         setRuntimeEntryPoint(String(draft.spec?.runtime?.entryPoint || (draft.spec?.runtime?.type === "langgraph" ? "graph.py" : "agent.py")));
@@ -648,6 +650,7 @@ export function AgentEditor({
         tools: mergeCapabilityBindings(original.bindings?.tools, selectedTools),
         plugins: selectedPlugins,
       };
+      if (subAgentsTouched) spec.subAgents = subAgents;
       spec.context = {
         ...(original.context || {}),
         ownership: contextOwnership,

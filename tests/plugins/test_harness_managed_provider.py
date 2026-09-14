@@ -185,14 +185,17 @@ async def test_builtin_write_runs_only_after_studio_approval(tmp_path, decision,
 
 
 @pytest.mark.asyncio
-async def test_dsh_contributions_run_through_managed_harness(tmp_path):
+@pytest.mark.parametrize("result_label,offloaded", [
+    ("managed", False), ("large-result-" * 600, True), ("phone:13800138000", True),
+], ids=["small", "large", "sensitive"])
+async def test_dsh_contributions_run_through_managed_harness(tmp_path, result_label, offloaded):
     reasoner = _ManagedMcpReasoner()
-    with run_fixture_mcp_server(label="managed") as fixture:
+    with run_fixture_mcp_server(label=result_label) as fixture:
         adapter = await build_managed_provider_adapter(
             HarnessConfig(
                 model="fixture-model",
                 prompt="Use bound capabilities.",
-                mcp_tools=(McpToolSpec(name="fixture", url=fixture.url),),
+                mcp_tools=(McpToolSpec(name="fixture", url=fixture.url, api_key="harness-secret"),),
             ),
             agent_name="managed-provider-agent",
             workspace_root=tmp_path,
@@ -236,12 +239,25 @@ async def test_dsh_contributions_run_through_managed_harness(tmp_path):
             "managed-style" in str(message.get("content")) for message in reasoner.first_messages
         )
         assert any(isinstance(event, RunCompleted) for event in events)
+        completed_run = next(event for event in events if isinstance(event, RunCompleted))
+        final_item_id = completed_run.output_refs[0].item_id
         final = next(
             event
             for event in events
-            if isinstance(event, ItemCompleted) and event.item_kind == "message"
+            if isinstance(event, ItemCompleted)
+            and event.item_kind == "message"
+            and event.item_id == final_item_id
         )
         assert isinstance(final.snapshot.parts[0], TextContent)
         assert final.snapshot.parts[0].text == "managed provider completed"
+        assert fixture.log.calls == [("lookup", "ALPHA")]
+
+        store = adapter._provider_artifact_store
+        rows = store._db.execute("SELECT run_id, name FROM artifacts").fetchall()
+        assert bool(rows) is offloaded
+        if offloaded:
+            record = store.latest(*rows[0])
+            assert record is not None and record.bytes > 0
+            assert record.uri.startswith("artifact://")
 
         await adapter.close_all()

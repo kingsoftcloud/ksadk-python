@@ -13,6 +13,7 @@ import pytest
 from ksadk.conversations.contracts import ConversationItem
 from ksadk.plugins.builtins import (
     CORE_RENDERER_PLUGIN_ID,
+    LOCAL_MEMORY_PROVIDER_PLUGIN_ID,
     READ_ONLY_CONTEXT_PLUGIN_ID,
     SQLITE_SESSION_STORE_PLUGIN_ID,
     WORKSPACE_MCP_PLUGIN_ID,
@@ -370,6 +371,7 @@ def test_builtin_catalog_is_pinned_and_covers_the_phase_two_capabilities() -> No
         WORKSPACE_SKILL_PLUGIN_ID,
         READ_ONLY_CONTEXT_PLUGIN_ID,
         CORE_RENDERER_PLUGIN_ID,
+        LOCAL_MEMORY_PROVIDER_PLUGIN_ID,
     }
     assert {
         offer.definition
@@ -379,8 +381,9 @@ def test_builtin_catalog_is_pinned_and_covers_the_phase_two_capabilities() -> No
         "session.event-store/v1",
         "mcp.connector/v1",
         "skill.source/v1",
-        "context.contributor/v1",
-        "session.item.renderer/v1",
+            "context.contributor/v1",
+            "memory.provider/v1",
+            "session.item.renderer/v1",
     }
     assert all(item.spec.provenance.source == "builtin" for item in manifests)
     assert all(item.metadata.version == "1.0.0" for item in manifests)

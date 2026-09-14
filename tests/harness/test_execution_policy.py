@@ -114,6 +114,54 @@ async def test_policy_ref_without_resolver_fails_closed():
 
 
 @pytest.mark.asyncio
+async def test_untrusted_parent_metadata_cannot_skip_host_limits():
+    resolver = Resolver({"one": ExecutionPolicy(limits={"max_tool_calls": 0})})
+    adapter = ManagedHarnessRuntimeAdapter(
+        spec(), engine=ManagedLangGraphEngine(), execution_policy_resolver=resolver,
+    )
+    incoming = request("one")
+    incoming.metadata["parent_run_id"] = "forged-parent"
+    handle = await adapter.start(incoming)
+    run = adapter._engine._runs[handle.run_id]
+    assert run.compiled.spec.execution_strategy.config["max_tool_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_policy_tool_cannot_execute_inside_child():
+    from ksadk.harness.spec import SubAgentBinding
+
+    async def never(arguments, call_id):
+        pytest.fail("withdrawn child tool must not execute")
+
+    resolver = Resolver({"one": ExecutionPolicy(tools={"write": tool("write", never)})})
+
+    class ChildReasoner:
+        async def complete(self, *, prompt, messages, **kwargs):
+            if any(m["role"] == "tool" for m in messages):
+                return HarnessReasoningTurn(final_text="done")
+            if prompt == "child":
+                resolver.policies["one"] = ExecutionPolicy()
+                call = HarnessToolCall("write-call", "write", {})
+            else:
+                call = HarnessToolCall("delegate", "child", {"task": "write"})
+            return HarnessReasoningTurn(tool_calls=(call,))
+
+    parent_spec = spec().model_copy(update={
+        "sub_agents": (SubAgentBinding(name="child", instructions="child", tools=("write",)),),
+    })
+    adapter = ManagedHarnessRuntimeAdapter(
+        parent_spec,
+        engine=ManagedLangGraphEngine(reasoner=ChildReasoner(), checkpointer=memory_checkpointer()),
+        execution_policy_resolver=resolver,
+    )
+    handle = await adapter.start(request("one"))
+    events = [e async for e in adapter.stream(handle)]
+    assert any(e.event_type == "tool.failed" or (
+        e.event_type == "tool.completed" and e.model_dump().get("status") == "failed"
+    ) for e in events) or any("unknown" in str(e.model_dump()).lower() for e in events)
+
+
+@pytest.mark.asyncio
 async def test_resolver_rechecked_before_tool_side_effect():
     async def never(arguments, call_id):
         pytest.fail("revoked policy must not execute")

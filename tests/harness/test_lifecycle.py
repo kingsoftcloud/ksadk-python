@@ -40,10 +40,10 @@ class TestBuild:
         assert payload["modelProfileRef"] == "model-profile://kimi-k3@1.0.0"
         assert payload["fallbackModelProfileRefs"] == ["model-profile://glm@1.0.0"]
         assert payload["modelProviderPolicy"] == {
-            "max_attempts_per_model": 2,
+            "max_attempts_per_model": 3,
             "total_attempt_budget": 6,
-            "initial_backoff_ms": 200,
-            "max_backoff_ms": 2000,
+            "initial_backoff_ms": 1000,
+            "max_backoff_ms": 8000,
             "retryable_categories": [
                 "rate_limit",
                 "timeout",

@@ -232,6 +232,7 @@ class StudioService:
                 StudioDshCapabilityService.create_workspace_resource_default(self.workspace.root)
             )
         self._start_lock = asyncio.Lock()
+        self._profile_maintenance = False
         self._started = False
         self._dsh_startup_task: asyncio.Task[None] | None = None
         self._dsh_ready = False
@@ -963,6 +964,8 @@ class StudioService:
                             "当前 Agent 需要插件组合，但无法生成 Composition",
                             status_code=409,
                         )
+                    if not self._build_has_composition(record, composition=composition):
+                        continue
                     self.plugin_compositions.bind_build(
                         composition,
                         agent_id=draft.metadata.id,
@@ -1027,7 +1030,7 @@ class StudioService:
             )
         return record
 
-    def _build_has_composition(self, record: Any) -> bool:
+    def _build_has_composition(self, record: Any, *, composition: Any = None) -> bool:
         """Reject stale pre-Phase-2 builds for a composed runtime.
 
         This check is intentionally scoped to Harness/plugin runtimes. Legacy
@@ -1046,6 +1049,13 @@ class StudioService:
                 and manifest.get("compositionProfileDigest")
                 and "composition-profile.json" in names
                 and "plugin-lock.json" in names
+                and (
+                    composition is None
+                    or (
+                        manifest.get("compositionProfileDigest") == composition.profile_digest
+                        and manifest.get("pluginLockDigest") == composition.plugin_lock_digest
+                    )
+                )
             )
         except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile):
             return False

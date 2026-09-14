@@ -240,7 +240,7 @@ class KsADKHarnessProviderRuntime:
         reasoner: HarnessReasoner,
         state_dir: str | None = None,
         checkpoint_dsn: str | None = None,
-        execution_policy_resolver: Any = None,
+        execution_policy_resolver: Any | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
@@ -324,7 +324,7 @@ class KsADKHarnessProviderRuntime:
                 if isinstance(execution, Mapping)
                 else "direct"
             )
-            if strategy != "direct":
+            if strategy not in {"direct", "plan-act-observe"}:
                 raise PluginHostError(
                     "harness_execution_strategy_unsupported",
                     f"KsADK Harness Provider does not support {strategy!r}",
@@ -426,8 +426,8 @@ class KsADKHarnessActivation:
         inventory: HarnessProviderInventory,
         state_dir: str | None = None,
         checkpoint_dsn: str | None = None,
-        execution_policy_resolver: Any = None,
         mcp_cleanup: AsyncExitStack | None = None,
+        execution_policy_resolver: Any | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -440,8 +440,8 @@ class KsADKHarnessActivation:
         self._inventory = inventory
         self._state_dir = state_dir
         self._checkpoint_dsn = checkpoint_dsn
-        self._execution_policy_resolver = execution_policy_resolver
         self._checkpoint_stack: Any | None = None
+        self._execution_policy_resolver = execution_policy_resolver
         self._mcp_cleanup = mcp_cleanup
         self._mcp_cleanup_lock = asyncio.Lock()
         self._ready = False

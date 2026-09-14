@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -102,6 +103,32 @@ def test_transient_failure_retries_same_model_before_failover() -> None:
     assert completed.payload["attempt"] == 2
     assert completed.payload["model_attempt"] == 2
     assert completed.payload["fallback"] is False
+
+
+def test_retry_failure_is_delivered_live_before_the_next_attempt() -> None:
+    timeline: list[str] = []
+
+    class _Reasoner:
+        async def complete(self, **_: object) -> HarnessReasoningTurn:
+            timeline.append("model")
+            if timeline.count("model") == 1:
+                raise _HTTPError(429)
+            return HarnessReasoningTurn(final_text="ok")
+
+    inp = replace(
+        _input(_Reasoner(), policy=_policy(max_attempts_per_model=2)),
+        live_event_sink=lambda event: timeline.append(event.event_type),
+    )
+
+    asyncio.run(reason_turn_async(1, inp))
+
+    assert timeline == [
+        "model.call.started",
+        "model",
+        "model.call.failed",
+        "model.call.started",
+        "model",
+    ]
 
 
 def test_transient_failure_exhausts_model_then_uses_fallback() -> None:

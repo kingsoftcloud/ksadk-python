@@ -43,6 +43,16 @@ async def test_provider_adapter_assembles_durable_sqlite_stack(tmp_path: Path) -
     assert adapter_matrix.durable_restore.supported is True
     assert adapter.runtime.native_capabilities()["session_continuity"]["durable"] is True
 
+    store = adapter._provider_artifact_store
+    assert adapter._engine._mcp_disclosure._artifact_store is store
+    record = store.save(run_id="run-test", name="knowledge", content=b"retained")
+    await adapter.close_all()
+    from ksadk.harness.artifact_store import ArtifactStore
+
+    reopened = ArtifactStore(store._root)
+    assert reopened.latest("run-test", "knowledge") == record
+    reopened.close()
+
 
 @pytest.mark.asyncio
 async def test_provider_adapter_without_state_falls_back_to_memory(tmp_path: Path) -> None:
@@ -59,3 +69,16 @@ async def test_provider_adapter_without_state_falls_back_to_memory(tmp_path: Pat
     adapter_matrix = adapter.capabilities()
     assert adapter_matrix.attach.supported is False
     assert adapter_matrix.durable_restore.supported is False
+    root = adapter._provider_artifact_store._root
+    assert root.exists()
+    await adapter.close_all()
+    assert not root.exists()
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_artifact_storage_inside_bundle(tmp_path):
+    with pytest.raises(ValueError, match="ArtifactStore"):
+        await build_managed_provider_adapter(
+            _config(), agent_name="agent", workspace_root=tmp_path,
+            bundle_root=tmp_path, state_dir=tmp_path / "state", reasoner=_Reasoner(),
+        )

@@ -74,7 +74,13 @@ _CLOUD_CONTROL_ENV_KEYS = (
     "KS3_ACCESS_KEY",
     "KS3_SECRET_KEY",
 )
-_STUDIO_ENV_FILE_KEYS = (*_MODEL_ENV_KEYS, *_CLOUD_CONTROL_ENV_KEYS)
+_WEB_SEARCH_ENV_KEYS = (
+    "KSADK_WEB_SEARCH_PROVIDER",
+    "KSADK_WEB_SEARCH_API_KEY",
+    "KSADK_WEB_SEARCH_BASE_URL",
+    "KSADK_WEB_SEARCH_SCOPE",
+)
+_STUDIO_ENV_FILE_KEYS = (*_MODEL_ENV_KEYS, *_CLOUD_CONTROL_ENV_KEYS, *_WEB_SEARCH_ENV_KEYS)
 # 别名归一：两者任一有值时，把另一个也设上，保证下游无论读哪个都命中。
 _MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 
@@ -99,7 +105,10 @@ def _open_browser_when_ready(url: str, port: int, *, timeout: float = 90.0) -> N
 @click.option(
     "--env-file",
     type=click.Path(exists=True, dir_okay=False),
-    help=("本地模型与云端控制环境文件；只读取允许的 OPENAI/KSYUN/KS3 字段，且仅保留在 Studio 进程"),
+    help=(
+        "本地模型、云端控制与搜索环境文件；只读取允许的 OPENAI/KSYUN/KS3/KSADK_WEB_SEARCH "
+        "字段，且仅保留在 Studio 进程"
+    ),
 )
 @click.option(
     "--codex-proxy",
@@ -134,11 +143,14 @@ def studio(
                 raise click.ClickException(str(exc)) from exc
             loaded_models = 0
             loaded_cloud_control = 0
+            loaded_search = 0
             for key, value in values.items():
                 if key not in _STUDIO_ENV_FILE_KEYS or not value:
                     continue
                 if key in _MODEL_ENV_KEYS:
                     loaded_models += 1
+                elif key in _WEB_SEARCH_ENV_KEYS:
+                    loaded_search += 1
                 else:
                     loaded_cloud_control += 1
                 # An explicit --env-file is the operator's selected cloud
@@ -174,6 +186,8 @@ def studio(
                     f"{loaded_cloud_control}/{len(_CLOUD_CONTROL_ENV_KEYS)} 个字段"
                     "（仅本地进程）",
                 )
+            if loaded_search:
+                print_kv("联网搜索", f"已安全加载 {loaded_search} 个字段（仅本地进程）")
         if codex_proxy == "forced":
             os.environ["KSADK_CODEX_USE_PROXY"] = "1"
         elif codex_proxy == "direct":

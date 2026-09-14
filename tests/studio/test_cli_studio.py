@@ -187,13 +187,16 @@ def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_pro
         "OPENAI_API_KEY=file-model-key\n"
         "KSYUN_ACCESS_KEY=file-cloud-access\n"
         "KSYUN_SECRET_KEY=file-cloud-secret\n"
-        "KSYUN_REGION=pre-online\n",
+        "KSYUN_REGION=pre-online\n"
+        "KSADK_WEB_SEARCH_PROVIDER=ksyun\n"
+        "KSADK_WEB_SEARCH_API_KEY=fixture-search-key\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "shell-model-key")
     monkeypatch.setenv("KSYUN_ACCESS_KEY", "shell-cloud-access")
     monkeypatch.setenv("KSYUN_SECRET_KEY", "shell-cloud-secret")
     monkeypatch.setenv("KSYUN_REGION", "online")
+    monkeypatch.setenv("KSADK_WEB_SEARCH_API_KEY", "old-search-key")
     active_environment: dict[str, str | None] = {}
 
     def capture_runtime_environment(*_args, **_kwargs):
@@ -203,6 +206,9 @@ def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_pro
                 "KSYUN_ACCESS_KEY": __import__("os").environ.get("KSYUN_ACCESS_KEY"),
                 "KSYUN_SECRET_KEY": __import__("os").environ.get("KSYUN_SECRET_KEY"),
                 "KSYUN_REGION": __import__("os").environ.get("KSYUN_REGION"),
+                "KSADK_WEB_SEARCH_API_KEY": __import__("os").environ.get(
+                    "KSADK_WEB_SEARCH_API_KEY"
+                ),
             }
         )
 
@@ -219,11 +225,14 @@ def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_pro
         "KSYUN_ACCESS_KEY": "file-cloud-access",
         "KSYUN_SECRET_KEY": "file-cloud-secret",
         "KSYUN_REGION": "pre-online",
+        "KSADK_WEB_SEARCH_API_KEY": "fixture-search-key",
     }
     assert __import__("os").environ["OPENAI_API_KEY"] == "shell-model-key"
     assert __import__("os").environ["KSYUN_ACCESS_KEY"] == "shell-cloud-access"
     assert __import__("os").environ["KSYUN_SECRET_KEY"] == "shell-cloud-secret"
     assert __import__("os").environ["KSYUN_REGION"] == "online"
+    assert __import__("os").environ["KSADK_WEB_SEARCH_API_KEY"] == "old-search-key"
+    assert "fixture-search-key" not in result.output
 
 
 def test_explicit_proxy_and_base_url_alias_override_saved_and_inherited_values(
