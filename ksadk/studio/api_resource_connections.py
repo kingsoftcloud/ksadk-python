@@ -43,6 +43,18 @@ class ValidateResourceBindings(PluginContractModel):
     expected_revision: int = Field(strict=True, ge=1)
 
 
+def _binding_region(kind: PlatformResourceKind, service_region: str, control_region: str) -> str:
+    """Memory's Default-CN is a service label, not an API signing region.
+
+    Resolve only this known service label at discovery, using the signed
+    client's region. Persist the resulting binding normally; never broaden the
+    host allowlist or silently rewrite an existing Revision/Bundle.
+    """
+    if kind == "memory-instance" and service_region == "Default-CN":
+        return control_region
+    return service_region
+
+
 def register_resource_connection_routes(app: FastAPI, studio: Any) -> None:
     @app.get("/api/v1/platform-resources")
     async def list_platform_resources(kind: PlatformResourceKind):
@@ -79,7 +91,8 @@ def register_resource_connection_routes(app: FastAPI, studio: Any) -> None:
                 {
                     "id": str(item.get("id") or ""),
                     "name": str(item.get("name") or item.get("id") or ""),
-                    "region": str(item.get("region") or ""),
+                    "region": _binding_region(kind, str(item.get("region") or ""), client.region),
+                    "serviceRegion": str(item.get("region") or ""),
                     "status": str(item.get("status") or "unknown"),
                     "disabled": bool(item.get("disabled", False)),
                     "disableReason": str(item.get("disable_reason") or ""),

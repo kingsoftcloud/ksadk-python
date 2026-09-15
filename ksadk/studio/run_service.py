@@ -131,6 +131,41 @@ class StudioRunService:
     def has_active_runs(self) -> bool:
         return bool(self._active_sessions or self._active_handles)
 
+    def is_run_executing(self, run_id: str) -> bool:
+        """该 run 是否仍在本进程内实际执行（内存态判定）。
+
+        磁盘 record 停在 RUNNING 的 run 若不在这里，说明是进程崩溃/重启
+        遗留的僵尸状态，允许删除会话时将其收尾为 canceled。
+        """
+        return run_id in self._active_handles or run_id in self._active_sessions
+
+    async def reap_stale_running_run(self, run_id: str) -> bool:
+        """把不在执行的僵尸 RUNNING run 收尾为 canceled（幂等）。"""
+        from ksadk.events.canonical import RunCanceled
+
+        record = self.event_store.get(run_id)
+        if record.status != RunStatus.RUNNING or self.is_run_executing(run_id):
+            return False
+        record.status = RunStatus.CANCELLED
+        record.error = {"code": "RUN_CANCELLED", "message": "会话删除时回收未完成的运行"}
+        record.completed_at = datetime.now(timezone.utc)
+        self.event_store.save(record)
+        await self.runtime_events.append_one(
+            record.session_id,
+            RunCanceled(
+                schema_version=2,
+                event_id=f"evt_reap_{uuid4().hex}",
+                seq=len(self.event_store.events(run_id)) + 1,
+                timestamp=time.time(),
+                run_id=run_id,
+                scope_id=run_id,
+                source=SourceRef(framework="ksadk", metadata={"reason": "session_deleted"}),
+                status="canceled",
+                reason="session deleted",
+            ),
+        )
+        return True
+
     async def recover_interrupted(self, resolve_spec=None) -> None:
         """Settle local runs left active across a Studio restart.
 
@@ -836,16 +871,48 @@ class StudioRunService:
         self.event_store.save(record)
         rows_before = await self.session_service.get_events(record.session_id)
         after_seq = max((int(row.seq_id or 0) for row in rows_before), default=0)
+        published_seq = after_seq
 
         async def publish(events: list[RuntimeEvent]) -> None:
+            nonlocal published_seq
             for runtime_event in events:
                 event_type, data = project_runtime_event(
                     runtime_event,
                     session_id=record.session_id,
                 )
                 stored = self.event_store.append(record.id, event_type, data)
+                published_seq = max(published_seq, int(runtime_event.seq or 0))
                 if on_event is not None:
                     on_event(stored)
+
+        async def tail_live_events() -> None:
+            # Kernel worker 会把 harness 的增量事实（TEXT_DELTA/ItemUpdated 等）
+            # 在执行期间逐条写入 canonical session store；这里实时转发给 SSE
+            # 订阅端，避免整轮结束后一次性爆发。终态事件会自然结束订阅。
+            async for event in self.runtime_events.subscribe_run(
+                record.session_id,
+                record.id,
+                after_seq=published_seq,
+                poll_interval=0.1,
+                timeout=600,
+            ):
+                try:
+                    await publish([event])
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "failed to publish live plugin event for run %s", record.id
+                    )
+
+        tail_task: asyncio.Task[None] | None = None
+
+        async def stop_tail() -> None:
+            nonlocal tail_task
+            if tail_task is not None:
+                tail_task.cancel()
+                await asyncio.gather(tail_task, return_exceptions=True)
+                tail_task = None
 
         try:
             if self.plugin_runtime is None:
@@ -864,18 +931,22 @@ class StudioRunService:
                 }.items()
                 if value not in {None, ""}
             }
-            result = await self.plugin_runtime.execute(
-                spec,
-                {
-                    "user_id": "local-user",
-                    "session_id": record.session_id,
-                    "invocation_id": record.id,
-                    "messages": [{"role": "user", "content": user_input}],
-                    "model": spec.model,
-                    "request_metadata": request_metadata,
-                },
-                session_id=record.session_id,
-            )
+            tail_task = asyncio.create_task(tail_live_events())
+            try:
+                result = await self.plugin_runtime.execute(
+                    spec,
+                    {
+                        "user_id": "local-user",
+                        "session_id": record.session_id,
+                        "invocation_id": record.id,
+                        "messages": [{"role": "user", "content": user_input}],
+                        "model": spec.model,
+                        "request_metadata": request_metadata,
+                    },
+                    session_id=record.session_id,
+                )
+            finally:
+                await stop_tail()
             if result.session_id != record.session_id:
                 raise StudioError(
                     "PLUGIN_SESSION_MISMATCH",
@@ -888,7 +959,7 @@ class StudioRunService:
                 )
             canonical = await self._plugin_events_after(
                 record.session_id,
-                after_seq=after_seq,
+                after_seq=published_seq,
                 run_id=record.id,
             )
             if not canonical:
@@ -902,6 +973,7 @@ class StudioRunService:
             record.status = RunStatus.COMPLETED
             _apply_plugin_usage(record, result.usage)
         except asyncio.CancelledError:
+            await stop_tail()
             record.status = RunStatus.CANCELLED
             record.error = {"code": "RUN_CANCELLED", "message": "运行已取消"}
             cancelled = await self.runtime_events.append_one(
@@ -915,12 +987,13 @@ class StudioRunService:
             await publish([cancelled])
             raise
         except Exception as exc:  # noqa: BLE001 - plugin boundary is typed below
+            await stop_tail()
             record.status = RunStatus.FAILED
             code = str(getattr(exc, "code", "PLUGIN_RUNTIME_FAILED"))
             record.error = {"code": code, "message": str(exc)}
             canonical = await self._plugin_events_after(
                 record.session_id,
-                after_seq=after_seq,
+                after_seq=published_seq,
                 run_id=record.id,
             )
             if canonical:

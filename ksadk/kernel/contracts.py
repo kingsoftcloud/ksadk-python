@@ -328,6 +328,8 @@ class RuntimeCapabilityMatrix(WireModel):
     goal: RuntimeCapability | None = None
     loop: RuntimeCapability | None = None
     plan: RuntimeCapability | None = None
+    # Trusted host policy injection is independent of prompt/tool availability.
+    execution_policy: RuntimeCapability | None = None
 
 
 class AgentStatusSnapshot(WireModel):

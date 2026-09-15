@@ -47,6 +47,7 @@ from ksadk.conversations.runtime_observability import (
     _set_conversation_usage_attributes,
     _set_prompt_cache_attributes,
     _set_prompt_source_attributes,
+    _set_skill_eval_result_attributes,
     _set_span_attribute,
     _span_current_context,
     _span_feedback_metadata,
@@ -74,6 +75,7 @@ from ksadk.conversations.runtime_resume import (
     _tool_receipt_metadata,
 )
 from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime_context import (
     PlatformInvocationContext,
     platform_invocation_scope,
@@ -316,6 +318,7 @@ async def _iter_conversation_turn_events(
         emitted_anything = False
         emitted_response_artifacts = False
         saw_final_chunk = False
+        result_fields: dict[str, Any] = {}
         responses_output: list[Any] = []
         responses_response_id: str | None = response_id
         runner_agentengine_metadata: dict[str, Any] = {}
@@ -743,6 +746,9 @@ async def _iter_conversation_turn_events(
                                 return
                             if chunk_type == "final":
                                 saw_final_chunk = True
+                                result_fields = skill_eval_response_fields(chunk)
+                                if result_fields:
+                                    _set_skill_eval_result_attributes(span, result_fields["skill_eval_result"])
                                 final_text = str(chunk.get("output", ""))
                                 if final_text:
                                     accumulated_text = final_text
@@ -967,6 +973,7 @@ async def _iter_conversation_turn_events(
         _finish_span()
         yield {
             "type": "completed",
+            **result_fields,
             "output_text": accumulated_text,
             "model": model,
             "session_id": prepared.session_id,

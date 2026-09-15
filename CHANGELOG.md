@@ -5,6 +5,23 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.8.5] - 2026-09-15
+
+### Added
+- harness 流式输出：透传 / 至全部 reasoner 包装层； live-tail canonical 事件并按 seq 去重
+- MCP 鉴权：harness envRefs 凭据回退（metaso 401 修复）；codex bearer env 合并；元调度工具（tool_search）从目录隐藏；mcp_tool_call 审批自动放行
+- 审批模式：composer 完全访问（tool_approval_mode=full）禁用 harness 审批门
+- 会话 UX：新建会话互斥；切 Agent 回欢迎页；流式中删除先取消再删；僵尸 RUNNING 回收；会话列表排序稳定
+- 运行时预热：prewarm 端点 + 跨轮复用激活（首 token -12s）
+- 打包瘦身：孤儿依赖 + 其他平台产物裁剪（1.5GB→1.1GB）
+- codex 运行时升级到 openai-codex 0.154.0
+- 默认模型 deepseek-v4.1-flash（原生 Responses），回退 glm-5.3-flash
+
+### Fixed
+- 内置工具 digest 漂移自愈（runtime-generated builtin tools）
+- harness 文件工具写入用户工作区（而非哈希目录）
+- event store stat 缓存避免 SSE 投影循环全量重读
+
 ## [0.8.4] - 2026-09-09
 
 ### Studio 与共享会话

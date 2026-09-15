@@ -76,6 +76,17 @@ class SkillRef:
     def is_active(self) -> bool:
         return not self.status or self.status.lower() in {"active", "available", "enabled"}
 
+    def matches_execution_identity(self, other: "SkillRef") -> bool:
+        """Match the immutable Skill version, not mutable display metadata."""
+
+        if not self.skill_id or not self.version_id:
+            return False
+        if (self.skill_id, self.version_id) != (other.skill_id, other.version_id):
+            return False
+        return not (
+            self.content_hash and other.content_hash
+        ) or self.content_hash == other.content_hash
+
 
 @dataclass(frozen=True)
 class SkillListResponse:

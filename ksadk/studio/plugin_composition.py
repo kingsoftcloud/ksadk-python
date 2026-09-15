@@ -18,6 +18,7 @@ from ksadk.harness.tools import HARNESS_SANDBOX_TOOL_NAMES
 from ksadk.plugins.builtins import (
     BUILTIN_PLUGIN_VERSION,
     CORE_RENDERER_PLUGIN_ID,
+    LOCAL_MEMORY_PROVIDER_PLUGIN_ID,
     READ_ONLY_CONTEXT_PLUGIN_ID,
     SQLITE_SESSION_STORE_PLUGIN_ID,
     WORKSPACE_MCP_PLUGIN_ID,
@@ -437,7 +438,17 @@ class StudioPluginCompositionCompiler:
         """Materialize a bound platform memory through its official DSH owner."""
 
         memory = draft.spec.memory
-        if not memory.enabled or not memory.provider_ref.startswith("binding://"):
+        if not memory.enabled:
+            return {}
+        if memory.provider_ref == "local-default":
+            return {
+                memory.provider_ref: _selection(
+                    LOCAL_MEMORY_PROVIDER_PLUGIN_ID,
+                    "memory.provider/v1",
+                    "memory.primary",
+                )
+            }
+        if not memory.provider_ref.startswith("binding://"):
             return {}
         binding_id = memory.provider_ref.removeprefix("binding://")
         for binding in draft.spec.bindings.plugins:

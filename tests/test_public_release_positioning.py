@@ -109,7 +109,7 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "发布版本：" not in readme
     assert "## 0.6." not in readme
     assert "0.8.0" not in readme
-    assert "0.8.4" not in readme
+    assert "0.8.5" not in readme
     assert "0.3.8" not in readme
     assert "评审候选" not in readme
 
@@ -128,7 +128,7 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "发布版本：" not in text
         assert "## 0.6." not in text
         assert "0.8.0" not in text
-        assert "0.8.4" not in text
+        assert "0.8.5" not in text
         assert "0.3.8" not in text
         assert "评审候选" not in text
 
@@ -141,7 +141,7 @@ def test_public_readme_language_variants_keep_homepage_shape():
     assert "发布版本：" not in en_readme
     assert "## 0.6." not in en_readme
     assert "0.8.0" not in en_readme
-    assert "0.8.4" not in en_readme
+    assert "0.8.5" not in en_readme
     assert "0.3.8" not in en_readme
     assert "Review Candidate" not in en_readme
 
@@ -332,8 +332,8 @@ def test_docs_versioned_facts_match_084_source():
     ):
         assert stale not in public_surfaces
 
-    assert 'version = "0.8.4"' in _read("pyproject.toml")
-    assert "0.8.4" in _read("docs-site/app/[lang]/(home)/page.tsx")
+    assert 'version = "0.8.5"' in _read("pyproject.toml")
+    assert "0.8.5" in _read("docs-site/app/[lang]/(home)/page.tsx")
 
     for relative in (
         "framework/guides/web-ui-source.mdx",
@@ -431,9 +431,9 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.4"
-    assert 'VERSION = "0.8.4"' in version_text
-    assert "## [0.8.3] - 2026-09-01" in changelog
+    assert pyproject["project"]["version"] == "0.8.5"
+    assert 'VERSION = "0.8.5"' in version_text
+    assert "## [0.8.4] - 2026-09-09" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
@@ -629,7 +629,7 @@ def test_public_release_approval_is_current_or_explicitly_historical():
 
     current_version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
     current_approval = f"| Python package version | {current_version} |"
-    historical_approval = "| Python package version | 0.8.3 |"
+    historical_approval = "| Python package version | 0.8.4 |"
     if current_approval in approval_record:
         assert "This is the historical" not in approval_record
         assert "Approved | 2026-09-09" in approval_record

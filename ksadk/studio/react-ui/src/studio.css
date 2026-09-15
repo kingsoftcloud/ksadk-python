@@ -5560,6 +5560,21 @@ ksadk-message {
   background: var(--accent-soft);
   color: var(--accent-strong);
 }
+.studio-multi-select-group {
+  padding: 8px 10px 4px;
+  color: var(--text-muted, #64748b);
+  font-size: var(--font-size-fine);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.studio-team-bindings-notice {
+  max-width: 440px;
+  margin: 10px auto 0;
+  color: var(--text-muted, #64748b);
+  font-size: var(--font-size-fine);
+  text-align: center;
+}
 
 .studio-command-list {
   max-height: min(340px, calc(100dvh - 180px));
@@ -8684,4 +8699,12 @@ button.codex-plugin-catalog-item:hover {
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
 select {
   min-height: var(--control-height);
+}
+
+/* Harness 首 token 前的"正在思考"占位。 */
+.harness-thinking {
+  max-width: 60rem;
+  margin: 8px auto 16px;
+  padding: 0 16px;
+  font-size: var(--font-size-meta);
 }

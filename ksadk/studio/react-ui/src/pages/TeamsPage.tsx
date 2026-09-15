@@ -105,6 +105,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [candidates, setCandidates] = useState<TeamMemberCandidate[]>([]);
   const [bindingsLoading, setBindingsLoading] = useState(false);
+  const [bindingsNotice, setBindingsNotice] = useState("");
   const drafts = useRef(new Map<string, string>());
   const listGeneration = useRef(0);
   const reload = useCallback(
@@ -160,6 +161,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
     setBindingsLoading(true);
     void teamRequest<{
       items: (ExecutionBinding & { name?: string; displayName?: string })[];
+      unavailableBuilds?: number;
     }>("/api/v1/groups/bindings", { signal: controller.signal })
       .then((result) => {
         setCandidates(
@@ -170,6 +172,18 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
             binding,
           })),
         );
+        const unavailable = result.unavailableBuilds ?? 0;
+        if (!result.items.length) {
+          setBindingsNotice(
+            unavailable
+              ? `没有可用的团队成员候选：${unavailable} 个本地 Agent 构建不可用，请先在 Agent 页面重新构建。`
+              : "没有可用的团队成员候选：本地还没有已构建的 Agent，请先创建并构建一个 Agent。",
+          );
+        } else if (unavailable) {
+          setBindingsNotice(`${unavailable} 个本地 Agent 构建不可用，已从候选中排除。`);
+        } else {
+          setBindingsNotice("");
+        }
       })
       .catch((cause) => {
         if (!controller.signal.aborted) setError(messageOf(cause));
@@ -313,6 +327,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
               <Plus size={16} />
               创建团队
             </button>
+            {bindingsNotice && <p className="studio-team-bindings-notice" role="status">{bindingsNotice}</p>}
             <a href="#/agents">查看可用 Agent</a>
           </div>
         )}

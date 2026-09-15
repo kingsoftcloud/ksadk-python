@@ -87,7 +87,7 @@ async def get_agent_builder(
     """Get agent builder config - stub for ADK-Web"""
     # Return minimal YAML config for non-ADK projects
     return f"""name: {app_name}
-model: glm-5.1
+model: deepseek-v4.1-flash
 description: {app_name} agent
 instruction: You are a helpful assistant.
 """

@@ -66,8 +66,8 @@ from ksadk.hermes_terminal import (
 )
 
 DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:v2026.7.7.2-ksadk-v070"
-DEFAULT_HERMES_CONTEXT_LENGTHS = (("glm-5.1", "200000"),)
-DEFAULT_HERMES_MODEL_NAME = "glm-5.2"
+DEFAULT_HERMES_CONTEXT_LENGTHS = (("deepseek-v4.1-flash", "128000"),)
+DEFAULT_HERMES_MODEL_NAME = "deepseek-v4.1-flash"
 DEFAULT_HERMES_PUBLIC_BASE_URL = "https://kspmas.ksyun.com/v1/"
 DEFAULT_HERMES_RUNTIME_BASE_URL = DEFAULT_HERMES_PUBLIC_BASE_URL
 KSPMAS_PUBLIC_BASES = (

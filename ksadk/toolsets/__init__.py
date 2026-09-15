@@ -56,6 +56,13 @@ _DEFAULT_GROUPS = ("skill", "workspace", "platform", "sandbox", "web", "a2a")
 _DISPATCHER_TOOL_NAME = "tool_dispatcher"
 _LEGACY_DISPATCHER_TOOL_NAME = "agentengine_tool_dispatcher"
 _TOOL_SEARCH_NAME = "tool_search"
+
+# 调度类元工具：可触达绑定范围之外的工具，禁止作为 Agent 的可绑定工具
+# 出现在目录/UI 中（harness 构建校验会拒绝它们，见
+# plugins/providers/harness_tools.py）。
+META_DISPATCHER_TOOL_NAMES = frozenset(
+    {"tool_search", "tool_dispatcher", "agentengine_tool_dispatcher"}
+)
 _FOCUSED_TOOL_NAMES = (
     "workspace_status",
     "list_workspace_files",
@@ -959,6 +966,7 @@ def _tool_spec(
 
 
 __all__ = [
+    "META_DISPATCHER_TOOL_NAMES",
     "agentengine_tool_dispatcher",
     "tool_dispatcher",
     "tool_search",

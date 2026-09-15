@@ -949,11 +949,12 @@ it("saves Harness child agents with authoritative parent tool names and retains 
     { resourceId: "tool-read", kind: "tool", name: "display-alias", displayName: "读取文件", version: "1", status: "ready", contract: { name: "read_file", executor: "builtin" } },
   ]} />);
   await screen.findByRole("button", { name: "保存修改" });
-  fireEvent.click(screen.getByRole("button", { name: /能力绑定/ }));
-  fireEvent.click(screen.getByText("子 Agent", { selector: "summary", exact: false }));
-  fireEvent.click(screen.getByRole("checkbox", { name: "读取文件" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
-  fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /能力绑定/ }));
+  await user.click(screen.getByText("子 Agent", { selector: "summary", exact: false }));
+  await user.click(screen.getByRole("checkbox", { name: "读取文件" }));
+  await user.click(screen.getByRole("checkbox", { name: /保存后/ }));
+  await user.click(screen.getByRole("button", { name: "保存修改" }));
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
   const sent = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT")!;
   expect(JSON.parse(String(sent[1]!.body)).subAgents).toEqual([{ ...child, tools: ["read_file"] }]);

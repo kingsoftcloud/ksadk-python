@@ -1,0 +1,13 @@
+{
+  "name": "@ksadk-e2e/dsh-profile-plugin",
+  "version": "1.0.0",
+  "description": "Offline DSH Profile bridge fixture",
+  "type": "module",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "cordis.patch.yml"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

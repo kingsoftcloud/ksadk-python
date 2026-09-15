@@ -162,6 +162,10 @@ class ToolContract(ContractModel):
     )
     permissions: list[str] = Field(default_factory=list)
     timeout_seconds: int = Field(default=20, ge=1, le=3600)
+    # Optional deterministic per-Run budget. The Managed Harness reserves one
+    # slot immediately before execution, so model retries and process restarts
+    # cannot bypass the limit.
+    max_calls_per_run: int | None = Field(default=None, ge=1, le=100_000)
     side_effect: Literal["none", "read", "write", "external"] = "none"
     approval: Literal["never", "always", "policy"] = "never"
     executor: Literal["builtin", "mcp", "deferred", "python"] = "builtin"
@@ -322,8 +326,8 @@ class RetryPolicy(ContractModel):
 
 class ExecutionSpec(ContractModel):
     strategy: Literal["direct", "plan-act-observe"] = "direct"
-    max_steps: int = Field(default=12, ge=1, le=100)
-    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    max_steps: int = Field(default=25, ge=1, le=100)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     sandbox: str | None = None
     approval_mode: str | None = None
@@ -646,8 +650,8 @@ class AgentTemplateComposeRequest(ContractModel):
     mcp_resource_ids: list[str] = Field(default_factory=list)
     policy_template: Literal["loose", "strict", "custom"] = "strict"
     execution_strategy: Literal["direct", "plan-act-observe"] = "direct"
-    max_steps: int = Field(default=12, ge=1, le=100)
-    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    max_steps: int = Field(default=25, ge=1, le=100)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
     auto_bind_tools: bool = True
     auto_bind_mcp: bool = True
 

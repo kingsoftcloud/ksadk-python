@@ -131,6 +131,11 @@ class LiteLLMHarnessReasoner:
             "messages": list(messages),
             "tools": [tool.openai_schema for tool in tools],
             "tool_choice": "auto",
+            # Provider retry is owned by the Harness policy layer so every
+            # attempt has a canonical failed event, backoff decision and UI
+            # progress item.  Letting LiteLLM retry internally would multiply
+            # requests invisibly (especially for 429 responses).
+            "num_retries": 0,
         }
         if max_output_tokens is not None:
             if max_output_tokens < 1:
@@ -208,6 +213,7 @@ class LiteLLMHarnessReasoner:
             "messages": list(messages),
             "tools": [tool.openai_schema for tool in tools],
             "tool_choice": "auto",
+            "num_retries": 0,
             "stream": True,
             "stream_options": {"include_usage": True},
         }

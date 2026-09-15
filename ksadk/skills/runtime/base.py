@@ -5,11 +5,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from ksadk.skills.events import SkillEvent, SkillInvocationPlan
 from ksadk.skills.package_store import SkillPackage
+
+_SANDBOX_OBSERVABILITY_ENV_PREFIXES = ("OTEL_", "LANGFUSE_")
+_SANDBOX_TRACE_ENV_NAMES = {"BAGGAGE", "TRACEPARENT", "TRACESTATE"}
 
 
 class SkillRuntimeError(RuntimeError):
     pass
+
+
+def sandbox_runtime_env(env: dict[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in env.items()
+        if not name.startswith(_SANDBOX_OBSERVABILITY_ENV_PREFIXES)
+        and name not in _SANDBOX_TRACE_ENV_NAMES
+    }
 
 
 @dataclass(frozen=True)
@@ -29,16 +42,20 @@ class SkillRuntimeResult:
     error_type: str | None = None
     error_message: str | None = None
     output_files: list[str] = field(default_factory=list)
+    output_text: str = ""
+    output_text_truncated: bool = False
+    skill_events: list[SkillEvent] = field(default_factory=list)
     workflow_status: str = ""
     executed_skill: str = ""
     instructions: str = ""
+    sandbox: dict[str, object] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
         return self.exit_code == 0 and not self.error_type and not self.timed_out
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "runtime_id": self.runtime_id,
             "exit_code": self.exit_code,
             "stdout": self.stdout,
@@ -52,6 +69,15 @@ class SkillRuntimeResult:
             "executed_skill": self.executed_skill,
             "instructions": self.instructions,
         }
+        if self.output_text:
+            result["output_text"] = self.output_text
+        if self.output_text_truncated:
+            result["output_text_truncated"] = True
+        if self.skill_events:
+            result["skill_events"] = [event.to_dict() for event in self.skill_events]
+        if self.sandbox:
+            result["sandbox"] = dict(self.sandbox)
+        return result
 
 
 class SkillRuntimeBackend(Protocol):
@@ -64,17 +90,26 @@ class SkillRuntimeBackend(Protocol):
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        invocation_plan: SkillInvocationPlan | None = None,
         pinned_packages: list[SkillPackage] | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult: ...
 
 
-def parse_workflow_result(stdout: str) -> dict[str, object]:
-    """Parse the workflow_result= JSON line from agent.py stdout.
+@dataclass(frozen=True)
+class ParsedWorkflowResult:
+    output_files: tuple[str, ...] = ()
+    output_text: str = ""
+    output_text_truncated: bool = False
+    workflow_status: str = ""
+    executed_skill: str = ""
+    instructions: str = ""
+    error: str = ""
+    command_error_type: str = ""
 
-    Returns a dict with keys: status, executed_skill, instructions,
-    output_files, warnings, etc.  Returns empty dict if not found.
-    """
+
+def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
+    """Parse the workflow_result= JSON line from agent.py stdout."""
     for line in stdout.splitlines():
         if not line.startswith("workflow_result="):
             continue
@@ -82,18 +117,36 @@ def parse_workflow_result(stdout: str) -> dict[str, object]:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return {}
-        if isinstance(payload, dict):
-            return payload
-    return {}
+            return ParsedWorkflowResult()
+        if not isinstance(payload, dict):
+            return ParsedWorkflowResult()
+        output_files = payload.get("output_files")
+        output_text = payload.get("output_text")
+        commands = payload.get("commands")
+        command_error_type = ""
+        if isinstance(commands, list):
+            for command in commands:
+                if isinstance(command, dict) and isinstance(command.get("error_type"), str):
+                    command_error_type = command["error_type"]
+                    break
+        return ParsedWorkflowResult(
+            output_files=(
+                tuple(str(item) for item in output_files) if isinstance(output_files, list) else ()
+            ),
+            output_text=output_text if isinstance(output_text, str) else "",
+            output_text_truncated=payload.get("output_text_truncated") is True,
+            workflow_status=str(payload.get("status") or ""),
+            executed_skill=str(payload.get("executed_skill") or ""),
+            instructions=str(payload.get("instructions") or ""),
+            error=str(payload.get("error") or ""),
+            command_error_type=command_error_type,
+        )
+    return ParsedWorkflowResult()
 
 
 def parse_output_files(stdout: str) -> list[str]:
-    payload = parse_workflow_result(stdout)
-    output_files = payload.get("output_files")
-    if isinstance(output_files, list):
-        return [str(item) for item in output_files]
-    return []
+    """Compatibility helper for callers that only need artifact paths."""
+    return list(parse_workflow_result(stdout).output_files)
 
 
 def normalize_skill_names(skill_names: Sequence[str] | str | None) -> list[str]:

@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import RLock
@@ -48,18 +50,49 @@ class WorkspaceRegistry:
 
     def _write(self, items: list[WorkspaceRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(
-                {"version": 1, "items": [asdict(i) for i in items]}, ensure_ascii=False, indent=2
-            ),
-            encoding="utf-8",
-        )
+        fd, temporary = tempfile.mkstemp(prefix=".workspaces-", dir=self.path.parent)
         try:
-            tmp.chmod(0o600)
-        except OSError:
-            pass
-        os.replace(tmp, self.path)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(
+                    {"version": 1, "items": [asdict(i) for i in items]}, stream,
+                    ensure_ascii=False, indent=2,
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    @contextmanager
+    def _locked(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(".lock").open("a+b") as stream:
+            try:
+                import fcntl
+            except ImportError:
+                try:
+                    import msvcrt
+                except ImportError:
+                    # Minimal embedded platforms can still open a workspace;
+                    # never persist its recent-list entry without a file lock.
+                    yield False
+                    return
+
+                stream.write(b"0")
+                stream.flush()
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield True
+                finally:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield True
+                finally:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
     def open(self, path: Path | str, *, create: bool = False) -> WorkspaceRecord:
         root = _canonical(path)
@@ -67,6 +100,10 @@ class WorkspaceRegistry:
             root.mkdir(parents=True, exist_ok=True)
         if not root.is_dir():
             raise FileNotFoundError(root)
+        with self._locked() as writable:
+            return self._record_open(root, persist=writable)
+
+    def _record_open(self, root: Path, *, persist: bool) -> WorkspaceRecord:
         items = self._read()
         existing = next((i for i in items if _canonical(i.path) == root), None)
         record = existing or WorkspaceRecord(
@@ -76,7 +113,8 @@ class WorkspaceRegistry:
             time.time(),
         )
         record = WorkspaceRecord(record.workspace_id, str(root), record.name, time.time())
-        self._write([record] + [i for i in items if i.workspace_id != record.workspace_id])
+        if persist:
+            self._write([record] + [i for i in items if i.workspace_id != record.workspace_id])
         return record
 
     def list(self) -> list[WorkspaceRecord]:
@@ -86,9 +124,8 @@ class WorkspaceRegistry:
 class WorkspaceRuntimeManager:
     """Keeps one isolated Studio service per workspace and proxies the active one."""
 
-    def __init__(self, initial, factory, *, registry: WorkspaceRegistry | None = None) -> None:
+    def __init__(self, initial, factory) -> None:
         self._factory = factory
-        self._registry = registry or WorkspaceRegistry()
         self._lock = RLock()
         self._services = {_canonical(initial.workspace.root): initial}
         self._active = _canonical(initial.workspace.root)
@@ -103,7 +140,7 @@ class WorkspaceRuntimeManager:
     def switch(self, path: str | Path, *, create: bool = False):
         root = _canonical(path)
         with self._lock:
-            record = self._registry.open(root, create=create)
+            record = WorkspaceRegistry().open(root, create=create)
             if root not in self._services:
                 self._services[root] = self._factory(root)
             self._active = root
@@ -125,6 +162,9 @@ class WorkspaceRuntimeManager:
 
     def runtime_for_run(self, run_id: str):
         for runtime in self._services.values():
+            host = getattr(runtime, "execution_host", None)
+            if host is not None and host.is_reserved_run(run_id):
+                return runtime
             try:
                 runtime.event_store.get(run_id)
                 return runtime
@@ -132,51 +172,17 @@ class WorkspaceRuntimeManager:
                 continue
         return None
 
-    def runtime_for_session(self, session_id: str):
+    async def runtime_for_session(self, session_id: str):
         for runtime in self._services.values():
-            try:
-                if runtime.event_store.list_runs(session_id=session_id):
-                    return runtime
-            except Exception:
-                continue
-            # A newly created local session has no Run yet, but it is still a
-            # valid routing target for replay and SSE.  Consult the local
-            # session index before declaring it missing.
-            try:
-                session = runtime.session_service._get_session_sync(  # type: ignore[attr-defined]
-                    session_id, include_events=False
-                )
-                if session is not None:
-                    return runtime
-            except Exception:
-                continue
+            # Plugin reservations and newly created sessions need not have a
+            # Studio RunRecord yet. Do not bypass their owner/authorization.
+            if runtime.execution_host.is_reserved_session(session_id):
+                return runtime
+            if runtime.event_store.list_runs(session_id=session_id):
+                return runtime
+            if await runtime.session_service.get_session_metadata(session_id) is not None:
+                return runtime
         return None
-
-    def is_reserved_session(self, session_id: str) -> bool:
-        for runtime in self._services.values():
-            db = getattr(getattr(runtime, "execution_host", None), "_db", None)
-            if db is None:
-                continue
-            row = db.execute(
-                "SELECT 1 FROM plugin_session_scopes WHERE session_id = ? LIMIT 1",
-                (session_id,),
-            ).fetchone()
-            if row:
-                return True
-        return False
-
-    def is_reserved_run(self, run_id: str) -> bool:
-        for runtime in self._services.values():
-            db = getattr(getattr(runtime, "execution_host", None), "_db", None)
-            if db is None:
-                continue
-            row = db.execute(
-                "SELECT 1 FROM execution_policy_refs WHERE run_id = ? LIMIT 1",
-                (run_id,),
-            ).fetchone()
-            if row:
-                return True
-        return False
 
     def runtime_for_operation(self, operation_id: str):
         for runtime in self._services.values():
@@ -203,7 +209,10 @@ class WorkspaceRuntimeManager:
         for runtime in self._services.values():
             wid = getattr(getattr(runtime, "workspace_record", None), "workspace_id", None)
             for operation in runtime.operations.list():
-                item = operation.model_dump(by_alias=True) if hasattr(operation, "model_dump") else dict(operation)
+                item = (
+                    operation.model_dump(by_alias=True)
+                    if hasattr(operation, "model_dump") else dict(operation)
+                )
                 item["workspaceId"] = wid
                 operations.append(item)
         return operations

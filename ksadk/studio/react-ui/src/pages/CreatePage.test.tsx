@@ -260,7 +260,7 @@ describe("CreatePage quick authoring", () => {
         mcpResourceIds: [],
         policyTemplate: "strict",
         executionStrategy: "direct",
-        maxSteps: 12,
+        maxSteps: 25,
         timeoutSeconds: 120,
       });
     });

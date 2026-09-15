@@ -1,7 +1,7 @@
 import * as Popover from "@radix-ui/react-popover";
 import { Command } from "cmdk";
 import { Check, ChevronDown, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 
 export interface StudioMultiSelectProps<T> {
   ariaLabel: string;
@@ -10,6 +10,7 @@ export interface StudioMultiSelectProps<T> {
   getId: (item: T) => string;
   getLabel: (item: T) => string;
   getDescription?: (item: T) => string;
+  getGroup?: (item: T) => string;
   onChange: (ids: string[]) => void;
   searchPlaceholder?: string;
   emptyMessage?: string;
@@ -23,6 +24,7 @@ export function StudioMultiSelect<T>({
   getId,
   getLabel,
   getDescription = () => "",
+  getGroup,
   onChange,
   searchPlaceholder = "搜索",
   emptyMessage = "没有匹配项",
@@ -34,6 +36,16 @@ export function StudioMultiSelect<T>({
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedItems = items.filter(item => selected.has(getId(item)));
   const visibleItems = selectedOnly ? selectedItems : items;
+  const selectableVisibleIds = visibleItems.map(getId).filter(id => !disabled.has(id));
+  const allVisibleSelected = selectableVisibleIds.length > 0 && selectableVisibleIds.every(id => selected.has(id));
+
+  function toggleAllVisible() {
+    if (allVisibleSelected) {
+      onChange(selectedIds.filter(id => !selectableVisibleIds.includes(id)));
+    } else {
+      onChange([...new Set([...selectedIds, ...selectableVisibleIds])]);
+    }
+  }
 
   function toggle(id: string) {
     if (disabled.has(id)) return;
@@ -91,6 +103,9 @@ export function StudioMultiSelect<T>({
                 <Command.Input aria-label={searchPlaceholder} placeholder={searchPlaceholder} autoFocus />
               </div>
               <div className="studio-multi-select-tools">
+                <button type="button" onClick={toggleAllVisible} disabled={!selectableVisibleIds.length}>
+                  {allVisibleSelected ? "取消全选" : "全选当前"}
+                </button>
                 <button
                   className={selectedOnly ? "selected" : ""}
                   type="button"
@@ -103,15 +118,18 @@ export function StudioMultiSelect<T>({
               </div>
               <Command.List className="studio-command-list">
                 <Command.Empty>{emptyMessage}</Command.Empty>
-                {visibleItems.map(item => {
+                {visibleItems.map((item, index) => {
                   const id = getId(item);
                   const label = getLabel(item);
                   const description = getDescription(item);
                   const checked = selected.has(id);
                   const itemDisabled = disabled.has(id);
+                  const group = getGroup?.(item);
+                  const previousGroup = index > 0 ? getGroup?.(visibleItems[index - 1]) : undefined;
                   return (
+                    <Fragment key={id}>
+                    {group && group !== previousGroup ? <div className="studio-multi-select-group" role="presentation">{group}</div> : null}
                     <Command.Item
-                      key={id}
                       value={`${label} ${description} ${id}`}
                       disabled={itemDisabled}
                       onSelect={() => toggle(id)}
@@ -124,6 +142,7 @@ export function StudioMultiSelect<T>({
                         {description ? <small>{description}</small> : null}
                       </span>
                     </Command.Item>
+                    </Fragment>
                   );
                 })}
               </Command.List>

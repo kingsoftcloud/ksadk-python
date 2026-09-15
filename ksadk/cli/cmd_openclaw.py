@@ -434,7 +434,7 @@ def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
 def _default_openclaw_model_inputs(provider_id: str, model_id: str) -> list[str]:
     if str(provider_id or "").strip().lower() == "ksyun" and str(
         model_id or ""
-    ).strip().lower() in {"glm-5.1", "glm-5.2"}:
+    ).strip().lower() in {"deepseek-v4.1-flash", "glm-5.3-flash"}:
         return ["text"]
     return ["text", "image"]
 

@@ -20,6 +20,11 @@ class RunEventStore:
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
         self.trace_store = OtlpTraceStore(workspace)
+        # (mtime, size, inode) → 已解析 (record, events)。流式期间 SSE 投影
+        # 每 50ms 调 events()/list_runs()，全量 JSON 解析 + Pydantic 验证会
+        # 随事件数线性放大（实测把事件循环拖到整段卡死）。同进程内写读方
+        # 在 _write/_read 之间共享此缓存；外部改动通过 stat 元数据失效。
+        self._cache: dict[str, tuple[tuple[float, int, int], tuple[Any, list[RunEvent]]]] = {}
 
     def _path(self, run_id: str) -> Path:
         return self.workspace.resolve(Path(".agentkit/runs") / f"{run_id}.json")
@@ -146,6 +151,7 @@ class RunEventStore:
             if path.is_file():
                 self.trace_store.delete(record.trace_id, purge=True)
                 path.unlink()
+                self._cache.pop(record.id, None)
                 deleted += 1
         return deleted
 
@@ -231,15 +237,31 @@ class RunEventStore:
             status=status,
         )
 
+    @staticmethod
+    def _stat_key(path: Path) -> tuple[float, int, int]:
+        info = path.stat()
+        return (info.st_mtime, info.st_size, info.st_ino)
+
     def _read(self, run_id: str) -> tuple[RunRecord, list[RunEvent]]:
         path = self._path(run_id)
         if not path.is_file():
+            self._cache.pop(run_id, None)
             raise not_found("run", run_id)
+        try:
+            key = self._stat_key(path)
+        except OSError:
+            key = None
+        cached = self._cache.get(run_id)
+        if cached is not None and key is not None and cached[0] == key:
+            return cached[1]
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             record = RunRecord.model_validate(payload["record"])
             events = [RunEvent.model_validate(item) for item in payload.get("events", [])]
-            return record, events
+            parsed = (record, events)
+            if key is not None:
+                self._cache[run_id] = (key, parsed)
+            return parsed
         except (OSError, ValueError, KeyError, ValidationError) as exc:
             raise StudioError(
                 "RUN_RECORD_INVALID",
@@ -256,7 +278,12 @@ class RunEventStore:
             payload["events"] = [
                 event.model_dump(by_alias=True, exclude_none=True, mode="json") for event in events
             ]
+        path = self._path(record.id)
         self.workspace.atomic_write_text(
-            self._path(record.id),
+            path,
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         )
+        try:
+            self._cache[record.id] = (self._stat_key(path), (record, list(events or [])))
+        except OSError:
+            self._cache.pop(record.id, None)

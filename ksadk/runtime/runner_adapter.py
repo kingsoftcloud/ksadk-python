@@ -54,6 +54,7 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
+from ksadk.runtime.timing import normalize_timing
 from ksadk.runtime_context import (
     TRUSTED_IDENTITY_METADATA_KEY,
     session_invocation_context,
@@ -569,6 +570,14 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
 
         request = run.__dict__.get("_start_request")
         runner_input = self._build_runner_input(handle, request)
+        runner_started = time.perf_counter()
+
+        def record_timing() -> None:
+            timing = normalize_timing(run.completion_metrics.get("timing"))
+            timing["agent_duration_ms"] = round((time.perf_counter() - runner_started) * 1000, 3)
+            timing["phase_status"] = {**timing.get("phase_status", {}), "agent": "measured"}
+            run.completion_metrics["timing"] = timing
+
         gen: Optional[AsyncIterator[RuntimeEvent]] = None
         terminal_event_seen = False
         approval_interrupted = False
@@ -576,6 +585,24 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             gen = self._map_runner_stream(event_handle, runner_input, active_run=run)
             run.stream = gen
             async for event in gen:
+                if event.event_type in {
+                    "run.completed",
+                    "run.failed",
+                    "run.canceled",
+                    "run.interrupted",
+                }:
+                    source_metrics = event.source.metadata.get("metrics")
+                    if isinstance(source_metrics, Mapping):
+                        run.completion_metrics.update(source_metrics)
+                    record_timing()
+                    metrics = dict(run.completion_metrics)
+                    event = event.model_copy(
+                        update={
+                            "source": event.source.model_copy(
+                                update={"metadata": {**event.source.metadata, "metrics": metrics}}
+                            )
+                        }
+                    )
                 yield event
                 if event.event_type == "interaction.requested":
                     approval_interrupted = True
@@ -598,6 +625,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
                 if event.event_type in {"run.failed", "run.canceled"}:
                     return
 
+            record_timing()
             if run.interrupt_event.is_set() and not terminal_event_seen:
                 yield self._make_run_canceled(
                     event_handle, reason=CancelResult.INTERRUPTED_ACTIVE_TURN.value

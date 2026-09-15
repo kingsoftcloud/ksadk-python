@@ -8,7 +8,8 @@ import pytest
 from ksadk.plugins.execution_host import ExecutionBarrier, ExecutionReceipt
 from ksadk.plugins.teams.contracts import Actor, GroupCreateInput, MessageInput
 from ksadk.plugins.teams.errors import TeamsError
-from ksadk.plugins.teams.runtime import TeamsRuntime
+from ksadk.plugins.teams.runtime import TEAMS_PLUGIN_ID, TeamsRuntime
+from ksadk.plugins.teams.store import TeamsStore
 
 OWNER = Actor("tenant-a", "owner-a")
 BINDING = {
@@ -370,7 +371,7 @@ async def test_real_source_refs_project_children_once_and_survive_replay(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_changed_plugin_artifact_fails_closed_and_original_version_reopens(tmp_path):
+async def test_changed_compatible_plugin_artifact_is_backed_up_and_migrated(tmp_path):
     options = {"path": tmp_path / "teams.sqlite", "authority_ref": "local", "host": Host()}
     first = TeamsRuntime(**options, plugin_digest="sha256:original")
     await first.start(background=False)
@@ -378,13 +379,48 @@ async def test_changed_plugin_artifact_fails_closed_and_original_version_reopens
     before = domain.snapshot(OWNER, gid)
     await first.close()
     changed = TeamsRuntime(**options, plugin_digest="sha256:different")
+    await changed.start(background=False)
+    try:
+        assert changed.require_domain().snapshot(OWNER, gid) == before
+        backups = list(tmp_path.glob("teams.sqlite.pre-artifact-*.bak"))
+        assert len(backups) == 1
+        backup = TeamsStore(backups[0])
+        try:
+            with backup.transaction() as tx:
+                installed = tx.get("installation", TEAMS_PLUGIN_ID)
+            assert installed["pluginDigest"] == "sha256:original"
+        finally:
+            backup.close()
+        with changed.require_domain().store.transaction() as tx:
+            installed = tx.get("installation", TEAMS_PLUGIN_ID)
+        assert installed["pluginDigest"] == "sha256:different"
+        assert installed["previousPluginDigest"] == "sha256:original"
+    finally:
+        await changed.close()
+
+
+@pytest.mark.asyncio
+async def test_changed_incompatible_plugin_artifact_still_fails_closed(tmp_path):
+    options = {"path": tmp_path / "teams.sqlite", "authority_ref": "local", "host": Host()}
+    first = TeamsRuntime(**options, plugin_digest="sha256:original")
+    await first.start(background=False)
+    domain, gid, _ = setup(first)
+    before = domain.snapshot(OWNER, gid)
+    with domain.store.transaction() as tx:
+        installed = tx.get("installation", TEAMS_PLUGIN_ID)
+        tx.put("installation", TEAMS_PLUGIN_ID, {**installed, "apiVersion": "teams/v2"})
+    await first.close()
+
+    changed = TeamsRuntime(**options, plugin_digest="sha256:different")
     with pytest.raises(TeamsError) as error:
         await changed.start(background=False)
     assert error.value.code == "artifact_migration_required"
     assert changed.domain is None
-    # Failed startup releases both database and authority ownership.
-    await first.start(background=False)
+    assert not list(tmp_path.glob("teams.sqlite.pre-artifact-*.bak"))
+
+    original = TeamsRuntime(**options, plugin_digest="sha256:original")
+    await original.start(background=False)
     try:
-        assert first.require_domain().snapshot(OWNER, gid) == before
+        assert original.require_domain().snapshot(OWNER, gid) == before
     finally:
-        await first.close()
+        await original.close()

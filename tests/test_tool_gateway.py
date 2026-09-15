@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
+from ksadk.tools.gateway import (
+    ToolGateway,
+    ToolPolicy,
+    approval_interrupt_info_from_result,
+    build_tool_receipt_idempotency_key,
+    check_command_policy,
+    default_tool_gateway,
+    tool_policy_requires_approval,
+)
+
+
+def _runtime_context(tool_approval_mode: str) -> PlatformInvocationContext:
+    return PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="langgraph",
+        tool_approval_mode=tool_approval_mode,
+    )
+
+
+def test_tool_gateway_imports_public_api():
+    gateway = default_tool_gateway({"delete_file": ToolPolicy(risk_level="high")})
+
+    assert isinstance(gateway, ToolGateway)
+
+
+def test_tool_policy_requires_approval_in_risk_mode():
+    policy = ToolPolicy(risk_level="high")
+
+    assert tool_policy_requires_approval(policy, approval_mode="full") is False
+    assert tool_policy_requires_approval(policy, approval_mode="risk") is True
+
+
+def test_public_network_reads_are_never_approval_gated():
+    web_read = ToolPolicy(risk_level="high", approval_scopes=("public_network",))
+
+    assert tool_policy_requires_approval(web_read, approval_mode="ask") is False
+    assert tool_policy_requires_approval(web_read, approval_mode="risk") is False
+    assert tool_policy_requires_approval(web_read, approval_mode="full") is False
+
+
+def test_tool_gateway_uses_the_current_request_profile_instead_of_process_env(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "full")
+    gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium")})
+
+    with platform_invocation_scope(_runtime_context("risk")):
+        result = gateway.invoke("write_file", lambda: {"ok": True})
+
+    assert result["type"] == "approval_required"
+    assert gateway.invoke("write_file", lambda: {"ok": True}) == {"ok": True}
+
+
+def test_tool_gateway_returns_approval_request_in_risk_mode(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
+    gateway = ToolGateway(
+        {"write_file": ToolPolicy(risk_level="medium", side_effects=("workspace_write",))}
+    )
+
+    result = gateway.invoke("write_file", lambda: {"ok": True})
+
+    assert result["type"] == "approval_required"
+    assert result["approval_required"] is True
+    assert result["approval_request"]["tool_name"] == "write_file"
+    assert result["approval_request"]["risk_level"] == "medium"
+    assert result["approval_request"]["side_effects"] == ["workspace_write"]
+
+
+def test_tool_gateway_runs_approved_call_in_risk_mode(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
+    gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium")})
+
+    assert gateway.invoke(
+        "write_file", lambda value: {"ok": True, "value": value}, 3, approval={"approved": True}
+    ) == {
+        "ok": True,
+        "value": 3,
+    }
+
+
+def test_tool_receipt_idempotency_key_is_stable_for_argument_order():
+    left = build_tool_receipt_idempotency_key(
+        session_id="sess-1",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        tool_call_id="call-1",
+        tool_name="write_workspace_file",
+        tool_args={"content": "hello", "path": "notes.txt"},
+    )
+    right = build_tool_receipt_idempotency_key(
+        session_id="sess-1",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        tool_call_id="call-1",
+        tool_name="write_workspace_file",
+        tool_args={"path": "notes.txt", "content": "hello"},
+    )
+
+    assert left == right
+    assert left.startswith("tool_receipt:")
+
+
+def test_approval_interrupt_info_from_result_normalizes_payload():
+    result = {
+        "type": "approval_required",
+        "approval_request": {
+            "id": "appr_123",
+            "tool_name": "write_file",
+            "tool_args": {"path": "demo.txt"},
+            "risk_level": "medium",
+            "side_effects": ["workspace_write"],
+        },
+    }
+
+    interrupt = approval_interrupt_info_from_result(
+        result, fallback_tool_name="fallback", run_id="run_1"
+    )
+
+    assert interrupt == {
+        "id": "appr_123",
+        "approval_request_id": "appr_123",
+        "tool_name": "write_file",
+        "arguments": {"path": "demo.txt"},
+        "risk_level": "medium",
+        "side_effects": ["workspace_write"],
+        "server_label": "ksadk",
+        "run_id": "run_1",
+    }
+
+
+def test_check_command_policy_allows_read_only_git_commands():
+    result = check_command_policy("git diff -- ksadk/toolsets/workspace.py")
+
+    assert result["ok"] is True
+    assert result["decision"] == "allow"
+
+
+def test_check_command_policy_rejects_dangerous_commands():
+    result = check_command_policy("git reset --hard HEAD")
+
+    assert result["ok"] is False
+    assert result["decision"] == "reject"
+    assert result["error_type"] == "command_rejected"
+
+
+def test_check_command_policy_rejects_recursive_rm_without_force():
+    result = check_command_policy("rm -r workspace")
+
+    assert result["ok"] is False
+    assert result["decision"] == "reject"
+    assert result["error_type"] == "command_rejected"

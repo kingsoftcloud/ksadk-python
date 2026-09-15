@@ -69,6 +69,16 @@ async def invoke_tool(
             cursors=mcp_cursors,
             call_id=call_id,
         )
+    if self._delegation_runtime is not None and self._delegation_runtime.is_tool(name):
+        if run is None:
+            raise RuntimeError("dynamic delegation requires an active parent run")
+        result, child_events = await self._delegation_runtime.invoke(
+            engine=self, parent_run=run, arguments=arguments, call_id=call_id or name,
+        )
+        self._pending_subagent_events.setdefault(run.handle.run_id, {})[call_id or name] = (
+            child_events
+        )
+        return result
     tool = (run.tools if run is not None else self._tools).get(name)
     if tool is None:
         raise RuntimeError(
