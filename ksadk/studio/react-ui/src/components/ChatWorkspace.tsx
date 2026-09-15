@@ -28,6 +28,7 @@ interface ChatWorkspaceProps {
   agentId: string;
   agentName: string;
   workspacePath?: string;
+  workspaceId?: string;
   targetId?: string;
   agentAppearance?: AgentAppearance;
   active?: boolean;
@@ -71,6 +72,7 @@ export function ChatWorkspace({
   agentId,
   agentName,
   workspacePath = "",
+  workspaceId = "",
   targetId = "",
   agentAppearance,
   active = true,
@@ -88,8 +90,8 @@ export function ChatWorkspace({
   // when the user returns to this Agent while in-flight engines remain owned
   // by the previous hook instance.
   const conversationController = useMemo(
-    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspacePath)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
-    [agentId, targetId, workspacePath],
+    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
+    [agentId, targetId, workspaceId, workspacePath],
   );
   const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: false });
   const documents = useRunDocumentActions();
