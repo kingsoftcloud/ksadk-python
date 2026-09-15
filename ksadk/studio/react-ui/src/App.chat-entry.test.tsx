@@ -27,6 +27,12 @@ function response(payload: unknown, ok = true): Response {
   return { ok, json: async () => payload } as Response;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(next => { resolve = next; });
+  return { promise, resolve };
+}
+
 describe("Studio chat entry", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "#/conversations");
@@ -186,5 +192,39 @@ describe("Studio chat entry", () => {
       expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent("新建本地 Agent");
     });
     expect(screen.queryByTestId("cloud-chat-workspace")).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale local Agent discovery response after a newer refresh", async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    let agentListReads = 0;
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        agentListReads += 1;
+        return (agentListReads === 1 ? first.promise : second.promise);
+      }
+      if (path === "/api/v1/agents/new-agent" || path === "/api/v1/agents/old-agent") {
+        return response({ builds: [] });
+      }
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+    await waitFor(() => expect(agentListReads).toBe(1));
+    await screen.getByRole("button", { name: "刷新" }).click();
+    await waitFor(() => expect(agentListReads).toBe(2));
+
+    second.resolve(response({ items: [{ metadata: { id: "new-agent", name: "最新 Agent" } }] }));
+    await waitFor(() => expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent("最新 Agent"));
+
+    first.resolve(response({ items: [{ metadata: { id: "old-agent", name: "过期 Agent" } }] }));
+    await waitFor(() => expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent("最新 Agent"));
+    expect(screen.queryByText("过期 Agent")).not.toBeInTheDocument();
   });
 });
