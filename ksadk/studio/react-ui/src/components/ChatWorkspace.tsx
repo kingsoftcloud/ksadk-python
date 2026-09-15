@@ -29,6 +29,8 @@ interface ChatWorkspaceProps {
   agentName: string;
   workspacePath?: string;
   workspaceId?: string;
+  /** Opaque credential/tenant scope from /system/bootstrap. Never expose credentials. */
+  credentialScope?: string;
   targetId?: string;
   agentAppearance?: AgentAppearance;
   active?: boolean;
@@ -73,6 +75,7 @@ export function ChatWorkspace({
   agentName,
   workspacePath = "",
   workspaceId = "",
+  credentialScope = "",
   targetId = "",
   agentAppearance,
   active = true,
@@ -90,8 +93,8 @@ export function ChatWorkspace({
   // when the user returns to this Agent while in-flight engines remain owned
   // by the previous hook instance.
   const conversationController = useMemo(
-    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
-    [agentId, targetId, workspaceId, workspacePath],
+    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
+    [agentId, credentialScope, targetId, workspaceId, workspacePath],
   );
   const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: false });
   const documents = useRunDocumentActions();

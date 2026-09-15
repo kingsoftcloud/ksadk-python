@@ -126,6 +126,22 @@ describe("ChatWorkspace shared conversation composition", () => {
     expect(screen.queryByText("ses_internal_id")).not.toBeInTheDocument();
   });
 
+  it("scopes conversation storage by the opaque credential tenant scope", () => {
+    render(
+      <ChatWorkspace
+        agentId="local-1"
+        agentName="Agent"
+        workspaceId="workspace-a"
+        credentialScope="tenant-a"
+        targetId="target-a"
+      />,
+    );
+
+    const lastCall = mocks.useAgentChat.mock.calls[mocks.useAgentChat.mock.calls.length - 1] as unknown[] | undefined;
+    const options = lastCall?.[0] as { conversationController: { storageKey?: string } };
+    expect(options.conversationController.storageKey).toBe("ksadk.studio:workspace-a:tenant-a:local-1:target-a");
+  });
+
   it("surfaces a multi-window draft conflict and resolves the selected side", () => {
     let notify!: () => void;
     let conflicted = true;

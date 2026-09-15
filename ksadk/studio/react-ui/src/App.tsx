@@ -156,6 +156,11 @@ interface AgentSummary {
   builds?: Array<{ id: string; status: string }>;
 }
 
+interface OperationScope {
+  workspace?: string;
+  cloudCredential?: string;
+}
+
 export default function App() {
   const workspacePages = useWorkspaceContributions();
   const viewportMode = useStudioViewportMode();
@@ -180,6 +185,7 @@ export default function App() {
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string; workspaceId?: string } | null>(null);
+  const [operationScope, setOperationScope] = useState<OperationScope | null>(null);
   const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>([]);
   const [workspaceRunCount, setWorkspaceRunCount] = useState(0);
   const [runtimeReady, setRuntimeReady] = useState(false);
@@ -342,6 +348,7 @@ export default function App() {
     apiFetch("/api/v1/system/bootstrap").then(r => r.json()).then(d => {
       if (requestEpoch !== workspaceDiscoveryEpoch.current) return;
       setWorkspace(d.workspace || null);
+      setOperationScope(d.operationScope || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => {
       if (requestEpoch === workspaceDiscoveryEpoch.current) setRuntimeReady(false);
@@ -748,6 +755,7 @@ export default function App() {
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   workspacePath={workspace?.path}
                   workspaceId={workspace?.workspaceId}
+                  credentialScope={operationScope?.cloudCredential}
                   targetId={selectedCloudDeployment.id}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
@@ -764,6 +772,7 @@ export default function App() {
                   agentId={currentAgentId}
                   workspacePath={workspace?.path}
                   workspaceId={workspace?.workspaceId}
+                  credentialScope={operationScope?.cloudCredential}
                   targetId={currentAgentId}
                   requestedSessionId={requestedSessionId}
                   agentName={currentAgent?.metadata.name || "Agent"}
