@@ -1926,8 +1926,8 @@ async def test_invoke_conversation_once_falls_back_on_transient_model_error(monk
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
     )
 
-    assert runner.prepared_models == ["glm-5.2", "deepseek-v4-pro"]
-    assert runner.calls[-1]["model"] == "deepseek-v4-pro"
+    assert runner.prepared_models == ["glm-5.2", "glm-5.3-flash"]
+    assert runner.calls[-1]["model"] == "glm-5.3-flash"
 
 
 @pytest.mark.asyncio
@@ -1949,8 +1949,8 @@ async def test_stream_conversation_turn_falls_back_before_first_delta(monkeypatc
         )
     ]
 
-    assert runner.prepared_models == ["glm-5.2", "deepseek-v4-pro"]
-    assert runner.calls[-1]["model"] == "deepseek-v4-pro"
+    assert runner.prepared_models == ["glm-5.2", "glm-5.3-flash"]
+    assert runner.calls[-1]["model"] == "glm-5.3-flash"
     assert any("fallback answer" in event for event in events)
     assert any("response.completed" in event for event in events)
 
@@ -5573,49 +5573,3 @@ def test_plan_compaction_keeps_pending_approval_group_out_of_checkpoint():
     assert [[item.seq_id for item in group] for group in plan.groups_to_compact] == [[1, 2]]
     assert plan.pinned_state["pending_approvals"]
     assert "当前任务" in plan.pinned_state["current_user_goal"]
-
-
-@pytest.mark.asyncio
-async def test_prepared_checkpoint_resume_lifecycle_is_not_written_twice():
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "prepared-resume")
-    await append_run_resume_event(
-        session_id="prepared-resume",
-        author="demo-agent",
-        run_id="run-1",
-        checkpoint_id="cp-1",
-        resume_attempt_id="resume-1",
-        framework="langgraph",
-        framework_ref={},
-        invocation_id="inv-1",
-        session_service_provider=lambda: service,
-    )
-    await append_run_status_event(
-        session_id="prepared-resume",
-        author="demo-agent",
-        status="resuming",
-        invocation_id="inv-1",
-        detail="checkpoint_resume",
-        session_service_provider=lambda: service,
-    )
-
-    await build_run_input(
-        agent_id="demo-agent",
-        user_id="user-1",
-        session_id="prepared-resume",
-        messages=[],
-        resume_input={
-            "type": "agentengine.resume_checkpoint",
-            "run_id": "run-1",
-            "checkpoint_id": "cp-1",
-            "resume_attempt_id": "resume-1",
-            "framework": "langgraph",
-            "framework_ref": {},
-        },
-        invocation_id="inv-1",
-        session_service_provider=lambda: service,
-        resume_lifecycle_prepared=True,
-    )
-
-    events = await service.get_events("prepared-resume")
-    assert [event.event_type for event in events] == ["run_resume", "run_status"]

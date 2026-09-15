@@ -2352,8 +2352,9 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
         item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
-    assert catalog[1]["options"] == {"temperature": 1}
+    # primary==multimodal==deepseek-v4.1-flash 去重后 catalog 只剩 policy 派生的 2 项
+    assert [item["id"] for item in catalog] == ["deepseek-v4.1-flash", "glm-5.3-flash"]
+    assert catalog[0]["options"] == {"temperature": 1}
 
 
 def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeypatch, tmp_path):
@@ -2407,7 +2408,9 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
         item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    # _build_openclaw_env_vars 已写入 policy catalog(非空),deploy 不会再进 provider fetch 分支;
+    # 这里的 catalog 即 policy 派生结果:primary==multimodal 去重后 2 项
+    assert [item["id"] for item in catalog] == ["deepseek-v4.1-flash", "glm-5.3-flash"]
     assert "kimi-k2.6" not in {item["id"] for item in catalog}
 
 

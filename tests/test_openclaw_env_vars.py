@@ -273,16 +273,16 @@ def test_build_openclaw_env_vars_injects_default_model_policy(monkeypatch):
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert "OPENCLAW_DEFAULT_MODEL" not in env
-    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.2"
-    assert env["OPENCLAW_FALLBACK_MODEL"] == "ksyun/deepseek-v4-pro"
-    assert env["OPENCLAW_IMAGE_MODEL"] == "ksyun/kimi-k2.7-code"
+    assert env["OPENAI_MODEL_NAME"] == "ksyun/deepseek-v4.1-flash"
+    assert env["OPENCLAW_FALLBACK_MODEL"] == "ksyun/glm-5.3-flash"
+    assert env["OPENCLAW_IMAGE_MODEL"] == "ksyun/deepseek-v4.1-flash"
     assert "AGENTENGINE_MODEL_POLICY_JSON" in env
     catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    # primary==multimodal==deepseek-v4.1-flash,catalog 按角色去重后只剩 2 项
+    assert [item["id"] for item in catalog] == ["deepseek-v4.1-flash", "glm-5.3-flash"]
     assert {item["id"]: item["reasoning"] for item in catalog} == {
-        "glm-5.2": True,
-        "kimi-k2.7-code": True,
-        "deepseek-v4-pro": True,
+        "deepseek-v4.1-flash": True,
+        "glm-5.3-flash": True,
     }
     assert "OPENCLAW_MODEL_BASE_URL" not in env
     assert "OPENCLAW_MODEL_PROVIDER_ID" not in env
@@ -304,7 +304,7 @@ def test_openclaw_model_policy_env_keeps_default_primary_with_catalog(monkeypatc
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
-    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.2"
+    assert env["OPENAI_MODEL_NAME"] == "ksyun/deepseek-v4.1-flash"
     assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"kimi-k2.7-code"},{"id":"glm-5.2"}]'
     assert "OPENCLAW_MODEL_BASE_URL" not in env
     assert "OPENCLAW_MODEL_PROVIDER_ID" not in env
@@ -322,7 +322,7 @@ def test_build_openclaw_env_vars_global_model_preference_keeps_dual_catalog(monk
     assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.1"
     assert "OPENCLAW_DEFAULT_MODEL" not in env
     catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    assert [item["id"] for item in catalog] == ["deepseek-v4.1-flash", "glm-5.3-flash"]
 
 
 def test_build_openclaw_env_vars_explicit_glm5_is_forwarded_without_catalog(monkeypatch):
@@ -334,7 +334,7 @@ def test_build_openclaw_env_vars_explicit_glm5_is_forwarded_without_catalog(monk
 
     assert env["OPENCLAW_DEFAULT_MODEL"] == "ksyun/glm-5.1"
     catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    assert [item["id"] for item in catalog] == ["deepseek-v4.1-flash", "glm-5.3-flash"]
 
 
 def test_build_openclaw_env_vars_preserves_explicit_model_catalog(monkeypatch):
@@ -364,11 +364,11 @@ def test_openclaw_provider_model_metadata_builds_catalog_for_creation(monkeypatc
     assert changed is True
     catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
     assert [item["id"] for item in catalog] == [
-        "glm-5.2",
-        "kimi-k2.7-code",
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
         "deepseek-v4-pro",
     ]
-    assert catalog[1]["options"] == {"temperature": 1}
+    assert catalog[0]["options"] == {"temperature": 1}
     assert catalog[-1] == {
         "id": "deepseek-v4-pro",
         "name": "deepseek-v4-pro",
