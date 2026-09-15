@@ -280,6 +280,34 @@ describe("Studio chat entry", () => {
     expect(screen.queryByText("过期工作区")).not.toBeInTheDocument();
   });
 
+  it("keeps the local conversation usable while cloud discovery is unavailable", async () => {
+    const deployments = deferred<Response>();
+    const cloudAgents = deferred<Response>();
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-online", name: "本地在线 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-online") return response({ builds: [] });
+      if (path === "/api/v1/deployments") return deployments.promise;
+      if (path === "/api/v1/cloud-agents?size=100") return cloudAgents.promise;
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent("本地在线 Agent");
+    });
+    expect(screen.queryByTestId("cloud-chat-workspace")).not.toBeInTheDocument();
+
+    deployments.resolve(response({ items: [] }));
+    cloudAgents.resolve(response({ items: [] }));
+  });
+
   it("opens the Agent target switcher with Cmd/Ctrl+K", async () => {
     mockedFetch.mockImplementation(async input => {
       const path = String(input);
