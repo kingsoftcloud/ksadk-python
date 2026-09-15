@@ -27,6 +27,7 @@ interface ChatWorkspaceProps {
   onSelectConversation?: () => void;
   agentId: string;
   agentName: string;
+  workspacePath?: string;
   agentAppearance?: AgentAppearance;
   active?: boolean;
   refreshTick?: number;
@@ -68,6 +69,7 @@ function sessionDisplayTitle(session: { SessionId: string; Title?: string }): st
 export function ChatWorkspace({
   agentId,
   agentName,
+  workspacePath = "",
   agentAppearance,
   active = true,
   refreshTick = 0,
@@ -84,8 +86,8 @@ export function ChatWorkspace({
   // when the user returns to this Agent while in-flight engines remain owned
   // by the previous hook instance.
   const conversationController = useMemo(
-    () => new ConversationController(`ksadk.studio:${encodeURIComponent(agentId)}`),
-    [agentId],
+    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspacePath)}:${encodeURIComponent(agentId)}`),
+    [agentId, workspacePath],
   );
   const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController, restoreSession: false });
   const documents = useRunDocumentActions();
@@ -160,7 +162,13 @@ export function ChatWorkspace({
   useEffect(() => chat.conversationOutbox?.subscribe(() => setOutboxRevision(revision => revision + 1)), [chat.conversationOutbox]);
   const unresolvedOutbox = useMemo(() => {
     const id = chat.conversationId || conversationController.getOrCreate(agentId, chat.currentSessionId);
-    return chat.conversationOutbox?.listUnresolved(id).filter(entry => entry.status === "unknown" || entry.status === "failed") || [];
+    return chat.conversationOutbox?.listUnresolved(id)
+      .filter(entry => entry.status === "unknown" || entry.status === "failed")
+      .map(entry => ({
+        entry,
+        canRetry: entry.attachments.length === 0
+          || chat.conversationOutbox?.getRuntimeAttachments(entry.requestId).length === entry.attachments.length,
+      })) || [];
   }, [agentId, chat.conversationId, chat.currentSessionId, chat.conversationOutbox, conversationController]);
   const [retryingOutboxId, setRetryingOutboxId] = useState<string | null>(null);
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
@@ -491,13 +499,13 @@ export function ChatWorkspace({
               <strong>{unresolvedOutbox.length === 1 ? "有一条消息尚未确认" : `有 ${unresolvedOutbox.length} 条消息尚未确认`}</strong>
               <span>网络中断可能导致投递结果未知，请确认后再重试。</span>
               <div className="studio-outbox-items">
-                {unresolvedOutbox.map(entry => (
+                {unresolvedOutbox.map(({ entry, canRetry }) => (
                   <div className="studio-outbox-item" key={entry.requestId}>
-                    <span title={entry.text}>{shortText(entry.text, 44)}</span>
-                    <button type="button" disabled={retryingOutboxId === entry.requestId} onClick={() => {
+                    <span title={entry.text}>{shortText(entry.text, 44)}{!canRetry ? " · 含附件，请重新添加后发送" : ""}</span>
+                    <button type="button" disabled={!canRetry || retryingOutboxId === entry.requestId} onClick={() => {
                       setRetryingOutboxId(entry.requestId);
                       void chat.retryOutbox(entry.requestId).finally(() => setRetryingOutboxId(null));
-                    }}>{retryingOutboxId === entry.requestId ? "重试中…" : "确认并重试"}</button>
+                    }}>{!canRetry ? "无法恢复附件" : retryingOutboxId === entry.requestId ? "重试中…" : "确认并重试"}</button>
                   </div>
                 ))}
               </div>
