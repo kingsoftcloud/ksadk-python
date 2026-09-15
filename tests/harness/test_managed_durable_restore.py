@@ -66,7 +66,8 @@ class _FakeEngine:
     async def compile(self, _spec):  # noqa: ANN001
         return object()
 
-    async def start(self, request, _compiled):  # noqa: ANN001
+    async def start(self, request, _compiled, **kwargs):  # noqa: ANN001
+        del kwargs  # 0.154 起 managed adapter 会透传 execution_policy_request
         from ksadk.runtime import RunHandle
 
         return RunHandle(

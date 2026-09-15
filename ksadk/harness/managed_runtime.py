@@ -217,6 +217,9 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
                 metadata["context_window_tokens"] = max_input + reserve_output
         internal_request = request.model_copy(update={"metadata": metadata})
         options = await self._policy_options(internal_request)
+        # 始终把请求传给 configure_run：回合级 tool_approval_mode 在那里
+        # 覆盖静态审批面（execution_policy_request 仅在有 policy 时传）。
+        options.setdefault("execution_policy_request", internal_request)
         internal = await self._engine.start(internal_request, compiled, **options)
         external = internal.model_copy(update={"runtime_type": "harness"})
         self._external_handles[external.run_id] = internal
