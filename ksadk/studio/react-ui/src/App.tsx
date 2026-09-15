@@ -63,6 +63,29 @@ const RESOURCE_KINDS: ResourceKind[] = [
 ];
 const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds"]);
 const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
+const CLOUD_DISCOVERY_TIMEOUT_MS = 4000;
+
+/** Keep an unavailable cloud control plane from delaying the local Studio shell. */
+async function apiFetchWithTimeout(
+  input: RequestInfo | URL,
+  timeoutMs = CLOUD_DISCOVERY_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      apiFetch(input, { signal: controller.signal }),
+      new Promise<Response>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("cloud discovery timeout"));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
   try {
@@ -261,8 +284,8 @@ export default function App() {
   const loadCloudDeployments = useCallback(async () => {
     try {
       const [receiptResponse, accountResponse] = await Promise.all([
-        apiFetch("/api/v1/deployments"),
-        apiFetch("/api/v1/cloud-agents?size=100"),
+        apiFetchWithTimeout("/api/v1/deployments"),
+        apiFetchWithTimeout("/api/v1/cloud-agents?size=100"),
       ]);
       if (!receiptResponse.ok) return;
       const receiptPayload = await receiptResponse.json() as { items?: CloudDeploymentSummary[] };
@@ -276,7 +299,7 @@ export default function App() {
       )))];
       const accountDetails = await Promise.all<AccountCloudAgentSummary | null>(receiptAgentIds.map(agentId => (
         Promise.resolve()
-          .then(() => apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
+          .then(() => apiFetchWithTimeout(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
           .then(async response => response.ok
             ? await response.json() as AccountCloudAgentSummary
             : null)
