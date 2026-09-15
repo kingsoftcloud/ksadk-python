@@ -1109,21 +1109,21 @@ def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path,
 
     assert result.exit_code == 0, result.output
     assert "https://kspmas.ksyun.com/v1/" in result.output
-    assert "glm-5.2" in result.output
+    assert "deepseek-v4.1-flash" in result.output
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://kspmas.ksyun.com/v1/"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
     assert any(
-        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-5.2"
+        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "deepseek-v4.1-flash"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
     env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert (
         json.loads(env_vars["AGENTENGINE_MODEL_POLICY_JSON"])["fallback"]["model"]
-        == "deepseek-v4-pro"
+        == "glm-5.3-flash"
     )
-    assert env_vars["HERMES_FALLBACK_MODEL"] == "deepseek-v4-pro"
+    assert env_vars["HERMES_FALLBACK_MODEL"] == "glm-5.3-flash"
     assert not any(
         item["Key"] == "OPENAI_API_KEY" for item in _FakeHermesClient.create_payload["env_vars"]
     )
@@ -1242,7 +1242,7 @@ def test_hermes_deploy_uses_model_policy_fallback_for_kspmas(tmp_path: Path, mon
 
     assert result.exit_code == 0, result.output
     env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
-    assert env_vars["HERMES_FALLBACK_MODEL"] == "deepseek-v4-pro"
+    assert env_vars["HERMES_FALLBACK_MODEL"] == "glm-5.3-flash"
     assert "kimi-k2.6" not in env_vars.values()
 
 

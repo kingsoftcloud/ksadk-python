@@ -85,6 +85,27 @@ test("parses fragmented Responses SSE and accumulates reasoning plus output", as
   ]);
 });
 
+test("accumulates reasoning from all four delta event name variants", async () => {
+  const chat = await loadChatProtocol();
+  const variants = [
+    "response.reasoning.delta",
+    "response.reasoning_text.delta",
+    "response.reasoning_summary.delta",
+    "response.reasoning_summary_text.delta",
+  ];
+  for (const name of variants) {
+    const events = [];
+    const parser = chat.createResponseSseParser(event => events.push(event));
+    parser.push(`event: ${name}\ndata: {"type":"${name}","delta":"想"}\n\n`);
+    parser.finish();
+    const state = events.reduce(
+      chat.reduceChatStreamEvent,
+      chat.createChatStreamState("resp_local", "ses_1"),
+    );
+    assert.equal(state.reasoning, "想", `variant ${name} should accumulate reasoning`);
+  }
+});
+
 test("keeps Studio Conversation decoding aligned with the frozen defaults and safe projection", async () => {
   const conversation = await loadConversationProtocol();
   const minimalSurface = {
