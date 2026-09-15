@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import { AgentsPage } from "./pages/AgentsPage";
 import { CreatePage } from "./pages/CreatePage";
@@ -189,6 +189,7 @@ export default function App() {
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
+  const cloudDiscoveryEpoch = useRef(0);
   const [cloudDeploymentId, setCloudDeploymentId] = useState(
     !initialRoute.conversationAgentId && initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
   );
@@ -282,11 +283,13 @@ export default function App() {
   useEffect(() => { loadAgents(); }, [loadAgents, refreshTick]);
 
   const loadCloudDeployments = useCallback(async () => {
+    const requestEpoch = ++cloudDiscoveryEpoch.current;
     try {
       const [receiptResponse, accountResponse] = await Promise.all([
         apiFetchWithTimeout("/api/v1/deployments"),
         apiFetchWithTimeout("/api/v1/cloud-agents?size=100"),
       ]);
+      if (requestEpoch !== cloudDiscoveryEpoch.current) return;
       if (!receiptResponse.ok) return;
       const receiptPayload = await receiptResponse.json() as { items?: CloudDeploymentSummary[] };
       const accountPayload = accountResponse.ok
@@ -305,6 +308,7 @@ export default function App() {
             : null)
           .catch(() => null)
       )));
+      if (requestEpoch !== cloudDiscoveryEpoch.current) return;
       const accountByAgentId = new Map(accountItems.map(item => [item.agentId, item]));
       for (const detail of accountDetails) {
         if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
@@ -322,7 +326,7 @@ export default function App() {
     } catch {
       // Deployment receipts are optional for a local-only workspace.
     } finally {
-      setCloudDeploymentsLoaded(true);
+      if (requestEpoch === cloudDiscoveryEpoch.current) setCloudDeploymentsLoaded(true);
     }
   }, []);
 
