@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => {
     respondToApproval: vi.fn(),
     submitAguiAction: vi.fn(),
     respondInteraction: vi.fn(),
+    conversationDrafts: undefined as any,
   };
   return {
     chat,
@@ -104,6 +105,7 @@ describe("ChatWorkspace shared conversation composition", () => {
     mocks.facadeOptions.length = 0;
     mocks.timelineProps = null;
     mocks.composerProps = null;
+    mocks.chat.conversationDrafts = undefined;
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
@@ -122,6 +124,24 @@ describe("ChatWorkspace shared conversation composition", () => {
 
     expect(screen.getByText("新会话")).toBeInTheDocument();
     expect(screen.queryByText("ses_internal_id")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a multi-window draft conflict and resolves the selected side", () => {
+    let notify!: () => void;
+    let conflicted = true;
+    const conflictStore = {
+      getConflict: vi.fn(() => conflicted ? { conversationId: "conversation_conflict", local: { text: "本窗口", revision: 1, updatedAt: 1, attachments: [] }, remote: { text: "另一个窗口", revision: 1, updatedAt: 2 }, detectedAt: 2 } : undefined),
+      subscribe: vi.fn((listener: () => void) => { notify = listener; return () => {}; }),
+      resolveConflict: vi.fn(() => { conflicted = false; notify(); }),
+    };
+    mocks.chat.conversationDrafts = conflictStore;
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("检测到其他窗口修改了草稿");
+    fireEvent.click(screen.getByRole("button", { name: "使用其他窗口" }));
+    expect(conflictStore.resolveConflict).toHaveBeenCalledWith(expect.any(String), "remote");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    delete mocks.chat.conversationDrafts;
   });
 
   it("finds the active conversation body and leaves browser find available on other pages", () => {

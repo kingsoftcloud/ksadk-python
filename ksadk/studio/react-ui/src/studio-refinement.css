@@ -782,6 +782,30 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   font-size: 13px;
 }
 .studio-outbox-notice > span { color: var(--text-secondary, #6b7280); }
+.studio-draft-conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #1677ff) 28%, var(--border, #d9dee8));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #1677ff) 6%, var(--surface, #fff));
+  color: var(--text-primary, #1f2937);
+  font-size: 12px;
+}
+.studio-draft-conflict > span { color: var(--text-secondary, #6b7280); }
+.studio-draft-conflict-actions { display: flex; gap: 4px; margin-left: auto; }
+.studio-draft-conflict-actions button {
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: var(--accent, #1677ff);
+  background: transparent;
+  cursor: pointer;
+}
+.studio-draft-conflict-actions button:hover { background: color-mix(in srgb, var(--accent, #1677ff) 10%, transparent); }
 .studio-outbox-items { display: flex; flex-direction: column; gap: 4px; }
 .studio-outbox-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .studio-outbox-item > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -110,6 +110,24 @@ export function ChatWorkspace({
   const conversationIdFor = useCallback((sessionId: string | null) => {
     return chat.conversationId || conversationController.getOrCreate(agentId, sessionId, targetId);
   }, [agentId, chat.conversationId, conversationController, targetId]);
+  const draftKey = conversationIdFor(chat.currentSessionId);
+  const [draftConflict, setDraftConflict] = useState(() => chat.conversationDrafts?.getConflict(draftKey));
+  useEffect(() => {
+    const store = chat.conversationDrafts;
+    if (!store) {
+      setDraftConflict(undefined);
+      return;
+    }
+    const refreshConflict = () => setDraftConflict(store.getConflict(draftKey));
+    refreshConflict();
+    return store.subscribe(refreshConflict);
+  }, [chat.conversationDrafts, draftKey]);
+  const resolveDraftConflict = useCallback((choice: 'local' | 'remote') => {
+    const store = chat.conversationDrafts;
+    if (!store) return;
+    store.resolveConflict(draftKey, choice);
+    setDraftConflict(store.getConflict(draftKey));
+  }, [chat.conversationDrafts, draftKey]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
   useEffect(() => {
     // A target change invalidates pending reads, while the runtime task keeps
@@ -498,6 +516,16 @@ export function ChatWorkspace({
           </>
         )}
         <div className="studio-composer-area">
+          {draftConflict ? (
+            <div className="studio-draft-conflict" role="alert" aria-live="assertive">
+              <strong>检测到其他窗口修改了草稿</strong>
+              <span>请选择要保留的版本，避免覆盖另一窗口的输入。</span>
+              <div className="studio-draft-conflict-actions">
+                <button type="button" onClick={() => resolveDraftConflict("local")}>保留本窗口</button>
+                <button type="button" onClick={() => resolveDraftConflict("remote")}>使用其他窗口</button>
+              </div>
+            </div>
+          ) : null}
           {unresolvedOutbox.length > 0 ? (
             <div className="studio-outbox-notice" role="status" aria-live="polite">
               <strong>{unresolvedOutbox.length === 1 ? "有一条消息需要处理" : `有 ${unresolvedOutbox.length} 条消息需要处理`}</strong>
@@ -516,7 +544,7 @@ export function ChatWorkspace({
             </div>
           ) : null}
           <AgentConversationComposer
-            draftKey={conversationIdFor(chat.currentSessionId)}
+            draftKey={draftKey}
             draftStore={chat.conversationDrafts}
             onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
             composerMaxHeight={176}
