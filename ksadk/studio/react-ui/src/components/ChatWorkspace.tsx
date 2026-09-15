@@ -10,7 +10,7 @@ import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
 import { useRunDocumentActions } from "./RunDocumentActions";
-import { createConversationId, createNavigationEpoch, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
+import { ConversationController, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
 
 export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
@@ -88,24 +88,18 @@ export function ChatWorkspace({
   const currentSessionIdRef = useRef<string | null>(null);
   // Studio conversation ids are local and stable. Native session ids can be
   // created later, so they must never be used as React keys or draft owners.
-  const conversationIds = useRef(new Map<string, ConversationId>());
-  const navigationEpoch = useRef(createNavigationEpoch());
+  const conversationController = useRef(new ConversationController());
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   const conversationIdFor = useCallback((sessionId: string | null) => {
-    const key = `${agentId}:${sessionId || "draft"}`;
-    const existing = conversationIds.current.get(key);
-    if (existing) return existing;
-    const created = createConversationId();
-    conversationIds.current.set(key, created);
-    return created;
+    return conversationController.current.getOrCreate(agentId, sessionId);
   }, [agentId]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
   useEffect(() => {
     // A target change invalidates pending reads, while the runtime task keeps
     // running in the broker. This is intentionally separate from aborting the
     // execution subscription.
-    navigationEpoch.current.next();
+    conversationController.current.navigate();
     openedRequest.current = "";
   }, [agentId]);
   useEffect(() => {
@@ -136,11 +130,11 @@ export function ChatWorkspace({
     const request = `${agentId}:${requestedSessionId}`;
     if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || chat.isLoadingSessions || openedRequest.current === request) return;
     openedRequest.current = request;
-    const requestEpoch = navigationEpoch.current.next();
+    const requestEpoch = conversationController.current.navigate();
     void (async () => {
       await chat.refresh();
       if (currentRequest.current === request
-        && navigationEpoch.current.current === requestEpoch) chat.selectSession(requestedSessionId);
+        && conversationController.current.navigationEpoch === requestEpoch) chat.selectSession(requestedSessionId);
     })();
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
