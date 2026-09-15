@@ -297,7 +297,10 @@ def test_start_timeout_cleans_up_thread_and_socket(monkeypatch):
 class _HangSSEHandler(BaseHTTPRequestHandler):
     """一直发 SSE chunk 不结束的假上游(模拟活动 SSE)。"""
 
+    accept: str | None = None
+
     def do_POST(self):
+        type(self).accept = self.headers.get("Accept")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -351,6 +354,7 @@ def test_stop_with_active_sse_reclaims_thread(capfd):
     rt.join(timeout=3)
     up.shutdown()
     up.server_close()
+    assert _HangSSEHandler.accept == "text/event-stream"
     captured = capfd.readouterr()
     assert "Traceback (most recent call last)" not in captured.err
     assert "asyncio.exceptions.CancelledError" not in captured.err

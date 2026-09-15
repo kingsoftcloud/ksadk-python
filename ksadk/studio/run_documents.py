@@ -6,7 +6,6 @@ resolve model-supplied absolute paths or traverse outside the owning agent root.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import stat
@@ -31,11 +30,13 @@ def _run_studio(studio, run_id: str):
 
 
 def document_root(studio, run) -> Path:
+    """harness 文件工具的落盘根：用户当前选择的 Studio 工作区。
+
+    与 build_managed_provider_adapter 的 tool_workspace 对齐（用户工作区
+    优先；历史上曾写到 plugin-runtime state 的哈希目录）。
+    """
     studio = _run_studio(studio, run.id)
-    agent_scope = hashlib.sha256(run.agent_id.encode()).hexdigest()
-    return studio.workspace.root / (
-        f".agentkit/plugin-runtime/state/tool-workspaces/{agent_scope}/.harness-tools/workspace"
-    )
+    return studio.workspace.root
 
 
 def referenced_documents(studio, run) -> list[dict]:

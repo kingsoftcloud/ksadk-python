@@ -124,7 +124,7 @@ def create_router(application: TeamsApplication) -> APIRouter:
 
     @router.get("/bindings")
     async def bindings():
-        return {"items": await application.bindings()}
+        return await application.bindings_catalog()
 
     @router.post("", status_code=201)
     async def create(payload: GroupCreateInput):

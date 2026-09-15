@@ -109,7 +109,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
       className: "agent-build-column",
       headerClassName: "agent-build-column",
       cell: agent => agent.builds?.some(build => build.status === "SUCCEEDED")
-        ? <span className="badge" data-state="ready">{isDeclarativeAgent(agent) ? "声明已校验" : "已构建"}</span>
+        ? <span className="badge" data-state="ready">已构建</span>
         : <span className="badge" data-state="idle">草稿</span>,
     },
     {

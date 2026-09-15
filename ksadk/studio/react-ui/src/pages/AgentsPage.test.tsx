@@ -65,7 +65,7 @@ describe("AgentsPage appearance", () => {
       />,
     );
 
-    expect(screen.getByText("声明已校验")).toBeInTheDocument();
+    expect(screen.getByText("已构建")).toBeInTheDocument();
     expect(screen.getByText("最近校验 / 构建")).toBeInTheDocument();
   });
 });

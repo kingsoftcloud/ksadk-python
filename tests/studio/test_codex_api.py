@@ -774,7 +774,7 @@ def test_openai_responses_reads_shared_web_agentengine_metadata(tmp_path: Path) 
     request = runtime_fixture.start_requests[0]
     assert request.config["sandbox"] == "workspace-write"
     assert request.config["sandbox_read_only"] is False
-    assert request.config["approval_mode"] == "auto_review"
+    assert request.config["approval_mode"] == "manual"
     assert request.config["tool_approval_mode"] == "risk"
     assert request.config["collaboration_mode"] == "plan"
     assert request.config["goal_objective"] == "完成协议回归"

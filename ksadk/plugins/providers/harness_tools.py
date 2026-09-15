@@ -100,7 +100,9 @@ def validate_tool_executor(contract: Mapping[str, Any]) -> dict[str, Any] | None
             "MCP 工具请通过 MCP Server 绑定，延迟工具请绑定具体工具。"
         )
     # Unrestricted dispatchers can reach tools outside the Agent's locked bindings.
-    if name in {"tool_dispatcher", "agentengine_tool_dispatcher", "tool_search"}:
+    from ksadk.toolsets import META_DISPATCHER_TOOL_NAMES
+
+    if name in META_DISPATCHER_TOOL_NAMES:
         raise ValueError(f"Tool {name} 不能绕过绑定范围；请绑定需要执行的具体工具")
     from ksadk.toolsets import describe_agentengine_tools
 

@@ -514,3 +514,78 @@ async def test_bundle_profile_mutation_is_detected_before_capability_use(
         runtime.inventory(bundle)
 
     assert captured.value.code == "plugin_bundle_profile_mutated"
+
+
+async def test_workspace_mcp_falls_back_to_resource_envrefs_credential() -> None:
+    """materializer 未携带 apiKeyRef 时，回退到目录合同 envRefs 解析凭据。
+
+    复现线上问题：组合器只透传 binding.config，catalog MCP 的
+    Authorization envRefs 留在 resolved-agent-spec 中，http MCP 因此
+    少鉴权头（401 transport_failed）。
+    """
+
+    registry = _registry()
+    profile = _profile()
+    capability = next(
+        item
+        for item in profile.capabilities
+        if WORKSPACE_MCP_PLUGIN_ID in item.ref
+    )
+    capability.config["resources"][0]["materializer"] = {}
+    bundle = _write_bundle(Path(tmp := __import__("tempfile").mkdtemp()) / "bundle", registry, profile)
+    runtime = WorkspaceMCPRuntime(
+        WORKSPACE_MCP_PLUGIN_ID,
+        "1.0.0",
+        secret_resolver=lambda _ref: "resolved-envref-secret",
+    )
+    await runtime.start()
+    try:
+        specs = runtime.harness_mcp_specs(bundle)
+        assert specs[0].api_key == "resolved-envref-secret"
+        assert specs[0].url == "http://mcp.example.test/rpc"
+    finally:
+        await runtime.drain()
+
+
+def test_stale_builtin_tool_digest_self_heals_but_published_tools_stay_strict() -> None:
+    """运行时生成的内置工具 digest 随宿主状态漂移，应重算放行；
+    持久化发布的工具仍保留篡改检测。"""
+    import tempfile
+    from pathlib import Path
+
+    from ksadk.plugins.bundle import PluginBundleResolver
+    from ksadk.studio.contracts import ToolContract
+    from ksadk.studio.errors import StudioError
+    from ksadk.studio.service import StudioService
+
+    registry = _registry()
+    profile = _profile()
+    bundle = _write_bundle(Path(tempfile.mkdtemp()) / "bundle", registry, profile)
+
+    stale = ToolContract.model_validate({
+        "name": "read-workspace-file",
+        "version": "1.0.0",
+        "description": "read workspace files",
+        "input_schema": {"type": "object", "properties": {}},
+        "permissions": [],
+        "side_effect": "read",
+        "approval": "never",
+        "executor": "builtin",
+        "group": "workspace",
+        "risk_level": "low",
+        "boundary": "ksadk-runtime",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    })
+    # 需要真实的运行时工具集注册（StudioService 启动时完成）
+    studio = StudioService(Path(tempfile.mkdtemp()))
+    resolver = studio.catalog.resolver
+    resolved = resolver.resolve_tool(stale)
+    assert resolved.digest != "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+    # 未注册到运行时工具集的合同仍走严格校验
+    stale_unknown = stale.model_copy(update={"name": "not-a-runtime-tool"})
+    try:
+        resolver.resolve_tool(stale_unknown)
+        raise AssertionError("expected CAPABILITY_DIGEST_MISMATCH")
+    except StudioError as error:
+        assert error.code == "CAPABILITY_DIGEST_MISMATCH"

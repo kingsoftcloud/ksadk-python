@@ -158,6 +158,34 @@ class _ConversationHistoryReasoner:
 
     def __init__(self, delegate: HarnessReasoner) -> None:
         self._delegate = delegate
+        # graph_builder 以 engine._reasoner._streaming 决定是否走增量推理；
+        # 包装器必须透传该声明，否则 managed Harness 静默回退到整段
+        # complete()，前端看不到任何 TEXT_DELTA。
+        self._streaming = getattr(delegate, "_streaming", None) is True
+
+    @staticmethod
+    def _expand_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Restore the canonical history envelope for either reasoner path.
+
+        The wrapper used to expand only ``complete``.  That made the managed
+        Harness graph silently fall back to a buffered model call whenever
+        Studio enabled streaming, because the wrapper no longer exposed the
+        delegate's ``stream_complete`` method.
+        """
+        expanded = list(messages)
+        if len(expanded) < 2:
+            return expanded
+        content = expanded[1].get("content")
+        if not isinstance(content, str) or not content.startswith(_HISTORY_ENVELOPE_PREFIX):
+            return expanded
+        raw = content.removeprefix(_HISTORY_ENVELOPE_PREFIX)
+        try:
+            history = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("invalid canonical Harness history envelope") from error
+        if not isinstance(history, list) or not all(isinstance(item, dict) for item in history):
+            raise RuntimeError("invalid canonical Harness history payload")
+        return [expanded[0], *_chat_history(history), *expanded[2:]]
 
     async def complete(
         self,
@@ -166,27 +194,56 @@ class _ConversationHistoryReasoner:
         prompt: str,
         messages: Sequence[dict[str, Any]],
         tools: Sequence[Any],
+        max_output_tokens: int | None = None,
     ) -> Any:
-        expanded = list(messages)
-        if len(expanded) >= 2:
-            content = expanded[1].get("content")
-            if isinstance(content, str) and content.startswith(_HISTORY_ENVELOPE_PREFIX):
-                raw = content.removeprefix(_HISTORY_ENVELOPE_PREFIX)
-                try:
-                    history = json.loads(raw)
-                except json.JSONDecodeError as error:
-                    raise RuntimeError("invalid canonical Harness history envelope") from error
-                if not isinstance(history, list) or not all(
-                    isinstance(item, dict) for item in history
-                ):
-                    raise RuntimeError("invalid canonical Harness history payload")
-                expanded = [expanded[0], *_chat_history(history), *expanded[2:]]
-        return await self._delegate.complete(
-            model=model,
-            prompt=prompt,
-            messages=expanded,
-            tools=tools,
-        )
+        expanded = self._expand_messages(messages)
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "messages": expanded,
+            "tools": tools,
+        }
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = max_output_tokens
+        return await self._delegate.complete(**kwargs)
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[Any],
+        max_output_tokens: int | None = None,
+    ):
+        """Forward incremental model events while preserving canonical history."""
+        stream = getattr(self._delegate, "stream_complete", None)
+        if stream is None:
+            # Keep compatibility with custom reasoners that only implement
+            # ``complete``; callers still receive one terminal turn.
+            turn = await self.complete(
+                model=model,
+                prompt=prompt,
+                messages=messages,
+                tools=tools,
+                **(
+                    {"max_output_tokens": max_output_tokens}
+                    if max_output_tokens is not None
+                    else {}
+                ),
+            )
+            yield {"turn": turn}
+            return
+        kwargs = {
+            "model": model,
+            "prompt": prompt,
+            "messages": self._expand_messages(messages),
+            "tools": tools,
+        }
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = max_output_tokens
+        async for item in stream(**kwargs):
+            yield item
 
 
 class _ConversationHistoryHarnessAdapter(HarnessRuntimeAdapter):
@@ -241,6 +298,7 @@ class KsADKHarnessProviderRuntime:
         state_dir: str | None = None,
         checkpoint_dsn: str | None = None,
         execution_policy_resolver: Any | None = None,
+        user_workspace_root: Path | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._session_service = session_service
@@ -248,6 +306,7 @@ class KsADKHarnessProviderRuntime:
         self._state_dir = state_dir
         self._checkpoint_dsn = checkpoint_dsn
         self._execution_policy_resolver = execution_policy_resolver
+        self._user_workspace_root = user_workspace_root
         self._ready = False
         self._disposed = False
         self._last_inventory: HarnessProviderInventory | None = None
@@ -365,6 +424,7 @@ class KsADKHarnessProviderRuntime:
                 state_dir=self._state_dir,
                 checkpoint_dsn=self._checkpoint_dsn,
                 execution_policy_resolver=self._execution_policy_resolver,
+                user_workspace_root=self._user_workspace_root,
             )
 
 
@@ -400,6 +460,7 @@ class KsADKHarnessProviderFactory:
             reasoner = LiteLLMHarnessReasoner()
         state_dir = services.get("harness_state_dir")
         checkpoint_dsn = services.get("checkpoint_dsn")
+        user_workspace_root = services.get("harness_workspace_root")
         self.runtime = KsADKHarnessProviderRuntime(
             plugin_id=manifest.metadata.id,
             session_service=service,
@@ -407,6 +468,9 @@ class KsADKHarnessProviderFactory:
             state_dir=str(state_dir) if state_dir else None,
             checkpoint_dsn=str(checkpoint_dsn) if checkpoint_dsn else None,
             execution_policy_resolver=services.get("execution_policy_resolver"),
+            user_workspace_root=(
+                Path(user_workspace_root) if user_workspace_root else None
+            ),
         )
         return self.runtime
 
@@ -428,11 +492,14 @@ class KsADKHarnessActivation:
         checkpoint_dsn: str | None = None,
         mcp_cleanup: AsyncExitStack | None = None,
         execution_policy_resolver: Any | None = None,
+        user_workspace_root: Path | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
         self._agent_name = agent_name
         self._workspace_root = workspace_root
+        # 用户当前选择的 Studio 工作区（bundle 之外）；文件工具落盘目标。
+        self._user_workspace_root = user_workspace_root
         self._reasoner = reasoner
         self._skills = skills
         self._context_sources = context_sources
@@ -448,11 +515,25 @@ class KsADKHarnessActivation:
         self._disposed = False
         self._executors: list[RuntimeExecutor] = []
         self._kernel_adapter: RuntimeAdapter | None = None
+        self._warmup_task: asyncio.Task[Any] | None = None
+        self._warmup_error: BaseException | None = None
 
     async def start(self) -> None:
         if self._disposed:
             raise RuntimeError("Harness activation is disposed")
         self._ready = True
+        # Compilation and MCP/tool discovery are independent of the first
+        # user turn.  Start them in the background so Studio can finish
+        # opening immediately; the first turn awaits the same task if needed.
+        self._warmup_task = asyncio.create_task(self._warmup_kernel())
+
+    async def _warmup_kernel(self) -> None:
+        try:
+            await self.runtime_adapter()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # retain the error for the first turn
+            self._warmup_error = error
 
     async def health(self) -> bool:
         return self._ready and not self._disposed
@@ -521,6 +602,12 @@ class KsADKHarnessActivation:
             raise PluginHostError(
                 "harness_activation_unavailable", "Harness activation is not ready"
             )
+        current = asyncio.current_task()
+        if self._warmup_task is not None and self._warmup_task is not current:
+            await asyncio.shield(self._warmup_task)
+            if self._warmup_error is not None:
+                error, self._warmup_error = self._warmup_error, None
+                raise error
         if self._kernel_adapter is None:
             from ksadk.plugins.providers.harness_managed import (
                 build_managed_provider_adapter,
@@ -531,6 +618,7 @@ class KsADKHarnessActivation:
                 agent_name=self._agent_name,
                 reasoner=self._reasoner,
                 workspace_root=self._workspace_root,
+                user_workspace_root=self._user_workspace_root,
                 skills=self._skills,
                 tool_contracts=dict(self._bundle.resolved_agent_spec),
                 bundle_root=self._bundle.root,
@@ -551,6 +639,10 @@ class KsADKHarnessActivation:
 
     async def dispose(self) -> None:
         self._ready = False
+        if self._warmup_task is not None and not self._warmup_task.done():
+            self._warmup_task.cancel()
+            await asyncio.gather(self._warmup_task, return_exceptions=True)
+        self._warmup_task = None
         first_error: BaseException | None = None
         if self._checkpoint_stack is not None:
             try:

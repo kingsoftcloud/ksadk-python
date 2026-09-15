@@ -464,6 +464,10 @@ async def test_sdk_plan_bridge_injects_app_server_collaboration_mode_payload() -
             captured.update({"thread_id": thread_id, "input": wire_input, "params": params})
             return SimpleNamespace(turn=SimpleNamespace(id="turn-plan"))
 
+        # openai-codex 0.154 重做通知路由：AsyncTurnHandle 构造时即订阅。
+        def _subscribe_turn_notifications(self, turn_id):
+            return SimpleNamespace(unsubscribe=lambda: None)
+
     codex = SimpleNamespace(_client=_LowLevel())
     client = AsyncCodexClient.__new__(AsyncCodexClient)
     client._codex = codex

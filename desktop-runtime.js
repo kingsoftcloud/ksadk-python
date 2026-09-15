@@ -44,8 +44,10 @@ function requestJson(port, route, {method = 'GET', data, cookie, csrf, timeoutMs
 async function waitForOwnedStudio(child, port, token, workspace, timeout = 90000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null || child.spawnError)
-      throw new Error('Studio 后端启动失败，请查看应用日志。');
+    if (child.exitCode !== null || child.signalCode !== null || child.spawnError) {
+      const detail = child.spawnError?.message || (child._recentOutput || []).join('\n');
+      throw new Error('Studio 后端启动失败' + (detail ? '：' + detail : '，请查看应用日志。'));
+    }
     try {
       const auth = await requestJson(port, '/api/v1/system/session', {method: 'POST', data: {token}});
       if (auth.status === 200) {
@@ -60,7 +62,8 @@ async function waitForOwnedStudio(child, port, token, workspace, timeout = 90000
     }
     await new Promise(resolve => setTimeout(resolve, 200));
   }
-  throw new Error('无法确认本次启动的 Studio 后端，未连接其他已有服务。');
+  const detail = (child._recentOutput || []).join('\n');
+  throw new Error('无法确认本次启动的 Studio 后端，未连接其他已有服务。' + (detail ? '\n最近日志：\n' + detail : ''));
 }
 
 async function startRuntime({resources, workspace, logPath, preferredPort = 0, env = process.env}) {
@@ -80,9 +83,17 @@ async function startRuntime({resources, workspace, logPath, preferredPort = 0, e
   delete childEnv.KSADK_STUDIO_NO_SECURITY;
   delete childEnv.PYTHONPATH;
   delete childEnv.PYTHONHOME;
-  const child = spawn(python, ['-I', '-B', '-m', 'ksadk', 'studio', workspace, '--port', String(port), '--no-open'], {
+  // 启动期 Python/Node/DSH/Codex 子进程风暴会抢占前台 UI 的 CPU；把运行时
+  // 降到低优先级，避免打开 App 时整机卡顿。nice 失败时回退直接执行。
+  const command = process.platform === 'darwin' || process.platform === 'linux'
+    ? 'nice' : python;
+  const args = (command === 'nice')
+    ? ['-n', '10', python, '-I', '-B', '-m', 'ksadk', 'studio', workspace, '--port', String(port), '--no-open']
+    : ['-I', '-B', '-m', 'ksadk', 'studio', workspace, '--port', String(port), '--no-open'];
+  const child = spawn(command, args, {
     cwd: workspace, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
   });
+  child._recentOutput = [];
   child.on('error', error => { child.spawnError = error; });
   fs.mkdirSync(path.dirname(logPath), {recursive: true});
   const output = fs.createWriteStream(logPath, {flags: 'a', mode: 0o600});
@@ -93,7 +104,12 @@ async function startRuntime({resources, workspace, logPath, preferredPort = 0, e
       pending += chunk;
       const lines = pending.split('\n');
       pending = lines.pop();
-      for (const line of lines) output.write(line.split(token).join('[redacted]') + '\n');
+      for (const line of lines) {
+        const safeLine = line.split(token).join('[redacted]');
+        child._recentOutput.push(safeLine);
+        if (child._recentOutput.length > 40) child._recentOutput.shift();
+        output.write(safeLine + '\n');
+      }
     });
     stream.on('end', () => { if (pending) output.write(pending.split(token).join('[redacted]')); });
   }

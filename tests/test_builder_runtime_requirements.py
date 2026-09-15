@@ -27,3 +27,11 @@ def test_bundled_runtime_requirements_keep_mcp_adapters_optional():
     assert "langchain-mcp-adapters>=0.0.1" not in CodeBuilder.BUNDLED_KSADK_RUNTIME_REQUIREMENTS
     assert "mcp>=1.1.0" in CodeBuilder.BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS
     assert "langchain-mcp-adapters>=0.0.1" in CodeBuilder.BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS
+
+
+def test_harness_agent_dependencies_include_sqlite_checkpoint_adapter():
+    from ksadk.builders.framework_requirements import requirements_for_framework
+
+    requirements = requirements_for_framework("harness")
+    assert "langgraph>=1.2.0,<1.3.0" in requirements
+    assert "langgraph-checkpoint-sqlite>=2.0.0" in requirements

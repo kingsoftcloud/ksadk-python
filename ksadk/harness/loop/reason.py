@@ -175,6 +175,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             try:
                 if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
                     text_parts: list[str] = []
+                    reasoning_parts: list[str] = []
                     async for item in inp.reasoner.stream_complete(
                         model=model_ref,
                         prompt=inp.instructions,
@@ -193,18 +194,25 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 EventType.TEXT_DELTA,
                                 inp,
                                 seq,
-                                {"text": item["text_delta"]},
+                                {
+                                    "text": item["text_delta"],
+                                    "delta_index": len(text_parts) - 1,
+                                },
                             )
                             out.events.append(delta_event)
                             if inp.live_event_sink is not None:
                                 inp.live_event_sink(delta_event)
                         if "reasoning_delta" in item:
+                            reasoning_parts.append(item["reasoning_delta"])
                             seq += 1
                             reasoning_event = _event(
                                 EventType.REASONING_DELTA,
                                 inp,
                                 seq,
-                                {"text": item["reasoning_delta"]},
+                                    {
+                                        "text": item["reasoning_delta"],
+                                        "delta_index": len(reasoning_parts) - 1,
+                                    },
                                 phase="commentary",
                             )
                             out.events.append(reasoning_event)
@@ -355,7 +363,10 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 EventType.TEXT_COMPLETED,
                 inp,
                 seq,
-                {"text": turn.final_text or ""},
+                {
+                    "text": turn.final_text or "",
+                    "streamed": bool(inp.streaming and hasattr(inp.reasoner, "stream_complete")),
+                },
                 phase="final_answer",
             ),
         )

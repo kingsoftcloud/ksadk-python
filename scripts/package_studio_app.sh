@@ -55,6 +55,38 @@ done
 
 uv pip install --python "$STUDIO_APP_RUNTIME/bin/python" "$wheel[codex]"
 
+# The wheel intentionally keeps the complete SDK dependency set for published
+# library installs.  The desktop Studio has a narrower UI contract: Harness
+# and Codex are the only built-in runtimes.  google-adk is still required by
+# the shared MCP ToolContext compatibility layer, but ADK is not exposed as a
+# selectable Studio runtime.  Remove packages that are only used by optional
+# attachment OCR.  The OCR module is
+# imported lazily and falls back to the system OCR path when it is unavailable;
+# this removes roughly 240 MiB of native OpenCV/ONNX payload from the app.
+uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" -y \
+  rapidocr-onnxruntime opencv-python onnxruntime \
+  2>/dev/null || true
+
+# rapidocr 卸载后遗留的孤儿传递依赖（本地 Studio 无任何消费方），连同
+# 冻结 runtime 里无用的 pip 一起移除；ksadk/google 全量源码扫描确认无
+# "import numpy/shapely"（唯一引用点 google vertex code executor 不在
+# Studio 路径上）。shapely 自身是唯一声明依赖 numpy 的包。
+uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" -y \
+  shapely numpy numpydoc pip \
+  2>/dev/null || true
+
+# DSH toolchain node_modules 只服务本机 arm64 运行：清理其他平台预编译
+# 产物、调试符号与类型/源码映射（运行时永不读取），约减 ~100 MiB。
+if [ -d "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains" ]; then
+  find "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains" \
+    \( -name "*.pdb" -o -name "*.d.ts" -o -name "*.tsbuildinfo" \
+       -o -name "*.map" \) -type f -delete 2>/dev/null || true
+  find "$STUDIO_APP_BUNDLE/Contents/Resources/plugin-toolchains" -type d \
+    \( -name "win32-x64" -o -name "win32-arm64" -o -name "linux-x64" -o -name "linux-arm64" \
+       -o -name "win32-ia32" -o -name "darwin-x64" \) \
+    -exec rm -rf {} + 2>/dev/null || true
+fi
+
 cat > "$STUDIO_APP_BUNDLE/Contents/MacOS/AgentKitStudio" <<'LAUNCHER'
 #!/bin/sh
 set -eu
@@ -102,6 +134,11 @@ if [ ! -f "$node_archive" ]; then
 fi
 mkdir -p "$node_root"
 tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+# Headers, examples, and documentation are development-only and are not
+# needed by the bundled DSH CLI.  Keep the portable node executable and npm
+# runtime libraries only.
+rm -rf "$node_root/include" "$node_root/share" \
+  "$node_root/CHANGELOG.md" "$node_root/LICENSE" "$node_root/README.md"
 pnpm_root="${STUDIO_APP_PNPM_ROOT:-$HOME/.cache/node/corepack/v1/pnpm/11.7.0}"
 test -f "$pnpm_root/bin/pnpm.cjs" || {
   echo "ERROR: pnpm 11.7.0 cache is missing: $pnpm_root" >&2

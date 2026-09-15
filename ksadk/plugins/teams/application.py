@@ -139,8 +139,12 @@ class TeamsApplication:
                 raise TeamsError("member_revoked", "成员执行授权已撤销", status=403)
 
     async def bindings(self) -> list[dict[str, Any]]:
+        return (await self.bindings_catalog())["items"]
+
+    async def bindings_catalog(self) -> dict[str, Any]:
         owner = self.actor()
         items = []
+        unavailable = 0
         for build_id in self.list_build_ids():
             scope = PluginExecutionScope(
                 TEAMS_PLUGIN_ID,
@@ -155,8 +159,8 @@ class TeamsApplication:
                 items.append(await self.host.describe(scope))
             except Exception:
                 # A stale/missing immutable Build must not break the catalog.
-                continue
-        return items
+                unavailable += 1
+        return {"items": items, "unavailableBuilds": unavailable}
 
     def _invocation(self, scope, context, request):
         with self.domain.store.transaction() as tx:

@@ -36,7 +36,7 @@ def document(tmp_path, monkeypatch):
         workspace=SimpleNamespace(root=tmp_path), event_store=SimpleNamespace(get=lambda _: run)
     )
     root = document_root(studio, run)
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     (root / "报告.md").write_text("# 报告\n\n测试内容", encoding="utf-8")
     app_root = tmp_path / "Applications"
     (app_root / "Visual Studio Code.app").mkdir(parents=True)

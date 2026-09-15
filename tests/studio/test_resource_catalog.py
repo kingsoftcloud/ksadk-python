@@ -184,7 +184,9 @@ def test_catalog_lists_stable_builtin_tool_resources(tmp_path: Path):
         item.name: item for item in first if item.kind == "tool" and item.source == "builtin"
     }
     assert "read_workspace_file" in builtin_tools
-    assert "tool_search" in builtin_tools
+    # 调度类元工具不再进入目录：harness 构建校验禁止绑定它们。
+    assert "tool_search" not in builtin_tools
+    assert "tool_dispatcher" not in builtin_tools
     assert builtin_tools["read_workspace_file"].category == "workspace"
     assert builtin_tools["read_workspace_file"].contract["boundary"] == "workspace_root"
     assert "builtin.echo" not in builtin_tools
