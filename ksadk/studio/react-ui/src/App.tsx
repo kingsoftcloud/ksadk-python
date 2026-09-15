@@ -184,6 +184,7 @@ export default function App() {
   const [workspaceRunCount, setWorkspaceRunCount] = useState(0);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
+  const workspaceDiscoveryEpoch = useRef(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
@@ -336,10 +337,16 @@ export default function App() {
   useEffect(() => { loadCloudDeployments(); }, [loadCloudDeployments, refreshTick]);
 
   useEffect(() => {
+    const requestEpoch = ++workspaceDiscoveryEpoch.current;
     apiFetch("/api/v1/system/bootstrap").then(r => r.json()).then(d => {
+      if (requestEpoch !== workspaceDiscoveryEpoch.current) return;
       setWorkspace(d.workspace || null);
       setRuntimeReady(Boolean(d.workspace));
-    }).catch(() => setRuntimeReady(false)).finally(() => setRuntimeChecked(true));
+    }).catch(() => {
+      if (requestEpoch === workspaceDiscoveryEpoch.current) setRuntimeReady(false);
+    }).finally(() => {
+      if (requestEpoch === workspaceDiscoveryEpoch.current) setRuntimeChecked(true);
+    });
   }, [refreshTick]);
 
   useEffect(() => {

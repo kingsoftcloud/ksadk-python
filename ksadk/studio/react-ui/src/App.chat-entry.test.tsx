@@ -227,4 +227,33 @@ describe("Studio chat entry", () => {
     await waitFor(() => expect(screen.getByTestId("local-chat-workspace")).toHaveTextContent("最新 Agent"));
     expect(screen.queryByText("过期 Agent")).not.toBeInTheDocument();
   });
+
+  it("ignores a stale workspace bootstrap response after a newer refresh", async () => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    let bootstrapReads = 0;
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") return response({ items: [] });
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        bootstrapReads += 1;
+        return (bootstrapReads === 1 ? first.promise : second.promise);
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+    await waitFor(() => expect(bootstrapReads).toBe(1));
+    await screen.getByRole("button", { name: "刷新" }).click();
+    await waitFor(() => expect(bootstrapReads).toBe(2));
+
+    second.resolve(response({ workspace: { name: "最新工作区", path: "/new-workspace" } }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /最新工作区/ })).toBeInTheDocument());
+
+    first.resolve(response({ workspace: { name: "过期工作区", path: "/old-workspace" } }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /最新工作区/ })).toBeInTheDocument());
+    expect(screen.queryByText("过期工作区")).not.toBeInTheDocument();
+  });
 });
