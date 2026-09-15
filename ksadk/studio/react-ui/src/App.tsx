@@ -25,6 +25,7 @@ import { useStudioViewportMode } from "./useStudioViewportMode";
 import { useStudioTheme } from "./useStudioTheme";
 import {
   mergeCloudChatTargets,
+  formatCloudChatTargetLabel,
   resolveCloudChatRoute,
   isCloudChatTargetSelectable,
   type AccountCloudAgentSummary,
@@ -388,7 +389,7 @@ export default function App() {
     ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: `本地 · ${agent.metadata.name}` })),
     ...studioCloudDeployments.map(deployment => ({
       value: `cloud:${deployment.id}`,
-      label: `云端 · ${deployment.agentName || deployment.agentId}`,
+      label: formatCloudChatTargetLabel(deployment),
     })),
   ];
   const chatTargetValue = selectedCloudDeployment
