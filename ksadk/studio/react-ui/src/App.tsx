@@ -436,6 +436,30 @@ export default function App() {
     setView("conversations");
   }
 
+  // Keep the high frequency desktop actions available without making the
+  // user leave the composer. Cmd/Ctrl+N creates a local draft through the
+  // same path as the rail action; Cmd/Ctrl+, opens settings without stealing
+  // focus until the overlay is ready.
+  useEffect(() => {
+    const handleGlobalShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "n") {
+        event.preventDefault();
+        setRequestedSessionId("");
+        setNewChatRequest(request => request + 1);
+        enterChat();
+        setMobileNavOpen(false);
+      } else if (event.key === ",") {
+        event.preventDefault();
+        setSettingsSection("general");
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalShortcut);
+    return () => window.removeEventListener("keydown", handleGlobalShortcut);
+  }, [agents, currentAgent, selectedCloudDeployment, studioCloudDeployments]);
+
   function enterCloudChat(target: CloudDeploymentSummary) {
     if (resolveCloudChatRoute(target).kind !== "studio-session-events") return;
     // DeploymentsPage already owns a live target projection.  Do not discard a
