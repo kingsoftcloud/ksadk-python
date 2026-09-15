@@ -21,6 +21,9 @@ from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 from tests.resource_runtime.test_broker import scope
 from tests.resource_runtime.test_resource_build_artifacts import frozen as frozen
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 def service(tmp_path, frozen):
     snapshot, package = frozen

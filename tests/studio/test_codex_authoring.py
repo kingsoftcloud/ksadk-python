@@ -197,8 +197,14 @@ async def test_codex_authoring_exhausts_retries(tmp_path: Path) -> None:
 async def test_codex_authoring_prunes_failed_directories(tmp_path: Path) -> None:
     executor, _client = _executor(tmp_path, [None], max_retries=0)
     authoring_root = tmp_path / ".agentkit/authoring"
+    # 显式递增 mtime:紧循环 mkdir 在快文件系统上时间戳并列,会让按 st_mtime
+    # 排序的 prune 删错目录(CI 上曾误删 old-2/old-5 而非最旧的 old-0/old-1)。
+    import os as _os
+
     for index in range(6):
-        (authoring_root / f"codex-req-old-{index}").mkdir(parents=True, exist_ok=True)
+        d = authoring_root / f"codex-req-old-{index}"
+        d.mkdir(parents=True, exist_ok=True)
+        _os.utime(d, (1_000_000 + index, 1_000_000 + index))
     with pytest.raises(StudioError):
         await executor.compose(messages=_messages(), model=_fake_model(), request_id="req-new")
     remaining = sorted(path.name for path in authoring_root.glob("codex-req-*") if path.is_dir())

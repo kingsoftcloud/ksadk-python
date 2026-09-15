@@ -17,6 +17,10 @@ from ksadk.skills.package_store import PackageStore
 from ksadk.skills.runtime import agent
 from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 
+# 真实 fork 子进程,单进程全量套件尾部在 2-core runner 上会 Cannot fork/超时。
+# CI 主套件 deselect,由独立 job(干净进程表)单独跑,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 def _package(tmp_path: Path, files: dict[str, str], *, name: str = "controlled-test"):
     buffer = io.BytesIO()

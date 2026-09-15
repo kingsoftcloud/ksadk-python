@@ -270,7 +270,9 @@ async def test_subscribe_replays_history_then_follows_live_without_duplicates(st
     received: list[SessionEventEnvelope] = []
 
     async def consume() -> None:
-        async for envelope in store.subscribe(SESSION_ID, 0, poll_interval=0.01, timeout=0.3):
+        # timeout 只是结束 generator 的保险丝,不是被测对象;CI 满载 runner 上
+        # 事件循环调度延迟可能超过 0.3s,放宽到 5s 避免漏掉第 4 个 event。
+        async for envelope in store.subscribe(SESSION_ID, 0, poll_interval=0.01, timeout=5.0):
             received.append(envelope)
             if len(received) == 4:
                 return
@@ -281,7 +283,7 @@ async def test_subscribe_replays_history_then_follows_live_without_duplicates(st
         control_event("control.command_rejected"), guard=admission_guard()
     )
     await typed.append(runtime_event(), guard=activation_guard())
-    await asyncio.wait_for(consumer, timeout=2)
+    await asyncio.wait_for(consumer, timeout=10)
 
     seqs = [envelope.seq for envelope in received]
     assert seqs == [1, 2, 3, 4]
