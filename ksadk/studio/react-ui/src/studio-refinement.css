@@ -779,6 +779,16 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .studio-chat-shell .studio-chat-timeline:has(.studio-conversation-welcome) { flex: none; }
 .studio-chat-shell .studio-conversation-welcome { min-height: 0; padding: 24px 16px 0; gap: 6px; }
 .studio-chat-shell .studio-conversation-welcome h2 { font-size: 28px; }
+/* Search adds a variable-height surface above the timeline. The normal grid
+   has fixed header/timeline/composer rows and would overlap the results. */
+.studio-chat-shell .chat-conversation:has(> .conversation-find) {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-bottom: 0;
+}
+.studio-chat-shell .chat-conversation:has(> .conversation-find) > .studio-chat-timeline { flex: 1; }
+.studio-chat-shell .chat-conversation:has(> .conversation-find) > .studio-composer-area { flex: 0 0 auto; }
 @media (max-width: 760px) {
   .studio-chat-shell .studio-conversation-welcome h2 { font-size: 24px; }
   .studio-chat-shell .chat-conversation:has(.studio-conversation-welcome) { padding-bottom: 10vh; }

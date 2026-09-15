@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => {
     selectSession: vi.fn(),
     loadMoreSessions: vi.fn(),
     loadOlderMessages: vi.fn(),
+    searchConversation: vi.fn(),
+    messageHistory: { hasMore: false },
     refresh: vi.fn(),
     send: vi.fn(),
     stop: vi.fn(),
@@ -120,6 +122,33 @@ describe("ChatWorkspace shared conversation composition", () => {
 
     expect(screen.getByText("新会话")).toBeInTheDocument();
     expect(screen.queryByText("ses_internal_id")).not.toBeInTheDocument();
+  });
+
+  it("finds the active conversation body and leaves browser find available on other pages", () => {
+    const props = { agentId: "local-1", agentName: "Agent" };
+    const { rerender } = render(<ChatWorkspace {...props} />);
+    const shortcut = new KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true });
+    fireEvent(window, shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+    expect(screen.getByRole("searchbox", { name: "查找当前会话正文" })).toHaveFocus();
+    expect(screen.getByRole("searchbox", { name: "搜索会话" })).toHaveValue("");
+    rerender(<ChatWorkspace {...props} active={false} />);
+    const otherPage = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, cancelable: true });
+    fireEvent(window, otherPage);
+    expect(otherPage.defaultPrevented).toBe(false);
+    expect(screen.queryByRole("region", { name: "查找当前会话" })).not.toBeInTheDocument();
+  });
+
+  it("passes the chosen history result to the active timeline", async () => {
+    mocks.chat.searchConversation.mockResolvedValue({ matches: [{ messageId: "old-user", role: "user", excerpt: "历史目标" }],
+      matchedMessages: 1, searchedMessages: 2000, complete: true });
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    fireEvent.click(screen.getByRole("button", { name: "查找当前会话" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "查找当前会话正文" }), { target: { value: "历史目标" } });
+    fireEvent.click(await screen.findByRole("button", { name: /历史目标/ }));
+    expect(mocks.timelineProps?.revealMessage).toEqual({ id: "old-user", request: 1 });
+    fireEvent.click(screen.getByRole("button", { name: /历史目标/ }));
+    expect(mocks.timelineProps?.revealMessage).toEqual({ id: "old-user", request: 2 });
   });
 
   it("reports the selected session so the host inspector follows it", async () => {

@@ -43,7 +43,7 @@ function hasModelOutput(message: Props["messages"][number]): boolean {
 }
 
 /** Shared controller/answer/approval renderer; host-owned expandable activity facts. */
-export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = false, onLoadOlderSessionMessages, className, ...props }: Props) {
+export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = false, onLoadOlderSessionMessages, className, revealMessage, ...props }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const projected = useMemo(() => compactHarnessMessages(messages), [messages]);
@@ -83,6 +83,19 @@ export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = 
       prepend.current = null;
     } else if (follow.current) element.scrollTop = element.scrollHeight;
   }, [projected, sessionId, waitingForFirstToken, hasMoreMessages]);
+  const revealedId = projected.find(message => message.id === revealMessage?.id
+    || message.sourceMessageIds?.includes(revealMessage?.id || ""))?.id;
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || !revealMessage || !revealedId) return;
+    const row = Array.from(element.querySelectorAll<HTMLElement>('.harness-turn[data-message-id]'))
+      .find(node => node.dataset.messageId === revealedId);
+    if (!row) return;
+    follow.current = false;
+    prepend.current = null;
+    element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - 24;
+    row.focus({ preventScroll: true });
+  }, [revealMessage, revealedId]);
   const loadOlder = async () => {
     if (!sessionId || !hasMoreMessages || !onLoadOlderSessionMessages || olderRequest.current) return;
     const token = Symbol(sessionId);
@@ -113,7 +126,8 @@ export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = 
       const runId = activityRunId(message);
       const showActivity = message.role === "model" && (!runId || !displayedRuns.has(runId));
       if (showActivity && runId) displayedRuns.add(runId);
-      return <div className="harness-turn" key={message.id}>
+      return <div className="harness-turn" key={message.id} tabIndex={-1}
+        data-message-id={message.id} data-search-target={revealedId === message.id || undefined}>
       {showActivity && <HarnessActivity runId={runId}
         streaming={props.isStreaming && Boolean(latestRunId && activityRunId(latestRunId) === runId)} fallback={fallbackActivity(message)} />}
       <SharedMessage {...props} message={message} isStreaming={props.isStreaming && index === projected.length - 1} />

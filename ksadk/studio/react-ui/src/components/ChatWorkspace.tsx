@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
-import { Bot, MessageSquarePlus, PanelLeftOpen, Trash2, X } from "lucide-react";
+import { Bot, MessageSquarePlus, PanelLeftOpen, Search, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
 import { useAgentChat } from "@kingsoftcloud/ksadk-web/hooks";
@@ -12,6 +12,7 @@ import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
 import { useRunDocumentActions } from "./RunDocumentActions";
 import { ConversationController, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
 import { pickStudioWelcome } from "./studioWelcome";
+import { ConversationFind } from "./ConversationFind";
 
 export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
@@ -144,6 +145,16 @@ export function ChatWorkspace({
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const sessionTriggerRef = useRef<HTMLButtonElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [revealMessage, setRevealMessage] = useState<{ id: string; request: number } | null>(null);
+  const findReturnFocus = useRef<HTMLElement | null>(null);
+  const findOwner = `${agentId}:${chat.conversationId || chat.currentSessionId || 'draft'}`;
+  useEffect(() => { setFindOpen(false); setRevealMessage(null); }, [findOwner, active]);
+  const openFind = useCallback(() => {
+    findReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFindOpen(true);
+  }, []);
+  const closeFind = () => { setFindOpen(false); findReturnFocus.current?.focus(); };
   const [deleteSessionId, setDeleteSessionId] = useState("");
   const [deleting, setDeleting] = useState(false);
   const isStreamingRef = useRef(false);
@@ -217,14 +228,15 @@ export function ChatWorkspace({
   }, [sessionPanelOpen]);
 
   useEffect(() => {
-    const focusSessionSearch = () => {
-      if (!active) return;
-      setSessionPanelOpen(true);
-      window.requestAnimationFrame(() => sessionSearchRef.current?.focus());
+    const findInConversation = (event: KeyboardEvent) => {
+      if (!active || chat.bootstrapStatus !== "ready" || event.defaultPrevented || event.isComposing
+        || event.altKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
+      event.preventDefault();
+      openFind();
     };
-    window.addEventListener("studio:focus-session-search", focusSessionSearch);
-    return () => window.removeEventListener("studio:focus-session-search", focusSessionSearch);
-  }, [active]);
+    window.addEventListener("keydown", findInConversation);
+    return () => window.removeEventListener("keydown", findInConversation);
+  }, [active, chat.bootstrapStatus, openFind]);
 
   useEffect(() => {
     const previous = previousTransport.current;
@@ -286,6 +298,8 @@ export function ChatWorkspace({
           </button>}
           {!integratedHistory && <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />}
           <h1>{conversationTitle}</h1>
+          <button className="icon-button tertiary" type="button" aria-label="查找当前会话" title="查找当前会话（⌘/Ctrl+F）"
+            onClick={openFind} disabled={chat.bootstrapStatus !== "ready"}><Search size={16} /></button>
         </div>
   );
 
@@ -402,6 +416,8 @@ export function ChatWorkspace({
 
       <section className="chat-conversation" aria-label={`与 ${agentName} 对话`}>
         {headerHost ? (active ? createPortal(conversationHeader, headerHost) : null) : conversationHeader}
+        {findOpen && active && <ConversationFind key={findOwner} search={chat.searchConversation}
+          onClose={closeFind} onReveal={id => setRevealMessage(previous => ({ id, request: (previous?.request || 0) + 1 }))} />}
 
         {chat.bootstrapStatus === "loading" || newChatRequest !== 0 ? (
           <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent">
@@ -422,7 +438,8 @@ export function ChatWorkspace({
               isStreaming={chat.isStreaming || submitPending}
               activity={chat.activity}
               sessionId={chat.currentSessionId}
-              hasMoreMessages={(chat.messages?.length ?? 0) >= 50}
+              hasMoreMessages={Boolean(chat.messageHistory?.hasMore)}
+              revealMessage={revealMessage}
               emptyState={(
                 <div className="studio-conversation-welcome">
                   <p>{agentName}</p>

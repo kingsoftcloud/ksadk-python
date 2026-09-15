@@ -454,9 +454,6 @@ export default function App() {
         event.preventDefault();
         setSettingsSection("general");
         setSettingsOpen(true);
-      } else if (event.key === "f") {
-        event.preventDefault();
-        window.dispatchEvent(new Event("studio:focus-session-search"));
       }
     };
     window.addEventListener("keydown", handleGlobalShortcut);
