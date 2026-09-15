@@ -8731,18 +8731,18 @@ select {
 }
 .studio-chat-shell .studio-conversation-welcome p {
   color: var(--studio-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   letter-spacing: .01em;
 }
 .studio-chat-shell .studio-conversation-welcome h2 {
   margin: 8px 0 0;
   font-size: clamp(28px, 3vw, 38px);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: -.04em;
 }
 .studio-chat-shell .studio-conversation-welcome h2 span {
   color: transparent;
-  background: linear-gradient(105deg, var(--text-primary) 12%, var(--studio-accent, #1488e6) 46%, var(--text-primary) 78%);
+  background: linear-gradient(105deg, var(--text-primary) 12%, var(--studio-accent) 46%, var(--text-primary) 78%);
   background-size: 220% 100%;
   background-clip: text;
   -webkit-background-clip: text;
