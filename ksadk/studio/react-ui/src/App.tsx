@@ -494,6 +494,13 @@ export default function App() {
         );
         target?.focus();
         target?.click();
+      } else if (key === "f") {
+        event.preventDefault();
+        const find = document.querySelector<HTMLButtonElement>('[aria-label="查找当前会话"]');
+        if (find && !find.disabled) {
+          find.focus();
+          find.click();
+        }
       } else if (event.key === ",") {
         event.preventDefault();
         setSettingsSection("general");

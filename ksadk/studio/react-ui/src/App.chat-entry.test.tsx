@@ -280,4 +280,34 @@ describe("Studio chat entry", () => {
     expect(selector).toHaveAttribute("id", "conversation-target-selector");
     expect(document.activeElement).toBe(selector);
   });
+
+  it("opens current conversation search with Cmd/Ctrl+F", async () => {
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-1", name: "目标 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-1") return response({ builds: [] });
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+    const find = document.createElement("button");
+    find.type = "button";
+    find.setAttribute("aria-label", "查找当前会话");
+    document.body.append(find);
+    const clicked = vi.fn();
+    find.addEventListener("click", clicked);
+    const event = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(find);
+    expect(clicked).toHaveBeenCalledTimes(1);
+    find.remove();
+  });
 });
