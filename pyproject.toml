@@ -183,9 +183,17 @@ dev = [
     "types-requests>=2.32.0",
     "playwright>=1.50.0",
 ]
+# AgentEngine Channel: IM channel integration (WPS/Feishu/WeCom)
+# Studio embedded mode: python -m agentengine_channel.studio --port 8082
+channel = [
+    "agentengine-channel>=0.1.0",
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.19.0",
+    "cryptography>=41.0.0",
+]
 # 全部依赖
 all = [
-    "ksadk[a2a,adk,agui,codex,langchain,langgraph,deepagents,kb,skills,tracing,judge,dev]",
+    "ksadk[a2a,adk,agui,codex,langchain,langgraph,deepagents,kb,skills,tracing,judge,channel,dev]",
 ]
 
 [project.scripts]
