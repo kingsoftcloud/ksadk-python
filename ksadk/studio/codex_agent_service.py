@@ -701,7 +701,7 @@ class CodexAgentService:
         if agent_id and self.studio.codex_manifests.exists(agent_id):
             return str(self.studio.codex_manifests.load(agent_id).manifest.model)
         configured = os.environ.get("OPENAI_MODEL_NAME", "").strip()
-        return configured or "glm-5.1"
+        return configured or "glm-5.3-flash"
 
     def _model_names(
         self,

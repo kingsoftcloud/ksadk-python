@@ -527,7 +527,12 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     description: `${item.contract?.model || item.name} · ${hasConfiguredCredential(item) ? "凭证已配置" : "需配置凭证"}`,
   })), [hasConfiguredCredential, models]);
   const preferredConversationAuthoringModel = useMemo(() => {
-    const preferred = models.find(item => String(item.contract?.model || item.name).toLowerCase() === "deepseek-v4-flash");
+    const lower = (item: (typeof models)[number]) =>
+      String(item.contract?.model || item.name).toLowerCase();
+    // 首选 deepseek-v4.1-flash（原生 Responses 协议），回退 glm-5.3-flash。
+    const preferred =
+      models.find(item => lower(item) === "deepseek-v4.1-flash") ||
+      models.find(item => lower(item) === "glm-5.3-flash");
     return preferred?.resourceId || models[0]?.resourceId || "";
   }, [models]);
 

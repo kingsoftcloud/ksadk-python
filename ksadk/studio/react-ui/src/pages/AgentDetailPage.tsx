@@ -64,7 +64,7 @@ function InvocationDrawer({ detail, catalog, buildId, onClose }: {
   const model = catalog.find(item => item.resourceId === modelId);
   const template = labels["agentkit.ksyun.com/template"] || "blank";
   const body = {
-    model: model?.contract?.model || model?.name || labels["agentkit.ksyun.com/model"] || "glm-5.1",
+    model: model?.contract?.model || model?.name || labels["agentkit.ksyun.com/model"] || "glm-5.3-flash",
     input: [{
       role: "user",
       content: [{

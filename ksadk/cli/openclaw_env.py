@@ -248,7 +248,7 @@ def _build_openclaw_env_vars(
     api_key = model_api_key or _resolve_env(
         "OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY"
     )
-    model = model_preference or "glm-5.2"
+    model = model_preference or "deepseek-v4.1-flash"
     explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
     inferred_provider_id = explicit_provider_id
     if not inferred_provider_id and model and "/" in model:
