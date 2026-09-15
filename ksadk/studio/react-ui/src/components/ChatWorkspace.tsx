@@ -174,7 +174,7 @@ export function ChatWorkspace({
   // 进入/切换会话时后台预热 harness Provider 激活（MCP spawn/health/list
   // ~12s），把这段开销移到用户输入之前；失败静默，首轮照旧现场预热。
   useEffect(() => {
-    if (chat.agentFramework !== "harness" || chat.bootstrapStatus !== "ready"
+    if (!chat.uiCapabilities.RuntimePrewarm || chat.bootstrapStatus !== "ready"
       || !chat.currentSessionId) return;
     const controller = new AbortController();
     void apiFetch(
@@ -187,7 +187,7 @@ export function ChatWorkspace({
       },
     ).catch(() => {});
     return () => controller.abort();
-  }, [agentId, chat.agentFramework, chat.bootstrapStatus, chat.currentSessionId]);
+  }, [agentId, chat.uiCapabilities.RuntimePrewarm, chat.bootstrapStatus, chat.currentSessionId]);
 
   // facade bootstrap 会自动 adopt 最近会话；切 Agent 应回到初始对话框，
   // 仅当路由显式要求打开某会话时才保留。只在 bootstrap 完成时执行一次。

@@ -73,6 +73,7 @@ class StudioSharedWebBridge:
                     if self.studio.agent_runtime_type(agent_id) == "harness"
                     else "standard",
                 },
+                "RuntimePrewarm": self.studio.agent_runtime_type(agent_id) == "harness",
                 "HostedChat": {
                     "Enabled": True,
                     "ApiFormats": ["responses"],
