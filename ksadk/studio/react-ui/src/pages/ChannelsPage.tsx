@@ -5,14 +5,15 @@ import {
   Check,
   ChevronDown,
   Link2,
- MessageSquare,
- Plus,
- Send,
- QrCode,
- UserPlus,
- X,
- Users,
- RefreshCw,
+  MessageSquare,
+  Plus,
+  Send,
+  QrCode,
+  UserPlus,
+  X,
+  Users,
+  RefreshCw,
+  Settings,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { apiFetch } from "../api";
@@ -1550,6 +1551,7 @@ async function submitChannel(event: React.FormEvent) {
                   size={16}
                   className={`channels-page__chevron${advancedOpen ? "" : " channels-page__chevron--closed"}`}
                 />
+                <Settings size={16} />
                 <span>高级设置</span>
                 <small>私聊策略、群聊策略、会话隔离等</small>
               </button>
