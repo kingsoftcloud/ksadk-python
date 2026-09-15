@@ -44,8 +44,9 @@ class ValidateResourceBindings(PluginContractModel):
 
 async def _bootstrap_default_connection(studio: Any) -> dict[str, Any] | None:
     """Lazily provision the local declaration from configured credentials."""
-    authority = studio.resource_authority
-    environment = studio.configuration.environment()
+    authority = getattr(studio, "resource_authority", None)
+    configuration = getattr(studio, "configuration", None)
+    environment = configuration.environment() if configuration is not None else {}
     access_key = environment.get("KSYUN_ACCESS_KEY", "").strip()
     secret_key = environment.get("KSYUN_SECRET_KEY", "").strip()
     if authority is None or not access_key or not secret_key:
@@ -156,7 +157,7 @@ def register_resource_connection_routes(app: FastAPI, studio: Any) -> None:
 
     @app.post("/api/v1/resource-connections:bootstrap", status_code=201)
     async def bootstrap_resource_connection():
-        authority = studio.resource_authority
+        authority = getattr(studio, "resource_authority", None)
         # Resolve through Studio's configuration precedence (workspace,
         # global config, inherited environment, dotenv), rather than only the
         # process environment. This keeps discovery and connection bootstrap

@@ -694,7 +694,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
       if (ids.length) setSelectedModels(ids);
       if (!preservePrompt || !systemPrompt.trim()) {
-        quickForm.setValue("systemPrompt", composition.spec?.instructions?.system || goalOverride?.trim() || prompt.trim(), { shouldDirty: true });
+        const fallbackSystemPrompt = composition.spec?.instructions?.system || prompt.trim();
+        quickForm.setValue("systemPrompt", goalOverride?.trim() || fallbackSystemPrompt, { shouldDirty: true });
       }
       if (!preservePrompt || !taskPrompt.trim()) {
         quickForm.setValue("taskPrompt", composition.spec?.instructions?.task || "", { shouldDirty: true });
