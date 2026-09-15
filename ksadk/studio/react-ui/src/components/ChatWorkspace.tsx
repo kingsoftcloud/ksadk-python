@@ -78,7 +78,7 @@ export function ChatWorkspace({
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const conversationController = useRef(new ConversationController());
-  const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController: conversationController.current });
+  const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController: conversationController.current, restoreSession: false });
   const documents = useRunDocumentActions();
   const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
@@ -107,26 +107,31 @@ export function ChatWorkspace({
     if (chat.messages?.length) autoCreatedEmptySessionId.current = null;
   }, [chat.messages]);
   const guardedCreateNewSession = useCallback(async () => {
-    if (creatingSession.current || chat.isStreaming) return;
+    if (creatingSession.current) return;
     if (currentSessionIdRef.current
       && currentSessionIdRef.current === autoCreatedEmptySessionId.current) return;
     creatingSession.current = true;
     try {
       setWelcomeCopy(pickStudioWelcome());
-      if (chat.startNewConversation) chat.startNewConversation();
-      else await chat.createNewSession();
-      autoCreatedEmptySessionId.current = currentSessionIdRef.current;
+      if (chat.startNewConversation) {
+        // A local draft is an explicit user action: every click gets a new
+        // owner, even while the previous run is still streaming.
+        chat.startNewConversation();
+        autoCreatedEmptySessionId.current = null;
+      } else {
+        await chat.createNewSession();
+        autoCreatedEmptySessionId.current = currentSessionIdRef.current;
+      }
     } finally {
       creatingSession.current = false;
     }
-  }, [chat.isStreaming, chat.startNewConversation, chat.createNewSession]);
+  }, [chat.startNewConversation, chat.createNewSession]);
   useEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
-    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
-      || chat.isLoadingSessions || startedNewChatRequest.current === newChatRequest) return;
+    if (!active || chat.agentId !== agentId || startedNewChatRequest.current === newChatRequest) return;
     startedNewChatRequest.current = newChatRequest;
     void guardedCreateNewSession().finally(() => onNewChatStarted?.());
-  }, [active, agentId, newChatRequest, onNewChatStarted, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, guardedCreateNewSession]);
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.agentId, guardedCreateNewSession]);
   currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
   useEffect(() => {
     if (!requestedSessionId) { openedRequest.current = ""; return; }
@@ -319,7 +324,6 @@ export function ChatWorkspace({
               aria-label="新对话"
               title="新对话"
               onClick={() => { void guardedCreateNewSession(); if (sessionPanelOpen) closeSessionPanel(); }}
-              disabled={chat.isStreaming}
             >
               <MessageSquarePlus size={16} />
             </button>
@@ -419,17 +423,16 @@ export function ChatWorkspace({
         {findOpen && active && <ConversationFind key={findOwner} search={chat.searchConversation}
           onClose={closeFind} onReveal={id => setRevealMessage(previous => ({ id, request: (previous?.request || 0) + 1 }))} />}
 
-        {chat.bootstrapStatus === "loading" || newChatRequest !== 0 ? (
-          <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent">
-            <i />
-          </div>
-        ) : chat.bootstrapStatus !== "ready" ? (
+        {chat.bootstrapStatus === "loading" && !chat.messages?.length ? (
+          <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent"><i /></div>
+        ) : chat.bootstrapStatus !== "ready" && !chat.messages?.length ? (
           <div className="chat-empty" role="alert">
             <span className="chat-empty-icon"><Bot size={22} /></span>
             <h2>会话暂不可用</h2>
             <p>{chat.bootstrapErrorMessage || "Agent 会话能力未开启。"}</p>
           </div>
-        ) : (
+        ) : null}
+        {(chat.bootstrapStatus === "ready" || Boolean(chat.messages?.length)) && (
           <>
             <Timeline
               className="studio-chat-timeline"
@@ -464,31 +467,31 @@ export function ChatWorkspace({
                 <span className="text-shimmer">正在思考…</span>
               </div>
             ) : null}
-            <div className="studio-composer-area">
-            <AgentConversationComposer
-              draftKey={conversationIdFor(chat.currentSessionId)}
-              draftStore={chat.conversationDrafts}
-              onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
-              composerMaxHeight={176}
-              submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
-                setSubmitPending(true);
-                chat.send(text, { attachments, executionMode });
-              }}
-              stopGeneration={chat.stop}
-              cancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
-              isMobile={chat.isMobile}
-              attachmentsEnabled={chat.uiCapabilities.Attachments !== false}
-              approvalEnabled={Boolean(chat.uiCapabilities.Approval)}
-              approvalPolicy={chat.uiCapabilities.ApprovalPolicy}
-              thinkingEnabled={Boolean(chat.uiCapabilities.Thinking)}
-              runtimeCapabilityMatrix={chat.uiCapabilities.RuntimeCapabilityMatrix}
-              pendingInteractions={chat.pendingInteractions}
-              onRespondInteraction={input => { void chat.respondInteraction(input); }}
-              localCatalog={chat.localCatalog}
-            />
-            </div>
           </>
         )}
+        <div className="studio-composer-area">
+          <AgentConversationComposer
+            draftKey={conversationIdFor(chat.currentSessionId)}
+            draftStore={chat.conversationDrafts}
+            onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
+            composerMaxHeight={176}
+            submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
+              setSubmitPending(true);
+              chat.send(text, { attachments, executionMode });
+            }}
+            stopGeneration={chat.stop}
+            cancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
+            isMobile={chat.isMobile}
+            attachmentsEnabled={chat.uiCapabilities.Attachments !== false}
+            approvalEnabled={Boolean(chat.uiCapabilities.Approval)}
+            approvalPolicy={chat.uiCapabilities.ApprovalPolicy}
+            thinkingEnabled={Boolean(chat.uiCapabilities.Thinking)}
+            runtimeCapabilityMatrix={chat.uiCapabilities.RuntimeCapabilityMatrix}
+            pendingInteractions={chat.pendingInteractions}
+            onRespondInteraction={input => { void chat.respondInteraction(input); }}
+            localCatalog={chat.localCatalog}
+          />
+        </div>
       </section>
 
       {deleteSessionId ? (

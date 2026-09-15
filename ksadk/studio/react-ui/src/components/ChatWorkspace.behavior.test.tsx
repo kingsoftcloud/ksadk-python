@@ -200,16 +200,16 @@ describe("ChatWorkspace shared conversation composition", () => {
     unmount(); historyHost.remove(); headerHost.remove();
   });
 
-  it("fulfills a new-chat request after mounting and bootstrap instead of restoring history", async () => {
+  it("creates a local draft immediately without waiting for bootstrap or session loading", async () => {
     mocks.chat.bootstrapStatus = "loading";
     const onNewChatStarted = vi.fn();
     const props = { agentId: "local-1", agentName: "Agent", newChatRequest: 1, onNewChatStarted };
     const { rerender } = render(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.bootstrapStatus = "ready";
     mocks.chat.isLoadingSessions = true;
     rerender(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.isLoadingSessions = false;
     rerender(<ChatWorkspace {...props}/>);
     expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
@@ -226,7 +226,7 @@ describe("ChatWorkspace shared conversation composition", () => {
     mocks.chat.isStreaming = true;
     rerender(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
     ref.current?.startNewChat();
-    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledTimes(2);
     expect(mocks.chat.stop).not.toHaveBeenCalled();
   });
 

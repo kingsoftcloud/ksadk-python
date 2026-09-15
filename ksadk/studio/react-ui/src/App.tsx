@@ -174,7 +174,6 @@ export default function App() {
   const [newChatRequest, setNewChatRequest] = useState(0);
   const onNewChatStarted = useCallback(() => setNewChatRequest(0), []);
   const [conversationHeaderHost, setConversationHeaderHost] = useState<HTMLDivElement | null>(null);
-  const [chatStreaming, setChatStreaming] = useState(false);
   const [historyHost, setHistoryHost] = useState<HTMLDivElement | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
@@ -551,7 +550,6 @@ export default function App() {
         onMobileOpenChange={setMobileNavOpen}
         onExpand={() => { setRailExpandedPreference(true); writeNavigationRailPreference(true); }}
         onHistoryHostChange={setHistoryHost}
-        chatStreaming={chatStreaming || newChatRequest !== 0}
         onStartChat={() => { setRequestedSessionId(""); setNewChatRequest(request => request + 1); enterChat(); setMobileNavOpen(false); }}
         workspaceName={workspaceName}
         workspacePath={workspacePath}
@@ -674,7 +672,6 @@ export default function App() {
                 <ChatWorkspace
                   newChatRequest={newChatRequest}
                   onNewChatStarted={onNewChatStarted}
-                  onStreamingChange={setChatStreaming}
                   integratedHistory
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
@@ -689,7 +686,6 @@ export default function App() {
                 <ChatWorkspace
                   newChatRequest={newChatRequest}
                   onNewChatStarted={onNewChatStarted}
-                  onStreamingChange={setChatStreaming}
                   integratedHistory
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
