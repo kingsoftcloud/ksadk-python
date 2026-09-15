@@ -77,7 +77,8 @@ export function ChatWorkspace({
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
   const documents = useRunDocumentActions();
-  const Timeline = chat.agentFramework === "harness" ? CompactHarnessTimeline : AgentConversationTimeline;
+  const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
+  const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
   const startedNewChatRequest = useRef(0);
   // facade 的 createNewSession 没有在途去重：连点"新对话"会连发
   // CreateSession 产生多条空会话。这里统一加互斥，创建完成后才允许下一次。
@@ -426,7 +427,7 @@ export function ChatWorkspace({
               onLoadOlderSessionMessages={chat.loadOlderMessages}
               interactionRecords={chat.interactionRecords}
             />
-            {chat.agentFramework !== "harness"
+            {!compactTimeline
               && (chat.isStreaming || submitPending)
               && !(chat.messages?.length
                 && chat.messages[chat.messages.length - 1].role === "model") ? (

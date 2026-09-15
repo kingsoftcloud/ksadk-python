@@ -68,6 +68,11 @@ class StudioSharedWebBridge:
             "ApiFormats": ["responses"],
             "Model": model,
             "Capabilities": {
+                "ConversationPresentation": {
+                    "Timeline": "compact"
+                    if self.studio.agent_runtime_type(agent_id) == "harness"
+                    else "standard",
+                },
                 "HostedChat": {
                     "Enabled": True,
                     "ApiFormats": ["responses"],
