@@ -94,7 +94,7 @@ def _configured_model(catalog: LocalResourceCatalog, draft: AgentDraft) -> str:
         return resolved.model
     if draft.spec.model is not None:
         return draft.spec.model.model
-    return str(draft.metadata.labels.get("agentkit.ksyun.com/model") or "glm-5.3-flash")
+    return str(draft.metadata.labels.get("agentkit.ksyun.com/model") or "deepseek-v4.1-flash")
 
 
 def _runtime_inputs(
