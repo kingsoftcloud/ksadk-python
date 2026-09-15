@@ -39,19 +39,12 @@ from ksadk.skills.runtime.base import (
     parse_workflow_result,
     sandbox_runtime_env,
 )
-from ksadk.skills.runtime.legacy_local import (
-    LEGACY_LOCAL_PROTOCOL,
-    PINNED_PROTOCOL,
-    LegacyDelivery,
-    collect_legacy_artifacts,
-    legacy_environment,
-    prepare_legacy_delivery,
-    resolve_protocol,
-    rewrite_workflow_artifacts,
-)
 from ksadk.skills.runtime.pinned import read_archive, stage_packages
 
 logger = logging.getLogger(__name__)
+
+PINNED_PROTOCOL = "pinned_v1"
+PROTOCOL_ENV = "KSADK_SKILL_SANDBOX_PROTOCOL"
 
 _SANDBOX_VERSION_FIELDS = frozenset(
     {
@@ -108,6 +101,16 @@ def _bool_env(name: str, default: bool = True) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_protocol(raw: str | None = None) -> str:
+    protocol = (raw if raw is not None else os.environ.get(PROTOCOL_ENV, "")).strip()
+    protocol = protocol or PINNED_PROTOCOL
+    if protocol != PINNED_PROTOCOL:
+        raise SkillRuntimeError(
+            f"Unsupported {PROTOCOL_ENV} value {protocol!r}: expected {PINNED_PROTOCOL}"
+        )
+    return protocol
 
 
 def _redact(value: str) -> str:
@@ -251,10 +254,6 @@ class E2BSkillRuntimeBackend:
         effective_timeout = timeout or self.timeout
         skill_events: list[SkillEvent] = []
         runtime_result: SkillRuntimeResult | None = None
-        protocol = ""
-        legacy_delivery: LegacyDelivery | None = None
-        legacy_collection_attempted = False
-        workflow_started = False
         event_path = ""
         stdout_path = ""
         stderr_path = ""
@@ -270,24 +269,7 @@ class E2BSkillRuntimeBackend:
         }
         try:
             if pinned_packages is not None:
-                protocol = resolve_protocol()
-                sandbox["skill_delivery_protocol"] = protocol
-                if protocol == LEGACY_LOCAL_PROTOCOL:
-                    legacy_root = "/tmp/ksadk-legacy-" + secrets.token_hex(16)
-                    legacy_delivery = LegacyDelivery(
-                        root=legacy_root,
-                        skills_dir=f"{legacy_root}/skills",
-                        work_dir=f"{legacy_root}/work",
-                        request_path=f"{legacy_root}/workflow-request.json",
-                        collector_path=f"{legacy_root}/collect-artifacts.py",
-                        artifact_manifest_path=f"{legacy_root}/artifact-paths.json",
-                        artifact_bundle_path=f"{legacy_root}/artifacts.zip",
-                    )
-                    sandbox.update(
-                        artifact_collection_status="not_started",
-                        artifact_collection_source=None,
-                        artifact_collection_error=None,
-                    )
+                sandbox["skill_delivery_protocol"] = _resolve_protocol()
                 for item in input_files or []:
                     target = PurePosixPath(item.target_path)
                     if (
@@ -311,10 +293,6 @@ class E2BSkillRuntimeBackend:
                 sandbox_env["KSADK_SELECTED_SKILL_NAMES"] = selected_skill_names
             sandbox_env.update(env or {})
             sandbox_env = sandbox_runtime_env(sandbox_env)
-            if legacy_delivery is not None:
-                # Apply after caller env so inherited/bespoke discovery settings cannot
-                # make the old sandbox fetch a different package from Skill Service.
-                sandbox_env.update(legacy_environment(legacy_delivery))
             session = self.sandbox_backend.create_session(
                 session_id=session_id,
                 env=sandbox_env,
@@ -337,16 +315,12 @@ class E2BSkillRuntimeBackend:
                 )
             )
 
-            request_path = (
-                legacy_delivery.request_path
-                if legacy_delivery is not None
-                else "/tmp/ksadk-workflow-request.json"
-            )
+            request_path = "/tmp/ksadk-workflow-request.json"
             request = {
                 "workflow_prompt": workflow_prompt,
                 "skill_names": normalize_skill_names(skill_names),
             }
-            if invocation_plan is not None and legacy_delivery is None:
+            if invocation_plan is not None:
                 request["invocation_plan"] = [
                     {
                         "skill_id": entry.skill_ref.skill_id,
@@ -354,7 +328,7 @@ class E2BSkillRuntimeBackend:
                     }
                     for entry in invocation_plan.entries
                 ]
-            if pinned_packages is not None and protocol == PINNED_PROTOCOL:
+            if pinned_packages is not None:
                 try:
                     with e2b_diagnostic_step(
                         "pinned.protocol_probe",
@@ -408,41 +382,6 @@ class E2BSkillRuntimeBackend:
                 request["collect_artifacts"] = True
                 sandbox_env["KSADK_SKILL_WORKDIR"] = f"{delivery}/work"
                 request_path = f"{delivery}/workflow-request.json"
-            elif pinned_packages is not None and legacy_delivery is not None:
-                with e2b_diagnostic_step(
-                    "legacy_local.protocol_probe",
-                    runtime_id=session.sandbox_id,
-                    env=sandbox_env,
-                    sensitive_values=diagnostic_secrets,
-                ):
-                    probe = session.run_command(
-                        "python -I -c "
-                        + shlex.quote(
-                            "import importlib.metadata; "
-                            "from ksadk.skills.runtime.loader import load_local_skills; "
-                            "from ksadk.skills.runtime.request import parse_workflow_request; "
-                            "print(importlib.metadata.version('ksadk'))"
-                        ),
-                        timeout=min(effective_timeout, 10),
-                        env=sandbox_env,
-                    )
-                    if probe.exit_code != 0 or probe.stdout.strip() != "0.8.2":
-                        raise SkillRuntimeError(
-                            "Sandbox runtime does not match legacy local KsADK 0.8.2"
-                        )
-                with e2b_diagnostic_step(
-                    "legacy_local.package_upload",
-                    runtime_id=session.sandbox_id,
-                    env=sandbox_env,
-                    sensitive_values=diagnostic_secrets,
-                ):
-                    prepare_legacy_delivery(
-                        session,
-                        pinned_packages,
-                        delivery=legacy_delivery,
-                        timeout=min(effective_timeout, 30),
-                        env=sandbox_env,
-                    )
             with e2b_diagnostic_step(
                 "workflow.request_write",
                 runtime_id=session.sandbox_id,
@@ -464,7 +403,6 @@ class E2BSkillRuntimeBackend:
             stdout_path = output_prefix + ".stdout"
             stderr_path = output_prefix + ".stderr"
             failure_stage = "execute"
-            workflow_started = True
             result = session.run_command(
                 f"{command} > {stdout_path} 2> {stderr_path}",
                 timeout=effective_timeout,
@@ -480,9 +418,7 @@ class E2BSkillRuntimeBackend:
                 stdout=stdout,
                 stderr=stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
-                # Legacy paths still point into the sandbox and are untrusted until
-                # the bounded collector publishes verified host files below.
-                output_files=[] if legacy_delivery is not None else output_files,
+                output_files=output_files,
                 output_text=workflow_result.output_text,
                 output_text_truncated=workflow_result.output_text_truncated,
                 skill_events=skill_events,
@@ -490,7 +426,7 @@ class E2BSkillRuntimeBackend:
                 executed_skill=workflow_result.executed_skill,
                 instructions=workflow_result.instructions,
             )
-            if pinned_packages is not None and protocol == PINNED_PROTOCOL:
+            if pinned_packages is not None:
                 failure_stage = "collect"
                 payloads = [
                     json.loads(line.split("=", 1)[1])
@@ -520,30 +456,6 @@ class E2BSkillRuntimeBackend:
                         for line in stdout.splitlines()
                     )
                     + "\n"
-                )
-            elif legacy_delivery is not None:
-                failure_stage = "collect"
-                legacy_collection_attempted = True
-                with e2b_diagnostic_step(
-                    "legacy_local.artifact_collect",
-                    runtime_id=session.sandbox_id,
-                    env=sandbox_env,
-                    sensitive_values=diagnostic_secrets,
-                ):
-                    collected = collect_legacy_artifacts(
-                        session,
-                        stdout=stdout,
-                        delivery=legacy_delivery,
-                        timeout=min(effective_timeout, 30),
-                        env=sandbox_env,
-                        parent=self.artifact_directory,
-                        recover=result.exit_code not in (0, None),
-                    )
-                output_files = collected.output_files
-                stdout = rewrite_workflow_artifacts(stdout, output_files)
-                sandbox.update(
-                    artifact_collection_status="completed",
-                    artifact_collection_source=collected.source,
                 )
             workflow_result = parse_workflow_result(stdout)
             runtime_result = replace(
@@ -584,11 +496,6 @@ class E2BSkillRuntimeBackend:
                     )
             else:
                 sandbox["failure_stage"] = failure_stage
-            if legacy_delivery is not None and failure_stage == "collect":
-                sandbox.update(
-                    artifact_collection_status="failed",
-                    artifact_collection_error=type(reported_exc).__name__,
-                )
             error_type = type(reported_exc).__name__
             values = {
                 "runtime_id": (
@@ -631,50 +538,6 @@ class E2BSkillRuntimeBackend:
                                 recovered_stdout
                             ).executed_skill,
                         )
-                    if (
-                        legacy_delivery is not None
-                        and workflow_started
-                        and not legacy_collection_attempted
-                        and runtime_result is not None
-                    ):
-                        legacy_collection_attempted = True
-                        try:
-                            with e2b_diagnostic_step(
-                                "legacy_local.artifact_recovery",
-                                runtime_id=session.sandbox_id,
-                                env=sandbox_env,
-                                sensitive_values=diagnostic_secrets,
-                            ):
-                                collected = collect_legacy_artifacts(
-                                    session,
-                                    stdout=runtime_result.stdout,
-                                    delivery=legacy_delivery,
-                                    timeout=min(effective_timeout, 30),
-                                    env=sandbox_env,
-                                    parent=self.artifact_directory,
-                                    recover=True,
-                                )
-                            recovered_stdout = rewrite_workflow_artifacts(
-                                runtime_result.stdout, collected.output_files
-                            )
-                            parsed = parse_workflow_result(recovered_stdout)
-                            runtime_result = replace(
-                                runtime_result,
-                                stdout=recovered_stdout,
-                                output_files=collected.output_files,
-                                workflow_status=parsed.workflow_status,
-                                executed_skill=parsed.executed_skill,
-                                instructions=parsed.instructions,
-                            )
-                            sandbox.update(
-                                artifact_collection_status="completed",
-                                artifact_collection_source=collected.source,
-                            )
-                        except Exception as collection_exc:
-                            sandbox.update(
-                                artifact_collection_status="failed",
-                                artifact_collection_error=type(collection_exc).__name__,
-                            )
                     if event_path:
                         try:
                             expected_invocations = (

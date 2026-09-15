@@ -58,7 +58,7 @@
 | `KSADK_LOCAL_SKILLS_DIR` | 条件必传 | `KSADK_SKILL_CACHE_DIR` 可作为 fallback | 否 | 开发者 | 本地已解压 Skill 包目录；目录下每个 skill 应包含 `SKILL.md`。 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | 否 | 无 | 否 | 开发者 | 本地进程模式设为 `local_process`。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | 条件必传 | 默认使用 SDK 内置 agent | 否 | 开发者 | `local_process` backend 的 agent 入口。 |
-| `KSADK_SKILL_SANDBOX_PROTOCOL` | 否 | `pinned_v1` | 否 | 平台 / 开发者 | 沙箱 Skill 交付协议。默认 `pinned_v1`；沙箱暂为 KsADK 0.8.2 时显式设为 `legacy_local_082`。 |
+| `KSADK_SKILL_SANDBOX_PROTOCOL` | 否 | `pinned_v1` | 否 | 平台 / 开发者 | 沙箱 Skill 交付协议。默认且仅支持 `pinned_v1`；其他值会在创建沙箱前被拒绝。 |
 
 ### 2.5 Skill Runtime 远程 Sandbox / E2B 模式
 

@@ -215,7 +215,40 @@ def remote_backend(session):
     return backend
 
 
-def test_remote_transport_delivers_exact_archive_to_real_consumer(tmp_path):
+@pytest.mark.parametrize("value", ["legacy_local_082", "auto", "0.8.2", "legacy"])
+def test_remote_rejects_unsupported_delivery_protocol_before_creating_sandbox(
+    tmp_path, monkeypatch, value
+):
+    created = []
+    backend = E2BSkillRuntimeBackend(template_id="fixture-template")
+    backend.sandbox_backend = SimpleNamespace(
+        create_session=lambda **kwargs: created.append(kwargs)
+    )
+    monkeypatch.setenv("KSADK_SKILL_SANDBOX_PROTOCOL", value)
+
+    result = backend.run_workflow(
+        "run",
+        skill_space_ids=[],
+        session_id="fixture",
+        pinned_packages=[package(tmp_path)],
+    )
+
+    assert not result.ok
+    assert result.error_type == "SkillRuntimeError"
+    assert "KSADK_SKILL_SANDBOX_PROTOCOL" in result.error_message
+    assert "expected pinned_v1" in result.error_message
+    assert result.sandbox["instance_status"] == "not_created"
+    assert created == []
+
+
+@pytest.mark.parametrize("protocol", [None, "", "pinned_v1"])
+def test_remote_transport_delivers_exact_archive_to_real_consumer(
+    tmp_path, monkeypatch, protocol
+):
+    if protocol is None:
+        monkeypatch.delenv("KSADK_SKILL_SANDBOX_PROTOCOL", raising=False)
+    else:
+        monkeypatch.setenv("KSADK_SKILL_SANDBOX_PROTOCOL", protocol)
     pinned = package(tmp_path)
     session = SandboxTransportDouble(tmp_path / "remote")
     result = remote_backend(session).run_workflow(

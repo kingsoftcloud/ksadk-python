@@ -479,7 +479,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_SKILL_SANDBOX_PROTOCOL",
         "skills",
-        "Sandbox Skill delivery protocol: pinned_v1 or legacy_local_082.",
+        "Sandbox Skill delivery protocol. Only pinned_v1 is supported.",
         "pinned_v1",
     ),
     EnvVarSpec(
