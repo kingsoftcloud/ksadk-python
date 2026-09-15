@@ -158,10 +158,13 @@ class _CdpBrowser:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # 独立进程组:chromium 会再派生 renderer/GPU/utility 子进程,
+            # 让整组可被杀干净,避免泄漏累积耗尽 runner 进程表(Cannot fork)。
+            start_new_session=True,
         )
 
         version_url = f"http://127.0.0.1:{self.port}/json/version"
-        deadline = time.time() + 10
+        deadline = time.time() + 30
         version_payload: dict[str, str] | None = None
         async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
             while time.time() < deadline:
@@ -187,11 +190,22 @@ class _CdpBrowser:
         if self._websocket is not None:
             await self._websocket.close()
         if self._process is not None:
-            self._process.terminate()
+            # 整组(SIGTERM 整个进程组):terminate() 只杀主进程,renderer/GPU
+            # 子进程会泄漏累积,连续 browser 测试后 runner 进程表耗尽 Cannot fork。
+            import os
+            import signal
+
+            try:
+                os.killpg(self._process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
             try:
                 self._process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._process.kill()
+                try:
+                    os.killpg(self._process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
                 self._process.wait(timeout=5)
         if self._user_data_dir is not None:
             # chromium 是多进程(renderer/GPU 子进程);terminate 主进程后子进程
