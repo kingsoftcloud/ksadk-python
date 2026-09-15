@@ -351,7 +351,10 @@ export default function App() {
       setOperationScope(d.operationScope || null);
       setRuntimeReady(Boolean(d.workspace));
     }).catch(() => {
-      if (requestEpoch === workspaceDiscoveryEpoch.current) setRuntimeReady(false);
+      if (requestEpoch === workspaceDiscoveryEpoch.current) {
+        setOperationScope(null);
+        setRuntimeReady(false);
+      }
     }).finally(() => {
       if (requestEpoch === workspaceDiscoveryEpoch.current) setRuntimeChecked(true);
     });

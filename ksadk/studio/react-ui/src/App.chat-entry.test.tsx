@@ -9,8 +9,8 @@ vi.mock("./useStudioTheme", () => ({
   useStudioTheme: () => ({ preference: "light", resolvedTheme: "light", setPreference: vi.fn() }),
 }));
 vi.mock("./components/ChatWorkspace", () => ({
-  ChatWorkspace: ({ agentId, agentName }: { agentId: string; agentName: string }) => (
-    <div data-testid={agentId.startsWith("ar-") ? "cloud-chat-workspace" : "local-chat-workspace"}>
+  ChatWorkspace: ({ agentId, agentName, credentialScope }: { agentId: string; agentName: string; credentialScope?: string }) => (
+    <div data-testid={agentId.startsWith("ar-") ? "cloud-chat-workspace" : "local-chat-workspace"} data-scope={credentialScope || ""}>
       {agentName} · {agentId}
     </div>
   ),
@@ -77,6 +77,29 @@ describe("Studio chat entry", () => {
       );
     });
     expect(screen.queryByText("先创建 Agent 才能开始会话")).not.toBeInTheDocument();
+  });
+
+  it("passes the anonymous credential scope into the local conversation store", async () => {
+    window.localStorage.setItem("agentkit-studio:chat-target:v1", "local:local-scoped");
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-scoped", name: "隔离 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-scoped") return response({ builds: [] });
+      if (path === "/api/v1/deployments" || path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        return response({
+          workspace: { name: "studio-test", path: "/workspace", workspaceId: "workspace-1" },
+          operationScope: { workspace: "workspace-scope", cloudCredential: "credential-scope" },
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("local-chat-workspace")).toHaveAttribute("data-scope", "credential-scope"));
   });
 
   it("restores the selected cloud Agent after a full page reload", async () => {
