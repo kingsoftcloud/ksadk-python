@@ -30,7 +30,7 @@ else:
 
 SCHEMA_VERSION = 1
 WEB_PACKAGE_NAME = "@kingsoftcloud/ksadk-web"
-WEB_PACKAGE_VERSION = "0.3.7"
+WEB_PACKAGE_VERSION = "0.3.8"
 REQUIRED_SCENARIOS = ("studioCreatedAgent", "historical082Agent")
 REQUIRED_SURFACES = {"studio", "hosted-ui"}
 

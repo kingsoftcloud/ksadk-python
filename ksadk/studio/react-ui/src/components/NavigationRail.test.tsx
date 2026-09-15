@@ -32,6 +32,13 @@ describe("NavigationRail", () => {
       },
     });
   });
+  it("renders only registered workspace contributions and removes disposed entries", async () => {
+    const { rerender } = render(<NavigationRail {...props} workspacePages={[{id: "teams", label: "团队", pluginId: "test-teams"}]} />);
+    await userEvent.click(screen.getByRole("button", {name: "团队"}));
+    expect(props.onNavigate).toHaveBeenLastCalledWith("plugin:teams");
+    rerender(<NavigationRail {...props} workspacePages={[]} />);
+    expect(screen.queryByRole("button", {name: "团队"})).not.toBeInTheDocument();
+  });
   it("persists an explicit rail preference", () => {
     expect(readNavigationRailPreference()).toBeNull();
     writeNavigationRailPreference(true);
@@ -64,7 +71,6 @@ describe("NavigationRail", () => {
       ["构建", "builds"],
       ["部署", "deployments"],
       ["自动化", "automations"],
-      ["编排", "orchestration"],
       ["可观测", "observability"],
       ["评测", "evaluations"],
     ]) {
@@ -97,9 +103,7 @@ describe("NavigationRail", () => {
   });
   it("shows workspace information without an inert fake button", async () => {
     render(<NavigationRail {...props} />);
-    expect(
-      screen.queryByRole("button", { name: "studio-test 工作区" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "studio-test 工作区" })).toBeInTheDocument();
     await userEvent.hover(screen.getByLabelText("studio-test 工作区"));
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "/workspace/studio-test",

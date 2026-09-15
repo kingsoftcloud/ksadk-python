@@ -1,0 +1,115 @@
+const {app, BrowserWindow, dialog, Menu, nativeImage, ipcMain} = require('electron');
+const path = require('node:path');
+const fs = require('node:fs');
+const {startRuntime, requestJson} = require('./desktop-runtime');
+let runtime;
+let window;
+let quitting = false;
+let switching = false;
+app.setName('AgentKit Studio');
+const partition = 'studio-' + process.pid;
+const resources = path.resolve(__dirname, '..');
+
+function preferencesPath() { return path.join(app.getPath('userData'), 'workspace.json'); }
+function defaultWorkspace() { const root = path.join(app.getPath('home'), '.agentkit', 'studio-workspace'); fs.mkdirSync(root, {recursive: true}); return root; }
+function saveWorkspace(workspace) {
+  fs.mkdirSync(app.getPath('userData'), {recursive: true});
+  fs.writeFileSync(preferencesPath(), JSON.stringify({version: 1, source: 'user-selection', workspace}, null, 2), {mode: 0o600});
+}
+function savedWorkspace() {
+  try {
+    const value = JSON.parse(fs.readFileSync(preferencesPath(), 'utf8'));
+    if (value?.version !== 1 || value?.source !== 'user-selection' || typeof value.workspace !== 'string' || !value.workspace) return null;
+    return fs.realpathSync(value.workspace);
+  } catch { return null; }
+}
+async function chooseWorkspace() {
+  const explicit = process.env.STUDIO_APP_WORKSPACE;
+  if (explicit && explicit !== '.') return fs.realpathSync(explicit);
+  return savedWorkspace() || defaultWorkspace();
+}
+async function chooseWorkspaceForSwitch() {
+  const result = await dialog.showOpenDialog({properties: ['openDirectory', 'createDirectory'], title: '打开 AgentKit Studio 工作区', buttonLabel: '打开目录'});
+  return result.canceled ? null : result.filePaths[0];
+}
+ipcMain.handle('studio:choose-workspace', chooseWorkspaceForSwitch);
+function watchRuntime(owned) {
+  owned.child.on('exit', () => {
+    if (!quitting && runtime === owned) {
+      dialog.showErrorBox('Studio 后端已退出', '请重新打开应用。诊断日志：' + path.join(app.getPath('logs'), 'studio-backend.log'));
+      app.quit();
+    }
+  });
+}
+async function switchWorkspace() {
+  if (switching || !runtime) return null;
+  const workspace = await chooseWorkspaceForSwitch();
+  if (!workspace || fs.realpathSync(workspace) === runtime.workspace) return null;
+  switching = true;
+  try {
+    // WorkspaceRuntimeManager owns one service per directory in this Python
+    // process. Reuse the supervised runtime instead of starting a second
+    // Python/DSH stack; the current Studio session and cookie remain valid.
+    const opened = await requestJson(runtime.port, '/api/v1/workspaces:open', {
+      method: 'POST', data: {path: workspace, create: true},
+      cookie: runtime.cookie, csrf: runtime.csrf, timeoutMs: 30000,
+    });
+    if (opened.status !== 200) {
+      throw new Error(opened.body?.error?.message || `打开工作区失败（${opened.status}）`);
+    }
+    runtime.workspace = opened.body.path || fs.realpathSync(workspace);
+    saveWorkspace(runtime.workspace);
+    window.webContents.send('studio:workspace-opened', {path: runtime.workspace});
+    return {path: runtime.workspace};
+  } catch (error) {
+    dialog.showErrorBox('切换工作区失败', error instanceof Error ? error.message : String(error));
+    return null;
+  } finally { switching = false; }
+}
+ipcMain.handle('studio:open-workspace', switchWorkspace);
+function createWindow() {
+  window = new BrowserWindow({width: 1440, height: 900, title: 'AgentKit Studio', webPreferences: {
+    nodeIntegration: false, contextIsolation: true, sandbox: true, partition,
+    preload: path.join(__dirname, 'preload.js'),
+  }});
+  window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.error(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+  });
+  window.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.error(`[renderer:load-failed] ${code} ${description} ${url}`);
+  });
+  window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
+  window.webContents.on('will-navigate', (event, url) => {
+    if (runtime && new URL(url).origin !== new URL(runtime.url).origin) event.preventDefault();
+  });
+  return window;
+}
+async function showLoadingWindow() {
+  await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html>
+    <meta charset="utf-8"><style>html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f5f7fa;color:#1f2937;font:16px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card{text-align:center}.mark{margin:auto auto 18px;width:56px;height:56px;border-radius:16px;background:#1683e8;color:#fff;display:grid;place-items:center;font-size:30px;font-weight:700;box-shadow:0 8px 24px #1683e844}.hint{color:#64748b;margin-top:8px}</style>
+    <main class="card"><div class="mark">K</div><strong>AgentKit Studio</strong><div class="hint">正在启动本地运行时…</div></main>`));
+}
+async function launch() {
+  const icon = nativeImage.createFromPath(path.join(resources, 'AgentKitStudio.icns'));
+  if (!icon.isEmpty() && app.dock) app.dock.setIcon(icon);
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {label: 'AgentKit Studio', submenu: [{role: 'about'}, {type: 'separator'}, {role: 'quit'}]},
+    {label: '工作区', submenu: [{label: '打开工作区…', accelerator: 'CmdOrCtrl+O', click: switchWorkspace}]},
+    {role: 'editMenu'}, {role: 'viewMenu'}, {role: 'windowMenu'},
+  ]));
+  createWindow();
+  await showLoadingWindow();
+  const workspace = await chooseWorkspace();
+  const logPath = path.join(app.getPath('logs'), 'studio-backend.log');
+  runtime = await startRuntime({resources, workspace, logPath, preferredPort: Number(process.env.STUDIO_APP_PORT || 0)});
+  if (workspace !== defaultWorkspace()) saveWorkspace(workspace);
+  watchRuntime(runtime);
+  await window.loadURL(runtime.url);
+}
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', () => { if (window) { window.show(); window.focus(); } });
+  app.whenReady().then(launch).catch(error => { dialog.showErrorBox('AgentKit Studio 启动失败', error.message); app.quit(); });
+}
+app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => { quitting = true; if (runtime) runtime.child.kill('SIGTERM'); });

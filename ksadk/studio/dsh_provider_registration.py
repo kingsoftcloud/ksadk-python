@@ -28,6 +28,7 @@ from ksadk.plugins.bridges.dsh import (
     DshProfileProjection,
 )
 from ksadk.plugins.contracts import CompositionProfile, PluginManifest
+from ksadk.plugins.dsh_home import default_studio_dsh_home, prepare_studio_dsh_home, studio_dsh_home
 from ksadk.plugins.dsh_toolchain import DSH_CORE_PACKAGES, DshToolchainManager
 from ksadk.plugins.host import ManagedPlugin, PluginHostError
 from ksadk.plugins.providers.codex_dsh import (
@@ -252,12 +253,7 @@ class StudioDshProviderRegistrationManager:
     def discover(cls, workspace: Path) -> "StudioDshProviderRegistrationManager | None":
         """Discover an initialized managed Profile without downloading tools."""
 
-        configured_home = os.environ.get("KSADK_DSH_HOME", "").strip()
-        home = (
-            Path(configured_home).expanduser()
-            if configured_home
-            else workspace / ".agentkit" / "dsh-home"
-        )
+        home = studio_dsh_home(workspace)
         profile = os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web"
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         manifest = home / "profiles" / profile / "package.json"
@@ -282,7 +278,7 @@ class StudioDshProviderRegistrationManager:
         """Discover DSH or prepare the isolated first-run Studio Profile.
 
         The default is deliberately narrower than :meth:`discover`: only the
-        Studio-owned ``.agentkit/dsh-home`` and official ``web`` Profile qualify for
+        Studio-owned versioned home and official ``web`` Profile qualify for
         automatic official-provider bootstrap.  Explicit DSH homes/profiles
         are user-owned and are never mutated by Studio startup.
         """
@@ -292,7 +288,7 @@ class StudioDshProviderRegistrationManager:
         if configured_home or configured_profile:
             return cls.discover(workspace)
         root = workspace.resolve()
-        home = root / ".agentkit" / "dsh-home"
+        home = default_studio_dsh_home(root)
         configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
         if configured_bin:
             command: Sequence[str] | None = (str(Path(configured_bin).expanduser()),)
@@ -326,7 +322,7 @@ class StudioDshProviderRegistrationManager:
                 return None
         return cls(
             root,
-            dsh_home=root / ".agentkit" / "dsh-home",
+            dsh_home=default_studio_dsh_home(root),
             profile="agentkit-resources",
             dsh_command=command,
         )
@@ -339,7 +335,7 @@ class StudioDshProviderRegistrationManager:
     def _owns_workspace_default_profile(self) -> bool:
         configured_home = os.environ.get("KSADK_DSH_HOME", "").strip()
         configured_profile = os.environ.get("KSADK_DSH_PROFILE", "").strip()
-        expected_home = (self._workspace / ".agentkit" / "dsh-home").resolve()
+        expected_home = default_studio_dsh_home(self._workspace)
         return (
             not configured_home
             and not configured_profile
@@ -369,6 +365,7 @@ class StudioDshProviderRegistrationManager:
 
         if not self._owns_workspace_default_profile:
             return "skipped"
+        prepare_studio_dsh_home(self._dsh_home)
         marker = self._default_marker_path
         marker_payload = self._read_default_marker(marker)
         command = self._dsh_command or DshToolchainManager().require_command()
@@ -419,6 +416,48 @@ class StudioDshProviderRegistrationManager:
             )
         return result
 
+    async def bootstrap_official_harness_provider(
+        self,
+    ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+        """Install and preflight the wheel-owned Harness provider in the managed profile."""
+        if not self._owns_workspace_default_profile:
+            return "skipped"
+        async with self._lock:
+            return await asyncio.to_thread(self._bootstrap_official_harness_provider_sync)
+
+    def _bootstrap_official_harness_provider_sync(
+        self,
+    ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
+        if not self._owns_workspace_default_profile:
+            return "skipped"
+        prepare_studio_dsh_home(self._dsh_home)
+        command = self._dsh_command or DshToolchainManager().require_command()
+        shipped = shipped_harness_dsh_bundle()
+        with self._bridge_factory(
+            dsh_home=self._dsh_home, profile=self._profile,
+            dsh_command=command, cwd=self._workspace,
+        ) as bridge:
+            self._repair_owned_profile_layout(bridge)
+            installed = {item.name: item for item in bridge.list_plugins()}
+            current = installed.get(SHIPPED_HARNESS_DSH_PACKAGE)
+            if current is None:
+                current = bridge.install_plugin(str(shipped.root), accept_host_permissions=True)
+                result = "installed"
+            else:
+                result = "already_enabled" if current.enabled else "disabled"
+            if (current.name != SHIPPED_HARNESS_DSH_PACKAGE
+                    or current.version != SHIPPED_HARNESS_PROVIDER_VERSION):
+                raise StudioDshProviderRegistrationError(
+                    "harness_dsh_bundle_not_active",
+                    "the official Harness DSH Bundle version is not supported",
+                )
+            if result == "installed" and not current.enabled:
+                current = bridge.set_enabled(SHIPPED_HARNESS_DSH_PACKAGE, enabled=True)
+            if not current.enabled:
+                return "disabled"
+            self._verify_shipped_bundle_bytes(SHIPPED_HARNESS_DSH_PACKAGE)
+        return result
+
     async def bootstrap_official_resource_plugins(
         self,
     ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
@@ -434,6 +473,7 @@ class StudioDshProviderRegistrationManager:
     ) -> Literal["installed", "already_enabled", "disabled", "skipped"]:
         if not self._owns_workspace_default_profile:
             return "skipped"
+        prepare_studio_dsh_home(self._dsh_home)
         marker = self._default_marker_path
         marker_payload = self._read_default_marker(marker)
         command = self._dsh_command or DshToolchainManager().require_command()
@@ -581,12 +621,10 @@ class StudioDshProviderRegistrationManager:
 
     @property
     def _default_marker_path(self) -> Path:
-        # Scope the bootstrap receipt to the owned Profile.  Older Studio
-        # builds used one workspace-wide marker while their default Profile
-        # was ``studio``.  Reusing that marker after the default moved to
-        # official Core's ``web`` Profile incorrectly skipped first-run
-        # installation and left Studio with no runnable DSH Profile.
-        return self._workspace / ".agentkit" / f"official-dsh-defaults-{self._profile}.json"
+        # An old Core home's "already installed" receipt cannot suppress
+        # installation in a fresh version-isolated home. Keep explicit
+        # uninstall/disable decisions local to their actual Profile and Core.
+        return self._dsh_home / f"official-dsh-defaults-{self._profile}.json"
 
     @staticmethod
     def _read_default_marker(path: Path) -> dict[str, object]:
@@ -711,6 +749,7 @@ class StudioDshProviderRegistrationManager:
             )
 
     def _discover_profile(self) -> _ProfileSnapshot:
+        prepare_studio_dsh_home(self._dsh_home)
         command = self._dsh_command or DshToolchainManager().require_command()
         with self._bridge_factory(
             dsh_home=self._dsh_home,

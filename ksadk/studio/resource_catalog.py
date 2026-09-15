@@ -1126,12 +1126,18 @@ class LocalResourceCatalog:
         return built
 
     def _build_builtin_tools(self) -> Iterable[ResourceDescriptor]:
+        from ksadk.toolsets import META_DISPATCHER_TOOL_NAMES
+
         runtime_tools = {
             str(getattr(tool, "name", None) or getattr(tool, "__name__", "")): tool
             for tool in get_agentengine_tools(profile="coding", mode="direct")
         }
         for descriptor in describe_agentengine_tools(profile="coding", mode="direct"):
             name = str(descriptor["name"])
+            if name in META_DISPATCHER_TOOL_NAMES:
+                # 调度类元工具不能绑定到 Agent（harness 构建校验会拒绝），
+                # 不应作为可绑定工具出现在目录与 UI 中。
+                continue
             group = str(descriptor.get("group") or "general")
             side_effects = [str(item) for item in descriptor.get("side_effects") or []]
             side_effect = _tool_side_effect(side_effects)

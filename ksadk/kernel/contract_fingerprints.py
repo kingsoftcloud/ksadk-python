@@ -29,7 +29,7 @@ def runtime_capability_matrix_wire_value(matrix: Any) -> dict[str, Any]:
     """
 
     dump = matrix.model_dump(mode="json")
-    for key in ("interaction_mode", "goal", "loop", "plan"):
+    for key in ("interaction_mode", "goal", "loop", "plan", "execution_policy"):
         if dump.get(key) is None:
             dump.pop(key, None)
     return dump

@@ -43,7 +43,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "status": "published",
         "registry": "https://registry.npmjs.org",
         "package": "@kingsoftcloud/ksadk-web",
-        "version": "0.3.7",
+        "version": "0.3.8",
         "npmIntegrity": INTEGRITY,
         "sourceCommit": WEB_COMMIT,
     }
@@ -54,7 +54,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "helmRevision": 60,
         "webPackage": {
             "package": "@kingsoftcloud/ksadk-web",
-            "version": "0.3.7",
+            "version": "0.3.8",
             "npmIntegrity": INTEGRITY,
         },
     }
@@ -74,7 +74,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "hostedUiImage": IMAGE,
         "webPackage": {
             "package": "@kingsoftcloud/ksadk-web",
-            "version": "0.3.7",
+            "version": "0.3.8",
             "npmIntegrity": INTEGRITY,
         },
         "scenarios": {
@@ -111,7 +111,7 @@ def test_final_gate_binds_every_release_surface(tmp_path: Path) -> None:
 
     assert report["overallStatus"] == "passed"
     assert report["sourceCommit"] == COMMIT
-    assert report["webPackage"]["version"] == "0.3.7"
+    assert report["webPackage"]["version"] == "0.3.8"
     assert report["webPackage"]["npmIntegrity"] == INTEGRITY
     assert report["hostedUi"]["image"] == IMAGE
     assert report["scenarios"] == {

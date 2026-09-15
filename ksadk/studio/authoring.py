@@ -142,7 +142,7 @@ class AgentAuthoringService:
             return RuntimeRef(
                 type=cast(Any, normalized),
                 version=(
-                    installed_runtime_version("codex") or "0.144.4"
+                    installed_runtime_version("codex") or "0.154.0"
                     if normalized == "codex"
                     else VERSION
                 ),

@@ -99,8 +99,6 @@ const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
 const BUILTIN_RUNTIME_OPTIONS = [
   { value: "harness", label: "KsADK Harness" },
   { value: "codex", label: "Codex · ManagedRuntime" },
-  { value: "adk", label: "Google ADK · Python source" },
-  { value: "langgraph", label: "LangGraph · Python graph" },
 ];
 
 function isCodexAgentProvider(providerRef: string): boolean {
@@ -655,7 +653,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
-    maxSteps: template === "research" ? 28 : 12,
+    maxSteps: template === "research" ? 40 : 25,
     timeoutSeconds: template === "research" ? 900 : 120,
   }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
@@ -1545,7 +1543,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                         />
                       </FormField>
                       {conversationRuntime === "codex" ? (
-                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；KsADK Tool 仅绑定到 ADK / LangGraph 通用 Agent。</p>
+                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；Harness 负责 KsADK Tool 的统一执行与审批。</p>
                       ) : (
                         <FormField label="KsADK Tool" className="authoring-model-field">
                           <StudioMultiSelect

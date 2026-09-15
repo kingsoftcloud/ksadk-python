@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { Bot, MessageSquarePlus, PanelLeftOpen, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
@@ -8,6 +8,8 @@ import { ApiFacadeImpl } from "@kingsoftcloud/ksadk-web/runtime";
 import { apiFetch } from "../api";
 import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
+import { useRunDocumentActions } from "./RunDocumentActions";
 
 export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
@@ -73,14 +75,39 @@ export function ChatWorkspace({
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
+  const documents = useRunDocumentActions();
+  const Timeline = chat.agentFramework === "harness" ? CompactHarnessTimeline : AgentConversationTimeline;
   const startedNewChatRequest = useRef(0);
+  // facade 的 createNewSession 没有在途去重：连点"新对话"会连发
+  // CreateSession 产生多条空会话。这里统一加互斥，创建完成后才允许下一次。
+  const creatingSession = useRef(false);
+  // 连点"新对话"复用刚自动创建且仍为空的会话（而不是再建一条）；用户
+  // 一旦在其中发了消息或切到其他会话，即恢复正常新建。
+  const autoCreatedEmptySessionId = useRef<string | null>(null);
+  const currentSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
+  useEffect(() => {
+    if (chat.messages?.length) autoCreatedEmptySessionId.current = null;
+  }, [chat.messages]);
+  const guardedCreateNewSession = useCallback(async () => {
+    if (creatingSession.current || chat.isStreaming) return;
+    if (currentSessionIdRef.current
+      && currentSessionIdRef.current === autoCreatedEmptySessionId.current) return;
+    creatingSession.current = true;
+    try {
+      await chat.createNewSession();
+      autoCreatedEmptySessionId.current = currentSessionIdRef.current;
+    } finally {
+      creatingSession.current = false;
+    }
+  }, [chat.isStreaming, chat.createNewSession]);
   useEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
     if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
-      || chat.isLoadingSessions || chat.isStreaming || startedNewChatRequest.current === newChatRequest) return;
+      || chat.isLoadingSessions || startedNewChatRequest.current === newChatRequest) return;
     startedNewChatRequest.current = newChatRequest;
-    void Promise.resolve(chat.createNewSession()).finally(() => onNewChatStarted?.());
-  }, [active, agentId, newChatRequest, onNewChatStarted, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.isStreaming, chat.createNewSession]);
+    void guardedCreateNewSession().finally(() => onNewChatStarted?.());
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, guardedCreateNewSession]);
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
@@ -99,9 +126,23 @@ export function ChatWorkspace({
   const sessionTriggerRef = useRef<HTMLButtonElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
   const [deleteSessionId, setDeleteSessionId] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const isStreamingRef = useRef(false);
+  useEffect(() => { isStreamingRef.current = chat.isStreaming; }, [chat.isStreaming]);
   const previousRefreshTick = useRef(refreshTick);
   const refreshChat = chat.refresh;
   const previousTransport = useRef({ agentId, sessionId: chat.currentSessionId, streaming: false });
+  // 提交→SSE 首帧之间存在会话创建/运行时预热窗口，此时 facade 的
+  // isStreaming 仍为 false；用本地 pending 让"正在思考"流光即时出现。
+  const [submitPending, setSubmitPending] = useState(false);
+  useEffect(() => {
+    if (chat.isStreaming) setSubmitPending(false);
+  }, [chat.isStreaming]);
+  useEffect(() => {
+    if (!submitPending) return;
+    const timer = window.setTimeout(() => setSubmitPending(false), 60000);
+    return () => window.clearTimeout(timer);
+  }, [submitPending]);
 
   useEffect(() => {
     onSessionChanged?.(chat.currentSessionId || "");
@@ -113,9 +154,39 @@ export function ChatWorkspace({
     return () => onStreamingChange?.(false);
   }, [chat.isStreaming, onStreamingChange]);
 
+  // 进入/切换会话时后台预热 harness Provider 激活（MCP spawn/health/list
+  // ~12s），把这段开销移到用户输入之前；失败静默，首轮照旧现场预热。
+  useEffect(() => {
+    if (chat.agentFramework !== "harness" || chat.bootstrapStatus !== "ready"
+      || !chat.currentSessionId) return;
+    const controller = new AbortController();
+    void apiFetch(
+      `/api/v1/agents/${encodeURIComponent(agentId)}/runtime:prewarm`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: chat.currentSessionId }),
+        signal: controller.signal,
+      },
+    ).catch(() => {});
+    return () => controller.abort();
+  }, [agentId, chat.agentFramework, chat.bootstrapStatus, chat.currentSessionId]);
+
+  // facade bootstrap 会自动 adopt 最近会话；切 Agent 应回到初始对话框，
+  // 仅当路由显式要求打开某会话时才保留。只在 bootstrap 完成时执行一次。
+  const initialSelectionHandled = useRef(false);
+  useEffect(() => {
+    if (chat.bootstrapStatus !== "ready" || initialSelectionHandled.current) return;
+    initialSelectionHandled.current = true;
+    if (requestedSessionId) return;
+    // facade bootstrap 会自动 adopt 最近会话（React state 此刻可能尚未更新），
+    // 因此无条件回到初始对话框；路由显式指定会话时除外。
+    chat.selectSession(null);
+  }, [chat.bootstrapStatus, requestedSessionId, chat.selectSession]);
+
   useImperativeHandle(ref, () => ({ startNewChat() {
-    if (!chat.isStreaming) void chat.createNewSession();
-  } }), [chat.isStreaming, chat.createNewSession]);
+    void guardedCreateNewSession();
+  } }), [guardedCreateNewSession]);
 
   function closeSessionPanel() {
     setSessionPanelOpen(false);
@@ -142,13 +213,28 @@ export function ChatWorkspace({
   const conversationTitle = currentSession && currentSession.Title !== currentSession.SessionId
     ? currentSession.Title || "新对话" : "新对话";
 
+  // 流式运行期间冻结会话列表顺序：isStreaming 翻转会触发 refresh 重排序，
+  // 正在阅读/点击列表时行位置乱跳；运行结束后才允许按最新 UpdatedAt 排序。
+  const frozenOrder = useRef<string[] | null>(null);
+  const orderedSessions = useMemo(() => {
+    if (!chat.isStreaming) {
+      frozenOrder.current = null;
+      return chat.sessions;
+    }
+    if (!frozenOrder.current) frozenOrder.current = chat.sessions.map(s => s.SessionId);
+    const frozenIds = frozenOrder.current;
+    const byId = new Map(chat.sessions.map(session => [session.SessionId, session]));
+    const frozen = frozenIds.map(id => byId.get(id)).filter(Boolean) as typeof chat.sessions;
+    const extra = chat.sessions.filter(session => !frozenIds.includes(session.SessionId));
+    return [...frozen, ...extra];
+  }, [chat.sessions, chat.isStreaming]);
   const filteredSessions = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return chat.sessions;
-    return chat.sessions.filter(session => (
+    if (!keyword) return orderedSessions;
+    return orderedSessions.filter(session => (
       sessionDisplayTitle(session)
     ).toLowerCase().includes(keyword));
-  }, [chat.sessions, query]);
+  }, [orderedSessions, query]);
 
   useEffect(() => {
     if (previousRefreshTick.current === refreshTick) return;
@@ -189,7 +275,7 @@ export function ChatWorkspace({
               type="button"
               aria-label="新对话"
               title="新对话"
-              onClick={() => { void chat.createNewSession(); if (sessionPanelOpen) closeSessionPanel(); }}
+              onClick={() => { void guardedCreateNewSession(); if (sessionPanelOpen) closeSessionPanel(); }}
               disabled={chat.isStreaming}
             >
               <MessageSquarePlus size={16} />
@@ -272,6 +358,8 @@ export function ChatWorkspace({
       data-agent-id={agentId}
       data-integrated-history={integratedHistory}
       data-integrated-header={Boolean(headerHost)}
+      onClickCapture={documents.onClickCapture}
+      onContextMenuCapture={documents.onContextMenuCapture}
     >
       {integratedHistory ? (historyHost ? createPortal(history, historyHost) : null) : history}
 
@@ -298,9 +386,14 @@ export function ChatWorkspace({
           </div>
         ) : (
           <>
-            <AgentConversationTimeline
+            <Timeline
               className="studio-chat-timeline"
               agentName={agentName}
+              messages={chat.messages}
+              isStreaming={chat.isStreaming || submitPending}
+              activity={chat.activity}
+              sessionId={chat.currentSessionId}
+              hasMoreMessages={(chat.messages?.length ?? 0) >= 50}
               emptyState={(
                 <div className="studio-conversation-welcome">
                   <p>{agentName}</p>
@@ -317,11 +410,20 @@ export function ChatWorkspace({
               onLoadOlderSessionMessages={chat.loadOlderMessages}
               interactionRecords={chat.interactionRecords}
             />
+            {chat.agentFramework !== "harness"
+              && (chat.isStreaming || submitPending)
+              && !(chat.messages?.length
+                && chat.messages[chat.messages.length - 1].role === "model") ? (
+              <div className="harness-thinking" role="status">
+                <span className="text-shimmer">正在思考…</span>
+              </div>
+            ) : null}
             <div className="studio-composer-area">
             <AgentConversationComposer
               onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
               composerMaxHeight={176}
               submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
+                setSubmitPending(true);
                 chat.send(text, { attachments, executionMode });
               }}
               stopGeneration={chat.stop}
@@ -345,18 +447,44 @@ export function ChatWorkspace({
         <ConfirmDialog
           title="删除这个会话？"
           description="删除后该会话的历史消息将无法恢复。"
-          confirmText="删除"
-          busy={chat.isStreaming}
+          confirmText={deleting ? "处理中…" : "删除"}
+          busy={deleting}
           onConfirm={() => {
             const id = deleteSessionId;
             setDeleteSessionId("");
-            void chat.deleteSession(id);
+            setDeleting(true);
+            void (async () => {
+              // 运行中的会话服务端拒绝删除（409）；先停止当前运行，
+              // 等它退出（最多 ~10s）再删，避免"处理中"卡到流式结束。
+              if (isStreamingRef.current && currentSessionIdRef.current === id) {
+                // 仅当删除的就是当前流式会话：stop 只断开前端订阅，服务端
+                // run 仍 RUNNING；cancelRemote 才会把 run 落为 canceled。
+                void chat.cancelRemote().catch(() => {});
+                chat.stop();
+                for (let i = 0; i < 40 && isStreamingRef.current; i += 1) {
+                  await new Promise(resolve => setTimeout(resolve, 250));
+                }
+              }
+              // 执行 host 对刚结束运行的会话有占用锁，run 终态落盘与锁释放
+              // 有延迟；给足重试窗口，避免"点了没反应"。
+              for (let attempt = 0; attempt < 10; attempt += 1) {
+                try {
+                  await chat.deleteSession(id);
+                  break;
+                } catch {
+                  if (attempt === 9) break;
+                  await new Promise(resolve => setTimeout(resolve, 800));
+                }
+              }
+              setDeleting(false);
+            })();
           }}
           onCancel={() => setDeleteSessionId("")}
         />
       ) : null}
 
       {!active ? <span hidden data-testid="studio-chat-inactive" /> : null}
+      {documents.ui}
     </div>
   );
 }

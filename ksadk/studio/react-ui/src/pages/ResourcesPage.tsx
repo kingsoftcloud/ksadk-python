@@ -792,7 +792,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       <FormField label="接口地址" requirement="required" htmlFor="amEndpoint" hint="支持主机、/v1、Chat Completions 或 Responses 地址；智能探测会自动归一化。" error={modelForm.formState.errors.endpointUrl?.message}>
         <div>
         {wireApi && <span className="tag">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
-        <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+        <div className="model-endpoint-actions">
           <div className="segmented-control">
             <button type="button" className={addressMode === "endpoint" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "endpoint")}>完整 endpointUrl</button>
             <button type="button" className={addressMode === "base" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "base")}>baseUrl</button>

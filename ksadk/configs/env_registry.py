@@ -264,8 +264,9 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_DSH_HOME",
         "plugins",
         (
-            "Directory containing the isolated DSH Profile; defaults to .agentkit/dsh-home "
-            "in the workspace."
+            "Directory containing isolated DSH Profiles; defaults to "
+            ".agentkit/dsh-homes/<pinned DSH version> in the workspace. "
+            "An existing explicit home requires a compatible version receipt before Core starts."
         ),
     ),
     EnvVarSpec(
@@ -273,6 +274,13 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "plugins",
         "DSH Profile name used by Studio and the plugin bridge.",
         "studio",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_LAZY_START",
+        "studio",
+        "Internal desktop startup mode; keep the Studio window responsive while optional DSH warmup runs.",
+        "0",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_STUDIO_NO_SECURITY",
@@ -978,7 +986,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.7",
+        "0.3.8",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

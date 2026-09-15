@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import inspect
 import re
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from ksadk.harness.artifact_store import ArtifactStore
 from ksadk.harness.capabilities import (
     CapabilityDescriptor,
     CapabilityKind,
@@ -23,6 +25,7 @@ from ksadk.harness.capabilities import (
 from ksadk.harness.config import HarnessConfig, McpToolSpec
 from ksadk.harness.context_engine import HarnessContextEngine
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine, memory_checkpointer
+from ksadk.harness.execution_policy import ExecutionPolicyResolver
 from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
 from ksadk.harness.mcp_runtime import McpCapabilityRuntime, McpServerBinding
 from ksadk.harness.reasoner import HarnessReasoner
@@ -30,11 +33,28 @@ from ksadk.harness.skill_runtime import SkillManifest, SkillRuntime
 from ksadk.harness.spec import (
     CapabilityBinding,
     CapabilityBindings,
+    ExecutionStrategyKind,
+    ExecutionStrategySpec,
     HarnessSpec,
     ModelBinding,
     PromptSpec,
+    SubAgentBinding,
 )
 from ksadk.harness.tools import HarnessTool, load_mcp_tools
+from ksadk.plugins.providers.harness_delegation import AdaptiveDelegationRuntime
+from ksadk.plugins.subagent_providers.codex import (
+    DEFAULT_CODEX_CHILD_PROVIDER_REF,
+    CodexOneShotSubagentProvider,
+)
+from ksadk.plugins.subagents import SubagentProviderRouter
+
+_AUTONOMOUS_CAPABILITY_INSTRUCTIONS = """
+根据用户目标自主选择已提供的 Tool、Skill、MCP 与子智能体；不要要求用户指定内部能力名称。
+当任务包含两个或更多彼此独立、适合并行处理的工作流时，主动委派子任务。
+为每个子任务提供不超过 16 字的职责标签。
+编码、仓库修改、调试和测试类子任务标记为 coding，其余调研与分析类子任务标记为 general。
+简单任务直接完成，不要为展示能力而委派。
+""".strip()
 
 
 async def build_managed_provider_adapter(
@@ -42,12 +62,14 @@ async def build_managed_provider_adapter(
     *,
     agent_name: str,
     workspace_root: Path,
+    user_workspace_root: Path | None = None,
     reasoner: HarnessReasoner,
     skills: Sequence[Any] = (),
     state_dir: str | Path | None = None,
     checkpoint_dsn: str | None = None,
     tool_contracts: dict[str, Any] | None = None,
     bundle_root: Path | None = None,
+    execution_policy_resolver: ExecutionPolicyResolver | None = None,
 ) -> ManagedHarnessRuntimeAdapter:
     """Assemble the DSH contributions behind the canonical Harness adapter.
 
@@ -62,10 +84,19 @@ async def build_managed_provider_adapter(
     mcp_runtime, transports, mcp_bindings = _mcp_runtime(config.mcp_tools)
     from ksadk.plugins.providers.harness_tools import assemble_python_tools
 
-    tool_workspace = (
-        Path(state_dir) / "tool-workspaces" / hashlib.sha256(agent_name.encode()).hexdigest()
-        if state_dir is not None else workspace_root
-    )
+    # 文件工具默认写到用户当前选择的 Studio 工作区；仅当工作区缺失或
+    # 落在不可变 Bundle 内部时才退回 state_dir 的哈希目录。
+    tool_workspace = user_workspace_root or workspace_root
+    if (
+        tool_workspace is None
+        or (
+            bundle_root is not None
+            and Path(tool_workspace).resolve().is_relative_to(Path(bundle_root).resolve())
+        )
+    ) and state_dir is not None:
+        tool_workspace = (
+            Path(state_dir) / "tool-workspaces" / hashlib.sha256(agent_name.encode()).hexdigest()
+        )
     if bundle_root is not None and tool_workspace.resolve().is_relative_to(bundle_root.resolve()):
         if any(
             item.get("enabled", True) and item.get("executor", "builtin") == "builtin"
@@ -76,10 +107,22 @@ async def build_managed_provider_adapter(
         bundle_root or workspace_root, tool_contracts or {}, workspace_root=tool_workspace,
         mcp_server_names=frozenset(item.name for item in config.mcp_tools),
     )
+    execution = dict((tool_contracts or {}).get("execution") or {})
+    strategy = (
+        ExecutionStrategyKind.PLAN_EXECUTE
+        if execution.get("strategy") == "plan-act-observe"
+        else ExecutionStrategyKind.SINGLE_AGENT
+    )
     spec = HarnessSpec(
         agent_revision_ref=f"agent-revision://{agent_id}@1",
         model=ModelBinding(profile_ref=f"model-profile://{model_name}@1"),
-        prompt=PromptSpec(instructions=config.prompt),
+        # Provider-level orchestration policy is part of the immutable spec so
+        # ContextManifest and Prompt Hash describe the exact instructions seen
+        # by the model. Users only describe goals; they never need to name an
+        # internal tool, Skill or child Provider in their request.
+        prompt=PromptSpec(
+            instructions=f"{config.prompt}\n\n{_AUTONOMOUS_CAPABILITY_INSTRUCTIONS}".strip()
+        ),
         capabilities=CapabilityBindings(
             mcp_bindings=mcp_bindings,
             skill_bindings=tuple(
@@ -91,7 +134,27 @@ async def build_managed_provider_adapter(
                 for skill_ref in skill_source.refs
             ),
         ),
+        execution_strategy=ExecutionStrategySpec(
+            kind=strategy,
+            config={
+                "max_parallel_subagents": int(execution.get("maxParallelChildren", 4)),
+                "subagent_failure_mode": "partial",
+            },
+        ),
+        sub_agents=tuple(
+            SubAgentBinding.model_validate(item)
+            for item in (tool_contracts or {}).get("sub_agents", ())
+        ),
     )
+    artifact_temp = (
+        tempfile.TemporaryDirectory(prefix="ksadk-artifacts-") if state_dir is None else None
+    )
+    artifact_root = (
+        Path(artifact_temp.name) if artifact_temp is not None
+        else Path(state_dir) / "artifacts" / hashlib.sha256(agent_name.encode()).hexdigest()
+    )
+    if bundle_root is not None and artifact_root.resolve().is_relative_to(bundle_root.resolve()):
+        raise ValueError("ArtifactStore 必须位于不可变 Bundle 之外")
     if state_dir is None and not checkpoint_dsn:
         checkpointer: Any = memory_checkpointer()
         stack = None
@@ -100,14 +163,42 @@ async def build_managed_provider_adapter(
 
         stack = await assemble_checkpoint_stack(state_dir=state_dir, dsn=checkpoint_dsn)
         checkpointer = stack.checkpointer
+    artifact_store = ArtifactStore(artifact_root)
+    codex_child = CodexOneShotSubagentProvider(
+        # Coding children may edit only the mutable per-Agent workspace, never
+        # the immutable admitted Bundle.
+        project_dir=tool_workspace,
+        sandbox_read_only=False,
+        base_instructions=(
+            "Complete only the delegated coding task inside the selected workspace. "
+            "Respect the parent task boundaries and return a concise result with verification."
+        ),
+    )
+    codex_available = await codex_child.available()
+    delegation_runtime = AdaptiveDelegationRuntime(
+        router=(
+            SubagentProviderRouter({DEFAULT_CODEX_CHILD_PROVIDER_REF: codex_child})
+            if codex_available
+            else None
+        ),
+        codex_available=codex_available,
+        max_children=int(
+            execution.get("maxDynamicChildren", 8)
+        ),
+        child_timeout_seconds=int(
+            execution.get("childTimeoutSeconds", 300)
+        ),
+    )
     engine = ManagedLangGraphEngine(
         reasoner=_BoundModelReasoner(reasoner, spec.model.profile_ref, config.model),
         checkpointer=checkpointer,
         context_engine=HarnessContextEngine(),
         skill_runtime=skill_runtime,
         mcp_runtime=mcp_runtime,
+        artifact_store=artifact_store,
         tools=tools,
         approval_required=approvals,
+        delegation_runtime=delegation_runtime,
         max_reasoning_turns=int((tool_contracts or {}).get("execution", {}).get("maxSteps", 8)),
     )
     adapter = _PluginManagedHarnessRuntimeAdapter(
@@ -117,10 +208,13 @@ async def build_managed_provider_adapter(
         engine=engine,
         durable=bool(stack and stack.durable),
         shared_across_pods=bool(checkpoint_dsn),
+        execution_policy_resolver=execution_policy_resolver,
         transports=transports,
     )
     adapter._checkpoint_stack = stack  # noqa: SLF001 - 生命周期由激活层托管
     adapter._run_store = stack.run_store if stack is not None else None  # noqa: SLF001
+    adapter._provider_artifact_store = artifact_store
+    adapter._provider_artifact_temp = artifact_temp
     return adapter
 
 
@@ -131,6 +225,10 @@ class _BoundModelReasoner:
         self._delegate = delegate
         self._profile_ref = profile_ref
         self._model = model
+        # graph_builder 以 engine._reasoner._streaming / hasattr(stream_complete)
+        # 决定是否走增量推理；包装器不透传时 managed Harness 会静默回退到
+        # 整段 complete()，前端看不到任何 TEXT_DELTA。
+        self._streaming = getattr(delegate, "_streaming", None) is True
 
     async def complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
         if model != self._profile_ref:
@@ -143,6 +241,30 @@ class _BoundModelReasoner:
             kwargs["max_output_tokens"] = max_output_tokens
         return await self._delegate.complete(**kwargs)
 
+    def stream_complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
+        if model != self._profile_ref:
+            raise ValueError(f"Unbound model profile: {model}")
+        stream = getattr(self._delegate, "stream_complete", None)
+        if stream is None:
+            return self._degenerate_stream(
+                model=model, prompt=prompt, messages=messages, tools=tools,
+                max_output_tokens=max_output_tokens,
+            )
+        kwargs = dict(model=self._model, prompt=prompt, messages=messages, tools=tools)
+        parameters = inspect.signature(stream).parameters
+        if "max_output_tokens" in parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        ):
+            kwargs["max_output_tokens"] = max_output_tokens
+        return stream(**kwargs)
+
+    async def _degenerate_stream(self, *, model, prompt, messages, tools, max_output_tokens=None):
+        turn = await self.complete(
+            model=model, prompt=prompt, messages=messages, tools=tools,
+            max_output_tokens=max_output_tokens,
+        )
+        yield {"turn": turn}
+
 
 class _PluginManagedHarnessRuntimeAdapter(ManagedHarnessRuntimeAdapter):
     """Managed adapter that also owns DSH-created MCP transport resources."""
@@ -152,11 +274,21 @@ class _PluginManagedHarnessRuntimeAdapter(ManagedHarnessRuntimeAdapter):
         self._provider_transports = tuple(transports)
 
     async def close_all(self) -> None:
-        for handle in list(self._external_handles.values()):
-            await self._engine.close(handle)
-        self._external_handles.clear()
-        for transport in self._provider_transports:
-            await transport.close()
+        try:
+            for handle in list(self._external_handles.values()):
+                await self._engine.close(handle)
+            self._external_handles.clear()
+            for transport in self._provider_transports:
+                await transport.close()
+        finally:
+            store = getattr(self, "_provider_artifact_store", None)
+            if store is not None:
+                store.close()
+                self._provider_artifact_store = None
+            temporary = getattr(self, "_provider_artifact_temp", None)
+            if temporary is not None:
+                temporary.cleanup()
+                self._provider_artifact_temp = None
 
 
 class _ProviderSkillSource:

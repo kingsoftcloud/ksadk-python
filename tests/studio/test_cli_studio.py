@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -20,8 +21,8 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     opened = []
     monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", fake_run)
     monkeypatch.setattr(
-        "ksadk.cli.cmd_studio.webbrowser.open",
-        lambda url: opened.append(url),
+        "ksadk.cli.cmd_studio._open_browser_when_ready",
+        lambda url, _port: opened.append(url),
     )
 
     result = CliRunner().invoke(studio, [str(tmp_path / "workspace"), "--port", "8899"])
@@ -42,6 +43,12 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
         "harness",
         "langgraph",
     ]
+    # The production launcher waits for Uvicorn to bind before opening the
+    # browser; the helper is replaced with a test double here.
+    for _ in range(100):
+        if opened:
+            break
+        time.sleep(0.01)
     assert opened[0].startswith("http://127.0.0.1:8899/#session=")
     assert (tmp_path / "workspace/agentkit.yaml").is_file()
 
@@ -180,13 +187,16 @@ def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_pro
         "OPENAI_API_KEY=file-model-key\n"
         "KSYUN_ACCESS_KEY=file-cloud-access\n"
         "KSYUN_SECRET_KEY=file-cloud-secret\n"
-        "KSYUN_REGION=pre-online\n",
+        "KSYUN_REGION=pre-online\n"
+        "KSADK_WEB_SEARCH_PROVIDER=ksyun\n"
+        "KSADK_WEB_SEARCH_API_KEY=fixture-search-key\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "shell-model-key")
     monkeypatch.setenv("KSYUN_ACCESS_KEY", "shell-cloud-access")
     monkeypatch.setenv("KSYUN_SECRET_KEY", "shell-cloud-secret")
     monkeypatch.setenv("KSYUN_REGION", "online")
+    monkeypatch.setenv("KSADK_WEB_SEARCH_API_KEY", "old-search-key")
     active_environment: dict[str, str | None] = {}
 
     def capture_runtime_environment(*_args, **_kwargs):
@@ -196,6 +206,9 @@ def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_pro
                 "KSYUN_ACCESS_KEY": __import__("os").environ.get("KSYUN_ACCESS_KEY"),
                 "KSYUN_SECRET_KEY": __import__("os").environ.get("KSYUN_SECRET_KEY"),
                 "KSYUN_REGION": __import__("os").environ.get("KSYUN_REGION"),
+                "KSADK_WEB_SEARCH_API_KEY": __import__("os").environ.get(
+                    "KSADK_WEB_SEARCH_API_KEY"
+                ),
             }
         )
 
@@ -212,11 +225,14 @@ def test_explicit_env_file_overrides_inherited_configuration_only_for_studio_pro
         "KSYUN_ACCESS_KEY": "file-cloud-access",
         "KSYUN_SECRET_KEY": "file-cloud-secret",
         "KSYUN_REGION": "pre-online",
+        "KSADK_WEB_SEARCH_API_KEY": "fixture-search-key",
     }
     assert __import__("os").environ["OPENAI_API_KEY"] == "shell-model-key"
     assert __import__("os").environ["KSYUN_ACCESS_KEY"] == "shell-cloud-access"
     assert __import__("os").environ["KSYUN_SECRET_KEY"] == "shell-cloud-secret"
     assert __import__("os").environ["KSYUN_REGION"] == "online"
+    assert __import__("os").environ["KSADK_WEB_SEARCH_API_KEY"] == "old-search-key"
+    assert "fixture-search-key" not in result.output
 
 
 def test_explicit_proxy_and_base_url_alias_override_saved_and_inherited_values(

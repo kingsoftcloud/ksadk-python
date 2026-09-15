@@ -134,6 +134,27 @@ async def test_locked_python_tool_real_process(tmp_path):
     assert not list(tmp_path.rglob("__pycache__"))
 
 
+@pytest.mark.asyncio
+async def test_tool_per_run_quota_is_hard_and_persists_across_reassembly(tmp_path):
+    from ksadk.runtime_context import tool_execution_scope
+
+    resolved, _ = fixture_tool(tmp_path)
+    resolved["capabilities"]["tools"][0]["maxCallsPerRun"] = 1
+    state = tmp_path / "state"
+    tools, _ = assemble_python_tools(tmp_path, resolved, workspace_root=state)
+    assert "at most 1 calls per run" in tools["calculate"].description
+    with tool_execution_scope("session", "run-a"):
+        assert await tools["calculate"].call({"budget": 100, "actual": 110}) == 10
+
+    # Rebuilding the Provider cannot reset a quota already reserved by this Run.
+    tools, _ = assemble_python_tools(tmp_path, resolved, workspace_root=state)
+    with tool_execution_scope("session", "run-a"):
+        with pytest.raises(RuntimeError, match="hard per-run limit of 1"):
+            await tools["calculate"].call({"budget": 100, "actual": 120})
+    with tool_execution_scope("session", "run-b"):
+        assert await tools["calculate"].call({"budget": 100, "actual": 120}) == 20
+
+
 def test_locked_python_tool_tamper_and_permission(tmp_path):
     resolved, path = fixture_tool(tmp_path)
     resolved["security"]["allowedPermissions"] = []

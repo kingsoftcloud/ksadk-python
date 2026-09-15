@@ -32,6 +32,7 @@ from ksadk.plugins.subagents import (
 DEFAULT_CODEX_CHILD_PROVIDER_REF = "plugin://io.ksadk.codex-child@1.0.0"
 _CAPABILITIES = ("cancel", "interrupt", "streaming")
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
+_NATIVE_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def _now() -> datetime:
@@ -69,12 +70,14 @@ class CodexOneShotSubagentProvider:
         provider_ref: str = DEFAULT_CODEX_CHILD_PROVIDER_REF,
         model: str | None = None,
         base_instructions: str | None = None,
+        sandbox_read_only: bool = True,
         client_factory: Callable[[Path], Any] | None = None,
     ) -> None:
         self._project_dir = Path(project_dir).resolve()
         self._provider_ref = provider_ref
         self._model = model
         self._base_instructions = base_instructions
+        self._sandbox_read_only = sandbox_read_only
         self._client_factory = client_factory
         self._states: dict[str, _ChildState] = {}
 
@@ -83,7 +86,7 @@ class CodexOneShotSubagentProvider:
             "providerRef": self._provider_ref,
             "mode": "one-shot",
             "capabilities": list(_CAPABILITIES),
-            "sandbox": "read-only",
+            "sandbox": "read-only" if self._sandbox_read_only else "workspace-write",
             "resumable": False,
         }
 
@@ -132,7 +135,7 @@ class CodexOneShotSubagentProvider:
                     "providerRef": self._provider_ref,
                     "mode": "one-shot",
                     "capabilities": _CAPABILITIES,
-                    "sandbox": "read-only",
+                    "sandbox": "read-only" if self._sandbox_read_only else "workspace-write",
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -219,7 +222,13 @@ class CodexOneShotSubagentProvider:
         if not state.closed:
             state.closed = True
             try:
-                await state.client.close()
+                await asyncio.wait_for(
+                    state.client.close(), timeout=_NATIVE_SHUTDOWN_TIMEOUT_SECONDS
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                # The isolated native process may be wedged in a command. Its
+                # lifecycle is no longer allowed to keep the parent run open.
+                pass
             finally:
                 shutil.rmtree(state.home, ignore_errors=True)
         state.state = "disposed"
@@ -239,7 +248,8 @@ class CodexOneShotSubagentProvider:
     def _thread_config(self) -> dict[str, Any]:
         config: dict[str, Any] = {
             "cwd": str(self._project_dir),
-            "sandbox_read_only": True,
+            "sandbox_read_only": self._sandbox_read_only,
+            "sandbox": "read-only" if self._sandbox_read_only else "workspace-write",
             "approval_mode": "deny_all",
             "ephemeral": True,
         }
@@ -265,7 +275,14 @@ class CodexOneShotSubagentProvider:
             await self._finish(state, terminal)
         except asyncio.TimeoutError:
             try:
-                await state.client.interrupt_active_turn(state.native_thread_id)
+                await asyncio.wait_for(
+                    state.client.interrupt_active_turn(state.native_thread_id),
+                    timeout=_NATIVE_SHUTDOWN_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                # Timeout is already authoritative. A stuck interrupt RPC must
+                # not suppress the terminal child result or wedge its parent.
+                pass
             finally:
                 await self._finish(
                     state,
@@ -346,7 +363,12 @@ class CodexOneShotSubagentProvider:
             return
         state.requested_terminal = terminal
         try:
-            await state.client.interrupt_active_turn(state.native_thread_id)
+            await asyncio.wait_for(
+                state.client.interrupt_active_turn(state.native_thread_id),
+                timeout=_NATIVE_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            state.reason = "native interrupt timed out"
         except Exception as error:
             # A dead or already-finished native process must not prevent local
             # cancellation and, critically, must not prevent ``dispose`` from

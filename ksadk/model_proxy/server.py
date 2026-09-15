@@ -248,9 +248,10 @@ def create_app(config: ProxyConfig) -> FastAPI:
 async def _chat_passthrough_stream(config: ProxyConfig, base: str, headers: dict, body: dict):
     """chat SSE 字节级透传(不转换),让前缀缓存/流式格式与直连一致。"""
     try:
+        stream_headers = {**headers, "Accept": "text/event-stream"}
         async with httpx.AsyncClient(timeout=config.timeout) as c:
             async with c.stream(
-                "POST", f"{base}/chat/completions", json=body, headers=headers
+                "POST", f"{base}/chat/completions", json=body, headers=stream_headers
             ) as r:
                 async for line in r.aiter_lines():
                     yield line + "\n"
@@ -275,10 +276,11 @@ async def _stream_gen(
     for e in s.start():
         yield e
     try:
+        stream_headers = {**headers, "Accept": "text/event-stream"}
         # 超时必须有界(config.timeout):无限超时的活动 SSE 会让 stop() 后线程仍存活
         async with httpx.AsyncClient(timeout=config.timeout) as c:
             async with c.stream(
-                "POST", f"{base}/chat/completions", json=chat_req, headers=headers
+                "POST", f"{base}/chat/completions", json=chat_req, headers=stream_headers
             ) as r:
                 config.emit(
                     "proxy.upstream",

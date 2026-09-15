@@ -9,6 +9,8 @@ import pytest
 
 from ksadk.events.session_event import session_event_to_envelope
 from ksadk.harness.reasoner import HarnessReasoningTurn
+from ksadk.plugins.dsh_home import prepare_studio_dsh_home
+from ksadk.plugins.dsh_toolchain import DSH_VERSION
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.scheduler.contracts import ScheduleSpec
 from ksadk.studio.contracts import AgentSpec
@@ -45,6 +47,7 @@ class _UsageReasoner(_Reasoner):
 
 def _install_managed_harness_profile(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = root / ".agentkit" / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     installed = profile / "node_modules" / "@kingsoftcloud" / "ksadk-harness-provider"
     installed.parent.mkdir(parents=True)
@@ -66,7 +69,7 @@ def _install_managed_harness_profile(root: Path, monkeypatch: pytest.MonkeyPatch
     executable.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        "  *--version*) echo 0.1.1-rc.2;;\n"
+        f"  *--version*) echo {DSH_VERSION};;\n"
         "  *--dump-config*) echo 'profile: studio; harness: 1.0.0';;\n"
         "  *) exit 2;;\n"
         "esac\n",
@@ -182,7 +185,10 @@ async def test_scheduler_settles_real_managed_dsh_harness_provider(
         state_dir = tmp_path / ".agentkit" / "plugin-runtime" / "state"
         assert state_dir.is_dir()
         assert (state_dir / "checkpoints.sqlite").is_file()
-        assert list((state_dir / "kernel").glob("*.sqlite"))
+        # Kernel and canonical session events now share one SQLite transaction
+        # boundary instead of writing a separate database per build.
+        kernel = service.scheduler_runtimes.runtime_for_build(task.target.agent_version_ref)
+        assert kernel.kernel_store.db_path.resolve() == service.session_service.db_path
     finally:
         await service.scheduler.stop()
         await service.aclose()

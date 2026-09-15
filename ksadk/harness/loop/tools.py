@@ -122,6 +122,10 @@ class ToolCallInput:
     dependencies: dict[str, tuple[str, ...]] = field(default_factory=dict)
     max_parallelism: int = 1
     tenant_id: str = "default"
+    authorization_agent_id: str | None = None
+    succeeded_tools: frozenset[str] = frozenset()
+    prior_failure: bool = False
+    live_event_sink: Callable[[RuntimeEvent], None] | None = None
 
 
 @dataclass
@@ -157,8 +161,12 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
     out = ToolCallOutput(working_context=inp.working_context)
     seq = inp.seq_start
     runtime = inp.capability_runtime
-    succeeded: set[str] = set()
-    cancelled_call_ids: set[str] = set()
+    succeeded: set[str] = set(inp.succeeded_tools)
+    cancelled_call_ids: set[str] = {
+        str(p["call_id"]) for p in inp.pending_tool_calls
+        if inp.prior_failure and inp.cancel_pending_decider is not None
+        and inp.cancel_pending_decider(p["name"], p["arguments"])
+    }
 
     for pending_index, pending in enumerate(inp.pending_tool_calls):
         call_id, name = pending["call_id"], pending["name"]
@@ -303,13 +311,16 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
             policy_decision = runtime.decide(
                 tenant_id=inp.tenant_id,
                 user_id=inp.user_id,
-                agent_id=inp.agent_id,
+                agent_id=inp.authorization_agent_id or inp.agent_id,
                 tool_name=name,
                 arguments=arguments,
             )
             if policy_decision.action == "deny":
                 decision = f"policy-denied: {policy_decision.reason}"
-            elif policy_decision.action == "require_approval" or dynamic_requires:
+            elif (
+                policy_decision.action == "require_approval"
+                or dynamic_requires or name in inp.approval_required
+            ):
                 if inp.approval_resolver is not None:
                     decision = inp.approval_resolver.request(
                         call_id=call_id, name=name, arguments=arguments
@@ -660,7 +671,7 @@ def _event(
     *,
     phase: str | None = None,
 ) -> RuntimeEvent:
-    return RuntimeEvent.create(
+    event = RuntimeEvent.create(
         event_type,
         agent_id=inp.agent_id,
         user_id=inp.user_id,
@@ -670,6 +681,9 @@ def _event(
         payload=payload,
         phase=phase,
     )
+    if inp.live_event_sink is not None:
+        inp.live_event_sink(event)
+    return event
 
 
 __all__ = [

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import sqlite3
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -99,7 +100,9 @@ def validate_tool_executor(contract: Mapping[str, Any]) -> dict[str, Any] | None
             "MCP 工具请通过 MCP Server 绑定，延迟工具请绑定具体工具。"
         )
     # Unrestricted dispatchers can reach tools outside the Agent's locked bindings.
-    if name in {"tool_dispatcher", "agentengine_tool_dispatcher", "tool_search"}:
+    from ksadk.toolsets import META_DISPATCHER_TOOL_NAMES
+
+    if name in META_DISPATCHER_TOOL_NAMES:
         raise ValueError(f"Tool {name} 不能绕过绑定范围；请绑定需要执行的具体工具")
     from ksadk.toolsets import describe_agentengine_tools
 
@@ -120,6 +123,45 @@ def _plain(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_plain(item) for item in value]
     return value
+
+
+def _reserve_tool_call(
+    *,
+    database: Path,
+    run_id: str,
+    tool_name: str,
+    limit: int,
+) -> int:
+    """Atomically reserve a bounded Tool call before any side effect starts."""
+    if not run_id:
+        raise RuntimeError(
+            f"Tool {tool_name} has a per-run limit but the runtime did not provide a run id"
+        )
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database, timeout=10) as db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS tool_call_quotas ("
+            "run_id TEXT NOT NULL, tool_name TEXT NOT NULL, calls INTEGER NOT NULL, "
+            "PRIMARY KEY (run_id, tool_name))"
+        )
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT calls FROM tool_call_quotas WHERE run_id=? AND tool_name=?",
+            (run_id, tool_name),
+        ).fetchone()
+        calls = int(row[0]) if row else 0
+        if calls >= limit:
+            raise RuntimeError(
+                f"Tool {tool_name} reached its hard per-run limit of {limit}; "
+                "do not retry it and finish with the evidence already collected"
+            )
+        calls += 1
+        db.execute(
+            "INSERT INTO tool_call_quotas(run_id, tool_name, calls) VALUES (?, ?, ?) "
+            "ON CONFLICT(run_id, tool_name) DO UPDATE SET calls=excluded.calls",
+            (run_id, tool_name, calls),
+        )
+    return calls
 
 
 def assemble_python_tools(
@@ -180,22 +222,40 @@ def assemble_python_tools(
             del call_id
             env = {}
             execution_root = root
+            from ksadk.runtime_context import get_current_tool_execution_context_or_default
+
+            tool_context = get_current_tool_execution_context_or_default()
+            from ksadk.harness.execution_policy import current_execution_policy
+
+            policy = current_execution_policy()
+            policy_root = policy.workspace_root if policy is not None else None
+            writable_root = policy_root or workspace_root or root
+            max_calls = contract.get("maxCallsPerRun")
+            if max_calls is not None:
+                _reserve_tool_call(
+                    database=writable_root
+                    / ".harness-tools"
+                    / "state"
+                    / "tool-call-quotas.sqlite",
+                    run_id=tool_context.run_id,
+                    tool_name=str(contract["name"]),
+                    limit=int(max_calls),
+                )
             if descriptor is None:
                 command = [_EXECUTE, str(path), contract["callableName"]]
             else:
-                from ksadk.runtime_context import get_current_tool_execution_context_or_default
                 from ksadk.toolsets.workspace_identity import identity_workspace_root
 
                 # Trusted SDK code only. Approval is owned by the Managed Loop;
                 # do not ask a second time inside the builtin gateway.
-                execution_root = (workspace_root or root).resolve()
+                execution_root = writable_root.resolve()
                 execution_root.mkdir(parents=True, exist_ok=True)
                 env = dict(
                     os.environ, KSADK_TOOL_APPROVAL_MODE="full",
                     KSADK_PROJECT_DIR=str(execution_root),
                     AGENTENGINE_UI_DIR=str(execution_root / ".harness-tools" / "ui"),
                 )
-                scoped_root = identity_workspace_root(
+                scoped_root = policy_root or identity_workspace_root(
                     (workspace_root or root) / ".harness-tools" / "workspace"
                 ).resolve()
                 command = [
@@ -204,12 +264,12 @@ def assemble_python_tools(
                     str(scoped_root),
                     contract["name"],
                     str(
-                        (workspace_root or root)
+                        writable_root
                         / ".harness-tools"
                         / "state"
                         / (hashlib.sha256(str(scoped_root).encode()).hexdigest() + ".sqlite")
                     ),
-                    get_current_tool_execution_context_or_default().session_id or "default",
+                    tool_context.session_id or "default",
                 ]
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -225,8 +285,7 @@ def assemble_python_tools(
                 env=env,
                 start_new_session=True,
             )
-            try:
-                async with asyncio.timeout(contract.get("timeoutSeconds", 20)):
+            async def consume_output():
                     process.stdin.write(json.dumps(arguments).encode())
                     await process.stdin.drain()
                     process.stdin.close()
@@ -241,6 +300,10 @@ def assemble_python_tools(
                             f"Tool {contract['name']} 执行失败，请检查参数与运行环境"
                         )
                     return json.loads(output)
+            try:
+                return await asyncio.wait_for(
+                    consume_output(), timeout=contract.get("timeoutSeconds", 20)
+                )
             finally:
                 if process.returncode is None:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -248,7 +311,14 @@ def assemble_python_tools(
 
         tools[name] = HarnessTool(
             name=name,
-            description=contract.get("description", ""),
+            description=(
+                str(contract.get("description", ""))
+                + (
+                    f" Hard limit: at most {int(contract['maxCallsPerRun'])} calls per run."
+                    if contract.get("maxCallsPerRun") is not None
+                    else ""
+                )
+            ),
             parameters=contract.get("inputSchema", {}),
             handler=invoke,
             source="sdk-builtin" if descriptor else "locked-python",

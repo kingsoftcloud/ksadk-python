@@ -337,7 +337,7 @@ def test_resolver_skips_capability_probe_for_legacy_kspmas_profile(
     ("profile", "sandbox", "approval"),
     [
         ("ask", "workspace-write", "manual"),
-        ("risk", "workspace-write", "auto_review"),
+        ("risk", "workspace-write", "manual"),
         ("full", "full-access", "deny_all"),
     ],
 )

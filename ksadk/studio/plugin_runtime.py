@@ -106,6 +106,9 @@ class _StudioHarnessReasoner:
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
         self._backoff_seconds = backoff_seconds
+        # Studio's Harness provider is always connected to the incremental
+        # model client.  The engine uses this flag to select stream_complete.
+        self._streaming = True
 
     async def complete(
         self,
@@ -114,6 +117,7 @@ class _StudioHarnessReasoner:
         prompt: str,
         messages: Sequence[dict[str, Any]],
         tools: Sequence[Any],
+        max_output_tokens: int | None = None,
     ) -> HarnessReasoningTurn:
         del prompt
         if model != self._model.model:
@@ -130,6 +134,7 @@ class _StudioHarnessReasoner:
             backoff_seconds=self._backoff_seconds,
             tools=[dict(tool.openai_schema) for tool in tools],
             allow_empty=bool(tools),
+            max_output_tokens=max_output_tokens,
         )
         calls: list[HarnessToolCall] = []
         for call in response.tool_calls:
@@ -166,6 +171,77 @@ class _StudioHarnessReasoner:
                 "reasoning_tokens": max(0, int(reported_usage.reasoning_output_tokens)),
             },
         )
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[Any],
+        max_output_tokens: int | None = None,
+    ):
+        """Pass model deltas through the Harness loop as soon as they arrive."""
+        del prompt
+        if model != self._model.model:
+            raise PluginHostError(
+                "harness_model_not_bound",
+                f"Harness requested unbound model {model!r}",
+            )
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls: list[HarnessToolCall] = []
+        usage = None
+        async for chunk in self._client.stream(
+            self._model,
+            messages=[dict(message) for message in messages],
+            network_policy=self._network_policy,
+            timeout_seconds=self._timeout_seconds,
+            tools=[dict(tool.openai_schema) for tool in tools],
+            max_output_tokens=max_output_tokens,
+        ):
+            if chunk.text:
+                text_parts.append(chunk.text)
+                yield {"text_delta": chunk.text}
+            if chunk.reasoning:
+                reasoning_parts.append(chunk.reasoning)
+                yield {"reasoning_delta": chunk.reasoning}
+            if chunk.usage is not None:
+                usage = chunk.usage
+            if chunk.tool_calls:
+                tool_calls = []
+                for call in chunk.tool_calls:
+                    try:
+                        arguments = json.loads(call.arguments or "{}")
+                    except json.JSONDecodeError as error:
+                        raise PluginHostError(
+                            "harness_tool_arguments_invalid",
+                            f"model emitted invalid arguments for tool {call.name!r}",
+                        ) from error
+                    if not isinstance(arguments, dict):
+                        raise PluginHostError(
+                            "harness_tool_arguments_invalid",
+                            f"model emitted non-object arguments for tool {call.name!r}",
+                        )
+                    tool_calls.append(
+                        HarnessToolCall(call_id=call.id, name=call.name, arguments=arguments)
+                    )
+            if chunk.done:
+                yield {
+                    "turn": HarnessReasoningTurn(
+                        final_text="".join(text_parts) or None,
+                        tool_calls=tuple(tool_calls),
+                        reasoning="".join(reasoning_parts) or None,
+                        usage=None
+                        if usage is None
+                        else {
+                            "input_tokens": max(0, int(usage.input_tokens)),
+                            "output_tokens": max(0, int(usage.output_tokens)),
+                            "cached_tokens": max(0, int(usage.cached_input_tokens)),
+                            "reasoning_tokens": max(0, int(usage.reasoning_output_tokens)),
+                        },
+                    )
+                }
 
 
 class StudioPluginRuntime:
@@ -214,6 +290,7 @@ class StudioPluginRuntime:
         self._resource_write_modes: dict[str, str] = {}
         self._admission_open = True
         self._closed = False
+        self.execution_policy_resolver: Any | None = None
 
     def replace_provider_registrations(
         self,
@@ -399,8 +476,12 @@ class StudioPluginRuntime:
             self._resource_write_modes.pop(session_id, None)
 
     async def close_session_if_dynamic(self, spec: StudioRunSpec, session_id: str) -> None:
-        if bool(spec.request_config.get("dynamic_dsh_mcp")):
-            await self.close_session(session_id)
+        # 每轮运行后关闭 dynamic-DSH MCP 激活会让下一轮重新 spawn/health/list
+        # 全部 MCP server（实测 ~12s），这是 harness 首 token 延迟的主因。
+        # open_activation 以 session 为 key 复用同一激活（图与 Bundle digest
+        # 不变），因此跨轮保留激活；激活只在会话删除（close_session）与
+        # Studio 退出（aclose）时释放。
+        return None
 
     def check_configuration_mutable(self) -> None:
         if self._hosts:
@@ -513,8 +594,12 @@ class StudioPluginRuntime:
                 # Harness Provider 持久 Checkpoint/RunStore/Receipt 的状态根
                 # （与 builtin capability factories 同一 Workspace 命名空间）。
                 "harness_state_dir": str(self.workspace.resolve(".agentkit/plugin-runtime/state")),
+                # 用户当前选择的 Studio 工作区：harness 的文件工具应写在这里，
+                # 而不是 plugin-runtime state 的哈希目录里。
+                "harness_workspace_root": str(self.workspace.root),
                 "codex_local_launch_resolver": self._codex_local_launch_resolver,
                 "runtime_executor": self._runtime_executor,
+                "execution_policy_resolver": self.execution_policy_resolver,
                 "dsh_capability_service": self._resource_dsh_capability_service,
                 "resource_authority": self._resource_authority,
                 "resource_connections": self._resource_connections,
@@ -544,15 +629,10 @@ class StudioPluginRuntime:
                 bundle=verified,
                 host=host,
             )
-            stale = [
-                (digest, entry)
-                for digest, entry in self._hosts.items()
-                if entry.agent_id == candidate.agent_id and digest != key
-            ]
             self._hosts[key] = candidate
-            for digest, entry in stale:
-                self._hosts.pop(digest, None)
-                await entry.host.dispose()
+            # Distinct immutable Builds of the same Agent may be active in
+            # different authorized sessions. Their profile graphs are owned
+            # until explicit maintenance/close, never evicted by another Build.
             return candidate
 
     def _resource_write_authorizer(

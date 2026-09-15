@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "grant_id": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Grant Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "agent_instance_id": {
+      "minLength": 1,
+      "title": "Agent Instance Id",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "owner_ref": {
+      "minLength": 1,
+      "title": "Owner Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "grant_id",
+    "tenant_id",
+    "agent_instance_id",
+    "session_id",
+    "owner_ref"
+  ],
+  "title": "ExecutionGrantSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -464,7 +464,6 @@ body {
 
   .app-shell .overview-strip,
   .app-shell .observability-overview,
-  .app-shell .orchestration-workbench,
   .app-shell .runtime-resource-groups {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -574,10 +573,6 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .app-shell .orchestration-workbench {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .app-shell[data-view="create"] .create-workbench {
     grid-template-columns: 196px minmax(0, 1fr);
   }
@@ -597,13 +592,6 @@ body {
 }
 
 @media (min-width: 768px) and (max-width: 1439px) {
-  .app-shell .orchestration-aside {
-    display: grid;
-    grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
-    gap: 28px;
-  }
-
-  .app-shell .orchestration-aside > .aside-divider { display: none; }
 }
 
 @media (max-width: 1439px) {
@@ -625,11 +613,6 @@ body {
     display: flex;
     grid-column: 1 / -1;
     border-top: 0;
-  }
-
-  .app-shell .orchestration-aside {
-    position: static;
-    width: auto;
   }
 
   .app-shell .chat-run-panel {

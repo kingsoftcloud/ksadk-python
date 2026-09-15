@@ -58,6 +58,7 @@ class ReasonInput:
     #: 可选实时事件出口。流式引擎用它在模型调用尚未结束时交付 started/delta；
     #: 事件仍保留在 ReasonOutput，供非流式调用方与审计使用。
     live_event_sink: Callable[[RuntimeEvent], None] | None = None
+    before_attempt: Callable[[], None] | None = None
 
 
 @dataclass
@@ -139,6 +140,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         raise ReasoningLimitError(f"reasoning exceeded {inp.max_turns} turns")
 
     seq = inp.seq_start
+
     out = ReasonOutput()
 
     candidates = tuple(dict.fromkeys((inp.model_ref, *inp.fallback_model_refs)))
@@ -154,6 +156,8 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             if total_attempt >= inp.provider_policy.total_attempt_budget:
                 stop = True
                 break
+            if inp.before_attempt is not None:
+                inp.before_attempt()
             total_attempt += 1
             attempted_models.append(model_ref)
             event_meta = {
@@ -171,6 +175,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
             try:
                 if inp.streaming and hasattr(inp.reasoner, "stream_complete"):
                     text_parts: list[str] = []
+                    reasoning_parts: list[str] = []
                     async for item in inp.reasoner.stream_complete(
                         model=model_ref,
                         prompt=inp.instructions,
@@ -189,18 +194,25 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 EventType.TEXT_DELTA,
                                 inp,
                                 seq,
-                                {"text": item["text_delta"]},
+                                {
+                                    "text": item["text_delta"],
+                                    "delta_index": len(text_parts) - 1,
+                                },
                             )
                             out.events.append(delta_event)
                             if inp.live_event_sink is not None:
                                 inp.live_event_sink(delta_event)
                         if "reasoning_delta" in item:
+                            reasoning_parts.append(item["reasoning_delta"])
                             seq += 1
                             reasoning_event = _event(
                                 EventType.REASONING_DELTA,
                                 inp,
                                 seq,
-                                {"text": item["reasoning_delta"]},
+                                    {
+                                        "text": item["reasoning_delta"],
+                                        "delta_index": len(reasoning_parts) - 1,
+                                    },
                                 phase="commentary",
                             )
                             out.events.append(reasoning_event)
@@ -237,22 +249,23 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                     else 0
                 )
                 seq += 1
-                out.events.append(
-                    _event(
-                        EventType.MODEL_CALL_FAILED,
-                        inp,
-                        seq,
-                        {
-                            **event_meta,
-                            "error": safe_model_error_message(exc),
-                            "error_type": type(exc).__name__,
-                            "failure_category": failure.kind.value,
-                            "status_code": failure.status_code,
-                            "action": action.value,
-                            "retry_delay_ms": delay_ms,
-                        },
-                    )
+                failed_event = _event(
+                    EventType.MODEL_CALL_FAILED,
+                    inp,
+                    seq,
+                    {
+                        **event_meta,
+                        "error": safe_model_error_message(exc),
+                        "error_type": type(exc).__name__,
+                        "failure_category": failure.kind.value,
+                        "status_code": failure.status_code,
+                        "action": action.value,
+                        "retry_delay_ms": delay_ms,
+                    },
                 )
+                out.events.append(failed_event)
+                if inp.live_event_sink is not None:
+                    inp.live_event_sink(failed_event)
                 if action == ModelFailureAction.RETRY:
                     if delay_ms:
                         await asyncio.sleep(delay_ms / 1000)
@@ -350,7 +363,10 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 EventType.TEXT_COMPLETED,
                 inp,
                 seq,
-                {"text": turn.final_text or ""},
+                {
+                    "text": turn.final_text or "",
+                    "streamed": bool(inp.streaming and hasattr(inp.reasoner, "stream_complete")),
+                },
                 phase="final_answer",
             ),
         )

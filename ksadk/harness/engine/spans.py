@@ -26,6 +26,13 @@ def wrap_node_span(engine: Any, run: Any, node_name: str, impl: Callable) -> Cal
                 {"node": node_name, "duration_ms": duration_ms},
             )
         )
+        if isinstance(result, dict):
+            from ksadk.harness.engine import budgets
+
+            result["budget"] = budgets.snapshot(run)
+            result["event_seq"] = run.seq
+            if run.controller is not None:
+                result["run_control"] = run.controller.snapshot()
         return result
 
     return wrapped

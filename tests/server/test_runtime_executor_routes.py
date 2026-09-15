@@ -326,8 +326,9 @@ def test_ui_bootstrap_uses_launch_context_and_runtime_capabilities() -> None:
         },
         "goal": None,
         "loop": None,
-            "plan": None,
-            "interaction_mode": "unavailable",
+                "plan": None,
+                "execution_policy": None,
+                "interaction_mode": "unavailable",
         }
 
 

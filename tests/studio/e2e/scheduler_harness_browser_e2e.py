@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 from playwright.sync_api import Page, expect, sync_playwright
 from studio_e2e_support import studio_server
 
+from ksadk.plugins.dsh_home import prepare_studio_dsh_home
 from ksadk.plugins.providers.harness_dsh import shipped_harness_dsh_bundle
 from ksadk.studio.contracts import AgentSpec
 from ksadk.studio.service import StudioService
@@ -77,6 +78,7 @@ def _managed_harness_profile(workspace: Path) -> dict[str, str]:
     """Install the wheel-owned Bundle behind a deterministic DSH CLI seam."""
 
     home = workspace / ".agentkit" / "dsh-home"
+    prepare_studio_dsh_home(home)
     profile = home / "profiles" / "studio"
     installed = profile / "node_modules" / "@kingsoftcloud" / "ksadk-harness-provider"
     installed.parent.mkdir(parents=True)
@@ -313,7 +315,13 @@ def _assert_harness_vertical(
     assert all(item.path == "/v1/chat/completions" for item in requests)
     assert all(item.authorization == "Bearer harness-fixture-key" for item in requests)
     assert len(requests[0].payload["messages"]) == 2
-    assert requests[2].payload["messages"] == [
+    # LiteLLM may serialize an unset optional name as null. Preserve exact
+    # message count, order, roles, content and every other wire field.
+    messages = [
+        {key: value for key, value in message.items() if key != "name" or value is not None}
+        for message in requests[2].payload["messages"]
+    ]
+    assert messages == [
         {
             "role": "system",
             "content": (

@@ -36,6 +36,7 @@ SQLITE_SESSION_STORE_PLUGIN_ID = "io.ksadk.session-store.sqlite"
 WORKSPACE_MCP_PLUGIN_ID = "io.ksadk.mcp.workspace"
 WORKSPACE_SKILL_PLUGIN_ID = "io.ksadk.skill.workspace"
 READ_ONLY_CONTEXT_PLUGIN_ID = "io.ksadk.context.bundle-readonly"
+LOCAL_MEMORY_PROVIDER_PLUGIN_ID = "io.ksadk.memory.local-default"
 CORE_RENDERER_PLUGIN_ID = "io.ksadk.renderer.conversation-core"
 
 SecretResolver = Callable[[str], str | None]
@@ -117,6 +118,12 @@ def builtin_capability_manifests() -> tuple[PluginManifest, ...]:
             slot="context.bundle",
             mode="multiple",
             permissions=("filesystem:bundle-read",),
+        ),
+        _manifest(
+            LOCAL_MEMORY_PROVIDER_PLUGIN_ID,
+            definition="memory.provider/v1",
+            slot="memory.primary",
+            mode="unique",
         ),
         _manifest(
             CORE_RENDERER_PLUGIN_ID,
@@ -275,6 +282,27 @@ class WorkspaceMCPRuntime(_BuiltinRuntime):
                 resolved, "endpointUrl", code="builtin_mcp_endpoint_missing"
             )
             secret_ref = _optional_string(materializer.get("apiKeyRef"))
+            if secret_ref is None:
+                # 组合器只透传 binding.config；目录资源的凭据声明在合同
+                # envRefs 里（例如 Authorization: env://<API_KEY>）。
+                # materializer 未显式覆盖时回退读取资源自身 envRefs，
+                # 否则 http MCP 少鉴权头必然 401 transport_failed。
+                env_refs = resolved.get("envRefs")
+                if isinstance(env_refs, Mapping) and env_refs:
+                    if len(env_refs) > 1:
+                        raise PluginHostError(
+                            "builtin_mcp_credentials_unsupported",
+                            f"workspace MCP {resolved['name']!r} accepts at most "
+                            "one Authorization credential",
+                        )
+                    header_name, reference = next(iter(env_refs.items()))
+                    if str(header_name).strip().casefold() != "authorization":
+                        raise PluginHostError(
+                            "builtin_mcp_credentials_unsupported",
+                            f"workspace MCP {resolved['name']!r} envRefs header "
+                            f"{header_name!r} is not supported; use Authorization",
+                        )
+                    secret_ref = str(reference).strip()
             api_key: str | None = None
             if secret_ref is not None:
                 if not _is_secret_reference(secret_ref):
@@ -543,6 +571,9 @@ def builtin_capability_factories(
         READ_ONLY_CONTEXT_PLUGIN_ID: _SimpleFactory(
             READ_ONLY_CONTEXT_PLUGIN_ID, ReadOnlyBundleContextRuntime
         ),
+        LOCAL_MEMORY_PROVIDER_PLUGIN_ID: _SimpleFactory(
+            LOCAL_MEMORY_PROVIDER_PLUGIN_ID, _BuiltinRuntime
+        ),
         CORE_RENDERER_PLUGIN_ID: _SimpleFactory(
             CORE_RENDERER_PLUGIN_ID, CoreConversationRendererRuntime
         ),
@@ -736,6 +767,7 @@ def _is_secret_reference(value: str) -> bool:
 __all__ = [
     "BUILTIN_PLUGIN_VERSION",
     "CORE_RENDERER_PLUGIN_ID",
+    "LOCAL_MEMORY_PROVIDER_PLUGIN_ID",
     "READ_ONLY_CONTEXT_PLUGIN_ID",
     "SQLITE_SESSION_STORE_PLUGIN_ID",
     "WORKSPACE_MCP_PLUGIN_ID",

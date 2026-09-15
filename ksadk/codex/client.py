@@ -720,6 +720,9 @@ class AsyncCodexClient(CodexClient):
         # Full access authorizes tool execution, never OAuth login or arbitrary
         # server forms. Only Codex's native, empty tool-approval form qualifies.
         schema = raw.get("requestedSchema") or {}
+        # MCP 工具调用不属于风险操作：无论沙箱/审批档位如何，codex 的
+        # mcp_tool_call 审批 elicitation（原生空表单）一律自动放行；真正的
+        # 风险操作（shell 命令/文件改动审批、真实表单 elicitation）不受影响。
         if (
             method == "mcpServer/elicitation/request"
             and request_queue is not None
@@ -727,8 +730,6 @@ class AsyncCodexClient(CodexClient):
             and metadata.get("codex_approval_kind") == "mcp_tool_call"
             and raw.get("mode") == "form"
             and schema == {"type": "object", "properties": {}}
-            and policy.get("sandbox") == "full-access"
-            and policy.get("approval_mode") == "deny_all"
         ):
             return {"action": "accept", "content": {}}
         interaction_id = str(

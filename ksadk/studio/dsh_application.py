@@ -6,36 +6,64 @@ plugin protocol, settings store, or module loader.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 from http.cookiejar import CookieJar
 from urllib.request import HTTPCookieProcessor, ProxyHandler, build_opener
 from urllib.parse import urlsplit
 from urllib.error import URLError
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket
 from starlette.background import BackgroundTask
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from ksadk.studio.errors import StudioError
 from ksadk.plugins.host import PluginHostError
 
 _HOP_HEADERS = {"host", "connection", "transfer-encoding", "content-length"}
 
+_STUDIO_CORE_BRAND_SCRIPT = """<script>(() => { const title = 'AgentKit Studio'; const apply = () => { if (document.title !== title) document.title = title; }; apply(); new MutationObserver(apply).observe(document.head, { childList: true, subtree: true }); })();</script>"""
+
+
+def _brand_core_document(body: bytes) -> bytes:
+    """Keep the embedded Core document branded as AgentKit Studio."""
+    text = body.decode("utf-8", errors="replace")
+    text = text.replace("<title>DeepSeek</title>", "<title>AgentKit Studio</title>")
+    text = text.replace("href=\"/favicon.svg\"", "href=\"/favicon.ico\"")
+    marker = "</head>"
+    if marker in text and "const title = 'AgentKit Studio'" not in text:
+        text = text.replace(marker, _STUDIO_CORE_BRAND_SCRIPT + marker, 1)
+    return text.encode("utf-8")
+
 
 def register_dsh_application(app: FastAPI, studio, *, session_secret: str, security_enabled: bool):
+    session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
+        session_secret.encode("utf-8")
+    ).hexdigest()[:16]
+    legacy_session_cookie_name = "agentkit_studio_session"
+
     def authorized(cookies):
-        token = cookies.get("agentkit_studio_session", "")
+        token = cookies.get(session_cookie_name) or cookies.get(legacy_session_cookie_name, "")
         return not security_enabled or hmac.compare_digest(token, session_secret)
 
     @app.api_route("/studio-core/", methods=["GET"])
     async def application(request: Request):
         if not authorized(request.cookies):
-            raise StudioError("LOCAL_SESSION_REQUIRED", "请从 Studio 启动链接进入", status_code=401)
+            # A fresh browser follows the normal loopback bootstrap first;
+            # the root issues the Studio cookie before entering Core.
+            target = "/" + ("?" + request.url.query if request.url.query else "")
+            return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
         try:
             lease = await studio.dsh_capabilities.connector_lease()
-        except PluginHostError:
-            raise StudioError("DSH_CORE_UNAVAILABLE", "插件服务暂时不可用，请返回 Studio 重试", status_code=503) from None
+        except (PluginHostError, StudioError, OSError):
+            # Core is an optional enhancement to the local React shell. If its
+            # host is busy or unavailable, keep the Studio page usable instead
+            # of returning a JSON 503 document that renders as a blank screen.
+            path = Path(__file__).with_name("static") / "index.html"
+            body = path.read_bytes()
+            return Response(body, media_type="text/html", headers={"Cache-Control": "no-store", "X-AgentKit-Studio-Degraded": "dsh-unavailable"})
         def bootstrap():
             # urllib does not log the process-token URL at INFO like httpx.
             jar = CookieJar()
@@ -50,6 +78,7 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
             # allow urllib's URL-bearing exception into API responses/logs.
             raise StudioError("DSH_CORE_UNAVAILABLE", "插件服务连接失败，请返回 Studio 重试", status_code=503) from None
         body = body.replace(b'<base href="/">', b'<base href="/studio-core/">')
+        body = _brand_core_document(body)
         result = Response(body, media_type="text/html", headers={"Cache-Control": "no-store"})
         for cookie in cookies:
             result.set_cookie(cookie.name, cookie.value, path=cookie.path, httponly=True, samesite="strict")

@@ -667,7 +667,9 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
             tenant_id=session_service.tenant_id,
             workspace_id=session_service.workspace_id,
         )
-        store = PostgresAgentKernelStore(pool, event_log, owns_pool=True)
+        store = PostgresAgentKernelStore(
+            pool, event_log, tenant_id=session_service.tenant_id, owns_pool=True
+        )
         # typed RuntimeEvent 写路径走 fenced store：ActivationWriteGuard
         # append 与 activation 行验证同一事务（Task 4 Step 5）。
         events = PostgresFencedSessionEventStore(store)

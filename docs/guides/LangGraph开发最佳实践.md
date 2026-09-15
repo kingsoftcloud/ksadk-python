@@ -173,9 +173,7 @@ messages-based 图适合快速迁移。但如果你的业务需要稳定消费�
 
 ```python
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-
+    # 只把新一轮请求投影成业务 State。resume 不经过此 hook。
     return {
         "query": payload["input"],
         "history": session_context["history"],
@@ -213,11 +211,11 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 | invocation_id（本次调用标识） | `payload["invocation_id"]`，对应 `ToolExecutionContext.invocation_id` |
 | 知识库上下文 | `session_context["kb_context"]` |
 | 长期记忆上下文 | `session_context["memory_context"]` |
-| 是否断点恢复 | `session_context["is_resume"]`，只建议在 adapter 中判断，用来返回 resume payload |
+| 是否断点恢复 | 由 runtime 内部识别；resume 不经过 `ksadk_prepare_state` |
 
 不要在业务代码里读取平台内部 event store 来拼 history。平台已经把可喂给模型的历史投影成 `history`。
 
-如果你的图使用 LangGraph `interrupt()`，`session_context["is_resume"]` 为 `True` 时，`ksadk_prepare_state` 的返回值会作为 `Command(resume=...)` 的值传回 interrupt 调用点，而不是作为新的 graph state 注入。因此推荐在 resume 分支直接返回 `payload["input"]`，不要继续返回完整业务 state。
+如果你的图使用 LangGraph `interrupt()`，当前 runner 在 resume 路径不会再次调用 `ksadk_prepare_state`，而是直接解包 `ksadk_resume.value` 并构造 `Command(resume=...)`。hook 只负责新一轮请求的 State 投影。
 
 !!! info "0.6.5 / 0.6.7 平台上下文字段"
     `session_context["platform_context"]` 来自平台 `PlatformInvocationContext.to_payload()`，业务代码可通过它稳定拿到：
@@ -342,14 +340,7 @@ LangGraph 原生支持在图节点中调用 `interrupt()` 暂停，并在下一�
 | conversation runtime | 记录 `approval_request / approval_response`，向 runner 传 `resume=True` |
 | LangGraphRunner | 薄适配：把 `resume=True` 转成 `Command(resume=...)` |
 
-如果你定义了 `ksadk_prepare_state`，resume 请求也会经过这个 hook。此时 hook 的返回值就是 `Command(resume=...)` 里的 `resume` 值。推荐写法是：
-
-```python
-def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-    return build_normal_state(payload, session_context)
-```
+`ksadk_prepare_state` 只负责新一轮请求的 State 投影。resume 请求由 runtime 识别；LangGraphRunner 会从 `ksadk_resume.value` 解包实际值，并构造 `Command(resume=...)`。业务代码只需在 `interrupt()` 返回后解析自己的业务 value。
 
 业务代码不应该：
 
@@ -523,7 +514,7 @@ curl -X POST https://example.com/agentengine/api/v1/ResumeRun \
 
 业务代码注意事项：
 
-- checkpoint resume **不会** 经过 `ksadk_prepare_state` 的 resume 分支。`session_context["is_resume"]` 描述的是 `interrupt()` 运行内恢复，与 checkpoint 回档是两条独立链路
+- checkpoint resume 与 `interrupt()` 运行内恢复是两条独立链路；两种恢复都由 runtime/runner 处理，不经过 `ksadk_prepare_state` 的 resume 分支
 - LangGraph runner 会把 `framework_ref.langgraph.checkpoint_ns` 写回 `configurable.checkpoint_ns`（0.6.5 首次保留，0.6.7 无条件保留），subgraph 命名空间上下文自动恢复，业务节点不需要感知
 - 终态 checkpoint（`IsTerminal=true`）不可恢复，`ResumeRun` 返回 `200 noop`；非终态且 `IsResumable=false` 返回 `409 checkpoint_not_resumable`，前端应引导用户选其他 checkpoint 而不是无限重试
 - runtime 只信任服务端已保存的 `run_checkpoint` 事件解析 `framework_ref`，客户端不能自行伪造 checkpoint 状态
@@ -612,9 +603,6 @@ def answer(state: AgentState) -> AgentState:
 
 
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    if session_context.get("is_resume"):
-        return payload.get("input")
-
     return {
         "query": payload.get("input", ""),
         "history": session_context.get("history", []),

@@ -154,7 +154,7 @@ _MCP_KEYWORDS = {
 _DEPTH_SETTINGS = {
     "focused": {"max_steps": 8, "timeout_seconds": 180, "max_tokens": 3072},
     "standard": {"max_steps": 16, "timeout_seconds": 360, "max_tokens": 4096},
-    "deep": {"max_steps": 28, "timeout_seconds": 900, "max_tokens": 6144},
+    "deep": {"max_steps": 40, "timeout_seconds": 900, "max_tokens": 6144},
 }
 
 _OUTPUT_NAMES_ZH = {
@@ -213,7 +213,7 @@ def default_agent_spec(
             instructions=prompt,
             execution=ExecutionSpec(
                 strategy="plan-act-observe",
-                max_steps=28,
+                max_steps=40,
                 timeout_seconds=900,
             ),
         )

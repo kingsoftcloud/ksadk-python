@@ -55,6 +55,9 @@ class WireModel(BaseModel):
 class EnqueuePayload(WireModel):
     content: JsonValue
     reply_to: str | None = None
+    # Optional execution-grants/v1 extension. AgentControlCommand retains the
+    # caller's original payload, so old command digests are unchanged.
+    execution_grant_id: str | None = Field(default=None, min_length=1, max_length=512, strict=True)
 
 
 class SteerPayload(WireModel):
@@ -325,6 +328,8 @@ class RuntimeCapabilityMatrix(WireModel):
     goal: RuntimeCapability | None = None
     loop: RuntimeCapability | None = None
     plan: RuntimeCapability | None = None
+    # Trusted host policy injection is independent of prompt/tool availability.
+    execution_policy: RuntimeCapability | None = None
 
 
 class AgentStatusSnapshot(WireModel):

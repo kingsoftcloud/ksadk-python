@@ -77,6 +77,75 @@ async def test_model_client_sends_openai_compatible_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_client_streams_chat_deltas_without_buffering(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = __import__("json").loads(request.content)
+        body = (
+            b'data: {"choices":[{"delta":{"content":"A"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"B"},"finish_reason":"stop"}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[{"role": "user", "content": "test"}],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+        )
+    ]
+    assert captured["json"]["stream"] is True
+    assert [chunk.text for chunk in chunks if chunk.text] == ["A", "B"]
+    assert chunks[-1].done is True
+
+
+@pytest.mark.asyncio
+async def test_model_client_streams_responses_events_and_tool_calls(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = __import__("json").loads(request.content)
+        body = (
+            b'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
+            b'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup"}}\n\n'
+            b'data: {"type":"response.function_call_arguments.delta","item_id":"item_1","delta":"{\\"q\\":\\"x\\"}"}\n\n'
+            b'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}\n\n'
+            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n'
+        )
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    model = _model().model_copy(
+        update={"wire_api": "responses", "endpoint_url": "https://model.example.com/v1/responses"}
+    )
+    client = OpenAICompatibleModelClient(network_guard=AllowNetwork(), transport=httpx.MockTransport(handler))
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            model,
+            messages=[{"role": "user", "content": "test"}],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        )
+    ]
+    assert captured["json"]["stream"] is True
+    assert captured["json"]["tools"][0]["name"] == "lookup"
+    assert [chunk.text for chunk in chunks if chunk.text] == ["Hi"]
+    assert chunks[-2].tool_calls[0].name == "lookup"
+    assert chunks[-1].done is True
+
+
+@pytest.mark.asyncio
 async def test_model_client_retries_5xx_without_leaking_secret(monkeypatch):
     monkeypatch.setenv("MODEL_API_KEY", "top-secret")
     attempts = 0

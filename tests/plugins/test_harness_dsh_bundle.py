@@ -96,7 +96,7 @@ def test_shipped_harness_is_a_standard_dsh_bundle_in_wheel_package_data() -> Non
     assert package["dsh"] == {"bundle": {"patch": "./cordis.patch.yml"}}
     assert "ksadk" not in package
     assert not (bundle.root / "ksadk-plugin.json").exists()
-    assert "ctx.provide('ksadkAgentProvider'" in (bundle.root / "index.mjs").read_text(
+    assert "ctx.provide('ksadkHarnessAgentProvider'" in (bundle.root / "index.mjs").read_text(
         encoding="utf-8"
     )
 

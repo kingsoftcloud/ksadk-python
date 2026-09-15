@@ -11,7 +11,7 @@ from ksadk.harness.capability_runtime import CapabilityRuntime
 from ksadk.harness.conformance import run_conformance_suite
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
 from ksadk.harness.event_tree import build_event_tree
-from ksadk.harness.events import project_v2
+from ksadk.harness.events import EventType, project_v2
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.spec import (
     CapabilityBinding,
@@ -99,8 +99,9 @@ def _drive() -> list:
 
 def test_subagent_runs_inline_and_streams_child_events():
     events = _drive()
-    kinds = [e.event_type for e in events]
+    kinds = [e.event_type for e in events if not e.parent_run_id]
     assert "run.completed" in kinds and kinds.count("run.started") == 1
+    assert sum(e.event_type == "run.started" and bool(e.parent_run_id) for e in events) == 1
     # 子 Agent 区间事件存在且 agent_id 是子 Agent。
     child_agent_events = [
         e
@@ -581,6 +582,77 @@ def test_subagent_tool_budget_stops_child_after_limit():
     )
     assert ended.payload["error_category"] == "budget_exhausted"
     assert "tool-call budget 0" in ended.payload["error"]
+
+
+def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
+    child_prompts: list[str] = []
+
+    class _ResearchReasoner:
+        async def complete(self, **kwargs):
+            prompt = kwargs["prompt"]
+            tools = kwargs["tools"]
+            if prompt.startswith("child"):
+                child_prompts.append(prompt)
+                if tools:
+                    return HarnessReasoningTurn(
+                        tool_calls=(
+                            HarnessToolCall(
+                                call_id=f"search-{len(child_prompts)}",
+                                name="search",
+                                arguments={},
+                            ),
+                        )
+                    )
+                return HarnessReasoningTurn(final_text="evidence summary")
+            if not any(message.get("role") == "tool" for message in kwargs["messages"]):
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="delegate", name="worker", arguments={"task": "research"}
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="done")
+
+    async def search(_arguments):
+        return "official evidence"
+
+    async def run() -> list:
+        engine = ManagedLangGraphEngine(
+            reasoner=_ResearchReasoner(),
+            checkpointer=InMemorySaver(),
+            tools={"search": search},
+            max_reasoning_turns=3,
+        )
+        spec = HarnessSpec(
+            agent_revision_ref="agent-revision://closing-turn@1",
+            model=ModelBinding(profile_ref="model-profile://m@1.0.0"),
+            prompt=PromptSpec(instructions="main"),
+            sub_agents=(
+                SubAgentBinding(
+                    name="worker",
+                    instructions="child",
+                    tools=("search",),
+                    max_turns=3,
+                ),
+            ),
+        )
+        compiled = await engine.compile(spec)
+        handle = await engine.start(
+            StartRequest(input="go", user_id="u", session_id="s", agent_id="main"),
+            compiled,
+        )
+        return await _collect(engine, handle)
+
+    events = asyncio.run(run())
+    assert any(
+        event.event_type == EventType.TEXT_COMPLETED
+        and event.payload.get("text") == "evidence summary"
+        for event in events
+    )
+    assert len(child_prompts) == 3
+    assert "最后一轮" in child_prompts[-1]
+    assert "禁止描述后续计划" in child_prompts[-1]
 
 
 def test_subagent_result_contract_is_additive_and_serializable():

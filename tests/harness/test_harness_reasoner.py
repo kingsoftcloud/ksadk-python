@@ -168,6 +168,7 @@ async def test_reasoner_forwards_preflight_output_budget_to_provider(monkeypatch
         max_output_tokens=17,
     )
     assert captured["max_tokens"] == 17
+    assert captured["num_retries"] == 0
 
 
 def test_invalid_model_profile_map_fails_honestly(monkeypatch):
@@ -241,6 +242,7 @@ async def test_stream_complete_uses_explicit_provider_configuration(monkeypatch)
     assert captured["base_url"] == "https://provider.invalid/v1"
     assert captured["api_key"] == "test-placeholder"
     assert captured["max_tokens"] == 23
+    assert captured["num_retries"] == 0
     assert items[0] == {"text_delta": "ok"}
 
 

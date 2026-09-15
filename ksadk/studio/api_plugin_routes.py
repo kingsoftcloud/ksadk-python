@@ -38,6 +38,12 @@ from ksadk.plugins.codex_manifest import (
     CodexPluginSourceCoordinate,
     snapshot_installed_codex_plugin,
 )
+from ksadk.plugins.dsh_home import (
+    DshHomeVersionError,
+    dsh_home_diagnostic,
+    prepare_studio_dsh_home,
+    studio_dsh_home,
+)
 from ksadk.plugins.dsh_toolchain import DshToolchainError, DshToolchainManager
 from ksadk.plugins.host import PluginHostError
 from ksadk.studio.codex_plugin_store import (
@@ -98,13 +104,14 @@ def _studio_codex_home(studio: StudioService) -> tuple[Path, str]:
     return studio.workspace.root / ".agentkit" / "codex-home", "workspace-isolated"
 
 
+def _active_studio(studio):
+    """Resolve the active runtime while retaining compatibility with direct test fixtures."""
+    return getattr(studio, "active", studio)
+
+
 def _studio_dsh_options(studio: StudioService) -> tuple[Path, str, tuple[str, ...] | None, str]:
     configured_home = os.environ.get("KSADK_DSH_HOME", "").strip()
-    home = (
-        Path(configured_home).expanduser()
-        if configured_home
-        else studio.workspace.root / ".agentkit" / "dsh-home"
-    )
+    home = studio_dsh_home(studio.workspace.root)
     configured_bin = os.environ.get("KSADK_DSH_BIN", "").strip()
     if configured_bin:
         command = (str(Path(configured_bin).expanduser()),)
@@ -513,6 +520,11 @@ def _codex_error(error: Exception) -> StudioError:
 
 
 def _dsh_error(error: Exception) -> StudioError:
+    if isinstance(error, DshHomeVersionError):
+        return StudioError(
+            "DSH_HOME_VERSION_UNVERIFIED", str(error), status_code=409,
+            details=error.diagnostic,
+        )
     if isinstance(error, DshPluginNotFoundError):
         return StudioError("DSH_PLUGIN_NOT_FOUND", "DSH 插件未安装", status_code=404)
     if isinstance(error, DshPluginApprovalRequired):
@@ -539,10 +551,8 @@ def _dsh_error(error: Exception) -> StudioError:
 def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     """Register only DSH Profile and Codex App Server lifecycle routes."""
 
-    codex_home, codex_mode = _studio_codex_home(studio)
-    dsh_home, dsh_profile, dsh_command, dsh_mode = _studio_dsh_options(studio)
-
     def public_dsh(item: DshPluginInventory, host: DshBridgeHost) -> dict[str, Any]:
+        _, _, _, dsh_mode = _studio_dsh_options(_active_studio(studio))
         return _public_dsh_inventory(
             item,
             host=host,
@@ -550,8 +560,14 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             runtime_state=studio.dsh_provider_runtime_state(item.name),
         )
 
-    def call_dsh(operation: Callable[[DshProfilePluginBridge], Any]) -> Any:
+    def call_dsh(operation: Callable[[DshProfilePluginBridge], Any], *, write: bool = False) -> Any:
+        dsh_home, dsh_profile, dsh_command, _ = _studio_dsh_options(_active_studio(studio))
         try:
+            # Even a read-only bridge creates its synchronization directory.
+            # Fence an empty home first so that lockfile cannot make our own
+            # fresh home look like an unversioned legacy installation later.
+            if write or dsh_home_diagnostic(dsh_home)["status"] == "new":
+                prepare_studio_dsh_home(dsh_home)
             with DshProfilePluginBridge(
                 dsh_home=dsh_home, profile=dsh_profile, dsh_command=dsh_command
             ) as bridge:
@@ -591,6 +607,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     async def list_codex_plugins(
         installed_only: bool = Query(default=False), force_refetch: bool = Query(default=False)
     ):
+        codex_home, codex_mode = _studio_codex_home(_active_studio(studio))
         try:
             async with CodexAppServerPluginBridge(codex_home=codex_home) as bridge:
                 items = await bridge.list_plugins(force_refetch=force_refetch)
@@ -620,6 +637,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
     async def get_codex_plugin(
         plugin_id: str, marketplace_name: str | None = Query(default=None, max_length=256)
     ):
+        codex_home, codex_mode = _studio_codex_home(_active_studio(studio))
         try:
             async with CodexAppServerPluginBridge(codex_home=codex_home) as bridge:
                 detail = await bridge.read_plugin(plugin_id, marketplace_name=marketplace_name)
@@ -635,6 +653,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.post("/api/v1/plugin-ecosystems/codex/plugins/{plugin_id}:snapshot")
     async def snapshot_codex_plugin(plugin_id: str, payload: CodexPluginSnapshotRequest):
+        codex_home, codex_mode = _studio_codex_home(_active_studio(studio))
         """Explicitly admit already-installed host bytes into the workspace store."""
 
         try:
@@ -661,6 +680,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.post("/api/v1/plugin-ecosystems/codex/plugins/{plugin_id}:install")
     async def install_codex_plugin(plugin_id: str, payload: CodexPluginInstallRequest):
+        codex_home, codex_mode = _studio_codex_home(_active_studio(studio))
         if not payload.accept_undeclared_permissions:
             raise _codex_error(CodexPluginApprovalRequired("approval required"))
         try:
@@ -745,6 +765,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.delete("/api/v1/plugin-ecosystems/codex/plugins/{plugin_id}", status_code=204)
     async def uninstall_codex_plugin(plugin_id: str):
+        codex_home, codex_mode = _studio_codex_home(_active_studio(studio))
         try:
             async with CodexAppServerPluginBridge(codex_home=codex_home) as bridge:
                 await bridge.uninstall_plugin(plugin_id)
@@ -754,6 +775,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
 
     @app.get("/api/v1/plugin-ecosystems/dsh/plugins")
     async def list_dsh_plugins():
+        dsh_home, dsh_profile, _, dsh_mode = _studio_dsh_options(_active_studio(studio))
         try:
             host, items = await asyncio.to_thread(call_dsh, lambda bridge: bridge.list_plugins())
             return {
@@ -762,6 +784,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
                 "profile": dsh_profile,
                 "host": _public_host("dsh", host, home_mode=dsh_mode),
                 "items": [public_dsh(item, host) for item in items],
+                "homeCompatibility": dsh_home_diagnostic(dsh_home, workspace=studio.workspace.root),
             }
         except StudioError as error:
             return {
@@ -771,12 +794,14 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
                 "host": _public_host("dsh", None, home_mode=dsh_mode),
                 "items": [],
                 "error": {"code": error.code, "message": error.message},
+                "homeCompatibility": dsh_home_diagnostic(dsh_home, workspace=studio.workspace.root),
             }
 
     @app.get("/api/v1/plugin-ecosystems/dsh/profile")
     async def get_dsh_profile_projection():
+        _, dsh_profile, _, dsh_mode = _studio_dsh_options(_active_studio(studio))
         host, projection = await asyncio.to_thread(
-            call_dsh, lambda bridge: bridge.project_profile()
+            call_dsh, lambda bridge: bridge.project_profile(), write=True,
         )
         return {
             "host": _public_host("dsh", host, home_mode=dsh_mode),
@@ -812,7 +837,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
         async def operation():
             # Do not release Studio's admission fence while a cancelled HTTP
             # request still has a filesystem migration running in its thread.
-            task = asyncio.create_task(asyncio.to_thread(call_dsh, migrate))
+            task = asyncio.create_task(asyncio.to_thread(call_dsh, migrate, write=True))
             cancelled = False
             while not task.done():
                 try:
@@ -844,6 +869,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             return await asyncio.to_thread(
                 call_dsh,
                 lambda bridge: bridge.install_plugin(payload.source, accept_host_permissions=True),
+                write=True,
             )
 
         host, item = await studio.reconfigure_dsh_profile(install)
@@ -863,7 +889,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             return await asyncio.to_thread(call_dsh, action)
 
         async def mutate():  # type: ignore[no-untyped-def]
-            return await asyncio.to_thread(call_dsh, action)
+            return await asyncio.to_thread(call_dsh, action, write=True)
 
         return await studio.reconfigure_dsh_profile(mutate)
 
@@ -886,6 +912,7 @@ def register_plugin_routes(app: FastAPI, studio: StudioService) -> None:
             return await asyncio.to_thread(
                 call_dsh,
                 lambda bridge: bridge.update_plugin(plugin_name, accept_host_permissions=True),
+                write=True,
             )
 
         host, item = await studio.reconfigure_dsh_profile(update)
