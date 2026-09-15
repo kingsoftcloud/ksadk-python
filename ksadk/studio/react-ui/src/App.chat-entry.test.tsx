@@ -279,6 +279,7 @@ describe("Studio chat entry", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(selector).toHaveAttribute("id", "conversation-target-selector");
     expect(document.activeElement).toBe(selector);
+    expect(await screen.findByRole("option", { name: "本地 · 目标 Agent" })).toBeInTheDocument();
   });
 
   it("opens current conversation search with Cmd/Ctrl+F", async () => {

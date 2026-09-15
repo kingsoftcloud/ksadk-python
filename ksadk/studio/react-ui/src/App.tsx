@@ -492,8 +492,16 @@ export default function App() {
         const target = document.querySelector<HTMLElement>(
           '[aria-label="切换会话目标"], [aria-label="切换当前 Agent"]',
         );
-        target?.focus();
-        target?.click();
+        if (target) {
+          target.focus();
+          // Radix Select opens on pointerdown; dispatch the same semantic
+          // event as a pointer activation so the shortcut opens the menu.
+          target.dispatchEvent(new MouseEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+          }));
+          target.click();
+        }
       } else if (key === "f") {
         event.preventDefault();
         const find = document.querySelector<HTMLButtonElement>('[aria-label="查找当前会话"]');
