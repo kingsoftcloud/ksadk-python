@@ -1873,7 +1873,7 @@ HERMES_DASHBOARD_HOST=127.0.0.1
 HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
-# HERMES_FALLBACK_MODEL=deepseek-v4-pro
+# HERMES_FALLBACK_MODEL=glm-5.3-flash
 """
     elif framework == "codex":
         env_content = _generate_codex_env_content(global_env)

@@ -783,7 +783,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       </div>
       <FormField label="模型 ID" requirement="required" htmlFor="amModelId" error={modelForm.formState.errors.model?.message}>
         <div>
-        <input id="amModelId" className="mono" placeholder="glm-5.1 / gpt-4o-mini / …" list="am-model-suggestions" {...modelForm.register("model")} />
+        <input id="amModelId" className="mono" placeholder="deepseek-v4.1-flash / …" list="am-model-suggestions" {...modelForm.register("model")} />
         <datalist id="am-model-suggestions">{modelSuggestions.map(m => <option key={m} value={m} />)}</datalist>
         {modelSuggestions.length > 0 && <span className="helper">可输入或从 {modelSuggestions.length} 个可用模型中选择（自动补全）。</span>}
         </div>

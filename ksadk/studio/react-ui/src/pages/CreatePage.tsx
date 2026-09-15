@@ -536,6 +536,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     return preferred?.resourceId || models[0]?.resourceId || "";
   }, [models]);
 
+  // 自动预选默认模型 deepseek-v4.1-flash，用户无需手动选择即可创建 Agent。
+  useEffect(() => {
+    if (mode === "conversation") return;
+    if (selectedModels.length || !preferredConversationAuthoringModel) return;
+    setSelectedModels([preferredConversationAuthoringModel]);
+  }, [mode, selectedModels.length, preferredConversationAuthoringModel]);
+
   useEffect(() => {
     if (mode !== "conversation") {
       conversationEntryInitialized.current = false;
