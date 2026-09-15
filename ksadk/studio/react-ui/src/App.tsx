@@ -487,6 +487,13 @@ export default function App() {
         setNewChatRequest(request => request + 1);
         enterChat();
         setMobileNavOpen(false);
+      } else if (key === "k") {
+        event.preventDefault();
+        const target = document.querySelector<HTMLElement>(
+          '[aria-label="切换会话目标"], [aria-label="切换当前 Agent"]',
+        );
+        target?.focus();
+        target?.click();
       } else if (event.key === ",") {
         event.preventDefault();
         setSettingsSection("general");
@@ -666,7 +673,8 @@ export default function App() {
           <div className="header-actions">
             <div ref={setConversationHeaderHost} id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
             {view === "conversations" ? (
-              <StudioSelect
+                <StudioSelect
+                id="conversation-target-selector"
                 className="header-agent-selector conversation-target-selector"
                 ariaLabel="切换会话目标"
                 value={chatTargetValue}

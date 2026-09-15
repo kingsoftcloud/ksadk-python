@@ -256,4 +256,28 @@ describe("Studio chat entry", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /最新工作区/ })).toBeInTheDocument());
     expect(screen.queryByText("过期工作区")).not.toBeInTheDocument();
   });
+
+  it("opens the Agent target switcher with Cmd/Ctrl+K", async () => {
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-1", name: "目标 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-1") return response({ builds: [] });
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+    const selector = await screen.findByRole("combobox", { name: "切换会话目标" });
+    const event = new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(selector).toHaveAttribute("id", "conversation-target-selector");
+    expect(document.activeElement).toBe(selector);
+  });
 });
