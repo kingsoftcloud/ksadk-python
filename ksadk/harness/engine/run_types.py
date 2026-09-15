@@ -32,6 +32,7 @@ class _GraphState(TypedDict, total=False):
     execution_terminal: str
     child_approval: dict[str, Any]
     child_approval_decision: dict[str, Any]
+    event_seq: int
 
 
 @dataclass
@@ -62,6 +63,7 @@ class _EngineRun:
     #: 本 Revision 的子 Agent 工具；Run 级冻结，避免多 Spec 并发串配置。
     sub_agents: dict[str, Any] = field(default_factory=dict)
     tools: dict[str, Any] = field(default_factory=dict)
+    policy_tool_names: set[str] = field(default_factory=set)
     approval_required: set[str] = field(default_factory=set)
     execution_policy: Any = None
     execution_policy_resolver: Any = None
@@ -69,8 +71,10 @@ class _EngineRun:
     budget_usage: dict[str, int] = field(default_factory=dict)
     child_budget_usage: dict[str, dict[str, int]] = field(default_factory=dict)
     budget_tool_calls: set[str] = field(default_factory=set)
+    dynamic_calls: set[str] = field(default_factory=set)
     budget_parent: Any = None
     execution_elapsed_seconds: float = 0.0
+    execution_started_at: float | None = None
     artifact_refs: list[str] = field(default_factory=list)
     tool_calls_started: int = 0
     artifacts_created: int = 0
@@ -78,3 +82,6 @@ class _EngineRun:
     controller: RunController | None = None
     #: 验收只读取这份追加式证据，不依赖会被 stream 消费的输出队列。
     control_events: list[RuntimeEvent] = field(default_factory=list)
+    observed_event_ids: set[str] = field(default_factory=set)
+    public_tool_activity_kinds: set[str] = field(default_factory=set)
+    public_tool_activity_batches: set[str] = field(default_factory=set)

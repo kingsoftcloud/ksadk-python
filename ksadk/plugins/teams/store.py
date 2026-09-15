@@ -259,6 +259,22 @@ class TeamsStore:
             )
             return result
 
+    def backup(self, destination: Path) -> None:
+        """Create a consistent SQLite backup without replacing an existing one."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            if destination.exists():
+                return
+            backup = sqlite3.connect(str(destination))
+            try:
+                self._connection.backup(backup)
+            except BaseException:
+                backup.close()
+                destination.unlink(missing_ok=True)
+                raise
+            else:
+                backup.close()
+
     def events(self, group_id: str, after: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         if after < 0 or not 1 <= limit <= 1000:
             raise TeamsError("invalid_cursor", "事件游标或分页大小无效", status=422)

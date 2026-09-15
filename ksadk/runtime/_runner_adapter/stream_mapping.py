@@ -26,6 +26,7 @@ from ksadk.conversations.runtime_observability import (
     _set_conversation_output_attributes,
     _set_conversation_span_attributes,
     _set_conversation_usage_attributes,
+    _set_skill_eval_result_attributes,
 )
 from ksadk.events.canonical import (
     ApprovalRequest,
@@ -37,6 +38,7 @@ from ksadk.events.canonical import (
     ItemCompleted,
     ItemStarted,
     ItemUpdated,
+    RunCompleted,
     RunFailed,
     RunProgress,
     RuntimeEvent,
@@ -47,6 +49,9 @@ from ksadk.events.content import DataContent, TextContent, ToolCallContent, Tool
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime.adapter import RunHandle
 from ksadk.runtime.preprocessing import PreparedRuntimeStart
+from ksadk.runtime.skill_eval_result import extract_skill_eval_result
+from ksadk.runtime.timing import extract_timing
+from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
 from ksadk.tools.gateway import approval_interrupt_info_from_result
 
@@ -283,7 +288,9 @@ class _RunnerStreamMappingMixin:
                     # _chunk_to_events 的 tool_result 分支,canonical 快速路径
                     # (stream_canonical_events)不覆盖该语义。
                     if getattr(
-                        self._runner, "supports_gateway_approval_semantic_resume", False  # type: ignore[attr-defined]
+                        self._runner,
+                        "supports_gateway_approval_semantic_resume",
+                        False,  # type: ignore[attr-defined]
                     ):
                         canonical_stream = None
                     stream_result = (
@@ -357,6 +364,10 @@ class _RunnerStreamMappingMixin:
                         if isinstance(chunk, EventEnvelope):
                             # canonical 事件(来自 stream_canonical_events):直接转发,
                             # 追踪 output/usage 供 span 属性。
+                            if isinstance(chunk, RunCompleted):
+                                evidence = extract_skill_eval_result(chunk.source.metadata.get("metrics"))
+                                if evidence:
+                                    _set_skill_eval_result_attributes(span, evidence)
                             if isinstance(chunk, ItemCompleted) and chunk.item_kind == "message":
                                 accumulated_output = "".join(
                                     part.text
@@ -376,6 +387,11 @@ class _RunnerStreamMappingMixin:
                         if isinstance(chunk, dict):
                             chunk_type = str(chunk.get("type") or "")
                             if chunk_type == "final" and run is not None:
+                                if evidence := extract_skill_eval_result(chunk):
+                                    run.completion_metrics["skill_eval_result"] = evidence
+                                    _set_skill_eval_result_attributes(span, evidence)
+                                if timing := extract_timing(chunk):
+                                    run.completion_metrics["timing"] = timing
                                 for source_key, target_key in (
                                     ("duration_ms", "duration_ms"),
                                     ("started_at", "started_at"),
@@ -786,7 +802,11 @@ class _RunnerStreamMappingMixin:
         # ---- usage ----
         if chunk_type == "usage":
             raw_usage = chunk.get("usage")
-            usage_dict: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+            usage_dict = (
+                canonical_usage_payload(raw_usage, runtime_type=framework)
+                if isinstance(raw_usage, Mapping)
+                else {}
+            )
             item_id = stable_item_id(framework, run_id, "$run")
             return [
                 UsageReported(
@@ -873,6 +893,36 @@ class _RunnerStreamMappingMixin:
             events.extend(
                 ensure_started(item_id=item_id, item_kind="message", phase="final_answer")
             )
+            # The dict-chunk path is still required for gateway approval flows.
+            # It must project runner-final usage into the canonical stream too;
+            # otherwise non-streaming Runs aggregate zero even when the runner
+            # returned provider token accounting.
+            raw_usage = chunk.get("usage")
+            if isinstance(raw_usage, Mapping):
+                usage_dict = canonical_usage_payload(
+                    raw_usage,
+                    runtime_type=framework,
+                )
+                input_tokens = usage_dict["input_tokens"]
+                output_tokens = usage_dict["output_tokens"]
+                total_tokens = usage_dict["total_tokens"]
+                if input_tokens or output_tokens or total_tokens:
+                    events.append(
+                        UsageReported(
+                            **self._canonical_kwargs(  # type: ignore[attr-defined]
+                                handle,
+                                scope_id=scope_id,
+                                item_id=stable_item_id(framework, run_id, "$run"),
+                                event_type="usage.reported",
+                                part_id="usage",
+                            ),
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            total_tokens=total_tokens,
+                            cached_tokens=usage_dict["cached_tokens"],
+                            reasoning_tokens=usage_dict["reasoning_tokens"],
+                        )
+                    )
             events.append(
                 ItemCompleted(
                     **self._canonical_kwargs(  # type: ignore[attr-defined]

@@ -99,8 +99,6 @@ const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
 const BUILTIN_RUNTIME_OPTIONS = [
   { value: "harness", label: "KsADK Harness" },
   { value: "codex", label: "Codex · ManagedRuntime" },
-  { value: "adk", label: "Google ADK · Python source" },
-  { value: "langgraph", label: "LangGraph · Python graph" },
 ];
 
 function isCodexAgentProvider(providerRef: string): boolean {
@@ -529,9 +527,21 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     description: `${item.contract?.model || item.name} · ${hasConfiguredCredential(item) ? "凭证已配置" : "需配置凭证"}`,
   })), [hasConfiguredCredential, models]);
   const preferredConversationAuthoringModel = useMemo(() => {
-    const preferred = models.find(item => String(item.contract?.model || item.name).toLowerCase() === "deepseek-v4-flash");
+    const lower = (item: (typeof models)[number]) =>
+      String(item.contract?.model || item.name).toLowerCase();
+    // 首选 deepseek-v4.1-flash（原生 Responses 协议），回退 glm-5.3-flash。
+    const preferred =
+      models.find(item => lower(item) === "deepseek-v4.1-flash") ||
+      models.find(item => lower(item) === "glm-5.3-flash");
     return preferred?.resourceId || models[0]?.resourceId || "";
   }, [models]);
+
+  // 自动预选默认模型 deepseek-v4.1-flash，用户无需手动选择即可创建 Agent。
+  useEffect(() => {
+    if (mode === "conversation") return;
+    if (selectedModels.length || !preferredConversationAuthoringModel) return;
+    setSelectedModels([preferredConversationAuthoringModel]);
+  }, [mode, selectedModels.length, preferredConversationAuthoringModel]);
 
   useEffect(() => {
     if (mode !== "conversation") {
@@ -655,7 +665,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
-    maxSteps: template === "research" ? 28 : 12,
+    maxSteps: template === "research" ? 40 : 25,
     timeoutSeconds: template === "research" ? 900 : 120,
   }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
@@ -1545,7 +1555,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                         />
                       </FormField>
                       {conversationRuntime === "codex" ? (
-                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；KsADK Tool 仅绑定到 ADK / LangGraph 通用 Agent。</p>
+                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；Harness 负责 KsADK Tool 的统一执行与审批。</p>
                       ) : (
                         <FormField label="KsADK Tool" className="authoring-model-field">
                           <StudioMultiSelect

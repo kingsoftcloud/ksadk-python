@@ -7,8 +7,8 @@ from typing import Any, Mapping
 
 from ksadk.configs.settings import DEFAULT_MODEL_NAME
 
-DEFAULT_MULTIMODAL_MODEL = "kimi-k2.7-code"
-DEFAULT_FALLBACK_MODEL = "deepseek-v4-pro"
+DEFAULT_MULTIMODAL_MODEL = "deepseek-v4.1-flash"
+DEFAULT_FALLBACK_MODEL = "glm-5.3-flash"
 
 DEFAULT_MODEL_POLICY: dict[str, Any] = {
     "version": "v1",

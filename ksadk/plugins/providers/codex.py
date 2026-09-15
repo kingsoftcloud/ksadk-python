@@ -647,14 +647,22 @@ def _resolve_bundle_config(
         "sandbox": str(execution.get("sandbox") or "workspace_write_auto"),
         "approval_mode": str(execution.get("approvalMode") or execution.get("approval_mode") or ""),
         "turn_timeout_seconds": int(
-            execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 120
+            execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 300
         ),
         "mcp_servers": mcp_servers,
         "skills": skills,
         "env": {**mcp_env, **model_env},
     }
     if local_launch is not None:
-        launch_config.update(local_launch.config)
+        # local_launch.config 自带 env（桌面 runtime 变量等），整体 update 会
+        # 把上面组装的 mcp_env（MCP bearer 凭证，如 Authorization）覆盖丢失，
+        # 导致 codex 子进程读不到 bearer_token_env_var 指向的变量，MCP server
+        # 401 被静默丢弃。env 必须合并且 mcp/model 凭证优先。
+        local_config = dict(local_launch.config)
+        local_env = dict(local_config.get("env") or {})
+        merged_env = {**local_env, **mcp_env, **model_env}
+        launch_config.update(local_config)
+        launch_config["env"] = merged_env
     # Local launch compatibility never replaces immutable Bundle Skill bytes.
     launch_config["skills"] = skills
     launch_config["enforce_bound_skills"] = True

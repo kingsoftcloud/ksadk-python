@@ -184,7 +184,7 @@ def _apply_set_command(
     if not updates_yaml and not updates_env and invalid_items:
         raise usage_error(
             "至少提供一个有效的 KEY=VALUE 配置项。",
-            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.2`"],
+            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v4.1-flash`"],
         )
 
     result = {
@@ -323,7 +323,7 @@ def _run_config_set_command(
     if not set_items:
         raise usage_error(
             "请至少提供一个 KEY=VALUE 配置项。",
-            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.2`"],
+            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v4.1-flash`"],
         )
     return _apply_set_command(set_items, output_path, env_path, is_global)
 
@@ -464,7 +464,7 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
 
     new_env["OPENAI_MODEL_NAME"] = _ask_or_exit(
         questionary.text(
-            "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台glm-5.2]:",
+            "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台deepseek-v4.1-flash]:",
             default=existing_env.get("OPENAI_MODEL_NAME", ""),
             style=_questionary_style(),
         )
@@ -784,7 +784,7 @@ def config_set(set_items: tuple, is_global: bool, output_mode: str | None):
     \b
     示例:
       agentengine config set region=cn-beijing-6
-      agentengine config set OPENAI_MODEL_NAME=glm-5.2 OPENAI_BASE_URL=https://example.com/v1
+      agentengine config set OPENAI_MODEL_NAME=deepseek-v4.1-flash OPENAI_BASE_URL=https://example.com/v1
       agentengine config set KSYUN_REGION=cn-beijing-6 --global
     """
     _ = output_mode

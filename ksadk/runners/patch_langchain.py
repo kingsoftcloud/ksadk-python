@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 # Original function reference (to avoid recursion if patched multiple times)
 _original_convert_delta = None
+_original_convert_chunk_to_generation_chunk = None
+
+# Dedup cache for upstream streams that return identical usage in both the
+# finish chunk and the trailing choices=[] chunk. Keyed by response ID so
+# concurrent streams don't interfere.
+_usage_dedup_cache: dict[str, dict] = {}
 
 
 def _patched_convert_delta_to_message_chunk(
@@ -154,10 +160,43 @@ def _patched_chat_get_request_payload(self, input_, *, stop=None, **kwargs):
     return _merge_payload_options(payload, model_options_for_chat_completions(model_options))
 
 
+def _patched_convert_chunk_to_generation_chunk(
+    self,
+    chunk: dict,
+    default_chunk_class: type,
+    base_generation_info: dict | None = None,
+):
+    """Suppress duplicate usage from upstream streams that return identical
+    usage in both the finish chunk and the trailing choices=[] chunk.
+
+    LangChain-core sums usage_metadata across chunks, so two identical usage
+    values produce a 2x result in Langfuse. This patch strips the second
+    occurrence before LangChain sees it, keyed by response ID.
+    """
+    token_usage = chunk.get("usage")
+    response_id = str(chunk.get("id") or "")
+    if token_usage is not None and response_id:
+        cached = _usage_dedup_cache.get(response_id)
+        if cached is not None and cached == token_usage:
+            chunk = dict(chunk)
+            chunk.pop("usage", None)
+        else:
+            _usage_dedup_cache[response_id] = dict(token_usage)
+            if len(_usage_dedup_cache) > 1024:
+                _usage_dedup_cache.clear()
+    choices = chunk.get("choices") or []
+    if len(choices) == 0 and response_id:
+        _usage_dedup_cache.pop(response_id, None)
+    return _original_convert_chunk_to_generation_chunk(
+        self, chunk, default_chunk_class, base_generation_info
+    )
+
+
 def apply_patch():
     """Apply the monkey patch to langchain_openai."""
     global _original_convert_delta, _original_convert_message_to_dict
     global _original_base_get_request_payload, _original_chat_get_request_payload
+    global _original_convert_chunk_to_generation_chunk
     try:
         import langchain_openai.chat_models.base as base_module
 
@@ -177,6 +216,14 @@ def apply_patch():
         base_module.BaseChatOpenAI._get_request_payload = _patched_base_get_request_payload
         _original_chat_get_request_payload = base_module.ChatOpenAI._get_request_payload
         base_module.ChatOpenAI._get_request_payload = _patched_chat_get_request_payload
+
+        # Patch 3: Deduplicate streaming usage to prevent Langfuse token doubling
+        _original_convert_chunk_to_generation_chunk = (
+            base_module.BaseChatOpenAI._convert_chunk_to_generation_chunk
+        )
+        base_module.BaseChatOpenAI._convert_chunk_to_generation_chunk = (
+            _patched_convert_chunk_to_generation_chunk
+        )
 
         base_module._ksadk_patched = True
 

@@ -352,6 +352,8 @@ export function AgentEditor({
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedTools((bindings.tools || []).map((item: { resourceId: string }) => item.resourceId));
+        setSubAgents(draft.spec?.subAgents || []);
+        setSubAgentsTouched(false);
         setSelectedPlugins(bindings.plugins || []);
         setRuntimeProjectPath(String(draft.spec?.runtime?.projectPath || "."));
         setRuntimeEntryPoint(String(draft.spec?.runtime?.entryPoint || (draft.spec?.runtime?.type === "langgraph" ? "graph.py" : "agent.py")));
@@ -424,7 +426,7 @@ export function AgentEditor({
         { value: "auto", label: "自动（推荐）", description: "按 Runtime 能力选择安全模式" },
         { value: "framework", label: "框架管理", description: "保留 ADK 原有上下文行为" },
       ];
-  const fallbackModel = detail?.draft.metadata.labels?.["agentkit.ksyun.com/model"] || "glm-5.1";
+  const fallbackModel = detail?.draft.metadata.labels?.["agentkit.ksyun.com/model"] || "deepseek-v4.1-flash";
   const preservesManifestModel = runtime === "codex" && selectedModels.length === 0 && Boolean(fallbackModel);
   const isManagedDeclaration = detail?.draft.metadata.labels?.["agentkit.ksyun.com/artifact-type"] === "ManagedRuntime"
     || runtime === "codex";
@@ -648,6 +650,7 @@ export function AgentEditor({
         tools: mergeCapabilityBindings(original.bindings?.tools, selectedTools),
         plugins: selectedPlugins,
       };
+      if (subAgentsTouched) spec.subAgents = subAgents;
       spec.context = {
         ...(original.context || {}),
         ownership: contextOwnership,
@@ -1052,6 +1055,7 @@ export function AgentEditor({
             getId={item => item.resourceId}
             getLabel={item => item.displayName}
             getDescription={item => modelName(item) !== item.displayName ? modelName(item) : ""}
+            getGroup={item => item.contract?.model?.split(/[/:.-]/)[0] || "其他模型"}
             onChange={changeModels}
             searchPlaceholder="搜索绑定模型"
             emptyMessage="当前模型服务没有返回可绑定模型"
@@ -1067,6 +1071,7 @@ export function AgentEditor({
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
               getDescription={item => item.version}
+              getGroup={item => item.contract?.executor || "builtin"}
               onChange={setSelectedSkills}
               searchPlaceholder="搜索 Skill"
               emptyMessage="没有已安装的 Skill"
@@ -1078,6 +1083,7 @@ export function AgentEditor({
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
               getDescription={item => mcpUnavailableReason(item, runtime) || `${item.version} · ${item.health?.toolCount || 0} Tool`}
+              getGroup={item => item.status === "ready" ? "已连接" : "待处理"}
               onChange={supportsMcpEditing ? setSelectedMcp : () => undefined}
               disabledIds={supportsMcpEditing ? visibleMcps.filter(item => !selectedMcp.includes(item.resourceId) && mcpUnavailableReason(item, runtime)).map(item => item.resourceId) : selectedMcp}
               searchPlaceholder="搜索 MCP"
@@ -1085,7 +1091,12 @@ export function AgentEditor({
             />
           </div>
         </div>
-        {runtime === "harness" && <SubAgentBindingsEditor value={subAgents} tools={visibleTools.filter(tool => selectedTools.includes(tool.resourceId) && tool.contract?.name).map(tool => ({ name: tool.contract!.name!, label: tool.displayName }))} onChange={value => { setSubAgents(value); setSubAgentsTouched(true); }} />}
+        {runtime === "harness" && <SubAgentBindingsEditor value={subAgents} tools={visibleTools.filter(tool => {
+          const boundIds = selectedTools.length
+            ? selectedTools
+            : (detail?.draft.spec.bindings?.tools || []).map((binding: CapabilityBindingValue) => binding.resourceId);
+          return boundIds.includes(tool.resourceId) && tool.contract?.name;
+        }).map(tool => ({ name: tool.contract!.name!, label: tool.displayName }))} onChange={value => { setSubAgents(value); setSubAgentsTouched(true); }} />}
         {runtime === "codex" && visibleSection === 2 && <NativePluginBindings
           key={`${agentId}-codex-plugins`}
           value={selectedPlugins.filter(binding => binding.ecosystem === "codex")}
@@ -1137,6 +1148,7 @@ export function AgentEditor({
             getId={item => item.resourceId}
             getLabel={item => item.displayName}
             getDescription={item => item.version}
+            getGroup={item => item.contract?.executor || "builtin"}
             onChange={setSelectedTools}
             disabledIds={[]}
             searchPlaceholder="搜索 Tool"
@@ -1302,7 +1314,7 @@ export function AgentEditor({
         <div className="quick-create-actions">
           <label className="checkbox-row">
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />
-            <span><strong>{isManagedDeclaration ? "保存后生成配置快照" : "保存后构建新 Bundle"}</strong><small>{isManagedDeclaration ? "校验 YAML 并生成可追溯的部署输入" : "新 Bundle 完成后进入会话工作台"}</small></span>
+            <span><strong>保存后生成配置快照（自动生效）</strong><small>默认保存、构建并自动刷新到最新 Revision，无需手动编译或多次刷新。</small></span>
           </label>
           {onCancel && <button className="button secondary" type="button" disabled={saving} onClick={onCancel}>取消</button>}
           <button className="button accent" type="submit" disabled={saving || pluginsPending}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>

@@ -13,7 +13,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime  # noqa: E402
 
-
 _MODEL_ROUTE_ENV_NAMES = (
     "KSADK_CODEX_USE_PROXY",
     "KSADK_PROXY_UPSTREAM_BASE",
@@ -57,6 +56,22 @@ def reset_cli_ui_runtime():
     os.environ.pop("AGENTENGINE_NO_COLOR", None)
     os.environ.pop("AGENTENGINE_GLOBAL_DRY_RUN", None)
     configure_ui_runtime(output_mode=OUTPUT_MODE_PRETTY, no_color=False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_workspace_registry(tmp_path, monkeypatch):
+    """Test-created Studios must never write the user's recent-workspace list."""
+    from ksadk.studio.workspace_registry import WorkspaceRegistry
+
+    original_init = WorkspaceRegistry.__init__
+
+    def isolated_init(self, home=None):
+        original_init(self, home if home is not None else tmp_path / "registry-home")
+
+    monkeypatch.setattr(WorkspaceRegistry, "__init__", isolated_init)
+    # Default Studio tests must not discover or mutate the user's real DSH
+    # installation. Explicit toolchain fixtures still supply their own root.
+    monkeypatch.setenv("AGENTENGINE_PLUGIN_TOOLCHAIN_HOME", str(tmp_path / "toolchains"))
 
 
 @pytest.fixture(autouse=True)

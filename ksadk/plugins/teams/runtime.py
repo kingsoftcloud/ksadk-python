@@ -8,6 +8,7 @@ profile. It does not initialize a database while disabled.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,9 +61,12 @@ class TeamsRuntime:
             try:
                 with store.transaction() as tx:
                     installed = tx.get("installation", TEAMS_PLUGIN_ID, required=False)
-                    if (installed and installed["pluginDigest"] != self.plugin_digest) or (
-                        installed is None and tx.list("group")
-                    ):
+                    has_groups = bool(tx.list("group"))
+                if installed and installed["pluginDigest"] != self.plugin_digest:
+                    self._migrate_compatible_artifact(store, installed)
+                with store.transaction() as tx:
+                    installed = tx.get("installation", TEAMS_PLUGIN_ID, required=False)
+                    if installed is None and has_groups:
                         raise TeamsError(
                             "artifact_migration_required",
                             "团队数据绑定的插件制品已改变；请恢复原锁定版本或备份后执行版本迁移",
@@ -89,6 +93,40 @@ class TeamsRuntime:
             raise
         if background:
             self._task = asyncio.create_task(self._run(), name="teams-plugin-outbox")
+
+    def _migrate_compatible_artifact(
+        self, store: TeamsStore, installed: dict[str, Any]
+    ) -> None:
+        if (
+            installed.get("pluginVersion") != PLUGIN_VERSION
+            or installed.get("apiVersion") != API_VERSION
+        ):
+            raise TeamsError(
+                "artifact_migration_required",
+                "团队插件协议或数据版本不兼容；请使用专用迁移工具",
+                status=409,
+            )
+        transition = hashlib.sha256(
+            f"{installed['pluginDigest']}->{self.plugin_digest}".encode()
+        ).hexdigest()[:16]
+        backup = self.path.with_name(f"{self.path.name}.pre-artifact-{transition}.bak")
+        store.backup(backup)
+        migrated = {
+            **installed,
+            "pluginDigest": self.plugin_digest,
+            "migratedAt": now(),
+            "previousPluginDigest": installed["pluginDigest"],
+            "migrationBackup": backup.name,
+        }
+        with store.transaction() as tx:
+            current = tx.get("installation", TEAMS_PLUGIN_ID)
+            if current["pluginDigest"] != installed["pluginDigest"]:
+                raise TeamsError(
+                    "artifact_migration_conflict",
+                    "团队插件制品迁移状态已改变，请重试",
+                    status=409,
+                )
+            tx.put("installation", TEAMS_PLUGIN_ID, migrated)
 
     def _lock_authority(self) -> None:
         try:

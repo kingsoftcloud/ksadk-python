@@ -15,6 +15,7 @@ Phase 1 能力范围（诚实声明）：
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any, AsyncIterator, Callable
 
@@ -22,6 +23,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
+from ksadk.harness.engine import budgets
 from ksadk.harness.engine.base import (
     CompiledHarness,
     EngineCapability,
@@ -33,10 +35,12 @@ from ksadk.harness.engine.mcp_disclosure import (
     McpDisclosureBridge,
     McpDisclosureCursors,
 )
+from ksadk.harness.engine.policy_runtime import configure_run, revalidate_policy
 from ksadk.harness.engine.run_types import _EngineRun, _GraphState
 from ksadk.harness.engine.skill_disclosure import SkillDisclosureBridge
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.events import EventType, RuntimeEvent
+from ksadk.harness.execution_policy import execution_policy_scope
 from ksadk.harness.mcp_runtime import McpCapabilityRuntime
 from ksadk.harness.prompt_cache import PromptCacheTracker
 from ksadk.harness.reasoner import HarnessReasoner, LiteLLMHarnessReasoner
@@ -81,6 +85,7 @@ class ManagedLangGraphEngine:
         mcp_runtime: McpCapabilityRuntime | None = None,
         artifact_store: Any | None = None,
         mcp_offload_policy: Any | None = None,
+        delegation_runtime: Any | None = None,
         event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
         max_reasoning_turns: int = _MAX_REASONING_TURNS,
     ) -> None:
@@ -117,6 +122,10 @@ class ManagedLangGraphEngine:
             artifact_store=artifact_store,
             offload_policy=mcp_offload_policy,
         )
+        # Provider-owned dynamic delegation. The engine only knows the stable
+        # tool/runtime seam; provider selection remains outside the LangGraph
+        # execution kernel.
+        self._delegation_runtime = delegation_runtime
         # P3 补强：事件出口回调（session_id, run_id, event）——洞察登记处
         # （ksadk.harness.insights）由此拿到完整事件流，供 Studio API 消费。
         self._event_sink = event_sink
@@ -148,9 +157,7 @@ class ManagedLangGraphEngine:
 
     # ------------------------------------------------------------- compile
 
-    async def compile(
-        self, spec: HarnessSpec, *, tools: dict[str, Any] | None = None
-    ) -> CompiledHarness:
+    async def compile(self, spec: HarnessSpec) -> CompiledHarness:
         # 集成项 4：拓扑由 Strategy Registry 按 spec.execution_strategy 编译，
         # 引擎不再硬编码 single_agent_plan。
         plan = self._strategy_registry.compile(spec, strategy=spec.execution_strategy.kind.value)
@@ -171,12 +178,12 @@ class ManagedLangGraphEngine:
         declared_sub_agents = {binding.name for binding in spec.sub_agents}
         self._skill_disclosure.validate_bindings(
             spec,
-            tool_names=set(self._tools if tools is None else tools),
+            tool_names=set(self._tools),
             sub_agent_names=set(self._sub_agents) | declared_sub_agents,
         )
         self._mcp_disclosure.validate_bindings(
             spec,
-            tool_names=set(self._tools if tools is None else tools),
+            tool_names=set(self._tools),
             sub_agent_names=set(self._sub_agents) | declared_sub_agents,
         )
         self._current_spec = spec
@@ -189,20 +196,10 @@ class ManagedLangGraphEngine:
     # --------------------------------------------------------------- start
 
     async def start(
-        self,
-        request: StartRequest,
-        compiled: CompiledHarness,
-        *,
-        tools: dict[str, Any] | None = None,
-        execution_policy: Any = None,
-        execution_policy_resolver: Any = None,
-        execution_policy_request: StartRequest | None = None,
+        self, request: StartRequest, compiled: CompiledHarness, *,
+        execution_policy=None, execution_policy_resolver=None, execution_policy_request=None,
     ) -> RunHandle:
-        run_id = str(
-            request.metadata.get("run_id")
-            or request.metadata.get("invocation_id")
-            or f"mle_{uuid.uuid4().hex[:16]}"
-        )
+        run_id = str(request.metadata.get("invocation_id") or f"mle_{uuid.uuid4().hex[:16]}")
         if run_id in self._runs:
             raise ValueError(f"duplicate engine run: {run_id}")
         state = HarnessState(
@@ -231,13 +228,17 @@ class ManagedLangGraphEngine:
                 "thread_id": thread_id,
                 "user_id": request.user_id,
                 "agent_id": state.agent_id,
-                "parent_run_id": request.metadata.get("parent_run_id"),
+                **({"execution_policy_ref": request.metadata["execution_policy_ref"]}
+                   if "execution_policy_ref" in request.metadata else {}),
+                **({"parent_run_id": request.metadata["parent_run_id"]}
+                   if "parent_run_id" in request.metadata else {}),
             },
         )
         from ksadk.harness.subagent import SubAgentSpec
 
         revision_sub_agents = {
-            binding.name: SubAgentSpec.from_binding(binding) for binding in compiled.spec.sub_agents
+            binding.name: SubAgentSpec.from_binding(binding)
+            for binding in compiled.spec.sub_agents
         }
         # Revision 是事实源；宿主同名配置只作为未编译旧路径的兼容兜底。
         effective_sub_agents = {**self._sub_agents, **revision_sub_agents}
@@ -252,13 +253,11 @@ class ManagedLangGraphEngine:
             ),
             mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
             sub_agents=effective_sub_agents,
-            tools=dict(self._tools if tools is None else tools),
-            approval_required=set(self._approval_required)
-            | set(getattr(execution_policy, "approval_required", ())),
-            execution_policy=execution_policy,
-            execution_policy_resolver=execution_policy_resolver,
-            execution_policy_request=execution_policy_request or request,
             controller=self._new_run_controller(compiled),
+        )
+        configure_run(
+            self, self._runs[run_id], policy=execution_policy,
+            resolver=execution_policy_resolver, request=execution_policy_request,
         )
         return handle
 
@@ -269,15 +268,8 @@ class ManagedLangGraphEngine:
         return handle.run_id in self._runs
 
     async def attach(
-        self,
-        handle: RunHandle,
-        compiled: CompiledHarness,
-        *,
-        allow_completed: bool = False,
-        tools: dict[str, Any] | None = None,
-        execution_policy: Any = None,
-        execution_policy_resolver: Any = None,
-        execution_policy_request: StartRequest | None = None,
+        self, handle: RunHandle, compiled: CompiledHarness, *, allow_completed: bool = False,
+        execution_policy=None, execution_policy_resolver=None, execution_policy_request=None,
     ) -> RunHandle:
         """跨进程恢复（收口 3）：从持久 Checkpoint 重建 _EngineRun。
 
@@ -316,37 +308,29 @@ class ManagedLangGraphEngine:
                 session_id=handle.session_id,
                 input="",
                 runtime_type="managed-langgraph",
-                metadata={"invocation_id": handle.run_id},
+                metadata={
+                    "invocation_id": handle.run_id,
+                    **{key: handle.native_ref[key] for key in
+                       ("parent_run_id", "execution_policy_ref") if key in handle.native_ref},
+                },
             ),
             compiled=compiled,
             state=state,
             thread_id=thread_id,
             skill_catalog=self._skill_disclosure.catalog(compiled.spec),
             mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
-            tools=dict(self._tools if tools is None else tools),
-            approval_required=set(self._approval_required)
-            | set(getattr(execution_policy, "approval_required", ())),
-            execution_policy=execution_policy,
-            execution_policy_resolver=execution_policy_resolver,
-            execution_policy_request=execution_policy_request,
             controller=self._new_run_controller(compiled),
         )
-        from ksadk.harness.subagent import SubAgentSpec
-
-        run.sub_agents = {
-            **self._sub_agents,
-            **{
-                binding.name: SubAgentSpec.from_binding(binding)
-                for binding in compiled.spec.sub_agents
-            },
-        }
         run.started_emitted = True  # run.started 已在首个进程发出
         run.done = False
+        configure_run(
+            self, run, policy=execution_policy,
+            resolver=execution_policy_resolver, request=execution_policy_request,
+        )
         # 从 Checkpoint snapshot 推断挂起状态。
         graph = self._build_graph(run)
         snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-        values = getattr(snapshot, "values", None) or {}
-        if snapshot is None or not values or (not snapshot.next and not allow_completed):
+        if snapshot is None or not snapshot.values or (not snapshot.next and not allow_completed):
             raise ExecutionEngineError(f"attach 失败：thread {thread_id!r} 无未决 Checkpoint")
         tasks = getattr(snapshot, "tasks", None) or ()
         if isinstance(tasks, dict):
@@ -364,21 +348,19 @@ class ManagedLangGraphEngine:
             control_snapshot = values.get("run_control") if isinstance(values, dict) else None
             if control_snapshot:
                 run.controller.restore(control_snapshot)
-        from ksadk.harness.engine.budgets import restore
-
-        restore(run, values.get("budget") or {})
-        run.state.messages = [
-            Message(role=MessageRole(m.get("role", "user")), content=str(m.get("content") or ""))
-            for m in values.get("messages", [])
-            if isinstance(m, dict)
-        ]
-        if values.get("execution_terminal"):
-            run.state.status, run.done = RunStatus(values["execution_terminal"]), True
-        elif not snapshot.next:
-            run.state.status, run.done = RunStatus.COMPLETED, True
-        else:
-            run.state.status = RunStatus.AWAITING_APPROVAL if has_interrupt else RunStatus.PAUSED
+        run.state.status = RunStatus.AWAITING_APPROVAL if has_interrupt else RunStatus.PAUSED
+        values = snapshot.values
+        budgets.restore(run, values.get("budget") or {})
+        run.seq = int(values.get("event_seq") or 0)
+        run.state.messages = self._messages(values.get("messages", []))
+        if not snapshot.next:
+            terminal = values.get("execution_terminal") or "completed"
+            run.state.status = RunStatus(terminal)
+            run.done = True
         self._runs[handle.run_id] = run
+        from ksadk.harness.engine.subagents import restore_pending_child
+
+        await restore_pending_child(self, run)
         return handle
 
     # -------------------------------------------------------------- stream
@@ -414,9 +396,9 @@ class ManagedLangGraphEngine:
                 self._emit_insight(run, event)
                 yield event
         except asyncio.CancelledError:
+            # A subscriber timeout must cancel and await the executing graph,
+            # not just mark its output stream finished while tools keep running.
             await self.cancel(handle)
-            if run.task is not None and not run.task.done():
-                await asyncio.gather(run.task, return_exceptions=True)
             raise
 
     def _emit_insight(self, run: _EngineRun, event: RuntimeEvent) -> None:
@@ -441,6 +423,7 @@ class ManagedLangGraphEngine:
         *,
         resume_from_checkpoint: bool = False,
     ) -> list[RuntimeEvent]:
+        run.execution_started_at = time.monotonic()
         spec = run.compiled.spec
         run.state.status = RunStatus.RUNNING
         if not run.started_emitted:
@@ -456,9 +439,17 @@ class ManagedLangGraphEngine:
 
             run.events.extend(capability_declarations(self, run))
         try:
+            if run.cancel_requested:
+                raise asyncio.CancelledError
+            await revalidate_policy(self, run)
             graph = self._build_graph(run)
             instructions = spec.prompt.instructions or ""
-            config = {"configurable": {"thread_id": run.thread_id}}
+            config = {
+                "configurable": {"thread_id": run.thread_id},
+                # Sequential tool checkpoints are graph steps too. The model
+                # turn/tool budgets, not LangGraph's default 25, govern a Run.
+                "recursion_limit": max(64, self._max_reasoning_turns * 128),
+            }
             invoke_input: _GraphState | Command | None
             if resume_command is not None:
                 invoke_input = resume_command
@@ -479,7 +470,9 @@ class ManagedLangGraphEngine:
                     )
                     if skill_catalog_message:
                         conversation.append(skill_catalog_message)
-                    mcp_catalog_message = self._mcp_disclosure.catalog_message(run.mcp_catalog)
+                    mcp_catalog_message = self._mcp_disclosure.catalog_message(
+                        run.mcp_catalog
+                    )
                     if mcp_catalog_message:
                         conversation.append(mcp_catalog_message)
                     if isinstance(history, list) and history:
@@ -503,9 +496,10 @@ class ManagedLangGraphEngine:
                 }
             from ksadk.harness.engine.run_control_bridge import invoke_graph_with_control
 
-            final_state = await invoke_graph_with_control(
-                graph, invoke_input, config, run.controller
-            )
+            with execution_policy_scope(run.execution_policy):
+                final_state = await invoke_graph_with_control(
+                    graph, invoke_input, config, run.controller
+                )
             interrupts = final_state.get("__interrupt__") if isinstance(final_state, dict) else None
             if interrupts:
                 # Approval 挂起：图状态已由 Checkpointer 持久化，等待 resume。
@@ -514,7 +508,7 @@ class ManagedLangGraphEngine:
                 info = getattr(interrupts[0], "value", {}) or {}
                 run.pending_approval_call_id = str(info.get("call_id") or "")
                 run.pending_approval = dict(info)
-                approval_id = self._approval_id(run)
+                approval_id = f"ap-{run.handle.run_id}-{info.get('call_id', '')}"
                 run.events.append(
                     self._event(
                         run,
@@ -531,26 +525,14 @@ class ManagedLangGraphEngine:
                     self._event(
                         run,
                         EventType.RUN_INTERRUPTED,
-                        {
-                            "status": "awaiting_approval",
-                            "reason": "tool_approval",
-                            "approval_id": approval_id,
-                        },
+                        {"status": "awaiting_approval", "reason": "tool_approval",
+                         "approval_id": approval_id},
                     )
                 )
                 return []
             # 影子状态消息（§6.2.1）：完整对话消息投影，供 Transcript 持久化。
             final_messages = final_state.get("messages", [])
-            run.state.messages = [
-                Message(
-                    role=MessageRole(m.get("role", "user")),
-                    content=str(m.get("content") or ""),
-                    tool_call_id=(str(m.get("tool_call_id")) if m.get("tool_call_id") else None),
-                    name=str(m["name"]) if m.get("name") else None,
-                )
-                for m in final_messages
-                if isinstance(m, dict)
-            ]
+            run.state.messages = self._messages(final_messages)
             # 最终答案事件由 reason 节点统一产生。这里仅投影 Transcript；若再从
             # final_state 补发，stream 已消费 reason 事件时会造成同一答案重复展示。
             if run.cancel_requested:
@@ -585,15 +567,7 @@ class ManagedLangGraphEngine:
                 return []
             run.state.status = RunStatus.CANCELED
             run.done = True
-            run.events.append(
-                self._event(
-                    run,
-                    EventType.AGENT_COMPLETED,
-                    {"agent_id": run.state.agent_id, "status": "canceled"},
-                )
-            )
             run.events.append(self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"}))
-            await self._persist_terminal(run)
             return []
         except GraphInterrupt as exc:
             # checkpoint=False 路径（无 Checkpointer 时 interrupt 直接抛出）。
@@ -637,8 +611,11 @@ class ManagedLangGraphEngine:
                     },
                 )
             )
-            await self._persist_terminal(run)
             return []
+
+        finally:
+            budgets.account_elapsed(run)
+            run.execution_started_at = None
 
     # ---------------------------------------------------------------- graph
 
@@ -659,67 +636,13 @@ class ManagedLangGraphEngine:
         call_id: str = "",
     ) -> Any:
         from ksadk.harness.engine.tool_dispatch import invoke_tool
-        from ksadk.harness.execution_policy import execution_policy_scope
 
         if run is not None:
-            await self._check_execution_policy(run)
+            await revalidate_policy(self, run)
         with execution_policy_scope(run.execution_policy if run is not None else None):
             return await invoke_tool(
                 self, name, arguments, run=run, mcp_cursors=mcp_cursors, call_id=call_id
             )
-
-    async def _check_execution_policy(self, run: Any) -> None:
-        if run.execution_policy_resolver is None:
-            return
-        from dataclasses import replace
-
-        from ksadk.harness.execution_policy import ExecutionPolicy
-
-        request = run.execution_policy_request
-        policy = await run.execution_policy_resolver.resolve(
-            request.metadata["execution_policy_ref"], request=request
-        )
-        if not isinstance(policy, ExecutionPolicy):
-            raise ExecutionEngineError("execution policy resolver returned an invalid policy")
-        previous = run.execution_policy
-        if (
-            set(policy.tools) != set(previous.tools)
-            or policy.workspace_root != previous.workspace_root
-            or policy.approval_required != previous.approval_required
-        ):
-            raise ExecutionEngineError(
-                "execution policy changed; a new execution reference is required"
-            )
-        # Refresh authorized callables after authority is checked again.
-        for name, tool in policy.tools.items():
-            if name in run.tools:
-                run.tools[name] = tool
-        # Context may reflect fresh host facts. Keep the original prompt snapshot
-        # for this invocation while accepting monotonically tighter budgets.
-        limits = dict(previous.limits)
-        for key, value in policy.limits.items():
-            limits[key] = min(limits[key], value) if key in limits else value
-        policy = replace(
-            policy,
-            limits=limits,
-            system_context=previous.system_context,
-            child_system_context=previous.child_system_context,
-        )
-        config = dict(run.compiled.spec.execution_strategy.config)
-        for key, value in limits.items():
-            prior = config.get(key)
-            config[key] = min(int(prior), value) if prior is not None else value
-        run.compiled = replace(
-            run.compiled,
-            spec=run.compiled.spec.model_copy(
-                update={
-                    "execution_strategy": run.compiled.spec.execution_strategy.model_copy(
-                        update={"config": config}
-                    )
-                }
-            ),
-        )
-        run.execution_policy = policy
 
     # --------------------------------------------------------------- cancel
 
@@ -727,58 +650,32 @@ class ManagedLangGraphEngine:
         run = self._runs.get(handle.run_id)
         if run is None or run.done:
             return CancelResult.NOT_RUNNING
-        if run.cancel_requested:
-            return CancelResult.PENDING_CANCEL_RECORDED
-        from ksadk.harness.engine.subagents import restore_pending_child
-
-        await restore_pending_child(self, run)
         run.cancel_requested = True
         active_children = list(self._active_subagent_runs.get(handle.run_id, {}).values())
         active_task = run.task if run.task is not None and not run.task.done() else None
         if active_task is not None:
             active_task.cancel()
-        if active_children:
-            await asyncio.gather(
-                *(
-                    child_engine.cancel(child_handle)
-                    for child_engine, child_handle in active_children
-                ),
-                return_exceptions=True,
-            )
-        if active_task is None:
-            run.state.status, run.done = RunStatus.CANCELED, True
+            await asyncio.gather(active_task, return_exceptions=True)
+        else:
             from ksadk.harness.engine.subagents import cancel_and_drain
             from ksadk.harness.subagent import resequence_child_events
 
             for child_engine, child_handle in active_children:
                 await cancel_and_drain(
-                    child_engine,
-                    child_handle,
-                    lambda event: resequence_child_events(run, [event]),
+                    child_engine, child_handle,
+                    lambda event: resequence_child_events(run, [event], observe=True),
                 )
             self._active_subagent_runs.pop(handle.run_id, None)
-            run.events.append(
-                self._event(
-                    run,
-                    EventType.AGENT_COMPLETED,
-                    {"agent_id": run.state.agent_id, "status": "canceled"},
-                )
-            )
-            run.events.append(self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"}))
-            await self._persist_terminal(run)
+        if self._delegation_runtime is not None:
+            await self._delegation_runtime.cancel_parent(handle.run_id)
+        if run.task is None and run.state.status is RunStatus.PENDING:
             return CancelResult.PENDING_CANCEL_RECORDED
+        if active_task is None:
+            run.done = True
+            run.state.status = RunStatus.CANCELED
+            run.events.append(self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"}))
+            return CancelResult.INTERRUPTED_ACTIVE_TURN
         return CancelResult.INTERRUPTED_ACTIVE_TURN
-
-    async def _persist_terminal(self, run: _EngineRun) -> None:
-        if self._checkpointer is None:
-            return
-        from ksadk.harness.engine.budgets import snapshot
-
-        graph = self._build_graph(run)
-        await graph.aupdate_state(
-            {"configurable": {"thread_id": run.thread_id}},
-            {"execution_terminal": run.state.status.value, "budget": snapshot(run)},
-        )
 
     # --------------------------------------------------------------- pause
 
@@ -815,6 +712,7 @@ class ManagedLangGraphEngine:
         payload: ResumePayload | None,
     ) -> RunHandle:
         run = self._require_run(handle)
+        await revalidate_policy(self, run)
         if run.state.status is RunStatus.PAUSED:
             if self._checkpointer is None:
                 raise ExecutionEngineError(
@@ -840,8 +738,7 @@ class ManagedLangGraphEngine:
                 "resume 需要 Checkpointer：interrupt 状态由 Checkpoint 持久化"
             )
         if (
-            payload is None
-            or payload.kind != "approval_decision"
+            payload is None or payload.kind != "approval_decision"
             or not run.pending_approval_call_id
             or payload.call_id != run.pending_approval_call_id
             or payload.data not in ("approved", "denied", "rejected")
@@ -857,7 +754,7 @@ class ManagedLangGraphEngine:
                     run,
                     EventType.APPROVAL_RESOLVED,
                     {
-                        "approval_id": self._approval_id(run),
+                        "approval_id": f"ap-{run.handle.run_id}-{payload.call_id or ''}",
                         "call_id": payload.call_id or "",
                         "decision": decision,
                     },
@@ -899,6 +796,8 @@ class ManagedLangGraphEngine:
         )
 
     async def close(self, handle: RunHandle) -> None:
+        if handle.run_id in self._runs and not self._runs[handle.run_id].done:
+            await self.cancel(handle)
         run = self._runs.pop(handle.run_id, None)
         if run and run.task and not run.task.done():
             run.task.cancel()
@@ -909,6 +808,8 @@ class ManagedLangGraphEngine:
             self._pending_child_events.pop(run.handle.run_id, None)
             self._pending_subagent_events.pop(run.handle.run_id, None)
             self._active_subagent_runs.pop(run.handle.run_id, None)
+            if self._delegation_runtime is not None:
+                self._delegation_runtime.clear_run(run.handle.run_id)
 
     # ------------------------------------------------------------- helpers
 
@@ -971,19 +872,19 @@ class ManagedLangGraphEngine:
         if run.controller is not None:
             run.control_events.append(event)
             run.controller.observe(event)
+        run.observed_event_ids.add(event.event_id)
         return event
 
     @staticmethod
-    def _approval_id(run: _EngineRun) -> str:
-        base = f"ap-{run.handle.run_id}-{run.pending_approval_call_id or ''}"
-        if run.pending_approval.get("kind") == "child_tool":
-            identity = (
-                str(run.pending_approval.get("child_run_id"))
-                + ":"
-                + str(run.pending_approval.get("child_call_id"))
+    def _messages(messages):
+        return [
+            Message(
+                role=MessageRole(m.get("role", "user")), content=str(m.get("content") or ""),
+                tool_call_id=str(m["tool_call_id"]) if m.get("tool_call_id") else None,
+                name=str(m["name"]) if m.get("name") else None,
             )
-            return base + "-" + uuid.uuid5(uuid.NAMESPACE_URL, identity).hex[:16]
-        return base
+            for m in messages if isinstance(m, dict)
+        ]
 
     @staticmethod
     def _new_run_controller(compiled: CompiledHarness) -> RunController | None:

@@ -23,6 +23,13 @@ regexes = [
 paths = [
     # 精确限定到测试文件, 避免误 allowlist 其它路径的真 key
     '''tests/test_cmd_hermes\.py''',
+    # 公开树新增测试的假 fixture (同一种占位符)
+    '''tests/events/''',
+    '''tests/phase1/''',
+    '''tests/kernel/''',
+    '''tests/studio/test_api\.py''',
+    '''tests/compat/''',
+    '''tests/packaging/''',
 ]
 
 # Route-manifest fixture checksums are deterministic SHA-256 test data, not

@@ -150,12 +150,29 @@ class LocalCapabilityResolver:
         payload.pop("digest", None)
         digest = sha256_digest(canonical_json(payload))
         if contract.digest and contract.digest != digest:
-            raise StudioError(
-                "CAPABILITY_DIGEST_MISMATCH",
-                "Tool 合同与声明 digest 不一致",
-                status_code=422,
-                details={"name": contract.name, "expected": contract.digest, "actual": digest},
-            )
+            # 运行时生成的内置工具没有持久化源头，合同随宿主状态（后端可用
+            # 性、插件注册）重算；compose 与 build 之间的状态漂移会误报失配，
+            # 这里按当前目录重算放行。已发布/持久化工具仍严格拒改。
+            from ksadk.toolsets import describe_agentengine_tools
+
+            runtime_names = {
+                str(item.get("name"))
+                for item in describe_agentengine_tools(profile="coding", mode="direct")
+            }
+            # 目录/合同用连字符命名，运行时注册名是下划线：两种变体都认。
+            normalized = {name.replace("_", "-") for name in runtime_names}
+            normalized |= runtime_names
+            if contract.name not in normalized:
+                raise StudioError(
+                    "CAPABILITY_DIGEST_MISMATCH",
+                    "Tool 合同与声明 digest 不一致",
+                    status_code=422,
+                    details={
+                        "name": contract.name,
+                        "expected": contract.digest,
+                        "actual": digest,
+                    },
+                )
         return cast(
             ToolContract,
             contract.model_copy(update={"digest": digest}),

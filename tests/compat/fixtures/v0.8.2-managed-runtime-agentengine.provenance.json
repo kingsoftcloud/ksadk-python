@@ -1,7 +1,7 @@
 {
-  "fixtureSha256": "a520f4517a015f367fd197a38a38f9dee2e1de1bc7505aa282c245360be3584f",
+  "fixtureSha256": "9a335dc488dcc1edd11981c283537ee4655b33b2d3673bb3a3611a9a48db1264",
   "generationProcedure": "CodexAgentManifest fields valid at v0.8.2 serialized with serialize_managed_runtime_manifest from the pinned tag",
-  "openaiCodexVersion": "0.147.0",
+  "openaiCodexVersion": "0.154.0",
   "sourceCommit": "c8c9be629f4cb054ec4d8818cf0596ef42377671",
   "sourceSchemaPath": "ksadk/studio/codex_manifest.py",
   "sourceSerializerPath": "ksadk/builders/managed_runtime_builder.py",

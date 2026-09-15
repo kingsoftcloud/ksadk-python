@@ -22,7 +22,7 @@ def test_write_codex_project_config_files(tmp_path):
     assert "framework: codex" in yaml_text
     assert "artifact_type: ManagedRuntime" in yaml_text
     assert "name: codex" in yaml_text
-    assert "model: glm-5.2" in yaml_text
+    assert "model: deepseek-v4.1-flash" in yaml_text
     assert "prompt:" in yaml_text
     # requirements 是 ksadk[codex]
     assert "ksadk[codex]" in (tmp_path / "requirements.txt").read_text(encoding="utf-8-sig")
@@ -50,11 +50,11 @@ def test_detector_recognizes_codex_project(tmp_path):
 
 def test_framework_requirements_codex():
     """Codex 只进入 Linux container/runtime，不进入宿主机 Code zip。"""
-    assert requirements_for_framework("codex") == ["openai-codex==0.144.4"]
-    assert minimal_requirements_for_framework("codex") == ["openai-codex==0.144.4"]
+    assert requirements_for_framework("codex") == ["openai-codex==0.154.0"]
+    assert minimal_requirements_for_framework("codex") == ["openai-codex==0.154.0"]
     assert code_requirements_for_framework("codex") == []
     # 大小写/空白归一
-    assert requirements_for_framework(" Codex ") == ["openai-codex==0.144.4"]
+    assert requirements_for_framework(" Codex ") == ["openai-codex==0.154.0"]
 
 
 def test_create_codex_cli_warns_when_sdk_missing_but_completes(monkeypatch):

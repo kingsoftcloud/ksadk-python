@@ -119,7 +119,7 @@ def test_managed_runtime_builder_requires_resolved_version(tmp_path):
 
 def test_managed_runtime_dependency_policy_keeps_codex_out_of_code_zip():
     assert code_requirements_for_framework("codex") == []
-    assert requirements_for_framework("codex") == ["openai-codex==0.144.4"]
+    assert requirements_for_framework("codex") == ["openai-codex==0.154.0"]
 
 
 def test_deploy_resolves_managed_runtime_from_config():

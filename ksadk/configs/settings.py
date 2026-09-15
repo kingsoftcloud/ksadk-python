@@ -123,7 +123,7 @@ KSPMAS_INTERNAL_URL = f"http://{KSPMAS_INTERNAL_HOST}/v1"
 KSPMAS_PUBLIC_URL = "https://kspmas.ksyun.com/v1"
 
 # 默认模型
-DEFAULT_MODEL_NAME = "glm-5.2"
+DEFAULT_MODEL_NAME = "deepseek-v4.1-flash"
 
 
 def optimize_kspmas_url(url: str) -> str:
@@ -199,7 +199,7 @@ class ModelConfig:
 
     默认值:
         OPENAI_BASE_URL: 自动检测内网/外网，使用金山云模型服务
-        MODEL_NAME: glm-5.2
+        MODEL_NAME: deepseek-v4.1-flash
     """
 
     @property
@@ -234,7 +234,7 @@ class ModelConfig:
     def model_name(self) -> str:
         """获取模型名称
 
-        如果未配置，默认使用 glm-5.2。
+        如果未配置，默认使用 deepseek-v4.1-flash。
         """
         configured = _get_env(
             "OPENAI_MODEL_NAME",  # OpenAI 格式 (优先)

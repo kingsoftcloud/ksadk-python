@@ -34,7 +34,9 @@ class StudioPluginKernelAdapter(PluginKernelAdapter):
         if self._delegate is None and self._runtime_type == "harness":
             from ksadk.harness.managed_runtime import managed_harness_capabilities
 
-            return managed_harness_capabilities(durable=True)
+            return managed_harness_capabilities(
+                durable=True, execution_policy=self._policy_supported,
+            )
         return super().capabilities()
 
 

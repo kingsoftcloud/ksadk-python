@@ -201,6 +201,7 @@ async def test_durable_child_approval_recovery_and_prior_sibling_not_replayed(tm
         assert calls == ["safe"]
         second = make()
         await second.attach(handle, await second.compile(spec()))
+        assert second._runs[handle.run_id].execution_elapsed_seconds > 0
         assert second._runs[handle.run_id].pending_approval["child_call_id"] == "write-call"
         await second.resume(
             handle,
@@ -210,6 +211,32 @@ async def test_durable_child_approval_recovery_and_prior_sibling_not_replayed(tm
         events = await collect(second, handle)
         assert calls == ["safe", "write"]
         assert (await second.snapshot_state(handle)).status.value == "completed", events
+
+
+@pytest.mark.asyncio
+async def test_checkpointing_many_tools_does_not_hit_default_graph_recursion_limit():
+    calls = []
+
+    async def read(arguments, call_id):
+        calls.append(call_id)
+        return "read"
+
+    class BatchReasoner:
+        async def complete(self, *, messages, **kwargs):
+            if any(m["role"] == "tool" for m in messages):
+                return HarnessReasoningTurn(final_text="done")
+            return HarnessReasoningTurn(tool_calls=tuple(
+                HarnessToolCall(f"read-{i}", "read", {}) for i in range(30)
+            ))
+
+    engine = ManagedLangGraphEngine(
+        reasoner=BatchReasoner(), checkpointer=memory_checkpointer(),
+        tools={"read": tool("read", read)},
+    )
+    handle = await engine.start(request(), await engine.compile(spec()))
+    events = await collect(engine, handle)
+    assert len(calls) == 30
+    assert (await engine.snapshot_state(handle)).status.value == "completed", events
 
 
 @pytest.mark.asyncio

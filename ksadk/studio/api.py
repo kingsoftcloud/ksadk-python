@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import base64
+import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import subprocess
@@ -15,6 +16,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -94,6 +96,14 @@ from ksadk.studio.contracts import (
     OperationStatus,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.native_documents import (
+    NativeDocumentActionRequest,
+    document_metadata,
+    is_local_desktop_request,
+    perform_document_action,
+)
+from ksadk.studio.run_activity import register_activity_routes
+from ksadk.studio.run_documents import read_document
 from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
 from ksadk.studio.workspace_registry import (
@@ -101,6 +111,8 @@ from ksadk.studio.workspace_registry import (
     WorkspaceRegistry,
     WorkspaceRuntimeManager,
 )
+
+logger = logging.getLogger(__name__)
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
@@ -231,11 +243,6 @@ def create_studio_app(
     )
     session_secret = session_token or secrets.token_urlsafe(32)
     csrf_secret = csrf_token or secrets.token_urlsafe(24)
-    # Cookies are scoped by host, not port.  Multiple local Studio processes
-    # (for example an App and a CLI started for another workspace) therefore
-    # used to overwrite one another's session cookie and produce intermittent
-    # LOCAL_SESSION_REQUIRED responses.  Bind the cookie name to this
-    # process's secret so each supervised Studio remains independent.
     session_cookie_name = "agentkit_studio_session_" + hashlib.sha256(
         session_secret.encode("utf-8")
     ).hexdigest()[:16]
@@ -253,7 +260,22 @@ def create_studio_app(
                 except Exception:
                     # Runtime warmup is best effort; core Studio remains usable
                     # while optional DSH capability discovery is unavailable.
-                    pass
+                    return
+                if os.environ.get(
+                    "KSADK_STUDIO_TEAMS_DEFAULT", "1"
+                ).strip().lower() in {"0", "false", "no", "off"}:
+                    return
+                installation = getattr(runtime, "teams_installation", None)
+                if installation is None or installation.status().get("enabled"):
+                    return
+                try:
+                    await installation.enable()
+                except Exception as error:
+                    # 默认启用是预期行为，但 DSH 工具链/权威不可用时必须静默
+                    # 降级，核心 Studio 与其他插件不受影响；页面仍保留手动入口。
+                    logger.info(
+                        "Teams 默认激活未完成（可手动启用）: %s", error
+                    )
 
             task = asyncio.create_task(warm_runtime())
             warmups.add(task)
@@ -371,6 +393,7 @@ def create_studio_app(
 
     static_root = Path(__file__).with_name("static")
     shared_web = StudioSharedWebBridge(studio)
+    register_activity_routes(app, studio, resolve_run_id=shared_web.resolve_run_reference)
     cloud_web = CloudSharedWebBridge(studio)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
@@ -525,9 +548,6 @@ def create_studio_app(
         except (StudioError, OSError, RuntimeError):
             # The optional toolchain may be absent in a plain SDK workspace.
             use_core = False
-        # The Electron shell starts the managed Core in the background. Keep
-        # the lightweight Studio shell as the immediate entry document; a
-        # plugin page can still open the official Core on demand.
         if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
             target = "/studio-core/"
             if request.url.query:
@@ -563,7 +583,11 @@ def create_studio_app(
     @app.get("/favicon.ico")
     async def favicon():
         return Response(
-            content='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#1677ff"/><path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>',
+            content=(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+                '<rect width="32" height="32" rx="8" fill="#1677ff"/>'
+                '<path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>'
+            ),
             media_type="image/svg+xml",
         )
 
@@ -798,7 +822,15 @@ def create_studio_app(
                     )
                 return {"Code": 0, "Message": "OK", "Data": data}
             if action == "GetAgentUiBootstrap":
-                data = shared_web.bootstrap(shared_web.resolve_agent_id(requested_agent_id or None))
+                bootstrap_agent_id = shared_web.resolve_agent_id(
+                    requested_agent_id or None
+                )
+                # 冷启动时 provider 模型描述符尚未发现；绑定 model:provider:*
+                # 的 Agent（尤其 Harness）若直接解析会 RESOURCE_NOT_FOUND，
+                # 前端只能无限转圈。访问资源库不应该是打开对话的前置条件。
+                if not bootstrap_agent_id.startswith(("ar-", "account:")):
+                    await runtime_model_catalog()
+                data = shared_web.bootstrap(bootstrap_agent_id)
             elif action == "ListAgentModels":
                 model_agent_id = shared_web.resolve_agent_id(requested_agent_id or None)
                 # A cold Studio process has no discovered provider descriptors.
@@ -1130,22 +1162,14 @@ def create_studio_app(
             # A user-selected directory is itself the workspace. The registry
             # entry is created as part of opening it; callers do not need to
             # pre-register paths in a separate settings screen.
-            # Switching is a workspace identity operation. Do not block it on
-            # optional DSH/Profile bootstrap; the selected workspace becomes
-            # active immediately and its plugins start lazily on demand.
             record = studio.switch(payload.path, create=True)
-            # A newly selected workspace has a fresh StudioService. Start its
-            # local state and schedule DSH/provider discovery without waiting
-            # for the optional toolchain. Without this step the active service
-            # has no provider snapshot, so the first Codex/Teams action would
-            # incorrectly report "Provider 未注册" until a process restart.
+            # Start local state immediately, but keep optional DSH/Profile
+            # discovery off the workspace-switch response path.
             runtime = studio.active
             await runtime.start(wait_for_dsh=False)
-            # Warm the selected runtime itself.  Capturing ``runtime`` avoids
-            # a race where a later switch enables Teams in the wrong workspace.
-            lifespan_state = getattr(app.state, "runtime_warmups", None)
-            if lifespan_state is not None:
-                lifespan_state(runtime)
+            schedule_runtime_warmup = getattr(app.state, "runtime_warmups", None)
+            if schedule_runtime_warmup is not None:
+                schedule_runtime_warmup(runtime)
         except FileNotFoundError as error:
             raise StudioError("WORKSPACE_NOT_FOUND", "工作区目录不存在", status_code=404) from error
         response = {
@@ -1581,6 +1605,48 @@ def create_studio_app(
     async def get_agent(agent_id: str):
         return studio.agent_detail(agent_id)
 
+    @app.post("/api/v1/agents/{agent_id}/runtime:prewarm", status_code=202)
+    async def prewarm_agent_runtime(agent_id: str, payload: dict[str, Any]):
+        """后台预热当前 Build 的 Provider 激活（MCP/图编译），不执行任何 turn。
+
+        首 token 延迟的主因是首轮 open_activation 时的 MCP spawn/health/list
+        （实测 ~12s）。前端在进入会话时 fire-and-forget 调用本端点，把这段
+        开销移到用户输入之前；失败静默（首轮照旧现场预热）。
+        """
+        session_id = str(payload.get("sessionId") or "")
+        if not session_id:
+            raise StudioError(
+                "SESSION_ID_REQUIRED", "缺少 sessionId", status_code=422
+            )
+        try:
+            build = await studio.ensure_current_build(agent_id)
+        except StudioError as exc:
+            raise StudioError(
+                "BUILD_NOT_FOUND", f"Agent 尚无可运行的 Build：{exc.message}",
+                status_code=404,
+            ) from exc
+
+        async def warm() -> None:
+            try:
+                spec = studio.resolve_run_spec(build.id)
+                runtime = studio.run_service.plugin_runtime
+                if runtime is None:
+                    return
+                kernel_adapter = getattr(runtime, "kernel_adapter", None)
+                if kernel_adapter is None:
+                    return
+                # 打开并保留激活（以 session 为 key）；下一轮 RunAgent 直接复用，
+                # 不再现场 spawn/health/list MCP。
+                await kernel_adapter(spec, session_id=session_id)
+            except Exception as error:
+                logger.info("runtime prewarm for %s skipped: %s", agent_id, error)
+
+        task = asyncio.create_task(warm())
+        app.state.runtime_prewarms = getattr(app.state, "runtime_prewarms", set())
+        app.state.runtime_prewarms.add(task)
+        task.add_done_callback(app.state.runtime_prewarms.discard)
+        return {"status": "prewarming", "buildId": build.id}
+
     @app.get("/api/v1/agents/{agent_id}/models")
     async def get_agent_models(agent_id: str):
         model_agent_id = shared_web.resolve_agent_id(agent_id)
@@ -1739,8 +1805,6 @@ def create_studio_app(
 
     @app.get("/api/v1/runs/{run_id}")
     async def get_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1748,29 +1812,26 @@ def create_studio_app(
 
     @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
     async def cancel_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
         return await runtime.run_service.cancel_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
     async def pause_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
         return await runtime.run_service.pause_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
     async def resume_run(run_id: str):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
+        runtime._require_direct_run(run_id)
         return await runtime.run_service.resume_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
@@ -1779,8 +1840,6 @@ def create_studio_app(
         interaction_id: str,
         payload: InteractionSubmitRequest,
     ):
-        if studio.is_reserved_run(run_id):
-            raise StudioError("plugin_run_forbidden", "该运行由平台服务管理", status_code=403)
         runtime = studio.runtime_for_run(run_id)
         if runtime is None:
             raise StudioError("RUN_NOT_FOUND", "运行不存在", status_code=404)
@@ -1853,9 +1912,7 @@ def create_studio_app(
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
-        if studio.is_reserved_session(session_id):
-            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
-        runtime = studio.runtime_for_session(session_id)
+        runtime = await studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
         await runtime.delete_session(session_id)
@@ -1868,9 +1925,7 @@ def create_studio_app(
         invocation_id: str | None = Query(default=None, alias="invocationId"),
         limit: int = Query(default=100, ge=1, le=500),
     ):
-        if studio.is_reserved_session(session_id):
-            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
-        runtime = studio.runtime_for_session(session_id)
+        runtime = await studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
         return await runtime.trajectory_page(
@@ -1887,9 +1942,7 @@ def create_studio_app(
         after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
         invocation_id: str | None = Query(default=None, alias="invocationId"),
     ):
-        if studio.is_reserved_session(session_id):
-            raise StudioError("plugin_session_forbidden", "该会话由平台服务管理", status_code=403)
-        runtime = studio.runtime_for_session(session_id)
+        runtime = await studio.runtime_for_session(session_id)
         if runtime is None:
             raise StudioError("SESSION_NOT_FOUND", "会话不存在", status_code=404)
         await runtime._require_runtime_session(session_id)
@@ -1974,6 +2027,35 @@ def create_studio_app(
     @app.get("/api/v1/workspaces/operations")
     async def list_workspace_operations():
         return {"items": studio.all_operations()}
+
+    @app.get("/api/v1/runs/{run_id}/documents/metadata")
+    def run_document_metadata(run_id: str, path: str, request: Request):
+        return document_metadata(studio, run_id, path, local=is_local_desktop_request(request))
+
+    @app.post("/api/v1/runs/{run_id}/documents/actions")
+    def run_document_action(run_id: str, payload: NativeDocumentActionRequest, request: Request):
+        return perform_document_action(
+            studio, run_id, payload, local=is_local_desktop_request(request)
+        )
+
+    @app.get("/api/v1/runs/{run_id}/documents/content")
+    def run_document(run_id: str, path: str, preview: bool = False):
+        file_path, content = read_document(studio, run_id, path)
+        if preview:
+            return JSONResponse(
+                {"name": file_path.name, "content": content},
+                headers={"Cache-Control": "no-store"},
+            )
+        return Response(
+            content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''"
+                + quote(file_path.name),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/v1/runs/{run_id}/events")
     async def run_events(

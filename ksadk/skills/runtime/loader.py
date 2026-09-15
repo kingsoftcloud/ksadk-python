@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
 
+from ksadk.skills.events import SkillEvent, SkillEventSink
 from ksadk.skills.loader import LocalSkill, load_local_skill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.package_store import PackageStore, SkillPackageError
@@ -20,6 +23,8 @@ from ksadk.skills.service_env import resolve_skill_service_url
 class SkillLoadResult:
     skills: list[LocalSkill] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    skill_refs: dict[str, SkillRef] = field(default_factory=dict)
+    skill_invocation_ids: dict[str, str] = field(default_factory=dict)
 
 
 def load_skills(
@@ -27,6 +32,8 @@ def load_skills(
     prompt: str = "",
     skill_names: list[str] | None = None,
     service_transport: httpx.BaseTransport | None = None,
+    event_sink: SkillEventSink | None = None,
+    planned_invocations: dict[str, str] | None = None,
 ) -> SkillLoadResult:
     warnings: list[str] = []
     skills: list[LocalSkill] = []
@@ -77,19 +84,90 @@ def load_skills(
             )
         )
 
+    skill_refs: dict[str, SkillRef] = {}
+    skill_invocation_ids: dict[str, str] = {}
     for skill in selected_refs:
+        if planned_invocations is not None and skill.skill_id not in planned_invocations:
+            continue
+        invocation_id = (planned_invocations or {}).get(skill.skill_id)
+        invocation_id = invocation_id or f"skill_inv_{uuid.uuid4().hex}"
         package = store.get_cached(skill)
         if package is None:
+            downloaded_at = time.time()
             archive = client.download_skill_archive(skill)
+            _emit(
+                event_sink,
+                "skill.package.downloaded",
+                skill_ref=skill,
+                skill_invocation_id=invocation_id,
+                status="completed",
+                started_at=downloaded_at,
+                ended_at=time.time(),
+            )
             try:
-                package = store.store_archive(skill, archive)
+                package = store.store_archive(
+                    skill,
+                    archive,
+                    event_sink=event_sink,
+                    skill_invocation_id=invocation_id,
+                )
             except SkillPackageError as exc:
                 if not _allow_hash_mismatch():
                     raise
                 package = _store_unverified_archive(store, skill, archive)
                 warnings.append(str(exc))
-        skills.append(load_local_skill(package.root_dir))
-    return SkillLoadResult(skills=skills, warnings=warnings)
+        else:
+            _emit(
+                event_sink,
+                "skill.package.cache_hit",
+                skill_ref=skill,
+                skill_invocation_id=invocation_id,
+                status="completed",
+                attributes={"cache_hit": True},
+            )
+        _emit(
+            event_sink,
+            "skill.load.started",
+            skill_ref=skill,
+            skill_invocation_id=invocation_id,
+            status="running",
+        )
+        try:
+            local_skill = load_local_skill(package.root_dir)
+        except Exception as exc:
+            _emit(
+                event_sink,
+                "skill.load.failed",
+                skill_ref=skill,
+                skill_invocation_id=invocation_id,
+                status="failed",
+                error_category=type(exc).__name__,
+            )
+            raise
+        _emit(
+            event_sink,
+            "skill.manifest.parsed",
+            skill_ref=skill,
+            skill_invocation_id=invocation_id,
+            status="completed",
+            attributes={"has_description": bool(local_skill.description)},
+        )
+        _emit(
+            event_sink,
+            "skill.load.completed",
+            skill_ref=skill,
+            skill_invocation_id=invocation_id,
+            status="completed",
+        )
+        skills.append(local_skill)
+        skill_refs[local_skill.name] = skill
+        skill_invocation_ids[local_skill.name] = invocation_id
+    return SkillLoadResult(
+        skills=skills,
+        warnings=warnings,
+        skill_refs=skill_refs,
+        skill_invocation_ids=skill_invocation_ids,
+    )
 
 
 def load_local_skills() -> list[LocalSkill]:
@@ -113,6 +191,33 @@ def _allow_hash_mismatch() -> bool:
         "yes",
         "on",
     }
+
+
+def _emit(
+    event_sink: SkillEventSink | None,
+    event_type: str,
+    *,
+    status: str,
+    skill_ref: SkillRef | None = None,
+    skill_invocation_id: str = "",
+    attributes: dict[str, object] | None = None,
+    error_category: str = "",
+    started_at: float | None = None,
+    ended_at: float | None = None,
+) -> None:
+    if event_sink is not None:
+        event_sink.emit(
+            SkillEvent.create(
+                event_type,
+                status=status,
+                skill_ref=skill_ref,
+                skill_invocation_id=skill_invocation_id,
+                attributes=attributes,
+                error_category=error_category,
+                started_at=started_at,
+                ended_at=ended_at,
+            )
+        )
 
 
 def _store_unverified_archive(store: PackageStore, skill: SkillRef, archive: bytes):

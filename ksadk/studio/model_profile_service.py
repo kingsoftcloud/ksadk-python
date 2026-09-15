@@ -96,6 +96,31 @@ def _classify_probe(status_code: int) -> str:
     return "error"
 
 
+def _recommended_probe(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose the profile protocol from probe results deterministically.
+
+    Responses is preferred for a generic URL when both endpoints are usable;
+    an explicitly supplied endpoint still produces a single eligible result.
+    """
+    protocol_priority = {"responses": 0, "chat": 1}
+    for wanted in ("ok", "auth_required", "recognized"):
+        eligible = [a for a in attempts if a.get("status") == wanted]
+        hit = min(
+            eligible,
+            key=lambda attempt: protocol_priority.get(str(attempt.get("protocol")), 99),
+            default=None,
+        )
+        if hit is not None:
+            protocol = str(hit["protocol"])
+            return {
+                "protocol": protocol,
+                "wireApi": "responses" if protocol == "responses" else "chat",
+                "endpointUrl": hit["endpointUrl"],
+                "status": hit["status"],
+            }
+    return None
+
+
 async def probe_model_endpoint(
     *,
     url: str,
@@ -190,17 +215,7 @@ async def probe_model_endpoint(
             *(_post(client, protocol, endpoint, probe_model) for protocol, endpoint in candidates)
         )
 
-    recommended: dict[str, Any] | None = None
-    for wanted in ("ok", "auth_required", "recognized"):
-        hit = next((a for a in attempts if a["status"] == wanted), None)
-        if hit is not None:
-            recommended = {
-                "protocol": hit["protocol"],
-                "wireApi": "responses" if hit["protocol"] == "responses" else "chat",
-                "endpointUrl": hit["endpointUrl"],
-                "status": hit["status"],
-            }
-            break
+    recommended = _recommended_probe(attempts)
 
     return {
         "input": url,

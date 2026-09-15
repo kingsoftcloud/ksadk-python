@@ -354,6 +354,17 @@ def _register_commands():
 
     _add_command_once(cli, web)
 
+    # The desktop shell invokes exactly ``ksadk studio``. Avoid importing the
+    # full command registry (A2A, deploy, eval, etc.) on this hot path: those
+    # optional SDKs are unrelated to Studio and their import warnings used to
+    # obscure the real startup error. This also shortens the time to the first
+    # local health check in Electron.
+    if bool(_argv) and _argv[0] == "studio":
+        from ksadk.cli.cmd_studio import studio
+
+        _add_command_once(cli, studio)
+        return
+
     if _runtime_only:
         # Skip create/deploy/run/managed_runtime imports on the runtime path.
         return

@@ -463,21 +463,28 @@ def run_conformance_suite(
 ) -> ConformanceReport:
     """Phase 0 最小套件 + 加固五类：模型配对/工具失败/审批幂等/检查点/压缩/用量。"""
     report = ConformanceReport()
-    verify_start_and_terminal_event(events, report)
     verify_event_ordering(events, report)
-    verify_tool_call_pairing(events, report)
     verify_secret_redaction(events, report)
     verify_cancel_honesty(events, report, cancel_requested=cancel_requested)
-    # 加固（plan §15 conformance 补齐：恢复/检查点/幂等/工具失败/压缩）。
-    verify_model_call_pairing(events, report)
-    verify_model_provider_policy(events, report)
-    verify_tool_failure_honesty(events, report)
-    verify_tool_reliability_honesty(events, report)
-    verify_approval_flow(events, report)
-    verify_checkpoint_honesty(events, report)
-    verify_compaction_honesty(events, report)
     verify_usage_accounting(events, report)
-    verify_capability_state_transitions(events, report)
+    # Live child events share the parent's audit sequence, not its lifecycle or
+    # model/tool call namespace. Validate every native run independently.
+    streams: dict[str, list[RuntimeEvent]] = {}
+    for event in events:
+        native_run = str(getattr(event, "run_id", None) or
+                         getattr(event, "invocation_id", ""))
+        streams.setdefault(native_run, []).append(event)
+    for stream in streams.values() or [events]:
+        verify_start_and_terminal_event(stream, report)
+        verify_tool_call_pairing(stream, report)
+        verify_model_call_pairing(stream, report)
+        verify_model_provider_policy(stream, report)
+        verify_tool_failure_honesty(stream, report)
+        verify_tool_reliability_honesty(stream, report)
+        verify_approval_flow(stream, report)
+        verify_checkpoint_honesty(stream, report)
+        verify_compaction_honesty(stream, report)
+        verify_capability_state_transitions(stream, report)
     return report
 
 

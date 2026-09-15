@@ -474,7 +474,12 @@ class CodexRunSpecResolver:
         }
         approval_presets = {
             "ask": ("workspace-write", "manual"),
-            "risk": ("workspace-write", "auto_review"),
+            # Risk operations must be surfaced to Studio's approval card. The
+            # Codex guardian's ``auto_review`` is an upstream model review;
+            # when that stream is unavailable it fails the tool call without
+            # giving the user a chance to confirm. Studio owns the decision,
+            # so use the native user-reviewed mode for both ask and risk.
+            "risk": ("workspace-write", "manual"),
             "full": ("full-access", "deny_all"),
         }
         if approval_mode:

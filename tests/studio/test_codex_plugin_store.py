@@ -550,6 +550,7 @@ def _plugin_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestCl
         workspace=workspace,
         codex_plugin_snapshots=CodexPluginSnapshotStore(workspace),
     )
+    studio.active = studio
     app = FastAPI()
 
     @app.exception_handler(StudioError)

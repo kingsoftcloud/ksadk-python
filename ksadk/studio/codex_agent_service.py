@@ -689,7 +689,7 @@ class CodexAgentService:
         return (
             current.runtime.version
             if current is not None
-            else (installed_runtime_version("codex") or "0.144.4")
+            else (installed_runtime_version("codex") or "0.154.0")
         )
 
     def _model_name(self, spec: AgentSpec, *, agent_id: str | None = None) -> str:
@@ -701,7 +701,7 @@ class CodexAgentService:
         if agent_id and self.studio.codex_manifests.exists(agent_id):
             return str(self.studio.codex_manifests.load(agent_id).manifest.model)
         configured = os.environ.get("OPENAI_MODEL_NAME", "").strip()
-        return configured or "glm-5.1"
+        return configured or "deepseek-v4.1-flash"
 
     def _model_names(
         self,
