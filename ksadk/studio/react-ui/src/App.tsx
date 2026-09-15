@@ -655,7 +655,6 @@ export default function App() {
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
-                  key={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   active={view === "conversations"}
@@ -671,7 +670,6 @@ export default function App() {
                   historyHost={historyHost}
                   headerHost={conversationHeaderHost}
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
-                  key={currentAgentId}
                   agentId={currentAgentId}
                   requestedSessionId={requestedSessionId}
                   agentName={currentAgent?.metadata.name || "Agent"}
