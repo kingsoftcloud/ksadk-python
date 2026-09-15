@@ -648,6 +648,7 @@ async def test_real_http_static_ui_bundle_contains_responses_input_payload_build
 
 
 @pytest.mark.asyncio
+@pytest.mark.local_process_heavy  # spawn chromium 子进程,满载 runner 上 DevTools 起不来;见 ci.yml
 async def test_real_browser_hosted_ui_file_upload_sends_responses_input_to_runner(
     real_http_runtime,
 ):
@@ -724,6 +725,7 @@ async def test_real_browser_hosted_ui_file_upload_sends_responses_input_to_runne
 
 
 @pytest.mark.asyncio
+@pytest.mark.local_process_heavy  # spawn chromium 子进程,满载 runner 上 DevTools 起不来;见 ci.yml
 async def test_real_browser_hosted_ui_image_upload_sends_input_image_to_runner(
     real_http_runtime,
 ):

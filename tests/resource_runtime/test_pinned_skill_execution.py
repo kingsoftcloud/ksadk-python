@@ -20,6 +20,9 @@ from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 from ksadk.skills.runtime.pinned import PinnedSkillArchive, load_pinned_packages, stage_packages
 from ksadk.skills.runtime.request import SkillWorkflowRequestError, parse_workflow_request
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 def package(tmp_path):
     buffer = io.BytesIO()

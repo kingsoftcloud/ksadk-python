@@ -18,6 +18,9 @@ from ksadk.sandbox import (
 from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY, SandboxRegistry
 from ksadk.toolsets.sandbox import run_code, run_command, sandbox_status
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 @pytest.fixture(autouse=True)
 def _reset_sandbox_registry(monkeypatch):
