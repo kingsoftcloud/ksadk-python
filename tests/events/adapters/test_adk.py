@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import pytest
+
+try:
+    from google.adk.events.event import NodeInfo  # google-adk >= 2.x
+except ImportError:  # pragma: no cover - adk 1.x has no NodeInfo
+    pytest.skip("NodeInfo requires google-adk >= 2.x", allow_module_level=True)
 from google.adk.events import Event
-from google.adk.events.event import NodeInfo
 from google.genai import types
 
 from ksadk.events.adapters.adk import ADKAdapterContext, ADKEventAdapter
