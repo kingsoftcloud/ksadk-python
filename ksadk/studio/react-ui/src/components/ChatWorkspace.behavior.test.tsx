@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
     interactionRecords: [],
     localCatalog: [],
     createNewSession: vi.fn(),
+    startNewConversation: vi.fn(),
     deleteSession: vi.fn(),
     selectSession: vi.fn(),
     loadMoreSessions: vi.fn(),
@@ -175,28 +176,28 @@ describe("ChatWorkspace shared conversation composition", () => {
     const onNewChatStarted = vi.fn();
     const props = { agentId: "local-1", agentName: "Agent", newChatRequest: 1, onNewChatStarted };
     const { rerender } = render(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.createNewSession).not.toHaveBeenCalled();
+    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
     mocks.chat.bootstrapStatus = "ready";
     mocks.chat.isLoadingSessions = true;
     rerender(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.createNewSession).not.toHaveBeenCalled();
+    expect(mocks.chat.startNewConversation).not.toHaveBeenCalled();
     mocks.chat.isLoadingSessions = false;
     rerender(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     await waitFor(() => expect(onNewChatStarted).toHaveBeenCalledOnce());
     rerender(<ChatWorkspace {...props} refreshTick={1}/>);
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
   });
 
   it("starts new conversations through the product rail without interrupting a stream", () => {
     const ref = createRef<ChatWorkspaceHandle>();
     const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
     ref.current?.startNewChat();
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.isStreaming = true;
     rerender(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
     ref.current?.startNewChat();
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     expect(mocks.chat.stop).not.toHaveBeenCalled();
   });
 
@@ -268,7 +269,7 @@ describe("ChatWorkspace shared conversation composition", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "新对话" }));
     fireEvent.click(screen.getByRole("button", { name: "已有会话" }));
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     expect(mocks.chat.selectSession).toHaveBeenCalledWith("session-1");
 
     rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" refreshTick={1} />);
