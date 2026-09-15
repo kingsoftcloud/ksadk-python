@@ -45,3 +45,66 @@ def test_memory_catalog_exposes_binding_region_and_retains_service_label(monkeyp
     item = response.json()["items"][0]
     assert item["region"] == "cn-beijing-6"
     assert item["serviceRegion"] == "Default-CN"
+
+
+def test_platform_resource_discovery_bootstraps_global_credential_connection(tmp_path, monkeypatch):
+    """Global AK/SK should make the first resource read immediately bindable."""
+
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from ksadk.studio.api_resource_connections import register_resource_connection_routes
+    from ksadk.studio.model_client import CredentialResolver
+    from ksadk.studio.resource_connections import ResourceConnectionRepository
+    from ksadk.studio.resource_authority import ResourceAuthorityPolicy
+    from ksadk.studio.workspace import Workspace
+
+    class Client:
+        region = "cn-beijing-6"
+
+        async def list_memory_instances(self):
+            return {"memory_instances": [{"id": "fixture-memory", "region": "Default-CN"}]}
+
+        async def close(self):
+            pass
+
+    class Authority:
+        policy = ResourceAuthorityPolicy(
+            iam_endpoint="https://iam.example.test",
+            iam_region="cn-beijing-6",
+            allowed_data_endpoints=("https://api.example.test",),
+            allowed_regions=("cn-beijing-6",),
+        )
+
+        def resolve_signed_identity(self, access_key, secret_key):
+            assert access_key == "global-ak"
+            assert secret_key == "global-sk"
+            return "tenant-global", "principal-global"
+
+    monkeypatch.setattr("ksadk.studio.api_resource_connections.AgentEngineClient", Client)
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    repository = ResourceConnectionRepository(workspace, CredentialResolver())
+    studio = SimpleNamespace(
+        resource_connections=repository,
+        resource_authority=Authority(),
+        configuration=SimpleNamespace(
+            environment=lambda: {
+                "KSYUN_ACCESS_KEY": "global-ak",
+                "KSYUN_SECRET_KEY": "global-sk",
+            }
+        ),
+    )
+    app = FastAPI()
+    register_resource_connection_routes(app, studio)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/platform-resources?kind=memory-instance")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["connectionRef"] == "ksyun-platform-default"
+    saved = repository.get("ksyun-platform-default")
+    assert saved.target.tenant_ref == "tenant-global"
+    assert saved.target.principal_ref == "principal-global"
