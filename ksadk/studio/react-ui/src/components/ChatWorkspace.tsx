@@ -28,6 +28,7 @@ interface ChatWorkspaceProps {
   agentId: string;
   agentName: string;
   workspacePath?: string;
+  targetId?: string;
   agentAppearance?: AgentAppearance;
   active?: boolean;
   refreshTick?: number;
@@ -70,6 +71,7 @@ export function ChatWorkspace({
   agentId,
   agentName,
   workspacePath = "",
+  targetId = "",
   agentAppearance,
   active = true,
   refreshTick = 0,
@@ -86,10 +88,10 @@ export function ChatWorkspace({
   // when the user returns to this Agent while in-flight engines remain owned
   // by the previous hook instance.
   const conversationController = useMemo(
-    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspacePath)}:${encodeURIComponent(agentId)}`),
-    [agentId, workspacePath],
+    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspacePath)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
+    [agentId, targetId, workspacePath],
   );
-  const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController, restoreSession: false });
+  const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: false });
   const documents = useRunDocumentActions();
   const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
@@ -104,8 +106,8 @@ export function ChatWorkspace({
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   const conversationIdFor = useCallback((sessionId: string | null) => {
-    return chat.conversationId || conversationController.getOrCreate(agentId, sessionId);
-  }, [agentId, chat.conversationId, conversationController]);
+    return chat.conversationId || conversationController.getOrCreate(agentId, sessionId, targetId);
+  }, [agentId, chat.conversationId, conversationController, targetId]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
   useEffect(() => {
     // A target change invalidates pending reads, while the runtime task keeps

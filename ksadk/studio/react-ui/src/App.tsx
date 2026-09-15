@@ -679,6 +679,7 @@ export default function App() {
                   agentId={selectedCloudDeployment.agentId || "Agent"}
                   agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   workspacePath={workspace?.path}
+                  targetId={selectedCloudDeployment.id}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
                 />
@@ -693,6 +694,7 @@ export default function App() {
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   agentId={currentAgentId}
                   workspacePath={workspace?.path}
+                  targetId={currentAgentId}
                   requestedSessionId={requestedSessionId}
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
