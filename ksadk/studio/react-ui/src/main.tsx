@@ -12,7 +12,7 @@ import "./plugins.css";
 import "./layout-simplification.css";
 import "./mobile-resource-lists.css";
 import "./teams.css";
-import "@kingsoftcloud/ksadk-web/teams/styles";
+import "@kingsoftcloud/ksadk-web/dist-lib/teams.css";
 
 function WorkspaceApp() {
   const [generation, setGeneration] = useState(0);
