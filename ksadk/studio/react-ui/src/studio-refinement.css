@@ -45,16 +45,17 @@
   --studio-border: #e1e5e8;
   --border-card: #e1e5e8;
   --border-strong: #d0d5d9;
-  --studio-accent: #0091ea;
-  --accent-strong: #0079c4;
+  /* Keep interactive blue text and white-on-blue controls above WCAG AA. */
+  --studio-accent: #0079c4;
+  --accent-strong: #006da8;
   --accent-soft: #e6f5ff;
   --accent-hover: #d5efff;
   --accent-active: #bee6ff;
   --accent-border: #91d5ff;
   --focus-ring: #0091ea;
-  --button-primary-bg: #0091ea;
-  --button-primary-bg-hover: #26a5f2;
-  --button-primary-bg-active: #0079c4;
+  --button-primary-bg: #0079c4;
+  --button-primary-bg-hover: #006da8;
+  --button-primary-bg-active: #005f9e;
   --button-primary-text: #ffffff;
   --success: #09791a;
   --success-soft: #e6ffe6;

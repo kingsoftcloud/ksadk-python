@@ -96,7 +96,9 @@ export function ChatWorkspace({
     () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
     [agentId, credentialScope, targetId, workspaceId, workspacePath],
   );
-  const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: false });
+  // Restore the last selected session on mount so an active run can reconnect
+  // after a browser refresh instead of silently falling back to a blank draft.
+  const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: true });
   const documents = useRunDocumentActions();
   const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;

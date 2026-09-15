@@ -126,6 +126,13 @@ describe("ChatWorkspace shared conversation composition", () => {
     expect(screen.queryByText("ses_internal_id")).not.toBeInTheDocument();
   });
 
+  it("restores the selected session so active runs reconnect after refresh", () => {
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+
+    const call = mocks.useAgentChat.mock.calls.at(-1) as unknown[] | undefined;
+    expect((call?.[0] as { restoreSession?: boolean }).restoreSession).toBe(true);
+  });
+
   it("scopes conversation storage by the opaque credential tenant scope", () => {
     render(
       <ChatWorkspace

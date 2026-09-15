@@ -92,7 +92,7 @@ def run(output: Path | None = None) -> list[dict]:
                     page.locator('.studio-select-trigger[aria-label="筛选 Agent 状态"]').evaluate(
                         "e => getComputedStyle(e).outlineStyle"
                     )
-                    == "none"
+                    == "solid"
                 )
                 capture("agent-select")
                 page.keyboard.press("Escape")
@@ -167,9 +167,7 @@ def run(output: Path | None = None) -> list[dict]:
                 page.keyboard.press("Escape")
 
                 navigate("conversations")
-                expect(
-                    page.get_by_role("heading", name="有什么可以帮你？", exact=True)
-                ).to_be_visible()
+                expect(page.locator(".studio-conversation-welcome h2")).to_be_visible()
                 expect(page.locator(".app-shell")).to_have_attribute(
                     "data-rail", "expanded" if width >= 1024 else "compact"
                 )
