@@ -75,7 +75,8 @@ export function ChatWorkspace({
   ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
-  const chat = useAgentChat({ api, agentId, conversationClient: null });
+  const conversationController = useRef(new ConversationController());
+  const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController: conversationController.current });
   const documents = useRunDocumentActions();
   const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
@@ -87,14 +88,11 @@ export function ChatWorkspace({
   // 一旦在其中发了消息或切到其他会话，即恢复正常新建。
   const autoCreatedEmptySessionId = useRef<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
-  // Studio conversation ids are local and stable. Native session ids can be
-  // created later, so they must never be used as React keys or draft owners.
-  const conversationController = useRef(new ConversationController());
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   const conversationIdFor = useCallback((sessionId: string | null) => {
-    return conversationController.current.getOrCreate(agentId, sessionId);
-  }, [agentId]);
+    return chat.conversationId || conversationController.current.getOrCreate(agentId, sessionId);
+  }, [agentId, chat.conversationId]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
   useEffect(() => {
     // A target change invalidates pending reads, while the runtime task keeps
@@ -112,12 +110,13 @@ export function ChatWorkspace({
       && currentSessionIdRef.current === autoCreatedEmptySessionId.current) return;
     creatingSession.current = true;
     try {
-      await chat.createNewSession();
+      if (chat.startNewConversation) chat.startNewConversation();
+      else await chat.createNewSession();
       autoCreatedEmptySessionId.current = currentSessionIdRef.current;
     } finally {
       creatingSession.current = false;
     }
-  }, [chat.isStreaming, chat.createNewSession]);
+  }, [chat.isStreaming, chat.startNewConversation, chat.createNewSession]);
   useEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
     if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
@@ -438,6 +437,7 @@ export function ChatWorkspace({
             <div className="studio-composer-area">
             <AgentConversationComposer
               draftKey={conversationIdFor(chat.currentSessionId)}
+              draftStore={chat.conversationDrafts}
               onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
               composerMaxHeight={176}
               submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
