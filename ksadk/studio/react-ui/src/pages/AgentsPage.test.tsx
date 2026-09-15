@@ -68,4 +68,41 @@ describe("AgentsPage appearance", () => {
     expect(screen.getByText("已构建")).toBeInTheDocument();
     expect(screen.getByText("最近校验 / 构建")).toBeInTheDocument();
   });
+
+  it("exposes quick create only as an enabled action when the runtime is ready", async () => {
+    const onQuickCreate = vi.fn();
+    const { rerender } = render(
+      <AgentsPage
+        agents={[]}
+        runtimeReady
+        workspaceName="studio-test"
+        onCreate={vi.fn()}
+        onQuickCreate={onQuickCreate}
+        onDetail={vi.fn()}
+        onChat={vi.fn()}
+        onBuild={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    const quickCreate = screen.getByRole("button", { name: "快速创建" });
+    expect(quickCreate).toBeEnabled();
+    quickCreate.click();
+    expect(onQuickCreate).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <AgentsPage
+        agents={[]}
+        runtimeReady={false}
+        workspaceName="studio-test"
+        onCreate={vi.fn()}
+        onQuickCreate={onQuickCreate}
+        onDetail={vi.fn()}
+        onChat={vi.fn()}
+        onBuild={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "快速创建" })).toBeDisabled();
+  });
 });
