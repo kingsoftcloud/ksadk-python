@@ -39,7 +39,8 @@
   --text-primary: #151b1e;
   --text-label: #3c4449;
   --studio-text-secondary: #5c6873;
-  --text-tertiary: #727e89;
+  /* Secondary metadata must remain readable on the white console surface. */
+  --text-tertiary: #5c6873;
   --text-faint: #848f9a;
   --text-disabled: #bec3c5;
   --studio-border: #e1e5e8;
@@ -345,6 +346,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
   border-radius: var(--radius-control);
   padding: 6px 30px 6px 12px;
 }
+.studio-select-item[data-state="checked"] { color: var(--accent-strong); }
 .more-actions-item, .chat-model-option {
   min-height: 32px;
   padding-inline: 12px;
