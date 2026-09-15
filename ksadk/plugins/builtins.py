@@ -282,6 +282,27 @@ class WorkspaceMCPRuntime(_BuiltinRuntime):
                 resolved, "endpointUrl", code="builtin_mcp_endpoint_missing"
             )
             secret_ref = _optional_string(materializer.get("apiKeyRef"))
+            if secret_ref is None:
+                # 组合器只透传 binding.config；目录资源的凭据声明在合同
+                # envRefs 里（例如 Authorization: env://<API_KEY>）。
+                # materializer 未显式覆盖时回退读取资源自身 envRefs，
+                # 否则 http MCP 少鉴权头必然 401 transport_failed。
+                env_refs = resolved.get("envRefs")
+                if isinstance(env_refs, Mapping) and env_refs:
+                    if len(env_refs) > 1:
+                        raise PluginHostError(
+                            "builtin_mcp_credentials_unsupported",
+                            f"workspace MCP {resolved['name']!r} accepts at most "
+                            "one Authorization credential",
+                        )
+                    header_name, reference = next(iter(env_refs.items()))
+                    if str(header_name).strip().casefold() != "authorization":
+                        raise PluginHostError(
+                            "builtin_mcp_credentials_unsupported",
+                            f"workspace MCP {resolved['name']!r} envRefs header "
+                            f"{header_name!r} is not supported; use Authorization",
+                        )
+                    secret_ref = str(reference).strip()
             api_key: str | None = None
             if secret_ref is not None:
                 if not _is_secret_reference(secret_ref):

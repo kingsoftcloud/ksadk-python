@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import subprocess
@@ -110,6 +111,8 @@ from ksadk.studio.workspace_registry import (
     WorkspaceRegistry,
     WorkspaceRuntimeManager,
 )
+
+logger = logging.getLogger(__name__)
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
@@ -257,7 +260,22 @@ def create_studio_app(
                 except Exception:
                     # Runtime warmup is best effort; core Studio remains usable
                     # while optional DSH capability discovery is unavailable.
-                    pass
+                    return
+                if os.environ.get(
+                    "KSADK_STUDIO_TEAMS_DEFAULT", "1"
+                ).strip().lower() in {"0", "false", "no", "off"}:
+                    return
+                installation = getattr(runtime, "teams_installation", None)
+                if installation is None or installation.status().get("enabled"):
+                    return
+                try:
+                    await installation.enable()
+                except Exception as error:
+                    # 默认启用是预期行为，但 DSH 工具链/权威不可用时必须静默
+                    # 降级，核心 Studio 与其他插件不受影响；页面仍保留手动入口。
+                    logger.info(
+                        "Teams 默认激活未完成（可手动启用）: %s", error
+                    )
 
             task = asyncio.create_task(warm_runtime())
             warmups.add(task)
@@ -804,7 +822,15 @@ def create_studio_app(
                     )
                 return {"Code": 0, "Message": "OK", "Data": data}
             if action == "GetAgentUiBootstrap":
-                data = shared_web.bootstrap(shared_web.resolve_agent_id(requested_agent_id or None))
+                bootstrap_agent_id = shared_web.resolve_agent_id(
+                    requested_agent_id or None
+                )
+                # 冷启动时 provider 模型描述符尚未发现；绑定 model:provider:*
+                # 的 Agent（尤其 Harness）若直接解析会 RESOURCE_NOT_FOUND，
+                # 前端只能无限转圈。访问资源库不应该是打开对话的前置条件。
+                if not bootstrap_agent_id.startswith(("ar-", "account:")):
+                    await runtime_model_catalog()
+                data = shared_web.bootstrap(bootstrap_agent_id)
             elif action == "ListAgentModels":
                 model_agent_id = shared_web.resolve_agent_id(requested_agent_id or None)
                 # A cold Studio process has no discovered provider descriptors.
@@ -1602,6 +1628,48 @@ def create_studio_app(
     @app.get("/api/v1/agents/{agent_id}")
     async def get_agent(agent_id: str):
         return studio.agent_detail(agent_id)
+
+    @app.post("/api/v1/agents/{agent_id}/runtime:prewarm", status_code=202)
+    async def prewarm_agent_runtime(agent_id: str, payload: dict[str, Any]):
+        """后台预热当前 Build 的 Provider 激活（MCP/图编译），不执行任何 turn。
+
+        首 token 延迟的主因是首轮 open_activation 时的 MCP spawn/health/list
+        （实测 ~12s）。前端在进入会话时 fire-and-forget 调用本端点，把这段
+        开销移到用户输入之前；失败静默（首轮照旧现场预热）。
+        """
+        session_id = str(payload.get("sessionId") or "")
+        if not session_id:
+            raise StudioError(
+                "SESSION_ID_REQUIRED", "缺少 sessionId", status_code=422
+            )
+        try:
+            build = await studio.ensure_current_build(agent_id)
+        except StudioError as exc:
+            raise StudioError(
+                "BUILD_NOT_FOUND", f"Agent 尚无可运行的 Build：{exc.message}",
+                status_code=404,
+            ) from exc
+
+        async def warm() -> None:
+            try:
+                spec = studio.resolve_run_spec(build.id)
+                runtime = studio.run_service.plugin_runtime
+                if runtime is None:
+                    return
+                kernel_adapter = getattr(runtime, "kernel_adapter", None)
+                if kernel_adapter is None:
+                    return
+                # 打开并保留激活（以 session 为 key）；下一轮 RunAgent 直接复用，
+                # 不再现场 spawn/health/list MCP。
+                await kernel_adapter(spec, session_id=session_id)
+            except Exception as error:
+                logger.info("runtime prewarm for %s skipped: %s", agent_id, error)
+
+        task = asyncio.create_task(warm())
+        app.state.runtime_prewarms = getattr(app.state, "runtime_prewarms", set())
+        app.state.runtime_prewarms.add(task)
+        task.add_done_callback(app.state.runtime_prewarms.discard)
+        return {"status": "prewarming", "buildId": build.id}
 
     @app.get("/api/v1/agents/{agent_id}/models")
     async def get_agent_models(agent_id: str):

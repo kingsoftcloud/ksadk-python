@@ -1636,3 +1636,117 @@ def test_native_question_projection_preserves_schema_and_submit_identity():
     assert data["inputSchema"]["required"] == ["scope"]
     assert data["callId"] == "native-question"
     assert data["message"] == "选择范围"
+
+
+@pytest.mark.asyncio
+async def test_plugin_run_streams_session_store_events_live_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    """_plugin_run 必须在 execute 进行中转发 canonical 增量，且终局零重复。"""
+
+    gate = asyncio.Event()
+    service_holder: dict[str, Any] = {}
+
+    class _LiveBufferedPluginRuntime:
+        async def execute(self, _spec: StudioRunSpec, request: dict[str, Any], *, session_id: str):
+            run_id = str(request["invocation_id"])
+            store = service_holder["service"].runtime_events
+            common = {
+                "schema_version": 2,
+                "timestamp": 1.0,
+                "run_id": run_id,
+                "scope_id": f"scope-{run_id}",
+                "source": SourceRef(framework="ksadk"),
+            }
+            await store.append_one(
+                session_id,
+                RunStarted(event_id="live-e1", seq=0, status="running", **common),
+            )
+            await store.append_one(
+                session_id,
+                ItemStarted(
+                    event_id="live-e2",
+                    seq=0,
+                    item_id="msg-1",
+                    item_kind="message",
+                    phase="final_answer",
+                    initial=ContentSnapshot(parts=(TextContent(part_id="text-0", text="hel"),)),
+                    **common,
+                ),
+            )
+            await store.append_one(
+                session_id,
+                ItemUpdated(
+                    event_id="live-e3",
+                    seq=0,
+                    item_id="msg-1",
+                    item_kind="message",
+                    op="append",
+                    update=TextContent(part_id="text-0", text="lo"),
+                    **common,
+                ),
+            )
+            await asyncio.wait_for(gate.wait(), timeout=2)
+            await store.append_one(
+                session_id,
+                ItemUpdated(
+                    event_id="live-e4",
+                    seq=0,
+                    item_id="msg-1",
+                    item_kind="message",
+                    op="append",
+                    update=TextContent(part_id="text-0", text="!"),
+                    **common,
+                ),
+            )
+            await store.append_one(
+                session_id,
+                RunCompleted(event_id="live-e5", seq=0, status="completed", output_refs=(), **common),
+            )
+            return SimpleNamespace(output_text="hello!", session_id=session_id, usage={})
+
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(
+        workspace,
+        RuntimeExecutor(RuntimeRegistry()),
+        plugin_runtime=_LiveBufferedPluginRuntime(),
+    )
+    service_holder["service"] = service
+    observed: list[tuple[str, str]] = []
+
+    task = asyncio.create_task(
+        service.run(
+            StudioRunSpec(
+                launch_context=RuntimeLaunchContext(
+                    runtime_type="harness",
+                    project_dir=tmp_path,
+                ),
+                build_id="build-harness-live",
+                agent_id="harness-live-agent",
+                model="fixture-model",
+                plugin_bundle_root=tmp_path,
+            ),
+            "stream this live",
+            session_id="ses-plugin-live",
+            on_event=lambda event: observed.append((event.type, str(event.data.get("text") or event.data.get("delta") or ""))),
+        )
+    )
+
+    # execute 完成前，session store 中已有的增量必须已经到达订阅端。
+    for _ in range(200):
+        if any(event_type == "message.delta" for event_type, _ in observed):
+            break
+        await asyncio.sleep(0.01)
+    assert any(event_type == "message.delta" and text == "lo" for event_type, text in observed)
+    assert not task.done()
+
+    gate.set()
+    record = await asyncio.wait_for(task, timeout=2)
+
+    assert record.status == RunStatus.COMPLETED
+    assert record.output == "hello!"
+    # 终局：最后一个 delta 与 run.completed 恰好各出现一次（live + 补发去重）。
+    deltas = [text for event_type, text in observed if event_type == "message.delta"]
+    assert deltas.count("!") == 1
+    assert [event_type for event_type, _ in observed].count("run.completed") == 1

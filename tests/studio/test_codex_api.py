@@ -700,7 +700,7 @@ def test_openai_responses_model_selects_real_bound_codex_model(tmp_path: Path) -
     ("approval_mode", "sandbox", "codex_approval"),
     [
         ("ask", "workspace-write", "manual"),
-        ("risk", "workspace-write", "auto_review"),
+        ("risk", "workspace-write", "manual"),
         ("full", "full-access", "deny_all"),
     ],
 )
@@ -774,7 +774,7 @@ def test_openai_responses_reads_shared_web_agentengine_metadata(tmp_path: Path) 
     request = runtime_fixture.start_requests[0]
     assert request.config["sandbox"] == "workspace-write"
     assert request.config["sandbox_read_only"] is False
-    assert request.config["approval_mode"] == "auto_review"
+    assert request.config["approval_mode"] == "manual"
     assert request.config["tool_approval_mode"] == "risk"
     assert request.config["collaboration_mode"] == "plan"
     assert request.config["goal_objective"] == "完成协议回归"

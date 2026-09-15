@@ -652,6 +652,7 @@ def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
     )
     assert len(child_prompts) == 3
     assert "最后一轮" in child_prompts[-1]
+    assert "禁止描述后续计划" in child_prompts[-1]
 
 
 def test_subagent_result_contract_is_additive_and_serializable():

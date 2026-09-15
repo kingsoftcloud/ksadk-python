@@ -1149,7 +1149,12 @@ class StudioSharedWebBridge:
         for session_id, runs in grouped.items():
             records[session_id] = self._session_record(runs)
         ordered = list(records.values())
-        ordered.sort(key=lambda item: item["UpdatedAt"], reverse=True)
+        # UpdatedAt 相同（同一秒创建的"新会话"、毫秒级并发会话）时以 SessionId
+        # 定序，避免两次 ListSessions 之间插入顺序漂移导致前端列表"乱跳"。
+        ordered.sort(
+            key=lambda item: (item["UpdatedAt"], item["SessionId"]),
+            reverse=True,
+        )
         return ordered
 
     def _session_metadata_record(self, session: Session) -> dict[str, Any]:
@@ -1253,11 +1258,17 @@ class StudioSharedWebBridge:
             binding_ids = [draft.spec.bindings.model_profile_id]
         descriptors: list[dict[str, Any]] = []
         for binding_id in binding_ids:
-            spec = self.studio.catalog.resolve_model(
-                draft.spec.bindings.model_copy(
-                    update={"model_profile_id": binding_id, "model_profile_ids": []}
+            try:
+                spec = self.studio.catalog.resolve_model(
+                    draft.spec.bindings.model_copy(
+                        update={"model_profile_id": binding_id, "model_profile_ids": []}
+                    )
                 )
-            )
+            except StudioError:
+                # provider 目录是惰性发现的；绑定指向尚未发现/已失效的
+                # model:provider:* 资源时跳过该绑定，回退到后续描述符，
+                # 而不是让整个 bootstrap 404（前端只能无限转圈）。
+                continue
             if spec is not None:
                 descriptors.append(
                     self._model_descriptor_from_spec(

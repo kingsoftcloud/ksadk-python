@@ -689,7 +689,7 @@ class CodexAgentService:
         return (
             current.runtime.version
             if current is not None
-            else (installed_runtime_version("codex") or "0.144.4")
+            else (installed_runtime_version("codex") or "0.154.0")
         )
 
     def _model_name(self, spec: AgentSpec, *, agent_id: str | None = None) -> str:

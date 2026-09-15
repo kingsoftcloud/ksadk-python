@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
+import logging
 import os
 import socket
+import time
 from dataclasses import dataclass, field
 from threading import RLock
+from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -28,6 +32,8 @@ _LENGTH_FINISH_REASONS = {"length", "incomplete", "max_output_tokens"}
 #: length 截断重试时把 max_tokens 提到的目标值；未配置 max_tokens 的 profile
 #: 首次截断重试也用该值兜底（authoring 输出完整 JSON 需要宽松上限）。
 _LENGTH_RETRY_TARGET_TOKENS = 16384
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,17 @@ class ModelResponse:
     raw_message: dict[str, Any]
     #: 推理文本（chat wire 的 reasoning_content / Responses wire 的 reasoning 项）。
     reasoning: str = ""
+
+
+@dataclass(frozen=True)
+class ModelStreamChunk:
+    """One OpenAI-compatible chat stream delta."""
+
+    text: str = ""
+    reasoning: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    usage: Usage | None = None
+    done: bool = False
 
 
 class CredentialResolver:
@@ -315,6 +332,34 @@ class OpenAICompatibleModelClient:
         self.network_guard = network_guard or NetworkGuard()
         self.transport = transport
         self.sleep = sleep
+        # Keep one AsyncClient for the lifetime of the Studio service. Creating
+        # a client for every turn defeats HTTP keep-alive and forces a fresh
+        # TCP/TLS handshake before the model can produce its first token.
+        self._client: httpx.AsyncClient | None = None
+        self._client_lock = RLock()
+
+    def _http_client(self) -> httpx.AsyncClient:
+        with self._client_lock:
+            if self._client is None or self._client.is_closed:
+                self._client = httpx.AsyncClient(
+                    transport=self.transport,
+                    follow_redirects=False,
+                    limits=httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                        keepalive_expiry=30.0,
+                    ),
+                )
+            return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared connection pool during Studio shutdown."""
+
+        with self._client_lock:
+            client = self._client
+            self._client = None
+        if client is not None and not client.is_closed:
+            await client.aclose()
 
     async def complete(
         self,
@@ -329,6 +374,7 @@ class OpenAICompatibleModelClient:
         allow_empty: bool = False,
         response_format: dict[str, Any] | None = None,
         retry_on_length: bool = False,
+        max_output_tokens: int | None = None,
     ) -> ModelResponse:
         await self.network_guard.check(model.endpoint_url, network_policy)
         credential = self.credential_resolver.resolve(model.credential_ref)
@@ -355,6 +401,8 @@ class OpenAICompatibleModelClient:
                 payload["tool_choice"] = "auto"
             if response_format and model.parameters.allow_json_response_format:
                 payload["response_format"] = response_format
+        if max_output_tokens is not None:
+            payload["max_output_tokens" if wire_api == "responses" else "max_tokens"] = max_output_tokens
         headers = {
             "Authorization": f"Bearer {credential}",
             "Content-Type": "application/json",
@@ -363,11 +411,8 @@ class OpenAICompatibleModelClient:
         dropped_response_format = False
         length_retried = False
         last_length_error: StudioError | None = None
-        async with httpx.AsyncClient(
-            transport=self.transport,
-            timeout=timeout,
-            follow_redirects=False,
-        ) as client:
+        client = self._http_client()
+        try:
             # 额外 1 次迭代仅用于 response_format 400 降级重发，
             # 其余失败路径仍受 max_attempts 约束（会在原上限处 raise）。
             for attempt in range(1, max_attempts + 2):
@@ -376,6 +421,7 @@ class OpenAICompatibleModelClient:
                         model.endpoint_url,
                         headers=headers,
                         json=payload,
+                        timeout=timeout,
                     )
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     if attempt >= max_attempts:
@@ -458,9 +504,280 @@ class OpenAICompatibleModelClient:
                     payload = self._expand_length_budget(payload)
                     continue
                 return parsed
+        except asyncio.CancelledError:
+            raise
         if last_length_error is not None:
             raise last_length_error
         raise AssertionError("unreachable")
+
+    async def stream(
+        self,
+        model: ResolvedModel,
+        *,
+        messages: list[dict[str, Any]],
+        network_policy: NetworkPolicy,
+        timeout_seconds: int,
+        tools: list[dict[str, Any]] | None = None,
+        max_output_tokens: int | None = None,
+    ) -> AsyncIterator[ModelStreamChunk]:
+        """Stream chat-completions deltas without buffering the response.
+
+        Studio's Harness path uses the same credential and network policy as
+        ``complete``.  Responses-wire profiles currently remain on the
+        buffered path because their event vocabulary is provider-specific.
+        """
+        if (model.wire_api or "chat").strip().lower() == "responses":
+            async for chunk in self._stream_responses(
+                model,
+                messages=messages,
+                network_policy=network_policy,
+                timeout_seconds=timeout_seconds,
+                tools=tools,
+                max_output_tokens=max_output_tokens,
+            ):
+                yield chunk
+            return
+        await self.network_guard.check(model.endpoint_url, network_policy)
+        credential = self.credential_resolver.resolve(model.credential_ref)
+        payload: dict[str, Any] = {
+            "model": model.model,
+            "messages": messages,
+            "stream": True,
+        }
+        if model.parameters.temperature is not None:
+            payload["temperature"] = model.parameters.temperature
+        if model.parameters.max_tokens is not None:
+            payload["max_tokens"] = model.parameters.max_tokens
+        if max_output_tokens is not None:
+            payload["max_tokens"] = max_output_tokens
+        if model.parameters.top_p is not None:
+            payload["top_p"] = model.parameters.top_p
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        headers = {
+            "Authorization": f"Bearer {credential}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        timeout = httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds))
+        client = self._http_client()
+        request_started = time.monotonic()
+        try:
+            async with client.stream(
+                "POST", model.endpoint_url, headers=headers, json=payload, timeout=timeout
+            ) as response:
+                if response.is_redirect or response.status_code >= 400:
+                    raise StudioError(
+                        "MODEL_REQUEST_FAILED",
+                        "模型流式请求失败",
+                        status_code=502,
+                        details={"upstreamStatus": response.status_code},
+                    )
+                tool_fragments: dict[int, dict[str, str]] = {}
+                first_chunk_logged = False
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    usage = chunk.get("usage") or {}
+                    usage_value = (
+                        Usage(
+                            input_tokens=int(usage.get("prompt_tokens") or 0),
+                            output_tokens=int(usage.get("completion_tokens") or 0),
+                            total_tokens=int(usage.get("total_tokens") or 0),
+                            cached_input_tokens=int(
+                                (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+                            ),
+                            reasoning_output_tokens=int(
+                                (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+                            ),
+                            reported=True,
+                            source="model-provider",
+                        )
+                        if usage
+                        else None
+                    )
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        text = str(delta.get("content") or "")
+                        reasoning = str(
+                            delta.get("reasoning_content") or delta.get("reasoning") or ""
+                        )
+                        calls: list[ToolCall] = []
+                        for call in delta.get("tool_calls") or []:
+                            index = int(call.get("index") or 0)
+                            function = call.get("function") or {}
+                            current = tool_fragments.setdefault(
+                                index, {"id": "", "name": "", "arguments": ""}
+                            )
+                            current["id"] += str(call.get("id") or "")
+                            current["name"] += str(function.get("name") or "")
+                            current["arguments"] += str(function.get("arguments") or "")
+                        if text or reasoning or usage_value is not None:
+                            if not first_chunk_logged and (text or reasoning):
+                                first_chunk_logged = True
+                                _LOGGER.info(
+                                    "model stream first delta: model=%s ttfb_ms=%d",
+                                    model.model,
+                                    int((time.monotonic() - request_started) * 1000),
+                                )
+                            yield ModelStreamChunk(
+                                text=text, reasoning=reasoning, usage=usage_value
+                            )
+                    finish = any(
+                        str(choice.get("finish_reason") or "") for choice in chunk.get("choices") or []
+                    )
+                    if finish:
+                        calls = tuple(
+                            ToolCall(
+                                id=value["id"],
+                                name=value["name"],
+                                arguments=value["arguments"] or "{}",
+                            )
+                            for value in tool_fragments.values()
+                            if value["name"]
+                        )
+                        yield ModelStreamChunk(tool_calls=calls, done=True)
+        except asyncio.CancelledError:
+            raise
+
+    async def _stream_responses(
+        self,
+        model: ResolvedModel,
+        *,
+        messages: list[dict[str, Any]],
+        network_policy: NetworkPolicy,
+        timeout_seconds: int,
+        tools: list[dict[str, Any]] | None = None,
+        max_output_tokens: int | None = None,
+    ) -> AsyncIterator[ModelStreamChunk]:
+        """Adapt the native Responses SSE event stream to Harness chunks."""
+
+        await self.network_guard.check(model.endpoint_url, network_policy)
+        credential = self.credential_resolver.resolve(model.credential_ref)
+        payload = self._responses_payload(model, messages, tools)
+        payload["stream"] = True
+        if max_output_tokens is not None:
+            payload["max_output_tokens"] = max_output_tokens
+        headers = {
+            "Authorization": f"Bearer {credential}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        timeout = httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds))
+        client = self._http_client()
+        request_started = time.monotonic()
+        first_delta_logged = False
+        function_calls: dict[str, dict[str, str]] = {}
+        emitted_calls: set[str] = set()
+        async with client.stream(
+            "POST", model.endpoint_url, headers=headers, json=payload, timeout=timeout
+        ) as response:
+            if response.is_redirect or response.status_code >= 400:
+                raise StudioError(
+                    "MODEL_REQUEST_FAILED",
+                    "模型 Responses 流式请求失败",
+                    status_code=502,
+                    details={"upstreamStatus": response.status_code},
+                )
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                event_type = str(event.get("type") or "")
+                text = ""
+                reasoning = ""
+                usage_value: Usage | None = None
+                if event_type == "response.output_text.delta":
+                    text = str(event.get("delta") or "")
+                elif event_type in {
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_text.delta",
+                }:
+                    reasoning = str(event.get("delta") or "")
+                elif event_type == "response.function_call_arguments.delta":
+                    key = str(event.get("item_id") or event.get("output_index") or "0")
+                    current = function_calls.setdefault(key, {"id": "", "name": "", "arguments": ""})
+                    current["arguments"] += str(event.get("delta") or "")
+                elif event_type == "response.output_item.added":
+                    item = event.get("item") or {}
+                    if item.get("type") == "function_call":
+                        key = str(item.get("id") or event.get("item_id") or event.get("output_index") or "0")
+                        current = function_calls.setdefault(key, {"id": "", "name": "", "arguments": ""})
+                        current["id"] = str(item.get("call_id") or item.get("id") or "")
+                        current["name"] = str(item.get("name") or "")
+                        current["arguments"] = str(item.get("arguments") or "")
+                elif event_type == "response.output_item.done":
+                    item = event.get("item") or {}
+                    if item.get("type") == "function_call":
+                        key = str(item.get("id") or event.get("item_id") or event.get("output_index") or "0")
+                        current = function_calls.setdefault(key, {"id": "", "name": "", "arguments": ""})
+                        current["id"] = str(item.get("call_id") or item.get("id") or current["id"])
+                        current["name"] = str(item.get("name") or current["name"])
+                        current["arguments"] = str(item.get("arguments") or current["arguments"] or "{}")
+                elif event_type in {"response.completed", "response.incomplete"}:
+                    response_payload = event.get("response") or {}
+                    raw_usage = response_payload.get("usage") or {}
+                    if raw_usage:
+                        usage_value = Usage(
+                            input_tokens=int(raw_usage.get("input_tokens") or 0),
+                            output_tokens=int(raw_usage.get("output_tokens") or 0),
+                            total_tokens=int(raw_usage.get("total_tokens") or 0),
+                            cached_input_tokens=int((raw_usage.get("input_tokens_details") or {}).get("cached_tokens") or 0),
+                            reasoning_output_tokens=int((raw_usage.get("output_tokens_details") or {}).get("reasoning_tokens") or 0),
+                            reported=True,
+                            source="model-provider",
+                        )
+                elif event_type in {"response.failed", "response.cancelled", "response.canceled"}:
+                    raise StudioError(
+                        "MODEL_REQUEST_FAILED",
+                        "模型 Responses 流式响应未完成",
+                        status_code=502,
+                        details={"eventType": event_type},
+                    )
+                if text or reasoning:
+                    if not first_delta_logged:
+                        first_delta_logged = True
+                        _LOGGER.info(
+                            "model Responses stream first delta: model=%s ttfb_ms=%d",
+                            model.model,
+                            int((time.monotonic() - request_started) * 1000),
+                        )
+                    yield ModelStreamChunk(text=text, reasoning=reasoning)
+                if event_type == "response.output_item.done":
+                    completed_key = str(
+                        (event.get("item") or {}).get("id")
+                        or event.get("item_id")
+                        or event.get("output_index")
+                        or "0"
+                    )
+                    calls = tuple(
+                        ToolCall(
+                            id=value["id"],
+                            name=value["name"],
+                            arguments=value["arguments"] or "{}",
+                        )
+                        for key, value in function_calls.items()
+                        if key == completed_key and key not in emitted_calls and value["name"]
+                    )
+                    if calls:
+                        emitted_calls.add(completed_key)
+                        yield ModelStreamChunk(tool_calls=calls)
+                if event_type in {"response.completed", "response.incomplete"}:
+                    yield ModelStreamChunk(usage=usage_value, done=True)
 
     @staticmethod
     def _is_length_truncation(exc: StudioError) -> bool:
@@ -482,12 +799,16 @@ class OpenAICompatibleModelClient:
         tools: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         """把 chat 语义消息映射到 Responses API 最小可用载荷。"""
-        if tools:
-            raise StudioError(
-                "MODEL_REQUEST_FAILED",
-                "Responses 端点暂不支持 tools 参数",
-                status_code=422,
-            )
+        # Responses tools are flat objects, unlike Chat Completions' nested
+        # ``function`` envelope. Accept both shapes because Harness supplies
+        # Chat-style schemas internally.
+        responses_tools = []
+        for tool in tools or []:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if isinstance(function, dict):
+                responses_tools.append({"type": "function", **function})
+            elif isinstance(tool, dict):
+                responses_tools.append(dict(tool))
         instructions: list[str] = []
         items: list[dict[str, Any]] = []
         for message in messages:
@@ -502,6 +823,8 @@ class OpenAICompatibleModelClient:
             "model": model.model,
             "input": items,
         }
+        if responses_tools:
+            payload["tools"] = responses_tools
         if model.parameters.max_tokens is not None:
             payload["max_output_tokens"] = model.parameters.max_tokens
         if instructions:

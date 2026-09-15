@@ -23,6 +23,8 @@ def configure_run(engine, run, *, policy=None, resolver=None, request=None):
     run.approval_required = set(engine._approval_required)
     if policy is not None:
         run.approval_required.update(policy.approval_required)
+    _apply_request_approval_mode(run, request)
+    _apply_request_approval_mode(run, request)
     run.sub_agents = {
         **engine._sub_agents,
         **{b.name: SubAgentSpec.from_binding(b) for b in run.compiled.spec.sub_agents},
@@ -49,3 +51,20 @@ async def revalidate_policy(engine, run):
         run.compiled, spec=apply_execution_policy(run.compiled.spec, limits_only)
     )
     run.execution_policy = policy
+
+def _apply_request_approval_mode(run, request) -> None:
+    """回合级审批档位（composer 的 完全访问/严格/询问）覆盖静态合同。
+
+    ``full`` = 免确认（用户已明确授权本次运行的工具副作用）；
+    ``ask`` = 全部需要确认；缺省保持合同与执行策略的静态判定。
+    """
+    request = request or getattr(run, "execution_policy_request", None)
+    mode = ""
+    if request is not None:
+        mode = str((getattr(request, "metadata", None) or {}).get("tool_approval_mode") or "")
+    if mode == "full":
+        run.approval_required = set()
+    elif mode == "ask":
+        run.approval_required.update(
+            name for name in getattr(run, "tools", {}) or {}
+        )

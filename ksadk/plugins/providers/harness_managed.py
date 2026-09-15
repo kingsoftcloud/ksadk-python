@@ -62,6 +62,7 @@ async def build_managed_provider_adapter(
     *,
     agent_name: str,
     workspace_root: Path,
+    user_workspace_root: Path | None = None,
     reasoner: HarnessReasoner,
     skills: Sequence[Any] = (),
     state_dir: str | Path | None = None,
@@ -83,10 +84,19 @@ async def build_managed_provider_adapter(
     mcp_runtime, transports, mcp_bindings = _mcp_runtime(config.mcp_tools)
     from ksadk.plugins.providers.harness_tools import assemble_python_tools
 
-    tool_workspace = (
-        Path(state_dir) / "tool-workspaces" / hashlib.sha256(agent_name.encode()).hexdigest()
-        if state_dir is not None else workspace_root
-    )
+    # 文件工具默认写到用户当前选择的 Studio 工作区；仅当工作区缺失或
+    # 落在不可变 Bundle 内部时才退回 state_dir 的哈希目录。
+    tool_workspace = user_workspace_root or workspace_root
+    if (
+        tool_workspace is None
+        or (
+            bundle_root is not None
+            and Path(tool_workspace).resolve().is_relative_to(Path(bundle_root).resolve())
+        )
+    ) and state_dir is not None:
+        tool_workspace = (
+            Path(state_dir) / "tool-workspaces" / hashlib.sha256(agent_name.encode()).hexdigest()
+        )
     if bundle_root is not None and tool_workspace.resolve().is_relative_to(bundle_root.resolve()):
         if any(
             item.get("enabled", True) and item.get("executor", "builtin") == "builtin"
@@ -215,6 +225,10 @@ class _BoundModelReasoner:
         self._delegate = delegate
         self._profile_ref = profile_ref
         self._model = model
+        # graph_builder 以 engine._reasoner._streaming / hasattr(stream_complete)
+        # 决定是否走增量推理；包装器不透传时 managed Harness 会静默回退到
+        # 整段 complete()，前端看不到任何 TEXT_DELTA。
+        self._streaming = getattr(delegate, "_streaming", None) is True
 
     async def complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
         if model != self._profile_ref:
@@ -226,6 +240,30 @@ class _BoundModelReasoner:
         ):
             kwargs["max_output_tokens"] = max_output_tokens
         return await self._delegate.complete(**kwargs)
+
+    def stream_complete(self, *, model, prompt, messages, tools, max_output_tokens=None):
+        if model != self._profile_ref:
+            raise ValueError(f"Unbound model profile: {model}")
+        stream = getattr(self._delegate, "stream_complete", None)
+        if stream is None:
+            return self._degenerate_stream(
+                model=model, prompt=prompt, messages=messages, tools=tools,
+                max_output_tokens=max_output_tokens,
+            )
+        kwargs = dict(model=self._model, prompt=prompt, messages=messages, tools=tools)
+        parameters = inspect.signature(stream).parameters
+        if "max_output_tokens" in parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        ):
+            kwargs["max_output_tokens"] = max_output_tokens
+        return stream(**kwargs)
+
+    async def _degenerate_stream(self, *, model, prompt, messages, tools, max_output_tokens=None):
+        turn = await self.complete(
+            model=model, prompt=prompt, messages=messages, tools=tools,
+            max_output_tokens=max_output_tokens,
+        )
+        yield {"turn": turn}
 
 
 class _PluginManagedHarnessRuntimeAdapter(ManagedHarnessRuntimeAdapter):

@@ -200,6 +200,11 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
         compiled = await self._ensure_compiled()
         conversation = request.conversation_preprocessing()
         metadata = dict(request.metadata)
+        # 回合级审批档位（composer 完全访问/严格/询问）放在 config 里，
+        # 挪进 metadata 让 policy_runtime.configure_run 能按它调整审批面。
+        approval_mode = str((request.config or {}).get("tool_approval_mode") or "")
+        if approval_mode:
+            metadata["tool_approval_mode"] = approval_mode
         if conversation is not None and conversation.messages:
             metadata["conversation_history"] = [dict(item) for item in conversation.messages]
         # Studio 的 Agent 合同给出 max_input_tokens + reserve_output_tokens，
@@ -544,6 +549,15 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         part_id = "text-0"
         text = str(payload.get("text") or payload.get("summary") or "")
         content = ContentSnapshot(parts=(TextContent(part_id=part_id, text=text),))
+        if payload.get("streamed"):
+            return [
+                ItemCompleted(
+                    **envelope("item.completed", item_id, part_id, 1),
+                    item_id=item_id,
+                    item_kind=kind,
+                    snapshot=content,
+                )
+            ]
         return [
             ItemStarted(
                 **envelope("item.started", item_id, part_id, 0),
@@ -558,6 +572,36 @@ def _project_event(event: HarnessEvent) -> list[Any]:
                 item_kind=kind,
                 snapshot=content,
             ),
+        ]
+    if rich.event_type in {EventType.TEXT_DELTA, EventType.REASONING_DELTA}:
+        kind = "message" if rich.event_type == EventType.TEXT_DELTA else "reasoning"
+        phase = "final_answer" if kind == "message" else "commentary"
+        item_id = (
+            stable_item_id("ksadk", native_run_id, "message", "final")
+            if kind == "message"
+            else stable_item_id("ksadk", run_id, kind, "stream")
+        )
+        part_id = "text-0"
+        text = str(payload.get("text") or "")
+        update = TextContent(part_id=part_id, text=text)
+        if int(payload.get("delta_index") or 0) == 0:
+            return [
+                ItemStarted(
+                    **envelope("item.started", item_id, part_id, 0),
+                    item_id=item_id,
+                    item_kind=kind,
+                    phase=phase,
+                    initial=ContentSnapshot(parts=(update,)),
+                )
+            ]
+        return [
+            ItemUpdated(
+                **envelope("item.updated", item_id, part_id, int(payload.get("delta_index") or 0)),
+                item_id=item_id,
+                item_kind=kind,
+                op="append",
+                update=update,
+            )
         ]
     if rich.event_type in {EventType.TOOL_CALL_BEGIN, EventType.TOOL_CALL_END}:
         # Arguments, results and receipts remain in the canonical Trace. The

@@ -20,6 +20,7 @@ import requests
 from pydantic import Field, model_validator
 
 from ksadk.knowledge_base.client import KnowledgeBaseClient
+from ksadk.identity.resolver import iam_endpoint_candidates, is_inner_account_error
 from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
 from ksadk.plugins.contracts import PluginContractModel
 from ksadk.resource_runtime.contracts import Identifier, ResourceConfig, ResourceRef
@@ -362,6 +363,13 @@ class SignedKnowledgeResourceAuthority:
             credentials=credentials,
         )
     def _verify_identity(self, access_key: str, secret_key: str) -> _VerifiedIamIdentity:
+        """Verify the signing key, retrying the IAM intranet for inner accounts.
+
+        Inner-account AKs are rejected by the public IAM endpoint with
+        ``InnerAccountCanOnlyAccessThroughIntranet``.  The standalone identity
+        resolver already handles this case; Studio must use the same fallback
+        so a packaged app launched from Finder behaves like the CLI.
+        """
         try:
             from ksyun.client.iam.v20151101.client import (  # type: ignore[import-untyped]
                 IamClient,
@@ -378,28 +386,40 @@ class SignedKnowledgeResourceAuthority:
                 HttpProfile,
             )
 
-            endpoint = urlsplit(self.policy.iam_endpoint)
-            profile = ClientProfile()
-            profile.httpProfile = HttpProfile(
-                protocol=endpoint.scheme,
-                endpoint=endpoint.netloc,
-                # The hardened transport owns the configured base path.
-                path="/",
-                reqMethod="POST",
-                reqTimeout=self.policy.timeout_seconds,
-            )
-            client = IamClient(
-                Credential(access_key, secret_key), self.policy.iam_region, profile
-            )
-            client.request = _HardenedSdkTransport(
-                self.policy.iam_endpoint, timeout=self.policy.timeout_seconds
-            )
-            listed = _response_object(client.ListAllUserAccessKeys(ListAllUserAccessKeysRequest()))
-            identity = self._identity_from_iam_listing(listed, access_key)
-            request = GetUserRequest()
-            request.UserName = identity
-            user_response = _response_object(client.GetUser(request))
-            return self._identity_from_iam_user(user_response, identity)
+            endpoints = iam_endpoint_candidates(self.policy.iam_endpoint)
+            last_error: Exception | None = None
+            for iam_endpoint in endpoints:
+                try:
+                    endpoint = urlsplit(iam_endpoint)
+                    profile = ClientProfile()
+                    profile.httpProfile = HttpProfile(
+                        protocol=endpoint.scheme,
+                        endpoint=endpoint.netloc,
+                        # The hardened transport owns the configured base path.
+                        path="/",
+                        reqMethod="POST",
+                        reqTimeout=self.policy.timeout_seconds,
+                    )
+                    client = IamClient(
+                        Credential(access_key, secret_key), self.policy.iam_region, profile
+                    )
+                    client.request = _HardenedSdkTransport(
+                        iam_endpoint, timeout=self.policy.timeout_seconds
+                    )
+                    listed = _response_object(
+                        client.ListAllUserAccessKeys(ListAllUserAccessKeysRequest())
+                    )
+                    identity = self._identity_from_iam_listing(listed, access_key)
+                    request = GetUserRequest()
+                    request.UserName = identity
+                    user_response = _response_object(client.GetUser(request))
+                    return self._identity_from_iam_user(user_response, identity)
+                except Exception as error:
+                    last_error = error
+                    if not is_inner_account_error(error):
+                        break
+            assert last_error is not None
+            raise last_error
         except StudioError:
             raise
         except Exception as error:

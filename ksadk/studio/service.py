@@ -1348,13 +1348,18 @@ class StudioService:
         session = await self.session_service.get_session_metadata(session_id)
         if not runs and session is None:
             raise not_found("session", session_id)
-        if any(run.status == RunStatus.RUNNING for run in runs):
-            raise StudioError(
-                "SESSION_RUN_ACTIVE",
-                "会话仍在运行，请先停止运行后再删除",
-                status_code=409,
-                details={"sessionId": session_id},
-            )
+        # 磁盘停在 RUNNING 的 run 只有仍在本进程内执行时才阻止删除；
+        # 崩溃/重启遗留的僵尸 RUNNING 一律回收为 canceled 后放行删除。
+        for run in runs:
+            if run.status == RunStatus.RUNNING:
+                if self.run_service.is_run_executing(run.id):
+                    raise StudioError(
+                        "SESSION_RUN_ACTIVE",
+                        "会话仍在运行，请先停止运行后再删除",
+                        status_code=409,
+                        details={"sessionId": session_id},
+                    )
+                await self.run_service.reap_stale_running_run(run.id)
         await self.plugin_runs.close_session(session_id)
         await self.session_service.delete_session(session_id)
         self.event_store.delete_session(session_id)
@@ -1388,6 +1393,11 @@ class StudioService:
             self.workspace_plugins.close, self.plugin_runs.aclose, self.dsh_capabilities.aclose,
             self.scheduler_runtimes.close, self.execution_host.close,
         ]
+        # The model client owns a keep-alive connection pool shared by all
+        # turns. Close it with the Studio service so shutdown remains clean.
+        close_model_client = getattr(self.model_client, "aclose", None)
+        if close_model_client is not None:
+            owned.append(close_model_client)
         if self.resource_dsh_capabilities is not self.dsh_capabilities:
             owned.append(self.resource_dsh_capabilities.aclose)
         if self._dsh_provider_registration_manager is not None:

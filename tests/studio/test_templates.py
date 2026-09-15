@@ -118,7 +118,7 @@ def test_research_template_installs_and_binds_methodology_skill(tmp_path: Path):
 
     assert composition.template_id == "research"
     assert composition.spec.execution.strategy == "plan-act-observe"
-    assert composition.spec.execution.max_steps == 28
+    assert composition.spec.execution.max_steps == 40
     assert composition.spec.bindings.model_profile_id
     assert "端云一体 Agent 平台" in composition.spec.instructions.system
     assert "当前未绑定外部调研 MCP" in composition.spec.instructions.system

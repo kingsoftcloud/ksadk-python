@@ -184,8 +184,9 @@ def build_graph(engine, run):
             instructions = spec.prompt.instructions or ""
             if closing_turn:
                 instructions += (
-                    "\n\n这是本次执行的最后一轮。请停止调用工具，直接基于已有证据给出"
-                    "当前最佳答案，并明确仍未验证的事项。"
+                    "\n\n这是本次执行的最后一轮。禁止再调用或模拟调用工具，禁止描述"
+                    "后续计划或说将继续查找。必须现在基于已有证据输出完整、可交付的"
+                    "当前最佳答案；证据不足的部分直接标为未验证。"
                 )
             available_tools = (
                 list(run.tools.values())
