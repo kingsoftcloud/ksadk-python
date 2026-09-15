@@ -8722,6 +8722,9 @@ select {
 
 /* Keep every runtime's empty conversation aligned to the same visual center. */
 .studio-chat-shell .studio-conversation-welcome {
+  width: min(100%, 832px);
+  box-sizing: border-box;
+  margin-inline: auto;
   min-height: clamp(300px, 52vh, 560px);
   justify-content: center;
   padding: 0 24px;
