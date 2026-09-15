@@ -156,6 +156,13 @@ export function ChatWorkspace({
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
   const [welcomeCopy, setWelcomeCopy] = useState(() => pickStudioWelcome());
+  const [, setOutboxRevision] = useState(0);
+  useEffect(() => chat.conversationOutbox?.subscribe(() => setOutboxRevision(revision => revision + 1)), [chat.conversationOutbox]);
+  const unresolvedOutbox = useMemo(() => {
+    const id = chat.conversationId || conversationController.getOrCreate(agentId, chat.currentSessionId);
+    return chat.conversationOutbox?.listUnresolved(id).filter(entry => entry.status === "unknown" || entry.status === "failed") || [];
+  }, [agentId, chat.conversationId, chat.currentSessionId, chat.conversationOutbox, conversationController]);
+  const [retryingOutboxId, setRetryingOutboxId] = useState<string | null>(null);
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const sessionTriggerRef = useRef<HTMLButtonElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
@@ -479,6 +486,23 @@ export function ChatWorkspace({
           </>
         )}
         <div className="studio-composer-area">
+          {unresolvedOutbox.length > 0 ? (
+            <div className="studio-outbox-notice" role="status" aria-live="polite">
+              <strong>{unresolvedOutbox.length === 1 ? "有一条消息尚未确认" : `有 ${unresolvedOutbox.length} 条消息尚未确认`}</strong>
+              <span>网络中断可能导致投递结果未知，请确认后再重试。</span>
+              <div className="studio-outbox-items">
+                {unresolvedOutbox.map(entry => (
+                  <div className="studio-outbox-item" key={entry.requestId}>
+                    <span title={entry.text}>{shortText(entry.text, 44)}</span>
+                    <button type="button" disabled={retryingOutboxId === entry.requestId} onClick={() => {
+                      setRetryingOutboxId(entry.requestId);
+                      void chat.retryOutbox(entry.requestId).finally(() => setRetryingOutboxId(null));
+                    }}>{retryingOutboxId === entry.requestId ? "重试中…" : "确认并重试"}</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <AgentConversationComposer
             draftKey={conversationIdFor(chat.currentSessionId)}
             draftStore={chat.conversationDrafts}

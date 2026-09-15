@@ -768,6 +768,26 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .studio-composer-area [data-slot="composer"] { background: transparent; border: 0; border-radius: 0; box-shadow: none; backdrop-filter: none; }
 /* Shared Web owns composer structure and focus; the host provides its radius. */
 .studio-composer-area { --chat-composer-radius: var(--radius-surface); }
+
+.studio-outbox-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 28%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-warning, #d97706) 8%, transparent);
+  color: var(--text-primary, #1f2937);
+  font-size: 13px;
+}
+.studio-outbox-notice > span { color: var(--text-secondary, #6b7280); }
+.studio-outbox-items { display: flex; flex-direction: column; gap: 4px; }
+.studio-outbox-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.studio-outbox-item > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-outbox-item button { flex: 0 0 auto; border: 0; border-radius: 6px; padding: 3px 8px; color: var(--accent, #1677ff); background: transparent; cursor: pointer; }
+.studio-outbox-item button:hover { background: color-mix(in srgb, var(--accent, #1677ff) 10%, transparent); }
+.studio-outbox-item button:disabled { opacity: .55; cursor: wait; }
 .header-agent-selector.conversation-target-selector { min-height: var(--control-height); border-radius: var(--radius-control); }
 .studio-navigation .integrated-history .chat-session-search input,
 .studio-navigation .integrated-history .chat-session-search input:hover,
