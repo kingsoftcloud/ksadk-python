@@ -146,6 +146,8 @@ const WIZARD_STEP_META = [
 
 const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
 const PROXY_MODEL_FAMILIES = ["deepseek", "glm", "kimi", "minimax", "qwen"];
+const QUICK_CREATE_DEFAULT_PROMPT = "你是一个可靠的通用助手，请直接回答用户问题；信息不足时先提出澄清问题。";
+const QUICK_CREATE_DEFAULT_NAME = "Studio Assistant";
 
 function modelSortKey(item: ResItem): [number, number[], string] {
   const raw = String(item.contract?.model || item.name || "").toLowerCase();
@@ -669,7 +671,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     timeoutSeconds: template === "research" ? 900 : 120,
   }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
-  const composeAgent = useCallback(async ({ preservePrompt = true } = {}) => {
+  const composeAgent = useCallback(async ({ preservePrompt = true, goalOverride } = {} as { preservePrompt?: boolean; goalOverride?: string }) => {
     const seq = ++composeSeq.current;
     setPromptOperation("compose");
     setPromptStatus("composing");
@@ -677,7 +679,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
       const res = await apiFetch(`/api/v1/agent-templates/${template}:compose`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(wizardPayload()),
+        body: JSON.stringify({ ...wizardPayload(), ...(goalOverride === undefined ? {} : { goal: goalOverride }) }),
       });
       const composition = await res.json();
       if (!res.ok) {
@@ -692,7 +694,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
       if (ids.length) setSelectedModels(ids);
       if (!preservePrompt || !systemPrompt.trim()) {
-        quickForm.setValue("systemPrompt", composition.spec?.instructions?.system || prompt.trim(), { shouldDirty: true });
+        quickForm.setValue("systemPrompt", composition.spec?.instructions?.system || goalOverride?.trim() || prompt.trim(), { shouldDirty: true });
       }
       if (!preservePrompt || !taskPrompt.trim()) {
         quickForm.setValue("taskPrompt", composition.spec?.instructions?.task || "", { shouldDirty: true });
@@ -704,7 +706,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
         setCreateError(error.message || "生成 Agent 配置失败");
       }
     }
-  }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm]);
+  }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm, prompt]);
 
   useEffect(() => {
     if (!restoreComposition) return;
@@ -841,6 +843,31 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     setStep(next);
     setMaxStep(m => Math.max(m, next));
     markDirty();
+  }
+
+  async function createWithDefaults() {
+    if (submitting || platformResourcesPending) return;
+    if (!selectedModels.length) {
+      setCreateError("模型目录仍在加载，请稍候再试。");
+      return;
+    }
+    const values = quickForm.getValues();
+    const defaultPrompt = values.prompt.trim() || QUICK_CREATE_DEFAULT_PROMPT;
+    const defaultName = values.name.trim() && values.name.trim() !== "New Agent"
+      ? values.name.trim()
+      : QUICK_CREATE_DEFAULT_NAME;
+    const nextValues = { ...values, name: defaultName, prompt: defaultPrompt,
+      systemPrompt: values.systemPrompt.trim() || defaultPrompt };
+    quickForm.reset(nextValues, { keepDirty: true });
+    setCreateError("");
+    setSubmitting(true);
+    try {
+      await composeAgent({ preservePrompt: false, goalOverride: defaultPrompt });
+      if (!compositionRef.current) throw new Error("未能生成 Agent 配置，请稍后重试。");
+      await submitWizard(nextValues);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function submitWizard(values: QuickAgentFormValues) {
@@ -2200,6 +2227,17 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                   </button>
                   <div className="wizard-flow-actions">
                     <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
+                    {step === 1 && (
+                      <button
+                        className="button secondary quick-create-default"
+                        type="button"
+                        disabled={submitting || platformResourcesPending}
+                        onClick={() => void createWithDefaults()}
+                        title="使用通用助手模板、已选模型和当前权限直接创建"
+                      >
+                        <Zap size={16} /><span>{submitting ? "正在创建" : "一键创建"}</span>
+                      </button>
+                    )}
                     {step < 4 ? (
                       <button key="continue" className="button accent" type="button" disabled={platformResourcesPending} onClick={event => { event.preventDefault(); void gotoStep(step + 1); }}>
                         <span>继续</span><ArrowRight size={16} />

@@ -72,6 +72,22 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("creates from the first step with safe defaults", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    const create = await screen.findByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.name).toBe("Studio Assistant");
+      expect(request.spec.instructions.system).toContain("可靠的通用助手");
+      expect(request.spec.bindings.modelProfileIds).toEqual([model.resourceId]);
+    });
+  });
+
   it("creates Harness through the manual wizard and preserves composed Tool bindings", async () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation(async (input, init) => {
