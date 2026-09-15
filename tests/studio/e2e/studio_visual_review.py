@@ -92,11 +92,14 @@ def main() -> None:
                         errors: list[str] = []
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         page.goto(url, wait_until="domcontentloaded")
-                        expect(page.locator(".app-shell")).to_be_visible()
-                        expect(page.locator("html")).to_have_attribute("data-theme", theme)
+                        # Cold DSH discovery can take several seconds on a new
+                        # context; wait for the shell rather than treating that
+                        # startup latency as a visual regression.
+                        expect(page.locator(".app-shell")).to_be_visible(timeout=20000)
+                        expect(page.locator("html")).to_have_attribute("data-theme", theme, timeout=20000)
                         expect(
                             page.get_by_role("button", name="创建 Agent", exact=True).first
-                        ).to_be_enabled()
+                        ).to_be_enabled(timeout=20000)
                         assert_readable(page, ".button.accent:not(:disabled)")
                         visible_nav_links = page.locator(
                             ".studio-navigation .studio-nav-link:visible"

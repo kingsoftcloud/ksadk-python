@@ -113,9 +113,9 @@
   --accent-active: #285477;
   --accent-border: #386783;
   --focus-ring: #64baff;
-  --button-primary-bg: #0091ea;
-  --button-primary-bg-hover: #26a5f2;
-  --button-primary-bg-active: #0079c4;
+  --button-primary-bg: #0079c4;
+  --button-primary-bg-hover: #006da8;
+  --button-primary-bg-active: #005f9e;
   --button-primary-text: #ffffff;
   --success: #82d988;
   --success-soft: #203a2a;
@@ -687,7 +687,7 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 }
 .studio-nav-link svg { flex-shrink: 0; stroke-width: 1.7; }
 .studio-navigation .studio-nav-link:hover { background: var(--surface-hover); color: var(--text-primary); }
-.studio-navigation .studio-nav-link.active { background: var(--selected); color: var(--studio-accent); font-weight: 500; }
+.studio-navigation .studio-nav-link.active { background: var(--selected); color: var(--accent-strong); font-weight: 500; }
 .studio-nav-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .studio-nav-chevron { margin-left: auto; transform: rotate(-90deg); }
 .studio-nav-chevron[data-open="true"] { transform: none; }
