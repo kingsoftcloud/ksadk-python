@@ -217,6 +217,16 @@ export function ChatWorkspace({
   }, [sessionPanelOpen]);
 
   useEffect(() => {
+    const focusSessionSearch = () => {
+      if (!active) return;
+      setSessionPanelOpen(true);
+      window.requestAnimationFrame(() => sessionSearchRef.current?.focus());
+    };
+    window.addEventListener("studio:focus-session-search", focusSessionSearch);
+    return () => window.removeEventListener("studio:focus-session-search", focusSessionSearch);
+  }, [active]);
+
+  useEffect(() => {
     const previous = previousTransport.current;
     const settled = previous.agentId === agentId
       && previous.sessionId === chat.currentSessionId
