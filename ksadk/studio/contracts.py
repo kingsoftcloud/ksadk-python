@@ -327,7 +327,7 @@ class RetryPolicy(ContractModel):
 class ExecutionSpec(ContractModel):
     strategy: Literal["direct", "plan-act-observe"] = "direct"
     max_steps: int = Field(default=25, ge=1, le=100)
-    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     sandbox: str | None = None
     approval_mode: str | None = None
@@ -651,7 +651,7 @@ class AgentTemplateComposeRequest(ContractModel):
     policy_template: Literal["loose", "strict", "custom"] = "strict"
     execution_strategy: Literal["direct", "plan-act-observe"] = "direct"
     max_steps: int = Field(default=25, ge=1, le=100)
-    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
     auto_bind_tools: bool = True
     auto_bind_mcp: bool = True
 
