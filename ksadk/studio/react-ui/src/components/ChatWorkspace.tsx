@@ -163,7 +163,7 @@ export function ChatWorkspace({
   const unresolvedOutbox = useMemo(() => {
     const id = chat.conversationId || conversationController.getOrCreate(agentId, chat.currentSessionId);
     return chat.conversationOutbox?.listUnresolved(id)
-      .filter(entry => entry.status === "unknown" || entry.status === "failed")
+      .filter(entry => entry.status === "pending" || entry.status === "unknown" || entry.status === "failed")
       .map(entry => ({
         entry,
         canRetry: entry.attachments.length === 0
@@ -496,12 +496,12 @@ export function ChatWorkspace({
         <div className="studio-composer-area">
           {unresolvedOutbox.length > 0 ? (
             <div className="studio-outbox-notice" role="status" aria-live="polite">
-              <strong>{unresolvedOutbox.length === 1 ? "有一条消息尚未确认" : `有 ${unresolvedOutbox.length} 条消息尚未确认`}</strong>
-              <span>网络中断可能导致投递结果未知，请确认后再重试。</span>
+              <strong>{unresolvedOutbox.length === 1 ? "有一条消息需要处理" : `有 ${unresolvedOutbox.length} 条消息需要处理`}</strong>
+              <span>应用重载或网络中断可能导致投递状态未知，请确认后再继续。</span>
               <div className="studio-outbox-items">
                 {unresolvedOutbox.map(({ entry, canRetry }) => (
                   <div className="studio-outbox-item" key={entry.requestId}>
-                    <span title={entry.text}>{shortText(entry.text, 44)}{!canRetry ? " · 含附件，请重新添加后发送" : ""}</span>
+                    <span title={entry.text}>{entry.status === "pending" ? "待发送 · " : entry.status === "failed" ? "发送失败 · " : "状态未知 · "}{shortText(entry.text, 44)}{!canRetry ? " · 含附件，请重新添加后发送" : ""}</span>
                     <button type="button" disabled={!canRetry || retryingOutboxId === entry.requestId} onClick={() => {
                       setRetryingOutboxId(entry.requestId);
                       void chat.retryOutbox(entry.requestId).finally(() => setRetryingOutboxId(null));
