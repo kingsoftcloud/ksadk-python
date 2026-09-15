@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request, WebSocket
 from starlette.background import BackgroundTask
+from starlette.requests import ClientDisconnect
 from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from ksadk.studio.errors import StudioError
@@ -108,6 +109,12 @@ def register_dsh_application(app: FastAPI, studio, *, session_secret: str, secur
             headers["origin"] = origin
         try:
             upstream = await client.send(client.build_request(request.method, origin + path, headers=headers, content=request.stream()), stream=True)
+        except ClientDisconnect:
+            # Navigation and responsive viewport changes can abort an in-flight
+            # browser request. Treat it as a client cancellation instead of
+            # emitting an application traceback from the proxy.
+            await client.aclose()
+            return Response(status_code=499)
         except BaseException:
             await client.aclose()
             raise
