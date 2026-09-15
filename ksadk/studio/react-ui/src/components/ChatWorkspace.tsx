@@ -11,6 +11,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
 import { useRunDocumentActions } from "./RunDocumentActions";
 import { ConversationController, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
+import { pickStudioWelcome } from "./studioWelcome";
 
 export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
@@ -110,6 +111,7 @@ export function ChatWorkspace({
       && currentSessionIdRef.current === autoCreatedEmptySessionId.current) return;
     creatingSession.current = true;
     try {
+      setWelcomeCopy(pickStudioWelcome());
       if (chat.startNewConversation) chat.startNewConversation();
       else await chat.createNewSession();
       autoCreatedEmptySessionId.current = currentSessionIdRef.current;
@@ -138,6 +140,7 @@ export function ChatWorkspace({
     })();
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
+  const [welcomeCopy, setWelcomeCopy] = useState(() => pickStudioWelcome());
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const sessionTriggerRef = useRef<HTMLButtonElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
@@ -413,7 +416,7 @@ export function ChatWorkspace({
               emptyState={(
                 <div className="studio-conversation-welcome">
                   <p>{agentName}</p>
-                  <h2>有什么可以帮你？</h2>
+                  <h2><span>{welcomeCopy}</span></h2>
                 </div>
               )}
               isMobile={chat.isMobile}

@@ -8719,3 +8719,36 @@ select {
   align-items: center;
   text-align: center;
 }
+
+/* Keep every runtime's empty conversation aligned to the same visual center. */
+.studio-chat-shell .studio-conversation-welcome {
+  min-height: clamp(300px, 52vh, 560px);
+  justify-content: center;
+  padding: 0 24px;
+}
+.studio-chat-shell .studio-conversation-welcome p {
+  color: var(--studio-text-secondary);
+  font-size: 13px;
+  letter-spacing: .01em;
+}
+.studio-chat-shell .studio-conversation-welcome h2 {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 3vw, 38px);
+  font-weight: 600;
+  letter-spacing: -.04em;
+}
+.studio-chat-shell .studio-conversation-welcome h2 span {
+  color: transparent;
+  background: linear-gradient(105deg, var(--text-primary) 12%, var(--studio-accent, #1488e6) 46%, var(--text-primary) 78%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: studio-welcome-shimmer 5s ease-in-out infinite;
+}
+@keyframes studio-welcome-shimmer {
+  0%, 100% { background-position: 100% 0; }
+  50% { background-position: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-chat-shell .studio-conversation-welcome h2 span { animation: none; }
+}
