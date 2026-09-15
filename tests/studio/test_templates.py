@@ -96,7 +96,7 @@ def test_blank_template_compiles_goal_into_behavior_contract(tmp_path: Path):
     )
     assert "# 核心目标" in composition.spec.instructions.system
     assert goal in composition.spec.instructions.system
-    assert "每次收到请求时遵循以下执行契约" in composition.spec.instructions.task
+    assert "按以下步骤处理请求" in composition.spec.instructions.task
     assert composition.spec.instructions.system != goal
 
 
