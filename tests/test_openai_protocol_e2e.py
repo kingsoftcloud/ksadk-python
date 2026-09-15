@@ -194,7 +194,12 @@ class _CdpBrowser:
                 self._process.kill()
                 self._process.wait(timeout=5)
         if self._user_data_dir is not None:
-            self._user_data_dir.cleanup()
+            # chromium 是多进程(renderer/GPU 子进程);terminate 主进程后子进程
+            # 可能仍在写 Default profile,cleanup 立刻删会撞 "Directory not empty"。
+            # 用 ignore_errors 容错删除——这是我们自有的临时目录,丢弃即可。
+            import shutil
+
+            shutil.rmtree(self._user_data_dir.name, ignore_errors=True)
 
     async def send(
         self,
