@@ -42,6 +42,7 @@ from ksadk.events.identity import stable_event_id, stable_item_id, stable_part_i
 
 _CODEX_0_147_0_NOTIFICATION_METHODS = frozenset("""
     account/login/completed account/rateLimits/updated account/updated app/list/updated
+    autoApprovalReview/strictReviewRequired
     command/exec/outputDelta configWarning deprecationNotice error
     externalAgentConfig/import/completed externalAgentConfig/import/progress fs/changed
     fuzzyFileSearch/sessionCompleted fuzzyFileSearch/sessionUpdated guardianWarning
@@ -50,16 +51,23 @@ _CODEX_0_147_0_NOTIFICATION_METHODS = frozenset("""
     item/commandExecution/terminalInteraction item/completed item/fileChange/outputDelta
     item/fileChange/patchUpdated item/mcpToolCall/progress item/plan/delta
     item/reasoning/summaryPartAdded item/reasoning/summaryTextDelta item/reasoning/textDelta
-    item/started mcpServer/oauthLogin/completed mcpServer/startupStatus/updated
-    model/rerouted model/safetyBuffering/updated model/verification process/exited
-    process/outputDelta remoteControl/status/changed serverRequest/resolved skills/changed
-    thread/archived thread/closed thread/compacted thread/deleted thread/goal/cleared
-    thread/environment/connected thread/environment/disconnected
-    thread/goal/updated thread/name/updated thread/realtime/closed thread/realtime/error
+    item/started mcpServer/event/stream/notification mcpServer/oauthLogin/completed
+    mcpServer/startupStatus/updated
+    model/rerouted model/safetyBuffering/updated model/verification
+    modelProvider/authRecoveryCompleted modelProvider/authRecoveryStarted
+    process/exited process/outputDelta project/changed
+    remoteControl/status/changed serverRequest/resolved skills/changed
+    thread/archived thread/attachment/updated thread/closed thread/compacted thread/deleted
+    thread/goal/cleared thread/environment/connected thread/environment/disconnected
+    thread/goal/updated thread/name/updated thread/project/updated thread/queue/changed
+    thread/realtime/closed thread/realtime/error
+    thread/realtime/item/completed thread/realtime/item/started
+    thread/realtime/item/transcript/delta
     thread/realtime/itemAdded thread/realtime/outputAudio/delta thread/realtime/sdp
     thread/realtime/started thread/realtime/transcript/delta thread/realtime/transcript/done
-    thread/settings/updated thread/started thread/status/changed thread/tokenUsage/updated
-    thread/unarchived turn/completed turn/diff/updated turn/moderationMetadata
+    thread/reverted thread/settings/updated thread/started thread/status/changed
+    thread/tokenUsage/updated thread/unarchived turn/completed turn/diff/updated
+    turn/moderationMetadata
     turn/plan/updated turn/started warning windows/worldWritableWarning
     windowsSandbox/setupCompleted
     """.split())

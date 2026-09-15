@@ -521,6 +521,13 @@ async def test_adk_runner_preserves_final_thought_chunk_and_replacement(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # google-adk 1.x 的 A2A artifact→event 转换器不分离 adk_thought 为独立
+    # thinking chunk(该行为是 2.x 语义),此测试断言的是 2.x 输出形态。
+    from importlib.metadata import version as _pkg_version
+
+    if int(_pkg_version("google-adk").split(".")[0]) < 2:
+        pytest.skip("adk_thought 分离为 thinking chunk 依赖 google-adk >= 2.x")
+
     from google.adk.a2a.converters.to_adk_event import (
         convert_a2a_artifact_update_to_event,
     )
