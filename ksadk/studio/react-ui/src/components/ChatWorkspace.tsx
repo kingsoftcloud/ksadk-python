@@ -77,8 +77,17 @@ export function ChatWorkspace({
   ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
-  const conversationController = useRef(new ConversationController());
-  const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController: conversationController.current, restoreSession: false });
+  // Keep the local identity ledger scoped to the selected Agent. A single
+  // browser-wide key would let drafts/outbox entries from one Agent appear
+  // after switching to another Agent (and would make tenant changes unsafe).
+  // Recreating the controller is intentional: its persisted stores restore
+  // when the user returns to this Agent while in-flight engines remain owned
+  // by the previous hook instance.
+  const conversationController = useMemo(
+    () => new ConversationController(`ksadk.studio:${encodeURIComponent(agentId)}`),
+    [agentId],
+  );
+  const chat = useAgentChat({ api, agentId, conversationClient: null, conversationController, restoreSession: false });
   const documents = useRunDocumentActions();
   const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
   const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
@@ -93,14 +102,14 @@ export function ChatWorkspace({
   const openedRequest = useRef("");
   const currentRequest = useRef("");
   const conversationIdFor = useCallback((sessionId: string | null) => {
-    return chat.conversationId || conversationController.current.getOrCreate(agentId, sessionId);
-  }, [agentId, chat.conversationId]);
+    return chat.conversationId || conversationController.getOrCreate(agentId, sessionId);
+  }, [agentId, chat.conversationId, conversationController]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
   useEffect(() => {
     // A target change invalidates pending reads, while the runtime task keeps
     // running in the broker. This is intentionally separate from aborting the
     // execution subscription.
-    conversationController.current.navigate();
+    conversationController.navigate();
     openedRequest.current = "";
   }, [agentId]);
   useEffect(() => {
@@ -138,11 +147,11 @@ export function ChatWorkspace({
     const request = `${agentId}:${requestedSessionId}`;
     if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || chat.isLoadingSessions || openedRequest.current === request) return;
     openedRequest.current = request;
-    const requestEpoch = conversationController.current.navigate();
+    const requestEpoch = conversationController.navigate();
     void (async () => {
       await chat.refresh();
       if (currentRequest.current === request
-        && conversationController.current.navigationEpoch === requestEpoch) chat.selectSession(requestedSessionId);
+        && conversationController.navigationEpoch === requestEpoch) chat.selectSession(requestedSessionId);
     })();
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
