@@ -8,10 +8,11 @@ import {
  MessageSquare,
  Plus,
  Send,
-  QrCode,
+ QrCode,
  UserPlus,
  X,
-  Users,
+ Users,
+ RefreshCw,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { apiFetch } from "../api";
@@ -542,8 +543,12 @@ const EMPTY_FORM = {
 
 type Tab = "channels" | "pairings" | "bindings" | "messages";
 
-export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
+export function ChannelsPage({ refreshTick }: { refreshTick?: number } = {}) {
   const [tab, setTab] = useState<Tab>("channels");
+  const [localRefreshTick, setLocalRefreshTick] = useState(0);
+  // When rendered through the plugin workspace (no global refreshTick),
+  // fall back to an internal refresh counter so the page still reloads on demand.
+  const effectiveRefreshTick = refreshTick ?? localRefreshTick;
   const [channels, setChannels] = useState<Channel[]>(SEED_CHANNELS);
   const [pairings, setPairings] = useState<PairingRequest[]>(SEED_PAIRINGS);
   const [bindings, setBindings] = useState<ChannelBinding[]>(SEED_BINDINGS);
@@ -629,7 +634,7 @@ const loadAll = useCallback(async () => {
   useEffect(() => {
     setLoading(true);
     void loadAll();
-  }, [loadAll, refreshTick]);
+  }, [loadAll, effectiveRefreshTick]);
 
   const agentName = useCallback(
     (id: string) => {
@@ -1219,8 +1224,11 @@ async function submitChannel(event: React.FormEvent) {
 
   return (
     <div className="page-container channels-page" data-layout="data" data-scroll-mode="data">
-      <PageHeaderActions>
-        <button className="button accent" type="button" onClick={openCreate}>
+     <PageHeaderActions>
+        <button className="icon-button tertiary" type="button" aria-label="刷新" title="刷新" onClick={() => setLocalRefreshTick(t => t + 1)}>
+          <RefreshCw size={15} />
+        </button>
+       <button className="button accent" type="button" onClick={openCreate}>
           <Plus size={15} /><span>新建渠道</span>
         </button>
       </PageHeaderActions>

@@ -1000,3 +1000,67 @@
   border: 1px solid var(--border-warning, rgba(232, 115, 12, 0.3));
   white-space: nowrap;
 }
+
+/* Agent Detail embedded IM channel tab */
+.agent-channel-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.agent-channel-tab__summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.agent-channel-tab__summary > div {
+  position: relative;
+  min-height: 80px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--surface);
+  transition: border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease);
+}
+
+.agent-channel-tab__summary > div:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-control);
+}
+
+.agent-channel-tab__summary span {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+
+.agent-channel-tab__summary strong {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--font-size-card-metric);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-channel-tab__summary > div::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  border-radius: var(--radius-surface) 0 0 var(--radius-surface);
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+@media (max-width: 760px) {
+  .agent-channel-tab__summary {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+}

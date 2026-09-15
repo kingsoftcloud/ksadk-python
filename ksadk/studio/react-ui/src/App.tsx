@@ -13,7 +13,6 @@ import { PluginWorkspacePage } from "./plugins/PluginWorkspacePage";
 import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
-import { ChannelsPage } from "./pages/ChannelsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
@@ -52,7 +51,6 @@ const VIEW_TITLE: Record<View, string> = {
   deployments: "部署",
   observability: "可观测",
   evaluations: "评测",
-  channels: "消息渠道",
   "runtime-resources": "运行资源",
   plugins: "已安装插件",
   automations: "自动化",
@@ -102,8 +100,8 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
-  const pluginPageId = parts[0] === 'workspace' && parts[1] ? decodeURIComponent(parts[1]) : ['orchestration', 'teams'].includes(parts[0]) ? 'teams' : '';
-  const view: View = pluginPageId ? `plugin:${pluginPageId}` : editingAgentId
+ const pluginPageId = parts[0] === 'workspace' && parts[1] ? decodeURIComponent(parts[1]) : ['orchestration', 'teams'].includes(parts[0]) ? 'teams' : parts[0] === 'channels' ? 'channels' : '';
+ const view: View = pluginPageId ? `plugin:${pluginPageId}` : editingAgentId
     ? "create"
     : detailAgentId
       ? "agent-detail"
@@ -773,7 +771,6 @@ export default function App() {
             {view === "evaluations" && evaluationRunId && (
               <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} refreshTick={refreshTick} />
             )}
-            {view === "channels" && <ChannelsPage refreshTick={refreshTick} />}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}

@@ -8,6 +8,7 @@ import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { AutomationsPage } from "./AutomationsPage";
+import { AgentChannelTab } from "./AgentChannelTab";
 import {
   deploymentCreateRoute,
   deploymentDetailRoute,
@@ -138,7 +139,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
   const [scheduleCount, setScheduleCount] = useState<number | null>(null);
-  const [section, setSection] = useState<"overview" | "automations">("overview");
+  const [section, setSection] = useState<"overview" | "automations" | "channels">("overview");
 
   useEffect(() => { setSection("overview"); setDetail(null); setError(""); }, [agentId]);
 
@@ -245,6 +246,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
       {error && <div className="form-error" style={{ marginBottom: 16 }}>{error}</div>}
       <div className="automation-tabs agent-detail-tabs" role="tablist" aria-label="Agent 详情">
         <button type="button" role="tab" aria-selected={section === "overview"} className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}>概览</button>
+        <button type="button" role="tab" aria-selected={section === "channels"} className={section === "channels" ? "active" : ""} onClick={() => setSection("channels")}>IM 渠道</button>
         <button type="button" role="tab" aria-selected={section === "automations"} className={section === "automations" ? "active" : ""} onClick={() => setSection("automations")}>自动化</button>
       </div>
       {section === "overview" && <div className="detail-layout">
@@ -320,6 +322,9 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
           )}
         </aside>
       </div>}
+      {section === "channels" && (
+        <AgentChannelTab agentId={agentId} agentName={draft.metadata.name} refreshTick={refreshTick} />
+      )}
       {section === "automations" && (
         <AutomationsPage
           refreshTick={refreshTick}
