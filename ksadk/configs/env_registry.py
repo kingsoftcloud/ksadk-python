@@ -421,6 +421,59 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
     ),
     EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_ADDRESS_SPACE_BYTES",
+        "skills",
+        "Local-process RLIMIT_AS address-space bytes.",
+        "1073741824",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_CONTROLS",
+        "skills",
+        "Internal marker injected by the local Skill runtime backend.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_CPU_SECONDS",
+        "skills",
+        "Local-process RLIMIT_CPU seconds.",
+        "120",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_ENV_ALLOWLIST",
+        "skills",
+        "Additional environment names allowed into local Skill commands.",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_FILE_BYTES",
+        "skills",
+        "Local-process RLIMIT_FSIZE bytes per file.",
+        "67108864",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_OPEN_FILES",
+        "skills",
+        "Local-process RLIMIT_NOFILE descriptor count.",
+        "256",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_OUTPUT_BYTES",
+        "skills",
+        "Maximum captured bytes for each local-process output stream.",
+        "1048576",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_PROCESSES",
+        "skills",
+        "Local-process RLIMIT_NPROC per-UID process count.",
+        "64",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_WALL_SECONDS",
+        "skills",
+        "Local-process hard wall-clock command limit.",
+        "900",
+    ),
+    EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
     ),
     EnvVarSpec(

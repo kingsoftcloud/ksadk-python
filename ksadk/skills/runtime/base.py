@@ -104,6 +104,8 @@ class ParsedWorkflowResult:
     workflow_status: str = ""
     executed_skill: str = ""
     instructions: str = ""
+    error: str = ""
+    command_error_type: str = ""
 
 
 def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
@@ -120,6 +122,13 @@ def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
             return ParsedWorkflowResult()
         output_files = payload.get("output_files")
         output_text = payload.get("output_text")
+        commands = payload.get("commands")
+        command_error_type = ""
+        if isinstance(commands, list):
+            for command in commands:
+                if isinstance(command, dict) and isinstance(command.get("error_type"), str):
+                    command_error_type = command["error_type"]
+                    break
         return ParsedWorkflowResult(
             output_files=(
                 tuple(str(item) for item in output_files) if isinstance(output_files, list) else ()
@@ -129,6 +138,8 @@ def parse_workflow_result(stdout: str) -> ParsedWorkflowResult:
             workflow_status=str(payload.get("status") or ""),
             executed_skill=str(payload.get("executed_skill") or ""),
             instructions=str(payload.get("instructions") or ""),
+            error=str(payload.get("error") or ""),
+            command_error_type=command_error_type,
         )
     return ParsedWorkflowResult()
 

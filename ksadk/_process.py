@@ -30,7 +30,12 @@ def terminate_process_group(
         _signal_group(process.pid, signal.SIGTERM, errors)
         deadline = time.monotonic() + max(grace_seconds, 0)
         while time.monotonic() < deadline and _group_exists(process.pid):
+            # Reap an exited group leader before probing again. On Darwin an
+            # unreaped leader can make a now-empty group appear present and a
+            # subsequent killpg report EPERM.
+            process.poll()
             time.sleep(0.01)
+        process.poll()
         if _group_exists(process.pid):
             _signal_group(process.pid, signal.SIGKILL, errors)
     elif process.poll() is None:

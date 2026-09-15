@@ -40,6 +40,8 @@ def test_wheel_contains_current_runtime_and_official_bundle_bytes(distribution):
         "ksadk/studio/api_resource_connections.py",
         "ksadk/skills/runtime/artifact_delivery.py",
         "ksadk/sandbox/e2b_connection.py",
+        "ksadk/sandbox/local_controls.py",
+        "ksadk/sandbox/local_launcher.py",
     ))
     with zipfile.ZipFile(wheel) as package:
         names = package.namelist()

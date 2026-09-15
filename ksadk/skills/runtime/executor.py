@@ -8,6 +8,14 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ksadk.sandbox.local_controls import (
+    LocalControlSettings,
+    build_script_environment,
+    check_command,
+    controls_enabled,
+    resource_limit_reason,
+    run_bounded_process,
+)
 from ksadk.skills.events import SKILL_EVENT_FILE_ENV, SkillEvent, SkillEventSink
 from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
@@ -151,9 +159,15 @@ def _emit_execution_result(
     invocation_id: str,
 ) -> None:
     status = "failed" if result.status in ("failed", "error") else "completed"
-    error_category = (
-        "timeout" if any(command.get("timed_out") for command in result.commands) else ""
-    )
+    error_category = ""
+    if any(command.get("timed_out") for command in result.commands):
+        error_category = "timeout"
+    elif any(command.get("status") == "blocked" for command in result.commands):
+        error_category = "safety_policy"
+    elif any(command.get("output_limit_exceeded") for command in result.commands):
+        error_category = "output_limit"
+    elif any(command.get("resource_limit") for command in result.commands):
+        error_category = "resource_limit"
     _emit_execution(
         event_sink,
         f"skill.execution.{status}",
@@ -216,7 +230,6 @@ def _run_instruction_only(skill: LocalSkill, prompt: str) -> WorkflowExecution:
     )
 
 
-
 def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
     workdir = _skill_workdir()
     project_name = _safe_project_name(
@@ -225,6 +238,24 @@ def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
     project_dir = workdir / project_name
     workdir.mkdir(parents=True, exist_ok=True)
     if project_dir.exists():
+        if project_dir.is_symlink() or project_dir.resolve().parent != workdir.resolve():
+            return WorkflowExecution(
+                status="failed",
+                executed_skill=skill.name,
+                commands=[
+                    {
+                        "command": "prepare artifact project",
+                        "cwd": str(workdir),
+                        "exit_code": 126,
+                        "status": "blocked",
+                        "error_type": "SafetyPolicyViolation",
+                        "blocked_reason": (
+                            "path.project_directory_boundary: existing artifact project path "
+                            "must be a real directory directly inside the Skill workdir"
+                        ),
+                    }
+                ],
+            )
         shutil.rmtree(project_dir)
 
     timeout = _runtime_timeout()
@@ -233,15 +264,22 @@ def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
         ["bash", str(skill.root_dir / "scripts" / "init-artifact.sh"), project_name],
         cwd=workdir,
         timeout=timeout,
+        allowed_roots=(workdir, skill.root_dir),
     )
     commands.append(init_result)
     if init_result["exit_code"] != 0:
-        return WorkflowExecution(status="failed", executed_skill=skill.name, commands=commands)
+        return WorkflowExecution(
+            status="failed",
+            executed_skill=skill.name,
+            commands=commands,
+            error=_command_error(init_result),
+        )
 
     bundle_result = _run_command(
         ["bash", str(skill.root_dir / "scripts" / "bundle-artifact.sh")],
         cwd=project_dir,
         timeout=timeout,
+        allowed_roots=(workdir, skill.root_dir),
     )
     commands.append(bundle_result)
     output_files = (
@@ -254,6 +292,7 @@ def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
         output_files=output_files,
         artifacts=list(output_files),
         commands=commands,
+        error=_command_error(bundle_result) if status == "failed" else "",
     )
 
 
@@ -267,6 +306,7 @@ def _run_generic_workflow(skill: LocalSkill, prompt: str) -> WorkflowExecution:
         ["bash", str(skill.root_dir / "scripts" / "run-workflow.sh")],
         cwd=workdir,
         timeout=timeout,
+        allowed_roots=(workdir, skill.root_dir),
         extra_env={
             "KSADK_WORKFLOW_PROMPT": prompt,
             "KSADK_SKILL_WORKDIR": str(workdir),
@@ -285,6 +325,7 @@ def _run_generic_workflow(skill: LocalSkill, prompt: str) -> WorkflowExecution:
         output_files=list(artifacts),
         artifacts=list(artifacts),
         commands=[command],
+        error=_command_error(command) if status == "failed" else "",
     )
 
 
@@ -301,7 +342,16 @@ def _run_command(
     cwd: Path,
     timeout: int,
     extra_env: dict[str, str] | None = None,
+    allowed_roots: tuple[Path, ...] | None = None,
 ) -> dict[str, object]:
+    if controls_enabled():
+        return _run_controlled_command(
+            args,
+            cwd=cwd,
+            timeout=timeout,
+            extra_env=extra_env,
+            allowed_roots=allowed_roots or (cwd,),
+        )
     env = os.environ.copy()
     env.pop(SKILL_EVENT_FILE_ENV, None)
     env.setdefault("CI", "1")
@@ -334,11 +384,93 @@ def _run_command(
         }
 
 
+def _run_controlled_command(
+    args: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    extra_env: dict[str, str] | None,
+    allowed_roots: tuple[Path, ...],
+) -> dict[str, object]:
+    command_text = " ".join(args)
+    try:
+        settings = LocalControlSettings.from_runtime_env()
+    except (TypeError, ValueError) as exc:
+        return {
+            "command": command_text,
+            "cwd": str(cwd),
+            "exit_code": 125,
+            "status": "failed",
+            "error_type": "LocalControlConfigurationError",
+            "error_message": str(exc),
+            "controls": {"status": "failed"},
+        }
+    finding = check_command(args, cwd=cwd, allowed_roots=allowed_roots)
+    if finding is not None:
+        return {
+            "command": command_text,
+            "cwd": str(cwd),
+            "exit_code": 126,
+            "status": "blocked",
+            "error_type": "SafetyPolicyViolation",
+            "blocked_reason": finding.reason(),
+            "controls": {"status": "blocked", "static_check": finding.rule},
+        }
+    required = dict(extra_env or {})
+    required.setdefault("TMPDIR", str(cwd))
+    env = build_script_environment(os.environ, settings=settings, required=required)
+    executed = run_bounded_process(
+        args,
+        cwd=cwd,
+        env=env,
+        timeout=min(timeout, settings.wall_seconds),
+        settings=settings,
+        # The outer local runtime owns the process group and always cleans it.
+        # Starting a nested session here would let commands outlive outer timeout.
+        start_new_session=False,
+    )
+    result: dict[str, object] = {
+        "command": command_text,
+        "cwd": str(cwd),
+        "exit_code": executed.exit_code,
+        "stdout": executed.stdout,
+        "stderr": executed.stderr,
+        "controls": executed.controls,
+        "cleanup_status": "deferred_to_runtime_process_group",
+    }
+    if executed.timed_out:
+        result.update(timed_out=True, status="failed", error_type="TimeoutExpired")
+    if executed.output_limit_exceeded:
+        result.update(
+            status="failed",
+            error_type="OutputLimitExceeded",
+            output_limit_exceeded=True,
+        )
+    if executed.stdout_truncated:
+        result["stdout_truncated"] = True
+    if executed.stderr_truncated:
+        result["stderr_truncated"] = True
+    if executed.controls.get("status") == "failed":
+        result.update(status="failed", error_type="ResourceLimitSetupError")
+    if limit := resource_limit_reason(executed.exit_code):
+        result.update(status="failed", error_type="ResourceLimitExceeded", resource_limit=limit)
+    return result
+
+
 def _runtime_timeout() -> int:
     try:
         return int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900"))
     except ValueError:
         return 900
+
+
+def _command_error(command: dict[str, object]) -> str:
+    return str(
+        command.get("blocked_reason")
+        or command.get("error_message")
+        or command.get("error_type")
+        or "Skill command failed"
+    )
 
 
 def _output_text_limit() -> int:

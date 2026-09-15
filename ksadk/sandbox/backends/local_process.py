@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
-from ksadk._process import terminate_process_group
 from ksadk.sandbox.base import SandboxCommandResult, SandboxInputFile, SandboxSession
-
-
-def _coerce_output(value: str | bytes | None) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value or ""
+from ksadk.sandbox.local_controls import (
+    LocalControlSettings,
+    build_script_environment,
+    check_command,
+    resource_limit_reason,
+    run_bounded_process,
+)
 
 
 class LocalProcessSandboxSession:
@@ -22,6 +21,7 @@ class LocalProcessSandboxSession:
         self._workspace_root = workspace_root.expanduser().resolve()
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         self._backend_name = backend_name
+        self._controls = LocalControlSettings.from_trusted_host_env()
 
     @property
     def sandbox_id(self) -> str:
@@ -59,35 +59,56 @@ class LocalProcessSandboxSession:
             resolved_cwd = self._resolve_cwd(cwd or (env or {}).get("KSADK_COMMAND_CWD"))
         except ValueError as exc:
             return SandboxCommandResult(stderr=str(exc), exit_code=126)
-        process_env = self._allowed_env(env or {})
+        finding = check_command(
+            command,
+            cwd=resolved_cwd,
+            allowed_roots=(self._workspace_root,),
+        )
+        if finding is not None:
+            return SandboxCommandResult(
+                stderr=f"blocked by local-process policy: {finding.reason()}", exit_code=126
+            )
+        source_env = dict(os.environ)
+        source_env.update(env or {})
+        process_env = build_script_environment(source_env, settings=self._controls)
         try:
-            process = subprocess.Popen(
-                command,
-                shell=True,
+            effective_timeout = self._controls.wall_seconds
+            if timeout is not None:
+                effective_timeout = min(timeout, effective_timeout)
+            executed = run_bounded_process(
+                ["/bin/sh", "-c", command],
                 cwd=resolved_cwd,
                 env=process_env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                timeout=effective_timeout,
+                settings=self._controls,
                 start_new_session=True,
             )
-            stdout, stderr = process.communicate(timeout=timeout)
+        except (OSError, ValueError) as exc:
             return SandboxCommandResult(
-                stdout=stdout,
-                stderr=stderr,
-                exit_code=process.returncode,
+                stderr=f"local-process controls failed: {exc}", exit_code=125
             )
-        except subprocess.TimeoutExpired as exc:
-            terminate_process_group(process)
-            try:
-                stdout, stderr = process.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
-                stdout, stderr = exc.stdout, exc.stderr
-            return SandboxCommandResult(
-                stdout=_coerce_output(stdout or exc.stdout),
-                stderr=_coerce_output(stderr or exc.stderr) + "\ncommand timed out",
-                exit_code=124,
-            )
+        diagnostics: list[str] = []
+        if executed.controls.get("status") == "failed":
+            diagnostics.append("resource limits were not applied")
+        if executed.output_limit_exceeded:
+            diagnostics.append("command output limit exceeded")
+        if executed.timed_out:
+            diagnostics.append("command timed out")
+        if limit := resource_limit_reason(executed.exit_code):
+            diagnostics.append(f"command exceeded {limit} resource limit")
+        if executed.cleanup_error:
+            diagnostics.append("command process-group cleanup failed")
+        stderr = executed.stderr
+        if diagnostics:
+            stderr = (stderr.rstrip() + "\n" if stderr else "") + "; ".join(diagnostics)
+        exit_code = executed.exit_code
+        if executed.timed_out:
+            exit_code = 124
+        elif executed.output_limit_exceeded:
+            exit_code = 122
+        elif executed.controls.get("status") == "failed" or executed.cleanup_error:
+            exit_code = 125
+        return SandboxCommandResult(stdout=executed.stdout, stderr=stderr, exit_code=exit_code)
 
     def get_host(self, port: int) -> str:
         return f"http://127.0.0.1:{int(port)}"
@@ -104,24 +125,27 @@ class LocalProcessSandboxSession:
         resolved = candidate.expanduser().resolve()
         if resolved != self._workspace_root and self._workspace_root not in resolved.parents:
             raise ValueError("cwd must stay inside the sandbox workspace")
+        self._reject_symlink_components(candidate)
         return resolved
 
     def _resolve_workspace_path(self, path: str) -> Path:
         raw = str(path or "").strip().lstrip("/") or "."
+        self._reject_symlink_components(self._workspace_root / raw)
         target = (self._workspace_root / raw).resolve()
         if target != self._workspace_root and self._workspace_root not in target.parents:
             raise ValueError("path must stay inside the sandbox workspace")
         return target
 
-    @staticmethod
-    def _allowed_env(env: dict[str, str]) -> dict[str, str]:
-        allowed = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
-        for key, value in env.items():
-            if key.startswith("KSADK_COMMAND_"):
-                continue
-            if key.startswith(("KSADK_SAFE_", "PYTHON", "NODE", "UV_")):
-                allowed[key] = str(value)
-        return allowed
+    def _reject_symlink_components(self, path: Path) -> None:
+        try:
+            relative = path.absolute().relative_to(self._workspace_root)
+        except ValueError:
+            raise ValueError("path must stay inside the sandbox workspace") from None
+        current = self._workspace_root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError("sandbox file API does not follow symbolic links")
 
 
 class LocalProcessSandboxBackend:

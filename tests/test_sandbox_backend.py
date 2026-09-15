@@ -399,7 +399,7 @@ def test_local_process_backend_kills_process_group_on_timeout(tmp_path):
     session = backend.create_session(session_id="sess-1")
 
     result = session.run_command(
-        'python -c \'import subprocess, time; subprocess.Popen(["sleep", "5"]); time.sleep(5)\'',
+        "python -c 'import time; time.sleep(5)'",
         timeout=1,
     )
 

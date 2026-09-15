@@ -235,6 +235,14 @@
 | `KSADK_SKILL_RUNTIME_TIMEOUT` | Skill Runtime command | 否 | `900` | `KSADK_SANDBOX_TIMEOUT` 在 E2B 会话层优先 | 否 | 开发者 / 平台 | 否 | workflow 命令超时秒数。 |
 | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | Skill Runtime E2B backend | 否 | `true` | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` 优先 | 否 | 旧部署 / 兼容 | 否 | 兼容变量。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | local_process backend | 条件必传 | SDK 内置 `ksadk/skills/runtime/agent.py` | 无 | 否 | 开发者 | 否 | 本地进程 backend 的 agent 路径。 |
+| `KSADK_LOCAL_PROCESS_WALL_SECONDS` | local_process backend / 通用本地命令 | 否 | `900` | 无 | 否 | 可信宿主 / 平台 | 否 | 单条 Skill 命令墙钟时间硬上限。调用方传入的更短 timeout 仍生效，不能通过请求调大。 |
+| `KSADK_LOCAL_PROCESS_CPU_SECONDS` | local_process 子进程 | 否 | `120` | 无 | 否 | 可信宿主 / 平台 | 否 | Linux `RLIMIT_CPU` 秒数。 |
+| `KSADK_LOCAL_PROCESS_ADDRESS_SPACE_BYTES` | local_process 子进程 | 否 | `1073741824` | 无 | 否 | 可信宿主 / 平台 | 否 | Linux `RLIMIT_AS` 地址空间字节数；不是 Pod 内存隔离。 |
+| `KSADK_LOCAL_PROCESS_MAX_PROCESSES` | local_process 子进程 | 否 | `64` | 无 | 否 | 可信宿主 / 平台 | 否 | Linux `RLIMIT_NPROC`；按 UID 计数，同 UID 进程会共享该约束。 |
+| `KSADK_LOCAL_PROCESS_MAX_OPEN_FILES` | local_process 子进程 | 否 | `256` | 无 | 否 | 可信宿主 / 平台 | 否 | `RLIMIT_NOFILE` 打开文件描述符上限。 |
+| `KSADK_LOCAL_PROCESS_MAX_FILE_BYTES` | local_process 子进程 | 否 | `67108864` | 无 | 否 | 可信宿主 / 平台 | 否 | `RLIMIT_FSIZE` 单文件上限；不限制许多小文件的聚合大小。 |
+| `KSADK_LOCAL_PROCESS_MAX_OUTPUT_BYTES` | local_process 子进程 | 否 | `1048576` | 无 | 否 | 可信宿主 / 平台 | 否 | stdout 和 stderr 各自的捕获上限；超限终止命令并记录截断/超限状态。 |
+| `KSADK_LOCAL_PROCESS_ENV_ALLOWLIST` | local_process Skill 脚本环境 | 否 | 空 | 无 | 否 | 可信宿主 / 平台 | 否 | 逗号分隔的额外环境变量名。脚本默认只得到 `PATH/LANG/LC_ALL/TZ/SYSTEMROOT/CI` 与 Runtime 生成的工作流变量，不继承 `HOME`、配置目录或 Agent Secret。不得列入 `KSADK_LOCAL_PROCESS_*` 控制变量。 |
 | `KSADK_SKILL_SERVICE_URL` | Runtime agent / Skill Service client | 条件必传 | 未设置 | 无 | 否 | Skill Service / 平台 | 否 | 配置后从 Skill Center 拉取技能。支持直连 REST 和 AICP KOP endpoint。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | Runtime agent / AICP resolver | 否 | 按 `KSADK_AICP_ENDPOINT_MODE` 自动选择 | 无 | 否 | Skill Service / 平台 | 否 | 未设置 `KSADK_SKILL_SERVICE_URL` 时覆盖 Skill Service AICP endpoint。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | Runtime agent / AICP resolver | 否 | 内网 endpoint 为 `http`，公网默认 `https` | 无 | 否 | Skill Service / 平台 | 否 | 未设置 `KSADK_SKILL_SERVICE_URL` 时覆盖 Skill Service AICP URL scheme。 |
@@ -260,6 +268,8 @@
 | `KSADK_SKILL_ROOT_DIR` | Runtime agent workflow | 否 | 当前执行 skill 根目录 | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的 skill 根目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |
 | `KSADK_WORKFLOW_PROMPT` | Runtime agent workflow | 否 | 当前 workflow prompt | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的用户请求文本。 |
+
+`local_process` 的静态检查、环境过滤、墙钟和 `rlimit` 只降低同容器执行可信/半可信 Skill 时的常见风险。它仍标记 `isolated=false`，与 Agent 共享文件系统、网络、UID 和容器资源，不阻止动态绕过、`setsid` 逃逸或直接读取所有可见绝对路径。Linux launcher 会如实记录已应用、部分支持或失败的限制；限制设置失败时不执行 Skill 命令。E2B backend 不使用这些变量。
 
 ## 7. MCP Runtime
 

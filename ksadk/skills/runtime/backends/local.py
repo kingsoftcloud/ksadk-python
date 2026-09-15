@@ -13,6 +13,7 @@ from types import TracebackType
 from uuid import uuid4
 
 from ksadk._process import starts_new_process_group, terminate_process_group
+from ksadk.sandbox.local_controls import LocalControlSettings
 from ksadk.skills.events import (
     SKILL_EVENT_FILE_ENV,
     SkillEvent,
@@ -54,10 +55,12 @@ class LocalProcessSkillRuntimeBackend:
         agent_path: str | Path,
         timeout: int = 900,
         artifact_directory: Path | None = None,
+        controls: LocalControlSettings | None = None,
     ):
         self.agent_path = Path(agent_path)
         self.timeout = timeout
         self.artifact_directory = artifact_directory
+        self.controls = controls or LocalControlSettings.from_trusted_host_env()
 
     @classmethod
     def from_env(cls) -> "LocalProcessSkillRuntimeBackend":
@@ -118,7 +121,14 @@ class LocalProcessSkillRuntimeBackend:
             for directory in (work_dir, package_dir, process_tmp_dir):
                 directory.mkdir(mode=0o700)
 
-            runtime_env = _runtime_environment(env, pinned=pinned_packages is not None)
+            runtime_env = _runtime_environment(
+                env,
+                pinned=pinned_packages is not None,
+                extra_env_names=self.controls.extra_env_names,
+            )
+            # Apply controls after caller environment. A Skill invocation cannot
+            # disable or weaken the host-selected launch policy.
+            runtime_env.update(self.controls.runtime_environment())
             runtime_env.update(
                 {
                     "KSADK_SKILL_SPACE_IDS": ",".join(skill_space_ids),
@@ -216,6 +226,7 @@ class LocalProcessSkillRuntimeBackend:
                             stdout, work_dir, request_root, sandbox
                         )
                     parsed = parse_workflow_result(recovered_stdout)
+                    _record_control_observation(recovered_stdout, sandbox)
                     result = SkillRuntimeResult(
                         runtime_id=runtime_id,
                         exit_code=None,
@@ -223,14 +234,14 @@ class LocalProcessSkillRuntimeBackend:
                         stderr=stderr,
                         duration_ms=int((time.monotonic() - started) * 1000),
                         timed_out=True,
-                        error_type="TimeoutExpired",
-                        error_message=f"Skill workflow timed out after {effective_timeout}s",
                         output_files=recovered_files,
                         output_text=parsed.output_text,
                         output_text_truncated=parsed.output_text_truncated,
                         workflow_status=parsed.workflow_status,
                         executed_skill=parsed.executed_skill,
                         instructions=parsed.instructions,
+                        error_type="TimeoutExpired",
+                        error_message=f"Skill workflow timed out after {effective_timeout}s",
                     )
                 elif exit_code == 0 and process_cleanup_error:
                     failure_stage = "cleanup"
@@ -261,6 +272,7 @@ class LocalProcessSkillRuntimeBackend:
                             strict=strict_collection,
                         )
                     parsed = parse_workflow_result(delivered_stdout)
+                    _record_control_observation(delivered_stdout, sandbox)
                     result = SkillRuntimeResult(
                         runtime_id=runtime_id,
                         exit_code=exit_code,
@@ -273,6 +285,8 @@ class LocalProcessSkillRuntimeBackend:
                         workflow_status=parsed.workflow_status,
                         executed_skill=parsed.executed_skill,
                         instructions=parsed.instructions,
+                        error_type=parsed.command_error_type or None,
+                        error_message=parsed.error or None,
                     )
                     if exit_code == 0:
                         failure_stage = ""
@@ -403,17 +417,52 @@ class LocalProcessSkillRuntimeBackend:
             return stdout, []
 
 
-def _runtime_environment(env: dict[str, str] | None, *, pinned: bool) -> dict[str, str]:
-    runtime_env = (
+def _runtime_environment(
+    env: dict[str, str] | None,
+    *,
+    pinned: bool,
+    extra_env_names: tuple[str, ...] = (),
+) -> dict[str, str]:
+    base_allowed = {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "TMPDIR",
+        "SYSTEMROOT",
+        "KSADK_SKILL_RUNTIME_TIMEOUT",
+        "KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES",
+        "KSADK_SKILL_ARTIFACT_PROJECT",
+    }
+    service_allowed = {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "KSADK_SKILL_SERVICE_URL",
+        "KSADK_SKILL_SERVICE_ENDPOINT",
+        "KSADK_SKILL_SERVICE_SCHEME",
+        "KSADK_SKILL_SERVICE_ACCOUNT_ID",
+        "KSADK_SKILL_SERVICE_REGION",
+        "KSADK_SKILL_SERVICE_TOKEN",
+        "KSADK_SKILL_MANIFEST_TIMEOUT",
+        "KSADK_SKILL_CACHE_DIR",
+        "KSADK_LOCAL_SKILLS_DIR",
+        "KSADK_SKILL_ALLOW_HASH_MISMATCH",
+        "KSADK_PUBLIC_SKILL_ALLOWLIST",
+        "AGENTENGINE_PRE_CONTROL_REGION",
+        "KSYUN_REGION",
+    }
+    allowed = base_allowed | (set() if pinned else service_allowed)
+    allowed.update(extra_env_names)
+    runtime_env = {key: value for key, value in os.environ.items() if key in allowed}
+    # Explicit call configuration belongs to the trusted runtime. It does not
+    # become Skill script environment unless separately allowlisted.
+    runtime_env.update(
         {
             key: value
-            for key, value in os.environ.items()
-            if key in {"PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT"}
+            for key, value in (env or {}).items()
+            if not key.startswith("KSADK_LOCAL_PROCESS_")
         }
-        if pinned
-        else os.environ.copy()
     )
-    runtime_env.update(env or {})
     return sandbox_runtime_env(runtime_env)
 
 
@@ -476,6 +525,58 @@ def _workflow_payload(stdout: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise SkillRuntimeError("Runtime did not return a unique workflow result")
     return payload
+
+
+def _record_control_observation(stdout: str, sandbox: dict[str, object]) -> None:
+    try:
+        payload = _workflow_payload(stdout)
+    except SkillRuntimeError:
+        return
+    commands = payload.get("commands")
+    if not isinstance(commands, list):
+        return
+    observations: list[dict[str, object]] = []
+    for command in commands:
+        if not isinstance(command, dict):
+            continue
+        controls = command.get("controls")
+        observation: dict[str, object] = {}
+        if isinstance(controls, dict):
+            status = controls.get("status")
+            if status in {"applied", "partial", "failed", "blocked"}:
+                observation["status"] = status
+            applied = controls.get("applied")
+            if isinstance(applied, dict):
+                observation["applied_limits"] = sorted(
+                    name
+                    for name, value in applied.items()
+                    if isinstance(name, str) and type(value) is int
+                )
+            unsupported = controls.get("unsupported")
+            if isinstance(unsupported, list):
+                observation["unsupported_limits"] = [
+                    item for item in unsupported if isinstance(item, str)
+                ][:10]
+            static_check = controls.get("static_check")
+            if isinstance(static_check, str):
+                observation["static_check"] = static_check
+        for key in (
+            "error_type",
+            "blocked_reason",
+            "resource_limit",
+            "timed_out",
+            "output_limit_exceeded",
+            "stdout_truncated",
+            "stderr_truncated",
+            "cleanup_status",
+        ):
+            value = command.get(key)
+            if isinstance(value, (str, bool)):
+                observation[key] = value
+        if observation:
+            observations.append(observation)
+    if observations:
+        sandbox["controls"] = observations
 
 
 def _rewrite_workflow_payload(stdout: str, payload: dict[str, object]) -> str:
