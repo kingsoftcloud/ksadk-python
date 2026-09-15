@@ -282,6 +282,34 @@ describe("Studio chat entry", () => {
     expect(await screen.findByRole("option", { name: "本地 · 目标 Agent" })).toBeInTheDocument();
   });
 
+  it("focuses the composer after creating a draft with Cmd/Ctrl+N", async () => {
+    mockedFetch.mockImplementation(async input => {
+      const path = String(input);
+      if (path === "/api/v1/agents?limit=100") {
+        return response({ items: [{ metadata: { id: "local-1", name: "目标 Agent" } }] });
+      }
+      if (path === "/api/v1/agents/local-1") return response({ builds: [] });
+      if (path === "/api/v1/deployments") return response({ items: [] });
+      if (path === "/api/v1/cloud-agents?size=100") return response({ items: [] });
+      if (path === "/api/v1/system/bootstrap") {
+        return response({ workspace: { name: "studio-test", path: "/workspace" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<App />);
+    const composer = document.createElement("textarea");
+    const form = document.createElement("form");
+    form.dataset.ui = "sender";
+    form.append(composer);
+    document.body.append(form);
+    const event = new KeyboardEvent("keydown", { key: "n", metaKey: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(composer));
+    form.remove();
+  });
+
   it("opens current conversation search with Cmd/Ctrl+F", async () => {
     mockedFetch.mockImplementation(async input => {
       const path = String(input);

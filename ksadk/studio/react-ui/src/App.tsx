@@ -487,6 +487,11 @@ export default function App() {
         setNewChatRequest(request => request + 1);
         enterChat();
         setMobileNavOpen(false);
+        // The composer remains mounted for an existing chat and mounts on the
+        // next render for a cold entry. A frame boundary covers both paths.
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLTextAreaElement>('form[data-ui="sender"] textarea')?.focus();
+        });
       } else if (key === "k") {
         event.preventDefault();
         const target = document.querySelector<HTMLElement>(
