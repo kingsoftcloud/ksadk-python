@@ -124,6 +124,8 @@ class _Adapter(RuntimeAdapter):
             input_tokens=7,
             output_tokens=2,
             total_tokens=9,
+            cached_tokens=4,
+            reasoning_tokens=1,
             **common,
         )
         yield RunCompleted(
@@ -326,10 +328,65 @@ async def test_runtime_events_use_the_existing_responses_serializer_without_dupl
     assert completed["output_text"] == "selected answer"
     assert completed["usage"] == {
         "input_tokens": 7,
-        "input_tokens_details": {"cached_tokens": 0},
+        "input_tokens_details": {"cached_tokens": 4},
         "output_tokens": 2,
-        "output_tokens_details": {"reasoning_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 1},
         "total_tokens": 9,
+    }
+
+
+@pytest.mark.asyncio
+async def test_legacy_dict_usage_details_reach_responses_output():
+    from ksadk.conversations.runtime_streaming import (
+        stream_runtime_responses_conversation_turn,
+    )
+
+    class _LegacyUsageRunner:
+        supports_gateway_approval_semantic_resume = True
+
+        async def stream(self, _input_data):
+            yield {
+                "type": "final",
+                "output": "selected answer",
+                "usage": {
+                    "input_tokens": 2488,
+                    "output_tokens": 576,
+                    "total_tokens": 3064,
+                    "input_token_details": {"cache_read": 2240},
+                    "output_token_details": {"reasoning": 327},
+                },
+            }
+
+        async def stream_canonical_events(self, _input_data):
+            raise AssertionError("legacy dict path must remain selected")
+
+    service = InMemorySessionService()
+    registry = RuntimeRegistry()
+    registry.register(
+        "langgraph",
+        lambda _context: RunnerRuntimeAdapter(_LegacyUsageRunner(), runtime_type="langgraph"),
+    )
+    chunks = [
+        chunk
+        async for chunk in stream_runtime_responses_conversation_turn(
+            executor=RuntimeExecutor(registry),
+            launch_context=RuntimeLaunchContext(runtime_type="langgraph", project_dir="."),
+            agent_id="agent-1",
+            user_id="user-1",
+            messages=[{"role": "user", "content": "hi"}],
+            session_id=None,
+            model="fixture-model",
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    completed = next(data for name, data in _decode_sse(chunks) if name == "response.completed")
+    assert completed["usage"] == {
+        "input_tokens": 2488,
+        "input_tokens_details": {"cached_tokens": 2240},
+        "output_tokens": 576,
+        "output_tokens_details": {"reasoning_tokens": 327},
+        "total_tokens": 3064,
     }
 
 

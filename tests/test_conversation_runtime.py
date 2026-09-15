@@ -1170,6 +1170,7 @@ def test_set_conversation_span_attributes_sets_langfuse_and_standard_session_id(
         response_id="resp-demo",
     )
 
+    assert span.attributes["openinference.span.kind"] == "AGENT"
     assert span.attributes["langfuse.session.id"] == "sess-demo"
     assert span.attributes["session.id"] == "sess-demo"
     assert span.attributes["langfuse.user.id"] == "user-demo"
@@ -4659,7 +4660,7 @@ async def test_invoke_conversation_once_preserves_runner_usage(monkeypatch):
     assert result["metadata"]["usage"] == result["usage"]
 
 
-def test_set_conversation_usage_attributes_writes_genai_and_llm_token_fields():
+def test_set_conversation_usage_attributes_writes_private_runtime_token_fields():
     span = _FakeSpan()
 
     _set_conversation_usage_attributes(
@@ -4673,14 +4674,13 @@ def test_set_conversation_usage_attributes_writes_genai_and_llm_token_fields():
         },
     )
 
-    assert span.attributes["gen_ai.usage.input_tokens"] == 2944
-    assert span.attributes["gen_ai.usage.output_tokens"] == 69
-    assert span.attributes["gen_ai.usage.total_tokens"] == 3013
-    assert span.attributes["gen_ai.usage.cache_read.input_tokens"] == 1800
-    assert span.attributes["gen_ai.usage.reasoning.output_tokens"] == 15
-    assert span.attributes["llm.usage.prompt_tokens"] == 2944
-    assert span.attributes["llm.usage.completion_tokens"] == 69
-    assert span.attributes["llm.usage.total_tokens"] == 3013
+    assert span.attributes["ksadk.runtime.usage.input_tokens"] == 2944
+    assert span.attributes["ksadk.runtime.usage.output_tokens"] == 69
+    assert span.attributes["ksadk.runtime.usage.total_tokens"] == 3013
+    assert span.attributes["ksadk.runtime.usage.cache_read.input_tokens"] == 1800
+    assert span.attributes["ksadk.runtime.usage.reasoning.output_tokens"] == 15
+    assert "gen_ai.usage.input_tokens" not in span.attributes
+    assert "llm.usage.prompt_tokens" not in span.attributes
 
 
 def test_build_chat_completions_payload_uses_real_usage_from_metadata():
@@ -4803,6 +4803,52 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
     # last_usage 透传到 metadata(供 server 取窗口占用)
     assert payload["metadata"]["last_usage"]["input_tokens"] == 8
     assert payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
+
+
+def test_build_responses_payload_preserves_canonical_usage_details():
+    payload = build_responses_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        usage={
+            "input_tokens": 2488,
+            "output_tokens": 576,
+            "total_tokens": 3064,
+            "cached_tokens": 2240,
+            "reasoning_tokens": 327,
+        },
+    )
+
+    assert payload["usage"] == {
+        "input_tokens": 2488,
+        "input_tokens_details": {"cached_tokens": 2240},
+        "output_tokens": 576,
+        "output_tokens_details": {"reasoning_tokens": 327},
+        "total_tokens": 3064,
+    }
+
+
+def test_build_responses_payload_preserves_official_usage_details():
+    payload = build_responses_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        usage={
+            "input_tokens": 2488,
+            "input_tokens_details": {"cached_tokens": 2240},
+            "output_tokens": 576,
+            "output_tokens_details": {"reasoning_tokens": 327},
+            "total_tokens": 3064,
+        },
+    )
+
+    assert payload["usage"] == {
+        "input_tokens": 2488,
+        "input_tokens_details": {"cached_tokens": 2240},
+        "output_tokens": 576,
+        "output_tokens_details": {"reasoning_tokens": 327},
+        "total_tokens": 3064,
+    }
 
 
 @pytest.mark.asyncio

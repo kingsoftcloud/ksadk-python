@@ -1,4 +1,5 @@
 import ast
+import json
 import zipfile
 from types import SimpleNamespace
 
@@ -7,11 +8,31 @@ from ksadk.builders.code_builder import CodeBuilder
 
 class _FakeType:
     name = "LANGGRAPH"
+    value = "langgraph"
 
 
-def test_code_builder_packages_web_static_assets(tmp_path):
+def test_code_builder_packages_web_static_assets(tmp_path, monkeypatch):
     # 最小项目结构
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    source_root = tmp_path.parent / f"{tmp_path.name}_bundled_sources"
+    ksadk_root = source_root / "ksadk"
+    common_root = source_root / "ksadk_runtime_common"
+    bundled_files = {
+        ksadk_root / "__init__.py": "",
+        ksadk_root / "studio" / "static" / "index.html": "<title>Studio</title>",
+        ksadk_root / "studio" / "static" / "app.js": "console.log('studio')",
+        ksadk_root / "studio" / "static" / "app.css": "body {}",
+        ksadk_root / "server" / "web-ui" / "ignored.js": "ignored",
+        common_root / "__init__.py": "",
+    }
+    for path, content in bundled_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_bundled_source_package_roots",
+        lambda self: {"ksadk": ksadk_root, "ksadk_runtime_common": common_root},
+    )
 
     builder = CodeBuilder(tmp_path)
     builder.build_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +122,102 @@ def test_code_builder_packages_runtime_common_sources(tmp_path):
     assert any(n.startswith("ksadk_runtime_common/") for n in names), (
         "应包含 ksadk_runtime_common 共享运行时代码"
     )
+
+
+def test_code_builder_prunes_bundled_source_dev_trees_without_changing_fingerprint(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    source_root = tmp_path.parent / f"{tmp_path.name}_bundled_sources"
+    ksadk_root = source_root / "ksadk"
+    common_root = source_root / "ksadk_runtime_common"
+
+    bundled_assets = {
+        ksadk_root / "__init__.py": "",
+        ksadk_root / "studio" / "static" / "index.html": "<title>Studio</title>",
+        ksadk_root / "studio" / "static" / "assets" / "app.js": "static app",
+        ksadk_root / "studio" / "static" / "assets" / "app.css": "static styles",
+        ksadk_root / "studio" / "static" / "manifest.json": '{"name":"studio"}',
+        ksadk_root / "studio" / "react-ui" / "dist" / "assets" / "app.js": "dist app",
+        common_root / "__init__.py": "",
+        common_root / "workspace_files" / "router.py": "ROUTER = True",
+    }
+    excluded_assets = {
+        ksadk_root / "studio" / "react-ui" / "node_modules" / "react" / "index.js": (
+            "module.exports = {}"
+        ),
+        ksadk_root / "studio" / "react-ui" / ".pytest_cache" / "state.json": "{}",
+        ksadk_root / "studio" / "react-ui" / ".mypy_cache" / "state.json": "{}",
+        common_root / "workspace_files" / "node_modules" / "tool" / "index.js": (
+            "module.exports = {}"
+        ),
+        common_root / "workspace_files" / ".ruff_cache" / "state.json": "{}",
+        common_root / "workspace_files" / "__pycache__" / "debug.js": "ignored",
+    }
+    for path, content in {**bundled_assets, **excluded_assets}.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_bundled_source_package_roots",
+        lambda self: {"ksadk": ksadk_root, "ksadk_runtime_common": common_root},
+    )
+
+    builder = CodeBuilder(tmp_path)
+    builder.build_dir.mkdir(parents=True, exist_ok=True)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    detection_result = SimpleNamespace(
+        package_path=str(tmp_path),
+        type=_FakeType(),
+        name="demo_agent",
+        entry_point="agent.py",
+        agent_variable="root_agent",
+    )
+
+    first_zip = tmp_path / "first.zip"
+    builder._package_zip(first_zip, detection_result)
+    with zipfile.ZipFile(first_zip) as zf:
+        first_names = set(zf.namelist())
+        first_build_info = json.loads(zf.read("ksadk/BUILD-INFO.json"))
+    monkeypatch.setattr(builder, "_iter_project_files", lambda: iter(()))
+    monkeypatch.setattr(builder, "_build_requirements_list", lambda _result: [])
+    first_input_fingerprint = builder._build_input_fingerprint(detection_result)
+
+    assert "ksadk/studio/static/index.html" in first_names
+    assert "ksadk/studio/static/assets/app.js" in first_names
+    assert "ksadk/studio/static/assets/app.css" in first_names
+    assert "ksadk/studio/static/manifest.json" in first_names
+    assert "ksadk/studio/react-ui/dist/assets/app.js" in first_names
+    assert "ksadk_runtime_common/workspace_files/router.py" in first_names
+    assert not any(
+        ignored in name.split("/")
+        for name in first_names
+        for ignored in {
+            "node_modules",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+        }
+    )
+
+    for path in excluded_assets:
+        path.write_text("changed but still excluded", encoding="utf-8")
+
+    second_zip = tmp_path / "second.zip"
+    builder._package_zip(second_zip, detection_result)
+    with zipfile.ZipFile(second_zip) as zf:
+        second_build_info = json.loads(zf.read("ksadk/BUILD-INFO.json"))
+    second_input_fingerprint = builder._build_input_fingerprint(detection_result)
+
+    for package_name in ("ksadk", "ksadk_runtime_common"):
+        assert (
+            first_build_info["packages"][package_name]["content_fingerprint_sha256"]
+            == second_build_info["packages"][package_name]["content_fingerprint_sha256"]
+        )
+    assert first_input_fingerprint == second_input_fingerprint
 
 
 def test_code_builder_embeds_ksadk_runtime_identity_in_the_archive(tmp_path):

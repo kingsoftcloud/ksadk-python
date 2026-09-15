@@ -154,11 +154,13 @@ async def test_conversation_request_reuses_full_runtime_preprocessing(monkeypatc
     assert spans[0].attributes["ksadk.session_id"] == "thread-1"
     assert spans[0].attributes["ksadk.invocation_id"] == "run-1"
     assert spans[0].attributes["ksadk.response_id"] == "agui-run-1"
+    assert spans[0].attributes["openinference.span.kind"] == "AGENT"
     assert spans[0].attributes["gen_ai.request.model"] == "model-1"
     assert spans[0].attributes["gen_ai.prompt"].startswith("inspect image [上传文件:")
     assert spans[0].attributes["gen_ai.completion"] == "done"
-    assert spans[0].attributes["gen_ai.usage.input_tokens"] == 4
-    assert spans[0].attributes["gen_ai.usage.output_tokens"] == 2
+    assert spans[0].attributes["ksadk.runtime.usage.input_tokens"] == 4
+    assert spans[0].attributes["ksadk.runtime.usage.output_tokens"] == 2
+    assert "gen_ai.usage.input_tokens" not in spans[0].attributes
 
 
 @pytest.mark.asyncio

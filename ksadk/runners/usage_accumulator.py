@@ -1,4 +1,4 @@
-"""usage 累加工具:逐字段求和(input/output/total + details 子键)。
+"""usage 累加工具:逐字段求和(主计数/canonical 明细 + details 子键)。
 
 用于 runner 本轮内多次 LLM 调用的 usage 累积。input_tokens 各 provider 均含 cache
 (Gemini prompt_token_count 含 cached_content_token_count;OpenAI prompt_tokens 含
@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
-_MAIN_FIELDS = ("input_tokens", "output_tokens", "total_tokens")
+_SCALAR_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "reasoning_tokens",
+)
 _DETAIL_FIELDS = ("input_token_details", "output_token_details")
 
 
@@ -20,7 +26,9 @@ def accumulate_usage(acc: dict[str, Any], delta: dict[str, Any]) -> dict[str, An
     if not delta:
         return dict(acc)
     result = dict(acc)
-    for key in _MAIN_FIELDS:
+    for key in _SCALAR_FIELDS:
+        if key not in result and key not in delta:
+            continue
         result[key] = int(result.get(key) or 0) + int(delta.get(key) or 0)
     for detail_key in _DETAIL_FIELDS:
         delta_details = delta.get(detail_key)

@@ -17,6 +17,7 @@ from ksadk.events.canonical import (
     ItemUpdated,
     RuntimeEvent,
     SourceRef,
+    UsageReported,
 )
 from ksadk.events.content import (
     ContentSnapshot,
@@ -32,6 +33,7 @@ from ksadk.events.identity import (
     stable_part_id,
     stable_scope_id,
 )
+from ksadk.runners.base_runner import BaseRunner
 
 # Native content-block types that carry a tool call identity.
 _TOOL_CALL_BLOCKS = frozenset(
@@ -423,7 +425,39 @@ def _map_whole_message(
                 ),
             )
         )
+    usage = BaseRunner._message_usage(payload)
+    if usage:
+        usage_item_id = stable_item_id("langgraph", state.scope_id, "$run")
+        emitted.append(
+            UsageReported(
+                **env(
+                    state.scope_id,
+                    state.parent_scope_id,
+                    usage_item_id,
+                    "usage.reported",
+                    "usage",
+                    source,
+                ),
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                total_tokens=usage["total_tokens"],
+                cached_tokens=_usage_detail(usage.get("input_token_details"), "cached"),
+                reasoning_tokens=_usage_detail(usage.get("output_token_details"), "reasoning"),
+            )
+        )
     return tuple(emitted)
+
+
+def _usage_detail(details: Any, key: str) -> int:
+    if not isinstance(details, Mapping):
+        return 0
+    value = details.get(key)
+    if value is None and key == "cached":
+        value = details.get("cache_read") or details.get("cached_tokens")
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _envelope(

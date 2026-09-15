@@ -45,6 +45,8 @@ def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
         "total_tokens",
         "prompt_tokens",
         "completion_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
     ):
         value = usage.get(key)
         if value is None:
@@ -57,6 +59,23 @@ def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
         value = usage.get(key)
         if isinstance(value, Mapping):
             normalized[key] = dict(value)
+    for source_key, target_key in (
+        ("input_tokens_details", "input_token_details"),
+        ("output_tokens_details", "output_token_details"),
+    ):
+        value = usage.get(source_key)
+        if isinstance(value, Mapping) and target_key not in normalized:
+            normalized[target_key] = dict(value)
+    cached_tokens = normalized.get("cached_tokens")
+    if cached_tokens is not None:
+        input_details = normalized.setdefault("input_token_details", {})
+        if not any(key in input_details for key in ("cached_tokens", "cached", "cache_read")):
+            input_details["cached"] = cached_tokens
+    reasoning_tokens = normalized.get("reasoning_tokens")
+    if reasoning_tokens is not None:
+        output_details = normalized.setdefault("output_token_details", {})
+        if not any(key in output_details for key in ("reasoning_tokens", "reasoning")):
+            output_details["reasoning"] = reasoning_tokens
     prompt_details = usage.get("prompt_tokens_details")
     if isinstance(prompt_details, Mapping):
         normalized["prompt_tokens_details"] = dict(prompt_details)
@@ -339,10 +358,21 @@ def _set_conversation_output_attributes(span: Any | None, output_text: str | Non
         _set_span_attribute(span, key, text)
 
 
+def _set_skill_eval_result_attributes(span: Any | None, result: Mapping[str, Any]) -> None:
+    """Attach structured evidence without changing trace/observation output text."""
+    payload = json.dumps({"skill_eval_result": dict(result)}, ensure_ascii=False)
+    _set_span_attribute(span, "metadata", payload)
+    _set_span_attribute(
+        span, "langfuse.trace.metadata.skill_eval_result",
+        json.dumps(dict(result), ensure_ascii=False),
+    )
+
+
 def _set_conversation_usage_attributes(
     span: Any | None,
     usage: Mapping[str, Any] | None,
 ) -> None:
+    """Write run-level usage as KsADK diagnostics, never as model generation usage."""
     normalized = _normalize_usage_payload(usage)
     if not normalized:
         return
@@ -372,19 +402,14 @@ def _set_conversation_usage_attributes(
         )
 
     attributes = {
-        "gen_ai.usage.input_tokens": input_tokens,
-        "gen_ai.usage.output_tokens": output_tokens,
-        "gen_ai.usage.total_tokens": total_tokens,
-        "llm.usage.prompt_tokens": input_tokens,
-        "llm.usage.completion_tokens": output_tokens,
-        "llm.usage.total_tokens": total_tokens,
+        "ksadk.runtime.usage.input_tokens": input_tokens,
+        "ksadk.runtime.usage.output_tokens": output_tokens,
+        "ksadk.runtime.usage.total_tokens": total_tokens,
     }
     if cache_read_tokens:
-        attributes["gen_ai.usage.cache_read.input_tokens"] = cache_read_tokens
-        attributes["llm.usage.cache_read.input_tokens"] = cache_read_tokens
+        attributes["ksadk.runtime.usage.cache_read.input_tokens"] = cache_read_tokens
     if reasoning_tokens:
-        attributes["gen_ai.usage.reasoning.output_tokens"] = reasoning_tokens
-        attributes["llm.usage.reasoning_tokens"] = reasoning_tokens
+        attributes["ksadk.runtime.usage.reasoning.output_tokens"] = reasoning_tokens
 
     for key, value in attributes.items():
         if value:
@@ -405,6 +430,10 @@ def _set_conversation_span_attributes(
     if span is None:
         return
     try:
+        # A conversation span wraps the whole run. Real token-bearing model
+        # calls are separate child generations; keep this span out of the
+        # generation namespace so trace aggregation does not double-count.
+        span.set_attribute("openinference.span.kind", "AGENT")
         span.set_attribute("ksadk.agent_id", agent_id)
         span.set_attribute("ksadk.user_id", user_id)
         span.set_attribute("ksadk.session_id", session_id)

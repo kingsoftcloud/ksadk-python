@@ -14,6 +14,7 @@ from ksadk.sandbox.base import (
     SandboxSession,
     SandboxSpec,
 )
+from ksadk.sandbox.diagnostics import e2b_diagnostic_step
 from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,28 @@ _TRANSIENT_STARTUP_ERROR_NAMES = {
     # SDK 将其包装为 TimeoutException 抛出, 需按瞬时启动错误重试。
     "TimeoutException",
 }
+
+
+class E2BSandboxSessionError(SandboxError):
+    """Carry sandbox lifecycle facts when session initialization fails."""
+
+    def __init__(
+        self,
+        cause: Exception,
+        *,
+        instance_status: str,
+        failure_stage: str,
+        runtime_id: str = "",
+        cleanup_status: str = "not_started",
+        cleanup_error: str | None = None,
+    ) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.instance_status = instance_status
+        self.failure_stage = failure_stage
+        self.runtime_id = runtime_id
+        self.cleanup_status = cleanup_status
+        self.cleanup_error = cleanup_error
 
 
 def _startup_retry_attempts() -> int:
@@ -48,7 +71,7 @@ def _is_transient_startup_error(exc: Exception) -> bool:
     return type(exc).__name__ in _TRANSIENT_STARTUP_ERROR_NAMES
 
 
-def _with_startup_retry(operation):
+def _with_startup_retry(operation, *, step: str = "startup", runtime_id: str = ""):
     attempts = _startup_retry_attempts()
     delay = _startup_retry_delay()
     last_exc: Exception | None = None
@@ -56,7 +79,18 @@ def _with_startup_retry(operation):
         try:
             return operation()
         except Exception as exc:
-            if not _is_transient_startup_error(exc) or attempt >= attempts - 1:
+            retry = _is_transient_startup_error(exc) and attempt < attempts - 1
+            logger.warning(
+                "E2B_DIAGNOSTIC step=%s runtime_id=%s attempt=%d max_attempts=%d "
+                "error_type=%s retry=%s",
+                step,
+                runtime_id,
+                attempt + 1,
+                attempts,
+                type(exc).__name__,
+                retry,
+            )
+            if not retry:
                 raise
             last_exc = exc
             time.sleep(min(delay * (2**attempt), 1.0))
@@ -226,6 +260,17 @@ class E2BSandboxSession:
 
 
 class E2BSandboxBackend:
+    def _diagnostic_step(self, step: str, *, runtime_id: str = "", env=None):
+        credentials = (
+            (self.connection.api_key.get_secret_value(),) if self.connection is not None else ()
+        )
+        return e2b_diagnostic_step(
+            step,
+            runtime_id=runtime_id,
+            sensitive_values=credentials,
+            env={**self.spec.env, **(env or {})},
+        )
+
     def __init__(
         self,
         *,
@@ -239,7 +284,8 @@ class E2BSandboxBackend:
         self.sandbox_cls = sandbox_cls
         self.connection = (
             ExplicitE2BConnection.model_validate(connection.model_dump())
-            if connection is not None else None
+            if connection is not None
+            else None
         )
 
     def _get_sandbox_cls(self) -> Any:
@@ -253,6 +299,7 @@ class E2BSandboxBackend:
                 "e2b>=2.15.3,<2.25.0 is required for KSADK_SANDBOX_BACKEND=e2b"
             ) from exc
         return Sandbox
+
     def check_available(self) -> None:
         """Validate local SDK/connection configuration without creating a sandbox."""
         if self.connection is not None:
@@ -288,26 +335,59 @@ class E2BSandboxBackend:
             "session_id": session_id,
         }
         runtime_env = {**self.spec.env, **(env or {})}
-        sandbox = sandbox_cls.create(
-            template=self.spec.template_id,
-            timeout=self.spec.timeout,
-            metadata=metadata,
-            envs=runtime_env,
-            allow_internet_access=self.spec.allow_internet_access,
-            **connection_options,
-        )
+        try:
+            with self._diagnostic_step("create", env=runtime_env):
+                sandbox = sandbox_cls.create(
+                    template=self.spec.template_id,
+                    timeout=self.spec.timeout,
+                    metadata=metadata,
+                    envs=runtime_env,
+                    allow_internet_access=self.spec.allow_internet_access,
+                    **connection_options,
+                )
+        except Exception as exc:
+            # The transport can fail after the service accepted the request but before
+            # returning an instance id, so creation cannot be reported as not_created.
+            raise E2BSandboxSessionError(
+                exc,
+                instance_status="unknown",
+                failure_stage="create",
+            ) from exc
         session = self._wrap_sandbox(sandbox)
         try:
-            self._wait_until_ready(session, runtime_env)
-            session.write_files(
-                [(item.target_path, item.source.read_bytes()) for item in input_files or []]
-            )
-        except BaseException:
+            with self._diagnostic_step(
+                "initialize", runtime_id=session.sandbox_id, env=runtime_env
+            ):
+                self._wait_until_ready(session, runtime_env)
+                with self._diagnostic_step(
+                    "input_files.write", runtime_id=session.sandbox_id, env=runtime_env
+                ):
+                    session.write_files(
+                        [(item.target_path, item.source.read_bytes()) for item in input_files or []]
+                    )
+        except BaseException as exc:
+            cleanup_status = "not_started"
+            cleanup_error = None
             try:
-                session.kill()
+                with self._diagnostic_step(
+                    "initialize.cleanup", runtime_id=session.sandbox_id, env=runtime_env
+                ):
+                    session.kill()
+                cleanup_status = "completed"
             except Exception:
+                cleanup_status = "failed"
+                cleanup_error = "cleanup_failed"
                 logger.warning("E2B sandbox cleanup failed after initialization failure")
-            raise
+            if not isinstance(exc, Exception):
+                raise
+            raise E2BSandboxSessionError(
+                exc,
+                instance_status="created",
+                failure_stage="initialize",
+                runtime_id=session.sandbox_id,
+                cleanup_status=cleanup_status,
+                cleanup_error=cleanup_error,
+            ) from exc
         return session
 
     def reconnect_session(self, *, session_locator: str) -> SandboxSession:
@@ -316,11 +396,21 @@ class E2BSandboxBackend:
         locator = session_locator.strip()
         if not locator:
             raise SandboxError("E2B reconnect requires a sandbox ID")
-        sandbox_cls = self._get_sandbox_cls()
-        connection_options = self.connection.sdk_options() if self.connection is not None else {}
-        sandbox = sandbox_cls.connect(locator, timeout=self.spec.timeout, **connection_options)
-        session = self._wrap_sandbox(sandbox)
-        _with_startup_retry(lambda: session.run_command("true"))
+        # Reconnection does not transfer ownership: failure must not kill an
+        # existing instance that may still be running another process's work.
+        with self._diagnostic_step("reconnect", runtime_id=locator):
+            sandbox_cls = self._get_sandbox_cls()
+            connection_options = (
+                self.connection.sdk_options() if self.connection is not None else {}
+            )
+            sandbox = sandbox_cls.connect(locator, timeout=self.spec.timeout, **connection_options)
+            session = self._wrap_sandbox(sandbox)
+            with self._diagnostic_step("reconnect.ready.command", runtime_id=session.sandbox_id):
+                _with_startup_retry(
+                    lambda: session.run_command("true"),
+                    step="reconnect.ready.command",
+                    runtime_id=session.sandbox_id,
+                )
         return session
 
     def _wrap_sandbox(self, sandbox: Any) -> E2BSandboxSession:
@@ -329,9 +419,20 @@ class E2BSandboxBackend:
     def _wait_until_ready(
         self, session: E2BSandboxSession, env: dict[str, str] | None = None
     ) -> None:
-        _with_startup_retry(lambda: session.run_command("true"))
-        _with_startup_retry(lambda: session.write_file("/tmp/.ksadk-sandbox-ready", ""))
-        self._wait_env_applied(session, env or {})
+        with self._diagnostic_step("ready.command", runtime_id=session.sandbox_id, env=env):
+            _with_startup_retry(
+                lambda: session.run_command("true"),
+                step="ready.command",
+                runtime_id=session.sandbox_id,
+            )
+        with self._diagnostic_step("ready.file", runtime_id=session.sandbox_id, env=env):
+            _with_startup_retry(
+                lambda: session.write_file("/tmp/.ksadk-sandbox-ready", ""),
+                step="ready.file",
+                runtime_id=session.sandbox_id,
+            )
+        with self._diagnostic_step("ready.env", runtime_id=session.sandbox_id, env=env):
+            self._wait_env_applied(session, env or {})
 
     def _wait_env_applied(self, session: E2BSandboxSession, env: dict[str, str]) -> None:
         # create 返回后 envd 异步应用 envVars, 实测存在秒级延迟;
@@ -350,9 +451,8 @@ class E2BSandboxBackend:
         # 不 raise: 模板可能预置同名空值覆盖 create 注入 (envd 合并优先级问题),
         # 此时调用方仍可通过 run_command(env=...) 的 per-command 注入拿到正确值。
         logger.warning(
-            "E2B sandbox env %s not applied after %d attempts (expected %r); "
+            "E2B sandbox env %s not applied after %d attempts; "
             "template may predefine an empty override",
             key,
             attempts,
-            expected,
         )

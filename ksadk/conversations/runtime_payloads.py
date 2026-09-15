@@ -15,6 +15,8 @@ from ksadk.conversations.runtime_observability import (
     _responses_usage_payload,
     _usage_from_metadata,
 )
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
+from ksadk.runtime.timing import normalize_timing
 from ksadk.sessions import SessionEvent
 
 
@@ -131,6 +133,8 @@ def build_responses_payload(
     status: str = "completed",
     metadata: Mapping[str, Any] | None = None,
     usage: Mapping[str, Any] | None = None,
+    timing: Mapping[str, Any] | None = None,
+    skill_eval_result: Mapping[str, Any] | None = None,
     incomplete_details: Mapping[str, Any] | None = None,
     error: Mapping[str, Any] | None = None,
     output_items: Sequence[Mapping[str, Any]] | None = None,
@@ -174,7 +178,11 @@ def build_responses_payload(
         "tools": [],
         "output": output,
         "output_text": output_text,
+        **skill_eval_response_fields({"skill_eval_result": skill_eval_result}),
         "usage": usage_payload,
+        **(
+            {"timing": normalized_timing} if (normalized_timing := normalize_timing(timing)) else {}
+        ),
         "session_id": session_id,
     }
 

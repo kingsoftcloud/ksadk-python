@@ -205,6 +205,8 @@ async def _stream_conversation_semantic_events(
                     event.get("metadata") if isinstance(event.get("metadata"), Mapping) else None
                 ),
                 usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
+                timing=event.get("timing") if isinstance(event.get("timing"), Mapping) else None,
+                skill_eval_result=event.get("skill_eval_result"),
             )
             yield _response_sse("response.completed", final_payload)
 
@@ -626,6 +628,8 @@ async def _stream_responses_semantic_events(
                 status="failed",
                 metadata=response_metadata,
                 usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
+                timing=event.get("timing") if isinstance(event.get("timing"), Mapping) else None,
+                skill_eval_result=event.get("skill_eval_result"),
                 error={"message": event.get("message") or "Agent 运行失败"},
             )
             yield _response_sse("response.failed", failed_payload)
@@ -641,6 +645,8 @@ async def _stream_responses_semantic_events(
                 status="cancelled",
                 metadata=response_metadata,
                 usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
+                timing=event.get("timing") if isinstance(event.get("timing"), Mapping) else None,
+                skill_eval_result=event.get("skill_eval_result"),
             )
             yield _response_sse("response.cancelled", cancelled_payload)
             return
@@ -704,6 +710,8 @@ async def _stream_responses_semantic_events(
                 status="completed",
                 metadata=response_metadata,
                 usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
+                timing=event.get("timing") if isinstance(event.get("timing"), Mapping) else None,
+                skill_eval_result=event.get("skill_eval_result"),
                 output_items=(
                     event.get("responses_output")
                     if isinstance(event.get("responses_output"), Sequence)

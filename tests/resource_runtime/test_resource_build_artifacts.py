@@ -86,7 +86,11 @@ def test_build_restores_and_executes_offline_after_source_is_removed(tmp_path, f
         directory, reference, cache_directory=tmp_path / "runtime"
     )
     assert manifest.snapshot.digest == snapshot.digest
-    result = LocalProcessSkillRuntimeBackend(Path(agent.__file__)).run_workflow(
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result = LocalProcessSkillRuntimeBackend(
+        Path(agent.__file__), artifact_directory=artifacts
+    ).run_workflow(
         "execute",
         skill_space_ids=[],
         session_id="fixture",

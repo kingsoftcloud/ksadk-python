@@ -24,6 +24,14 @@
 
 因此，本文后续“建议路径/Phase”应理解为目标架构与剩余工作拆分；其中 Sandbox/E2B/ADK 注入/Skill 拉取缓存已经有代码实现，通用 executor、多框架适配和部署配置链路仍需继续收敛。
 
+## Skill Runtime 评测可观测性（2026-08 特性切片）
+
+`feat/skill-observability` 在保持 `RuntimeEvent v1`、SSE、Studio replay 和既有 OTLP exporter 不变的前提下，为 Skill Runtime 增加独立的 `SkillEvent v1`。当前切片覆盖包缓存/下载/摘要校验/解压、manifest、load、execution、artifact、受控 JSONL envelope 回收和外层 OTEL 投影；`SkillRuntimeResult.skill_events` 为可选诊断字段，因此空事件时旧 `to_dict()` 返回结构不变。
+
+这不是对本文旧阶段规划的重命名，也不表示完整跨系统链路已经完成。local/E2B backend 已记录 Sandbox session create/kill/cleanup 的事实，但 Agent Runtime 的请求级授权 binding、候选快照、选择回执和结果消费步骤关联，以及按外层 `SkillRef`/invocation 校验 envelope 仍须由所属系统补齐。缺失这些证据时，下游评测应使用 `not_evaluable`，不把缺失误判为失败或通过。
+
+权威的事件字段、脱敏、OTEL 投影和跨系统责任见 [Skill Runtime 评测可观测性设计](skill-runtime-evaluation-observability-design.md)。其中明确：Skill Service 只提供授权的不可变 Skill/Version/digest/Space 数据，下载 URL 仅供 KsADK 内部使用；Sandbox 不解释 `SKILL.md` 语义且不直报 OTLP；EvalSmith 不在本仓和本期改造范围内，只能在后续消费已有证据。
+
 ## 友商设计分析
 
 KsADK 值得接入 Skill 中心，但不要照搬 VeADK 的全部形态。
@@ -314,7 +322,7 @@ read SKILL.md
 run workflow inside sandbox agent
           |
           v
-return stdout/stderr/status/output_files to outer Agent
+return stdout/stderr/status/output_files and bounded text output to outer Agent
 ```
 
 ### 模块设计
