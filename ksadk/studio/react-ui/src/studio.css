@@ -8708,3 +8708,14 @@ select {
   padding: 0 16px;
   font-size: var(--font-size-meta);
 }
+
+/* 空会话欢迎语在 harness timeline（滚动容器）内正确居中。 */
+.harness-timeline > .studio-conversation-welcome {
+  min-height: 60vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
