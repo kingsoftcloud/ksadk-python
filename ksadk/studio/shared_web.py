@@ -536,6 +536,10 @@ class StudioSharedWebBridge:
     ) -> AsyncIterator[str]:
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
+        # Keep the client correlation key through the operation layer. It is
+        # only an idempotency key when the caller explicitly supplies one;
+        # otherwise each invocation remains independently executable.
+        idempotency_key = str(payload.get("IdempotencyKey") or f"responses:{invocation_id}")
         try:
             agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
             prompt = self._input_text(payload)
@@ -581,6 +585,7 @@ class StudioSharedWebBridge:
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
                 reasoning_effort=reasoning_effort,
+                idempotency_key=idempotency_key,
             )
         )
 
@@ -681,6 +686,7 @@ class StudioSharedWebBridge:
         agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
+        idempotency_key = str(payload.get("IdempotencyKey") or f"responses:{invocation_id}")
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
         approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
@@ -714,6 +720,7 @@ class StudioSharedWebBridge:
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
                 reasoning_effort=reasoning_effort,
+                idempotency_key=idempotency_key,
             )
             return self._response_payload(
                 run,
@@ -737,6 +744,7 @@ class StudioSharedWebBridge:
         collaboration_mode: str = "",
         goal_objective: str = "",
         reasoning_effort: str = "",
+        idempotency_key: str = "",
     ) -> RunRecord:
         if build is None:
             build = await self._ensure_build(agent_id)
@@ -764,7 +772,7 @@ class StudioSharedWebBridge:
             goal_objective=goal_objective or None,
             reasoning_effort=reasoning_effort or None,
             runtime_input=runtime_input or None,
-            idempotency_key=f"responses:{invocation_id}",
+            idempotency_key=idempotency_key or f"responses:{invocation_id}",
             on_event=observe,
         )
         self._operations_by_invocation[invocation_id] = operation.id
