@@ -189,6 +189,7 @@ export default function App() {
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
+  const agentsDiscoveryEpoch = useRef(0);
   const cloudDiscoveryEpoch = useRef(0);
   const [cloudDeploymentId, setCloudDeploymentId] = useState(
     !initialRoute.conversationAgentId && initialChatTarget.kind === "cloud" ? initialChatTarget.id : "",
@@ -255,6 +256,7 @@ export default function App() {
   }
 
   const loadAgents = useCallback(async () => {
+    const requestEpoch = ++agentsDiscoveryEpoch.current;
     try {
       const payload = await apiFetch("/api/v1/agents?limit=100").then(r => r.json());
       const summaries: AgentSummary[] = payload.items || [];
@@ -267,6 +269,7 @@ export default function App() {
         ...agent,
         builds: details[index]?.builds || [],
       }));
+      if (requestEpoch !== agentsDiscoveryEpoch.current) return;
       setAgents(items);
       setCurrentAgentId(prev => (
         items.some(agent => agent.metadata.id === prev)
@@ -276,7 +279,7 @@ export default function App() {
     } catch {
       // 保留上一次成功加载的数据，刷新按钮可重新触发同步。
     } finally {
-      setAgentsLoaded(true);
+      if (requestEpoch === agentsDiscoveryEpoch.current) setAgentsLoaded(true);
     }
   }, []);
 
