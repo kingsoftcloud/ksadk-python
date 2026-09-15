@@ -243,9 +243,10 @@ async function waitForCreatedBuild(operationId: string) {
   throw new Error("构建等待超时");
 }
 
-export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack, onCreated, onAgentsChanged }: {
+export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickCreateRequest = 0, onBack, onCreated, onAgentsChanged }: {
   editingAgentId?: string;
   workspacePath?: string;
+  quickCreateRequest?: number;
   viewportMode: StudioViewportMode;
   onBack: () => void;
   onCreated: (id?: string, openChat?: boolean) => void;
@@ -334,6 +335,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
   const [promptOperation, setPromptOperation] = useState<"compose" | "optimize">("compose");
   const [createError, setCreateError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const autoQuickCreateRequest = useRef(0);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [configModel, setConfigModel] = useState<ResItem | null>(null);
   const [showMcpConnect, setShowMcpConnect] = useState(false);
@@ -544,6 +546,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     if (selectedModels.length || !preferredConversationAuthoringModel) return;
     setSelectedModels([preferredConversationAuthoringModel]);
   }, [mode, selectedModels.length, preferredConversationAuthoringModel]);
+
+  useEffect(() => {
+    if (!quickCreateRequest || editingAgentId || autoQuickCreateRequest.current === quickCreateRequest
+      || !catalogReady || !selectedModels.length || platformResourcesPending) return;
+    autoQuickCreateRequest.current = quickCreateRequest;
+    void createWithDefaults();
+  }, [catalogReady, editingAgentId, platformResourcesPending, quickCreateRequest, selectedModels.length]);
 
   useEffect(() => {
     if (mode !== "conversation") {

@@ -88,6 +88,16 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("starts the one-click flow when requested from the Agent catalog", async () => {
+    const onCreated = vi.fn();
+    render(<CreatePage quickCreateRequest={1} viewportMode="desktop" onBack={vi.fn()} onCreated={onCreated} />);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+    });
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("codex-local-test", true));
+  });
+
   it("creates Harness through the manual wizard and preserves composed Tool bindings", async () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation(async (input, init) => {

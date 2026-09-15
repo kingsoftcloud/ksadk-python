@@ -23,12 +23,13 @@ function isDeclarativeAgent(agent: AgentItem): boolean {
   return agent.spec?.runtime?.type === "codex";
 }
 
-export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, workspaceName, onCreate, onDetail, onChat, onBuild, onChanged }: {
+export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, workspaceName, onCreate, onQuickCreate, onDetail, onChat, onBuild, onChanged }: {
   agents: AgentItem[];
   runtimeReady: boolean;
   runtimeChecked?: boolean;
   workspaceName: string;
   onCreate: () => void;
+  onQuickCreate?: () => void;
   onDetail: (id: string) => void;
   onChat: (id: string) => void;
   onBuild: (id: string) => void;
@@ -156,6 +157,11 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
   return (
     <div className="page-container agents-page" data-layout="data">
       <PageHeaderActions>
+        {onQuickCreate && (
+          <button className="button secondary" type="button" disabled={!runtimeReady} onClick={onQuickCreate} title="使用默认模板、模型和权限直接创建并打开会话">
+            <KingIcon name="add" size={16} /><span>快速创建</span>
+          </button>
+        )}
         <button className="button accent" type="button" disabled={!runtimeReady} onClick={onCreate}>
           <KingIcon name="add" size={16} /><span>创建 Agent</span>
         </button>

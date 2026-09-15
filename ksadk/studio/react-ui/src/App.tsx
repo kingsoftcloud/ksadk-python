@@ -199,6 +199,7 @@ export default function App() {
   const [conversationSessionId, setConversationSessionId] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
   const [newChatRequest, setNewChatRequest] = useState(0);
+  const [quickCreateRequest, setQuickCreateRequest] = useState(0);
   const onNewChatStarted = useCallback(() => setNewChatRequest(0), []);
   const [conversationHeaderHost, setConversationHeaderHost] = useState<HTMLDivElement | null>(null);
   const [historyHost, setHistoryHost] = useState<HTMLDivElement | null>(null);
@@ -550,8 +551,9 @@ export default function App() {
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
-  function openCreate() {
+  function openCreate(quick = false) {
     setEditingAgentId("");
+    setQuickCreateRequest(quick ? request => request + 1 : 0);
     setView("create");
   }
 
@@ -783,7 +785,7 @@ export default function App() {
                     <h2>还没有可用的会话目标</h2>
                     <p>可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。</p>
                     <div className="empty-actions">
-                      <button className="primary-button" type="button" onClick={openCreate}>创建本地 Agent</button>
+                      <button className="primary-button" type="button" onClick={() => openCreate()}>创建本地 Agent</button>
                       <button className="button secondary" type="button" onClick={() => setView("deployments")}>查看云端 Agent</button>
                     </div>
                   </div>
@@ -809,6 +811,7 @@ export default function App() {
                 runtimeChecked={runtimeChecked}
                 workspaceName={workspace?.name || ""}
                 onCreate={openCreate}
+                onQuickCreate={() => openCreate(true)}
                 onDetail={openDetail}
                 onChat={enterChat}
                 onBuild={id => { setCurrentAgentId(id); setView("builds"); }}
@@ -818,6 +821,7 @@ export default function App() {
             {view === "create" && (
               <CreatePage
                 workspacePath={workspace?.path}
+                quickCreateRequest={quickCreateRequest}
                 editingAgentId={editingAgentId || undefined}
                 viewportMode={viewportMode}
                 onAgentsChanged={loadAgents}
