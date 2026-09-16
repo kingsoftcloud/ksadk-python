@@ -49,7 +49,7 @@ def _block(stylesheet: str, selector: str) -> str:
 
 def test_react_ci_gate_runs_protocol_and_component_suites() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
-    target = makefile.split("studio-react-test:\n", 1)[1].split("\n\n", 1)[0]
+    target = makefile.split("studio-react-test: build-studio-static\n", 1)[1].split("\n\n", 1)[0]
 
     assert "npm --prefix ksadk/studio/react-ui test" in target
     assert "npm --prefix ksadk/studio/react-ui run test:ui" in target

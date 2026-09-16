@@ -76,13 +76,21 @@
           "type": "string"
         },
         "acceptancePolicy": {
-          "default": "human",
-          "enum": [
-            "human",
-            "result"
+          "anyOf": [
+            {
+              "enum": [
+                "leader",
+                "human",
+                "result"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Acceptancepolicy",
-          "type": "string"
+          "default": null,
+          "title": "Acceptancepolicy"
         }
       },
       "required": [
@@ -115,7 +123,7 @@
   },
   {
     "name": "team_task_action",
-    "description": "按最新 revision 领取未分配任务，或由 Leader 分配/重试任务；不能代替人类验收。",
+    "description": "按最新 revision 领取任务；Leader 分配/重试，并仅在leader策略下审核任务结果。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -126,7 +134,9 @@
           "enum": [
             "assign",
             "claim",
-            "retry"
+            "retry",
+            "accept",
+            "reject"
           ]
         },
         "expectedRevision": {
@@ -135,6 +145,10 @@
         },
         "ownerMemberId": {
           "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 2000
         }
       },
       "required": [
