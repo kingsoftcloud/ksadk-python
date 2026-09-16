@@ -249,8 +249,8 @@ export function AgentEditor({
   const [providerConfigText, setProviderConfigText] = useState("{}");
   const [providerConsent, setProviderConsent] = useState<{ key: string; approved: boolean } | null>(null);
   const [executionStrategy, setExecutionStrategy] = useState("direct");
-  const [executionMaxSteps, setExecutionMaxSteps] = useState(12);
-  const [executionTimeoutSeconds, setExecutionTimeoutSeconds] = useState(120);
+  const [executionMaxSteps, setExecutionMaxSteps] = useState(100);
+  const [executionTimeoutSeconds, setExecutionTimeoutSeconds] = useState(600);
   const [contextOwnership, setContextOwnership] = useState("auto");
   const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
   const [soulEnabled, setSoulEnabled] = useState(false);
@@ -361,8 +361,8 @@ export function AgentEditor({
         setProviderRef(String(draft.spec?.runtime?.providerRef || ""));
         setProviderConfigText(JSON.stringify(draft.spec?.runtime?.providerConfig || {}, null, 2));
         setExecutionStrategy(String(draft.spec?.execution?.strategy || "direct"));
-        setExecutionMaxSteps(Number(draft.spec?.execution?.maxSteps ?? 12));
-        setExecutionTimeoutSeconds(Number(draft.spec?.execution?.timeoutSeconds ?? 120));
+        setExecutionMaxSteps(Number(draft.spec?.execution?.maxSteps ?? 100));
+        setExecutionTimeoutSeconds(Number(draft.spec?.execution?.timeoutSeconds ?? 600));
         setContextOwnership(String(draft.spec?.context?.ownership || "auto"));
         setContextEngineRollout(String(draft.spec?.context?.rollout?.contextEngine || "shadow"));
         setSoulEnabled(Boolean(draft.spec?.soul));

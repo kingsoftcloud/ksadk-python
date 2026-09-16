@@ -88,7 +88,7 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
-  it("limits new Agent authoring to the Phase 2 runtimes", async () => {
+  it("shows the two built-in runtimes when no external Provider is installed", async () => {
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     const runtime = await screen.findByRole("combobox", { name: "Runtime" });
@@ -99,6 +99,37 @@ describe("CreatePage quick authoring", () => {
       "KsADK Harness",
       "Codex · ManagedRuntime",
     ]);
+  });
+
+  it("creates with DeepSeek first and GLM second regardless of catalog order", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    const deepseek = { ...model, resourceId: "model-deepseek", contract: { ...model.contract, model: "deepseek-v4.1-flash" } };
+    const glm = { ...model, resourceId: "model-glm", contract: { ...model.contract, model: "glm-5.3-flash" } };
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/catalog/resources?limit=200")
+        return response({ items: [model, glm, deepseek] });
+      const result = await base(input, init);
+      if (String(input) === "/api/v1/agent-templates/blank:compose") {
+        const request = JSON.parse(String(init?.body));
+        expect(request.modelProfileIds).toEqual([deepseek.resourceId, glm.resourceId]);
+        expect(request).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
+        const composition = await result.json();
+        composition.spec.bindings.modelProfileId = request.modelProfileId;
+        composition.spec.bindings.modelProfileIds = request.modelProfileIds;
+        composition.spec.execution = { maxSteps: request.maxSteps, timeoutSeconds: request.timeoutSeconds };
+        return response(composition);
+      }
+      return result;
+    });
+    render(<CreatePage quickCreateRequest={1} viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.spec.bindings.modelProfileId).toBe(deepseek.resourceId);
+      expect(request.spec.bindings.modelProfileIds).toEqual([deepseek.resourceId, glm.resourceId]);
+      expect(request.spec.execution).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
+    });
   });
 
   it("starts the one-click flow when requested from the Agent catalog", async () => {
@@ -299,8 +330,8 @@ describe("CreatePage quick authoring", () => {
         mcpResourceIds: [],
         policyTemplate: "strict",
         executionStrategy: "direct",
-        maxSteps: 25,
-        timeoutSeconds: 120,
+        maxSteps: 100,
+        timeoutSeconds: 600,
       });
     });
 

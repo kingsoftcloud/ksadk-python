@@ -148,6 +148,7 @@ const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELL
 const PROXY_MODEL_FAMILIES = ["deepseek", "glm", "kimi", "minimax", "qwen"];
 const QUICK_CREATE_DEFAULT_PROMPT = "你是一个可靠的通用助手，请直接回答用户问题；信息不足时先提出澄清问题。";
 const QUICK_CREATE_DEFAULT_NAME = "Studio Assistant";
+const DEFAULT_STUDIO_MODEL_NAMES = ["deepseek-v4.1-flash", "glm-5.3-flash"];
 
 function modelSortKey(item: ResItem): [number, number[], string] {
   const raw = String(item.contract?.model || item.name || "").toLowerCase();
@@ -540,12 +541,21 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     return preferred?.resourceId || models[0]?.resourceId || "";
   }, [models]);
 
+  const preferredStudioModelIds = useMemo(() => {
+    const lower = (item: (typeof models)[number]) =>
+      String(item.contract?.model || item.name).toLowerCase();
+    const preferred = DEFAULT_STUDIO_MODEL_NAMES
+      .map(name => models.find(item => lower(item) === name))
+      .filter((item): item is (typeof models)[number] => Boolean(item));
+    return (preferred.length ? preferred : models).slice(0, 2).map(item => item.resourceId);
+  }, [models]);
+
   // 自动预选默认模型 deepseek-v4.1-flash，用户无需手动选择即可创建 Agent。
   useEffect(() => {
     if (mode === "conversation") return;
     if (selectedModels.length || !preferredConversationAuthoringModel) return;
-    setSelectedModels([preferredConversationAuthoringModel]);
-  }, [mode, selectedModels.length, preferredConversationAuthoringModel]);
+    setSelectedModels(preferredStudioModelIds.length ? preferredStudioModelIds : [preferredConversationAuthoringModel]);
+  }, [mode, selectedModels.length, preferredConversationAuthoringModel, preferredStudioModelIds]);
 
   useEffect(() => {
     if (!quickCreateRequest || editingAgentId || autoQuickCreateRequest.current === quickCreateRequest
@@ -562,12 +572,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     if (conversationEntryInitialized.current || !preferredConversationAuthoringModel) return;
     conversationEntryInitialized.current = true;
     if (!convAuthoringModel) setConvAuthoringModel(preferredConversationAuthoringModel);
-    if (!convAgentModels.length) setConvAgentModels([preferredConversationAuthoringModel]);
+    if (!convAgentModels.length) setConvAgentModels(preferredStudioModelIds.length ? preferredStudioModelIds : [preferredConversationAuthoringModel]);
   }, [
     convAgentModels.length,
     convAuthoringModel,
     mode,
     preferredConversationAuthoringModel,
+    preferredStudioModelIds,
   ]);
 
   function updateConversationAgentModels(next: string[]) {
@@ -676,8 +687,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
-    maxSteps: template === "research" ? 40 : 25,
-    timeoutSeconds: template === "research" ? 900 : 120,
+    maxSteps: 100,
+    timeoutSeconds: 600,
   }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true, goalOverride } = {} as { preservePrompt?: boolean; goalOverride?: string }) => {
