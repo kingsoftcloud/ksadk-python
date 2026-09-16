@@ -25,8 +25,19 @@ async def prepare_worker_identity(
     if session_service is None:
         return identity_native_user_id(invocation_identity), invocation_identity
 
+    # Hosted runtimes have two stable identifiers: the platform deployment
+    # instance (used by the Kernel command) and the public AgentId used by
+    # CreateSession/RunAgent.  The admission path has already authorized the
+    # command against this session; use the persisted session owner as the
+    # canonical lookup key instead of treating the internal instance alias as
+    # a different Agent.  This prevents a valid hosted turn from becoming a
+    # misleading ``Session not found`` during worker startup.
+    agent_id = str(defaults.get("agent_id") or command.agent_instance_id)
+    existing = await session_service.get_session_metadata(command.session_id)
+    if existing is not None and str(existing.agent_id or "").strip():
+        agent_id = str(existing.agent_id)
     canonical_session = await ensure_conversation_session(
-        agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
+        agent_id=agent_id,
         user_id=effective_user_id,
         session_id=command.session_id,
         session_service_provider=lambda: session_service,

@@ -785,8 +785,12 @@ async def _ensure_shared_log_session(command: Any) -> None:
 
         payload = getattr(command, "payload", {})
         identity = payload.get("invocation_identity") if isinstance(payload, Mapping) else None
+        agent_id = str(getattr(command, "agent_instance_id", "") or "runtime")
+        existing = await service.get_session_metadata(session_id)
+        if existing is not None and str(existing.agent_id or "").strip():
+            agent_id = str(existing.agent_id)
         await ensure_conversation_session(
-            agent_id=str(getattr(command, "agent_instance_id", "") or "runtime"),
+            agent_id=agent_id,
             user_id=str(getattr(command, "tenant_id", "") or "tenant"),
             session_id=session_id,
             session_service_provider=lambda: service,
