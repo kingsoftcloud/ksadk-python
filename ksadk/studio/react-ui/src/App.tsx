@@ -268,21 +268,25 @@ export default function App() {
     try {
       const payload = await apiFetch("/api/v1/agents?limit=100").then(r => r.json());
       const summaries: AgentSummary[] = payload.items || [];
-      const details = await Promise.all(summaries.map(agent => (
-        apiFetch(`/api/v1/agents/${encodeURIComponent(agent.metadata.id)}`)
-          .then(r => r.ok ? r.json() : null)
-          .catch(() => null)
-      )));
-      const items = summaries.map((agent, index) => ({
-        ...agent,
-        builds: details[index]?.builds || [],
-      }));
       if (requestEpoch !== agentsDiscoveryEpoch.current) return;
-      setAgents(items);
+      // 先用摘要渲染，构建详情（仅 Agents 页徽标需要）逐个后台补齐，
+      // 避免会话首屏等待 N 个详情请求串行排队。
+      setAgents(summaries);
       setCurrentAgentId(prev => (
-        items.some(agent => agent.metadata.id === prev)
+        summaries.some(agent => agent.metadata.id === prev)
           ? prev
-          : items[0]?.metadata.id || ""
+          : summaries[0]?.metadata.id || ""
+      ));
+      summaries.map((agent, index) => (
+        apiFetchWithTimeout(`/api/v1/agents/${encodeURIComponent(agent.metadata.id)}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(detail => {
+            if (!detail || requestEpoch !== agentsDiscoveryEpoch.current) return;
+            setAgents(prevItems => prevItems.map((item, i) => (
+              i === index ? { ...item, builds: detail.builds || [] } : item
+            )));
+          })
+          .catch(() => null)
       ));
     } catch {
       // 保留上一次成功加载的数据，刷新按钮可重新触发同步。
@@ -311,6 +315,17 @@ export default function App() {
       const receiptAgentIds = [...new Set(receiptItems.flatMap((item: CloudDeploymentSummary) => (
         item.agentId?.trim() ? [item.agentId.trim()] : []
       )))];
+      // 收据已足够渲染目标列表，先解除会话页的加载门槛；
+      // 每个云端 Agent 的详情（版本/别名）后台增量合入。
+      const accountByAgentId = new Map(accountItems.map(item => [item.agentId, item]));
+      const initialItems = mergeCloudChatTargets(receiptItems, [...accountByAgentId.values()]);
+      setCloudDeployments(initialItems);
+      setCloudDeploymentId(previous => initialItems.some((item: CloudDeploymentSummary) => (
+        item.id === previous
+        && resolveCloudChatRoute(item).kind === "studio-session-events"
+        && isCloudChatTargetSelectable(item)
+      )) ? previous : "");
+      if (requestEpoch === cloudDiscoveryEpoch.current) setCloudDeploymentsLoaded(true);
       const accountDetails = await Promise.all<AccountCloudAgentSummary | null>(receiptAgentIds.map(agentId => (
         Promise.resolve()
           .then(() => apiFetchWithTimeout(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
@@ -320,7 +335,6 @@ export default function App() {
           .catch(() => null)
       )));
       if (requestEpoch !== cloudDiscoveryEpoch.current) return;
-      const accountByAgentId = new Map(accountItems.map(item => [item.agentId, item]));
       for (const detail of accountDetails) {
         if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
       }
