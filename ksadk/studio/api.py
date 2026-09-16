@@ -543,11 +543,25 @@ def create_studio_app(
     async def index(request: Request):
         from ksadk.studio.entry import studio_entry_response
 
-        return await studio_entry_response(
-            studio, request, static_root, security_enabled=security_enabled,
-            session_secret=session_secret, session_cookie_name=session_cookie_name,
-            legacy_session_cookie_name=legacy_session_cookie_name,
-        )
+        response = await studio_entry_response(studio, request, static_root)
+        if security_enabled:
+            response.set_cookie(
+                session_cookie_name,
+                session_secret,
+                httponly=True,
+                samesite="strict",
+                secure=False,
+                path="/",
+            )
+            response.set_cookie(
+                legacy_session_cookie_name,
+                session_secret,
+                httponly=True,
+                samesite="strict",
+                secure=False,
+                path="/",
+            )
+        return response
 
     @app.get("/api/v1/plugin-ecosystems/dsh/recovery")
     async def dsh_recovery_status():

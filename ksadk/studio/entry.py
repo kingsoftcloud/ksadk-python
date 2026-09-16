@@ -12,8 +12,7 @@ from ksadk.studio.errors import StudioError
 
 
 async def studio_entry_response(
-    studio: Any, request: Request, static_root: Path, *, security_enabled: bool,
-    session_secret: str, session_cookie_name: str, legacy_session_cookie_name: str,
+    studio: Any, request: Request, static_root: Path,
 ) -> Response:
     # Workspace navigation is contributed by the official Core client.
     # Opening the standalone React shell with enabled plugins silently
@@ -44,21 +43,4 @@ async def studio_entry_response(
         # Keep hashed module URLs identical to internal lazy imports.
         response = Response(content=html, media_type="text/html")
     response.headers["Cache-Control"] = "no-store"
-    if security_enabled:
-        response.set_cookie(
-            session_cookie_name,
-            session_secret,
-            httponly=True,
-            samesite="strict",
-            secure=False,
-            path="/",
-        )
-        response.set_cookie(
-            legacy_session_cookie_name,
-            session_secret,
-            httponly=True,
-            samesite="strict",
-            secure=False,
-            path="/",
-        )
     return response
