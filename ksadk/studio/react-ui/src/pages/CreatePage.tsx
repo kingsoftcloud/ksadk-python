@@ -138,10 +138,10 @@ function approveHarness(spec: any, approved: boolean) {
   ])] };
 }
 const WIZARD_STEP_META = [
-  ["定义 Agent", "模板与系统提示词"],
-  ["绑定能力", "Model · Tool · MCP · Skill"],
-  ["Prompt 与策略", "检查并调整"],
-  ["检查并创建", "构建与打开会话"],
+  ["定义 Agent", "名称、目标与运行环境"],
+  ["绑定能力", "模型、工具与扩展能力"],
+  ["Prompt 与策略", "提示词与执行规则"],
+  ["检查并创建", "确认配置，开始对话"],
 ];
 
 const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
@@ -339,6 +339,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
   const restoredWorkspaceRef = useRef("");
   const [restoreComposition, setRestoreComposition] = useState(false);
   const createRailTriggerRef = useRef<HTMLButtonElement>(null);
+  const focusStepAfterRailClose = useRef(false);
   const composeSeq = useRef(0);
   const conversationEntryInitialized = useRef(false);
 
@@ -800,6 +801,12 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     taskPrompt,
   ]);
 
+  function focusCurrentStep() {
+    const heading = document.querySelector<HTMLElement>("#quickAgentForm .wizard-panel.active h2");
+    heading?.focus({ preventScroll: true });
+    heading?.scrollIntoView({ block: "start" });
+  }
+
   async function gotoStep(next: number) {
     if (next < 1 || next > 4) return;
     if (next > step) {
@@ -839,6 +846,12 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     setCreateError("");
     if (next === 3 && promptStatus === "idle") composeAgent({ preservePrompt: true });
     setStep(next);
+    if (viewportMode === "compact" && createRailOpen) {
+      focusStepAfterRailClose.current = true;
+      closeCreateRail();
+    } else if (next !== step) {
+      requestAnimationFrame(focusCurrentStep);
+    }
     setMaxStep(m => Math.max(m, next));
     markDirty();
   }
@@ -1276,9 +1289,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
     item => !hasConfiguredCredential(item),
   );
   const isManagedRuntime = runtime === "codex" || runtime === "harness";
-  const wizardStepMeta = isManagedRuntime
-    ? [...WIZARD_STEP_META.slice(0, 3), ["检查并创建", "校验声明与打开会话"]]
-    : WIZARD_STEP_META;
+  const wizardStepMeta = WIZARD_STEP_META;
 
   const closeCreateRail = useCallback((restoreFocus = false) => {
     setCreateRailOpen(false);
@@ -1300,59 +1311,77 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
   }
 
   const MODE_TABS: Array<{ id: Mode; icon: any; label: string; sub: string }> = [
-    { id: "quick", icon: Zap, label: "快速创建", sub: "配置 YAML Revision" },
-    { id: "conversation", icon: MessagesSquare, label: "对话构建", sub: "多轮生成 Draft Patch" },
+    { id: "quick", icon: Zap, label: "快速创建", sub: "分步配置 Agent" },
+    { id: "conversation", icon: MessagesSquare, label: "对话构建", sub: "通过对话完善 Agent" },
     { id: "import", icon: Upload, label: "导入", sub: "YAML / Agent ZIP" },
     { id: "project", icon: Folder, label: "项目识别", sub: "检测 ADK / LangGraph" },
   ];
   const layout = !editingAgentId && mode === "conversation" ? "workbench" : "document";
 
-  const renderCreateRailContent = () => (
-    <div className="create-rail-panel">
-      {!editingAgentId && (
-        <nav className="authoring-mode-tabs" aria-label="创建方式" role="tablist">
-          {MODE_TABS.map(tab => {
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                id={`authoring-tab-${tab.id}`}
-                className={mode === tab.id ? "active" : ""}
-                type="button"
-                role="tab"
-                aria-selected={mode === tab.id}
-                aria-controls={`authoring-panel-${tab.id}`}
-                title={`${tab.label}：${tab.sub}`}
-                onClick={() => selectMode(tab.id)}
-              >
-                <Icon size={16} /><span><strong>{tab.label}</strong></span>
-              </button>
-            );
-          })}
-        </nav>
-      )}
-      {(editingAgentId || mode === "quick") && (
-        <>
-          <nav className="wizard-steps" aria-label="创建步骤">
-            {wizardStepMeta.map((meta, index) => {
-              const number = index + 1;
-              const completed = !editingAgentId && number < maxStep && number !== step;
-              return (
-                <button
-                  key={number}
-                  className={`wizard-step${(editingAgentId ? number === 1 : step === number) ? " active" : ""}${completed ? " completed" : ""}`}
-                  type="button"
-                  disabled={Boolean(editingAgentId) || number > maxStep}
-                  onClick={() => gotoStep(number)}
-                >
-                  <span className="step-number">{completed ? <Check size={13} strokeWidth={3} /> : number}</span>
-                  <span><strong>{meta[0]}</strong></span>
-                </button>
-              );
-            })}
-          </nav>
-        </>
-      )}
+  const renderModeTabs = () => (
+    <nav className="authoring-mode-tabs" aria-label="创建方式" role="tablist">
+      {MODE_TABS.map(tab => {
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.id}
+            id={`authoring-tab-${tab.id}`}
+            className={mode === tab.id ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={mode === tab.id}
+            aria-controls={`authoring-panel-${tab.id}`}
+            title={`${tab.label}：${tab.sub}`}
+            onClick={() => selectMode(tab.id)}
+          >
+            <Icon size={16} /><span><strong>{tab.label}</strong></span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+
+  const renderWizardSteps = () => (
+    <nav className="wizard-steps" aria-label="创建步骤">
+      {wizardStepMeta.map((meta, index) => {
+        const number = index + 1;
+        const completed = number < maxStep && number !== step;
+        return (
+          <button
+            key={number}
+            className={`wizard-step${step === number ? " active" : ""}${completed ? " completed" : ""}`}
+            type="button"
+            aria-current={step === number ? "step" : undefined}
+            disabled={number > maxStep}
+            onClick={() => void gotoStep(number)}
+          >
+            <span className="step-number" aria-hidden="true">{completed ? <Check size={13} strokeWidth={2} /> : number}</span>
+            <span><strong>{meta[0]}</strong><small>{meta[1]}</small></span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+
+  const configurationSummary = (
+    <div className="wizard-summary-content">
+      <dl>
+        <div><dt>模板</dt><dd>{templateLabel}</dd></div>
+        <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
+        <div><dt>模型</dt><dd className={!selectedModels.length ? "summary-pending" : undefined}>{reviewModel}</dd></div>
+        <div><dt>Skill</dt><dd>{selectedSkills.length ? `${selectedSkills.length} 个` : "未添加"}</dd></div>
+        <div><dt>MCP</dt><dd>{selectedMcp.length ? `${selectedMcp.length} 个` : "未添加"}</dd></div>
+        <div><dt>Tool</dt><dd>{usesNativeCodexTools ? "Codex 原生工具" : effectiveSelectedTools.length ? `${effectiveSelectedTools.length} 个` : "未添加"}</dd></div>
+        <div><dt>策略</dt><dd>{template === "research" ? "Plan-Act-Observe" : "Direct"}</dd></div>
+      </dl>
+      {supportsKsAdkTools && <div className="summary-note">
+        <ShieldCheck size={16} />
+        <div><strong>{policyMeta.title}</strong><p>{policyMeta.description}</p></div>
+      </div>}
+      <div className="summary-note">
+        <Package size={16} />
+        <div><strong>创建之后</strong><p>{buildAfterCreate ? "完成校验后，打开会话开始使用。" : "保存 Agent，稍后从列表中打开。"}</p></div>
+      </div>
     </div>
   );
 
@@ -1376,10 +1405,15 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
         {!editingAgentId && mode === "quick" && <span className="tag">{draftState}</span>}
       </PageHeaderActions>
 
+      {!editingAgentId && viewportMode !== "compact" && (
+        <div className="create-method-bar">{renderModeTabs()}</div>
+      )}
       <div className="create-workbench">
-        {!editingAgentId && viewportMode !== "compact" && (
+        {!editingAgentId && mode === "quick" && viewportMode !== "compact" && (
           <aside id="createRail" className="create-rail" aria-label="创建方式与步骤">
-            {renderCreateRailContent()}
+            <p className="create-rail-label">创建步骤</p>
+            {renderWizardSteps()}
+            <p className="create-rail-help">随时保存草稿，稍后继续完善。</p>
           </aside>
         )}
 
@@ -1389,11 +1423,20 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
             compact
             title="创建方式"
             subtitle="切换创建入口，或查看当前配置步骤。"
+            onCloseAutoFocus={event => {
+              if (!focusStepAfterRailClose.current) return;
+              event.preventDefault();
+              focusStepAfterRailClose.current = false;
+              requestAnimationFrame(focusCurrentStep);
+            }}
             onOpenChange={open => {
               if (!open) closeCreateRail(true);
             }}
           >
-            <div id="createRail">{renderCreateRailContent()}</div>
+            <div id="createRail" className="create-rail-panel">
+              {renderModeTabs()}
+              {mode === "quick" && renderWizardSteps()}
+            </div>
           </StudioDrawer>
         )}
 
@@ -1413,7 +1456,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
               id="authoring-panel-conversation"
               className="authoring-mode-panel"
               role="tabpanel"
-              aria-labelledby="authoring-tab-conversation"
+              aria-label={viewportMode === "compact" ? "对话构建" : undefined}
+              aria-labelledby={viewportMode !== "compact" ? "authoring-tab-conversation" : undefined}
             >
               <div className="authoring-panel-heading conversation-panel-heading">
                 <div><h2>对话创建 Agent</h2></div>
@@ -1637,7 +1681,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
               id="authoring-panel-import"
               className="authoring-mode-panel"
               role="tabpanel"
-              aria-labelledby="authoring-tab-import"
+              aria-label={viewportMode === "compact" ? "导入" : undefined}
+              aria-labelledby={viewportMode !== "compact" ? "authoring-tab-import" : undefined}
             >
               <div className="authoring-panel-heading">
                 <div><h2>导入 Agent</h2><p>支持 YAML 或 ZIP，检查后再导入。</p></div>
@@ -1705,7 +1750,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
               id="authoring-panel-project"
               className="authoring-mode-panel"
               role="tabpanel"
-              aria-labelledby="authoring-tab-project"
+              aria-label={viewportMode === "compact" ? "项目识别" : undefined}
+              aria-labelledby={viewportMode !== "compact" ? "authoring-tab-project" : undefined}
             >
               <div className="authoring-panel-heading">
                 <div><h2>识别现有项目</h2><p>选择工作区项目，检查后导入。</p></div>
@@ -1761,25 +1807,25 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
               id="authoring-panel-quick"
               className="wizard-layout"
               role="tabpanel"
-              aria-labelledby="authoring-tab-quick"
+              aria-label={viewportMode === "compact" ? "快速创建" : undefined}
+              aria-labelledby={viewportMode !== "compact" ? "authoring-tab-quick" : undefined}
             >
               <FormProvider {...quickForm}>
               <form id="quickAgentForm" className="wizard-content" onSubmit={quickForm.handleSubmit(submitWizard)} noValidate>
                 {/* 第 1 步：定义 Agent */}
                 <section className={`wizard-panel${step === 1 ? " active" : ""}`} hidden={step !== 1}>
                   <div className="panel-heading">
-                    <span className="panel-index">01</span>
-                    <div><h2>定义 Agent</h2></div>
+                    <div><span className="wizard-step-caption">第 1 步，共 4 步</span><h2 tabIndex={-1}>定义 Agent</h2><p>先给它一个名字，再描述你希望它完成的工作。</p></div>
                   </div>
                   <div className="field">
-                    <label>起点</label>
+                    <label>选择起点</label>
                     <div className="template-grid">
-                      <button className={`template-card${template === "blank" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "blank", { shouldDirty: true }); markDirty(); }}>
+                      <button className={`template-card${template === "blank" ? " selected" : ""}`} aria-pressed={template === "blank"} type="button" onClick={() => { quickForm.setValue("template", "blank", { shouldDirty: true }); markDirty(); }}>
                         <span className="template-icon"><Bot size={18} /></span>
                         <span><strong>空白 Agent</strong><small>从自己的需求开始</small></span>
                         <span className="choice-check"><Check size={14} /></span>
                       </button>
-                      <button className={`template-card${template === "research" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "research", { shouldDirty: true }); markDirty(); }}>
+                      <button className={`template-card${template === "research" ? " selected" : ""}`} aria-pressed={template === "research"} type="button" onClick={() => { quickForm.setValue("template", "research", { shouldDirty: true }); markDirty(); }}>
                         <span className="template-icon"><Search size={18} /></span>
                         <span><strong>深度调研</strong><small>调研、验证来源并生成报告</small></span>
                         <span className="choice-check"><Check size={14} /></span>
@@ -1792,6 +1838,67 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                     </FormField>
 
                   </div>
+                  <FormField
+                    label="Agent 目标与要求"
+                    requirement="required"
+                    htmlFor="quickPrompt"
+                    hint="写清角色、目标、工作边界和回答方式。"
+                    error={quickForm.formState.errors.prompt?.message}
+                    footer={<div className="field-footer"><span>{prompt.length} / 32768</span></div>}
+                  >
+                    <textarea id="quickPrompt" rows={6} maxLength={32768} placeholder="例如：帮助用户排查技术问题。先确认现象，再给出可执行的步骤。" {...quickForm.register("prompt", { onChange: markDirty })} />
+                  </FormField>
+                  {template === "research" && (
+                    <div className="template-specific">
+                      <div className="form-grid two-columns">
+                        <FormField label="目标读者" requirement="required" htmlFor="researchAudience" error={quickForm.formState.errors.audience?.message}>
+                          <input id="researchAudience" maxLength={256} {...quickForm.register("audience")} />
+                        </FormField>
+                        <FormField label="输出语言" requirement="required" htmlFor="researchLanguage">
+                          <StudioSelect
+                            id="researchLanguage"
+                            ariaLabel="输出语言"
+                            value={language}
+                            options={[
+                              { value: "zh-CN", label: "简体中文" },
+                              { value: "en-US", label: "English" },
+                            ]}
+                            onValueChange={value => quickForm.setValue("language", value as QuickAgentFormValues["language"], { shouldDirty: true, shouldValidate: true })}
+                          />
+                        </FormField>
+                      </div>
+                      <div className="field">
+                        <label>调研深度</label>
+                        <div className="choice-grid">
+                          {[
+                            { value: "focused", label: "聚焦", desc: "8 个步骤，适合快速事实核验", time: "约 3 分钟" },
+                            { value: "standard", label: "标准", desc: "16 个步骤，兼顾范围和深度", time: "约 8 分钟" },
+                            { value: "deep", label: "深度", desc: "28 个步骤，多来源交叉验证", time: "约 15 分钟" },
+                          ].map(o => (
+                            <button key={o.value} className={`choice-card${depth === o.value ? " selected" : ""}`} type="button" onClick={() => quickForm.setValue("depth", o.value as QuickAgentFormValues["depth"], { shouldDirty: true })}>
+                              <span className="choice-check"><Check size={14} /></span>
+                              <strong>{o.label}</strong><span>{o.desc}</span><small>{o.time}</small>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <FormField label="默认输出" requirement="required" htmlFor="researchFormat">
+                        <StudioSelect
+                          id="researchFormat"
+                          ariaLabel="默认输出"
+                          value={format}
+                          options={[
+                            { value: "report", label: "结构化研究报告" },
+                            { value: "brief", label: "决策简报" },
+                            { value: "evidence-table", label: "证据矩阵与结论" },
+                          ]}
+                          onValueChange={value => quickForm.setValue("format", value as QuickAgentFormValues["format"], { shouldDirty: true, shouldValidate: true })}
+                        />
+                      </FormField>
+                    </div>
+                  )}
+                  <div className="wizard-runtime-section">
+                    <h3>运行环境</h3>
                   <FormField label="Runtime" requirement="required" htmlFor="quickRuntime" hint="Codex 支持 OpenAI Responses 与兼容接口。" error={quickForm.formState.errors.runtimeType?.message}>
                     <StudioSelect
                       id="quickRuntime"
@@ -1871,16 +1978,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                     </div>
                   )}
 
-                  <FormField
-                    label="Agent 目标与要求"
-                    requirement="required"
-                    htmlFor="quickPrompt"
-                    hint="写清角色、目标、工作边界和回答方式。"
-                    error={quickForm.formState.errors.prompt?.message}
-                    footer={<div className="field-footer"><span>{prompt.length} / 32768</span></div>}
-                  >
-                    <textarea id="quickPrompt" rows={6} maxLength={32768} placeholder="例如：帮助用户排查技术问题。先确认现象，再给出可执行的步骤。" {...quickForm.register("prompt", { onChange: markDirty })} />
-                  </FormField>
+                  </div>
                   <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description) || undefined}>
                     <summary>标识与描述</summary>
                     <div className="form-grid two-columns">
@@ -1897,62 +1995,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                   </FormField>
                     </div>
                   </details>
-                  {template === "research" && (
-                    <div className="template-specific">
-                      <div className="form-grid two-columns">
-                        <FormField label="目标读者" requirement="required" htmlFor="researchAudience" error={quickForm.formState.errors.audience?.message}>
-                          <input id="researchAudience" maxLength={256} {...quickForm.register("audience")} />
-                        </FormField>
-                        <FormField label="输出语言" requirement="required" htmlFor="researchLanguage">
-                          <StudioSelect
-                            id="researchLanguage"
-                            ariaLabel="输出语言"
-                            value={language}
-                            options={[
-                              { value: "zh-CN", label: "简体中文" },
-                              { value: "en-US", label: "English" },
-                            ]}
-                            onValueChange={value => quickForm.setValue("language", value as QuickAgentFormValues["language"], { shouldDirty: true, shouldValidate: true })}
-                          />
-                        </FormField>
-                      </div>
-                      <div className="field">
-                        <label>调研深度</label>
-                        <div className="choice-grid">
-                          {[
-                            { value: "focused", label: "聚焦", desc: "8 个步骤，适合快速事实核验", time: "约 3 分钟" },
-                            { value: "standard", label: "标准", desc: "16 个步骤，兼顾范围和深度", time: "约 8 分钟" },
-                            { value: "deep", label: "深度", desc: "28 个步骤，多来源交叉验证", time: "约 15 分钟" },
-                          ].map(o => (
-                            <button key={o.value} className={`choice-card${depth === o.value ? " selected" : ""}`} type="button" onClick={() => quickForm.setValue("depth", o.value as QuickAgentFormValues["depth"], { shouldDirty: true })}>
-                              <span className="choice-check"><Check size={14} /></span>
-                              <strong>{o.label}</strong><span>{o.desc}</span><small>{o.time}</small>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <FormField label="默认输出" requirement="required" htmlFor="researchFormat">
-                        <StudioSelect
-                          id="researchFormat"
-                          ariaLabel="默认输出"
-                          value={format}
-                          options={[
-                            { value: "report", label: "结构化研究报告" },
-                            { value: "brief", label: "决策简报" },
-                            { value: "evidence-table", label: "证据矩阵与结论" },
-                          ]}
-                          onValueChange={value => quickForm.setValue("format", value as QuickAgentFormValues["format"], { shouldDirty: true, shouldValidate: true })}
-                        />
-                      </FormField>
-                    </div>
-                  )}
+
                 </section>
 
                 {/* 第 2 步：绑定能力 */}
                 <section className={`wizard-panel${step === 2 ? " active" : ""}`} hidden={step !== 2}>
                   <div className="panel-heading">
-                    <span className="panel-index">02</span>
-                    <div><h2>绑定能力</h2></div>
+                    <div><span className="wizard-step-caption">第 2 步，共 4 步</span><h2 tabIndex={-1}>绑定能力</h2><p>选择模型，并按需添加工具和扩展能力。</p></div>
                   </div>
                   {usesNativeCodexTools && (
                     <div className="inline-alert warning codex-capability-notice">
@@ -1967,18 +2016,12 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                         <h3>模型 <span className="studio-field-requirement required" aria-hidden="true">*</span><span className="sr-only">必填</span></h3>
                         <p>至少选择一个；支持多选</p>
                       </div>
+                      {selectedModelNeedsCredential && (
+                        <button className="button secondary small" type="button" onClick={() => setConfigModel(selectedModelItems[0] || null)}>
+                          配置凭证
+                        </button>
+                      )}
                     </div>
-                    {selectedModelNeedsCredential && (
-                    <div className="model-profile-control">
-                      <button
-                        className="button secondary"
-                        type="button"
-                        onClick={() => setConfigModel(selectedModelItems[0] || null)}
-                      >
-                        配置凭证
-                      </button>
-                    </div>
-                    )}
                     <StudioMultiSelect
                       ariaLabel="选择模型"
                       items={models}
@@ -2057,7 +2100,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                       emptyMessage="没有已安装的 Skill"
                     />
                   </div>
-                  <div className="capability-section platform-capability-section">
+                  <details className="capability-section platform-capability-section wizard-optional-capabilities" open={selectedPlatformResources.length > 0 || undefined}>
+                    <summary><span>平台资源 <small>可选</small></span><p>连接知识库、记忆库与云端 Skill</p></summary>
                     <PlatformResourceBindings
                       value={selectedPlatformResources}
                       onChange={bindings => {
@@ -2072,14 +2116,13 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                       }}
                       onPendingChange={setPlatformResourcesPending}
                     />
-                  </div>
+                  </details>
                 </section>
 
                 {/* 第 3 步：Prompt 与策略 */}
                 <section className={`wizard-panel${step === 3 ? " active" : ""}`} hidden={step !== 3}>
                   <div className="panel-heading">
-                    <span className="panel-index">03</span>
-                    <div><h2>提示词与策略</h2></div>
+                    <div><span className="wizard-step-caption">第 3 步，共 4 步</span><h2 tabIndex={-1}>提示词与策略</h2><p>检查生成的提示词，明确它的工作方式与边界。</p></div>
                     <button className={`button secondary small prompt-optimize-button${promptStatus === "composing" ? " is-working" : ""}`} type="button" disabled={promptStatus === "composing"} aria-busy={promptStatus === "composing"} onClick={optimizePromptWithModel}>
                       <RefreshCw size={14} aria-hidden="true" /><span className={promptStatus === "composing" ? "text-shimmer" : undefined}>{promptStatus === "composing" ? (promptOperation === "optimize" ? "正在优化" : "正在生成") : "一键优化 Prompt"}</span>
                     </button>
@@ -2153,8 +2196,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                 {/* 第 4 步：检查并创建 */}
                 <section className={`wizard-panel${step === 4 ? " active" : ""}`} hidden={step !== 4}>
                   <div className="panel-heading">
-                    <span className="panel-index">04</span>
-                    <div><h2>检查并创建</h2></div>
+                    <div><span className="wizard-step-caption">第 4 步，共 4 步</span><h2 tabIndex={-1}>检查并创建</h2><p>确认配置后，创建你的 Agent。</p></div>
                   </div>
                   <div className="review-block">
                     <div className="review-title"><span>Agent</span><button className="text-button" type="button" onClick={() => gotoStep(1)}>编辑</button></div>
@@ -2193,7 +2235,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                   <button className="button secondary" type="button" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => gotoStep(step - 1)}>
                     <ArrowLeft size={16} /><span>上一步</span>
                   </button>
-                  <span className="wizard-progress">第 {step} 步，共 4 步</span>
+                  <span className="wizard-progress">{step < 4 ? `下一步：${wizardStepMeta[step][0]}` : "准备就绪后创建"}</span>
 
                   <button className="button tertiary summary-toggle" type="button" aria-label="完整摘要" title="完整摘要" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
                     <PanelRight size={16} /><span>完整摘要</span>
@@ -2214,6 +2256,17 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
               </form>
               </FormProvider>
 
+              <aside className="wizard-live-summary" aria-label="配置预览">
+                <h3>配置预览</h3>
+                <div className="summary-agent-identity">
+                  <span className="summary-agent-icon">{template === "research" ? <Search size={22} /> : <Bot size={22} />}</span>
+                  <strong>{name.trim() || "未命名 Agent"}</strong>
+                  <span>{templateLabel}</span>
+                </div>
+                <p className={`summary-agent-goal${prompt.trim() ? "" : " is-empty"}`}>{prompt.trim() || "你的 Agent 将在这里呈现。先描述它要完成的工作。"}</p>
+                {configurationSummary}
+              </aside>
+
               <StudioDrawer
                 open={summaryOpen}
                 compact
@@ -2221,26 +2274,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                 subtitle="检查本轮创建使用的 Runtime、模型、能力与权限策略。"
                 onOpenChange={setSummaryOpen}
               >
-                <div className="wizard-summary-content">
-                <dl>
-                  <div><dt>模板</dt><dd>{templateLabel}</dd></div>
-                  <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
-                  <div><dt>模型</dt><dd>{reviewModel}</dd></div>
-                  <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
-                  <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
-                  <div><dt>Tool</dt><dd>{effectiveSelectedTools.length}</dd></div>
-                  <div><dt>策略</dt><dd>{template === "research" ? "Plan-Act-Observe" : "Direct"}</dd></div>
-                </dl>
-                <div className="summary-divider" />
-                <div className="summary-note">
-                  <ShieldCheck size={16} />
-                  <div><strong>{policyMeta.title}</strong><p>{policyMeta.description}</p></div>
-                </div>
-                <div className="summary-note">
-                  <Package size={16} />
-                  <div><strong>{isManagedRuntime ? "声明校验" : "不可变构建"}</strong><p>{isManagedRuntime ? "冻结 YAML 与 runtime 摘要；云端部署不使用代码包。" : usesNativeCodexTools ? "Skill 与 MCP 将锁定版本与摘要；工具由 Codex Runtime 提供。" : "Skill、MCP 和 Tool 将锁定版本与摘要。"}</p></div>
-                </div>
-                </div>
+                {configurationSummary}
               </StudioDrawer>
             </div>
           )}

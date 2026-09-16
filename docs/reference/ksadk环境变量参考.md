@@ -409,6 +409,10 @@
 | `KSADK_STUDIO_NO_SECURITY` | AgentKit Studio | 否 | `0` | 无 | 否 | 测试环境 | 否 | 仅受控自动化测试可设为 `1`；正常启动必须保留 loopback session 与 CSRF 校验。 |
 | `KSADK_STUDIO_SESSION_TOKEN` | AgentKit Studio | 否 | 随机生成 | 无 | 是 | CLI / 测试 Secret | 否 | 显式指定本地浏览器 session token；正常启动由 CLI 随机生成并写入启动 URL。 |
 | `KSADK_STUDIO_TRACE_CONTENT` | AgentKit Studio | 否 | `1` | 无 | 否 | 开发者 / Studio 设置 | 否 | 是否保存 Trace 事件正文；设为 `0` 时只保留排障所需元数据。 |
+| `KSADK_TEAMS_SERVER_URL` | Studio Teams | 否 | 空，使用本地团队存储 | 无 | 否 | 开发者 / 工作区配置 | 否 | 显式连接兼容 Teams 协议的服务端；未设置时保留本地模式。 |
+| `KSADK_TEAMS_ACCESS_TOKEN` | Studio Teams | 按服务端鉴权要求 | 空 | 未设置时使用已配置的请求签名 | 是 | 本地 Secret / 环境变量 | 否 | 配置远端团队服务的 Bearer 凭据，不写入源码或日志。 |
+| `KSADK_TEAMS_NODE_KIND` | Studio Teams | 否 | `local` | 无 | 否 | 执行节点配置 | 否 | 节点注册时报告的类型，应匹配服务端支持的节点类型。 |
+| `KSADK_TEAMS_NODE_NAME` | Studio Teams | 否 | 系统主机名 | 无 | 否 | 执行节点配置 | 否 | 发送给已配置团队服务的节点显示名称；可设置不包含主机信息的名称。 |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex model proxy | 否 | `OPENAI_BASE_URL` / `OPENAI_API_BASE` | 无 | 否 | 开发者 / 平台 | 否 | Codex proxy 上游 base URL 覆盖。 |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex model proxy | 否 | `OPENAI_API_KEY` | 无 | 是 | 开发者 / 平台 | 否 | Codex proxy 上游凭据覆盖。 |
 | `KSADK_PROXY_TOKEN` | Codex model proxy | 否 | 运行时生成 | 无 | 是 | SDK 内部 | 否 | 本地回环 proxy 与 Codex 子进程之间的 bearer token；通常不应手动设置。 |

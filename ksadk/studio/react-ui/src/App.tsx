@@ -18,6 +18,7 @@ import { SettingsOverlay, type SettingsSection } from "./components/SettingsOver
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
+import { ChatAgentSelector, type ChatAgentOption } from "./components/ChatAgentSelector";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
 import { ToastRegion, showToast } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
@@ -36,7 +37,7 @@ import {
   writeNavigationRailPreference,
   type NavigationView,
 } from "./components/NavigationRail";
-import { PanelRight } from "lucide-react";
+import { CircleAlert, CircleCheck, Clock3, PanelRight } from "lucide-react";
 import { KingIcon } from "./components/KingIcon";
 
 type View = NavigationView;
@@ -176,6 +177,7 @@ export default function App() {
   const [conversationHeaderHost, setConversationHeaderHost] = useState<HTMLDivElement | null>(null);
   const [chatStreaming, setChatStreaming] = useState(false);
   const [historyHost, setHistoryHost] = useState<HTMLDivElement | null>(null);
+  const [searchHost, setSearchHost] = useState<HTMLDivElement | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
   useEffect(() => {
@@ -326,6 +328,8 @@ export default function App() {
   const currentAgent = agents.find(a => a.metadata.id === currentAgentId);
   const runtimeState = !runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed";
   const runtimeStateLabel = !runtimeChecked ? "检查中" : runtimeReady ? "运行正常" : "连接失败";
+  const runtimeBadgeLabel = !runtimeChecked ? "本地检查中" : runtimeReady ? "本地" : "本地异常";
+  const RuntimeStatusIcon = !runtimeChecked ? Clock3 : runtimeReady ? CircleCheck : CircleAlert;
 
   function switchAgent(id: string) {
     if (!id) return;
@@ -385,11 +389,12 @@ export default function App() {
     view,
   ]);
 
-  const chatTargetOptions = [
-    ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: `本地 · ${agent.metadata.name}` })),
+  const chatTargetOptions: ChatAgentOption[] = [
+    ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: agent.metadata.name, group: "本地" as const })),
     ...studioCloudDeployments.map(deployment => ({
       value: `cloud:${deployment.id}`,
-      label: `云端 · ${deployment.agentName || deployment.agentId}`,
+      label: deployment.agentName || deployment.agentId || "云端 Agent",
+      group: "云端" as const,
     })),
   ];
   const chatTargetValue = selectedCloudDeployment
@@ -526,7 +531,9 @@ export default function App() {
         mobileOpen={mobileNavOpen}
         onMobileOpenChange={setMobileNavOpen}
         onExpand={() => { setRailExpandedPreference(true); writeNavigationRailPreference(true); }}
+        onToggle={toggleRail}
         onHistoryHostChange={setHistoryHost}
+        onSearchHostChange={setSearchHost}
         chatStreaming={chatStreaming || newChatRequest !== 0}
         onStartChat={() => { setRequestedSessionId(""); setNewChatRequest(request => request + 1); enterChat(); setMobileNavOpen(false); }}
         workspaceName={workspaceName}
@@ -605,16 +612,7 @@ export default function App() {
           )}
           <div className="header-actions">
             <div ref={setConversationHeaderHost} id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
-            {view === "conversations" ? (
-              <StudioSelect
-                className="header-agent-selector conversation-target-selector"
-                ariaLabel="切换会话目标"
-                value={chatTargetValue}
-                placeholder="选择会话目标"
-                options={chatTargetOptions}
-                onValueChange={switchChatTarget}
-              />
-            ) : AGENT_SCOPED_VIEWS.has(view) && (
+            {view !== "conversations" && AGENT_SCOPED_VIEWS.has(view) && (
               <StudioSelect
                 className="header-agent-selector"
                 ariaLabel="切换当前 Agent"
@@ -624,8 +622,16 @@ export default function App() {
                 onValueChange={switchAgent}
               />
             )}
-            {view !== "conversations" && <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>}
-            <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
+            <span
+              className="badge"
+              data-state={runtimeState}
+              role="status"
+              aria-label={`本地 · ${runtimeStateLabel}`}
+              title={`本地 · ${runtimeStateLabel}`}
+            >
+              <RuntimeStatusIcon size={12} aria-hidden="true" />
+              {runtimeBadgeLabel}
+            </span>
             {(view !== "conversations" || railCanExpand) && <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
               <KingIcon name="refresh" size={16} />
             </button>}
@@ -653,7 +659,9 @@ export default function App() {
                   onStreamingChange={setChatStreaming}
                   integratedHistory
                   historyHost={historyHost}
+                  searchHost={searchHost}
                   headerHost={conversationHeaderHost}
+                  agentSelector={<ChatAgentSelector placement="header" value={chatTargetValue} options={chatTargetOptions} onValueChange={switchChatTarget} />}
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   key={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
@@ -669,7 +677,9 @@ export default function App() {
                   onStreamingChange={setChatStreaming}
                   integratedHistory
                   historyHost={historyHost}
+                  searchHost={searchHost}
                   headerHost={conversationHeaderHost}
+                  agentSelector={<ChatAgentSelector placement="header" value={chatTargetValue} options={chatTargetOptions} onValueChange={switchChatTarget} />}
                   onSelectConversation={() => { enterChat(); setMobileNavOpen(false); }}
                   key={currentAgentId}
                   agentId={currentAgentId}

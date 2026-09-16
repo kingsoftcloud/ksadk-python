@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from ksadk.configs.env_registry_pcm import PCM_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_var_spec import EnvVarSpec
+from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    *STUDIO_ENV_VAR_REGISTRY_ITEMS,
     EnvVarSpec(
         "KSADK_MEMORY_POSTGRES_DSN", "memory", "Harness memory PostgreSQL DSN.",
         sensitive=True, documented=False,
@@ -274,39 +276,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "plugins",
         "DSH Profile name used by Studio and the plugin bridge.",
         "studio",
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_LAZY_START",
-        "studio",
-        "Internal desktop startup mode; keep the Studio window responsive while optional DSH warmup runs.",
-        "0",
-        documented=False,
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_NO_SECURITY",
-        "studio",
-        "Disable Studio loopback session and CSRF checks for controlled tests only.",
-        "0",
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_AUTHORIZER",
-        "studio",
-        "Internal authoring backend selector; bounded chat is the default and the "
-        "filesystem-capable Codex authorizer requires an explicit opt-in.",
-        "chat",
-        documented=False,
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_SESSION_TOKEN",
-        "studio",
-        "Explicit local Studio browser session token; generated randomly when unset.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_TRACE_CONTENT",
-        "studio",
-        "Persist Studio trace event content; set to 0 to retain metadata only.",
-        "1",
     ),
     EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."

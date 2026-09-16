@@ -360,7 +360,7 @@ class StudioService:
             runtime_registry=self.scheduler_runtimes,
         )
         from ksadk.studio.execution_host import StudioExecutionHost
-        from ksadk.studio.teams_installation import StudioTeamsInstallation
+        from ksadk.studio.teams_installation import create_teams_installation
         from ksadk.studio.workspace_plugins import WorkspacePluginRegistry
 
         self.workspace_plugins = WorkspacePluginRegistry()
@@ -369,7 +369,7 @@ class StudioService:
             state_path=self.workspace.resolve(".agentkit/plugin-runtime/execution-host.sqlite"),
         )
         self.plugin_runs.execution_policy_resolver = self.execution_host
-        self.teams_installation = StudioTeamsInstallation(self)
+        self.teams_installation = create_teams_installation(self)
         from ksadk.studio.scheduler_assistant import StudioScheduleAssistant
 
         self.run_service.schedule_assistant = StudioScheduleAssistant(self)

@@ -17,6 +17,8 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from ksadk.studio.plugin_lifecycle import lifecycle_error
+
 
 @dataclass(frozen=True)
 class WorkspacePlugin:
@@ -26,6 +28,7 @@ class WorkspacePlugin:
     disable: Callable[[], Awaitable[None]]
     status: Callable[[], dict[str, Any]]
     shutdown: Callable[[], Awaitable[None]] | None = None
+    repair: Callable[[], Awaitable[dict[str, Any]]] | None = None
 
 
 class LifecycleInput(BaseModel):
@@ -62,30 +65,37 @@ class WorkspacePluginRegistry:
                 try:
                     await (plugin.enable() if payload.enabled else plugin.disable())
                 except Exception as error:
+                    failure = lifecycle_error(error, plugin.status().get("stage", "configuration"))
                     import logging
-                    logging.getLogger(__name__).exception("workspace plugin lifecycle failed: %s", plugin_id)
-                    code = getattr(error, "code", "plugin_lifecycle_failed")
-                    messages = {
-                        "DSH_PROFILE_IN_USE": (
-                            "仍有执行或审批正在进行，请结束执行后再变更插件 Profile"
-                        ),
-                        "artifact_migration_required": (
-                            "插件制品与现有团队数据不匹配。请恢复原插件锁定版本，"
-                            "或备份后执行明确的版本迁移；现有数据未修改。"
-                        ),
-                    }
+                    logging.getLogger(__name__).warning(
+                        "workspace plugin lifecycle failed: %s (%s)", plugin_id, failure.code
+                    )
                     return JSONResponse(
-                        {
-                            "error": {
-                                "code": code,
-                                "message": messages.get(
-                                    code, str(error) or "插件未能完成装配，请查看插件状态后重试"
-                                ),
-                            }
-                        },
-                        status_code=getattr(error, "status_code", getattr(error, "status", 503)),
+                        failure.as_dict(),
+                        status_code=failure.status_code,
                     )
                 return {"apiVersion": plugin.api_version, **plugin.status()}
+
+        @self.api.post("/plugins/{plugin_id}/repair")
+        async def repair(plugin_id: str):
+            plugin = self._plugins.get(plugin_id)
+            if not plugin or not plugin.repair:
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": "repair_unavailable",
+                            "message": "此插件没有适用的修复操作",
+                        }
+                    },
+                    status_code=409,
+                )
+            async with self._locks[plugin_id]:
+                try:
+                    result = await plugin.repair()
+                except Exception as error:
+                    failure = lifecycle_error(error, "data_migration")
+                    return JSONResponse(failure.as_dict(), status_code=failure.status_code)
+                return {"apiVersion": plugin.api_version, **plugin.status(), "repair": result}
 
     def register(self, plugin: WorkspacePlugin) -> Callable[[], None]:
         if plugin.plugin_id in self._plugins:

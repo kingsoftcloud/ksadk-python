@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,6 +20,30 @@ def test_embedded_core_document_uses_agentkit_branding():
     assert "AgentKit Studio" in branded
 
 
+def test_failed_core_opens_base_workspace_when_fallback_is_available():
+    app = FastAPI()
+
+    @app.get("/studio-shell/")
+    async def shell():
+        return {"workspace": "available"}
+
+    capabilities = SimpleNamespace(
+        connector_lease=AsyncMock(side_effect=RuntimeError("private bootstrap token"))
+    )
+    dsh_application.register_dsh_application(
+        app,
+        SimpleNamespace(dsh_capabilities=capabilities),
+        session_secret="test",
+        security_enabled=False,
+        fallback_url="/studio-shell/",
+    )
+    with TestClient(app) as client:
+        response = client.get("/studio-core/")
+        assert response.status_code == 200
+        assert response.json() == {"workspace": "available"}
+        assert "private" not in response.text
+
+
 @pytest.fixture
 def application(monkeypatch):
     app = FastAPI()
@@ -27,16 +52,33 @@ def application(monkeypatch):
     async def error(_request, exc):
         return JSONResponse(exc.as_dict(), status_code=exc.status_code)
 
-    capabilities = SimpleNamespace(application_lease=AsyncMock(return_value=SimpleNamespace(endpoint="http://127.0.0.1:43123/mcp")))
-    dsh_application.register_dsh_application(app, SimpleNamespace(dsh_capabilities=capabilities), session_secret="test-session", security_enabled=True)
+    capabilities = SimpleNamespace(
+        application_lease=AsyncMock(
+            return_value=SimpleNamespace(endpoint="http://127.0.0.1:43123/mcp")
+        )
+    )
+    dsh_application.register_dsh_application(
+        app,
+        SimpleNamespace(dsh_capabilities=capabilities),
+        session_secret="test-session",
+        security_enabled=True,
+    )
     observed = []
 
     def upstream(request):
         observed.append((str(request.url), request.headers.get("origin"), request.read()))
-        return httpx.Response(200, stream=httpx.ByteStream(b"event: result\ndata: ok\n\n"), headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(b"event: result\ndata: ok\n\n"),
+            headers={"content-type": "text/event-stream"},
+        )
 
     client_type = httpx.AsyncClient
-    monkeypatch.setattr(dsh_application.httpx, "AsyncClient", lambda **kw: client_type(transport=httpx.MockTransport(upstream), **kw))
+    monkeypatch.setattr(
+        dsh_application.httpx,
+        "AsyncClient",
+        lambda **kw: client_type(transport=httpx.MockTransport(upstream), **kw),
+    )
     with TestClient(app) as client:
         yield client, capabilities, observed
 
@@ -65,10 +107,16 @@ def test_studio_api_misses_never_fall_through_to_core(application):
 def test_core_proxy_preserves_stream_body_and_rewrites_only_transport_origin(application):
     client, _, observed = application
     client.cookies.set("agentkit_studio_session", "test-session")
-    response = client.post("/studio-core/api/example?q=test", content=b'{"args":{}}', headers={"Origin": "http://testserver"})
+    response = client.post(
+        "/studio-core/api/example?q=test",
+        content=b'{"args":{}}',
+        headers={"Origin": "http://testserver"},
+    )
     assert response.content == b"event: result\ndata: ok\n\n"
     assert response.headers["content-type"] == "text/event-stream"
-    assert observed == [("http://127.0.0.1:43123/api/example?q=test", "http://127.0.0.1:43123", b'{"args":{}}')]
+    assert observed == [
+        ("http://127.0.0.1:43123/api/example?q=test", "http://127.0.0.1:43123", b'{"args":{}}')
+    ]
 
 
 def test_websocket_checks_authentication_before_connecting(application):
@@ -89,3 +137,24 @@ def test_retired_chat_does_not_start_core(application, path):
     assert client.get(path).status_code == 404
     capabilities.application_lease.assert_not_awaited()
     assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_proxy_response_closes_upstream():
+    entered = asyncio.Event()
+    closed = AsyncMock()
+
+    async def body():
+        entered.set()
+        await asyncio.Event().wait()
+        yield b"unreachable"
+
+    response = dsh_application._CoreStreamingResponse(body(), close_upstream=closed)
+    task = asyncio.create_task(
+        response({"type": "http", "asgi": {"spec_version": "2.4"}}, AsyncMock(), AsyncMock())
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    closed.assert_awaited_once()
