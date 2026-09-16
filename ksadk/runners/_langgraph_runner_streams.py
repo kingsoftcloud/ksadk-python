@@ -15,6 +15,8 @@ from langgraph.types import Command
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 from ksadk.events.runtime_event import RuntimeEvent
 from ksadk.runners.usage_accumulator import accumulate_usage
+from ksadk.runtime.skill_eval_result import skill_eval_response_fields
+from ksadk.runtime.timing import extract_timing
 
 if TYPE_CHECKING:
     pass
@@ -87,6 +89,8 @@ class _LangGraphStreamMixin:
         inline_reasoning_parser = ReasoningMarkupParser()
         emitted_non_text_event = False
         final_output_text = ""
+        final_output_timing: dict[str, Any] = {}
+        final_result_fields: dict[str, Any] = {}
         final_output_usage: dict[str, Any] = {}
         final_output_last_usage: dict[str, Any] = {}
         model_run_usages: dict[str, dict[str, Any]] = {}
@@ -97,6 +101,7 @@ class _LangGraphStreamMixin:
         model_step_indexes: dict[str, int] = {}
         first_token_seen: set[str] = set()
         next_step_index = 0
+        internal_model_runs: set[str] = set()
 
         def model_run_key(
             event: Mapping[str, Any],
@@ -169,6 +174,8 @@ class _LangGraphStreamMixin:
             last_usage = self._extract_last_usage(result)
             if last_usage:
                 final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+            if timing := extract_timing(result):
+                final_chunk["timing"] = timing
             yield final_chunk
             return
 
@@ -195,6 +202,19 @@ class _LangGraphStreamMixin:
                 stream_kwargs["context"] = native_context
             async for event in self._agent.astream_events(stream_input, **stream_kwargs):
                 event_kind = event.get("event", "")
+
+                # This metadata is scoped to a model call, not the whole graph.
+                # Remember it because subsequent chunks may omit metadata.
+                event_run_id = str(event.get("run_id") or "")
+                event_metadata = event.get("metadata") or {}
+                internal_output = (
+                    isinstance(event_metadata, Mapping)
+                    and event_metadata.get("ksadk_output_visibility") == "internal"
+                )
+                if event_kind.startswith("on_chat_model_"):
+                    if internal_output and event_run_id:
+                        internal_model_runs.add(event_run_id)
+                    internal_output = internal_output or event_run_id in internal_model_runs
 
                 if event_kind == "on_chat_model_start":
                     model_call_id = str(event.get("run_id") or "")
@@ -247,6 +267,11 @@ class _LangGraphStreamMixin:
                             run_key = model_run_key(event)
                             stream_usage_run_keys.add(run_key)
                             record_model_usage(event, latest_stream_usage)
+
+                    # Collect usage/lifecycle above even for internal calls, but
+                    # never feed their text into the shared reasoning parser.
+                    if internal_output:
+                        continue
 
                     # 推理内容
                     reasoning = getattr(chunk, "reasoning_content", None)
@@ -387,6 +412,9 @@ class _LangGraphStreamMixin:
 
                 elif event_kind == "on_chain_end":
                     output = event.get("data", {}).get("output", {})
+                    if not event.get("parent_ids"):
+                        final_output_timing = extract_timing(output)
+                        final_result_fields = skill_eval_response_fields(output)
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
                         # __interrupt__ 是 LangGraph 原始 Interrupt 对象列表，
@@ -469,7 +497,7 @@ class _LangGraphStreamMixin:
 
         if not accumulated_text:
             if final_output_text:
-                final_chunk = {"output": final_output_text, "type": "final"}
+                final_chunk = {"output": final_output_text, "type": "final", **final_result_fields}
                 usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
                 last_usage = (
                     latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
@@ -478,11 +506,14 @@ class _LangGraphStreamMixin:
                     final_chunk["usage"] = usage
                 if last_usage:
                     final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+                if final_output_timing:
+                    final_chunk["timing"] = final_output_timing
                 yield final_chunk
             elif not emitted_non_text_event:
                 result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
                 fallback_chunk: dict[str, Any] = {
                     "output": result.get("output", ""),
+                    **skill_eval_response_fields(result),
                     "type": "final",
                 }
                 usage = self._extract_usage(result)
@@ -491,13 +522,15 @@ class _LangGraphStreamMixin:
                 last_usage = self._extract_last_usage(result)
                 if last_usage:
                     fallback_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+                if timing := extract_timing(result):
+                    fallback_chunk["timing"] = timing
                 yield fallback_chunk
                 checkpoint_metadata = result.get("metadata") if isinstance(result, dict) else None
                 if isinstance(checkpoint_metadata, dict) and checkpoint_metadata.get("agentengine"):
                     yield {"type": "checkpoint", "metadata": checkpoint_metadata}
                     return
         else:
-            final_chunk = {"output": accumulated_text, "type": "final"}
+            final_chunk = {"output": accumulated_text, "type": "final", **final_result_fields}
             state_usage = await self._latest_state_usage(config)
             usage = (
                 accumulated_model_usage()
@@ -515,6 +548,8 @@ class _LangGraphStreamMixin:
                     or usage
                 )
                 final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+            if final_output_timing:
+                final_chunk["timing"] = final_output_timing
             yield final_chunk
 
         metadata = await self._latest_checkpoint_metadata(config)
@@ -549,6 +584,7 @@ class _LangGraphStreamMixin:
             RunInterrupted,
             RunStarted,
             SourceRef,
+            UsageReported,
         )
         from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
         from ksadk.events.reducer import StreamReducer
@@ -690,6 +726,8 @@ class _LangGraphStreamMixin:
         )
         adapter = LangGraphEventAdapter()
         reducer = StreamReducer()
+        accumulated_usage: dict[str, Any] = {}
+        final_result_fields: dict[str, Any] = {}
 
         # --- build stream kwargs (v3 rejects stream_mode/subgraphs) ---
         stream_kwargs: dict[str, Any] = {"version": "v3", "config": config}
@@ -702,6 +740,18 @@ class _LangGraphStreamMixin:
         try:
             run_stream = await self._agent.astream_events(stream_input, **stream_kwargs)
             async for event in adapter.stream_run(run_stream, adapter_context):
+                if isinstance(event, UsageReported):
+                    accumulated_usage = accumulate_usage(
+                        accumulated_usage,
+                        {
+                            "input_tokens": event.input_tokens,
+                            "output_tokens": event.output_tokens,
+                            "total_tokens": event.total_tokens,
+                            "cached_tokens": event.cached_tokens,
+                            "reasoning_tokens": event.reasoning_tokens,
+                        },
+                    )
+                    event = event.model_copy(update=accumulated_usage)
                 if isinstance(event, RunInterrupted):
                     was_interrupted = True
                     # Extract checkpoint from graph state and emit
@@ -811,6 +861,9 @@ class _LangGraphStreamMixin:
                 reducer.apply(event)
                 last_timestamp = float(getattr(event, "timestamp", 0.0) or last_timestamp)
                 yield event
+            # v3 exposes the final graph state after the event stream completes.
+            final_state = await run_stream.output()
+            final_result_fields = skill_eval_response_fields(final_state)
         except Exception as exc:
             error_source = SourceRef(
                 framework="langgraph",
@@ -860,7 +913,10 @@ class _LangGraphStreamMixin:
         terminal_source = SourceRef(
             framework="langgraph",
             native_run_id=run_id,
-            metadata=dict(source_metadata),
+            metadata={
+                **source_metadata,
+                **({"metrics": final_result_fields} if final_result_fields else {}),
+            },
         )
         yield RunCompleted(
             schema_version=2,

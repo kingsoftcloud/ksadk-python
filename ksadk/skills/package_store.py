@@ -7,6 +7,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ try:
 except ImportError:  # Windows legacy callers retain in-process synchronization.
     fcntl = None
 
+from ksadk.skills.events import SkillEvent, SkillEventSink
 from ksadk.skills.models import SkillRef
 
 
@@ -60,14 +62,43 @@ class PackageStore:
         self.max_files = max_files
         self._thread_lock = threading.RLock()
 
-    def store_archive(self, ref: SkillRef, content: bytes) -> SkillPackage:
-        self._verify_hash(ref, content)
+    def store_archive(
+        self,
+        ref: SkillRef,
+        content: bytes,
+        *,
+        event_sink: SkillEventSink | None = None,
+        skill_invocation_id: str = "",
+    ) -> SkillPackage:
+        hash_started_at = time.time()
+        try:
+            self._verify_hash(ref, content)
+        except SkillPackageError:
+            self._emit_lifecycle(
+                event_sink,
+                "skill.package.hash_verified",
+                status="failed",
+                ref=ref,
+                skill_invocation_id=skill_invocation_id,
+                started_at=hash_started_at,
+                error_category="hash_verification_failed",
+            )
+            raise
+        self._emit_lifecycle(
+            event_sink,
+            "skill.package.hash_verified",
+            status="completed",
+            ref=ref,
+            skill_invocation_id=skill_invocation_id,
+            started_at=hash_started_at,
+        )
         with self._locked(ref):
             cached = self._get_cached(ref)
             if cached is not None:
                 return cached
             skill_dir = self._skill_dir(ref)
             stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=self.cache_dir))
+            extract_started_at = time.time()
             try:
                 (stage / "archive.zip").write_bytes(content)
                 os.chmod(stage / "archive.zip", 0o600)
@@ -82,10 +113,27 @@ class PackageStore:
                     shutil.rmtree(skill_dir)
                 os.replace(stage, skill_dir)
             except (OSError, zipfile.BadZipFile, RuntimeError, ValueError) as error:
+                self._emit_lifecycle(
+                    event_sink,
+                    "skill.package.extracted",
+                    status="failed",
+                    ref=ref,
+                    skill_invocation_id=skill_invocation_id,
+                    started_at=extract_started_at,
+                    error_category="extract_failed",
+                )
                 raise SkillPackageError("Skill archive could not be safely materialized") from error
             finally:
                 if stage.exists():
                     shutil.rmtree(stage)
+            self._emit_lifecycle(
+                event_sink,
+                "skill.package.extracted",
+                status="completed",
+                ref=ref,
+                skill_invocation_id=skill_invocation_id,
+                started_at=extract_started_at,
+            )
             return self._package(ref, skill_dir, cache_hit=False)
 
     def get_cached(self, ref: SkillRef) -> SkillPackage | None:
@@ -253,3 +301,28 @@ class PackageStore:
         if not candidates:
             raise SkillPackageError(f"SKILL.md not found under {extract_dir}")
         return candidates[0]
+
+    @staticmethod
+    def _emit_lifecycle(
+        event_sink: SkillEventSink | None,
+        event_type: str,
+        *,
+        status: str,
+        ref: SkillRef,
+        skill_invocation_id: str,
+        started_at: float,
+        error_category: str = "",
+    ) -> None:
+        if event_sink is None or not skill_invocation_id:
+            return
+        event_sink.emit(
+            SkillEvent.create(
+                event_type,
+                status=status,
+                skill_ref=ref,
+                skill_invocation_id=skill_invocation_id,
+                started_at=started_at,
+                ended_at=time.time(),
+                error_category=error_category,
+            )
+        )

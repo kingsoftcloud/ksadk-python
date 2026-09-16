@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from uuid import uuid4
 
+from ksadk.skills.events import (
+    SkillEvent,
+    SkillExecutionContext,
+    SkillInvocationPlan,
+    apply_execution_context,
+    build_skill_invocation_plan,
+)
 from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
-from ksadk.skills.runtime.base import SkillRuntimeBackend, normalize_skill_names
+from ksadk.skills.observability import project_skill_events
+from ksadk.skills.package_store import SkillPackage
+from ksadk.skills.runtime.base import SkillRuntimeBackend, SkillRuntimeResult, normalize_skill_names
 from ksadk.skills.service_client import SkillServiceClient
 from ksadk.skills.service_env import (
     parse_skill_space_ids,
@@ -30,6 +40,7 @@ RUNTIME_AGENT_ENV_NAMES = (
     "KSADK_SKILL_CACHE_DIR",
     "KSADK_SKILL_WORKDIR",
     "KSADK_SKILL_ARTIFACT_PROJECT",
+    "KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES",
     "KSADK_PUBLIC_SKILL_SPACE_IDS",
     "KSADK_PUBLIC_SKILL_ALLOWLIST",
 )
@@ -86,25 +97,119 @@ def build_execute_skills_tool(
     backend: SkillRuntimeBackend,
     skill_space_ids: list[str] | None = None,
     session_id: str | None = None,
+    execution_context: SkillExecutionContext | None = None,
+    pinned_packages: list[SkillPackage] | None = None,
 ):
     spaces = list(skill_space_ids or resolve_user_skill_space_ids())
     default_session_id = session_id or f"ksadk-{uuid4().hex}"
+    packages = list(pinned_packages) if pinned_packages is not None else None
 
     def execute_skills(workflow_prompt: str, skill_names: list[str] | str | None = None) -> dict:
         """Execute a workflow with the configured Skill Runtime."""
 
+        invocation_plan = _invocation_plan(execution_context)
+        runtime_spaces = [] if packages is not None else spaces
         result = backend.run_workflow(
             workflow_prompt,
-            skill_space_ids=spaces,
+            skill_space_ids=runtime_spaces,
             skill_names=normalize_skill_names(skill_names),
             session_id=default_session_id,
-            env=runtime_agent_env_from_process(spaces),
+            env={} if packages is not None else runtime_agent_env_from_process(runtime_spaces),
+            invocation_plan=invocation_plan,
+            pinned_packages=packages,
             timeout=int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900")),
         )
+        if execution_context is not None:
+            result = _with_execution_context(result, execution_context, invocation_plan)
+        project_skill_events(getattr(result, "skill_events", []))
         return result.to_dict()
 
     execute_skills.__name__ = "execute_skills"
     return execute_skills
+
+
+def _invocation_plan(context: SkillExecutionContext | None):
+    if context is None or context.binding is None or not context.selected_skill_ids:
+        return None
+    return build_skill_invocation_plan(
+        context.binding,
+        selected_skill_ids=context.selected_skill_ids,
+        decision_id=context.decision_id,
+    )
+
+
+def _with_execution_context(
+    result: SkillRuntimeResult,
+    context: SkillExecutionContext,
+    invocation_plan: SkillInvocationPlan | None,
+) -> SkillRuntimeResult:
+    allowed_skill_refs = (
+        tuple(candidate.skill_ref for candidate in context.binding.candidates)
+        if context.binding
+        else ()
+    )
+    context_events = [
+        SkillEvent.create(
+            "skill.candidates.resolved",
+            status="completed",
+            trace_id=context.trace_id,
+            run_id=context.run_id,
+            binding_snapshot_id=context.binding.binding_snapshot_id if context.binding else "",
+            decision_id=context.decision_id,
+            attributes={
+                "candidate_count": len(context.binding.candidates) if context.binding else 0,
+                "candidate_skill_ids": (
+                    [candidate.skill_ref.skill_id for candidate in context.binding.candidates]
+                    if context.binding
+                    else []
+                ),
+            },
+        ),
+        SkillEvent.create(
+            "skill.selection.completed",
+            status="completed",
+            trace_id=context.trace_id,
+            run_id=context.run_id,
+            binding_snapshot_id=context.binding.binding_snapshot_id if context.binding else "",
+            decision_id=context.decision_id,
+            attributes={"selected_skill_ids": list(context.selected_skill_ids)},
+        ),
+    ]
+    accepted_events: list[SkillEvent] = []
+    expected_invocations = (
+        {entry.skill_invocation_id: entry.skill_ref for entry in invocation_plan.entries}
+        if invocation_plan is not None
+        else {}
+    )
+    for event in result.skill_events:
+        if event.skill_ref is not None:
+            expected_ref = expected_invocations.get(event.skill_invocation_id)
+            if invocation_plan is not None:
+                canonical_ref = expected_ref
+            else:
+                canonical_ref = next(
+                    (
+                        skill_ref
+                        for skill_ref in allowed_skill_refs
+                        if skill_ref.matches_execution_identity(event.skill_ref)
+                    ),
+                    None,
+                )
+            if canonical_ref is None or not canonical_ref.matches_execution_identity(
+                event.skill_ref
+            ):
+                accepted_events.append(
+                    SkillEvent.create(
+                        "sandbox.envelope.rejected",
+                        status="rejected",
+                        runtime_id=event.runtime_id,
+                        error_category="correlation_mismatch",
+                    )
+                )
+                continue
+            event = replace(event, skill_ref=canonical_ref)
+        accepted_events.append(apply_execution_context(event, context))
+    return replace(result, skill_events=[*context_events, *accepted_events])
 
 
 def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> list[dict[str, str]]:

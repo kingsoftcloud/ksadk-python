@@ -175,9 +175,7 @@ def _accumulate_chat_tool_calls(
                 current["name"] = incoming_name
             # Do not let an empty/default snapshot overwrite arguments that
             # were already reconstructed from deltas.
-            if incoming_arguments and (
-                incoming_arguments != "{}" or not current["arguments"]
-            ):
+            if incoming_arguments and (incoming_arguments != "{}" or not current["arguments"]):
                 current["arguments"] = incoming_arguments
             continue
         current["id"] += incoming_id
@@ -356,9 +354,7 @@ def _normalize_tool_call_arguments(
             ToolCall(
                 id=call.id,
                 name=canonical_name,
-                arguments=(
-                    json.dumps(repaired, ensure_ascii=False) if changed else call.arguments
-                ),
+                arguments=(json.dumps(repaired, ensure_ascii=False) if changed else call.arguments),
                 raw=call.raw,
             )
         )
@@ -604,7 +600,7 @@ def _recover_malformed_glm_tool_call(
             status_code=502,
         )
     digest = hashlib.sha256(
-        f"{canonical_name}:malformed:{content[start.start():]}".encode()
+        f"{canonical_name}:malformed:{content[start.start() :]}".encode()
     ).hexdigest()[:20]
     return (
         content[: start.start()].strip(),
@@ -1009,7 +1005,9 @@ class OpenAICompatibleModelClient:
             if response_format and model.parameters.allow_json_response_format:
                 payload["response_format"] = response_format
         if max_output_tokens is not None:
-            payload["max_output_tokens" if wire_api == "responses" else "max_tokens"] = max_output_tokens
+            payload["max_output_tokens" if wire_api == "responses" else "max_tokens"] = (
+                max_output_tokens
+            )
         headers = {
             "Authorization": f"Bearer {credential}",
             "Content-Type": "application/json",
@@ -1238,7 +1236,10 @@ class OpenAICompatibleModelClient:
                                 (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
                             ),
                             reasoning_output_tokens=int(
-                                (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+                                (usage.get("completion_tokens_details") or {}).get(
+                                    "reasoning_tokens"
+                                )
+                                or 0
                             ),
                             reported=True,
                             source="model-provider",
@@ -1320,9 +1321,7 @@ class OpenAICompatibleModelClient:
                                 and visible_length - last_repetition_check_length >= 64
                             ):
                                 last_repetition_check_length = visible_length
-                                _raise_for_repetitive_output(
-                                    emitted_text + pending_visible_text
-                                )
+                                _raise_for_repetitive_output(emitted_text + pending_visible_text)
                         if visible_text or reasoning or usage_value is not None:
                             if not first_chunk_logged and (text or reasoning):
                                 first_chunk_logged = True
@@ -1393,7 +1392,9 @@ class OpenAICompatibleModelClient:
                         or "DSML" in raw_text.replace("｜", "|").upper()
                         or "<tool_call" in raw_text.lower()
                     ):
-                        final_text, recovered_calls, _ = _recover_textual_tool_calls(raw_text, tools)
+                        final_text, recovered_calls, _ = _recover_textual_tool_calls(
+                            raw_text, tools
+                        )
                         calls = tuple(recovered_calls)
                     calls = _normalize_tool_call_arguments(calls, tools)
                     if not final_text.strip() and not calls:
@@ -1476,24 +1477,42 @@ class OpenAICompatibleModelClient:
                     reasoning = str(event.get("delta") or "")
                 elif event_type == "response.function_call_arguments.delta":
                     key = str(event.get("item_id") or event.get("output_index") or "0")
-                    current = function_calls.setdefault(key, {"id": "", "name": "", "arguments": ""})
+                    current = function_calls.setdefault(
+                        key, {"id": "", "name": "", "arguments": ""}
+                    )
                     current["arguments"] += str(event.get("delta") or "")
                 elif event_type == "response.output_item.added":
                     item = event.get("item") or {}
                     if item.get("type") == "function_call":
-                        key = str(item.get("id") or event.get("item_id") or event.get("output_index") or "0")
-                        current = function_calls.setdefault(key, {"id": "", "name": "", "arguments": ""})
+                        key = str(
+                            item.get("id")
+                            or event.get("item_id")
+                            or event.get("output_index")
+                            or "0"
+                        )
+                        current = function_calls.setdefault(
+                            key, {"id": "", "name": "", "arguments": ""}
+                        )
                         current["id"] = str(item.get("call_id") or item.get("id") or "")
                         current["name"] = str(item.get("name") or "")
                         current["arguments"] = str(item.get("arguments") or "")
                 elif event_type == "response.output_item.done":
                     item = event.get("item") or {}
                     if item.get("type") == "function_call":
-                        key = str(item.get("id") or event.get("item_id") or event.get("output_index") or "0")
-                        current = function_calls.setdefault(key, {"id": "", "name": "", "arguments": ""})
+                        key = str(
+                            item.get("id")
+                            or event.get("item_id")
+                            or event.get("output_index")
+                            or "0"
+                        )
+                        current = function_calls.setdefault(
+                            key, {"id": "", "name": "", "arguments": ""}
+                        )
                         current["id"] = str(item.get("call_id") or item.get("id") or current["id"])
                         current["name"] = str(item.get("name") or current["name"])
-                        current["arguments"] = str(item.get("arguments") or current["arguments"] or "{}")
+                        current["arguments"] = str(
+                            item.get("arguments") or current["arguments"] or "{}"
+                        )
                 elif event_type in {"response.completed", "response.incomplete"}:
                     response_payload = event.get("response") or {}
                     raw_usage = response_payload.get("usage") or {}
@@ -1502,8 +1521,16 @@ class OpenAICompatibleModelClient:
                             input_tokens=int(raw_usage.get("input_tokens") or 0),
                             output_tokens=int(raw_usage.get("output_tokens") or 0),
                             total_tokens=int(raw_usage.get("total_tokens") or 0),
-                            cached_input_tokens=int((raw_usage.get("input_tokens_details") or {}).get("cached_tokens") or 0),
-                            reasoning_output_tokens=int((raw_usage.get("output_tokens_details") or {}).get("reasoning_tokens") or 0),
+                            cached_input_tokens=int(
+                                (raw_usage.get("input_tokens_details") or {}).get("cached_tokens")
+                                or 0
+                            ),
+                            reasoning_output_tokens=int(
+                                (raw_usage.get("output_tokens_details") or {}).get(
+                                    "reasoning_tokens"
+                                )
+                                or 0
+                            ),
                             reported=True,
                             source="model-provider",
                         )

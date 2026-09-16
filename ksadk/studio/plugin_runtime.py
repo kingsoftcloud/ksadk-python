@@ -915,7 +915,7 @@ class StudioPluginRuntime:
             model=model,
             network_policy=network,
             timeout_seconds=int(
-                execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 120
+                execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 300
             ),
             max_attempts=1,
             backoff_seconds=0,

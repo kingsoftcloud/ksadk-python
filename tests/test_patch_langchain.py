@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from ksadk.runners.patch_langchain import apply_patch
@@ -91,3 +92,62 @@ def test_chat_openai_patch_preserves_temperature_override():
         payload = llm._get_request_payload([HumanMessage(content="hello")])
 
     assert payload["temperature"] == 1
+
+
+def test_patch_deduplicates_consecutive_identical_usage():
+    """When upstream sends identical usage in both the finish chunk and the
+    trailing choices=[] chunk, the second occurrence must be suppressed so
+    LangChain-core does not sum them into 2x."""
+    apply_patch()
+    llm = ChatOpenAI(model="gpt-4o", api_key="sk-test", use_responses_api=False)
+
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+    finish_chunk = {
+        "id": "chatcmpl-test-dedup-1",
+        "choices": [{"delta": {"content": "hello"}, "finish_reason": "stop"}],
+        "usage": dict(usage),
+    }
+    gen = llm._convert_chunk_to_generation_chunk(finish_chunk, AIMessageChunk, {})
+    assert gen is not None
+    assert gen.message.usage_metadata is not None
+    assert gen.message.usage_metadata["input_tokens"] == 10
+    assert gen.message.usage_metadata["output_tokens"] == 5
+
+    final_chunk = {
+        "id": "chatcmpl-test-dedup-1",
+        "choices": [],
+        "usage": dict(usage),
+    }
+    gen = llm._convert_chunk_to_generation_chunk(final_chunk, AIMessageChunk, {})
+    assert gen is not None
+    assert gen.message.usage_metadata is None
+
+
+def test_patch_preserves_distinct_usage():
+    """When two chunks carry different usage values, both must be preserved."""
+    apply_patch()
+    llm = ChatOpenAI(model="gpt-4o", api_key="sk-test", use_responses_api=False)
+
+    usage_1 = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    usage_2 = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+
+    finish_chunk = {
+        "id": "chatcmpl-test-distinct-1",
+        "choices": [{"delta": {"content": "hello"}, "finish_reason": "stop"}],
+        "usage": dict(usage_1),
+    }
+    gen = llm._convert_chunk_to_generation_chunk(finish_chunk, AIMessageChunk, {})
+    assert gen is not None
+    assert gen.message.usage_metadata is not None
+    assert gen.message.usage_metadata["input_tokens"] == 10
+
+    final_chunk = {
+        "id": "chatcmpl-test-distinct-1",
+        "choices": [],
+        "usage": dict(usage_2),
+    }
+    gen = llm._convert_chunk_to_generation_chunk(final_chunk, AIMessageChunk, {})
+    assert gen is not None
+    assert gen.message.usage_metadata is not None
+    assert gen.message.usage_metadata["input_tokens"] == 20

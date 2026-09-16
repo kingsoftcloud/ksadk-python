@@ -647,7 +647,7 @@ def _resolve_bundle_config(
         "sandbox": str(execution.get("sandbox") or "workspace_write_auto"),
         "approval_mode": str(execution.get("approvalMode") or execution.get("approval_mode") or ""),
         "turn_timeout_seconds": int(
-            execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 120
+            execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 300
         ),
         "mcp_servers": mcp_servers,
         "skills": skills,

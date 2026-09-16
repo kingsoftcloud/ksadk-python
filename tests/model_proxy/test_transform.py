@@ -257,3 +257,29 @@ def test_clamp_reasoning_effort_qwen_caps_xhigh():
     assert clamp_reasoning_effort("qwen3.7-max", "high") == "high"
     assert clamp_reasoning_effort("qwen3.7-max", "medium") == "medium"
     assert clamp_reasoning_effort("qwen3.7-max", "weird") == "weird"
+
+
+def test_remap_reasoning_effort_glm_flash_value_set():
+    """glm-5.3-flash 是始终思考模型,合法值只有 low/high/max(2026-09 实测,
+    none/minimal/medium/xhigh 全 400)。值域裁剪:向上取整到最近合法档。
+    注意必须不误伤 glm-5.3 / glm-5.2(实测它们接受 medium)。"""
+    from ksadk.model_proxy.transform import clamp_reasoning_effort, remap_reasoning_effort
+
+    # glm-5.3-flash:合法值原样通过
+    assert remap_reasoning_effort("glm-5.3-flash", "low") == "low"
+    assert remap_reasoning_effort("glm-5.3-flash", "high") == "high"
+    assert remap_reasoning_effort("glm-5.3-flash", "max") == "max"
+    # 非法档向上取整:medium(3)->high(4);xhigh(5)->max(5);none/minimal->low
+    assert remap_reasoning_effort("glm-5.3-flash", "medium") == "high"
+    assert remap_reasoning_effort("glm-5.3-flash", "xhigh") == "max"
+    assert remap_reasoning_effort("glm-5.3-flash", "none") == "low"
+    assert remap_reasoning_effort("glm-5.3-flash", "minimal") == "low"
+    # clamp 入口整合 remap
+    assert clamp_reasoning_effort("glm-5.3-flash", "medium") == "high"
+    # 不误伤同前缀的 glm-5.3 / glm-5.2(实测它们接受 medium、且 glm-5.3 收 xhigh)
+    assert remap_reasoning_effort("glm-5.3", "medium") == "medium"
+    assert remap_reasoning_effort("glm-5.2", "medium") == "medium"
+    assert clamp_reasoning_effort("glm-5.3", "xhigh") == "xhigh"
+    # 未知模型/未知档位原样透传
+    assert remap_reasoning_effort("deepseek-v4.1-flash", "medium") == "medium"
+    assert remap_reasoning_effort("glm-5.3-flash", "weird") == "low"  # 未知档->最低合法档

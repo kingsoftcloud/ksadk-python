@@ -18,7 +18,6 @@ import click
 
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref, resolve_openclaw_ref
-from ksadk.cli.invoke_payload import build_chat_request
 from ksadk.cli.cmd_files import (
     _build_sync_payload,
     _collect_local_files_report,
@@ -27,6 +26,7 @@ from ksadk.cli.cmd_files import (
     _normalize_workspace_dir,
     _push_workspace_files,
 )
+from ksadk.cli.invoke_payload import build_chat_request
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
     CompatibilityAliasCommand,
@@ -1311,7 +1311,15 @@ async def _invoke_once(
                     last_refresh_time = 0.0
                     full_reasoning = ""
                     async for chunk in _stream_chat(
-                        endpoint, message, api_key, session_id, True, insecure, model, api_format, default_model
+                        endpoint,
+                        message,
+                        api_key,
+                        session_id,
+                        True,
+                        insecure,
+                        model,
+                        api_format,
+                        default_model,
                     ):
                         content, reasoning = _extract_content(chunk)
 
@@ -1341,7 +1349,15 @@ async def _invoke_once(
                     live.refresh()  # 确保最后一次刷新
             else:
                 async for chunk in _stream_chat(
-                    endpoint, message, api_key, session_id, True, insecure, model, api_format, default_model
+                    endpoint,
+                    message,
+                    api_key,
+                    session_id,
+                    True,
+                    insecure,
+                    model,
+                    api_format,
+                    default_model,
                 ):
                     content, reasoning = _extract_content(chunk)
                     if reasoning:
@@ -1510,8 +1526,15 @@ def _extract_content(chunk: dict) -> tuple[str, str]:
     event_name = str(chunk.get("_event") or "")
     if event_name == "response.output_text.delta":
         return str(chunk.get("delta") or ""), ""
-    if event_name == "response.reasoning.delta":
-        return "", str(chunk.get("delta") or "")
+    # reasoning delta 有 4 个变体名(与 remote_runner / 前端 chatProtocol 对齐),
+    # 主 runtime 发 reasoning.delta,Studio shared_web 发 reasoning_summary_text.delta。
+    if event_name in {
+        "response.reasoning.delta",
+        "response.reasoning_text.delta",
+        "response.reasoning_summary.delta",
+        "response.reasoning_summary_text.delta",
+    }:
+        return "", str(chunk.get("delta") or chunk.get("text") or "")
     if event_name == "response.completed":
         return "", ""
 

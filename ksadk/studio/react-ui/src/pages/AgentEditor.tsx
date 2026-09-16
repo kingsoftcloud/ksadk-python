@@ -426,7 +426,7 @@ export function AgentEditor({
         { value: "auto", label: "自动（推荐）", description: "按 Runtime 能力选择安全模式" },
         { value: "framework", label: "框架管理", description: "保留 ADK 原有上下文行为" },
       ];
-  const fallbackModel = detail?.draft.metadata.labels?.["agentkit.ksyun.com/model"] || "glm-5.1";
+  const fallbackModel = detail?.draft.metadata.labels?.["agentkit.ksyun.com/model"] || "deepseek-v4.1-flash";
   const preservesManifestModel = runtime === "codex" && selectedModels.length === 0 && Boolean(fallbackModel);
   const isManagedDeclaration = detail?.draft.metadata.labels?.["agentkit.ksyun.com/artifact-type"] === "ManagedRuntime"
     || runtime === "codex";

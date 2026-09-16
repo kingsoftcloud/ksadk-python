@@ -179,7 +179,9 @@ async def test_model_client_recovers_streamed_dsml_as_declared_tool_call(monkeyp
             },
         }
     ]
-    client = OpenAICompatibleModelClient(network_guard=AllowNetwork(), transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(), transport=httpx.MockTransport(handler)
+    )
     chunks = [
         chunk
         async for chunk in client.stream(
@@ -382,9 +384,7 @@ async def test_model_client_recovers_streamed_glm_textual_tool_call(monkeypatch)
         ),
     ],
 )
-async def test_model_client_recovers_real_glm52_malformed_write_call(
-    monkeypatch, content
-):
+async def test_model_client_recovers_real_glm52_malformed_write_call(monkeypatch, content):
     monkeypatch.setenv("MODEL_API_KEY", "secret-value")
     body = (
         "data: "
@@ -459,8 +459,7 @@ async def test_model_client_repairs_glm_residue_in_native_tool_argument_key(monk
                                 "function": {
                                     "name": "delegate_task",
                                     "arguments": (
-                                        '{"label":"ADK","task</arg_key>":'
-                                        '"research ADK",'
+                                        '{"label":"ADK","task</arg_key>":"research ADK",'
                                     ),
                                 },
                             }
@@ -583,9 +582,10 @@ async def test_model_client_recovers_final_message_tool_call_snapshot(monkeypatc
             ]
         },
     ]
-    body = b"".join(
-        f"data: {__import__('json').dumps(payload)}\n\n".encode() for payload in payloads
-    ) + b"data: [DONE]\n\n"
+    body = (
+        b"".join(f"data: {__import__('json').dumps(payload)}\n\n".encode() for payload in payloads)
+        + b"data: [DONE]\n\n"
+    )
     client = OpenAICompatibleModelClient(
         network_guard=AllowNetwork(),
         transport=httpx.MockTransport(
@@ -706,10 +706,16 @@ async def test_model_client_streams_responses_events_and_tool_calls(monkeypatch)
         captured["json"] = __import__("json").loads(request.content)
         body = (
             b'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
-            b'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup"}}\n\n'
-            b'data: {"type":"response.function_call_arguments.delta","item_id":"item_1","delta":"{\\"q\\":\\"x\\"}"}\n\n'
-            b'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}\n\n'
-            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n'
+            b'data: {"type":"response.output_item.added","item":'
+            b'{"type":"function_call","id":"item_1","call_id":"call_1",'
+            b'"name":"lookup"}}\n\n'
+            b'data: {"type":"response.function_call_arguments.delta",'
+            b'"item_id":"item_1","delta":"{\\"q\\":\\"x\\"}"}\n\n'
+            b'data: {"type":"response.output_item.done","item":'
+            b'{"type":"function_call","id":"item_1","call_id":"call_1",'
+            b'"name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}\n\n'
+            b'data: {"type":"response.completed","response":{"usage":'
+            b'{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n'
         )
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
 
@@ -726,7 +732,12 @@ async def test_model_client_streams_responses_events_and_tool_calls(monkeypatch)
             messages=[{"role": "user", "content": "test"}],
             network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
             timeout_seconds=10,
-            tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                }
+            ],
         )
     ]
     assert captured["json"]["stream"] is True
@@ -1391,7 +1402,9 @@ async def test_model_client_reasoning_absent_is_empty(monkeypatch):
         return httpx.Response(
             200,
             json={
-                "choices": [{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+                "choices": [
+                    {"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}
+                ],
             },
         )
 

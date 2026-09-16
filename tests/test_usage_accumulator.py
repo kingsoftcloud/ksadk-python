@@ -14,6 +14,37 @@ def test_accumulate_usage_sums_main_fields():
     assert acc["total_tokens"] == 430
 
 
+def test_accumulate_usage_sums_canonical_detail_fields():
+    acc = accumulate_usage(
+        {},
+        {
+            "input_tokens": 1839,
+            "output_tokens": 110,
+            "total_tokens": 1949,
+            "cached_tokens": 1792,
+            "reasoning_tokens": 63,
+        },
+    )
+    acc = accumulate_usage(
+        acc,
+        {
+            "input_tokens": 649,
+            "output_tokens": 466,
+            "total_tokens": 1115,
+            "cached_tokens": 448,
+            "reasoning_tokens": 264,
+        },
+    )
+
+    assert acc == {
+        "input_tokens": 2488,
+        "output_tokens": 576,
+        "total_tokens": 3064,
+        "cached_tokens": 2240,
+        "reasoning_tokens": 327,
+    }
+
+
 def test_accumulate_usage_sums_input_token_details():
     """details 键名不统一(cached/cache_read/cache_creation),逐键求和作诊断明细。"""
     acc = {}
