@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "./api";
 import App from "./App";
@@ -16,8 +16,8 @@ vi.mock("./components/ChatWorkspace", () => ({
   ),
 }));
 vi.mock("./pages/CreatePage", () => ({
-  CreatePage: ({ onCreated }: { onCreated: (id?: string, openChat?: boolean) => void }) => (
-    <button type="button" onClick={() => onCreated("local-created", true)}>完成创建</button>
+  CreatePage: ({ onCreated, quickCreateRequest }: { quickCreateRequest?: number; onCreated: (id?: string, openChat?: boolean) => void }) => (
+    <button data-quick-create={quickCreateRequest || 0} type="button" onClick={() => onCreated("local-created", true)}>完成创建</button>
   ),
 }));
 
@@ -77,6 +77,15 @@ describe("Studio chat entry", () => {
       );
     });
     expect(screen.queryByText("先创建 Agent 才能开始会话")).not.toBeInTheDocument();
+  });
+
+  it.each([["创建 Agent", "0"], ["快速创建", "1"]])("uses only the requested creation mode for %s", async (label, request) => {
+    window.history.replaceState(null, "", "#/agents");
+    render(<App />);
+    const button = await screen.findByRole("button", { name: label });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("button", { name: "完成创建" })).toHaveAttribute("data-quick-create", request);
   });
 
   it("passes the anonymous credential scope into the local conversation store", async () => {

@@ -1,4 +1,4 @@
-import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
+import { STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { AuthoringInspectionSummary } from "../components/AuthoringInspectionSummary";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -36,6 +36,7 @@ import {
 import {
   agentImportSchema,
   conversationCommitSchema,
+  executionLimitFields,
   projectImportSchema,
   quickAgentSchema,
   type AgentImportFormValues,
@@ -63,6 +64,7 @@ const quickDraftSchema = z.object({
   workspacePath: z.string().min(1),
   savedAt: z.iso.datetime(),
   fields: z.object({
+    ...executionLimitFields,
     name: z.string().max(128), slug: z.string().max(63),
     description: z.string().max(1024), prompt: z.string().max(32768),
     runtimeType: z.enum(["harness", "codex", "adk", "langgraph", "plugin"]),
@@ -93,6 +95,7 @@ function emptyQuickForm(): QuickAgentFormValues {
     name: "New Agent", slug: generateAgentSlug(), runtimeType: "codex", template: "blank",
     prompt: "", description: "", audience: "产品与技术负责人", language: "zh-CN", depth: "deep",
     format: "report", systemPrompt: "", taskPrompt: "", buildAfterCreate: true,
+    maxSteps: 100, timeoutSeconds: 600,
   };
 }
 const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
@@ -138,7 +141,7 @@ function approveHarness(spec: any, approved: boolean) {
   ])] };
 }
 const WIZARD_STEP_META = [
-  ["定义 Agent", "模板与系统提示词"],
+  ["定义 Agent", "目标与系统提示词"],
   ["绑定能力", "Model · Tool · MCP · Skill"],
   ["Prompt 与策略", "检查并调整"],
   ["检查并创建", "构建与打开会话"],
@@ -287,6 +290,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     systemPrompt,
     taskPrompt,
     buildAfterCreate,
+    maxSteps,
+    timeoutSeconds,
   } = quickForm.watch();
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
@@ -472,8 +477,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
   const codexPermissionsApproved = codexConsentKey !== null && codexConsent === codexConsentKey;
   const convCodexPermissionsApproved = codexConsentKey !== null && convCodexConsent === codexConsentKey;
   const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent(approved ? selectedConsentKey : null);
-  const setCodexPermissionsApproved = (approved: boolean) => setCodexConsent(approved ? codexConsentKey : null);
-  const setConvCodexPermissionsApproved = (approved: boolean) => setConvCodexConsent(approved ? codexConsentKey : null);
   useEffect(() => {
     if (codexConsentKey === null || codexConsentDefaulted.current) return;
     codexConsentDefaulted.current = true;
@@ -687,9 +690,9 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
-    maxSteps: 100,
-    timeoutSeconds: 600,
-  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
+    maxSteps,
+    timeoutSeconds,
+  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy, maxSteps, timeoutSeconds]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true, goalOverride } = {} as { preservePrompt?: boolean; goalOverride?: string }) => {
     const seq = ++composeSeq.current;
@@ -827,7 +830,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     if (next < 1 || next > 4) return;
     if (next > step) {
       if (step === 1) {
-        const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
+        const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience", "maxSteps", "timeoutSeconds"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
         if (runtime === "codex" && codexProvider?.permissions.length && !codexPermissionsApproved) {
           setCreateError("请先确认 Codex Provider 请求的 Agent 权限。");
@@ -880,6 +883,10 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     const nextValues = { ...values, name: defaultName, prompt: defaultPrompt,
       systemPrompt: values.systemPrompt.trim() || defaultPrompt };
     quickForm.reset(nextValues, { keepDirty: true });
+    if (!await quickForm.trigger(undefined, { shouldFocus: true })) {
+      setCreateError("请修正标记字段后继续。");
+      return;
+    }
     setCreateError("");
     setSubmitting(true);
     try {
@@ -903,6 +910,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
         throw new Error("未能生成 Agent 配置，请检查模板和能力绑定后重试。");
       }
       const spec = JSON.parse(JSON.stringify(compositionRef.current?.spec || {}));
+      spec.execution = { ...spec.execution, maxSteps: values.maxSteps, timeoutSeconds: values.timeoutSeconds };
       spec.instructions = { system: values.systemPrompt.trim(), task: values.taskPrompt.trim() };
       spec.description = values.description.trim() || spec.description;
       spec.context = {
@@ -1310,7 +1318,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     }
   }
 
-  const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
   const runtimeLabel = ({ harness: "KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
@@ -1553,10 +1560,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                           onValueChange={value => conversationForm.setValue("runtimeType", value as ConversationCommitFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true })}
                         />
                       </FormField>
-                      {conversationRuntime === "codex" && (
-                        <CodexProviderPermissions provider={codexProvider} approved={convCodexPermissionsApproved}
-                          onChange={setConvCodexPermissionsApproved} />
-                      )}
                       {conversationRuntime === "harness" && <HarnessPermission approved={convHarnessApproved} onChange={setConvHarnessApproved} />}
                       <FormField
                         label="Agent 可用模型"
@@ -1819,21 +1822,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                     <span className="panel-index">01</span>
                     <div><h2>定义 Agent</h2></div>
                   </div>
-                  <div className="field">
-                    <label>起点</label>
-                    <div className="template-grid">
-                      <button className={`template-card${template === "blank" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "blank", { shouldDirty: true }); markDirty(); }}>
-                        <span className="template-icon"><Bot size={18} /></span>
-                        <span><strong>空白 Agent</strong><small>从自己的需求开始</small></span>
-                        <span className="choice-check"><Check size={14} /></span>
-                      </button>
-                      <button className={`template-card${template === "research" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "research", { shouldDirty: true }); markDirty(); }}>
-                        <span className="template-icon"><Search size={18} /></span>
-                        <span><strong>深度调研</strong><small>调研、验证来源并生成报告</small></span>
-                        <span className="choice-check"><Check size={14} /></span>
-                      </button>
-                    </div>
-                  </div>
                   <div className="form-grid two-columns">
                     <FormField label="Agent 名称" requirement="required" htmlFor="quickAgentName" error={quickForm.formState.errors.name?.message}>
                       <input id="quickAgentName" maxLength={128} placeholder="例如：技术支持助手" {...quickForm.register("name", { onChange: markDirty })} />
@@ -1853,10 +1841,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                       }}
                     />
                   </FormField>
-                  {runtime === "codex" && (
-                    <CodexProviderPermissions provider={codexProvider} approved={codexPermissionsApproved}
-                      onChange={approved => { setCodexPermissionsApproved(approved); markDirty(); }} />
-                  )}
                   {runtime === "harness" && <HarnessPermission approved={harnessApproved} onChange={setHarnessApproved} />}
                   {runtime === "plugin" && (
                     <div className="template-specific" data-testid="external-provider-config">
@@ -1929,9 +1913,15 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                   >
                     <textarea id="quickPrompt" rows={6} maxLength={32768} placeholder="例如：帮助用户排查技术问题。先确认现象，再给出可执行的步骤。" {...quickForm.register("prompt", { onChange: markDirty })} />
                   </FormField>
-                  <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description) || undefined}>
-                    <summary>标识与描述</summary>
+                  <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description || quickForm.formState.errors.maxSteps || quickForm.formState.errors.timeoutSeconds) || undefined}>
+                    <summary>高级配置</summary>
                     <div className="form-grid two-columns">
+                      <FormField label="最大步骤" htmlFor="quickMaxSteps" error={quickForm.formState.errors.maxSteps?.message}>
+                        <input id="quickMaxSteps" type="number" min={1} max={100} step={1} {...quickForm.register("maxSteps", { valueAsNumber: true, onChange: markDirty })} />
+                      </FormField>
+                      <FormField label="超时时间（秒）" htmlFor="quickTimeoutSeconds" error={quickForm.formState.errors.timeoutSeconds?.message}>
+                        <input id="quickTimeoutSeconds" type="number" min={1} max={3600} step={1} {...quickForm.register("timeoutSeconds", { valueAsNumber: true, onChange: markDirty })} />
+                      </FormField>
                     <GeneratedIdField
                       value={slug}
                       onChange={value => {
@@ -2208,7 +2198,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                     <div className="review-title"><span>Agent</span><button className="text-button" type="button" onClick={() => gotoStep(1)}>编辑</button></div>
                     <div className="review-agent">
                       <span className="agent-avatar">{template === "research" ? <Search size={16} /> : <Bot size={16} />}</span>
-                      <div><strong>{name}</strong><span>{slug} · {runtime} · {templateLabel}</span><p>{prompt || "等待填写系统提示词"}</p></div>
+                      <div><strong>{name}</strong><span>{slug} · {runtime}</span><p>{prompt || "等待填写系统提示词"}</p></div>
                     </div>
                   </div>
                   <div className="review-block">
@@ -2282,7 +2272,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
               >
                 <div className="wizard-summary-content">
                 <dl>
-                  <div><dt>模板</dt><dd>{templateLabel}</dd></div>
                   <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
                   <div><dt>模型</dt><dd>{reviewModel}</dd></div>
                   <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>

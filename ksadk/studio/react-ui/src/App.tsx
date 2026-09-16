@@ -822,7 +822,7 @@ export default function App() {
                 runtimeReady={runtimeReady}
                 runtimeChecked={runtimeChecked}
                 workspaceName={workspace?.name || ""}
-                onCreate={openCreate}
+                onCreate={() => openCreate()}
                 onQuickCreate={() => openCreate(true)}
                 onDetail={openDetail}
                 onChat={enterChat}
@@ -859,11 +859,11 @@ export default function App() {
               />
             )}
             {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
-            {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} refreshTick={refreshTick} />}
+            {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={() => openCreate()} refreshTick={refreshTick} />}
             {view === "deployments" && (
               <DeploymentsPage
                 refreshTick={refreshTick}
-                onCreate={openCreate}
+                onCreate={() => openCreate()}
                 onOpenChat={enterCloudChat}
                 onSelectBuild={() => setView("builds")}
               />

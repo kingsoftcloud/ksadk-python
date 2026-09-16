@@ -85,7 +85,50 @@ describe("CreatePage quick authoring", () => {
       expect(request.name).toBe("Studio Assistant");
       expect(request.spec.instructions.system).toContain("可靠的通用助手");
       expect(request.spec.bindings.modelProfileIds).toEqual([model.resourceId]);
+      expect(request.spec.execution).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
     });
+  });
+
+  it("keeps execution limits in collapsed advanced settings and creates with custom values", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    expect(screen.queryByText("起点")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /空白 Agent|深度调研/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex 本地执行权限")).not.toBeInTheDocument();
+    expect(screen.queryByText(/请在插件中心安装并启用官方 Codex Provider/)).not.toBeInTheDocument();
+    expect(screen.getByText("高级配置").closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getByText("高级配置"));
+    const steps = screen.getByRole("spinbutton", { name: "最大步骤" });
+    const timeout = screen.getByRole("spinbutton", { name: "超时时间（秒）" });
+    expect(steps).toHaveValue(100);
+    expect(timeout).toHaveValue(600);
+    fireEvent.change(steps, { target: { value: "60" } });
+    fireEvent.change(timeout, { target: { value: "900" } });
+    const create = screen.getByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await waitFor(() => {
+      const compose = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/agent-templates/blank:compose");
+      expect(JSON.parse(String(compose?.[1]?.body))).toMatchObject({ maxSteps: 60, timeoutSeconds: 900 });
+      const saved = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(JSON.parse(String(saved?.[1]?.body)).spec.execution).toMatchObject({ maxSteps: 60, timeoutSeconds: 900 });
+    });
+  });
+
+  it("validates advanced execution limits before one-click creation", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.click(screen.getByText("高级配置"));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "最大步骤" }), { target: { value: "101" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "超时时间（秒）" }), { target: { value: "0" } });
+    await user.click(screen.getByText("高级配置"));
+    const create = screen.getByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    expect(await screen.findByText("最大步骤不能超过 100")).toBeVisible();
+    expect(screen.getByText("超时时间至少为 1 秒")).toBeVisible();
+    expect(screen.getByText("高级配置").closest("details")).toHaveAttribute("open");
+    expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
   });
 
   it("shows the two built-in runtimes when no external Provider is installed", async () => {
@@ -196,8 +239,8 @@ describe("CreatePage quick authoring", () => {
       }] })) : base(input, init));
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
-    expect(consent).toBeChecked();
+    expect(screen.queryByText("Codex 本地执行权限")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /确认 Codex Provider/ })).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
     await user.click(screen.getByRole("button", { name: "继续" }));
     await user.click(await screen.findByRole("button", { name: "选择模型" }));
@@ -226,7 +269,7 @@ describe("CreatePage quick authoring", () => {
       ] })) : base(input, init));
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /确认 Codex Provider/ })).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "Answer with evidence.");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /DSH AgentProvider/ }));
@@ -685,7 +728,7 @@ describe("CreatePage quick authoring", () => {
     await screen.findByDisplayValue("Review releases.");
     expect(screen.queryByText(/1\.0元/)).not.toBeInTheDocument();
     expect(screen.queryByText(/models\.example\.test\/v1\/models/)).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /确认 Codex Provider/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "确认创建 Agent" }));
 
     await waitFor(() => {
