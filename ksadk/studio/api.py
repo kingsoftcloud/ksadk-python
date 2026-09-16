@@ -538,47 +538,22 @@ def create_studio_app(
         )
 
     @app.get("/")
+    @app.get("/studio-recovery/")
+    @app.get("/studio-shell/")
     async def index(request: Request):
-        # Workspace navigation is contributed by the official Core client.
-        # Opening the standalone React shell with enabled plugins silently
-        # hides those pages. Select the host from Profile metadata, without
-        # starting Core just to decide which entry to serve.
-        try:
-            use_core = await studio.dsh_capabilities.has_enabled_profile_plugins()
-        except (StudioError, OSError, RuntimeError):
-            # The optional toolchain may be absent in a plain SDK workspace.
-            use_core = False
-        if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
-            target = "/studio-core/"
-            if request.url.query:
-                target += "?" + request.url.query
-            # Browsers inherit the original fragment across this redirect,
-            # preserving Agent/session/group deep links and CLI bootstrap.
-            response = RedirectResponse(target, status_code=307)
-        else:
-            path = static_root / "index.html"
-            html = path.read_text(encoding="utf-8")
-            # Keep hashed module URLs identical to internal lazy imports.
-            response = Response(content=html, media_type="text/html")
-        response.headers["Cache-Control"] = "no-store"
-        if security_enabled:
-            response.set_cookie(
-                session_cookie_name,
-                session_secret,
-                httponly=True,
-                samesite="strict",
-                secure=False,
-                path="/",
-            )
-            response.set_cookie(
-                legacy_session_cookie_name,
-                session_secret,
-                httponly=True,
-                samesite="strict",
-                secure=False,
-                path="/",
-            )
-        return response
+        from ksadk.studio.entry import studio_entry_response
+
+        return await studio_entry_response(
+            studio, request, static_root, security_enabled=security_enabled,
+            session_secret=session_secret, session_cookie_name=session_cookie_name,
+            legacy_session_cookie_name=legacy_session_cookie_name,
+        )
+
+    @app.get("/api/v1/plugin-ecosystems/dsh/recovery")
+    async def dsh_recovery_status():
+        # This endpoint must remain a read-only snapshot: no Core startup, Profile
+        # projection, credential resolution, or filesystem repair is attempted.
+        return studio.dsh_capabilities.startup_status
 
     @app.get("/favicon.ico")
     async def favicon():
@@ -2577,7 +2552,11 @@ def create_studio_app(
     from ksadk.studio.dsh_application import register_dsh_application
 
     register_dsh_application(
-        app, studio, session_secret=session_secret, security_enabled=security_enabled
+        app,
+        studio,
+        session_secret=session_secret,
+        security_enabled=security_enabled,
+        fallback_url="/studio-shell/",
     )
 
     return app

@@ -190,9 +190,8 @@ phase1-canary-delete:
 studio-react-install-browser:
 	uv run playwright install chromium
 
-studio-react-test:
+studio-react-test: build-studio-static
 	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
-		$(KSADK_WEB_NPM) --prefix ksadk/studio/react-ui ci; \
 		npm --prefix ksadk/studio/react-ui test; \
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \

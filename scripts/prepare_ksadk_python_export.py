@@ -34,6 +34,7 @@ CURATED_DOCS: set[str] = {
 CURATED_REFERENCE_DOCS: set[str] = {"docs/reference/ksadk环境变量参考.md"}
 
 ROOT_EXPORT_FILES = {
+    ".github/actions/prepare-web-candidate/action.yml",
     ".dockerignore",
     ".gitattributes",
     ".gitleaks.toml",
@@ -106,6 +107,16 @@ SCRIPT_EXPORT_FILES = {
 }
 
 PUBLIC_TEST_FILES = {
+    "tests/plugins/test_teams_migration.py",
+    "tests/plugins/test_teams_postgres.py",
+    "tests/plugins/test_teams_workspaces.py",
+    "tests/studio/e2e/studio_creation_layout_smoke.py",
+    "tests/studio/test_dsh_studio_assets.py",
+    "tests/studio/test_teams_catalog.py",
+    "tests/studio/test_teams_installation.py",
+    "tests/studio/test_teams_node.py",
+    "tests/studio/test_teams_remote.py",
+    "tests/studio/e2e/studio_style_comparison.py",
     "tests/studio/test_scheduler_runtime.py",
     "tests/test_check_release_version.py",
     "tests/studio/test_shared_web.py",

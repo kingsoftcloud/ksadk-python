@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import httpx
 import pytest
 import pytest_asyncio
@@ -190,7 +192,7 @@ async def active_fixture(client):
         run_id="native-run",
         status="running",
     )
-    member = created["members"][0]
+    member = feature.domain.snapshot(OWNER, gid)["runMembers"][0]
     actor = Actor(
         OWNER.tenant_id,
         "member:leader",
@@ -290,6 +292,7 @@ async def test_execution_context_is_bounded_without_truncating_owner_history(cli
             json={
                 "parts": [{"kind": "text", "text": content}],
                 "intent": "note",
+                "teamRunId": actor.team_run_id,
                 "idempotencyKey": f"context-note-{index}",
             },
         )
@@ -300,3 +303,163 @@ async def test_execution_context_is_bounded_without_truncating_owner_history(cli
     owner = feature.domain.snapshot(OWNER, gid)
     assert len(owner["messages"]) == 21
     assert owner["messages"][-1]["parts"][0]["text"] == content.strip()
+
+
+@pytest.mark.asyncio
+async def test_parallel_context_artifact_and_observer_require_matching_run(client):
+    from ksadk.plugins.teams.context import execution_context
+    from ksadk.plugins.teams.contracts import MessageInput
+
+    http, feature = client
+    gid, member, actor, _ = await active_fixture(client)
+    workspace = feature.workspace(actor)
+    (workspace / "private.md").write_text("第一项任务独有资料", encoding="utf-8")
+    artifact = feature.publish_artifact(actor, "private.md", None, "first-file")
+    receipt = feature.domain.send(
+        OWNER,
+        gid,
+        MessageInput(
+            parts=[{"kind": "text", "text": "第二项独立任务"}],
+            intent="start_goal",
+            idempotencyKey="second",
+        ),
+    )
+    other = replace(actor, team_run_id=receipt["teamRunId"], run_id="other-native-run")
+    other_snapshot = feature.domain.snapshot(OWNER, gid, other.team_run_id)
+    other_member = next(m for m in other_snapshot["runMembers"] if m["memberId"] == "leader")
+    assert feature.workspace(other) != workspace
+    context = execution_context(feature.domain, other)
+    assert context["artifacts"] == []
+    assert [m["parts"][0]["text"] for m in context["recentMessages"]] == ["第二项独立任务"]
+    with pytest.raises(TeamsError, match="显式引用"):
+        feature.read_artifact(other, artifact["artifactId"])
+    with pytest.raises(TeamsError):
+        feature.member_scope(gid, member["memberId"], other_member["sessionId"], "native-run")
+    with pytest.raises(TeamsError, match="群主"):
+        feature.domain.send(
+            other,
+            gid,
+            MessageInput(
+                parts=[
+                    {
+                        "kind": "attachment",
+                        "attachmentRef": artifact["artifactId"],
+                        "mediaType": "text/plain",
+                    }
+                ],
+                intent="note",
+                teamRunId=other.team_run_id,
+                idempotencyKey="self-share",
+            ),
+        )
+    feature.domain.send(
+        OWNER,
+        gid,
+        MessageInput(
+            parts=[
+                {
+                    "kind": "attachment",
+                    "attachmentRef": artifact["artifactId"],
+                    "mediaType": "text/plain",
+                }
+            ],
+            intent="note",
+            teamRunId=other.team_run_id,
+            idempotencyKey="owner-share",
+        ),
+    )
+    assert feature.read_artifact(other, artifact["artifactId"])["text"] == "第一项任务独有资料"
+    response = await http.get(f"/api/v1/groups/{gid}", params={"teamRunId": other.team_run_id})
+    assert {run["teamRunId"] for run in response.json()["teamRuns"]} == {other.team_run_id}
+
+
+@pytest.mark.asyncio
+async def test_binding_catalog_does_not_instantiate_unselected_agents(client):
+    _, feature = client
+    calls = []
+    original = feature.host.describe
+
+    async def describe(scope):
+        calls.append(scope.binding_ref)
+        return await original(scope)
+
+    async def catalog():
+        return [
+            {"bindingRef": "local-build:build-one", "name": "One", "availability": "available"},
+            {"bindingRef": "local-build:unselected", "name": "Other"},
+        ]
+
+    feature.host.describe = describe
+    feature.list_bindings = catalog
+    assert len(await feature.bindings()) == 2
+    assert calls == []
+    result = await feature.validate_bindings(["local-build:build-one", "local-build:build-one"])
+    assert calls == ["local-build:build-one"]
+    assert result["local-build:build-one"]["name"] == "One"
+    with pytest.raises(TeamsError, match="版本已不可用"):
+        await feature.validate_bindings(["missing"])
+    assert calls == ["local-build:build-one"]
+
+
+@pytest.mark.asyncio
+async def test_application_prepares_frozen_workspace_from_new_task_input(client, tmp_path):
+    from ksadk.plugins.teams.contracts import MessageInput
+
+    http, feature = client
+    created = await create(http)
+    gid = created["group"]["groupId"]
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "brief.txt").write_text("task input")
+    feature.allowed_workspace_roots = [source]
+    receipt = feature.domain.send(
+        OWNER,
+        gid,
+        MessageInput(
+            parts=[{"kind": "text", "text": "使用所选文件"}],
+            intent="start_goal",
+            idempotencyKey="with-workspace",
+            workspace={"sourcePath": str(source), "inputs": ["brief.txt"]},
+        ),
+    )
+    actor = Actor(
+        OWNER.tenant_id,
+        "member:leader",
+        kind="member",
+        group_id=gid,
+        team_run_id=receipt["teamRunId"],
+        member_id="leader",
+        run_id="execution",
+    )
+    workspace = feature.workspace(actor)
+    assert (workspace / "brief.txt").read_text() == "task input"
+    assert feature.domain.snapshot(OWNER, gid)["teamRuns"][0]["workspace"]["sourcePath"] == str(
+        source
+    )
+    assert workspace != source
+
+
+@pytest.mark.asyncio
+async def test_server_workspace_requires_commit_and_ambiguous_execution_requires_run(client):
+    http, feature = client
+    created = await create(http)
+    gid = created["group"]["groupId"]
+    feature.require_pinned_workspace_commit = True
+    payload = {
+        "parts": [{"kind": "text", "text": "第一项"}],
+        "intent": "start_goal",
+        "idempotencyKey": "first",
+        "workspace": {"sourcePath": "/controlled/repo"},
+    }
+    response = await http.post(f"/api/v1/groups/{gid}/messages", json=payload)
+    assert (
+        response.status_code == 422
+        and response.json()["error"]["code"] == "workspace_commit_required"
+    )
+    assert feature.domain.snapshot(OWNER, gid)["teamRuns"] == []
+    payload.pop("workspace")
+    assert (await http.post(f"/api/v1/groups/{gid}/messages", json=payload)).status_code == 202
+    payload["idempotencyKey"] = "second"
+    assert (await http.post(f"/api/v1/groups/{gid}/messages", json=payload)).status_code == 202
+    response = await http.get(f"/api/v1/groups/{gid}/execution")
+    assert response.status_code == 422 and response.json()["error"]["code"] == "team_run_ambiguous"

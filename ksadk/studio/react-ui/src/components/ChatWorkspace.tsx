@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
-import { Bot, MessageSquarePlus, PanelLeftOpen, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { Bot, MessageSquarePlus, PanelLeftOpen, Search, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
 import { useAgentChat } from "@kingsoftcloud/ksadk-web/hooks";
@@ -20,7 +20,9 @@ interface ChatWorkspaceProps {
   integratedHistory?: boolean;
   onStreamingChange?: (streaming: boolean) => void;
   historyHost?: HTMLElement | null;
+  searchHost?: HTMLElement | null;
   headerHost?: HTMLElement | null;
+  agentSelector?: ReactNode;
   onSelectConversation?: () => void;
   agentId: string;
   agentName: string;
@@ -71,7 +73,7 @@ export function ChatWorkspace({
   requestedSessionId = "",
   onSessionChanged,
   newChatRequest = 0, onNewChatStarted,
-  ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
+  ref, integratedHistory = false, onStreamingChange, historyHost, searchHost, headerHost, agentSelector, onSelectConversation,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
@@ -256,8 +258,18 @@ export function ChatWorkspace({
             <PanelLeftOpen size={17} />
           </button>}
           {!integratedHistory && <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />}
-          <h1>{conversationTitle}</h1>
+          {agentSelector}
+          <h1 className={agentSelector ? "sr-only" : undefined}>{conversationTitle}</h1>
         </div>
+  );
+
+  const sessionSearch = (
+    <label className={`chat-session-search${searchHost ? " chat-session-search--navigation" : ""}`}>
+      <Search size={20} aria-hidden="true" />
+      <span className="sr-only">搜索会话</span>
+      <input ref={sessionSearchRef} type="search" value={query}
+        onChange={event => setQuery(event.target.value)} placeholder="搜索会话" />
+    </label>
   );
 
   const history = (
@@ -291,16 +303,7 @@ export function ChatWorkspace({
             </button>
           </div>}
         </header>
-        <label className="chat-session-search">
-          <span className="sr-only">搜索会话</span>
-          <input
-            ref={sessionSearchRef}
-            type="search"
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="搜索会话"
-          />
-        </label>
+        {integratedHistory && searchHost ? createPortal(sessionSearch, searchHost) : sessionSearch}
         <div
           className="chat-session-list"
           onScroll={event => {
@@ -396,7 +399,7 @@ export function ChatWorkspace({
               hasMoreMessages={(chat.messages?.length ?? 0) >= 50}
               emptyState={(
                 <div className="studio-conversation-welcome">
-                  <p>{agentName}</p>
+                  {!agentSelector && <p>{agentName}</p>}
                   <h2>有什么可以帮你？</h2>
                 </div>
               )}
@@ -418,7 +421,10 @@ export function ChatWorkspace({
                 <span className="text-shimmer">正在思考…</span>
               </div>
             ) : null}
-            <div className="studio-composer-area">
+          </>
+        )}
+        <div className="studio-composer-area">
+          {chat.bootstrapStatus === "ready" && newChatRequest === 0 && (
             <AgentConversationComposer
               onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
               composerMaxHeight={176}
@@ -438,9 +444,8 @@ export function ChatWorkspace({
               onRespondInteraction={input => { void chat.respondInteraction(input); }}
               localCatalog={chat.localCatalog}
             />
-            </div>
-          </>
-        )}
+          )}
+        </div>
       </section>
 
       {deleteSessionId ? (

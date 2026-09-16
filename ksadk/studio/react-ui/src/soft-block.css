@@ -1,9 +1,5 @@
 /* AgentKit Studio Soft Block contract. This file is the final cascade layer. */
 
-:root {
-  --studio-outline-surface: var(--border-card);
-  --studio-outline-inset: var(--studio-border);
-}
 
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
   outline: 2px solid color-mix(in oklab, var(--studio-accent) 55%, transparent);
@@ -117,7 +113,7 @@
 }
 
 .global-header {
-  min-height: 70px;
+  min-height: var(--studio-header-height);
   padding: 0 28px;
   background: var(--canvas);
 }
@@ -2366,7 +2362,7 @@ details.build-log > pre {
   }
 
   .global-header {
-    min-height: 70px;
+    min-height: var(--studio-header-height);
     padding-inline: 16px;
   }
 
@@ -2507,14 +2503,6 @@ details.build-log > pre {
 /* Selectively absorbed from agentkit-studio-phase1: delivery pages share a
    quiet document surface, while actual lifecycle state remains data-driven. */
 
-:root {
-  --radius-block: 16px;
-  --radius-card: 14px;
-  --radius-inset: 12px;
-  --radius-chip: 8px;
-  --studio-outline-surface: var(--border-card);
-  --studio-outline-inset: var(--studio-border);
-}
 
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
   outline: 2px solid color-mix(in srgb, var(--studio-accent) 58%, transparent);

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TeamsPage } from "./TeamsPage";
@@ -97,6 +97,54 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Studio Teams API integration", () => {
+  it("keeps server teams usable when the local node fails", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith("/lifecycle")) return json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "degraded", mode: "server", authorityRef: "fixture-local", authorityLocation: "server", failure: { code: "local_node_unavailable", reason: "本地节点暂时不可用" } });
+      return original(url, init);
+    });
+    render(<TeamsPage />);
+    expect(await screen.findByRole("heading", { name: snapshot.group.name })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "给团队的消息" })).toBeEnabled();
+  });
+
+  it("requires original terminal evidence and preserves reconciliation input after a conflict", async () => {
+    snapshot.teamRuns[0].leaderStandby = { groupId: snapshot.group.groupId, teamRunId: "team-run", state: "active", primaryNodeId: "local", primarySessionId: "prior-session", primaryBindingRef: "binding-leader", standbyNodeId: "cloud", standbyBindingRef: "cloud-leader", buildDigest: "digest", epoch: 2, reason: "execution_uncertain_fenced", automaticFailback: false };
+    const original = fetchMock.getMockImplementation()!;
+    const records = [
+      { commandId: "unknown-order", teamRunId: "team-run", nodeId: "local", state: "fenced", reconciled: false, receiptDigest: null },
+      { commandId: "ended-order", teamRunId: "team-run", nodeId: "local", state: "fenced", reconciled: false, receiptDigest: "sha256:" + "a".repeat(64), quarantinedReceipt: { run_id: "original-run", run_status: "succeeded", output: "已保存原执行成果" } },
+    ];
+    let attempts = 0;
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith("/reconciliation")) return json({ groupId: snapshot.group.groupId, items: records });
+      if (url.endsWith("/reconciliation/ended-order")) {
+        requests.push({ url, init });
+        if (++attempts === 1) return json({ error: { code: "reconciliation_receipt_changed", message: "原单证据已更新，请刷新后核对" } }, 409);
+        records[1].reconciled = true;
+        return json({ status: "reconciled", commandId: "ended-order", teamRunId: "team-run" });
+      }
+      return original(url, init);
+    });
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: "查看任务详情" }));
+    await userEvent.click(await screen.findByRole("button", { name: "查看原单证据" }));
+    expect(await screen.findByText(/原节点尚未返回结束回执/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "确认已结束" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "确认已结束" })).toBeDisabled();
+    await userEvent.type(screen.getByRole("textbox", { name: "核查说明" }), "已核对原单与产物");
+    await userEvent.click(screen.getByRole("button", { name: "确认已结束" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("原单证据已更新");
+    expect(screen.getByRole("textbox", { name: "核查说明" })).toHaveValue("已核对原单与产物");
+    await userEvent.click(screen.getByRole("button", { name: "确认已结束" }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "核查说明" })).not.toBeInTheDocument());
+    const sent = requests.filter(row => row.url.endsWith("/reconciliation/ended-order"));
+    expect(sent).toHaveLength(2);
+    expect(JSON.parse(String(sent[0].init.body))).toMatchObject({ action: "confirm_ended", receiptDigest: "sha256:" + "a".repeat(64), reason: "已核对原单与产物" });
+    expect(JSON.parse(String(sent[0].init.body)).idempotencyKey).toBe(JSON.parse(String(sent[1].init.body)).idempotencyKey);
+  });
+
   it("loads a real group snapshot, starts only group observation and keeps graphs opt-in", async () => {
     const { unmount } = render(<TeamsPage />);
     expect(
@@ -244,7 +292,7 @@ describe("Studio Teams API integration", () => {
     render(<TeamsPage />);
     await screen.findByRole("heading", { name: snapshot.group.name });
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
-    expect(screen.getByRole("combobox", { name: "Leader" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Leader" })).toBeEnabled();
     const name = screen.getByRole("textbox", { name: "群组名称" });
     await userEvent.clear(name);
     await userEvent.type(name, "新的团队名称");
@@ -330,5 +378,169 @@ describe("Studio Teams API integration", () => {
     expect(
       screen.queryByRole("button", { name: "移除引用 review.md" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("independent team tasks and recovery", () => {
+  function withTwoTasks() {
+    const first = snapshot.teamRuns[0];
+    snapshot.teamRuns.push({ ...first, teamRunId: "second-run", goal: "独立的第二个目标", goalMessageId: "second-goal" });
+    snapshot.messages.forEach(message => { message.teamRunId = first.teamRunId; });
+    snapshot.messages.push({ ...snapshot.messages[0], messageId: "second-goal", teamRunId: "second-run", parts: [{ kind: "text", text: "仅属于第二个任务的内容" }] });
+    snapshot.runMembers = snapshot.teamRuns.flatMap(run => snapshot.members.map(member => ({ ...member, runMemberId: `${run.teamRunId}-${member.memberId}`, teamRunId: run.teamRunId, groupRevision: 1, sessionId: `${run.teamRunId}-${member.sessionId}` })));
+  }
+  it("keeps conversation, drafts and outgoing target within the selected task", async () => {
+    withTwoTasks();
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    expect(screen.queryByText("仅属于第二个任务的内容")).not.toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "给团队的消息" });
+    await userEvent.type(input, "第一份草稿");
+    await userEvent.click(screen.getByRole("button", { name: /独立的第二个目标/ }));
+    expect(input).toHaveValue("");
+    expect(screen.getByText("仅属于第二个任务的内容")).toBeInTheDocument();
+    await userEvent.type(input, "第二份草稿");
+    await userEvent.click(screen.getByRole("button", { name: /^输出接口改造方案与验证结果/ }));
+    expect(input).toHaveValue("第一份草稿");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    const sent = requests.find(row => row.url.endsWith("/messages"))!;
+    expect(JSON.parse(String(sent.init.body))).toMatchObject({ teamRunId: "team-run", intent: "followup", parts: [{ kind: "text", text: "第一份草稿" }] });
+  });
+  it("starts an explicitly new task with an @recipient while other tasks run", async () => {
+    withTwoTasks();
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: /新任务/ }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "接收成员" }), "engineer");
+    await userEvent.type(screen.getByRole("textbox", { name: "给团队的消息" }), "新的独立目标");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    const body = JSON.parse(String(requests.find(row => row.url.endsWith("/messages"))!.init.body));
+    expect(body).toMatchObject({ intent: "start_goal", mentions: ["engineer"] });
+    expect(body).not.toHaveProperty("teamRunId");
+  });
+  it("sends a reasoned request for changes to the same task", async () => {
+    snapshot.teamRuns[0].status = "awaiting_acceptance";
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: "提出修改" }));
+    expect(screen.getByRole("button", { name: "提交修改意见" })).toBeDisabled();
+    await userEvent.type(screen.getByRole("textbox", { name: "修改意见" }), "请补充失败恢复场景");
+    await userEvent.click(screen.getByRole("button", { name: "提交修改意见" }));
+    const request = requests.find(row => row.url.endsWith("/acceptance"))!;
+    expect(request.url).toContain("/team-runs/team-run/");
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ action: "request_changes", reason: "请补充失败恢复场景" });
+    expect(JSON.parse(String(request.init.body))).not.toHaveProperty("accepted");
+  });
+  it("preserves a failed creation draft and member identities across close and refresh", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    const creations: Record<string, unknown>[] = [];
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url === "/api/v1/groups" && init.method === "POST") { creations.push(JSON.parse(String(init.body))); throw new Error("回执暂未确认"); }
+      return original(url, init);
+    });
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: "创建团队" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: /协调助手/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /工程师/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: "团队名称" }), "重试验证团队");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "组建团队" })).getByRole("button", { name: "创建团队" }));
+    await screen.findByText("回执暂未确认");
+    await userEvent.click(screen.getByRole("button", { name: "稍后继续" }));
+    await userEvent.click(screen.getByRole("button", { name: "创建团队" }));
+    await userEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(within(screen.getByRole("dialog", { name: "组建团队" })).getByRole("button", { name: "创建团队" })).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "团队名称" })).toHaveValue("重试验证团队");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "组建团队" })).getByRole("button", { name: "创建团队" }));
+    await waitFor(() => expect(creations).toHaveLength(2));
+    expect(creations[1]).toEqual(creations[0]);
+  });
+  it("shows recovery for a configured plugin that failed before activation", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith("/lifecycle")) return json({ enabled: false, configuredEnabled: true, apiVersion: TEAMS_API_VERSION, health: "failed", authorityRef: "fixture-local", failure: { code: "artifact_migration_required", stage: "teams.start", retryable: false, reason: "需要完成数据迁移" } });
+      return original(url, init);
+    });
+    render(<TeamsPage />);
+    expect(await screen.findByRole("heading", { name: "团队暂时无法启动" })).toBeInTheDocument();
+    expect(screen.getByText("需要完成数据迁移")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "修复与诊断" })).toHaveAttribute("href", "/studio-recovery/");
+    expect(screen.getByRole("button", { name: "暂时禁用" })).toBeEnabled();
+    expect(requests.some(row => row.url.startsWith("/api/v1/groups"))).toBe(false);
+  });
+});
+
+describe("task execution configuration", () => {
+  it("checks a selected cloud standby as part of team creation and preserves it on failure", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    const cloud = { ...snapshot.members[0].binding, bindingRef: "cloud-copy", agentId: "cloud-copy", kind: "cloud", name: "云端副本", availability: { state: "unchecked" } };
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith("/lifecycle")) return json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "ready", authorityRef: "fixture-local", mode: "server" });
+      if (url.endsWith("/bindings")) return json({ items: [...snapshot.members.map(member => ({ ...member.binding, name: member.name })), cloud] });
+      if (url === "/api/v1/groups" && init.method === "POST") { requests.push({ url, init }); return json({ error: { code: "standby_incompatible", message: "备用版本不兼容，请选择同一构建" } }, 422); }
+      return original(url, init);
+    });
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: "创建团队" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: /协调助手/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /工程师/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: "团队名称" }), "带备用的团队");
+    await userEvent.click(screen.getByText("本地离线时继续协作"));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Leader 云端备用" }), "cloud-copy");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "组建团队" })).getByRole("button", { name: "创建团队" }));
+    expect(await screen.findByText("备用版本不兼容，请选择同一构建")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "团队名称" })).toHaveValue("带备用的团队");
+    expect(screen.getByRole("combobox", { name: "Leader 云端备用" })).toHaveValue("cloud-copy");
+    const sent = requests.find(row => row.url === "/api/v1/groups" && row.init.method === "POST")!;
+    expect(JSON.parse(String(sent.init.body))).toMatchObject({ leaderStandbyBindingRef: "cloud-copy", members: expect.any(Array) });
+  });
+
+  it("sends workspace options and only the explicitly selected cross-task artifact", async () => {
+    snapshot.artifacts = [{ artifactId: "prior-report", name: "prior-review.md", mediaType: "text/markdown", source: memberRef() }];
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: /新任务/ }));
+    await userEvent.click(screen.getByLabelText("更多消息选项"));
+    await userEvent.click(screen.getByText("工作目录 · 可选"));
+    await userEvent.type(screen.getByRole("textbox", { name: "工作目录" }), "/node/workspace/project");
+    await userEvent.type(screen.getByRole("textbox", { name: "Git 基线" }), "main");
+    await userEvent.type(screen.getByRole("textbox", { name: "输入文件" }), "README.md\nsrc/main.py");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "引用本群交付物" }), "prior-report");
+    await userEvent.type(screen.getByRole("textbox", { name: "给团队的消息" }), "请验证接口兼容性");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    const body = JSON.parse(String(requests.find(row => row.url.endsWith("/messages"))!.init.body));
+    expect(body.workspace).toEqual({ sourcePath: "/node/workspace/project", baseRef: "main", inputs: ["README.md", "src/main.py"], mode: "auto" });
+    expect(body.intent).toBe("start_goal");
+    expect(body.parts).toEqual([{ kind: "text", text: "请验证接口兼容性" }, { kind: "attachment", attachmentRef: "prior-report", mediaType: "text/markdown", name: "prior-review.md" }]);
+  });
+  it("renders the real final result before asking for acceptance", async () => {
+    snapshot.teamRuns[0].status = "awaiting_acceptance";
+    snapshot.teamRuns[0].result = "### 已完成的交付\n\n请求格式已验证，兼容性测试通过。";
+    render(<TeamsPage />);
+    expect(await screen.findByRole("heading", { name: "已完成的交付" })).toBeInTheDocument();
+    expect(screen.getByText("请求格式已验证，兼容性测试通过。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "本轮进展" })).not.toBeInTheDocument();
+  });
+  it("distinguishes an armed cloud standby from an active takeover", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    const standby = { groupId: snapshot.group.groupId, teamRunId: "team-run", state: "armed", primaryNodeId: "local-node", primarySessionId: "primary-session", primaryBindingRef: "binding-leader", standbyNodeId: "cloud-node", standbyBindingRef: "cloud-leader", buildDigest: "fixture-build-digest", epoch: 1, reason: null, automaticFailback: false };
+    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith("/lifecycle")) return json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "ready", authorityRef: "fixture-local", mode: "server", authorityLocation: "server" });
+      if (url.endsWith("/bindings")) return json({ items: [{ ...snapshot.members[0].binding, bindingRef: "cloud-leader", kind: "cloud", name: "云端备用 Leader", availability: { state: "ready" } }] });
+      if (url.endsWith("/leader-standby")) { requests.push({ url, init }); return json(standby); }
+      return original(url, init);
+    });
+    render(<TeamsPage />);
+    await screen.findByRole("heading", { name: snapshot.group.name });
+    await userEvent.click(screen.getByRole("button", { name: "查看任务详情" }));
+    await userEvent.click(await screen.findByText("云端接管设置"));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Leader 备用节点" }), "cloud-leader");
+    await userEvent.click(screen.getByRole("button", { name: "配置备用节点" }));
+    expect(await screen.findByText("兼容的备用节点已配置；接管前会保存进度并核对原执行。")).toBeInTheDocument();
+    expect(screen.queryByText("云端 Leader 已接管当前任务。")).not.toBeInTheDocument();
+    const request = requests.find(row => row.url.endsWith("/leader-standby"))!;
+    expect(request.url).toBe("/api/v1/groups/fixture-group/team-runs/team-run/leader-standby");
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ bindingRef: "cloud-leader", idempotencyKey: expect.any(String) });
   });
 });

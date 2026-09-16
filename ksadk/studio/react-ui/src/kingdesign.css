@@ -7,43 +7,6 @@
  * shadowed L2 transient layers.
  */
 
-:root:not(.dark) {
-  color-scheme: light;
-  --kc-accent-border: #ccecff;
-  --kc-accent-fill: #f0f9ff;
-  --kc-accent-fill-strong: #f3faff;
-  --kc-user-bubble: #ecf4ff;
-  --kc-user-bubble-border: #cce2fb;
-  --kc-think-border: #d8e8f2;
-  --kc-think-fill: #f7fbfe;
-  --kc-think-hover: #edf8ff;
-  --kc-think-divider: #e1edf4;
-  --kc-code-fill: #f6f8fa;
-  --kc-composer-border: #b9c6cf;
-  --kc-graph-fill: #fbfcfd;
-  --kc-graph-dot: #dce5eb;
-  --kc-node-border: #bdc8cf;
-  --kc-edge: #7f919d;
-  --kc-rail-fill: #f8fafc;
-}
-:root.dark {
-  --kc-accent-border: color-mix(in srgb, var(--studio-accent) 36%, var(--studio-border));
-  --kc-accent-fill: color-mix(in srgb, var(--accent-soft) 72%, var(--studio-surface));
-  --kc-accent-fill-strong: color-mix(in srgb, var(--accent-soft) 54%, var(--studio-surface));
-  --kc-user-bubble: color-mix(in srgb, var(--accent-soft) 80%, var(--studio-surface));
-  --kc-user-bubble-border: color-mix(in srgb, var(--studio-accent) 35%, var(--studio-border));
-  --kc-think-border: color-mix(in srgb, var(--studio-accent) 30%, var(--studio-border));
-  --kc-think-fill: color-mix(in srgb, var(--accent-soft) 32%, var(--studio-surface));
-  --kc-think-hover: color-mix(in srgb, var(--accent-soft) 54%, var(--studio-surface));
-  --kc-think-divider: color-mix(in srgb, var(--studio-accent) 20%, var(--studio-border));
-  --kc-code-fill: var(--studio-code-bg);
-  --kc-composer-border: var(--border-strong);
-  --kc-graph-fill: color-mix(in srgb, var(--studio-surface) 86%, var(--canvas));
-  --kc-graph-dot: color-mix(in srgb, var(--border-strong) 72%, transparent);
-  --kc-node-border: var(--border-strong);
-  --kc-edge: var(--text-tertiary);
-  --kc-rail-fill: var(--surface-subtle);
-}
 
 html,
 body {
@@ -85,7 +48,7 @@ body {
 }
 
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid rgb(0 145 234 / 58%);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -115,7 +78,7 @@ body {
 }
 
 .global-header {
-  min-height: 64px;
+  min-height: var(--studio-header-height);
   border-bottom: 1px solid var(--rail-divider);
   background: var(--studio-surface);
 }
@@ -164,7 +127,7 @@ body {
 }
 
 .page-container[data-layout="workbench"] {
-  height: calc(100dvh - 64px);
+  height: calc(100dvh - var(--studio-header-height));
 }
 
 .navigation-rail {
@@ -483,7 +446,7 @@ button:disabled {
 .studio-multi-select-trigger:focus-visible,
 .studio-multi-select-trigger[aria-expanded="true"] {
   border-color: var(--studio-accent);
-  outline: 2px solid rgb(0 145 234 / 16%);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 0;
   background: var(--studio-surface);
 }
@@ -497,7 +460,7 @@ button:disabled {
 
 .search-field:focus-within {
   border-color: var(--studio-accent);
-  outline: 2px solid rgb(0 145 234 / 16%);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 0;
   background: var(--studio-surface);
 }
@@ -1165,7 +1128,7 @@ button:disabled {
 
 .chat-composer:focus-within {
   border-color: var(--studio-accent);
-  box-shadow: 0 0 0 3px rgb(0 145 234 / 13%) !important;
+  box-shadow: var(--shadow-focus) !important;
 }
 
 .chat-composer textarea,
@@ -1522,7 +1485,7 @@ button:disabled {
 .react-flow__node.selected .pipeline-node-card,
 .pipeline-node-card:hover {
   border-color: var(--studio-accent);
-  box-shadow: 0 0 0 2px rgb(0 145 234 / 13%) !important;
+  box-shadow: var(--shadow-focus) !important;
 }
 
 .pipeline-node-icon {
@@ -1655,7 +1618,7 @@ details.build-log,
 .create-shell .template-card:focus-visible,
 .create-shell .authoring-mode-tabs button:focus-visible,
 .create-shell .wizard-step:focus-visible {
-  outline: 2px solid rgb(0 145 234 / 36%);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -1737,7 +1700,7 @@ details.build-log,
   }
 
   .app-shell .global-header {
-    min-height: 64px;
+    min-height: var(--studio-header-height);
   }
 
   .app-shell .header-agent-selector,

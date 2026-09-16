@@ -61,6 +61,7 @@ from ksadk.resource_runtime.supervisor import (
 )
 from ksadk.resource_runtime.worker import WorkerInitialization
 from ksadk.studio.errors import StudioError
+from ksadk.studio.dsh_lifecycle import DshStartupLifecycle
 
 _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -128,7 +129,7 @@ def _reject_non_finite(value: str) -> None:
     raise ValueError(f"non-finite JSON number: {value}")
 
 
-class StudioDshCapabilityService:
+class StudioDshCapabilityService(DshStartupLifecycle):
     """Lazy, generation-fenced access to a DSH Profile's real MCP lease."""
 
     def __init__(
@@ -180,18 +181,8 @@ class StudioDshCapabilityService:
         self.model_projection = None
         self._companion_definitions: tuple[DshCompanionDefinition, ...] = ()
         self._companion_manager: DshPluginCompanionManager | None = None
-
-    def configure_companions(self, definitions: Sequence[DshCompanionDefinition]) -> None:
-        """Configure trusted lifecycle callbacks before this Profile starts."""
-        if self._host is not None or self._closed:
-            raise CompanionError("COMPANION_CONFIGURATION_BUSY")
-        if any(item.profile != self._profile for item in definitions):
-            raise CompanionError("COMPANION_PROFILE_MISMATCH")
-        self._companion_definitions = tuple(definitions)
-
-    @property
-    def companion_manager(self) -> DshPluginCompanionManager | None:
-        return self._companion_manager
+        self._startup_stage = "not_started"
+        self._startup_failure: dict[str, Any] | None = None
 
     async def call_companion_tool(
         self, plugin_id: str, principal: Any, operation: str, arguments: Mapping[str, Any],
@@ -619,7 +610,7 @@ class StudioDshCapabilityService:
         async with self._lock:
             return await self._ensure_ready_locked()
 
-    async def _ensure_ready_locked(
+    async def _ensure_ready_generation_locked(
         self,
     ) -> tuple[DshProfileCapabilityHost, DshMcpConnectorLease]:
         if self._closed:
@@ -644,8 +635,11 @@ class StudioDshCapabilityService:
             return await self._start_host_locked(host, projection)
 
         try:
+            self._startup_stage = "toolchain"
             command = await asyncio.to_thread(self._resolve_command)
+            self._startup_stage = "profile_projection"
             projection = await asyncio.to_thread(self._project_profile, command)
+            self._startup_stage = "host_configuration"
             host = self._host_factory(
                 command,
                 projection=projection,
@@ -681,10 +675,12 @@ class StudioDshCapabilityService:
         # A restarted Core must never inherit workers or resource handles from
         # the previous generation, including when the restart subsequently fails.
         self._resource_generation_snapshot = None
+        self._startup_stage = "previous_generation_cleanup"
         await self._close_companions_locked()
         await self._close_resource_supervisor_locked()
         generation_id = f"dshgen_{secrets.token_urlsafe(24)}"
         try:
+            self._startup_stage = "companion_graph"
             definitions = []
             for definition in self._companion_definitions:
                 packages = set(definition.components.values())
@@ -694,6 +690,7 @@ class StudioDshCapabilityService:
                 if present:
                     definitions.append(definition)
             if definitions:
+                self._startup_stage = "companion_artifact"
                 command = await asyncio.to_thread(self._resolve_command)
                 artifacts = await asyncio.to_thread(
                     self._capture_companion_artifacts, command, definitions, projection,
@@ -704,11 +701,13 @@ class StudioDshCapabilityService:
                     artifacts=artifacts,
                 )
                 self._companion_manager = manager
+                self._startup_stage = "companion_broker"
                 await manager.start_broker()
                 await host.configure_companions(manager.configuration)
             elif self._companion_definitions:
                 await host.configure_companions(None)
             if "@kingsoftcloud/dsh-platform-resources" in projection.bundles:
+                self._startup_stage = "resource_broker"
                 ledger = await asyncio.to_thread(
                     OperationLedger, self._workspace / ".agentkit" / "resource-operations"
                 )
@@ -717,7 +716,9 @@ class StudioDshCapabilityService:
                 )
                 socket_path = await self._resource_supervisor.start_broker()
                 await host.configure_resource_socket(socket_path)
+            self._startup_stage = "core_start"
             lease = await host.lease()
+            self._startup_stage = "core_protocol"
             descriptor = host.descriptor
             if (
                 lease.profile != projection.profile
@@ -727,11 +728,13 @@ class StudioDshCapabilityService:
                 raise self._protocol_error()
             await self._initialize_lease(lease)
             if self._companion_manager is not None:
+                self._startup_stage = "companion_artifact_verification"
                 verified = await asyncio.to_thread(
                     self._capture_companion_artifacts, command, definitions, projection,
                 )
                 if verified != artifacts:
                     raise CompanionError("COMPANION_ARTIFACT_CHANGED_DURING_BOOT")
+                self._startup_stage = "companion_start"
                 await self._companion_manager.confirm_core_ready()
         except StudioError as error:
             self._lease = None
@@ -1056,11 +1059,6 @@ class StudioDshCapabilityService:
 
     async def _dispose_generation_locked(self) -> None:
         await self._finish_cleanup(self._dispose_generation_owned_locked())
-
-    async def _close_companions_locked(self) -> None:
-        manager, self._companion_manager = self._companion_manager, None
-        if manager is not None:
-            await manager.close()
 
     async def _dispose_generation_owned_locked(self) -> None:
         """Finish generation teardown before propagating caller cancellation."""

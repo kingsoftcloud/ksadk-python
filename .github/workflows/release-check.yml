@@ -58,6 +58,12 @@ jobs:
       - name: Install Chromium for Phase 2 browser gates
         run: uv run playwright install --with-deps chromium
 
+      # Source candidates use the exact companion PR. Manual release checks
+      # retain the registry dependency and must pass after its npm publication.
+      - name: Prepare companion Web source
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build pinned frontend static assets
         env:
           KSADK_WEB_VERSION: "0.3.8"

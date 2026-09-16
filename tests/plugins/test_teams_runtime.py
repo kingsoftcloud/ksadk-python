@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -282,7 +282,7 @@ async def test_elapsed_budget_requests_stop_and_waits_for_actual_run(tmp_path):
         await runtime.tick()
         with domain.store.transaction() as tx:
             run = tx.get("team_run", run_id)
-            run["createdAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            run["activeDurationSeconds"] = run["budget"]["maxDurationSeconds"]
             tx.put("team_run", run_id, run)
         await runtime.tick()
         assert current(domain, gid)["status"] == "cancel_requested"
@@ -292,6 +292,199 @@ async def test_elapsed_budget_requests_stop_and_waits_for_actual_run(tmp_path):
         host.commands[key] = replace(host.commands[key], run_status="cancelled")
         await runtime.tick()
         assert current(domain, gid)["status"] == "cancelled"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_waiting_approval_and_final_acceptance_do_not_use_active_duration(
+    tmp_path, monkeypatch
+):
+    from importlib import import_module
+
+    domain_module = import_module("ksadk.plugins.teams.domain")
+    host = Host()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, run_id = setup(runtime)
+        delivery = domain.snapshot(OWNER, gid)["deliveries"][0]
+        monkeypatch.setattr(domain_module, "now", lambda: "2026-09-12T00:00:00+00:00")
+        domain.project_run(
+            delivery_id=delivery["deliveryId"], event_id="started", run_id="real", status="running"
+        )
+        monkeypatch.setattr(domain_module, "now", lambda: "2026-09-12T00:00:10+00:00")
+        domain.project_run(
+            delivery_id=delivery["deliveryId"],
+            event_id="waiting",
+            run_id="real",
+            status="awaiting_approval",
+        )
+        monkeypatch.setattr(domain_module, "now", lambda: "2026-09-13T00:00:00+00:00")
+        runtime._watchdog(domain)
+        run = current(domain, gid)
+        assert run["activeDurationSeconds"] == 10
+        assert run["status"] != "cancel_requested"
+        published = [
+            event["payload"]["teamRun"]
+            for event in domain.events(OWNER, gid)
+            if event["type"] == "team_run.updated"
+        ]
+        assert published[-1]["activeDurationSeconds"] == run["activeDurationSeconds"]
+        assert published[-1]["revision"] == run["revision"]
+        with domain.store.transaction() as tx:
+            stored = tx.get("team_run", run_id)
+            stored.update(status="awaiting_acceptance")
+            stored["budget"]["tokensUsed"] = stored["budget"]["maxTokens"]
+            tx.put("team_run", run_id, stored)
+        runtime._watchdog(domain)
+        assert current(domain, gid)["status"] == "awaiting_acceptance"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_preflight_failure_is_rejected_and_offline_node_stays_pending(tmp_path):
+    class PreflightHost(Host):
+        error_code = "execution_node_offline"
+
+        async def ensure_session(self, scope):
+            raise TeamsError(self.error_code, "safe fixture", status=503)
+
+    host = PreflightHost()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, _ = setup(runtime)
+        await runtime.tick()
+        delivery = domain.snapshot(OWNER, gid)["deliveries"][0]
+        assert delivery["status"] == "pending" and delivery["reason"] == "waiting_for_node"
+        assert current(domain, gid)["activeDurationSeconds"] == 0
+        assert host.submitted == []
+        host.error_code = "BUILD_UNAVAILABLE"
+        with domain.store.transaction() as tx:
+            stored = tx.get("delivery", delivery["deliveryId"])
+            stored["_nextRetryAt"] = 0
+            tx.put("delivery", stored["deliveryId"], stored)
+        await runtime.tick()
+        rejected = domain.snapshot(OWNER, gid)["deliveries"][0]
+        assert rejected["status"] == "rejected" and rejected["reason"] == "BUILD_UNAVAILABLE"
+        assert host.submitted == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_close_is_bounded_and_keeps_authority_until_old_writer_stops(tmp_path):
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=Host())
+    await runtime.start(background=False)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stuck_writer():
+        async with runtime._tick_lock:
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+
+    writer = runtime._task = asyncio.create_task(stuck_writer())
+    await entered.wait()
+    await asyncio.wait_for(runtime.close(timeout=0.01), timeout=0.2)
+    assert runtime.last_error == "teams_shutdown_timeout"
+    assert runtime.domain is not None and runtime._authority_file is not None
+    competing = TeamsRuntime(path=runtime.path, authority_ref="local", host=Host())
+    with pytest.raises(TeamsError, match="已有运行"):
+        await competing.start(background=False)
+    release.set()
+    await writer
+    await runtime.close(timeout=0.1)
+    assert runtime.domain is None
+    await competing.start(background=False)
+    await competing.close()
+
+
+@pytest.mark.asyncio
+async def test_same_member_in_parallel_runs_uses_distinct_sessions_and_concurrency(tmp_path):
+    class SessionHost(Host):
+        def __init__(self):
+            super().__init__()
+            self.sessions = []
+
+        async def submit(self, scope, **payload):
+            self.sessions.append(scope.session_id)
+            return await super().submit(scope, **payload)
+
+    host = SessionHost()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, first = setup(runtime)
+        second = domain.send(
+            OWNER,
+            gid,
+            MessageInput(
+                parts=[{"kind": "text", "text": "另一个任务"}],
+                intent="start_goal",
+                idempotencyKey="parallel",
+            ),
+        )["teamRunId"]
+        await runtime.tick()
+        assert len(set(host.sessions)) == 2
+        assert len(host.submitted) == 2
+        await runtime.tick()
+        members = domain.snapshot(OWNER, gid)["runMembers"]
+        assert {m["teamRunId"] for m in members if m["executionStatus"] == "running"} == {
+            first,
+            second,
+        }
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_fenced_delivery_reconciles_original_scope_and_keeps_budget_reservation(tmp_path):
+    class RecordingHost(Host):
+        def __init__(self):
+            super().__init__()
+            self.lookups = []
+
+        async def lookup(self, scope, idempotency_key):
+            self.lookups.append(scope.session_id)
+            return await super().lookup(scope, idempotency_key)
+
+    host = RecordingHost()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, run_id = setup(runtime)
+        await runtime.tick()
+        with domain.store.transaction() as tx:
+            old = tx.list("delivery", gid)[0]
+            old_session = old["_sessionId"]
+            old.update(_fenced=True, _tokenLimit=40)
+            tx.put("delivery", old["deliveryId"], old)
+            member = domain.run_member(tx, run_id, "leader")
+            member["sessionId"] = "new-session"
+            tx.put("run_member", member["runMemberId"], member)
+            run = tx.get("team_run", run_id)
+            run["_roster"][0] = member
+            run["budget"]["maxTokens"] = 100
+            tx.put("team_run", run_id, run)
+        domain.send(
+            OWNER,
+            gid,
+            MessageInput(
+                parts=[{"kind": "text", "text": "继续已确认的工作"}],
+                intent="followup",
+                teamRunId=run_id,
+                idempotencyKey="takeover",
+            ),
+        )
+        await runtime.tick()
+        assert host.lookups[0] == old_session
+        assert len(host.submitted) == 2
+        assert host.policies[-1]["tokenLimit"] == 60
     finally:
         await runtime.close()
 
