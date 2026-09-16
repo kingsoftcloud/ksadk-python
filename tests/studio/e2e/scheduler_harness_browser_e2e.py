@@ -321,14 +321,16 @@ def _assert_harness_vertical(
         {key: value for key, value in message.items() if key != "name" or value is not None}
         for message in requests[2].payload["messages"]
     ]
-    assert messages == [
-        {
-            "role": "system",
-            "content": (
-                "You are the real built-in Harness scheduler fixture.\n\n"
-                "Retain prior scheduled turns in one continued session."
-            ),
-        },
+    # The runtime appends its delegation policy to the configured instructions.
+    # It must preserve those instructions and use the same system message on
+    # each turn while replaying the exact conversation history below.
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"].startswith(
+        "You are the real built-in Harness scheduler fixture.\n\n"
+        "Retain prior scheduled turns in one continued session."
+    )
+    assert all(item.payload["messages"][0] == messages[0] for item in requests)
+    assert messages[1:] == [
         {"role": "user", "content": "执行 Harness 继续会话"},
         {"role": "assistant", "content": "scheduled harness result 2"},
         {"role": "user", "content": "执行 Harness 继续会话"},
@@ -376,7 +378,9 @@ def _assert_conversation_scheduling(page: Page, base_url: str) -> None:
     expect(page.locator(".chat-session-main[aria-current=true]")).to_contain_text(
         "定时任务 · 生成昨日工作日报"
     )
-    page.reload(wait_until="networkidle")
+    # The conversation keeps an SSE connection open; visible persisted output,
+    # rather than network idleness, is the reload completion condition.
+    page.reload(wait_until="domcontentloaded")
     expect(page.get_by_text("scheduled harness result 6", exact=True)).to_be_visible(timeout=15000)
     expect(page.locator(".chat-session-main[aria-current=true]")).to_contain_text(
         "定时任务 · 生成昨日工作日报"
