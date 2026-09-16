@@ -5,8 +5,11 @@ import { HarnessActivity, type Activity } from "./HarnessActivity";
 
 type Props = Omit<ComponentProps<typeof ChatMessageList>, "scrollRef" | "contextIndicator" | "onOpenAttachmentPreview"> & {
   sessionId: string | null;
+  /** 当前运行在首条公开消息到达前也已有稳定 run id。 */
+  activeRunId?: string;
   hasMoreMessages?: boolean;
   onLoadOlderSessionMessages?: (sessionId: string) => Promise<void>;
+  onOpenSession?: (sessionId: string) => void;
 };
 
 function activityRunId(message: Props["messages"][number]): string | undefined {
@@ -43,7 +46,7 @@ function hasModelOutput(message: Props["messages"][number]): boolean {
 }
 
 /** Shared controller/answer/approval renderer; host-owned expandable activity facts. */
-export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = false, onLoadOlderSessionMessages, className, revealMessage, ...props }: Props) {
+export function CompactHarnessTimeline({ messages, sessionId, activeRunId, hasMoreMessages = false, onLoadOlderSessionMessages, onOpenSession, className, revealMessage, ...props }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const projected = useMemo(() => compactHarnessMessages(messages), [messages]);
@@ -59,7 +62,12 @@ export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = 
   // 一旦出现，中间态由 facade 的"正在思考"折叠条接管，避免双指示重复。
   const hasVisibleProgress = messages.some(message => hasModelOutput(message))
     || messages.some(message => (message.blocks || []).some(block => block.type === "thinking"));
-  const waitingForFirstToken = props.isStreaming && !hasVisibleProgress;
+  const projectedRunIds = new Set(projected.flatMap(message => {
+    const runId = message.role === "model" ? activityRunId(message) : undefined;
+    return runId ? [runId] : [];
+  }));
+  const liveRunWithoutMessage = props.isStreaming && activeRunId && !projectedRunIds.has(activeRunId);
+  const waitingForFirstToken = props.isStreaming && !hasVisibleProgress && !activeRunId;
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -124,14 +132,30 @@ export function CompactHarnessTimeline({ messages, sessionId, hasMoreMessages = 
     </div>}
     {!projected.length && !props.isStreaming ? props.emptyState : projected.map((message, index) => {
       const runId = activityRunId(message);
-      const showActivity = message.role === "model" && (!runId || !displayedRuns.has(runId));
+      const fallback = fallbackActivity(message);
+      const showActivity = message.role === "model"
+        && (runId ? !displayedRuns.has(runId) : fallback.length > 0);
       if (showActivity && runId) displayedRuns.add(runId);
       return <div className="harness-turn" key={message.id} tabIndex={-1}
         data-message-id={message.id} data-search-target={revealedId === message.id || undefined}>
       {showActivity && <HarnessActivity runId={runId}
-        streaming={props.isStreaming && Boolean(latestRunId && activityRunId(latestRunId) === runId)} fallback={fallbackActivity(message)} />}
+        streaming={props.isStreaming && Boolean(latestRunId && activityRunId(latestRunId) === runId)} fallback={fallback} onOpenSession={onOpenSession} />}
       <SharedMessage {...props} message={message} isStreaming={props.isStreaming && index === projected.length - 1} />
     </div>; })}
+    {liveRunWithoutMessage && <div className="harness-turn harness-live-run" data-run-id={activeRunId}>
+      <HarnessActivity
+        runId={activeRunId}
+        streaming
+        fallback={[{
+          id: `${activeRunId}:starting`,
+          kind: "step",
+          label: "分析任务",
+          status: "running",
+          details: [{ id: `${activeRunId}:starting:detail`, text: "正在理解任务并准备执行" }],
+        }]}
+        onOpenSession={onOpenSession}
+      />
+    </div>}
     {waitingForFirstToken && <div className="harness-thinking" role="status">
       <span className="text-shimmer">正在思考…</span>
     </div>}

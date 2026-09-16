@@ -15,7 +15,10 @@ test -n "$wheel" || {
 
 rm -rf "$STUDIO_APP_DIR"
 mkdir -p "$STUDIO_APP_BUNDLE/Contents/MacOS" "$STUDIO_APP_RUNTIME"
-"${STUDIO_BUILD_PYTHON:-.venv/bin/python}" scripts/create_studio_icon.py
+# Do not depend on the host's global/user-site Pillow installation. A stale
+# native Pillow extension there can make an otherwise self-contained package
+# fail before the bundled runtime is created.
+uv run --isolated --no-project --with pillow python scripts/create_studio_icon.py
 uv venv --python "$STUDIO_APP_PYTHON" "$STUDIO_APP_RUNTIME"
 
 # uv may create interpreter symlinks into its user cache. Resolve and copy them
@@ -63,7 +66,7 @@ uv pip install --python "$STUDIO_APP_RUNTIME/bin/python" "$wheel[codex]"
 # attachment OCR.  The OCR module is
 # imported lazily and falls back to the system OCR path when it is unavailable;
 # this removes roughly 240 MiB of native OpenCV/ONNX payload from the app.
-uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" \
+uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" -y \
   rapidocr-onnxruntime opencv-python onnxruntime \
   2>/dev/null || true
 
@@ -71,7 +74,7 @@ uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" \
 # 冻结 runtime 里无用的 pip 一起移除；ksadk/google 全量源码扫描确认无
 # "import numpy/shapely"（唯一引用点 google vertex code executor 不在
 # Studio 路径上）。shapely 自身是唯一声明依赖 numpy 的包。
-uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" \
+uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" -y \
   shapely numpy numpydoc pip \
   2>/dev/null || true
 
@@ -195,12 +198,11 @@ PLIST
 if [ -f "dist/studio-app/.iconset/icon_512x512.png" ]; then
   sips -s format icns "dist/studio-app/.iconset/icon_512x512.png" --out "$STUDIO_APP_BUNDLE/Contents/Resources/AgentKitStudio.icns" >/dev/null
 fi
-codex_version="$("$STUDIO_APP_RUNTIME/bin/python" -I -c 'from importlib.metadata import version; print(version("openai-codex"))')"
 cat > "$STUDIO_APP_BUNDLE/Contents/Resources/manifest.json" <<MANIFEST
 {
   "product": "AgentKit Studio",
   "ksadk_version": "$STUDIO_APP_VERSION",
-  "codex_version": "$codex_version",
+  "codex_version": "0.147.0",
   "electron_version": "$electron_version",
   "node_version": "$node_version",
   "pnpm_version": "11.7.0",

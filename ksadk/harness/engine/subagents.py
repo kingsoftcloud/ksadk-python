@@ -290,9 +290,7 @@ async def execute_subagent(*, engine, parent_run, sub, task, call_id):
     output = None
     if not failure:
         try:
-            output = validate_subagent_output(
-                final_text or "（子 Agent 未产出结果）", sub.output_schema
-            )
+            output = validate_subagent_output(final_text, sub.output_schema)
         except ValueError as exc:
             raise SubAgentExecutionError("output_validation_failed", str(exc)) from exc
     return SubAgentResult(

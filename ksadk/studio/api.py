@@ -287,6 +287,13 @@ def create_studio_app(
             # Optional plugin activation must not hold the HTTP listener closed
             # while DSH starts subprocesses or acquires an authority lease.
             schedule_runtime_warmup(studio.active)
+            # Pre-resolve the entry redirect choice once off the request path;
+            # failures are swallowed and ``index()`` has its own bounded wait.
+            probe_warmup = getattr(
+                studio.active.dsh_capabilities, "schedule_plugin_probe_warmup", None
+            )
+            if callable(probe_warmup):
+                probe_warmup()
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield

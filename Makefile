@@ -216,7 +216,7 @@ studio-react-test: build-studio-static
 # ============================================================
 
 # 获取当前版本
-VERSION := $(shell python -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
+VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
 
 # 版本管理
 version:
@@ -310,7 +310,7 @@ build-only: check-build-deps build-studio-static
 # Print provenance for the artifact that will actually be uploaded.  The Git
 # state is deliberately included: a commit alone must not imply a clean tree.
 print-build-provenance:
-	@python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
+	@uv run python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
 
 # 带版本号构建: make release V=0.2.0
 release:
@@ -616,7 +616,7 @@ public-review: public-status public-preflight
 
 # 离线包输出目录
 OFFLINE_DIR = offline-packages
-VERSION := $(shell python -c "from ksadk.version import VERSION; print(VERSION)")
+VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)")
 
 # 平台参数
 LINUX_PLATFORM = manylinux2014_x86_64

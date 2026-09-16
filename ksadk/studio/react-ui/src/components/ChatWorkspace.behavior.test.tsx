@@ -382,7 +382,7 @@ describe("ChatWorkspace shared conversation composition", () => {
       isMobile: false,
       onRespondToApproval: mocks.chat.respondToApproval,
       onSubmitAguiAction: mocks.chat.submitAguiAction,
-      onCancelRemote: mocks.chat.cancelRemote,
+      onCancelRemote: expect.any(Function),
     });
     expect(mocks.composerProps).toMatchObject({
       isMobile: false,
@@ -391,6 +391,9 @@ describe("ChatWorkspace shared conversation composition", () => {
       thinkingEnabled: true,
       pendingInteractions: mocks.chat.pendingInteractions,
     });
+
+    (mocks.timelineProps?.onStopGeneration as () => void)();
+    expect(mocks.chat.stop).toHaveBeenCalledOnce();
   });
 
   it("keeps Studio session navigation and refresh wired to the shared controller", async () => {

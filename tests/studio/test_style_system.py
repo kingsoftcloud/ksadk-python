@@ -246,7 +246,9 @@ def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     assert "AgentConversationTimeline" in source
     assert "AgentConversationComposer" in source
     assert "useAgentChat" in source
-    assert "ApiFacadeImpl" in source
+    # Studio wraps the shared facade so UI lifecycle aborts detach the reader
+    # without being misreported as an explicit user cancellation.
+    assert "StudioChatApiFacade" in source
     assert '"@kingsoftcloud/ksadk-web": "0.3.8"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
@@ -266,9 +268,9 @@ def test_react_chat_keeps_compact_sessions_and_streaming_controls() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet
     assert "<time>" not in source
     assert "chat-composer-hint" not in source
-    assert "onStopGeneration={chat.stop}" in source
-    assert "stopGeneration={chat.stop}" in source
-    assert "onCancelRemote=" in source
+    assert "onStopGeneration={stopByUser}" in source
+    assert "stopGeneration={stopByUser}" in source
+    assert "onCancelRemote={chat.uiCapabilities.StopRun ? cancelRemoteByUser : undefined}" in source
 
 
 def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:

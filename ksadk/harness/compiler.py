@@ -53,10 +53,10 @@ class OrchestrationInput(_RevisionInputModel):
 
 
 class RevisionModelProviderPolicyInput(_RevisionInputModel):
-    max_attempts_per_model: int = Field(default=3, ge=1, le=5)
-    total_attempt_budget: int = Field(default=6, ge=1, le=20)
+    max_attempts_per_model: int = Field(default=10, ge=1, le=10)
+    total_attempt_budget: int = Field(default=20, ge=1, le=40)
     initial_backoff_ms: int = Field(default=1_000, ge=0, le=30_000)
-    max_backoff_ms: int = Field(default=8_000, ge=0, le=60_000)
+    max_backoff_ms: int = Field(default=60_000, ge=0, le=60_000)
     retryable_categories: tuple[ModelFailureCategory, ...] = tuple(ModelFailureCategory)
     failover_categories: tuple[ModelFailureCategory, ...] = tuple(ModelFailureCategory)
 

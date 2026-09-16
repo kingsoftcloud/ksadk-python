@@ -1,4 +1,4 @@
-import { STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
+import { CodexProviderPermissions, STUDIO_CODEX_PROVIDER_REF } from "../components/CodexProviderPermissions";
 import { AuthoringInspectionSummary } from "../components/AuthoringInspectionSummary";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -36,7 +36,6 @@ import {
 import {
   agentImportSchema,
   conversationCommitSchema,
-  executionLimitFields,
   projectImportSchema,
   quickAgentSchema,
   type AgentImportFormValues,
@@ -64,7 +63,6 @@ const quickDraftSchema = z.object({
   workspacePath: z.string().min(1),
   savedAt: z.iso.datetime(),
   fields: z.object({
-    ...executionLimitFields,
     name: z.string().max(128), slug: z.string().max(63),
     description: z.string().max(1024), prompt: z.string().max(32768),
     runtimeType: z.enum(["harness", "codex", "adk", "langgraph", "plugin"]),
@@ -95,12 +93,11 @@ function emptyQuickForm(): QuickAgentFormValues {
     name: "New Agent", slug: generateAgentSlug(), runtimeType: "codex", template: "blank",
     prompt: "", description: "", audience: "产品与技术负责人", language: "zh-CN", depth: "deep",
     format: "report", systemPrompt: "", taskPrompt: "", buildAfterCreate: true,
-    maxSteps: 100, timeoutSeconds: 600,
   };
 }
 const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
 const BUILTIN_RUNTIME_OPTIONS = [
-  { value: "harness", label: "KsADK Harness" },
+  { value: "harness", label: "通用智能体 · KsADK Harness" },
   { value: "codex", label: "Codex · ManagedRuntime" },
 ];
 
@@ -128,7 +125,7 @@ const RUNTIME_OPTIONS = BUILTIN_RUNTIME_OPTIONS;
 function HarnessPermission({ approved, onChange }: { approved: boolean; onChange: (value: boolean) => void }) {
   return <details className="template-specific"><summary>本地运行：{approved ? "已授权" : "未授权"} · 高级权限</summary><label className="post-create-option">
     <input type="checkbox" checked={approved} onChange={event => onChange(event.target.checked)} />
-    <span><strong>允许 KsADK Harness 在本机运行</strong>
+    <span><strong>允许通用智能体在本机运行</strong>
       <small>默认开启，用于启动本地执行引擎；可取消。工具调用仍受权限与审批策略约束。</small>
     </span>
   </label></details>;
@@ -141,7 +138,7 @@ function approveHarness(spec: any, approved: boolean) {
   ])] };
 }
 const WIZARD_STEP_META = [
-  ["定义 Agent", "目标与系统提示词"],
+  ["定义 Agent", "模板与系统提示词"],
   ["绑定能力", "Model · Tool · MCP · Skill"],
   ["Prompt 与策略", "检查并调整"],
   ["检查并创建", "构建与打开会话"],
@@ -149,9 +146,6 @@ const WIZARD_STEP_META = [
 
 const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
 const PROXY_MODEL_FAMILIES = ["deepseek", "glm", "kimi", "minimax", "qwen"];
-const QUICK_CREATE_DEFAULT_PROMPT = "你是一个可靠的通用助手，请直接回答用户问题；信息不足时先提出澄清问题。";
-const QUICK_CREATE_DEFAULT_NAME = "Studio Assistant";
-const DEFAULT_STUDIO_MODEL_NAMES = ["deepseek-v4.1-flash", "glm-5.3-flash"];
 
 function modelSortKey(item: ResItem): [number, number[], string] {
   const raw = String(item.contract?.model || item.name || "").toLowerCase();
@@ -247,10 +241,9 @@ async function waitForCreatedBuild(operationId: string) {
   throw new Error("构建等待超时");
 }
 
-export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickCreateRequest = 0, onBack, onCreated, onAgentsChanged }: {
+export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack, onCreated, onAgentsChanged }: {
   editingAgentId?: string;
   workspacePath?: string;
-  quickCreateRequest?: number;
   viewportMode: StudioViewportMode;
   onBack: () => void;
   onCreated: (id?: string, openChat?: boolean) => void;
@@ -290,8 +283,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     systemPrompt,
     taskPrompt,
     buildAfterCreate,
-    maxSteps,
-    timeoutSeconds,
   } = quickForm.watch();
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
@@ -341,7 +332,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
   const [promptOperation, setPromptOperation] = useState<"compose" | "optimize">("compose");
   const [createError, setCreateError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const autoQuickCreateRequest = useRef(0);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [configModel, setConfigModel] = useState<ResItem | null>(null);
   const [showMcpConnect, setShowMcpConnect] = useState(false);
@@ -477,6 +467,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
   const codexPermissionsApproved = codexConsentKey !== null && codexConsent === codexConsentKey;
   const convCodexPermissionsApproved = codexConsentKey !== null && convCodexConsent === codexConsentKey;
   const setProviderPermissionsApproved = (approved: boolean) => setProviderConsent(approved ? selectedConsentKey : null);
+  const setCodexPermissionsApproved = (approved: boolean) => setCodexConsent(approved ? codexConsentKey : null);
+  const setConvCodexPermissionsApproved = (approved: boolean) => setConvCodexConsent(approved ? codexConsentKey : null);
   useEffect(() => {
     if (codexConsentKey === null || codexConsentDefaulted.current) return;
     codexConsentDefaulted.current = true;
@@ -544,28 +536,12 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     return preferred?.resourceId || models[0]?.resourceId || "";
   }, [models]);
 
-  const preferredStudioModelIds = useMemo(() => {
-    const lower = (item: (typeof models)[number]) =>
-      String(item.contract?.model || item.name).toLowerCase();
-    const preferred = DEFAULT_STUDIO_MODEL_NAMES
-      .map(name => models.find(item => lower(item) === name))
-      .filter((item): item is (typeof models)[number] => Boolean(item));
-    return (preferred.length ? preferred : models).slice(0, 2).map(item => item.resourceId);
-  }, [models]);
-
   // 自动预选默认模型 deepseek-v4.1-flash，用户无需手动选择即可创建 Agent。
   useEffect(() => {
     if (mode === "conversation") return;
     if (selectedModels.length || !preferredConversationAuthoringModel) return;
-    setSelectedModels(preferredStudioModelIds.length ? preferredStudioModelIds : [preferredConversationAuthoringModel]);
-  }, [mode, selectedModels.length, preferredConversationAuthoringModel, preferredStudioModelIds]);
-
-  useEffect(() => {
-    if (!quickCreateRequest || editingAgentId || autoQuickCreateRequest.current === quickCreateRequest
-      || !catalogReady || !selectedModels.length || platformResourcesPending) return;
-    autoQuickCreateRequest.current = quickCreateRequest;
-    void createWithDefaults();
-  }, [catalogReady, editingAgentId, platformResourcesPending, quickCreateRequest, selectedModels.length]);
+    setSelectedModels([preferredConversationAuthoringModel]);
+  }, [mode, selectedModels.length, preferredConversationAuthoringModel]);
 
   useEffect(() => {
     if (mode !== "conversation") {
@@ -575,13 +551,12 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     if (conversationEntryInitialized.current || !preferredConversationAuthoringModel) return;
     conversationEntryInitialized.current = true;
     if (!convAuthoringModel) setConvAuthoringModel(preferredConversationAuthoringModel);
-    if (!convAgentModels.length) setConvAgentModels(preferredStudioModelIds.length ? preferredStudioModelIds : [preferredConversationAuthoringModel]);
+    if (!convAgentModels.length) setConvAgentModels([preferredConversationAuthoringModel]);
   }, [
     convAgentModels.length,
     convAuthoringModel,
     mode,
     preferredConversationAuthoringModel,
-    preferredStudioModelIds,
   ]);
 
   function updateConversationAgentModels(next: string[]) {
@@ -690,11 +665,11 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     mcpResourceIds: selectedMcp,
     policyTemplate: policy,
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
-    maxSteps,
-    timeoutSeconds,
-  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy, maxSteps, timeoutSeconds]);
+    maxSteps: template === "research" ? 40 : 25,
+    timeoutSeconds: template === "research" ? 900 : 120,
+  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, effectiveSelectedTools, selectedSkills, selectedMcp, policy]);
 
-  const composeAgent = useCallback(async ({ preservePrompt = true, goalOverride } = {} as { preservePrompt?: boolean; goalOverride?: string }) => {
+  const composeAgent = useCallback(async ({ preservePrompt = true } = {}) => {
     const seq = ++composeSeq.current;
     setPromptOperation("compose");
     setPromptStatus("composing");
@@ -702,7 +677,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
       const res = await apiFetch(`/api/v1/agent-templates/${template}:compose`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...wizardPayload(), ...(goalOverride === undefined ? {} : { goal: goalOverride }) }),
+        body: JSON.stringify(wizardPayload()),
       });
       const composition = await res.json();
       if (!res.ok) {
@@ -717,8 +692,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
       if (ids.length) setSelectedModels(ids);
       if (!preservePrompt || !systemPrompt.trim()) {
-        const fallbackSystemPrompt = composition.spec?.instructions?.system || prompt.trim();
-        quickForm.setValue("systemPrompt", goalOverride?.trim() || fallbackSystemPrompt, { shouldDirty: true });
+        quickForm.setValue("systemPrompt", composition.spec?.instructions?.system || prompt.trim(), { shouldDirty: true });
       }
       if (!preservePrompt || !taskPrompt.trim()) {
         quickForm.setValue("taskPrompt", composition.spec?.instructions?.task || "", { shouldDirty: true });
@@ -730,7 +704,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
         setCreateError(error.message || "生成 Agent 配置失败");
       }
     }
-  }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm, prompt]);
+  }, [template, wizardPayload, supportsKsAdkTools, systemPrompt, taskPrompt, quickForm]);
 
   useEffect(() => {
     if (!restoreComposition) return;
@@ -830,7 +804,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     if (next < 1 || next > 4) return;
     if (next > step) {
       if (step === 1) {
-        const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience", "maxSteps", "timeoutSeconds"], { shouldFocus: true });
+        const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
         if (runtime === "codex" && codexProvider?.permissions.length && !codexPermissionsApproved) {
           setCreateError("请先确认 Codex Provider 请求的 Agent 权限。");
@@ -869,35 +843,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     markDirty();
   }
 
-  async function createWithDefaults() {
-    if (submitting || platformResourcesPending) return;
-    if (!selectedModels.length) {
-      setCreateError("模型目录仍在加载，请稍候再试。");
-      return;
-    }
-    const values = quickForm.getValues();
-    const defaultPrompt = values.prompt.trim() || QUICK_CREATE_DEFAULT_PROMPT;
-    const defaultName = values.name.trim() && values.name.trim() !== "New Agent"
-      ? values.name.trim()
-      : QUICK_CREATE_DEFAULT_NAME;
-    const nextValues = { ...values, name: defaultName, prompt: defaultPrompt,
-      systemPrompt: values.systemPrompt.trim() || defaultPrompt };
-    quickForm.reset(nextValues, { keepDirty: true });
-    if (!await quickForm.trigger(undefined, { shouldFocus: true })) {
-      setCreateError("请修正标记字段后继续。");
-      return;
-    }
-    setCreateError("");
-    setSubmitting(true);
-    try {
-      await composeAgent({ preservePrompt: false, goalOverride: defaultPrompt });
-      if (!compositionRef.current) throw new Error("未能生成 Agent 配置，请稍后重试。");
-      await submitWizard(nextValues);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function submitWizard(values: QuickAgentFormValues) {
     setCreateError("");
     setSubmitting(true);
@@ -910,7 +855,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
         throw new Error("未能生成 Agent 配置，请检查模板和能力绑定后重试。");
       }
       const spec = JSON.parse(JSON.stringify(compositionRef.current?.spec || {}));
-      spec.execution = { ...spec.execution, maxSteps: values.maxSteps, timeoutSeconds: values.timeoutSeconds };
       spec.instructions = { system: values.systemPrompt.trim(), task: values.taskPrompt.trim() };
       spec.description = values.description.trim() || spec.description;
       spec.context = {
@@ -1318,7 +1262,8 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
     }
   }
 
-  const runtimeLabel = ({ harness: "KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
+  const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
+  const runtimeLabel = ({ harness: "通用智能体 · KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
@@ -1560,6 +1505,10 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                           onValueChange={value => conversationForm.setValue("runtimeType", value as ConversationCommitFormValues["runtimeType"], { shouldDirty: true, shouldValidate: true })}
                         />
                       </FormField>
+                      {conversationRuntime === "codex" && (
+                        <CodexProviderPermissions provider={codexProvider} approved={convCodexPermissionsApproved}
+                          onChange={setConvCodexPermissionsApproved} />
+                      )}
                       {conversationRuntime === "harness" && <HarnessPermission approved={convHarnessApproved} onChange={setConvHarnessApproved} />}
                       <FormField
                         label="Agent 可用模型"
@@ -1606,7 +1555,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                         />
                       </FormField>
                       {conversationRuntime === "codex" ? (
-                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；Harness 负责 KsADK Tool 的统一执行与审批。</p>
+                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；通用智能体负责 KsADK Tool 的统一执行与审批。</p>
                       ) : (
                         <FormField label="KsADK Tool" className="authoring-model-field">
                           <StudioMultiSelect
@@ -1822,6 +1771,21 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                     <span className="panel-index">01</span>
                     <div><h2>定义 Agent</h2></div>
                   </div>
+                  <div className="field">
+                    <label>起点</label>
+                    <div className="template-grid">
+                      <button className={`template-card${template === "blank" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "blank", { shouldDirty: true }); markDirty(); }}>
+                        <span className="template-icon"><Bot size={18} /></span>
+                        <span><strong>空白 Agent</strong><small>从自己的需求开始</small></span>
+                        <span className="choice-check"><Check size={14} /></span>
+                      </button>
+                      <button className={`template-card${template === "research" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "research", { shouldDirty: true }); markDirty(); }}>
+                        <span className="template-icon"><Search size={18} /></span>
+                        <span><strong>深度调研</strong><small>调研、验证来源并生成报告</small></span>
+                        <span className="choice-check"><Check size={14} /></span>
+                      </button>
+                    </div>
+                  </div>
                   <div className="form-grid two-columns">
                     <FormField label="Agent 名称" requirement="required" htmlFor="quickAgentName" error={quickForm.formState.errors.name?.message}>
                       <input id="quickAgentName" maxLength={128} placeholder="例如：技术支持助手" {...quickForm.register("name", { onChange: markDirty })} />
@@ -1841,6 +1805,10 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                       }}
                     />
                   </FormField>
+                  {runtime === "codex" && (
+                    <CodexProviderPermissions provider={codexProvider} approved={codexPermissionsApproved}
+                      onChange={approved => { setCodexPermissionsApproved(approved); markDirty(); }} />
+                  )}
                   {runtime === "harness" && <HarnessPermission approved={harnessApproved} onChange={setHarnessApproved} />}
                   {runtime === "plugin" && (
                     <div className="template-specific" data-testid="external-provider-config">
@@ -1913,15 +1881,9 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                   >
                     <textarea id="quickPrompt" rows={6} maxLength={32768} placeholder="例如：帮助用户排查技术问题。先确认现象，再给出可执行的步骤。" {...quickForm.register("prompt", { onChange: markDirty })} />
                   </FormField>
-                  <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description || quickForm.formState.errors.maxSteps || quickForm.formState.errors.timeoutSeconds) || undefined}>
-                    <summary>高级配置</summary>
+                  <details className="secondary-settings" open={Boolean(quickForm.formState.errors.slug || quickForm.formState.errors.description) || undefined}>
+                    <summary>标识与描述</summary>
                     <div className="form-grid two-columns">
-                      <FormField label="最大步骤" htmlFor="quickMaxSteps" error={quickForm.formState.errors.maxSteps?.message}>
-                        <input id="quickMaxSteps" type="number" min={1} max={100} step={1} {...quickForm.register("maxSteps", { valueAsNumber: true, onChange: markDirty })} />
-                      </FormField>
-                      <FormField label="超时时间（秒）" htmlFor="quickTimeoutSeconds" error={quickForm.formState.errors.timeoutSeconds?.message}>
-                        <input id="quickTimeoutSeconds" type="number" min={1} max={3600} step={1} {...quickForm.register("timeoutSeconds", { valueAsNumber: true, onChange: markDirty })} />
-                      </FormField>
                     <GeneratedIdField
                       value={slug}
                       onChange={value => {
@@ -2198,7 +2160,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                     <div className="review-title"><span>Agent</span><button className="text-button" type="button" onClick={() => gotoStep(1)}>编辑</button></div>
                     <div className="review-agent">
                       <span className="agent-avatar">{template === "research" ? <Search size={16} /> : <Bot size={16} />}</span>
-                      <div><strong>{name}</strong><span>{slug} · {runtime}</span><p>{prompt || "等待填写系统提示词"}</p></div>
+                      <div><strong>{name}</strong><span>{slug} · {runtime} · {templateLabel}</span><p>{prompt || "等待填写系统提示词"}</p></div>
                     </div>
                   </div>
                   <div className="review-block">
@@ -2238,17 +2200,6 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
                   </button>
                   <div className="wizard-flow-actions">
                     <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
-                    {step === 1 && (
-                      <button
-                        className="button secondary quick-create-default"
-                        type="button"
-                        disabled={submitting || platformResourcesPending}
-                        onClick={() => void createWithDefaults()}
-                        title="使用通用助手模板、已选模型和当前权限直接创建"
-                      >
-                        <Zap size={16} /><span>{submitting ? "正在创建" : "一键创建"}</span>
-                      </button>
-                    )}
                     {step < 4 ? (
                       <button key="continue" className="button accent" type="button" disabled={platformResourcesPending} onClick={event => { event.preventDefault(); void gotoStep(step + 1); }}>
                         <span>继续</span><ArrowRight size={16} />
@@ -2272,6 +2223,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, quickC
               >
                 <div className="wizard-summary-content">
                 <dl>
+                  <div><dt>模板</dt><dd>{templateLabel}</dd></div>
                   <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
                   <div><dt>模型</dt><dd>{reviewModel}</dd></div>
                   <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>

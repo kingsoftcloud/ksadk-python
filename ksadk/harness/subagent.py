@@ -17,6 +17,7 @@ agent.started/completed、自己的 turn/node/model/usage）以**子 agent_id**
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,6 +98,13 @@ class SubAgentOutputValidationError(ValueError):
 
 def validate_subagent_output(text: str, schema: dict[str, Any] | None) -> Any:
     """按声明解析并校验最终输出；无 Schema 时保持原文本。"""
+    text = text.strip()
+    if not text:
+        raise SubAgentOutputValidationError("sub-agent did not produce a final result")
+    if re.search(r"DSML", text.replace("｜", "|"), re.IGNORECASE):
+        raise SubAgentOutputValidationError(
+            "sub-agent returned an unexecuted tool call instead of a result"
+        )
     if schema is None:
         return text
     try:
@@ -152,9 +160,7 @@ def child_spec(parent_spec: HarnessSpec, sub: SubAgentSpec) -> HarnessSpec:
         model=parent_spec.model,
         prompt=PromptSpec(instructions=sub.instructions),
         capabilities=CapabilityBindings(
-            skill_bindings=(
-                parent_spec.capabilities.skill_bindings if sub.inherit_skills else ()
-            ),
+            skill_bindings=(parent_spec.capabilities.skill_bindings if sub.inherit_skills else ()),
             mcp_bindings=(parent_spec.capabilities.mcp_bindings if sub.inherit_mcp else ()),
         ),
         context_policy=parent_spec.context_policy,

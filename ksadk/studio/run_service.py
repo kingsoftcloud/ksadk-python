@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -68,6 +69,7 @@ from ksadk.sessions.local_service import LocalSessionService
 from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, Usage
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
+from ksadk.studio.run_activity import project_run_activities
 from ksadk.studio.workspace import Workspace
 
 _CANCEL_TIMEOUT_SECONDS = 2.0
@@ -88,6 +90,129 @@ class StudioRunSpec:
     request_config: Mapping[str, Any] = field(default_factory=dict)
     manifest_sha256: str = ""
     plugin_bundle_root: Path | None = None
+
+
+class _ProjectedRunEventWriter:
+    """Batch high-frequency text deltas before rewriting a Run JSON file.
+
+    Canonical RuntimeEvents are already durable in the session store.  The
+    RunEvent JSON is a presentation projection, so writing and retaining one
+    copy of the full projection envelope per token is unnecessary and becomes
+    quadratic as the response grows.  A short batching window keeps live chat
+    responsive and coalesces adjacent chunks for the same projected item.
+    """
+
+    _STREAM_TYPES = frozenset({"message.delta", "thinking.delta"})
+
+    def __init__(
+        self,
+        event_store: RunEventStore,
+        run_id: str,
+        on_event: Callable[[RunEvent], None] | None,
+        *,
+        flush_interval: float = 0.5,
+    ) -> None:
+        self._event_store = event_store
+        self._run_id = run_id
+        self._on_event = on_event
+        self._flush_interval = flush_interval
+        self._pending: list[tuple[str, dict[str, Any]]] = []
+        # Publish the first chunk immediately so the UI can enter streaming
+        # state without waiting for the batching window. Subsequent chunks are
+        # coalesced into short durable writes.
+        self._last_flush = 0.0
+        self._flush_handle: asyncio.TimerHandle | None = None
+
+    def append(self, event_type: str, data: dict[str, Any]) -> RunEvent | None:
+        if event_type in self._STREAM_TYPES:
+            self._pending.append((event_type, data))
+            elapsed = time.monotonic() - self._last_flush
+            if elapsed < self._flush_interval:
+                if self._flush_handle is None:
+                    self._flush_handle = asyncio.get_running_loop().call_later(
+                        self._flush_interval - elapsed, self.flush
+                    )
+                return None
+            return self.flush()[-1]
+        self.flush()
+        stored = self._event_store.append(self._run_id, event_type, data)
+        self._notify((stored,))
+        return stored
+
+    def flush(self) -> list[RunEvent]:
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        if not self._pending:
+            return []
+        pending, self._pending = self._pending, []
+        stored = self._event_store.append_many(
+            self._run_id,
+            self._coalesce_stream_entries(pending),
+        )
+        self._last_flush = time.monotonic()
+        self._notify(stored)
+        return stored
+
+    @staticmethod
+    def _coalesce_stream_entries(
+        entries: list[tuple[str, dict[str, Any]]],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Collapse adjacent chunks without changing the rendered transcript."""
+
+        coalesced: list[tuple[str, dict[str, Any]]] = []
+        for event_type, data in entries:
+            if not coalesced:
+                coalesced.append((event_type, copy.deepcopy(data)))
+                continue
+            previous_type, previous = coalesced[-1]
+            if not _same_projected_stream(previous_type, previous, event_type, data):
+                coalesced.append((event_type, copy.deepcopy(data)))
+                continue
+
+            operation = str(data.get("operation") or "append")
+            if operation == "append":
+                merged_text = str(previous.get("text") or "") + str(data.get("text") or "")
+                merged = copy.deepcopy(data)
+                _set_projected_stream_text(merged, merged_text)
+                coalesced[-1] = (event_type, merged)
+            else:
+                coalesced[-1] = (event_type, copy.deepcopy(data))
+        return coalesced
+
+    def _notify(self, events: tuple[RunEvent, ...] | list[RunEvent]) -> None:
+        if self._on_event is None:
+            return
+        for event in events:
+            self._on_event(event)
+
+
+def _same_projected_stream(
+    previous_type: str,
+    previous: dict[str, Any],
+    event_type: str,
+    data: dict[str, Any],
+) -> bool:
+    return (
+        previous_type == event_type
+        and previous.get("itemId") == data.get("itemId")
+        and previous.get("partId") == data.get("partId")
+        and previous.get("operation") == data.get("operation")
+    )
+
+
+def _set_projected_stream_text(data: dict[str, Any], text: str) -> None:
+    data["text"] = text
+    conversation_item = data.get("conversationItem")
+    if isinstance(conversation_item, dict):
+        payload = conversation_item.get("payload")
+        if isinstance(payload, dict):
+            payload["text"] = text
+    runtime_event = data.get("runtimeEvent")
+    if isinstance(runtime_event, dict):
+        update = runtime_event.get("update")
+        if isinstance(update, dict):
+            update["text"] = text
 
 
 class StudioRunService:
@@ -332,8 +457,11 @@ class StudioRunService:
             record.status = RunStatus.RUNNING
             record.started_at = datetime.now(timezone.utc)
         self.event_store.save(record)
+        projected_writer = _ProjectedRunEventWriter(self.event_store, run_id, on_event)
 
-        async def persist(runtime_event: RuntimeEvent) -> RunEvent:
+        async def persist(runtime_event: RuntimeEvent) -> RunEvent | None:
+            if _is_private_harness_delta(runtime_event):
+                return None
             persisted = await self.runtime_events.append_one(record.session_id, runtime_event)
             event_type, data = project_runtime_event(
                 persisted,
@@ -347,10 +475,7 @@ class StudioRunService:
                     item_payload = conversation_item.get("payload")
                     if isinstance(item_payload, dict):
                         item_payload["revision"] = 1
-            stored = self.event_store.append(record.id, event_type, data)
-            if on_event is not None:
-                on_event(stored)
-            return stored
+            return projected_writer.append(event_type, data)
 
         handle = None
         completed_text_by_item: dict[tuple[str, str], str] = {}
@@ -640,6 +765,7 @@ class StudioRunService:
             )
             await persist(failure)
         finally:
+            projected_writer.flush()
             if handle is not None and self.executor.is_attached(handle):
                 try:
                     await asyncio.shield(self.executor.close(handle))
@@ -869,6 +995,7 @@ class StudioRunService:
             "activationKey": record.session_id,
         }
         self.event_store.save(record)
+        projected_writer = _ProjectedRunEventWriter(self.event_store, record.id, on_event)
         rows_before = await self.session_service.get_events(record.session_id)
         after_seq = max((int(row.seq_id or 0) for row in rows_before), default=0)
         published_seq = after_seq
@@ -876,14 +1003,24 @@ class StudioRunService:
         async def publish(events: list[RuntimeEvent]) -> None:
             nonlocal published_seq
             for runtime_event in events:
+                # Harness keeps token-level child output in the canonical
+                # session trace for diagnostics.  It is deliberately not part
+                # of Studio's public run timeline: the activity projection
+                # never consumes these private deltas, and persisting each one
+                # rewrites the growing run JSON file.  Long-running delegated
+                # research can otherwise turn a few useful activity rows into
+                # thousands of O(n²) file writes and make the page appear
+                # frozen.  Advance the cursor so final catch-up will not replay
+                # an omitted delta.
+                if _is_private_harness_delta(runtime_event):
+                    published_seq = max(published_seq, int(runtime_event.seq or 0))
+                    continue
                 event_type, data = project_runtime_event(
                     runtime_event,
                     session_id=record.session_id,
                 )
-                stored = self.event_store.append(record.id, event_type, data)
+                projected_writer.append(event_type, data)
                 published_seq = max(published_seq, int(runtime_event.seq or 0))
-                if on_event is not None:
-                    on_event(stored)
 
         async def tail_live_events() -> None:
             # Kernel worker 会把 harness 的增量事实（TEXT_DELTA/ItemUpdated 等）
@@ -1014,6 +1151,7 @@ class StudioRunService:
                 )
                 await publish([failed])
         finally:
+            projected_writer.flush()
             record.completed_at = datetime.now(timezone.utc)
             record.duration_ms = int((time.monotonic() - started) * 1000)
             record.duration_source = "studio"
@@ -1789,7 +1927,41 @@ class StudioRunService:
             if previous.agent_id != agent_id or previous.status != RunStatus.COMPLETED:
                 continue
             messages.append({"role": "user", "content": previous.input})
-            messages.append({"role": "assistant", "content": previous.output})
+            assistant_content = previous.output
+            if previous.runtime_type == "harness":
+                projection = project_run_activities(
+                    previous,
+                    self.event_store.events(previous.id),
+                )
+                children = [
+                    activity
+                    for activity in projection.get("activities", [])
+                    if activity.get("kind") == "subagent"
+                ][:8]
+                if children:
+                    status_text = {
+                        "completed": "已完成",
+                        "failed": "失败",
+                        "cancelled": "已取消",
+                        "running": "仍在运行",
+                        "unknown": "状态未确认",
+                    }
+                    facts = "；".join(
+                        f"子智能体“{child.get('label') or '未命名'}”"
+                        f"{status_text.get(str(child.get('status')), '状态未确认')}"
+                        for child in children
+                    )
+                    # Lifecycle evidence belongs to the completed assistant turn.
+                    # A standalone system message inserted between historical turns
+                    # can outweigh the next user request on some providers and make
+                    # a new turn answer an old child result instead (conversation
+                    # "cross-talk"). Keep the evidence attached to the turn it
+                    # describes so the newest user message remains authoritative.
+                    assistant_content = (
+                        f"{assistant_content}\n\n"
+                        f"[Harness 执行记录] {facts}。"
+                    )
+            messages.append({"role": "assistant", "content": assistant_content})
         messages.append({"role": "user", "content": user_input})
         return messages
 
@@ -1904,6 +2076,25 @@ def _apply_plugin_usage(record: RunRecord, usage: Mapping[str, Any]) -> None:
         reported=True,
         source="pluginhost",
     )
+
+
+def _is_private_harness_delta(event: RuntimeEvent) -> bool:
+    """Return whether *event* is an internal token delta, not a UI activity.
+
+    Managed Harness projects its rich event stream to canonical status items.
+    ``text.delta`` and ``reasoning.delta`` contain private token fragments,
+    are intentionally ignored by ``run_activity``, and must not be copied into
+    Studio's durable session or run stores. User-visible parent answer
+    streaming uses canonical ``message`` items and therefore remains
+    unaffected.
+    """
+
+    if not isinstance(event, ItemCompleted) or event.item_kind != "status":
+        return False
+    if event.source.framework != "ksadk":
+        return False
+    native_event_type = str(event.source.metadata.get("native_event_type") or "")
+    return native_event_type in {"reasoning.delta", "text.delta"}
 
 
 def project_runtime_event(
