@@ -7,6 +7,7 @@ export type TeamsLifecycle = {
   apiVersion: string;
   health: string;
   authorityRef: string;
+  reason?: string | null;
 };
 export async function teamRequest<T>(
   path: string,
@@ -30,12 +31,22 @@ export function TeamsAvailability({ compact = false }: { compact?: boolean }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
-    void readTeamsLifecycle(controller.signal)
-      .then(setState)
-      .catch((cause) => {
-        if (!controller.signal.aborted) setError(cause.message);
-      });
-    return () => controller.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = async () => {
+      try {
+        const next = await readTeamsLifecycle(controller.signal);
+        if (controller.signal.aborted) return;
+        setState(next);
+        setError("");
+      } catch (cause) {
+        if (!controller.signal.aborted)
+          setError(cause instanceof Error ? cause.message : "团队状态读取失败。");
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(() => void read(), 1500);
+      }
+    };
+    void read();
+    return () => { controller.abort(); clearTimeout(timer); };
   }, []);
   async function enable() {
     setBusy(true);
@@ -91,6 +102,15 @@ export function TeamsAvailability({ compact = false }: { compact?: boolean }) {
               : "组建你的 Agent 团队"}
         </h2>
         <p>选择成员和 Leader，在群聊中分工、跟进任务并验收成果。</p>
+        {!error && state?.health === "error" && (
+          <p className="form-error" role="alert">
+            {state.reason === "authority_in_use"
+              ? "此工作区的团队正在另一个 Studio 中运行。关闭该实例后重试。"
+              : state.reason === "DSH_CAPABILITY_HOST_UNAVAILABLE"
+              ? "团队插件未能连接本地插件服务，请重试。"
+              : "团队插件自动准备未完成，请重试。"}
+          </p>
+        )}
         {error && (
           <p className="form-error" role="alert">
             {error}
@@ -98,14 +118,14 @@ export function TeamsAvailability({ compact = false }: { compact?: boolean }) {
         )}
         <button
           className="button primary"
-          disabled={busy || (!state && !error)}
+          disabled={busy || state?.health === "preparing" || (!state && !error)}
           onClick={() => void enable()}
         >
-          {busy
+          {busy || state?.health === "preparing"
             ? "正在准备团队…"
             : state?.enabled
               ? "打开团队"
-              : "启用 Agent Teams"}
+              : state?.health === "error" ? "重试准备团队" : "启用 Agent Teams"}
         </button>
         {!compact && (
           <a href="#/agents" className="button tertiary">

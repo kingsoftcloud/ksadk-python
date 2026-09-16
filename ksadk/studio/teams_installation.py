@@ -48,6 +48,8 @@ class StudioTeamsInstallation:
         )
         self._contributed = False
         self._failure: str | None = None
+        self._preparing = False
+        self._lifecycle_lock = asyncio.Lock()
         studio.workspace_plugins.register(
             WorkspacePlugin(
                 "teams", API_VERSION, self.enable, self.disable, self.status, shutdown=self._close
@@ -67,7 +69,10 @@ class StudioTeamsInstallation:
         return {
             "enabled": running and active,
             "available": self.available,
-            "health": "ready" if running and active else "disabled",
+            "health": (
+                "ready" if running and active else "preparing" if self._preparing
+                else "error" if self._failure else "disabled"
+            ),
             "authorityRef": self.authority_ref,
             "reason": self._failure or self.application.runtime.last_error,
         }
@@ -121,11 +126,26 @@ class StudioTeamsInstallation:
             raise TeamsError("teams_activation_incomplete", "Teams 插件图尚未完整激活", status=503)
 
     async def enable(self) -> None:
-        if self.status()["enabled"]:
-            return
-        await self._configure(True)
+        # Startup warmup and an explicit retry share the same activation.
+        async with self._lifecycle_lock:
+            if self.status()["enabled"]:
+                return
+            self._preparing = True
+            self._failure = None
+            try:
+                await self._configure(True)
+            except Exception as error:
+                reason = getattr(error, "details", {}).get("reason")
+                self._failure = (
+                    reason if reason == "authority_in_use"
+                    else getattr(error, "code", "teams_activation_failed")
+                )
+                raise
+            finally:
+                self._preparing = False
 
     async def disable(self) -> None:
-        if not self.status()["enabled"] and self.application.runtime.domain is None:
-            return
-        await self._configure(False)
+        async with self._lifecycle_lock:
+            if not self.status()["enabled"] and self.application.runtime.domain is None:
+                return
+            await self._configure(False)
