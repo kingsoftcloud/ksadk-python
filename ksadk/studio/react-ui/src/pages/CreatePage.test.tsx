@@ -136,10 +136,10 @@ describe("CreatePage quick authoring", () => {
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     const runtime = await screen.findByRole("combobox", { name: "Runtime" });
     await user.click(runtime);
-    expect(screen.getByRole("option", { name: "KsADK Harness" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "通用智能体 · KsADK Harness" })).toBeVisible();
     expect(screen.getByRole("option", { name: "Codex · ManagedRuntime" })).toBeVisible();
     expect(screen.getAllByRole("option").map(option => option.textContent?.trim())).toEqual([
-      "KsADK Harness",
+      "通用智能体 · KsADK Harness",
       "Codex · ManagedRuntime",
     ]);
   });
