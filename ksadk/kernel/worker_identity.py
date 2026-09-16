@@ -42,5 +42,6 @@ async def prepare_worker_identity(
         session_id=command.session_id,
         session_service_provider=lambda: session_service,
         invocation_identity=invocation_identity,
+        allow_agent_alias=True,
     )
     return canonical_session.user_id, invocation_identity
