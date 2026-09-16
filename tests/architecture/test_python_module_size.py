@@ -20,7 +20,10 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/cli/cmd_create.py": 2084,
     "ksadk/cli/cmd_files.py": 1270,
     "ksadk/cli/cmd_hermes.py": 1441,
-    "ksadk/cli/cmd_invoke.py": 1565,
+    # 0.8.5 kspmas native Responses hardening added the four-variant reasoning
+    # delta handling (reasoning.delta/reasoning_text/reasoning_summary/summary_text)
+    # on top of the prior 1,565 baseline.
+    "ksadk/cli/cmd_invoke.py": 1578,
     "ksadk/cli/cmd_mcp.py": 1213,
     "ksadk/cli/cmd_openclaw.py": 4218,
     "ksadk/codex/client.py": 1521,
