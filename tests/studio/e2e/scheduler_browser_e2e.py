@@ -109,7 +109,7 @@ def _agent_spec() -> AgentSpec:
     )
 
 
-def _prepare_agent(service: StudioService) -> str:
+def _prepare_agent(service: StudioService, *, base_url: str | None = None) -> str:
     spec = _agent_spec()
     service.create_studio_agent(
         agent_id=AGENT_ID,
@@ -118,6 +118,11 @@ def _prepare_agent(service: StudioService) -> str:
         spec=spec,
         runtime=spec.runtime,
     )
+    if base_url is not None:
+        return _json(
+            base_url,
+            f"/api/v1/agents/{AGENT_ID}/conversation-surface?sessionId={CONTINUE_SESSION_ID}",
+        )["buildId"]
     build = asyncio.run(service.ensure_current_build(AGENT_ID))
     return build.id
 
@@ -408,28 +413,27 @@ def main() -> None:
                 codex_runtime_inspector=_runtime_inspector,
                 runtime_executor=RuntimeExecutor(registry),
             )
-            build_id = _prepare_agent(service)
-            asyncio.run(
-                service.session_service.create_session(AGENT_ID, "local-user", CONTINUE_SESSION_ID)
-            )
-
-            with (
-                studio_server(workspace, service=service) as base_url,
-                sync_playwright() as playwright,
-            ):
-                browser = playwright.chromium.launch(headless=True)
-                try:
-                    page = browser.new_page(viewport={"width": 1440, "height": 960})
-                    page_errors: list[str] = []
-                    page.on("pageerror", lambda error: page_errors.append(str(error)))
-                    session_id, run_id = _assert_scheduler_lifecycle(
-                        page,
-                        base_url,
-                        build_id=build_id,
-                    )
-                    assert page_errors == [], f"Uncaught React page errors: {page_errors}"
-                finally:
-                    browser.close()
+            with studio_server(workspace, service=service) as base_url:
+                # App startup registers companion providers. Build against that
+                # final registry, as an Agent created through the UI would be.
+                build_id = _prepare_agent(service, base_url=base_url)
+                asyncio.run(
+                    service.session_service.create_session(AGENT_ID, "local-user", CONTINUE_SESSION_ID)
+                )
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(headless=True)
+                    try:
+                        page = browser.new_page(viewport={"width": 1440, "height": 960})
+                        page_errors: list[str] = []
+                        page.on("pageerror", lambda error: page_errors.append(str(error)))
+                        session_id, run_id = _assert_scheduler_lifecycle(
+                            page,
+                            base_url,
+                            build_id=build_id,
+                        )
+                        assert page_errors == [], f"Uncaught React page errors: {page_errors}"
+                    finally:
+                        browser.close()
 
             requests = responses.requests()
             assert len(requests) == 3, requests
