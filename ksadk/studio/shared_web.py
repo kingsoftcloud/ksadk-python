@@ -505,8 +505,15 @@ class StudioSharedWebBridge:
             await asyncio.sleep(0.25)
 
     def cancel_run(self, invocation_id: str) -> dict[str, Any]:
-        self.studio._require_direct_run(invocation_id)
+        run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
+        self.studio._require_direct_run(run_id)
         operation_id = self._operations_by_invocation.get(invocation_id)
+        if operation_id is None:
+            operation_id = next((
+                self._operations_by_invocation[client_id]
+                for client_id, canonical_id in self._run_ids_by_invocation.items()
+                if canonical_id == run_id and client_id in self._operations_by_invocation
+            ), None)
         if operation_id:
             self.studio.operations.cancel(operation_id)
         return {"InvocationId": invocation_id, "Cancelled": bool(operation_id)}
@@ -633,15 +640,9 @@ class StudioSharedWebBridge:
                         if event_name == "response.output_text.delta":
                             emitted_text += str(event_payload.get("delta") or "")
                         yield self._sse(event_name, event_payload)
-                        if (
-                            shared_ui
-                            and event_name == "a2ui.interaction"
-                            and event_payload.get("kind") in {"form", "structured_input"}
-                        ):
-                            # The shared UI restores the durable Interaction/v1
-                            # request, then subscribes to this same live run.
-                            # Leave the execution attached while input is pending.
-                            return
+                        # A form pauses the Agent, not its response stream.
+                        # Keep delivery attached through input and emit the
+                        # eventual terminal frame after the same run resumes.
                 else:
                     idle_polls += 1
                     if idle_polls >= 20:

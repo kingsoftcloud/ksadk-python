@@ -47,6 +47,8 @@ Agent Teams 默认在 Studio 启动后异步启用，`KSADK_STUDIO_TEAMS_DEFAULT
 
 同一工作区的团队数据库只能由一个 Studio 宿主持有。另一个实例占用时保留其数据与独占锁，返回 `authority_in_use`；页面提示关闭该实例后重试，不自动删除锁文件或重建数据库。
 
+Studio 退出时，HTTP 长连接最多等待 10 秒，然后进入运行时清理；已打开的 SSE 观察连接不应无限阻止团队锁释放。会话等待用户填写表单时仍保持原响应流，收到实际执行终态后才关闭。`CancelRun` 同时接受客户端 Invocation ID 和 `GetSession.ActiveInvocationId` 返回的运行 ID，并用实际运行 ID 检查团队占用权限。
+
 `dsh_application.py` 把官方资源、HTTP RPC/事件流与 WebSocket 转发到同一个 Core。Studio 已注册 API 和静态路由优先，未知 Studio API 不落入 Core。
 
 所有转发要求有效 Studio cookie；写请求还要求当前页面的精确 Origin，其他本机端口不视为同源。Core 自己的 cookie 和协议鉴权继续有效。启动握手中的进程 token 不进入访问日志，浏览器只接收 HttpOnly cookie。网络请求不使用系统代理，也不接受调用方指定的 upstream 地址。
