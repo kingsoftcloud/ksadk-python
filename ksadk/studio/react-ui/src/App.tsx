@@ -14,6 +14,7 @@ import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
+import { ChannelsPage } from "./pages/ChannelsPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
@@ -43,6 +44,7 @@ type View = NavigationView;
 
 const VIEW_TITLE: Record<View, string> = {
   agents: "Agent",
+  channels: "消息渠道",
   create: "创建 Agent",
   "agent-detail": "Agent 配置",
   conversations: "会话",
@@ -100,7 +102,7 @@ export function parseStudioLocationHash(hash: string): {
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
- const pluginPageId = parts[0] === 'workspace' && parts[1] ? decodeURIComponent(parts[1]) : ['orchestration', 'teams'].includes(parts[0]) ? 'teams' : parts[0] === 'channels' ? 'channels' : '';
+ const pluginPageId = parts[0] === 'workspace' && parts[1] ? decodeURIComponent(parts[1]) : ['orchestration', 'teams'].includes(parts[0]) ? 'teams' : parts[0] === '';
  const view: View = pluginPageId ? `plugin:${pluginPageId}` : editingAgentId
     ? "create"
     : detailAgentId
@@ -772,6 +774,7 @@ export default function App() {
               <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} refreshTick={refreshTick} />
             )}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
+            {view === "channels" && <ChannelsPage />}
             {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
           </div>

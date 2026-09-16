@@ -7,6 +7,7 @@ import {
   Clock3,
   ClipboardCheck,
   CloudUpload,
+  MessageSquare,
   PackageCheck,
   Plug,
   ServerCog,
@@ -19,6 +20,7 @@ import type { ResourceKind } from "../pages/ResourcesPage";
 export const NAVIGATION_RAIL_PREFERENCE_KEY = "agentkit.studio.rail-expanded";
 export type NavigationView =
   | "agents"
+  | "channels"
   | "create"
   | "agent-detail"
   | "conversations"
@@ -49,6 +51,7 @@ const GROUPS: Array<{
     items: [
       { id: "resources", label: "模型与工具", icon: Boxes },
       { id: "runtime-resources", label: "运行资源", icon: ServerCog },
+      { id: "channels", label: "消息渠道", icon: MessageSquare },
       { id: "plugins", label: "插件", icon: Plug },
     ],
   },

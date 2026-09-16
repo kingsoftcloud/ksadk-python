@@ -28,11 +28,6 @@ export function useWorkspaceContributions() {
     bind();
     const discoverWithoutCore = () => {
       if (window.__STUDIO_DSH__) return;
-      // Channels is a permanent built-in contribution, independent of plugin lifecycle.
-      setPages(current => {
-        const rest = current.filter(page => page.id !== "channels");
-        return [...rest, { id: "channels", label: "消息渠道", order: 25 }];
-      });
       void apiFetch("/api/v1/plugins/teams/lifecycle")
         .then(response => response.ok ? response.json() : null)
         .then(state => {
@@ -47,7 +42,7 @@ export function useWorkspaceContributions() {
             setPages(current => current.filter(page => page.id !== "teams"));
           }
         })
-        .catch(() => undefined); // channels is already set synchronously above
+        .catch(() => undefined);
     };
     discoverWithoutCore();
     timer = window.setInterval(discoverWithoutCore, 1500);
