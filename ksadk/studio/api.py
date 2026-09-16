@@ -714,7 +714,7 @@ def create_studio_app(
 
     @app.post("/v1/responses/{response_id}/cancel")
     async def cancel_openai_response(response_id: str):
-        result = shared_web.cancel_run(response_id)
+        result = await shared_web.cancel_run(response_id)
         return {
             "id": response_id,
             "object": "response",
@@ -876,7 +876,7 @@ def create_studio_app(
                     },
                 )
             elif action == "CancelRun":
-                data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+                data = await shared_web.cancel_run(str(payload.get("InvocationId") or ""))
             elif action == "SubmitInteraction":
                 run_id = str(payload.get("RunId") or "")
                 studio._require_direct_run(run_id)

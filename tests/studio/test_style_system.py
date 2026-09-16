@@ -248,7 +248,7 @@ def test_react_chat_uses_shared_protocol_and_asymmetric_messages() -> None:
     assert "useAgentChat" in source
     # Studio wraps the shared facade so UI lifecycle aborts detach the reader
     # without being misreported as an explicit user cancellation.
-    assert "StudioChatApiFacade" in source
+    assert "ApiFacadeImpl" in source
     assert '"@kingsoftcloud/ksadk-web": "0.3.8"' in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
     # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口

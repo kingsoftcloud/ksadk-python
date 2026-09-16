@@ -505,17 +505,20 @@ class StudioSharedWebBridge:
             await asyncio.sleep(0.25)
 
     async def cancel_run(self, invocation_id: str) -> dict[str, Any]:
-        run_id = self._run_ids_by_invocation.get(invocation_id, invocation_id)
-        self.studio._require_direct_run(run_id)
         operation_id = self._operations_by_invocation.get(invocation_id)
-        if operation_id is None:
-            operation_id = next((
-                self._operations_by_invocation[client_id]
+        run_id = self._run_ids_by_invocation.get(invocation_id)
+        if run_id is None and operation_id is None:
+            # get_session reports the canonical run id; accept it as a cancel
+            # reference by resolving back to the invoking client id.
+            client_id = next((
+                client_id
                 for client_id, canonical_id in self._run_ids_by_invocation.items()
-                if canonical_id == run_id and client_id in self._operations_by_invocation
+                if canonical_id == invocation_id and client_id in self._operations_by_invocation
             ), None)
-        if operation_id:
-            self.studio.operations.cancel(operation_id)
+            if client_id is not None:
+                operation_id = self._operations_by_invocation[client_id]
+                run_id = invocation_id
+        self.studio._require_direct_run(run_id or invocation_id)
         if run_id:
             # Preserve the canonical Run terminal event. Cancelling only the
             # outer Operation can strand the already-created Run in CREATED.
@@ -542,6 +545,8 @@ class StudioSharedWebBridge:
                     }:
                         break
                     await asyncio.sleep(0.05)
+        elif operation_id:
+            self.studio.operations.cancel(operation_id)
         return {
             "InvocationId": invocation_id,
             "RunId": run_id or "",

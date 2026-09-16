@@ -760,17 +760,23 @@ async def test_shared_ui_form_keeps_response_open_until_execution_finishes(tmp_p
 
 
 @pytest.mark.parametrize("reference", ["client-invocation", "canonical-run"])
-def test_cancel_accepts_the_canonical_identity_reported_by_get_session(reference):
+async def test_cancel_accepts_the_canonical_identity_reported_by_get_session(reference):
     cancelled = []
     checked = []
+    cancelled_runs = []
+
+    async def cancel_run(run_id):
+        cancelled_runs.append(run_id)
+
     bridge = StudioSharedWebBridge(SimpleNamespace(
         _require_direct_run=checked.append,
         operations=SimpleNamespace(cancel=cancelled.append),
+        run_service=SimpleNamespace(cancel_run=cancel_run),
     ))
     bridge._run_ids_by_invocation["client-invocation"] = "canonical-run"
     bridge._operations_by_invocation["client-invocation"] = "operation"
-    assert bridge.cancel_run(reference)["Cancelled"] is True
-    assert cancelled == ["operation"]
+    assert (await bridge.cancel_run(reference))["Cancelled"] is True
+    assert cancelled_runs == ["canonical-run"]
     assert checked == ["canonical-run"]
 
 
