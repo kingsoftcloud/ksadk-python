@@ -106,6 +106,14 @@ describe("ChatWorkspace shared conversation composition", () => {
     });
   });
 
+  it("keeps Agent switching available when the selected Agent cannot connect", () => {
+    mocks.chat.bootstrapStatus = "error";
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" agentSelector={<button>切换 Agent</button>} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("会话暂不可用");
+    expect(screen.getByRole("button", { name: "切换 Agent" })).toBeVisible();
+    expect(screen.queryByTestId("shared-composer")).not.toBeInTheDocument();
+  });
+
   it("shows a product title for an empty session instead of its internal id", () => {
     mocks.chat.sessions = [{
       SessionId: "ses_internal_id",
@@ -153,21 +161,24 @@ describe("ChatWorkspace shared conversation composition", () => {
   it("keeps one history surface and preserves its filter across product navigation", () => {
     const historyHost = document.createElement("div");
     const headerHost = document.createElement("div");
-    document.body.append(historyHost, headerHost);
+    const searchHost = document.createElement("div");
+    document.body.append(historyHost, headerHost, searchHost);
     const onSelectConversation = vi.fn();
     const { container, rerender, unmount } = render(<ChatWorkspace agentId="local-1" agentName="Agent"
-      integratedHistory historyHost={historyHost} headerHost={headerHost} onSelectConversation={onSelectConversation}/>);
+      integratedHistory historyHost={historyHost} searchHost={searchHost} headerHost={headerHost} onSelectConversation={onSelectConversation}/>);
     expect(within(container).queryByRole("complementary", { name: "会话历史" })).toBeNull();
     expect(within(historyHost).getByRole("complementary", { name: "会话历史" })).toBeInTheDocument();
-    fireEvent.change(within(historyHost).getByRole("searchbox"), { target: { value: "已有" } });
+    fireEvent.change(within(searchHost).getByRole("searchbox"), { target: { value: "不存在" } });
+    expect(within(historyHost).queryByRole("button", { name: "已有会话" })).not.toBeInTheDocument();
+    fireEvent.change(within(searchHost).getByRole("searchbox"), { target: { value: "已有" } });
     rerender(<ChatWorkspace agentId="local-1" agentName="Agent" active={false}
-      integratedHistory historyHost={historyHost} headerHost={headerHost} onSelectConversation={onSelectConversation}/>);
+      integratedHistory historyHost={historyHost} searchHost={searchHost} headerHost={headerHost} onSelectConversation={onSelectConversation}/>);
     expect(headerHost).toBeEmptyDOMElement();
-    expect(within(historyHost).getByRole("searchbox")).toHaveValue("已有");
+    expect(within(searchHost).getByRole("searchbox")).toHaveValue("已有");
     fireEvent.click(within(historyHost).getByRole("button", { name: "已有会话" }));
     expect(mocks.chat.selectSession).toHaveBeenCalledWith("session-1");
     expect(onSelectConversation).toHaveBeenCalledOnce();
-    unmount(); historyHost.remove(); headerHost.remove();
+    unmount(); historyHost.remove(); headerHost.remove(); searchHost.remove();
   });
 
   it("fulfills a new-chat request after mounting and bootstrap instead of restoring history", async () => {

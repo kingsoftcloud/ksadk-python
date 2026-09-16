@@ -153,17 +153,28 @@ def test_goal_api_and_message_api_share_same_goal_identity(domain):
     assert run["teamRunId"] == receipt["teamRunId"]
     snapshot = domain.snapshot(OWNER, gid)
     assert len(snapshot["deliveries"]) == 1
-    with pytest.raises(TeamsError, match="已有进行中"):
+    second = domain.send(
+        OWNER,
+        gid,
+        MessageInput(
+            parts=[{"kind": "text", "text": "另一个目标"}],
+            intent="start_goal",
+            idempotencyKey="second",
+        ),
+    )
+    assert second["teamRunId"] != receipt["teamRunId"]
+    assert len(domain.snapshot(OWNER, gid)["teamRuns"]) == 2
+    with pytest.raises(TeamsError) as error:
         domain.send(
             OWNER,
             gid,
             MessageInput(
-                parts=[{"kind": "text", "text": "另一个目标"}],
-                intent="start_goal",
-                idempotencyKey="second",
+                parts=[{"kind": "text", "text": "补充"}],
+                intent="followup",
+                idempotencyKey="ambiguous",
             ),
         )
-    assert len(domain.snapshot(OWNER, gid)["messages"]) == 1
+    assert error.value.code == "team_run_ambiguous"
 
 
 def test_rebind_allocates_new_session_and_preserves_immutable_history(domain):
@@ -187,7 +198,7 @@ def test_rebind_allocates_new_session_and_preserves_immutable_history(domain):
         assert stored["_bindingHistory"][0]["sessionId"] == before["sessionId"]
         old = tx.get("group_revision", f"{gid}:1")
         assert old["members"][1]["sessionId"] == before["sessionId"]
-    assert updated["group"]["policy"] == {"taskAcceptance": "human", "peerWake": False}
+    assert updated["group"]["policy"] == {"taskAcceptance": "leader", "peerWake": False}
 
 
 def test_explicit_peer_requests_are_bounded_and_plain_mentions_do_not_wake(domain):
@@ -301,9 +312,9 @@ def test_authorization_is_checked_on_duplicate_and_cross_group_reply(domain):
     )
     domain.send(actor, gid, note)
     with domain.store.transaction() as tx:
-        member = tx.get("member", member_key(gid, "engineer"))
+        member = domain.run_member(tx, receipt["teamRunId"], "engineer")
         member["status"] = "removed"
-        tx.put("member", member_key(gid, "engineer"), member)
+        tx.put("run_member", member["runMemberId"], member)
     with pytest.raises(TeamsError):
         domain.send(actor, gid, note)
 
@@ -446,3 +457,261 @@ def test_event_snapshot_watermark_and_invalid_future_cursor(domain):
     with pytest.raises(TeamsError) as error:
         domain.events(OWNER, gid, 10000)
     assert error.value.code == "reset_required"
+
+
+def second_goal(domain, gid, key="second-goal"):
+    return domain.send(
+        OWNER,
+        gid,
+        MessageInput(
+            parts=[{"kind": "text", "text": key}], intent="start_goal", idempotencyKey=key
+        ),
+    )
+
+
+def leader_actor(gid, run_id, execution_id="leader-run"):
+    return Actor(
+        OWNER.tenant_id,
+        "verified-leader",
+        kind="member",
+        group_id=gid,
+        member_id="leader",
+        team_run_id=run_id,
+        run_id=execution_id,
+    )
+
+
+def test_parallel_runs_freeze_configuration_sessions_and_message_identity(domain):
+    created = group(domain)
+    gid = created["group"]["groupId"]
+    first = start(domain, gid)["teamRunId"]
+    previous = domain.snapshot(OWNER, gid, first)
+    leader = leader_actor(gid, first)
+    changed = domain.update_group(
+        OWNER,
+        gid,
+        created["group"]["revision"],
+        "change-config",
+        leader_member_id="engineer",
+        remove_member_id="reviewer",
+        task_acceptance="human",
+        rebind_member=MemberInput(memberId="leader", name="新成员名称", bindingRef="binding-one"),
+        bindings={"binding-one": BINDING},
+    )
+    second = second_goal(domain, gid)["teamRunId"]
+    current = domain.snapshot(OWNER, gid, second)
+    assert current["teamRuns"][0]["leaderMemberId"] == "engineer"
+    assert current["teamRuns"][0]["policy"]["taskAcceptance"] == "human"
+    assert previous["teamRuns"][0]["policy"]["taskAcceptance"] == "leader"
+    assert {m["sessionId"] for m in previous["runMembers"]}.isdisjoint(
+        m["sessionId"] for m in current["runMembers"]
+    )
+    assert len(current["runMembers"]) == 2
+    # Current configuration removal and Leader replacement cannot revoke old work.
+    planned = domain.create_task(
+        leader,
+        gid,
+        first,
+        TaskCreateInput(title="旧任务继续", ownerMemberId="reviewer"),
+        "old-planning",
+    )
+    assert planned["acceptancePolicy"] == "leader"
+    note = domain.send(
+        leader,
+        gid,
+        MessageInput(
+            parts=[{"kind": "text", "text": "旧角色消息"}],
+            intent="followup",
+            idempotencyKey="old-note",
+        ),
+    )
+    actual = next(
+        m for m in domain.snapshot(OWNER, gid)["messages"] if m["messageId"] == note["messageId"]
+    )
+    assert actual["senderName"] == "协调员" and actual["groupRole"] == "leader"
+    assert actual["teamRunId"] == first
+    assert changed["group"]["revision"] > created["group"]["revision"]
+    assert set(domain.list_groups(OWNER)["items"][0]["activeTeamRunIds"]) == {first, second}
+
+
+def test_first_directed_message_starts_leader_and_cross_run_access_is_rejected(domain):
+    gid = group(domain)["group"]["groupId"]
+    first = domain.send(
+        OWNER,
+        gid,
+        MessageInput(
+            parts=[{"kind": "text", "text": "请工程师调查"}],
+            mentions=["engineer"],
+            intent="directed",
+            idempotencyKey="directed",
+        ),
+    )["teamRunId"]
+    assert domain.snapshot(OWNER, gid, first)["deliveries"][0]["memberId"] == "leader"
+    second = second_goal(domain, gid)["teamRunId"]
+    actor = leader_actor(gid, first)
+    with pytest.raises(TeamsError, match="其他轮次"):
+        domain.snapshot(actor, gid, second)
+    with pytest.raises(TeamsError, match="其他轮次"):
+        domain.execution(actor, gid, second)
+    with pytest.raises(TeamsError, match="其他轮次"):
+        domain.create_task(actor, gid, second, TaskCreateInput(title="越权"), "forbidden-task")
+    snapshot = domain.snapshot(actor, gid)
+    assert {r["teamRunId"] for r in snapshot["teamRuns"]} == {first}
+    assert all(m.get("teamRunId") == first for m in snapshot["messages"])
+
+
+def test_leader_reviews_latest_attempt_and_retry_preserves_feedback(domain):
+    gid = group(domain)["group"]["groupId"]
+    run_id = start(domain, gid)["teamRunId"]
+    created = domain.create_task(
+        OWNER,
+        gid,
+        run_id,
+        TaskCreateInput(title="需要验收", ownerMemberId="engineer"),
+        "review-task",
+    )
+    complete(domain, gid, run_id, created)
+    waiting = domain.snapshot(OWNER, gid)["tasks"][0]
+    leader = leader_actor(gid, run_id)
+    failed = domain.task_action(
+        leader,
+        gid,
+        created["taskId"],
+        "reject",
+        waiting["revision"],
+        "review-reject",
+        reason="补充错误响应的测试",
+    )
+    retried = domain.task_action(
+        leader, gid, created["taskId"], "retry", failed["revision"], "review-retry"
+    )
+    assert len(retried["attempts"]) == 2
+    assert retried["attempts"][0]["reviewReason"] == "补充错误响应的测试"
+    snapshot = domain.snapshot(OWNER, gid)
+    assert any(
+        "补充错误响应的测试" in m["parts"][0].get("text", "")
+        for m in snapshot["messages"]
+        if m["senderName"] == "任务分派"
+    )
+    assert len([m for m in snapshot["messages"] if m["senderName"] == "任务待验收"]) == 1
+    with pytest.raises(TeamsError, match="任务已更新"):
+        domain.task_action(
+            leader, gid, created["taskId"], "accept", waiting["revision"], "stale-accept"
+        )
+
+
+def test_final_request_changes_reuses_run_and_requires_human_reason(domain):
+    gid = group(domain)["group"]["groupId"]
+    run_id = start(domain, gid)["teamRunId"]
+    delivery = domain.snapshot(OWNER, gid)["deliveries"][0]
+    leader = leader_actor(gid, run_id)
+    domain.project_run(
+        delivery_id=delivery["deliveryId"], event_id="start", run_id=leader.run_id, status="running"
+    )
+    domain.finish_candidate(leader, "初稿", "finish")
+    domain.project_run(
+        delivery_id=delivery["deliveryId"],
+        event_id="done",
+        run_id=leader.run_id,
+        status="succeeded",
+    )
+    run = domain.snapshot(OWNER, gid)["teamRuns"][0]
+    assert run["status"] == "awaiting_acceptance"
+    with pytest.raises(TeamsError, match="说明"):
+        domain.accept_run(
+            OWNER, gid, run_id, run["revision"], "no-reason", action="request_changes"
+        )
+    with pytest.raises(TeamsError):
+        domain.accept_run(leader, gid, run_id, run["revision"], "self-accept", action="accept")
+    updated = domain.accept_run(
+        OWNER,
+        gid,
+        run_id,
+        run["revision"],
+        "changes",
+        action="request_changes",
+        reason="补充回滚方案",
+    )
+    assert updated["teamRunId"] == run_id and updated["status"] == "running"
+    assert "result" not in updated
+    assert updated["resultHistory"][0]["result"] == "初稿"
+    assert (
+        domain.accept_run(
+            OWNER,
+            gid,
+            run_id,
+            run["revision"],
+            "changes",
+            action="request_changes",
+            reason="补充回滚方案",
+        )
+        == updated
+    )
+    snapshot = domain.snapshot(OWNER, gid)
+    assert len(snapshot["teamRuns"]) == 1 and len(snapshot["deliveries"]) == 2
+    assert "补充回滚方案" in snapshot["messages"][-1]["parts"][0]["text"]
+
+
+def test_legacy_history_cannot_unarchive_or_create_new_execution(domain):
+    created = group(domain)
+    gid = created["group"]["groupId"]
+    with domain.store.transaction() as tx:
+        row = tx.get("group", gid)
+        row.update(legacySource={"authorityRef": "old"}, status="archived")
+        tx.put("group", gid, row)
+    with pytest.raises(TeamsError) as error:
+        domain.update_group(OWNER, gid, row["revision"], "unarchive", archived=False)
+    assert error.value.code == "legacy_history_read_only"
+    with pytest.raises(TeamsError):
+        start(domain, gid)
+    assert domain.snapshot(OWNER, gid)["teamRuns"] == []
+
+
+def test_fenced_old_leader_result_keeps_source_and_cannot_finish_new_leader(domain):
+    gid = group(domain)["group"]["groupId"]
+    run_id = start(domain, gid)["teamRunId"]
+    before = domain.snapshot(OWNER, gid)
+    delivery = before["deliveries"][0]
+    actor = leader_actor(gid, run_id, "old-execution")
+    domain.project_run(
+        delivery_id=delivery["deliveryId"],
+        event_id="old-start",
+        run_id=actor.run_id,
+        status="running",
+    )
+    domain.finish_candidate(actor, "旧Leader提交的未验收结果", "old-final")
+    old_session = next(m for m in before["runMembers"] if m["memberId"] == "leader")["sessionId"]
+    with domain.store.transaction() as tx:
+        original = tx.get("delivery", delivery["deliveryId"])
+        original["_fenced"] = True
+        tx.put("delivery", original["deliveryId"], original)
+        member = domain.run_member(tx, run_id, "leader")
+        member.update(
+            sessionId="new-leader-session",
+            name="接管Leader",
+            activeRunId="new-execution",
+            executionStatus="running",
+        )
+        tx.put("run_member", member["runMemberId"], member)
+        run = tx.get("team_run", run_id)
+        run["_roster"][0] = member
+        tx.put("team_run", run_id, run)
+    domain.project_run(
+        delivery_id=delivery["deliveryId"],
+        event_id="old-done",
+        run_id=actor.run_id,
+        status="succeeded",
+        output="旧结果",
+    )
+    after = domain.snapshot(OWNER, gid)
+    assert after["teamRuns"][0]["status"] != "awaiting_acceptance"
+    new_leader = next(m for m in after["runMembers"] if m["memberId"] == "leader")
+    assert (
+        new_leader["sessionId"] == "new-leader-session"
+        and new_leader["activeRunId"] == "new-execution"
+    )
+    graph = domain.execution(OWNER, gid, run_id)
+    old_node = next(node for node in graph["nodes"] if node["kind"] == "run")
+    assert old_node["source"]["sessionId"] == old_session
+    assert old_node["title"] == "协调员" and old_node["reason"] == "execution_uncertain_fenced"
+    assert after["messages"][-1]["sourceRefs"][0]["sessionId"] == old_session

@@ -34,11 +34,11 @@ PACKAGE = REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "package.json"
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
 
 
+TOKEN_STYLESHEET = STYLESHEET.with_name("studio-tokens.css")
+
 def _stylesheet_without_root() -> tuple[str, str]:
     stylesheet = STYLESHEET.read_text(encoding="utf-8")
-    match = re.search(r":root\s*\{(?P<tokens>.*?)\n\}", stylesheet, re.DOTALL)
-    assert match is not None
-    return stylesheet, stylesheet[: match.start()] + stylesheet[match.end() :]
+    return TOKEN_STYLESHEET.read_text(encoding="utf-8") + stylesheet, stylesheet
 
 
 def _block(stylesheet: str, selector: str) -> str:
@@ -49,7 +49,7 @@ def _block(stylesheet: str, selector: str) -> str:
 
 def test_react_ci_gate_runs_protocol_and_component_suites() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
-    target = makefile.split("studio-react-test:\n", 1)[1].split("\n\n", 1)[0]
+    target = makefile.split("studio-react-test: build-studio-static\n", 1)[1].split("\n\n", 1)[0]
 
     assert "npm --prefix ksadk/studio/react-ui test" in target
     assert "npm --prefix ksadk/studio/react-ui run test:ui" in target
@@ -84,10 +84,10 @@ def test_typography_tokens_form_the_complete_product_scale() -> None:
 
 
 def test_component_surface_and_code_tokens_exist_in_both_themes() -> None:
-    stylesheet = STYLESHEET.read_text(encoding="utf-8")
-    theme = THEME_STYLESHEET.read_text(encoding="utf-8")
-    light_root = _block(stylesheet, ":root {")
-    dark_root = _block(theme, ":root.dark {")
+    stylesheet = TOKEN_STYLESHEET.read_text(encoding="utf-8")
+    common_root = _block(stylesheet, ":root {")
+    light_root = common_root + _block(stylesheet, ":root:not(.dark) {")
+    dark_root = common_root + _block(stylesheet, ":root.dark {")
     required = {
         "--surface-raised",
         "--surface-sunken",
@@ -189,7 +189,7 @@ def test_responsive_layer_is_the_final_layout_owner() -> None:
     for selector, declarations in {
         ".app-shell .data-scroll-region {": ["overflow-x: auto", "max-width: 100%"],
         '.create-shell[data-scroll-mode="workbench"] {': [
-            "height: calc(100dvh - 64px)",
+            "height: calc(100dvh - var(--studio-header-height))",
             "overflow: hidden",
         ],
         '.app-shell[data-view="conversations"] {\n  height: 100dvh;': ["overflow: hidden"],
@@ -214,8 +214,8 @@ def test_theme_layer_supports_persisted_light_dark_and_system_modes() -> None:
         < entrypoint.index('@import "./theme.css"')
         < entrypoint.index('@import "./responsive.css"')
     )
-    assert ":root.dark {" in theme
-    assert "color-scheme: dark" in theme
+    assert ":root.dark {" in TOKEN_STYLESHEET.read_text(encoding="utf-8")
+    assert "color-scheme: dark" in TOKEN_STYLESHEET.read_text(encoding="utf-8")
     assert ".appearance-options {" in theme
     assert "useStudioTheme" in app
 

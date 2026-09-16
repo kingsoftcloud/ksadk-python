@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [entry, foundation, tokens, responsive, finalLayer, resourcesPage] = await Promise.all([
+const [entry, foundation, tokens, responsive, finalLayer, resourcesPage, themeTokens] = await Promise.all([
   readFile(new URL("./main.tsx", import.meta.url), "utf8"),
   readFile(new URL("./soft-block.css", import.meta.url), "utf8"),
   readFile(new URL("./studio.css", import.meta.url), "utf8"),
   readFile(new URL("./responsive.css", import.meta.url), "utf8"),
   readFile(new URL("./kingdesign.css", import.meta.url), "utf8"),
   readFile(new URL("./pages/ResourcesPage.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./studio-tokens.css", import.meta.url), "utf8"),
 ]);
 
 test("loads the company design layer after the legacy Studio styles", () => {
@@ -40,22 +41,22 @@ test("keeps browser zoom, AI message states, and scrollbars in the shared contra
 
 test("keeps the resource catalogue inside the bounded data-page scroll contract", () => {
   assert.match(resourcesPage, /className="page-container resources-page" data-layout="data" data-scroll-mode="data"/);
-  assert.match(responsive, /\.app-shell \.page-container\[data-layout="data"\]\[data-scroll-mode="data"\]\s*\{[\s\S]*?height:\s*calc\(100dvh - 64px\);[\s\S]*?overflow:\s*hidden;/);
+  assert.match(responsive, /\.app-shell \.page-container\[data-layout="data"\]\[data-scroll-mode="data"\]\s*\{[\s\S]*?height:\s*calc\(100dvh - var\(--studio-header-height\)\);[\s\S]*?overflow:\s*hidden;/);
   assert.match(responsive, /\.app-shell \.table-data-body \.data-scroll-region\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
 });
 
 test("derives conversation surfaces from tokens in both light and dark themes", () => {
-  assert.match(finalLayer, /:root:not\(\.dark\)\s*\{/);
-  assert.match(finalLayer, /:root\.dark\s*\{/);
+  assert.match(themeTokens, /:root:not\(\.dark\)\s*\{/);
+  assert.match(themeTokens, /:root\.dark\s*\{/);
   assert.match(finalLayer, /background:\s*var\(--kc-user-bubble\)/);
 });
 
-test("uses soft borders for the creation workbench and blue only for selection", () => {
+test("uses semantic borders for the creation workbench and neutral selection", () => {
   // The phase branch retains the current Studio token palette; this assertion
   // deliberately protects the semantic card-border contract rather than an
   // obsolete literal from the reference branch.
-  assert.match(tokens, /--border-card:\s*#[0-9a-f]{6};/i);
-  assert.match(tokens, /--border-strong:\s*#[0-9a-f]{6};/i);
+  assert.match(themeTokens, /--border-card:\s*#[0-9a-f]{6};/i);
+  assert.match(themeTokens, /--border-strong:\s*#[0-9a-f]{6};/i);
   assert.match(finalLayer, /\.create-shell \.template-card\s*\{[\s\S]*?border:\s*1px solid var\(--studio-border\)/);
   assert.match(finalLayer, /\.create-shell \.template-card\.selected\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
   assert.match(finalLayer, /\.create-shell \.authoring-mode-tabs button\.active,[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);

@@ -1,4 +1,5 @@
 /* React Studio 的共享设计令牌与非对话页面复刻样式。 */
+@import "./studio-tokens.css";
 @import "./studio.css";
 @import "./theme.css";
 @import "./responsive.css";

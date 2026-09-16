@@ -421,6 +421,56 @@ async def test_start_failures_keep_one_host_and_its_circuit_history(tmp_path: Pa
     ]
 
 
+@pytest.mark.asyncio
+async def test_start_failure_status_retains_stage_until_successful_retry(tmp_path):
+    from unittest.mock import AsyncMock
+
+    service = _RecordingService(tmp_path)
+    host = _FakeHost(service.descriptor_value)
+    original_lease = host.lease
+    host.lease = AsyncMock(side_effect=PluginHostError(
+        "dsh_capability_start_failed", "private://transport-detail"
+    ))
+    service._host = host
+    service._projection = service._project_profile(("/pinned/dsh",))
+    try:
+        with pytest.raises(StudioError) as failure:
+            await service.describe()
+        assert failure.value.details["stage"] == "core_start"
+        assert service.startup_status["failure"]["reason"] == "dsh_capability_start_failed"
+        assert "private://transport-detail" not in str(service.startup_status)
+        assert service.startup_status["state"] == "failed"
+        host.lease = original_lease
+        await service.describe()
+        assert service.startup_status["state"] == "ready"
+        assert service.startup_status["failure"] is None
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_companion_graph_has_recoverable_structured_error(tmp_path):
+    from ksadk.plugins.companions import DshCompanionDefinition
+
+    service = _RecordingService(tmp_path, profile="studio")
+    service.configure_companions([DshCompanionDefinition(
+        plugin_id="fixture", profile="studio",
+        components={"one": "@example/plugin", "two": "@example/missing"},
+        operations=frozenset(), start=lambda: None, revoke=lambda: None,
+        close=lambda: None, invoke=lambda *args: {},
+    )])
+    try:
+        with pytest.raises(StudioError) as failure:
+            await service.describe()
+        assert failure.value.code == "COMPANION_GRAPH_INCOMPLETE"
+        assert failure.value.details["stage"] == "companion_graph"
+        assert failure.value.details["retryable"] is False
+        assert failure.value.details["recoveryUrl"] == "/studio-recovery/"
+        assert service.companion_manager is None
+    finally:
+        await service.aclose()
+
+
 def test_command_resolution_always_uses_exact_version_manager(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

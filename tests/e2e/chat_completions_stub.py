@@ -100,9 +100,37 @@ class _ChatHandler(BaseHTTPRequestHandler):
             self.headers.get("Authorization") or "",
             payload,
         )
-        body = json.dumps(response, separators=(",", ":")).encode("utf-8")
+        content_type = "application/json"
+        if payload.get("stream"):
+            # The production Harness streams model output. Preserve the same
+            # deterministic answer and tool calls over the Chat Completions SSE
+            # protocol instead of returning a non-streaming response to it.
+            choice = response["choices"][0]
+            delta = dict(choice["message"])
+            if "tool_calls" in delta:
+                delta["tool_calls"] = [
+                    {"index": index, **call} for index, call in enumerate(delta["tool_calls"])
+                ]
+            chunk = {key: response[key] for key in ("id", "created", "model")}
+            chunk["object"] = "chat.completion.chunk"
+            events = [
+                {**chunk, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+                {
+                    **chunk,
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}
+                    ],
+                    "usage": response["usage"],
+                },
+            ]
+            body = (
+                "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
+            ).encode("utf-8")
+            content_type = "text/event-stream"
+        else:
+            body = json.dumps(response, separators=(",", ":")).encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

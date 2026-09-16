@@ -3,6 +3,7 @@ import {
   type HttpTeamsClient,
   type GroupSnapshot,
   type ExecutionBinding,
+  TeamsError,
 } from "@kingsoftcloud/ksadk-web/teams";
 import { teamRequest } from "./TeamsAvailability";
 const newKey = () => `studio-${crypto.randomUUID()}`;
@@ -21,7 +22,7 @@ export function TeamsGroupSettings({
   onSaved: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const baseline = useRef(snapshot).current;
+  const [baseline, setBaseline] = useState(snapshot);
   const [name, setName] = useState(snapshot.group.name);
   const [leader, setLeader] = useState(snapshot.group.leaderMemberId);
   const [busy, setBusy] = useState(false);
@@ -33,6 +34,7 @@ export function TeamsGroupSettings({
   const [rebindMemberId, setRebindMemberId] = useState("");
   const [bindingRef, setBindingRef] = useState("");
   const [memberName, setMemberName] = useState("");
+  const [responsibility, setResponsibility] = useState("");
   const [bindings, setBindings] = useState<
     (ExecutionBinding & { name?: string })[]
   >([]);
@@ -85,6 +87,7 @@ export function TeamsGroupSettings({
       memberId: memberAction === "rebind" ? rebindMemberId : newMemberId,
       name: memberName.trim(),
       bindingRef,
+      ...(responsibility.trim() ? { responsibility: responsibility.trim() } : {}),
     };
     const patch = {
       ...(memberAction === "add"
@@ -116,7 +119,10 @@ export function TeamsGroupSettings({
       onSaved();
       onClose();
     } catch (cause) {
-      setError(messageOf(cause));
+      if (cause instanceof TeamsError && cause.code === "revision_conflict") {
+        try { setBaseline(await client.snapshot(snapshot.group.groupId)); setError("团队配置已更新。已保留你的修改，请核对后再次保存。"); }
+        catch { setError("团队配置已更新，暂时无法读取最新版本。请稍后重试，当前草稿已保留。"); }
+      } else setError(messageOf(cause));
     } finally {
       setBusy(false);
     }
@@ -164,7 +170,7 @@ export function TeamsGroupSettings({
           <select
             value={leader}
             onChange={(event) => setLeader(event.target.value)}
-            disabled={busy || active}
+            disabled={busy}
           >
             {snapshot.members
               .filter(
@@ -184,10 +190,11 @@ export function TeamsGroupSettings({
           <select
             value={taskAcceptance}
             onChange={(event) =>
-              setTaskAcceptance(event.target.value as "human" | "result")
+              setTaskAcceptance(event.target.value as "leader" | "human" | "result")
             }
-            disabled={busy || active}
+            disabled={busy}
           >
+            <option value="leader">由 Leader 审核成员成果</option>
             <option value="human">由我逐项验收</option>
             <option value="result">以执行结果验收任务</option>
           </select>
@@ -199,7 +206,7 @@ export function TeamsGroupSettings({
               type="checkbox"
               checked={peerWake}
               onChange={(event) => setPeerWake(event.target.checked)}
-              disabled={busy || active}
+              disabled={busy}
             />
             允许成员互相唤醒
           </span>
@@ -207,7 +214,7 @@ export function TeamsGroupSettings({
         </label>
         <fieldset
           className="studio-team-member-settings"
-          disabled={busy || active}
+          disabled={busy}
         >
           <legend>添加成员或更换 Agent</legend>
           <label className="team-field">
@@ -220,6 +227,7 @@ export function TeamsGroupSettings({
                 );
                 setBindingRef("");
                 setMemberName("");
+                setResponsibility("");
               }}
             >
               <option value="none">保留当前绑定</option>
@@ -245,7 +253,10 @@ export function TeamsGroupSettings({
                     value={rebindMemberId}
                     onChange={(event) => {
                       setRebindMemberId(event.target.value);
-                      setBindingRef("");
+                      const member = snapshot.members.find(row => row.memberId === event.target.value);
+                      setBindingRef(member?.bindingRef || "");
+                      setMemberName(member?.name || "");
+                      setResponsibility(member?.responsibility || "");
                     }}
                   >
                     <option value="">请选择成员</option>
@@ -271,7 +282,7 @@ export function TeamsGroupSettings({
                     setMemberName(binding?.name || binding?.agentId || "");
                   }}
                 >
-                  <option value="">选择已构建或已部署的 Agent</option>
+                  <option value="">选择支持团队执行的 Agent</option>
                   {bindings
                     .filter(
                       (binding) =>
@@ -299,6 +310,7 @@ export function TeamsGroupSettings({
                   onChange={(event) => setMemberName(event.target.value)}
                 />
               </label>
+              <label className="team-field">工作职责<textarea rows={3} maxLength={2000} value={responsibility} onChange={event => setResponsibility(event.target.value)} placeholder="说明这位成员负责什么，以及预期交付" /></label>
               <p className="team-muted">
                 更换 Agent 会使用新的独立会话，历史执行记录仍可查看。
               </p>
@@ -310,7 +322,7 @@ export function TeamsGroupSettings({
           <select
             value={removeMemberId}
             onChange={(event) => setRemoveMemberId(event.target.value)}
-            disabled={busy || active}
+            disabled={busy}
           >
             <option value="">保留当前成员</option>
             {snapshot.members
@@ -327,7 +339,7 @@ export function TeamsGroupSettings({
         </label>
         <p className="team-muted">
           {active
-            ? "本轮正在进行，结束或停止后可修改成员和协作策略。群名可以随时修改。"
+            ? "新配置用于之后创建的任务。正在执行的任务保留原来的成员和策略。"
             : "配置变化不会重置已有任务记录。"}
         </p>
         {error && (

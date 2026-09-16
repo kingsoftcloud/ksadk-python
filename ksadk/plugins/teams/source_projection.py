@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-from .domain import member_key
 from .store import digest
 
 _STATUSES = {
@@ -26,18 +25,7 @@ async def project_sources(runtime, domain) -> None:
             continue
         with domain.store.transaction() as tx:
             group = tx.get("group", delivery["groupId"])
-            member = tx.get("member", member_key(group["groupId"], delivery["memberId"]))
-            if member["sessionId"] != delivery["_sessionId"]:
-                previous = next(
-                    (
-                        old
-                        for old in member.get("_bindingHistory", [])
-                        if old["sessionId"] == delivery["_sessionId"]
-                    ),
-                    None,
-                )
-                if previous:
-                    member = {**member, **previous}
+            member = domain.delivery_member(tx, delivery)
         try:
             batch = await runtime.host.source_events(
                 runtime._scope(group, member), after=delivery.get("_sourceCursor", 0), limit=500

@@ -566,7 +566,8 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         '$(KSADK_WEB_NPM) pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"'
         in makefile
     )
-    assert "$(KSADK_WEB_NPM) --prefix ksadk/studio/react-ui ci" in makefile
+    # The test target delegates installation to the registry-aware build target.
+    assert "studio-react-test: build-studio-static" in makefile
     assert '$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci' in makefile
     assert (
         "REGISTRY_JSON=$$(curl -fsSL "

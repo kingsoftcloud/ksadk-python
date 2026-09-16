@@ -201,7 +201,7 @@ def test_release_build_generates_ignored_react_studio_static_assets():
     assert 'WEB_TARBALL_PATH="$(KSADK_WEB_TARBALL)"' in target
     assert (
         '$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install '
-        '--no-save --package-lock=false "$$WEB_TARBALL_PATH"' in target
+        '--no-save --ignore-scripts "$$WEB_TARBALL_PATH"' in target
     )
     assert 'cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name"' not in target
     assert 'npm --prefix "$(STUDIO_REACT_DIR)" run build' in target

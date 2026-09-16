@@ -18,6 +18,7 @@ SETTINGS_ENV = {
     "cloudSecretKey": "KSYUN_SECRET_KEY",
     "cloudAccountId": "KSYUN_ACCOUNT_ID",
     "cloudServerUrl": "AGENTENGINE_SERVER_URL",
+    "teamsServerUrl": "KSADK_TEAMS_SERVER_URL",
     "cloudRegion": "AGENTENGINE_REGION",
     "cloudBucket": "KS3_BUCKET",
     "sandbox": "KSADK_CODEX_SANDBOX",

@@ -1,0 +1,262 @@
+/* Create Agent: a focused form with persistent steps and a live configuration preview.
+   Keep these rules scoped to creation; the Agent editor has its own layout. */
+.app-shell .create-shell[data-editing="false"] {
+  --create-content-width: 1320px;
+  padding: 0 32px;
+}
+
+.create-shell[data-editing="false"] .create-method-bar {
+  max-width: var(--create-content-width);
+  margin-inline: auto;
+  padding-block: 16px;
+  border-bottom: 1px solid var(--studio-border);
+}
+
+.create-shell[data-editing="false"] .create-method-bar .authoring-mode-tabs {
+  display: flex;
+  width: fit-content;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .authoring-mode-tabs button {
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .authoring-mode-tabs button.active {
+  background: var(--surface-subtle);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.app-shell .create-shell[data-editing="false"] .create-workbench {
+  max-width: var(--create-content-width);
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto;
+  gap: 32px;
+  padding-top: 28px;
+}
+
+.app-shell .create-shell[data-editing="false"][data-authoring-mode="quick"] .create-workbench {
+  grid-template-columns: 184px minmax(0, 1fr);
+}
+
+.app-shell[data-view="create"] .create-shell[data-editing="false"] .create-workbench > .create-stage {
+  grid-column: auto;
+  grid-row: auto;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.app-shell[data-view="create"] .create-shell[data-editing="false"] .create-workbench > .create-rail {
+  grid-column: auto;
+  grid-row: auto;
+  position: sticky;
+  top: calc(var(--studio-header-height) + 32px);
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.create-shell[data-editing="false"] .create-rail-label {
+  margin: 0 12px 20px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-steps {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 0;
+}
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 70px;
+  padding: 13px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  text-align: left;
+}
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step::before,
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step::after { display: none; }
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step.active {
+  color: var(--text);
+  border-color: transparent;
+  background: var(--surface-subtle);
+}
+
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step:disabled { opacity: 1; color: var(--text-secondary); }
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step > span:last-child { display: grid; gap: 4px; }
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step strong { font-size: 13px; font-weight: 500; line-height: 24px; }
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step small { display: block; margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step .step-number { width: 24px; height: 24px; flex-basis: 24px; border-radius: 50%; font-size: 12px; }
+.create-shell[data-editing="false"] .create-rail-help { margin: 24px 12px; max-width: 150px; font-size: 12px; line-height: 1.8; color: var(--text-tertiary); }
+
+.app-shell .create-shell[data-editing="false"] .wizard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 40px;
+  min-height: 0;
+  overflow: visible;
+}
+
+.app-shell .create-shell[data-editing="false"] .wizard-content {
+  display: flex;
+  flex-direction: column;
+  max-width: 740px;
+  min-height: calc(100dvh - var(--studio-header-height) - 112px);
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.app-shell .create-shell[data-editing="false"] .wizard-panel {
+  flex: 1;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  padding: 0 0 32px;
+  margin: 0;
+}
+
+.create-shell[data-editing="false"] .panel-heading { gap: 16px; margin-bottom: 28px; }
+.create-shell[data-editing="false"] .panel-heading > div { min-width: 0; }
+:is(.create-shell[data-editing="false"], .create-rail-panel) .wizard-step-caption { display: block; margin-bottom: 9px; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
+.create-shell[data-editing="false"] .panel-heading h2 { margin: 0; font-size: 25px; line-height: 1.3; font-weight: 600; letter-spacing: -.5px; scroll-margin-top: calc(var(--studio-header-height) + 24px); }
+.create-shell[data-editing="false"] .panel-heading h2:focus { outline: none; }
+.create-shell[data-editing="false"] .panel-heading p { margin: 10px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
+
+.create-shell[data-editing="false"] .wizard-panel > .field,
+.create-shell[data-editing="false"] .wizard-panel > .form-grid { margin-bottom: 20px; }
+.create-shell[data-editing="false"] .wizard-panel > .form-grid + .studio-form-field { margin-top: 0; }
+.create-shell[data-editing="false"] .wizard-panel > .form-grid.two-columns:has(#quickAgentName) { grid-template-columns: minmax(0, 1fr); }
+.create-shell[data-editing="false"] .template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.create-shell[data-editing="false"] .template-card { min-height: 82px; padding: 16px; border-radius: 12px; grid-template-columns: minmax(0, 1fr); }
+.create-shell[data-editing="false"] .template-card strong { font-weight: 500; font-size: 14px; }
+.create-shell[data-editing="false"] .template-card small { font-size: 12px; margin-top: 6px; line-height: 1.6; }
+.create-shell[data-editing="false"] .template-card.selected { background: var(--surface-subtle); border-color: var(--border-strong); }
+.create-shell[data-editing="false"] .template-card .choice-check { top: 12px; right: 12px; }
+.create-shell[data-editing="false"] #quickPrompt { height: 132px; min-height: 132px; }
+.create-shell[data-editing="false"] .wizard-panel :is(input:not([type="checkbox"]), textarea, .studio-select-trigger) { border-radius: 10px; }
+.create-shell[data-editing="false"] .wizard-runtime-section { padding-top: 18px; margin-top: 18px; border-top: 1px solid var(--studio-border); }
+.create-shell[data-editing="false"] .wizard-runtime-section > h3 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
+.create-shell[data-editing="false"] .wizard-runtime-section .template-specific { margin: 14px 0 0; padding: 0; border: 0; background: transparent; }
+.create-shell[data-editing="false"] .wizard-runtime-section .template-specific > strong { display: none; }
+.create-shell[data-editing="false"] .wizard-runtime-section .post-create-option { margin: 0; padding: 12px 14px; border: 0; border-radius: 10px; background: var(--surface-subtle); gap: 10px; }
+.create-shell[data-editing="false"] .wizard-runtime-section .post-create-option strong { font-size: 12px; font-weight: 500; }
+.create-shell[data-editing="false"] .wizard-runtime-section .post-create-option small { font-size: 11px; line-height: 1.7; }
+.create-shell[data-editing="false"] .secondary-settings { margin-top: 22px; }
+.create-shell[data-editing="false"] .secondary-settings > summary { padding-block: 8px; font-size: 12px; }
+.create-shell[data-editing="false"] .capability-section { padding: 0 0 24px; margin: 0 0 24px; border: 0; border-bottom: 1px solid var(--studio-border); border-radius: 0; background: transparent; }
+.create-shell[data-editing="false"] .capability-section:last-child { border-bottom: 0; margin-bottom: 0; }
+.create-shell[data-editing="false"] .prompt-optimize-button { flex-shrink: 0; margin-top: 25px; }
+.create-shell[data-editing="false"] .prompt-editor { min-height: 160px; }
+.create-shell[data-editing="false"] #composedSystemPrompt { height: 280px; }
+.create-shell[data-editing="false"] #composedTaskPrompt { height: 180px; }
+.create-shell[data-editing="false"] .review-block { border-radius: 12px; }
+
+.app-shell .create-shell[data-editing="false"] .wizard-actions {
+  position: sticky;
+  inset: auto 0 0;
+  display: flex;
+  flex-wrap: nowrap;
+  min-height: 76px;
+  gap: 10px;
+  padding: 16px 0;
+  margin-top: auto;
+  background: var(--studio-surface);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.create-shell[data-editing="false"] .wizard-progress { display: none; }
+.create-shell[data-editing="false"] .wizard-actions .button { min-height: 40px; border-radius: 10px; font-size: 13px; }
+.create-shell[data-editing="false"] .wizard-actions .summary-toggle { margin-left: auto; }
+.create-shell[data-editing="false"] .wizard-error-summary { bottom: 76px; margin: 0 0 12px; }
+.create-shell[data-editing="false"] .wizard-live-summary { display: none; }
+.create-shell[data-editing="false"] .wizard-live-summary > h3 { margin: 0 0 24px; font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+.create-shell[data-editing="false"] .summary-agent-identity { display: grid; justify-items: start; gap: 8px; min-width: 0; }
+.create-shell[data-editing="false"] .summary-agent-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 4px; background: var(--studio-surface); border: 1px solid var(--studio-border); border-radius: 14px; color: var(--text-secondary); }
+.create-shell[data-editing="false"] .summary-agent-identity > strong { max-width: 100%; overflow-wrap: anywhere; font-size: 16px; font-weight: 600; }
+.create-shell[data-editing="false"] .summary-agent-identity > span:last-child { color: var(--text-tertiary); font-size: 12px; }
+.create-shell[data-editing="false"] .summary-agent-goal { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin: 16px 0 20px; font-size: 12px; line-height: 1.8; color: var(--text-secondary); }
+.create-shell[data-editing="false"] .summary-agent-goal.is-empty { color: var(--text-tertiary); }
+.create-shell[data-editing="false"] .wizard-live-summary .wizard-summary-content dl { padding-block: 16px; border-top: 1px solid var(--studio-border); }
+.create-shell[data-editing="false"] .wizard-live-summary .wizard-summary-content dl > div { align-items: baseline; min-height: 32px; padding-block: 5px; gap: 16px; border: 0; font-size: 12px; }
+.create-shell[data-editing="false"] .wizard-live-summary dt { flex-shrink: 0; color: var(--text-tertiary); }
+.create-shell[data-editing="false"] .wizard-live-summary dd { margin: 0; text-align: right; font-weight: 400; overflow-wrap: anywhere; }
+.create-shell[data-editing="false"] .wizard-live-summary .summary-pending { color: var(--text-tertiary); }
+.create-shell[data-editing="false"] .wizard-live-summary .summary-note { margin: 0; padding-top: 16px; border-top: 1px solid var(--studio-border); gap: 8px; }
+.create-shell[data-editing="false"] .wizard-live-summary .summary-note strong { font-size: 12px; font-weight: 500; }
+.create-shell[data-editing="false"] .wizard-live-summary .summary-note p { margin-top: 6px; font-size: 11px; line-height: 1.7; }
+
+@media (min-width: 1280px) {
+  .app-shell .create-shell[data-editing="false"] .wizard-layout { grid-template-columns: minmax(0, 1fr) 240px; }
+  .create-shell[data-editing="false"] .wizard-live-summary { display: block; position: sticky; top: calc(var(--studio-header-height) + 32px); min-width: 0; padding: 22px; border-radius: 16px; background: var(--surface-subtle); }
+}
+
+@media (max-width: 1023px) {
+  .app-shell .create-shell[data-editing="false"] { padding-inline: 24px; }
+  .app-shell .create-shell[data-editing="false"] .create-workbench { padding-top: 24px; gap: 0; }
+  .app-shell .create-shell[data-editing="false"] .wizard-content { min-height: calc(100dvh - var(--studio-header-height) - 24px); }
+  .app-shell .create-shell[data-editing="false"] .wizard-panel { padding-bottom: 100px; }
+  .app-shell .create-shell[data-editing="false"] .wizard-actions { position: fixed; left: var(--studio-app-rail); right: 0; padding: 12px 24px max(12px, env(safe-area-inset-bottom)); min-height: 65px; }
+  .create-shell[data-editing="false"] .wizard-error-summary { bottom: 76px; }
+  .create-shell[data-editing="false"] .create-rail-panel { gap: 24px; }
+}
+
+@media (max-width: 600px) {
+  .app-shell .create-shell[data-editing="false"] { padding-inline: 20px; }
+  .app-shell .create-shell[data-editing="false"] .wizard-content { margin: 0; }
+  .create-shell[data-editing="false"] .panel-heading { flex-wrap: wrap; margin-bottom: 24px; }
+  .create-shell[data-editing="false"] .panel-heading h2 { font-size: 23px; }
+  .create-shell[data-editing="false"] .panel-heading p { max-width: 30ch; }
+  .create-shell[data-editing="false"] .template-grid { gap: 8px; }
+  .create-shell[data-editing="false"] .template-card { min-height: 96px; padding: 14px 12px; }
+  .create-shell[data-editing="false"] .template-card strong { font-size: 13px; }
+  .create-shell[data-editing="false"] .template-card small { font-size: 11px; }
+  .create-shell[data-editing="false"] .template-card .choice-check { top: 7px; right: 7px; width: 16px; height: 16px; }
+  .create-shell[data-editing="false"] .prompt-optimize-button { margin: 0; }
+  .app-shell .create-shell[data-editing="false"] .wizard-actions { gap: 6px; padding-inline: 16px; }
+  .create-shell[data-editing="false"] .wizard-actions .button { padding-inline: 12px; }
+  .create-shell[data-editing="false"] .wizard-actions > .button:first-child,
+  .create-shell[data-editing="false"] .wizard-actions .summary-toggle { width: 36px; min-width: 36px; padding: 0; }
+}
+
+/* Keep the compact creation switcher in the header's main row. */
+@media (max-width: 760px) {
+  .app-shell[data-view="create"]:has(.create-shell[data-editing="false"]) .global-header { display: flex; height: 56px; min-height: 56px; padding-block: 8px; gap: 8px; }
+  .app-shell[data-view="create"]:has(.create-shell[data-editing="false"]) .header-identity-inline { flex: 1; min-width: 0; }
+  .app-shell[data-view="create"]:has(.create-shell[data-editing="false"]) .header-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+  .app-shell[data-view="create"]:has(.create-shell[data-editing="false"]) #pageHeaderActions { flex-wrap: nowrap; width: auto; }
+}
+
+.create-rail-panel { display: grid; gap: 24px; }
+.create-rail-panel .authoring-mode-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.create-rail-panel .authoring-mode-tabs button { width: 100%; gap: 8px; padding-inline: 10px; }
+.create-rail-panel .wizard-step.active .step-number,
+.create-rail-panel .wizard-step.completed .step-number { background: var(--button-primary-bg); color: var(--button-primary-text); border-color: var(--button-primary-bg); }
+.create-shell[data-editing="false"] .wizard-optional-capabilities > summary { cursor: pointer; list-style: none; padding: 0; }
+.create-shell[data-editing="false"] .wizard-optional-capabilities > summary::-webkit-details-marker { display: none; }
+.create-shell[data-editing="false"] .wizard-optional-capabilities > summary > span { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; }
+.create-shell[data-editing="false"] .wizard-optional-capabilities > summary > span::after { content: "+"; margin-left: auto; color: var(--text-tertiary); font-size: 20px; font-weight: 400; }
+.create-shell[data-editing="false"] .wizard-optional-capabilities[open] > summary > span::after { content: "−"; }
+.create-shell[data-editing="false"] .wizard-optional-capabilities > summary small { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
+.create-shell[data-editing="false"] .wizard-optional-capabilities > summary p { margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); }
+.create-shell[data-editing="false"] .wizard-optional-capabilities[open] > summary { margin-bottom: 20px; }
+
+.create-shell[data-editing="false"] .studio-multi-select:has(.studio-multi-select-selection:empty) :is(.studio-multi-select-summary, .studio-multi-select-selection) { display: none; }

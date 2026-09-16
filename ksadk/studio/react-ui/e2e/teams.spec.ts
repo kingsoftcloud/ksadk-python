@@ -433,7 +433,7 @@ for (const width of [1440, 768, 390]) {
       const toolbar = page.locator('.team-composer-toolbar');
       if (width === 1440) {
         const recipient = await toolbar.getByRole('combobox', { name: '接收成员' }).boundingBox();
-        const note = await toolbar.getByText('仅留言', { exact: true }).boundingBox();
+        const note = await toolbar.getByLabel('更多消息选项', { exact: true }).boundingBox();
         expect(Math.abs(recipient!.y - note!.y)).toBeLessThan(16);
       }
       const send = toolbar.getByRole('button', { name: '发送', exact: true });
@@ -459,12 +459,12 @@ for (const width of [1440, 768, 390]) {
         expect(fields[i].controlBottom).toBeLessThanOrEqual(fields[i].bottom + 1);
         if (i) expect(fields[i].top).toBeGreaterThanOrEqual(fields[i - 1].bottom);
       }
-      await expect(dialog).toHaveCSS('background-color', theme === 'dark' ? 'rgb(32, 33, 35)' : 'rgb(255, 255, 255)');
-      await page.screenshot({ path: `output/ui-review/settings-${width}-${theme}.png` });
+      await expect(dialog).toHaveCSS('background-color', theme === 'dark' ? 'rgb(47, 47, 47)' : 'rgb(255, 255, 255)');
+      await page.screenshot({ path: `output/chatgpt-style/teams/settings-${width}-${theme}.png` });
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
       await expect(composer).toHaveValue('第一行输入\n第二行输入');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await page.screenshot({ path: `output/ui-review/team-${width}-${theme}.png` });
+      await page.screenshot({ path: `output/chatgpt-style/teams/team-${width}-${theme}.png` });
     });
   }
 }
@@ -494,7 +494,7 @@ for (const width of [1440, 390]) {
     const modes = await page.locator('.model-endpoint-actions .segmented-control').evaluate(e => ({ columns: getComputedStyle(e).gridTemplateColumns.split(' ').length, count: e.children.length, clipped: [...e.children].some(c => c.scrollWidth > c.clientWidth + 1) }));
     expect(modes.columns).toBe(modes.count);
     expect(modes.clipped).toBe(false);
-    await page.screenshot({ animations: "disabled", path: `output/ui-review/model-form-regression-${width}.png` });
+    await page.screenshot({ animations: "disabled", path: `output/chatgpt-style/teams/model-form-regression-${width}.png` });
     await page.getByRole('button', { name: '取消', exact: true }).click();
     if (width === 390) await page.getByRole('button', { name: '展开导航', exact: true }).click();
     await page.getByRole('button', { name: '设置', exact: true }).click();
@@ -503,6 +503,6 @@ for (const width of [1440, 390]) {
     const nextRow = page.locator('#settings-cloud .form-grid').nth(1);
     const first = await firstRow.boundingBox(); const next = await nextRow.boundingBox();
     expect(next!.y - (first!.y + first!.height)).toBeGreaterThanOrEqual(20);
-    await page.screenshot({ path: `output/ui-review/cloud-form-${width}.png` });
+    await page.screenshot({ path: `output/chatgpt-style/teams/cloud-form-${width}.png` });
   });
 }
