@@ -435,3 +435,32 @@
 .subagent-tools legend { margin-bottom: 8px; }
 .subagent-inheritance { display: flex; flex-wrap: wrap; gap: 14px; }
 .subagent-tools label, .subagent-inheritance label { display: flex; align-items: center; gap: 7px; }
+
+/* Directory remains quiet; the active task carries the visual emphasis. */
+.studio-team-directory { width: 214px; }
+.studio-team-list-item { min-height: 66px; }
+.studio-team-list-copy strong { font-size: 14px; }
+.studio-team-search input { font-size: 13px; }
+.studio-team-directory h2 { font-size: 18px; }
+.studio-team-content .team-header { padding: 16px 24px; }
+.studio-teams-recovery { width: min(100%, 640px); margin: auto; padding: 32px; }
+.studio-teams-recovery h2 { font-size: 22px; line-height: 1.4; margin: 0 0 12px; }
+.studio-teams-recovery p { color: var(--studio-text-secondary); font-size: 14px; line-height: 1.75; }
+.studio-teams-recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.studio-teams-recovery details { margin-top: 20px; font-size: 12px; color: var(--studio-text-secondary); }
+.studio-teams-recovery details summary { cursor: pointer; }
+.studio-teams-recovery dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; }
+.studio-teams-recovery dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .studio-team-directory { width: 100%; } }
+
+/* Portals carry the same raised surface and scrim as Studio dialogs. */
+.ksadk-teams.team-create-dialog { background: var(--surface-raised); }
+.ksadk-teams.team-create-dialog::backdrop { background: var(--overlay-backdrop); }
+.ksadk-teams .team-composer {
+  border-radius: var(--chat-composer-radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-composer);
+}
+.ksadk-teams .team-composer textarea,
+.ksadk-teams .team-message-body { font-size: var(--font-size-subtitle); }
+.ksadk-teams .team-message[data-role="owner"] .team-message-body { border-radius: var(--radius-message); }

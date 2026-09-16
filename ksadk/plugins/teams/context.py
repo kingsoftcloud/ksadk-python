@@ -1,17 +1,19 @@
 """Small execution context, separate from the complete owner UI snapshot."""
 
-from .domain import member_key
-
 
 def execution_context(domain, actor, current_task_id=None):
     with domain.store.transaction() as tx:
-        group = domain.authorize(tx, actor, actor.group_id)
-        member = tx.get("member", member_key(actor.group_id, actor.member_id))
+        domain.authorize(tx, actor, actor.group_id)
+        member = domain.run_member(tx, actor.team_run_id, actor.member_id)
         run = tx.get("team_run", actor.team_run_id)
         tasks = tx.list("task", actor.group_id, team_run_id=actor.team_run_id)
-        recent = tx.recent("message", actor.group_id, 12)
-        artifacts = tx.recent("artifact", actor.group_id, 12)
-        members = tx.list("member", actor.group_id)
+        recent = tx.recent("message", actor.group_id, 12, team_run_id=actor.team_run_id)
+        artifacts = tx.recent("artifact", actor.group_id, 12, team_run_id=actor.team_run_id)
+        artifacts += [
+            tx.get("artifact", artifact_id) for artifact_id in run.get("_sharedArtifactIds", [])
+        ]
+        members = run["_roster"]
+        policy = domain.run_policy(tx, run)
     relevant = sorted(
         tasks,
         key=lambda task: (
@@ -70,12 +72,16 @@ def execution_context(domain, actor, current_task_id=None):
     return {
         "memberId": actor.member_id,
         "role": member["role"],
+        "responsibility": member.get("responsibility", ""),
         "teamRunId": run["teamRunId"],
         "goal": run["goal"][:1200],
         "currentTaskId": current_task_id,
-        "taskAcceptance": group["_policy"]["taskAcceptance"],
+        "taskAcceptance": policy["taskAcceptance"],
         "members": [
-            {key: member[key] for key in ("memberId", "name", "role")}
+            {
+                **{key: member[key] for key in ("memberId", "name", "role")},
+                "responsibility": member.get("responsibility", ""),
+            }
             for member in members
             if member["status"] == "active"
         ],

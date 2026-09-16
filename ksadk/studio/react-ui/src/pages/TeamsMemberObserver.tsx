@@ -18,23 +18,25 @@ export function TeamsMemberObserver({
   snapshot,
   onDirectedMessage,
   requestedSource,
+  teamRunId,
 }: {
   member: AgentMember;
   snapshot: GroupSnapshot;
   requestedSource?: MemberStreamRef;
+  teamRunId?: string;
   onDirectedMessage: () => void;
 }) {
   const requestedKey = requestedSource ? memberStreamKey(requestedSource) : "";
   const [selectedRun, setSelectedRun] = useState(requestedKey);
   useEffect(() => { if (requestedKey) setSelectedRun(requestedKey); }, [requestedKey]);
   const sources = [
-    ...snapshot.tasks.flatMap((task) =>
+    ...snapshot.tasks.filter(task => !teamRunId || task.teamRunId === teamRunId).flatMap((task) =>
       task.attempts.map((attempt) => attempt.source),
     ),
-    ...snapshot.messages.flatMap((message) => message.sourceRefs || []),
-    ...snapshot.interactions.map((interaction) => interaction.ref),
+    ...snapshot.messages.filter(message => !teamRunId || message.teamRunId === teamRunId || (!snapshot.runMembers && snapshot.teamRuns.length === 1 && !message.teamRunId)).flatMap((message) => message.sourceRefs || []),
+    ...snapshot.interactions.filter(interaction => !teamRunId || interaction.ref.sessionId === member.sessionId).map((interaction) => interaction.ref),
   ].filter((ref): ref is MemberStreamRef =>
-    Boolean(ref && ref.memberId === member.memberId),
+    Boolean(ref && ref.memberId === member.memberId && (!((member as { teamRunId?: string }).teamRunId) || ref.sessionId === member.sessionId)),
   );
   if (member.activeRunId)
     sources.push({
@@ -54,10 +56,11 @@ export function TeamsMemberObserver({
     references.find((ref) => memberStreamKey(ref) === selectedRun) || references.at(-1);
   if (!ref)
     return (
-      <MemberInspector member={member} onDirectedMessage={onDirectedMessage} />
+      <><p className="team-observer-note">模型：{member.binding.modelName || "沿用固定版本配置"} <a href={member.binding.kind === "local_build" ? `#/agents/${encodeURIComponent(member.binding.agentId)}/edit` : "#/agents"}>查看 Agent 配置</a></p><MemberInspector member={member} onDirectedMessage={onDirectedMessage} /></>
     );
   return (
     <>
+      <p className="team-observer-note">模型：{member.binding.modelName || "沿用固定版本配置"} <a href={member.binding.kind === "local_build" ? `#/agents/${encodeURIComponent(member.binding.agentId)}/edit` : "#/agents"}>查看 Agent 配置</a></p>
       {references.length > 1 && (
         <label className="team-field">
           成员执行记录

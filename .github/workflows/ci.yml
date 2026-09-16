@@ -39,8 +39,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build frontend static assets
         run: make build-frontend
+
+      - name: Verify Studio types and components
+        working-directory: ksadk/studio/react-ui
+        run: |
+          npx tsc --noEmit
+          npm test
+          npm run test:ui
 
       - name: Build package artifacts
         run: uv build
@@ -103,6 +113,9 @@ jobs:
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
 
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Run React Studio browser gate
         run: make studio-react-test
 
@@ -150,6 +163,9 @@ jobs:
 
       # Both internal and public branches compile Studio from source.
       # Generated assets belong in packages, never in the Git tree.
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build frontend static assets
         run: make build-frontend
 
@@ -209,6 +225,9 @@ jobs:
 
       # browser e2e 起真实 HTTP server 服务 Studio 静态 bundle;resource_build_artifacts
       # 校验打包产物。与主套件同样构建,避免 heavy job 缺产物。
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build frontend static assets
         run: make build-frontend
 

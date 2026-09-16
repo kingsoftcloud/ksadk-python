@@ -88,12 +88,11 @@ def run(output: Path | None = None) -> list[dict]:
                 trigger = page.get_by_role("combobox", name="筛选 Agent 状态")
                 trigger.click()
                 expect(page.get_by_role("option", name="草稿", exact=True)).to_be_visible()
-                assert (
-                    page.locator('.studio-select-trigger[aria-label="筛选 Agent 状态"]').evaluate(
-                        "e => getComputedStyle(e).outlineStyle"
-                    )
-                    == "solid"
-                )
+                # The trigger keeps its semantic border when the menu opens;
+                # keyboard focus may additionally show the shared focus ring.
+                assert page.locator('.studio-select-trigger[aria-label="筛选 Agent 状态"]').evaluate(
+                    "e => getComputedStyle(e).borderTopWidth"
+                ) == "1px"
                 capture("agent-select")
                 page.keyboard.press("Escape")
                 page.get_by_role("button", name="Conversation Items Agent 的更多操作").click()
@@ -149,8 +148,11 @@ def run(output: Path | None = None) -> list[dict]:
                 if width >= 1024:
                     steps = page.locator(".wizard-steps .wizard-step").all()
                     tops = [step.bounding_box()["y"] for step in steps]
-                    assert max(tops) - min(tops) <= 1, tops
-                    assert page.locator(".create-rail").bounding_box()["height"] < 150
+                    assert tops == sorted(tops) and tops[-1] - tops[0] > 150, tops
+                    rail = page.locator(".create-rail").bounding_box()
+                    form = page.locator(".wizard-content").bounding_box()
+                    assert rail["x"] + rail["width"] < form["x"]
+                    inside_viewport(page, page.get_by_role("button", name="继续", exact=True))
                 else:
                     page.get_by_role("button", name="查看创建入口与配置步骤").click()
                     expect(page.get_by_role("dialog", name="创建方式", exact=True)).to_be_visible()
@@ -167,7 +169,9 @@ def run(output: Path | None = None) -> list[dict]:
                 page.keyboard.press("Escape")
 
                 navigate("conversations")
-                expect(page.locator(".studio-conversation-welcome h2")).to_be_visible()
+                expect(
+                    page.get_by_role("heading", name="有什么可以帮你？", exact=True)
+                ).to_be_visible()
                 expect(page.locator(".app-shell")).to_have_attribute(
                     "data-rail", "expanded" if width >= 1024 else "compact"
                 )

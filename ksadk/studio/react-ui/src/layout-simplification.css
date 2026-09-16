@@ -103,7 +103,6 @@ body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
 
 .studio-chat-shell { border: 0; }
 .studio-chat-shell .chat-conversation-header { border-bottom-color: transparent; }
-.studio-conversation-welcome h2 { font-size: 24px; font-weight: var(--font-weight-medium); }
 
 @media (max-width: 760px) {
   body:has(.overlay .drawer-footer) .toast-region { bottom: 144px; }
@@ -118,11 +117,73 @@ body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
   .resource-filter-fields { display: grid; grid-template-columns: minmax(0, 1fr); }
   .resource-filter-fields > .studio-select-trigger { width: 100%; max-width: none; }
   .create-shell .wizard-actions { gap: 8px; }
-  .studio-conversation-welcome h2 { font-size: 22px; }
-}
+  }
 
-.studio-chat-shell .studio-chat-timeline > div { max-width: 800px; }
-.studio-chat-shell .studio-composer-area { width: 100%; min-width: 0; max-width: 832px; margin-inline: auto; flex-shrink: 0; }
+/* Public chat slots keep host styling independent of shared DOM nesting. */
+.studio-chat-shell [data-slot="message-list-content"] { max-width: var(--studio-chat-width); }
+.studio-chat-shell .studio-composer-area {
+  width: 100%; min-width: 0; max-width: calc(var(--studio-chat-width) + 32px);
+  margin-inline: auto; flex-shrink: 0; padding-bottom: 8px;
+}
+.studio-composer-area [data-slot="composer"] { padding-block: 0; }
+.chat-conversation:has(.studio-conversation-welcome) .studio-composer-area { padding-bottom: 0; }
+.studio-chat-shell [data-slot="composer-surface"] {
+  border: 1px solid var(--studio-border);
+  border-radius: var(--chat-composer-radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-composer);
+  transition: border-color var(--motion-fast) var(--ease);
+}
+.studio-chat-shell [data-slot="composer-surface"]:focus-within { border-color: var(--border-strong); }
+.studio-chat-shell [data-slot="composer-form"] {
+  min-height: 92px; border: 0; border-radius: inherit;
+  background: transparent; box-shadow: none; outline: none;
+  padding: 12px 16px 10px;
+}
+.studio-chat-shell [data-slot="composer-header"] { margin: 0 0 8px; }
+.studio-chat-shell [data-slot="composer-input"],
+.studio-chat-shell [data-slot="composer-input"]:is(:hover, :focus) {
+  min-height: 28px; padding: 0 4px; border: 0; background: transparent;
+  color: var(--text-primary); font: inherit; font-size: 16px; line-height: 1.65;
+  box-shadow: none; outline: none; resize: none;
+}
+.studio-chat-shell [data-slot="composer-surface"]:has(:focus-visible) {
+  outline: 2px solid var(--focus-ring); outline-offset: 2px;
+}
+.studio-chat-shell [data-slot="user-message"] {
+  padding: 10px 18px; border-radius: 20px; font-size: 16px;
+  background: var(--surface-subtle); color: var(--text-primary); white-space: pre-wrap;
+}
+.studio-chat-shell [data-slot="assistant-message"] { padding-inline: 0; }
+.studio-chat-shell [data-slot="assistant-content"] { color: var(--text-primary); font-size: 16px; line-height: 1.75; }
+.chat-agent-selector {
+  display: inline-flex; align-items: center; gap: 7px;
+  max-width: 100%; min-height: 30px; padding: 4px 8px;
+  border: 0; border-radius: var(--radius-chip);
+  background: transparent; color: var(--studio-text-secondary);
+  font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.chat-agent-selector > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-agent-selector > svg { flex-shrink: 0; color: var(--studio-text-secondary); }
+.chat-agent-selector:hover, .chat-agent-selector[data-state="open"] { background: var(--surface-subtle); color: var(--text); }
+.chat-agent-selector:focus-visible { outline: 2px solid var(--studio-accent); outline-offset: 2px; }
+.chat-agent-selector--header {
+  min-width: 0; max-width: min(420px, 100%); min-height: 36px;
+  padding: 6px 8px; margin-left: -8px; gap: 8px;
+  color: var(--text-primary); font-size: 18px; line-height: 24px; font-weight: 500;
+}
+.global-header .chat-agent-selector--header > span { font: inherit; color: inherit; }
+.studio-nav-brand .studio-nav-collapse > svg { width: 20px; height: 20px; }
+.global-header .chat-conversation-header { display: flex; gap: 16px; width: 100%; }
+@media (max-width: 760px) {
+  .chat-agent-selector--header { font-size: 16px; }
+}
+.chat-agent-selector-popover { width: min(360px, calc(100vw - 24px)); max-height: var(--radix-popover-content-available-height); overflow: hidden; }
+.chat-agent-selector-popover .studio-command-list { max-height: min(300px, calc(var(--radix-popover-content-available-height) - 60px)); }
+.chat-agent-selector-popover [cmdk-group-heading] { padding: 8px 10px 4px; color: var(--studio-text-secondary); font-size: 12px; }
+.chat-agent-selector-popover [cmdk-item] { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chat-agent-selector-popover [cmdk-item] > svg { flex-shrink: 0; color: var(--studio-accent); }
+.chat-agent-option-name { min-width: 0; overflow-wrap: anywhere; }
 .studio-chat-shell .chat-conversation { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 720px) {
   .studio-chat-shell:not(.sessions-open) .chat-session-sidebar { visibility: hidden; }
@@ -166,8 +227,8 @@ body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
   .app-shell:not([data-view="conversations"]) .header-agent-selector { grid-column: 1 / -1; grid-row: 3; width: 100%; min-width: 0; }
   .app-shell:not([data-view="conversations"]) #pageHeaderTools { grid-column: 1 / -1; grid-row: 4; min-width: 0; }
   .app-shell:not([data-view="conversations"]) :is(#pageHeaderActions, #pageHeaderTools):empty { display: none; }
-  .studio-composer-area [data-slot="composer"] form > div:last-child { flex-wrap: wrap; row-gap: 8px; }
-  .studio-composer-area [data-slot="composer"] form > div:last-child > div:last-child { margin-left: auto; }
+  .studio-composer-area [data-slot="composer-toolbar"] { flex-wrap: wrap; row-gap: 8px; }
+  .studio-composer-area [data-slot="composer-toolbar-end"] { margin-left: auto; }
   .studio-composer-area [data-slot="composer"] button[title="选择模型"] { max-width: 150px; }
   .studio-composer-area [data-slot="composer"] button[title="设置本次会话的工具审批规则"] { white-space: nowrap; }
   .app-shell[data-view="create"] .wizard-actions {
@@ -185,6 +246,21 @@ body:has(.overlay .drawer-footer) .toast-region { bottom: 112px; }
 
 @media (max-width: 760px) {
   .app-shell .global-header > .rail-toggle { display: inline-flex; grid-column: 1; grid-row: 1; }
+}
+
+/* Keep the phone composer in two rows; the approval label stays accessible. */
+@media (max-width: 480px) {
+  .studio-composer-area button[title="设置本次会话的工具审批规则"] { padding-inline: 8px; gap: 4px; }
+  .studio-composer-area button[title="设置本次会话的工具审批规则"] > span {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .studio-composer-area [data-slot="composer"] :is(button[title="选择模型"], button[title="选择模型与推理设置"]) {
+    max-width: clamp(72px, calc(100vw - 236px), 140px); padding-inline: 8px;
+  }
+  .studio-composer-area [role="menu"][aria-label="工具权限"] { max-width: calc(100vw - 96px); }
+  .studio-composer-area [role="menu"][aria-label="选择模型"] { max-width: calc(100vw - 88px); }
+  .studio-composer-area [data-slot="composer-toolbar-end"] > div:has(> button[aria-label="上下文用量与压缩"]) { position: static; }
 }
 
 /* Inspection is a short document. Raw protocol data is optional detail. */

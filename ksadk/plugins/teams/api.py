@@ -33,6 +33,8 @@ class TeamsRoute(APIRoute):
         async def wrapped(request):
             try:
                 return await handler(request)
+            except TeamsError as error:
+                return JSONResponse({"error": error.public()}, status_code=error.status)
             except ValueError as error:
                 if hasattr(error, "code") and hasattr(error, "status"):
                     return JSONResponse(
@@ -56,7 +58,7 @@ class GroupPatch(RevisionMutation):
     name: str | None = None
     leaderMemberId: str | None = None
     removeMemberId: str | None = None
-    taskAcceptance: Literal["human", "result"] | None = None
+    taskAcceptance: Literal["leader", "human", "result"] | None = None
     peerWake: bool | None = None
     archived: bool | None = None
     addMember: MemberInput | None = None
@@ -68,7 +70,9 @@ class StartInput(Mutation):
 
 
 class AcceptanceInput(RevisionMutation):
-    accepted: bool
+    accepted: bool | None = None
+    action: Literal["accept", "request_changes", "reject"] | None = None
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class TaskActionInput(RevisionMutation):
@@ -128,17 +132,18 @@ def create_router(application: TeamsApplication) -> APIRouter:
 
     @router.post("", status_code=201)
     async def create(payload: GroupCreateInput):
-        bindings = {item["bindingRef"]: item for item in await application.bindings()}
-        return application.domain.create_group(application.actor(), payload, bindings)
+        return await application.create_group(payload)
 
     @router.get("/{group_id}")
-    async def snapshot(group_id: str):
-        return application.domain.snapshot(application.actor(), group_id)
+    async def snapshot(group_id: str, teamRunId: str | None = None):
+        return application.domain.snapshot(application.actor(), group_id, teamRunId)
 
     @router.patch("/{group_id}")
     async def update(group_id: str, payload: GroupPatch):
         bindings = (
-            {item["bindingRef"]: item for item in await application.bindings()}
+            await application.validate_bindings(
+                [m.bindingRef for m in (payload.addMember, payload.rebindMember) if m]
+            )
             if payload.addMember or payload.rebindMember
             else None
         )
@@ -160,6 +165,12 @@ def create_router(application: TeamsApplication) -> APIRouter:
 
     @router.post("/{group_id}/messages", status_code=202)
     async def send(group_id: str, payload: MessageInput):
+        from .workspaces import validate_workspace_plan
+
+        validate_workspace_plan(
+            payload.workspace.model_dump() if payload.workspace else None,
+            require_pinned_git=application.require_pinned_workspace_commit,
+        )
         for part in payload.parts:
             if part.kind == "attachment":
                 with application.domain.store.transaction() as tx:
@@ -197,6 +208,8 @@ def create_router(application: TeamsApplication) -> APIRouter:
             payload.expectedRevision,
             payload.idempotencyKey,
             accepted=payload.accepted,
+            action=payload.action,
+            reason=payload.reason,
         )
         return {"status": "accepted", "groupId": group_id, "teamRunId": run_id}
 
@@ -220,6 +233,7 @@ def create_router(application: TeamsApplication) -> APIRouter:
             payload.expectedRevision,
             payload.idempotencyKey,
             owner_member_id=payload.memberId,
+            reason=payload.reason,
         )
         return {"status": "accepted", "groupId": group_id}
 
@@ -241,7 +255,16 @@ def create_router(application: TeamsApplication) -> APIRouter:
                     "nodes": [],
                     "edges": [],
                 }
-            team_run_id = snapshot["teamRuns"][-1]["teamRunId"]
+            active = [
+                run
+                for run in snapshot["teamRuns"]
+                if run["status"] not in {"succeeded", "failed", "cancelled"}
+            ]
+            if len(active) > 1:
+                raise TeamsError(
+                    "team_run_ambiguous", "团队有多个进行中的任务，请选择要查看的执行", status=422
+                )
+            team_run_id = (active[-1] if active else snapshot["teamRuns"][-1])["teamRunId"]
         return application.domain.execution(application.actor(), group_id, team_run_id)
 
     @router.get("/{group_id}/events")

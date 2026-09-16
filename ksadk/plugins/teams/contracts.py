@@ -36,6 +36,7 @@ class MemberInput(InputModel):
     memberId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=80)
     bindingRef: str = Field(min_length=1, max_length=256)
+    responsibility: str = Field(default="", max_length=2000)
 
 
 class GroupCreateInput(InputModel):
@@ -43,6 +44,8 @@ class GroupCreateInput(InputModel):
     members: list[MemberInput] = Field(min_length=1, max_length=8)
     leaderMemberId: str
     idempotencyKey: str = Field(min_length=1, max_length=200)
+    taskAcceptance: Literal["leader", "human", "result"] = "leader"
+    leaderStandbyBindingRef: str | None = Field(default=None, min_length=1, max_length=256)
 
     @model_validator(mode="after")
     def validate_roster(self) -> GroupCreateInput:
@@ -70,18 +73,31 @@ class MessagePart(InputModel):
         return self
 
 
+class WorkspaceInput(InputModel):
+    sourcePath: str = Field(min_length=1, max_length=4096)
+    baseRef: str | None = Field(default=None, min_length=1, max_length=256)
+    inputs: list[str] = Field(default_factory=list, max_length=32)
+    mode: Literal["auto", "directory"] = "auto"
+
+
 class MessageInput(InputModel):
     parts: list[MessagePart] = Field(min_length=1, max_length=32)
     mentions: list[str] = Field(default_factory=list, max_length=8)
     intent: Literal["start_goal", "followup", "directed", "note"]
     idempotencyKey: str = Field(min_length=1, max_length=200)
     replyTo: str | None = Field(default=None, max_length=128)
+    teamRunId: str | None = Field(default=None, min_length=1, max_length=128)
+    workspace: WorkspaceInput | None = None
 
     @model_validator(mode="after")
     def validate_targets(self) -> MessageInput:
         self.mentions = list(dict.fromkeys(self.mentions))
         if self.intent == "directed" and not self.mentions:
             raise ValueError("定向消息需要选择成员")
+        if self.intent == "start_goal" and self.teamRunId:
+            raise ValueError("新目标不能引用已有轮次")
+        if self.workspace is not None and self.intent != "start_goal":
+            raise ValueError("工作区只能在创建新目标时指定")
         return self
 
 
@@ -102,7 +118,7 @@ class TaskCreateInput(InputModel):
     ownerMemberId: str | None = None
     dependencies: list[str] = Field(default_factory=list, max_length=64)
     acceptanceCriteria: str = Field(default="提交可核验结果", max_length=5000)
-    acceptancePolicy: Literal["human", "result"] = "human"
+    acceptancePolicy: Literal["leader", "human", "result"] | None = None
 
 
 class ControlInput(InputModel):
