@@ -41,6 +41,7 @@ def setup_run(tmp_path: Path, *, agent_id="agent-a", run_id="run-a"):
 
 def test_links_only_reference_existing_documents_in_owner_workspace(tmp_path):
     studio, run, root = setup_run(tmp_path)
+    assert root == tmp_path / ".harness-tools" / "workspace"
     links = referenced_documents(studio, run)
     assert len(links) == 1
     assert links[0]["path"] == "对比报告.md"

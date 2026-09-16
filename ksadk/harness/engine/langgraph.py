@@ -490,6 +490,7 @@ class ManagedLangGraphEngine:
                     "mcp_listed": [],
                     "mcp_schema_read": [],
                     "finalization_retries": 0,
+                    "delegation_synthesis_pending": False,
                     "run_control": (
                         run.controller.snapshot() if run.controller is not None else {}
                     ),
@@ -537,6 +538,15 @@ class ManagedLangGraphEngine:
             # final_state 补发，stream 已消费 reason 事件时会造成同一答案重复展示。
             if run.cancel_requested:
                 raise asyncio.CancelledError
+            from ksadk.harness.engine.completion_guard import unfinished_delegations
+
+            unfinished = unfinished_delegations(run.events)
+            if unfinished:
+                labels = ", ".join(unfinished.values())
+                raise ExecutionEngineError(
+                    "parent run cannot complete while delegated children lack terminal "
+                    f"evidence: {labels}"
+                )
             run.state.status = RunStatus.COMPLETED
             run.events.append(
                 self._event(

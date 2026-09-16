@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from threading import RLock
-from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -32,8 +35,79 @@ _LENGTH_FINISH_REASONS = {"length", "incomplete", "max_output_tokens"}
 #: length 截断重试时把 max_tokens 提到的目标值；未配置 max_tokens 的 profile
 #: 首次截断重试也用该值兜底（authoring 输出完整 JSON 需要宽松上限）。
 _LENGTH_RETRY_TARGET_TOKENS = 16384
+_REPETITION_MIN_UNIT_CHARS = 24
+_REPETITION_MAX_UNIT_CHARS = 512
+_REPETITION_COUNT = 4
 
 _LOGGER = logging.getLogger(__name__)
+
+_DSML_INVOKE_RE = re.compile(
+    r"<\s*(?:\|\s*){1,2}DSML\s*(?:\|\s*){1,2}invoke\b(?P<attrs>[^>]*)>"
+    r"(?P<body>.*?)"
+    r"<\s*(?:\|\s*){1,2}DSML\s*(?:\|\s*){1,2}/invoke\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_PARAMETER_RE = re.compile(
+    r"<\s*(?:\|\s*){1,2}DSML\s*(?:\|\s*){1,2}parameter\b(?P<attrs>[^>]*)>"
+    r"(?P<value>.*?)"
+    r"<\s*(?:\|\s*){1,2}DSML\s*(?:\|\s*){1,2}/parameter\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_CALLS_WRAPPER_RE = re.compile(
+    r"<\s*(?:\|\s*){1,2}DSML\s*(?:\|\s*){1,2}/?calls\s*>",
+    re.IGNORECASE,
+)
+_DSML_ATTRIBUTE_RE = re.compile(
+    r"(?P<name>[A-Za-z_][\w.-]*)\s*=\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+    re.DOTALL,
+)
+_DSML_SIMPLE_ARGUMENT_RE = re.compile(
+    r"<(?P<name>[A-Za-z_][\w.-]*)>(?P<value>.*?)</(?P=name)>",
+    re.DOTALL,
+)
+_DSML_STREAM_LOOKBEHIND = 64
+_GLM_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(?P<name>[A-Za-z_][\w.-]*)\s*(?P<body>.*?)</tool_call>",
+    re.IGNORECASE | re.DOTALL,
+)
+_GLM_ARGUMENT_TAG_RE = re.compile(
+    r"<(?P<tag>arg_key|arg_value)>(?P<value>.*?)</(?:arg_key|arg_value)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_GLM_ASSIGNMENT_RE = re.compile(
+    r"^(?P<name>[A-Za-z_][\w.-]*)\s*=\s*(?P<quote>['\"])(?P<value>.*)(?P=quote)$",
+    re.DOTALL,
+)
+_GLM_ARGUMENT_KEY_RESIDUE_RE = re.compile(
+    r"(?:</?\s*arg_(?:key|value)\s*>)+$",
+    re.IGNORECASE,
+)
+_GLM_MALFORMED_TOOL_START_RE = re.compile(
+    r"<\s*tool_call\s*>\s*(?P<name>[A-Za-z_][\w.-]*)",
+    re.IGNORECASE,
+)
+_GLM_MALFORMED_KEY_RE = re.compile(
+    r"(?:<\s*arg_value\s*>\s*)?(?P<name>[A-Za-z_][\w.-]*)\s*"
+    r"</\s*arg_key\s*>",
+    re.IGNORECASE,
+)
+_GLM_MALFORMED_ASSIGNMENT_RE = re.compile(
+    r"(?P<name>[A-Za-z_][\w.-]*)\s*=\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)"
+    r"\s*</\s*arg_value\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_SAFE_TOOL_NAME_ALIASES = {
+    # GLM 5.2 has emitted this shorter DSML name for the explicitly
+    # advertised workspace writer. The alias is accepted only when the target
+    # tool is present in the current request's declared schema.
+    "writefile": "writeworkspacefile",
+}
+_SAFE_TOOL_ARGUMENT_ALIASES = {
+    "write_workspace_file": {
+        "filename": "path",
+        "filepath": "path",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -42,6 +116,73 @@ class ToolCall:
     name: str
     arguments: str
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+def _tool_call_arguments_text(value: Any) -> str:
+    """Return provider tool arguments as valid JSON text when possible."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _accumulate_chat_tool_calls(
+    fragments: dict[int, dict[str, str]],
+    calls: Any,
+    *,
+    snapshot: bool,
+) -> None:
+    """Merge incremental or final-snapshot chat-completion tool calls.
+
+    Most OpenAI-compatible providers stream arguments through
+    ``choice.delta.tool_calls``. Some gateways only include the complete
+    function call on the finishing choice (under ``message.tool_calls`` or
+    ``choice.tool_calls``). Supporting both forms prevents a valid long call
+    from degrading to an empty ``{}`` invocation at stream completion.
+    """
+
+    if not isinstance(calls, list):
+        return
+    for fallback_index, raw_call in enumerate(calls):
+        if not isinstance(raw_call, dict):
+            continue
+        raw_index = raw_call.get("index")
+        try:
+            index = int(raw_index if raw_index is not None else fallback_index)
+        except (TypeError, ValueError):
+            index = fallback_index
+        function = raw_call.get("function") or {}
+        if not isinstance(function, dict):
+            function = {}
+        current = fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        incoming_id = str(raw_call.get("id") or "")
+        incoming_name = str(function.get("name") or raw_call.get("name") or "")
+        if "arguments" in function:
+            raw_arguments = function.get("arguments")
+        elif "arguments" in raw_call:
+            raw_arguments = raw_call.get("arguments")
+        elif "input" in function:
+            raw_arguments = function.get("input")
+        else:
+            raw_arguments = raw_call.get("input")
+        incoming_arguments = _tool_call_arguments_text(raw_arguments)
+        if snapshot:
+            if incoming_id:
+                current["id"] = incoming_id
+            if incoming_name:
+                current["name"] = incoming_name
+            # Do not let an empty/default snapshot overwrite arguments that
+            # were already reconstructed from deltas.
+            if incoming_arguments and (
+                incoming_arguments != "{}" or not current["arguments"]
+            ):
+                current["arguments"] = incoming_arguments
+            continue
+        current["id"] += incoming_id
+        current["name"] += incoming_name
+        current["arguments"] += incoming_arguments
 
 
 def _reasoning_from_responses_output(output: Any) -> str:
@@ -82,6 +223,464 @@ class ModelStreamChunk:
     tool_calls: tuple[ToolCall, ...] = ()
     usage: Usage | None = None
     done: bool = False
+
+
+def _dsml_attributes(value: str) -> dict[str, str]:
+    return {
+        match.group("name"): html.unescape(match.group("value"))
+        for match in _DSML_ATTRIBUTE_RE.finditer(value)
+    }
+
+
+def _declared_tool_names(tools: list[dict[str, Any]] | None) -> dict[str, str]:
+    declared: dict[str, str] = {}
+    for tool in tools or []:
+        function = tool.get("function") or tool
+        name = str(function.get("name") or "").strip()
+        if name:
+            declared[re.sub(r"[^a-z0-9]", "", name.lower())] = name
+    return declared
+
+
+def _canonical_declared_tool_name(
+    requested_name: str,
+    declared: dict[str, str],
+) -> str | None:
+    key = re.sub(r"[^a-z0-9]", "", requested_name.lower())
+    canonical = declared.get(key)
+    if canonical:
+        return canonical
+    alias_target = _SAFE_TOOL_NAME_ALIASES.get(key)
+    canonical = declared.get(alias_target or "")
+    if canonical:
+        return canonical
+    # GLM 5.2 occasionally appends a leaked textual call id to a declared
+    # name (for example ``write_file_ide49a``). Only strip this narrowly
+    # shaped suffix and only accept the prefix when it resolves to an
+    # explicitly advertised tool/alias.
+    leaked_id = re.fullmatch(r"(?P<name>.+?)_id[a-z0-9]+", requested_name, re.IGNORECASE)
+    if leaked_id:
+        prefix = re.sub(r"[^a-z0-9]", "", leaked_id.group("name").lower())
+        return declared.get(prefix) or declared.get(_SAFE_TOOL_NAME_ALIASES.get(prefix, ""))
+    return None
+
+
+def _canonical_declared_argument_name(
+    requested_name: str,
+    canonical_tool_name: str,
+    declared_properties: frozenset[str],
+) -> str | None:
+    if requested_name in declared_properties:
+        return requested_name
+    key = re.sub(r"[^a-z0-9]", "", requested_name.lower())
+    for declared_name in declared_properties:
+        if re.sub(r"[^a-z0-9]", "", declared_name.lower()) == key:
+            return declared_name
+    alias = _SAFE_TOOL_ARGUMENT_ALIASES.get(canonical_tool_name, {}).get(key)
+    return alias if alias in declared_properties else None
+
+
+def _declared_tool_properties(
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, frozenset[str]]:
+    """Return declared JSON argument names keyed by canonical tool name.
+
+    A few OpenAI-compatible GLM gateways have emitted a native function-call
+    JSON key such as ``task</arg_key>``. We only repair that wire residue when
+    the cleaned name is an explicitly declared property; arbitrary model keys
+    are never guessed or renamed.
+    """
+
+    declared: dict[str, frozenset[str]] = {}
+    for tool in tools or []:
+        function = tool.get("function") or tool
+        name = str(function.get("name") or "").strip()
+        parameters = function.get("parameters") or {}
+        properties = parameters.get("properties") if isinstance(parameters, dict) else {}
+        if name:
+            declared[name] = (
+                frozenset(str(key) for key in properties if isinstance(key, str))
+                if isinstance(properties, dict)
+                else frozenset()
+            )
+    return declared
+
+
+def _normalize_tool_call_arguments(
+    calls: tuple[ToolCall, ...] | list[ToolCall],
+    tools: list[dict[str, Any]] | None,
+) -> tuple[ToolCall, ...]:
+    """Normalize known provider wire residue in native function arguments."""
+
+    properties_by_tool = _declared_tool_properties(tools)
+    declared_names = _declared_tool_names(tools)
+    normalized_calls: list[ToolCall] = []
+    for call in calls:
+        canonical_name = _canonical_declared_tool_name(call.name, declared_names) or call.name
+        properties = properties_by_tool.get(canonical_name, frozenset())
+        if not properties:
+            normalized_calls.append(
+                ToolCall(
+                    id=call.id,
+                    name=canonical_name,
+                    arguments=call.arguments,
+                    raw=call.raw,
+                )
+            )
+            continue
+        try:
+            arguments = json.loads(call.arguments or "{}")
+        except (TypeError, ValueError):
+            normalized_calls.append(call)
+            continue
+        if not isinstance(arguments, dict):
+            normalized_calls.append(call)
+            continue
+        repaired: dict[str, Any] = {}
+        changed = False
+        for raw_key, value in arguments.items():
+            key = str(raw_key)
+            candidate = _GLM_ARGUMENT_KEY_RESIDUE_RE.sub("", html.unescape(key).strip()).strip()
+            if key not in properties and candidate in properties:
+                key = candidate
+                changed = True
+            if key in repaired:
+                raise StudioError(
+                    "MODEL_TOOL_PROTOCOL_INVALID",
+                    "模型返回了重复的工具参数",
+                    status_code=502,
+                    details={"toolName": call.name, "argument": key},
+                )
+            repaired[key] = value
+        normalized_calls.append(
+            ToolCall(
+                id=call.id,
+                name=canonical_name,
+                arguments=(
+                    json.dumps(repaired, ensure_ascii=False) if changed else call.arguments
+                ),
+                raw=call.raw,
+            )
+        )
+    return tuple(normalized_calls)
+
+
+def _dsml_argument_value(raw: str, attributes: dict[str, str]) -> Any:
+    value = html.unescape(raw.strip())
+    if attributes.get("string", "").lower() == "true":
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _recover_dsml_tool_calls(
+    content: str,
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, list[ToolCall], bool]:
+    """Recover DeepSeek's textual DSML tool protocol without exposing it as prose."""
+
+    normalized = content.replace("｜", "|")
+    if "DSML" not in normalized.upper():
+        return content, [], False
+    declared = _declared_tool_names(tools)
+    calls: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+    for index, match in enumerate(_DSML_INVOKE_RE.finditer(normalized)):
+        attrs = _dsml_attributes(match.group("attrs"))
+        requested_name = str(attrs.get("name") or "").strip()
+        canonical_name = _canonical_declared_tool_name(requested_name, declared)
+        if not canonical_name:
+            raise StudioError(
+                "MODEL_TOOL_PROTOCOL_INVALID",
+                f"模型返回了未声明的工具调用：{requested_name or 'unknown'}",
+                status_code=502,
+                details={"toolName": requested_name or "unknown"},
+            )
+        body = match.group("body")
+        arguments: dict[str, Any] = {}
+        for parameter in _DSML_PARAMETER_RE.finditer(body):
+            parameter_attrs = _dsml_attributes(parameter.group("attrs"))
+            parameter_name = str(parameter_attrs.get("name") or "").strip()
+            if parameter_name:
+                arguments[parameter_name] = _dsml_argument_value(
+                    parameter.group("value"), parameter_attrs
+                )
+        if not arguments:
+            for parameter in _DSML_SIMPLE_ARGUMENT_RE.finditer(body):
+                parameter_name = parameter.group("name")
+                arguments[parameter_name] = _dsml_argument_value(parameter.group("value"), {})
+        digest = hashlib.sha256(f"{canonical_name}:{index}:{match.group(0)}".encode()).hexdigest()[
+            :20
+        ]
+        calls.append(
+            ToolCall(
+                id=f"call_dsml_{digest}",
+                name=canonical_name,
+                arguments=json.dumps(arguments, ensure_ascii=False),
+                raw={"protocol": "dsml"},
+            )
+        )
+        spans.append(match.span())
+    if not calls:
+        raise StudioError(
+            "MODEL_TOOL_PROTOCOL_INVALID",
+            "模型返回了无法解析的工具调用",
+            status_code=502,
+        )
+    cleaned = normalized
+    for start, end in reversed(spans):
+        cleaned = cleaned[:start] + cleaned[end:]
+    cleaned = _DSML_CALLS_WRAPPER_RE.sub("", cleaned).strip()
+    if "DSML" in cleaned.upper():
+        raise StudioError(
+            "MODEL_TOOL_PROTOCOL_INVALID",
+            "模型返回了不完整的工具调用",
+            status_code=502,
+        )
+    return cleaned, calls, True
+
+
+def _recover_glm_tool_calls(
+    content: str,
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, list[ToolCall], bool]:
+    """Recover GLM's textual ``<tool_call>`` fallback protocol.
+
+    Some OpenAI-compatible GLM endpoints put tool calls in ``content`` rather
+    than ``delta.tool_calls``.  Real responses also occasionally encode an
+    argument as ``<arg_value>name=\"value\"</arg_value>`` (or close an
+    ``arg_key`` with ``</arg_value>``), so parsing is intentionally tolerant
+    about those two wire quirks while remaining fail-closed on tool names.
+    """
+
+    if "<tool_call" not in content.lower():
+        return content, [], False
+    declared = _declared_tool_names(tools)
+    calls: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+    for index, match in enumerate(_GLM_TOOL_CALL_RE.finditer(content)):
+        requested_name = match.group("name").strip()
+        canonical_name = _canonical_declared_tool_name(requested_name, declared)
+        if not canonical_name:
+            raise StudioError(
+                "MODEL_TOOL_PROTOCOL_INVALID",
+                f"模型返回了未声明的工具调用：{requested_name or 'unknown'}",
+                status_code=502,
+                details={"toolName": requested_name or "unknown"},
+            )
+        arguments: dict[str, Any] = {}
+        pending_key = ""
+        for token in _GLM_ARGUMENT_TAG_RE.finditer(match.group("body")):
+            tag = token.group("tag").lower()
+            raw_value = html.unescape(token.group("value").strip())
+            assignment = _GLM_ASSIGNMENT_RE.match(raw_value)
+            if assignment:
+                arguments[assignment.group("name")] = _dsml_argument_value(
+                    assignment.group("value"), {"string": "true"}
+                )
+                pending_key = ""
+            elif tag == "arg_key":
+                pending_key = raw_value
+            elif pending_key:
+                arguments[pending_key] = _dsml_argument_value(raw_value, {})
+                pending_key = ""
+            else:
+                raise StudioError(
+                    "MODEL_TOOL_PROTOCOL_INVALID",
+                    "模型返回了无法解析的工具参数",
+                    status_code=502,
+                )
+        if pending_key or not arguments:
+            raise StudioError(
+                "MODEL_TOOL_PROTOCOL_INVALID",
+                "模型返回了不完整的工具调用",
+                status_code=502,
+            )
+        digest = hashlib.sha256(f"{canonical_name}:{index}:{match.group(0)}".encode()).hexdigest()[
+            :20
+        ]
+        calls.append(
+            ToolCall(
+                id=f"call_glm_{digest}",
+                name=canonical_name,
+                arguments=json.dumps(arguments, ensure_ascii=False),
+                raw={"protocol": "glm-text"},
+            )
+        )
+        spans.append(match.span())
+    if not calls:
+        raise StudioError(
+            "MODEL_TOOL_PROTOCOL_INVALID",
+            "模型返回了无法解析的工具调用",
+            status_code=502,
+        )
+    cleaned = content
+    for start, end in reversed(spans):
+        cleaned = cleaned[:start] + cleaned[end:]
+    if "<tool_call" in cleaned.lower():
+        raise StudioError(
+            "MODEL_TOOL_PROTOCOL_INVALID",
+            "模型返回了不完整的工具调用",
+            status_code=502,
+        )
+    return cleaned.strip(), calls, True
+
+
+def _recover_malformed_glm_tool_call(
+    content: str,
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, list[ToolCall], bool]:
+    """Recover the bounded malformed fallback emitted by GLM 5.2.
+
+    Some GLM 5.2 compatible gateways emit a textual ``<tool_call>`` marker
+    but lose the closing marker and mix up ``arg_key``/``arg_value`` tags.
+    Recovery remains fail-closed: the tool must resolve to a declared schema,
+    every recovered argument must resolve to a declared property, and at
+    least one argument must be recovered. Text after the marker is discarded
+    so a hallucinated "file created" sentence cannot escape as visible output
+    before the tool actually executes.
+    """
+
+    start = _GLM_MALFORMED_TOOL_START_RE.search(content)
+    if start is None:
+        return content, [], False
+    declared_names = _declared_tool_names(tools)
+    requested_name = start.group("name").strip()
+    canonical_name = _canonical_declared_tool_name(requested_name, declared_names)
+    if not canonical_name:
+        raise StudioError(
+            "MODEL_TOOL_PROTOCOL_INVALID",
+            f"模型返回了未声明的工具调用：{requested_name or 'unknown'}",
+            status_code=502,
+            details={"toolName": requested_name or "unknown"},
+        )
+    properties = _declared_tool_properties(tools).get(canonical_name, frozenset())
+    body = content[start.end() :]
+    raw_arguments: list[tuple[str, str]] = []
+
+    key_matches = list(_GLM_MALFORMED_KEY_RE.finditer(body))
+    for index, key_match in enumerate(key_matches):
+        next_start = key_matches[index + 1].start() if index + 1 < len(key_matches) else len(body)
+        value = body[key_match.end() : next_start]
+        value = re.sub(r"^\s*<\s*arg_value\s*>\s*", "", value, flags=re.IGNORECASE)
+        value = re.split(r"</\s*arg_value\s*>", value, maxsplit=1, flags=re.IGNORECASE)[0]
+        raw_arguments.append((key_match.group("name"), html.unescape(value.strip())))
+
+    if not raw_arguments:
+        raw_arguments.extend(
+            (match.group("name"), html.unescape(match.group("value")))
+            for match in _GLM_MALFORMED_ASSIGNMENT_RE.finditer(body)
+        )
+
+    arguments: dict[str, Any] = {}
+    for raw_name, raw_value in raw_arguments:
+        argument_name = _canonical_declared_argument_name(
+            raw_name,
+            canonical_name,
+            properties,
+        )
+        if not argument_name:
+            raise StudioError(
+                "MODEL_TOOL_PROTOCOL_INVALID",
+                "模型返回了未声明的工具参数",
+                status_code=502,
+                details={"toolName": canonical_name, "argument": raw_name},
+            )
+        if argument_name in arguments:
+            raise StudioError(
+                "MODEL_TOOL_PROTOCOL_INVALID",
+                "模型返回了重复的工具参数",
+                status_code=502,
+                details={"toolName": canonical_name, "argument": argument_name},
+            )
+        arguments[argument_name] = _dsml_argument_value(raw_value, {"string": "true"})
+
+    if not arguments:
+        raise StudioError(
+            "MODEL_TOOL_PROTOCOL_INVALID",
+            "模型返回了无法解析的工具调用",
+            status_code=502,
+        )
+    digest = hashlib.sha256(
+        f"{canonical_name}:malformed:{content[start.start():]}".encode()
+    ).hexdigest()[:20]
+    return (
+        content[: start.start()].strip(),
+        [
+            ToolCall(
+                id=f"call_glm_{digest}",
+                name=canonical_name,
+                arguments=json.dumps(arguments, ensure_ascii=False),
+                raw={"protocol": "glm-text-recovered"},
+            )
+        ],
+        True,
+    )
+
+
+def _recover_textual_tool_calls(
+    content: str,
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, list[ToolCall], bool]:
+    if "DSML" in content.replace("｜", "|").upper():
+        return _recover_dsml_tool_calls(content, tools)
+    try:
+        return _recover_glm_tool_calls(content, tools)
+    except StudioError as exc:
+        if exc.code != "MODEL_TOOL_PROTOCOL_INVALID":
+            raise
+        return _recover_malformed_glm_tool_call(content, tools)
+
+
+def _partition_tool_stream_text(value: str) -> tuple[str, str, bool]:
+    """Split a streamed text buffer before a possible textual tool marker.
+
+    Ordinary model prose must remain truly streaming even when tools are
+    available.  Only the short suffix beginning at ``<`` is held long enough
+    to decide whether a provider is starting a textual DSML tool call.
+    """
+
+    normalized = value.replace("｜", "|")
+    marker = re.search(
+        r"<\s*(?:\|\s*){1,2}DSML|<\s*tool_call\s*>",
+        normalized,
+        re.IGNORECASE,
+    )
+    if marker:
+        start = marker.start()
+        return value[:start], value[start:], True
+    candidate_start = value.rfind("<")
+    if candidate_start >= 0 and len(value) - candidate_start <= _DSML_STREAM_LOOKBEHIND:
+        return value[:candidate_start], value[candidate_start:], False
+    return value, "", False
+
+
+def _repeated_output_unit(value: str) -> str:
+    """Return a repeated tail unit when a provider is stuck in a text loop."""
+
+    if len(value) < _REPETITION_MIN_UNIT_CHARS * _REPETITION_COUNT:
+        return ""
+    window = value[-(_REPETITION_MAX_UNIT_CHARS * _REPETITION_COUNT) :]
+    max_unit = min(_REPETITION_MAX_UNIT_CHARS, len(window) // _REPETITION_COUNT)
+    for unit_length in range(_REPETITION_MIN_UNIT_CHARS, max_unit + 1):
+        unit = window[-unit_length:]
+        if window.endswith(unit * _REPETITION_COUNT) and len(set(unit.strip())) >= 6:
+            return unit
+    return ""
+
+
+def _raise_for_repetitive_output(value: str) -> None:
+    unit = _repeated_output_unit(value)
+    if not unit:
+        return
+    raise StudioError(
+        "MODEL_REPETITIVE_OUTPUT",
+        "模型输出出现重复循环，已停止本次生成",
+        status_code=502,
+        details={"repeatedChars": len(unit)},
+    )
 
 
 class CredentialResolver:
@@ -190,6 +789,14 @@ class CredentialResolver:
             value, source = self.configuration.resolve_candidates(
                 [name, *([fallback] if fallback else [])]
             )
+            with self._lock:
+                # put_session() keeps the session overlay and the persisted copy in
+                # sync; if the persisted copy vanished (deleted via another resolver
+                # instance) the session entry is stale and must not shadow it.
+                if value and name in self._session_values:
+                    return True, "session"
+                if value and fallback and fallback in self._session_values:
+                    return True, "session-alias"
             return bool(value), source
         with self._lock:
             if name in self._session_values:
@@ -503,6 +1110,33 @@ class OpenAICompatibleModelClient:
                     length_retried = True
                     payload = self._expand_length_budget(payload)
                     continue
+                if not (
+                    "DSML" in parsed.content.replace("｜", "|").upper()
+                    or "<tool_call" in parsed.content.lower()
+                ):
+                    _raise_for_repetitive_output(parsed.content)
+                if wire_api != "responses" and not parsed.tool_calls:
+                    cleaned, recovered_calls, recovered = _recover_textual_tool_calls(
+                        parsed.content, tools
+                    )
+                    if recovered:
+                        parsed = ModelResponse(
+                            content=cleaned,
+                            finish_reason="tool_calls",
+                            usage=parsed.usage,
+                            tool_calls=recovered_calls,
+                            raw_message=parsed.raw_message,
+                            reasoning=parsed.reasoning,
+                        )
+                if parsed.tool_calls:
+                    parsed = ModelResponse(
+                        content=parsed.content,
+                        finish_reason=parsed.finish_reason,
+                        usage=parsed.usage,
+                        tool_calls=list(_normalize_tool_call_arguments(parsed.tool_calls, tools)),
+                        raw_message=parsed.raw_message,
+                        reasoning=parsed.reasoning,
+                    )
                 return parsed
         except asyncio.CancelledError:
             raise
@@ -576,11 +1210,19 @@ class OpenAICompatibleModelClient:
                     )
                 tool_fragments: dict[int, dict[str, str]] = {}
                 first_chunk_logged = False
+                raw_text = ""
+                emitted_text = ""
+                pending_visible_text = ""
+                textual_tool_detected = False
+                done_emitted = False
+                last_repetition_check_length = 0
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
                     raw = line[5:].strip()
-                    if not raw or raw == "[DONE]":
+                    if raw == "[DONE]":
+                        break
+                    if not raw:
                         continue
                     try:
                         chunk = json.loads(raw)
@@ -604,23 +1246,84 @@ class OpenAICompatibleModelClient:
                         if usage
                         else None
                     )
+                    _accumulate_chat_tool_calls(
+                        tool_fragments,
+                        chunk.get("tool_calls"),
+                        snapshot=True,
+                    )
+                    root_message = chunk.get("message") or {}
+                    if isinstance(root_message, dict):
+                        _accumulate_chat_tool_calls(
+                            tool_fragments,
+                            root_message.get("tool_calls"),
+                            snapshot=True,
+                        )
+                        if isinstance(root_message.get("function_call"), dict):
+                            _accumulate_chat_tool_calls(
+                                tool_fragments,
+                                [{"index": 0, "function": root_message["function_call"]}],
+                                snapshot=True,
+                            )
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
                         text = str(delta.get("content") or "")
+                        raw_text += text
+                        pending_visible_text += text
                         reasoning = str(
                             delta.get("reasoning_content") or delta.get("reasoning") or ""
                         )
-                        calls: list[ToolCall] = []
-                        for call in delta.get("tool_calls") or []:
-                            index = int(call.get("index") or 0)
-                            function = call.get("function") or {}
-                            current = tool_fragments.setdefault(
-                                index, {"id": "", "name": "", "arguments": ""}
+                        _accumulate_chat_tool_calls(
+                            tool_fragments,
+                            delta.get("tool_calls"),
+                            snapshot=False,
+                        )
+                        if isinstance(delta.get("function_call"), dict):
+                            _accumulate_chat_tool_calls(
+                                tool_fragments,
+                                [{"index": 0, "function": delta["function_call"]}],
+                                snapshot=False,
                             )
-                            current["id"] += str(call.get("id") or "")
-                            current["name"] += str(function.get("name") or "")
-                            current["arguments"] += str(function.get("arguments") or "")
-                        if text or reasoning or usage_value is not None:
+                        message = choice.get("message") or {}
+                        if isinstance(message, dict):
+                            _accumulate_chat_tool_calls(
+                                tool_fragments,
+                                message.get("tool_calls"),
+                                snapshot=True,
+                            )
+                            if isinstance(message.get("function_call"), dict):
+                                _accumulate_chat_tool_calls(
+                                    tool_fragments,
+                                    [{"index": 0, "function": message["function_call"]}],
+                                    snapshot=True,
+                                )
+                        _accumulate_chat_tool_calls(
+                            tool_fragments,
+                            choice.get("tool_calls"),
+                            snapshot=True,
+                        )
+                        if isinstance(choice.get("function_call"), dict):
+                            _accumulate_chat_tool_calls(
+                                tool_fragments,
+                                [{"index": 0, "function": choice["function_call"]}],
+                                snapshot=True,
+                            )
+                        visible_text = ""
+                        if text and not textual_tool_detected:
+                            visible_text, pending_visible_text, marker_found = (
+                                _partition_tool_stream_text(pending_visible_text)
+                            )
+                            textual_tool_detected = marker_found
+                            emitted_text += visible_text
+                            visible_length = len(emitted_text) + len(pending_visible_text)
+                            if (
+                                not textual_tool_detected
+                                and visible_length - last_repetition_check_length >= 64
+                            ):
+                                last_repetition_check_length = visible_length
+                                _raise_for_repetitive_output(
+                                    emitted_text + pending_visible_text
+                                )
+                        if visible_text or reasoning or usage_value is not None:
                             if not first_chunk_logged and (text or reasoning):
                                 first_chunk_logged = True
                                 _LOGGER.info(
@@ -629,12 +1332,19 @@ class OpenAICompatibleModelClient:
                                     int((time.monotonic() - request_started) * 1000),
                                 )
                             yield ModelStreamChunk(
-                                text=text, reasoning=reasoning, usage=usage_value
+                                text=visible_text,
+                                reasoning=reasoning,
+                                usage=usage_value,
                             )
                     finish = any(
-                        str(choice.get("finish_reason") or "") for choice in chunk.get("choices") or []
+                        str(choice.get("finish_reason") or "")
+                        for choice in chunk.get("choices") or []
                     )
-                    if finish:
+                    incomplete_native_call = any(
+                        value["name"] and not value["arguments"]
+                        for value in tool_fragments.values()
+                    )
+                    if finish and not done_emitted and not incomplete_native_call:
                         calls = tuple(
                             ToolCall(
                                 id=value["id"],
@@ -644,7 +1354,63 @@ class OpenAICompatibleModelClient:
                             for value in tool_fragments.values()
                             if value["name"]
                         )
+                        final_text = raw_text
+                        if not calls and textual_tool_detected:
+                            final_text, recovered_calls, _ = _recover_textual_tool_calls(
+                                raw_text, tools
+                            )
+                            calls = tuple(recovered_calls)
+                        calls = _normalize_tool_call_arguments(calls, tools)
+                        if not final_text.strip() and not calls:
+                            raise StudioError(
+                                "MODEL_EMPTY_RESPONSE",
+                                "模型未返回可用内容",
+                                status_code=502,
+                                details={"finishReason": "stream-completed"},
+                            )
+                        if not calls and not textual_tool_detected:
+                            _raise_for_repetitive_output(final_text)
+                        remaining_text = final_text
+                        if emitted_text and final_text.startswith(emitted_text):
+                            remaining_text = final_text[len(emitted_text) :]
+                        if remaining_text:
+                            yield ModelStreamChunk(text=remaining_text)
                         yield ModelStreamChunk(tool_calls=calls, done=True)
+                        done_emitted = True
+                if not done_emitted:
+                    calls = tuple(
+                        ToolCall(
+                            id=value["id"],
+                            name=value["name"],
+                            arguments=value["arguments"] or "{}",
+                        )
+                        for value in tool_fragments.values()
+                        if value["name"]
+                    )
+                    final_text = raw_text
+                    if not calls and (
+                        textual_tool_detected
+                        or "DSML" in raw_text.replace("｜", "|").upper()
+                        or "<tool_call" in raw_text.lower()
+                    ):
+                        final_text, recovered_calls, _ = _recover_textual_tool_calls(raw_text, tools)
+                        calls = tuple(recovered_calls)
+                    calls = _normalize_tool_call_arguments(calls, tools)
+                    if not final_text.strip() and not calls:
+                        raise StudioError(
+                            "MODEL_EMPTY_RESPONSE",
+                            "模型未返回可用内容",
+                            status_code=502,
+                            details={"finishReason": "stream-ended"},
+                        )
+                    if not calls and not textual_tool_detected:
+                        _raise_for_repetitive_output(final_text)
+                    remaining_text = final_text
+                    if emitted_text and final_text.startswith(emitted_text):
+                        remaining_text = final_text[len(emitted_text) :]
+                    if remaining_text:
+                        yield ModelStreamChunk(text=remaining_text)
+                    yield ModelStreamChunk(tool_calls=calls, done=True)
         except asyncio.CancelledError:
             raise
 

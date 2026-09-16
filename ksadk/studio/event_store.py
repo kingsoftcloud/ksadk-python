@@ -125,9 +125,13 @@ class RunEventStore:
         directory = self.workspace.resolve(".agentkit/runs")
         for path in sorted(directory.glob("run_*.json")):
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                record = RunRecord.model_validate(payload["record"])
-            except (OSError, ValueError, KeyError, ValidationError):
+                # ``list_runs`` is polled while a chat is running.  Parsing every
+                # growing run file on every poll turns a streamed response into
+                # an O(polls * events) JSON workload and can consume an entire
+                # CPU core.  Route the read through the stat-aware cache used by
+                # ``get``/``events``; external edits still invalidate it.
+                record, _events = self._read(path.stem)
+            except (OSError, ValueError, KeyError, ValidationError, StudioError):
                 continue
             if session_id and record.session_id != session_id:
                 continue

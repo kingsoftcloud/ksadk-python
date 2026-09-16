@@ -586,6 +586,7 @@ def test_subagent_tool_budget_stops_child_after_limit():
 
 def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
     child_prompts: list[str] = []
+    child_messages: list[list[dict[str, object]]] = []
 
     class _ResearchReasoner:
         async def complete(self, **kwargs):
@@ -593,6 +594,7 @@ def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
             tools = kwargs["tools"]
             if prompt.startswith("child"):
                 child_prompts.append(prompt)
+                child_messages.append(list(kwargs["messages"]))
                 if tools:
                     return HarnessReasoningTurn(
                         tool_calls=(
@@ -653,6 +655,10 @@ def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
     assert len(child_prompts) == 3
     assert "最后一轮" in child_prompts[-1]
     assert "禁止描述后续计划" in child_prompts[-1]
+    assert child_messages[-1][-1]["role"] == "user"
+    assert "不要再搜索、查看网页或调用任何工具" in str(
+        child_messages[-1][-1]["content"]
+    )
 
 
 def test_subagent_result_contract_is_additive_and_serializable():
@@ -679,6 +685,17 @@ def test_declared_subagent_output_schema_accepts_json_and_rejects_invalid_output
 
     with pytest.raises(SubAgentOutputValidationError, match="output_schema"):
         validate_subagent_output('{"answer": "forty-two"}', schema)
+
+
+def test_subagent_output_rejects_empty_or_unexecuted_dsml():
+    with pytest.raises(SubAgentOutputValidationError, match="did not produce"):
+        validate_subagent_output("   ", None)
+
+    with pytest.raises(SubAgentOutputValidationError, match="unexecuted tool call"):
+        validate_subagent_output(
+            '<｜｜DSML｜｜invoke name="web_search"><query>x</query><｜｜DSML｜｜/invoke>',
+            None,
+        )
 
 
 def test_subagent_binding_rejects_invalid_output_schema_definition():

@@ -498,12 +498,43 @@ class StudioSharedWebBridge:
             yield ": ping\n\n"
             await asyncio.sleep(0.25)
 
-    def cancel_run(self, invocation_id: str) -> dict[str, Any]:
+    async def cancel_run(self, invocation_id: str) -> dict[str, Any]:
         self.studio._require_direct_run(invocation_id)
         operation_id = self._operations_by_invocation.get(invocation_id)
-        if operation_id:
+        run_id = self._run_ids_by_invocation.get(invocation_id)
+        if run_id:
+            # Preserve the canonical Run terminal event. Cancelling only the
+            # outer Operation can strand the already-created Run in CREATED.
+            await self.studio.run_service.cancel_run(run_id)
+            # ListSessions is refreshed as soon as this response returns. Give
+            # the run task a short bounded window to persist its terminal state
+            # so the sidebar does not keep a stale "running" indicator.
+            event_store = getattr(self.studio, "event_store", None)
+            if event_store is not None:
+                # Provider cancellation may need to unwind an in-flight model
+                # request before RunService can append run.canceled.  Keep the
+                # CancelRun response pending for a bounded 10 seconds so the
+                # refresh issued by ksadk-web observes the terminal record
+                # instead of permanently caching a transient RUNNING badge.
+                for _ in range(200):
+                    try:
+                        status = event_store.get(run_id).status
+                    except Exception:  # noqa: BLE001 - cancellation already accepted
+                        break
+                    if status not in {
+                        RunStatus.CREATED,
+                        RunStatus.RUNNING,
+                        RunStatus.WAITING_INPUT,
+                    }:
+                        break
+                    await asyncio.sleep(0.05)
+        elif operation_id:
             self.studio.operations.cancel(operation_id)
-        return {"InvocationId": invocation_id, "Cancelled": bool(operation_id)}
+        return {
+            "InvocationId": invocation_id,
+            "RunId": run_id or "",
+            "Cancelled": bool(run_id or operation_id),
+        }
 
     async def pause_run(self, invocation_id: str) -> dict[str, Any]:
         self.studio._require_direct_run(invocation_id)

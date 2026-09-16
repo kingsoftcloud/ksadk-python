@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +28,60 @@ from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
 from ksadk.studio.templates import default_agent_spec
 from tests.studio.runtime_adapter_fixtures import RuntimeFixture
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_preserves_canonical_run_cancellation() -> None:
+    run_service = SimpleNamespace(cancel_run=AsyncMock(return_value={"status": "cancelling"}))
+    operations = SimpleNamespace(cancel=Mock())
+    studio = SimpleNamespace(
+        _require_direct_run=Mock(),
+        run_service=run_service,
+        operations=operations,
+        event_store=SimpleNamespace(
+            get=Mock(
+                side_effect=[
+                    SimpleNamespace(status=RunStatus.CREATED),
+                    SimpleNamespace(status=RunStatus.RUNNING),
+                    SimpleNamespace(status=RunStatus.CANCELLED),
+                ]
+            )
+        ),
+    )
+    bridge = StudioSharedWebBridge(studio)
+    bridge._operations_by_invocation["inv-1"] = "op-1"
+    bridge._run_ids_by_invocation["inv-1"] = "run-1"
+
+    result = await bridge.cancel_run("inv-1")
+
+    run_service.cancel_run.assert_awaited_once_with("run-1")
+    operations.cancel.assert_not_called()
+    assert studio.event_store.get.call_count == 3
+    assert result == {
+        "InvocationId": "inv-1",
+        "RunId": "run-1",
+        "Cancelled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_falls_back_before_canonical_run_is_created() -> None:
+    run_service = SimpleNamespace(cancel_run=AsyncMock())
+    operations = SimpleNamespace(cancel=Mock())
+    studio = SimpleNamespace(
+        _require_direct_run=Mock(),
+        run_service=run_service,
+        operations=operations,
+    )
+    bridge = StudioSharedWebBridge(studio)
+    bridge._operations_by_invocation["inv-1"] = "op-1"
+
+    result = await bridge.cancel_run("inv-1")
+
+    operations.cancel.assert_called_once_with("op-1")
+    run_service.cancel_run.assert_not_awaited()
+    assert result["Cancelled"] is True
+    assert result["RunId"] == ""
 
 
 class RecordingModelClient:

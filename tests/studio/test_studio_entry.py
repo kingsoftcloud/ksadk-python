@@ -1,5 +1,6 @@
 """Browser entry selection must never silently drop enabled workspace pages."""
 import hashlib
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,7 +26,8 @@ def test_enabled_profile_enters_core_after_setting_the_local_session(tmp_path, m
         assert client.cookies.get(cookie_name) == "test-entry-session"
         assert "HttpOnly" in response.headers["set-cookie"]
         assert response.headers["cache-control"] == "no-store"
-        check.assert_awaited_once()
+        # The request plus the startup warmup probe both consult the checker.
+        assert check.await_count >= 1
 
 
 @pytest.mark.parametrize("failure", [None, StudioError("DSH_TOOLCHAIN_MISSING", "toolchain absent", status_code=503)])
@@ -51,3 +53,26 @@ def test_fresh_core_link_bootstraps_then_enters_the_enabled_workspace(tmp_path, 
         assert response.status_code == 307
         assert response.headers["location"] == "/studio-core/?workspacePage=teams"
         assert client.cookies.get("agentkit_studio_session")
+
+
+def test_cold_plugin_probe_returns_the_react_shell_within_a_bounded_wait(
+    tmp_path, monkeypatch
+):
+    """A legacy profile missing the state file must not block ``GET /`` on the
+    Node bridge cold start; the entry point falls back to the React shell."""
+    app = create_studio_app(tmp_path)
+    capabilities = app.state.studio_service.dsh_capabilities
+    monkeypatch.setattr(capabilities, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _cold_bridge_probe(_command):
+        time.sleep(3)
+        return False
+
+    monkeypatch.setattr(capabilities, "_profile_has_enabled_plugins", _cold_bridge_probe)
+    with TestClient(app, follow_redirects=False) as client:
+        started = time.monotonic()
+        response = client.get("/")
+        elapsed = time.monotonic() - started
+        assert response.status_code == 200
+        assert '/static/assets/' in response.text
+        assert elapsed < 5

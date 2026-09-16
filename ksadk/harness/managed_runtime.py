@@ -129,12 +129,21 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
             "execution_policy_request": request,
         }
 
-    def _persist_durable_handle(self, handle: RunHandle, status: str = "running") -> None:
+    def _persist_durable_handle(
+        self,
+        handle: RunHandle,
+        status: str = "running",
+        *,
+        terminal: bool = False,
+    ) -> None:
         if self._run_store is None:
             return
         runs, handles = self._run_store.load()
         runs[handle.run_id] = {"runId": handle.run_id, "status": status}
-        handles[handle.run_id] = handle
+        if terminal:
+            handles.pop(handle.run_id, None)
+        else:
+            handles[handle.run_id] = handle
         self._run_store.save(runs, handles)
 
     async def attach(self, handle: RunHandle) -> RunHandle:
@@ -229,11 +238,32 @@ class ManagedHarnessRuntimeAdapter(RuntimeAdapter):
     async def _stream(self, handle: RunHandle) -> AsyncIterator[Any]:
         internal = self._internal_handle(handle)
         async for event in self._engine.stream(internal):
+            rich = event.to_v2()
+            if not rich.parent_run_id:
+                terminal_status = {
+                    EventType.RUN_COMPLETED: "completed",
+                    EventType.RUN_FAILED: "failed",
+                    EventType.RUN_CANCELED: "canceled",
+                }.get(rich.event_type)
+                if terminal_status is not None:
+                    # A terminal checkpoint must not remain eligible for cold
+                    # attach.  Persist before yielding so a consumer that stops
+                    # at the terminal event cannot leave a stale live handle.
+                    self._persist_durable_handle(
+                        handle,
+                        terminal_status,
+                        terminal=True,
+                    )
             for projected in _project_event(event):
                 yield projected
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
-        return await self._engine.cancel(self._internal_handle(handle))
+        result = await self._engine.cancel(self._internal_handle(handle))
+        if result is CancelResult.INTERRUPTED_ACTIVE_TURN:
+            self._persist_durable_handle(handle, "canceled", terminal=True)
+        elif result is CancelResult.PENDING_CANCEL_RECORDED:
+            self._persist_durable_handle(handle, "cancel_requested")
+        return result
 
     async def resume(
         self,
@@ -323,6 +353,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
             "native_event_type": rich.event_type,
             "agent_id": rich.agent_id,
             "session_id": rich.session_id,
+            **({"phase": rich.phase} if rich.phase else {}),
             **({"parent_run_id": rich.parent_run_id} if rich.parent_run_id else {}),
         },
     )
@@ -371,6 +402,7 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         EventType.RUN_STARTED, EventType.RUN_COMPLETED, EventType.RUN_FAILED,
         EventType.RUN_CANCELED, EventType.RUN_INTERRUPTED, EventType.APPROVAL_REQUESTED,
         EventType.TEXT_DELTA, EventType.TEXT_COMPLETED, EventType.REASONING_DELTA,
+        EventType.MODEL_CALL_FAILED,
     }:
         return status_projection()
     if rich.event_type == EventType.RUN_STARTED:
@@ -424,6 +456,12 @@ def _project_event(event: HarnessEvent) -> list[Any]:
     # exclusively from the compact RUN_PROGRESS events below.
     if rich.event_type in {EventType.REASONING_DELTA, EventType.REASONING_COMPLETED}:
         return status_projection()
+    # Public commentary is rendered by Studio's chronological activity
+    # projection.  Keeping it as a canonical status fact prevents the shared
+    # chat reducer from concatenating every checkpoint into the final answer.
+    # The final-answer text remains a normal message item below.
+    if rich.event_type == EventType.TEXT_COMPLETED and rich.phase == "commentary":
+        return status_projection({"text": str(payload.get("text") or "")})
     if rich.event_type == EventType.MODEL_CALL_FAILED:
         if payload.get("action") != "retry_same_model":
             return status_projection()
@@ -540,10 +578,10 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         ]
     if rich.event_type in {EventType.TEXT_COMPLETED, EventType.REASONING_COMPLETED}:
         kind = "message" if rich.event_type == EventType.TEXT_COMPLETED else "reasoning"
-        phase = "final_answer" if kind == "message" else "commentary"
+        phase = str(rich.phase or ("final_answer" if kind == "message" else "commentary"))
         item_id = (
             stable_item_id("ksadk", run_id, "message", "final")
-            if kind == "message"
+            if kind == "message" and phase == "final_answer"
             else stable_item_id("ksadk", run_id, kind, rich.event_id)
         )
         part_id = "text-0"
@@ -575,10 +613,10 @@ def _project_event(event: HarnessEvent) -> list[Any]:
         ]
     if rich.event_type in {EventType.TEXT_DELTA, EventType.REASONING_DELTA}:
         kind = "message" if rich.event_type == EventType.TEXT_DELTA else "reasoning"
-        phase = "final_answer" if kind == "message" else "commentary"
+        phase = str(rich.phase or ("final_answer" if kind == "message" else "commentary"))
         item_id = (
             stable_item_id("ksadk", native_run_id, "message", "final")
-            if kind == "message"
+            if kind == "message" and phase == "final_answer"
             else stable_item_id("ksadk", run_id, kind, "stream")
         )
         part_id = "text-0"
@@ -737,7 +775,7 @@ def _provider_retry_text(payload: dict[str, Any]) -> str:
         attempt = max(2, int(payload["next_attempt"]))
     else:
         attempt = max(2, int(payload.get("model_attempt") or 1) + 1)
-    maximum = max(attempt, int(payload.get("max_attempts") or 3))
+    maximum = max(attempt, int(payload.get("max_attempts") or 10))
     delay_ms = max(0, int(payload.get("delay_ms") or payload.get("retry_delay_ms") or 0))
     wait = f"，{delay_ms / 1000:g} 秒后" if delay_ms else ""
     label = str(payload.get("label") or "").strip()

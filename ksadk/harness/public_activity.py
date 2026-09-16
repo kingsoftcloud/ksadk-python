@@ -13,15 +13,71 @@ _SENSITIVE = re.compile(
     r"(?i)(?:api[_ -]?key|secret|password|passwd|authorization|bearer|token|"
     r"sk-[a-z0-9]|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})"
 )
+_SECRET_VALUE = re.compile(
+    r"(?i)(?:\b(?:api[_ -]?key|secret|password|passwd|authorization|access[_ -]?token|"
+    r"refresh[_ -]?token)\b\s*[:=]\s*\S+|\bbearer\s+\S+|\bsk-[a-z0-9_-]{12,})"
+)
 
 
 def _text(value: Any) -> str:
+    # Tool arguments are untrusted payloads.  Keep the deliberately broad
+    # policy here: even a credential-shaped field name or URL path is enough
+    # to omit the action rather than risk displaying it.
     if not isinstance(value, str) or _SENSITIVE.search(value):
         return ""
     # Free-text search requests can embed URLs too; never publish credentials.
     if re.search(r"https?://[^\s/]*@", value):
         return ""
     return " ".join(value.split())[:180]
+
+
+def public_commentary_text(value: Any, *, limit: int = 360) -> str:
+    """Return model-authored text that is safe to show as public progress.
+
+    This accepts only the assistant's public text channel.  Provider reasoning,
+    tool arguments and tool results never call this helper.  Fail closed for
+    credentials and for tool-protocol fragments that some OpenAI-compatible
+    providers accidentally place in ``content`` alongside a tool call.
+    """
+    # Public assistant prose may legitimately discuss concepts such as a
+    # "token budget".  Only reject text that contains a credential value;
+    # unlike tool arguments, this channel has already been separated from
+    # provider reasoning and tool payloads.
+    if not isinstance(value, str) or _SECRET_VALUE.search(value):
+        return ""
+    if re.search(r"https?://[^\s/]*@", value):
+        return ""
+    if re.search(
+        r"(?i)(?:<\|\s*DSML\s*\||</?calls?>|</?invoke\b|<parameter\b|"
+        r"tool_calls?\s*[:=]|function_call\s*[:=])",
+        value,
+    ):
+        return ""
+    # Child conclusions are often Markdown.  The activity feed is prose, so
+    # remove presentation markers while retaining the actual conclusion.
+    text = re.sub(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)", "", value)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = " ".join(text.split()).strip()
+    # Streaming providers can occasionally leave a trailing punctuation-only
+    # content fragment after a tool call.  It conveys no progress and would
+    # otherwise render as a stray activity row such as ``。``.
+    if not re.search(r"[A-Za-z0-9\u3400-\u9fff]", text):
+        return ""
+    # Tool-preface boilerplate is not a useful user-facing checkpoint.  It is
+    # intentionally omitted instead of translated into another canned phrase.
+    if re.fullmatch(
+        r"(?i)(?:let me|i(?:'ll| will)|we(?:'ll| will))\s+"
+        r"(?:delegate|search|look up|check|call|use|run)\b.*",
+        text,
+    ):
+        return ""
+    if len(text) <= limit:
+        return text
+    shortened = text[:limit]
+    boundary = max(shortened.rfind(mark) for mark in "。！？；.!?;")
+    if boundary >= max(40, limit // 2):
+        shortened = shortened[: boundary + 1]
+    return shortened.rstrip() + "…"
 
 
 def tool_public_action(payload: dict[str, Any]) -> dict[str, str] | None:
@@ -93,3 +149,6 @@ def tool_public_action(payload: dict[str, Any]) -> dict[str, str] | None:
         }:
             return {"text": f"运行命令：{command}（参数未展示）"}
     return None
+
+
+__all__ = ["public_commentary_text", "tool_public_action"]

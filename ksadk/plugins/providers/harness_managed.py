@@ -50,10 +50,13 @@ from ksadk.plugins.subagents import SubagentProviderRouter
 
 _AUTONOMOUS_CAPABILITY_INSTRUCTIONS = """
 根据用户目标自主选择已提供的 Tool、Skill、MCP 与子智能体；不要要求用户指定内部能力名称。
-当任务包含两个或更多彼此独立、适合并行处理的工作流时，主动委派子任务。
+当任务包含两个或更多彼此独立、适合并行处理的工作流时，必须在同一次回复中为每个
+独立工作流各调用一次 delegate_task，让它们并行执行；不要只委派第一个后自己串行完成其余工作。
 为每个子任务提供不超过 16 字的职责标签。
 编码、仓库修改、调试和测试类子任务标记为 coding，其余调研与分析类子任务标记为 general。
 简单任务直接完成，不要为展示能力而委派。
+当用户明确要求生成、输出或保存某种格式的文件时，必须调用已提供的工作区写入能力
+创建真实文件，并在最终答复中给出文件名；只在对话中展示同格式文本不算完成。
 """.strip()
 
 
@@ -175,6 +178,11 @@ async def build_managed_provider_adapter(
         ),
     )
     codex_available = await codex_child.available()
+    run_timeout_seconds = int(execution.get("timeoutSeconds", 120))
+    child_timeout_seconds = min(
+        run_timeout_seconds,
+        int(execution.get("childTimeoutSeconds", run_timeout_seconds)),
+    )
     delegation_runtime = AdaptiveDelegationRuntime(
         router=(
             SubagentProviderRouter({DEFAULT_CODEX_CHILD_PROVIDER_REF: codex_child})
@@ -185,8 +193,20 @@ async def build_managed_provider_adapter(
         max_children=int(
             execution.get("maxDynamicChildren", 8)
         ),
-        child_timeout_seconds=int(
-            execution.get("childTimeoutSeconds", 300)
+        # A delegated child is part of the parent run and must not outlive the
+        # Agent's declared execution deadline.  The previous 300s fallback
+        # silently ignored Studio's common 120s timeout and made one slow
+        # research child hold the whole turn open for five minutes.
+        child_timeout_seconds=child_timeout_seconds,
+        # ``modelParameters.maxTokens`` is a per-call output ceiling, not a
+        # whole-child input+output budget.  A 4096 default here made ordinary
+        # research children fail as soon as search results were added to their
+        # next prompt.  Keep the total budget opt-in; an explicitly configured
+        # child ceiling and any parent run ceiling are still enforced.
+        child_max_total_tokens=(
+            int(execution["childMaxTotalTokens"])
+            if execution.get("childMaxTotalTokens") is not None
+            else None
         ),
     )
     engine = ManagedLangGraphEngine(

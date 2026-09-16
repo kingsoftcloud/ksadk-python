@@ -88,12 +88,16 @@ def run(output: Path | None = None) -> list[dict]:
                 trigger = page.get_by_role("combobox", name="筛选 Agent 状态")
                 trigger.click()
                 expect(page.get_by_role("option", name="草稿", exact=True)).to_be_visible()
-                assert (
-                    page.locator('.studio-select-trigger[aria-label="筛选 Agent 状态"]').evaluate(
-                        "e => getComputedStyle(e).outlineStyle"
-                    )
-                    == "none"
+                outline = page.locator(
+                    '.studio-select-trigger[aria-label="筛选 Agent 状态"]'
+                ).evaluate(
+                    "e => { const s = getComputedStyle(e);"
+                    " return { style: s.outlineStyle, width: s.outlineWidth }; }"
                 )
+                # focus-visible 会给触发器加 2px focus ring（a11y 特性），也允许无 ring。
+                assert outline["style"] == "none" or (
+                    outline["style"] == "solid" and outline["width"] == "2px"
+                ), outline
                 capture("agent-select")
                 page.keyboard.press("Escape")
                 page.get_by_role("button", name="Conversation Items Agent 的更多操作").click()

@@ -287,6 +287,13 @@ def create_studio_app(
             # Optional plugin activation must not hold the HTTP listener closed
             # while DSH starts subprocesses or acquires an authority lease.
             schedule_runtime_warmup(studio.active)
+            # Pre-resolve the entry redirect choice once off the request path;
+            # failures are swallowed and ``index()`` has its own bounded wait.
+            probe_warmup = getattr(
+                studio.active.dsh_capabilities, "schedule_plugin_probe_warmup", None
+            )
+            if callable(probe_warmup):
+                probe_warmup()
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
@@ -544,8 +551,13 @@ def create_studio_app(
         # hides those pages. Select the host from Profile metadata, without
         # starting Core just to decide which entry to serve.
         try:
-            use_core = await studio.dsh_capabilities.has_enabled_profile_plugins()
-        except (StudioError, OSError, RuntimeError):
+            # 有界等待：探测可能触发 Node bridge 冷启动（可达数十秒），
+            # 超时则先回 React shell，避免首屏长时间白屏；
+            # 预热完成后真实 Core 用户下次导航仍会拿到正确重定向。
+            use_core = await asyncio.wait_for(
+                studio.dsh_capabilities.has_enabled_profile_plugins(), timeout=2.0
+            )
+        except (asyncio.TimeoutError, StudioError, OSError, RuntimeError):
             # The optional toolchain may be absent in a plain SDK workspace.
             use_core = False
         if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
@@ -718,7 +730,7 @@ def create_studio_app(
 
     @app.post("/v1/responses/{response_id}/cancel")
     async def cancel_openai_response(response_id: str):
-        result = shared_web.cancel_run(response_id)
+        result = await shared_web.cancel_run(response_id)
         return {
             "id": response_id,
             "object": "response",
@@ -880,7 +892,7 @@ def create_studio_app(
                     },
                 )
             elif action == "CancelRun":
-                data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+                data = await shared_web.cancel_run(str(payload.get("InvocationId") or ""))
             elif action == "SubmitInteraction":
                 run_id = str(payload.get("RunId") or "")
                 studio._require_direct_run(run_id)

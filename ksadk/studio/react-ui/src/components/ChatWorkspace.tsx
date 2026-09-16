@@ -4,8 +4,8 @@ import { Bot, MessageSquarePlus, PanelLeftOpen, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
 import { useAgentChat } from "@kingsoftcloud/ksadk-web/hooks";
-import { ApiFacadeImpl } from "@kingsoftcloud/ksadk-web/runtime";
 import { apiFetch } from "../api";
+import { StudioChatApiFacade } from "../studioChatApiFacade";
 import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
@@ -73,7 +73,7 @@ export function ChatWorkspace({
   newChatRequest = 0, onNewChatStarted,
   ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
-  const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
+  const api = useMemo(() => new StudioChatApiFacade({ fetch: apiFetch, agentId }), [agentId]);
   const chat = useAgentChat({ api, agentId, conversationClient: null });
   const documents = useRunDocumentActions();
   const Timeline = chat.agentFramework === "harness" ? CompactHarnessTimeline : AgentConversationTimeline;
@@ -132,6 +132,18 @@ export function ChatWorkspace({
   const previousRefreshTick = useRef(refreshTick);
   const refreshChat = chat.refresh;
   const previousTransport = useRef({ agentId, sessionId: chat.currentSessionId, streaming: false });
+  const stopByUser = () => {
+    api.authorizeUserCancellation();
+    chat.stop();
+  };
+  const cancelRemoteByUser = () => {
+    api.authorizeUserCancellation();
+    // The shared controller refreshes once CancelRun returns.  Refresh again
+    // from the product shell as a defensive reconciliation: providers may
+    // acknowledge cooperative cancellation just before their terminal event
+    // becomes visible to the session projection.
+    void chat.cancelRemote().finally(() => refreshChat());
+  };
   // 提交→SSE 首帧之间存在会话创建/运行时预热窗口，此时 facade 的
   // isStreaming 仍为 false；用本地 pending 让"正在思考"流光即时出现。
   const [submitPending, setSubmitPending] = useState(false);
@@ -392,6 +404,7 @@ export function ChatWorkspace({
               messages={chat.messages}
               isStreaming={chat.isStreaming || submitPending}
               activity={chat.activity}
+              {...(chat.agentFramework === "harness" ? { activeRunId: chat.activity?.runId } : {})}
               sessionId={chat.currentSessionId}
               hasMoreMessages={(chat.messages?.length ?? 0) >= 50}
               emptyState={(
@@ -405,9 +418,10 @@ export function ChatWorkspace({
               onSubmitFeedback={chat.submitResponseFeedback}
               onRespondToApproval={chat.respondToApproval}
               onSubmitAguiAction={chat.submitAguiAction}
-              onStopGeneration={chat.stop}
-              onCancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
+              onStopGeneration={stopByUser}
+              onCancelRemote={chat.uiCapabilities.StopRun ? cancelRemoteByUser : undefined}
               onLoadOlderSessionMessages={chat.loadOlderMessages}
+              {...(chat.agentFramework === "harness" ? { onOpenSession: sessionId => chat.selectSession(sessionId) } : {})}
               interactionRecords={chat.interactionRecords}
             />
             {chat.agentFramework !== "harness"
@@ -426,8 +440,8 @@ export function ChatWorkspace({
                 setSubmitPending(true);
                 chat.send(text, { attachments, executionMode });
               }}
-              stopGeneration={chat.stop}
-              cancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
+              stopGeneration={stopByUser}
+              cancelRemote={chat.uiCapabilities.StopRun ? cancelRemoteByUser : undefined}
               isMobile={chat.isMobile}
               attachmentsEnabled={chat.uiCapabilities.Attachments !== false}
               approvalEnabled={Boolean(chat.uiCapabilities.Approval)}
@@ -459,6 +473,7 @@ export function ChatWorkspace({
               if (isStreamingRef.current && currentSessionIdRef.current === id) {
                 // 仅当删除的就是当前流式会话：stop 只断开前端订阅，服务端
                 // run 仍 RUNNING；cancelRemote 才会把 run 落为 canceled。
+                api.authorizeUserCancellation();
                 void chat.cancelRemote().catch(() => {});
                 chat.stop();
                 for (let i = 0; i < 40 && isStreamingRef.current; i += 1) {

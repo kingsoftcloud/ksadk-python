@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,7 +93,8 @@ class _RecordingAdapter(RuntimeAdapter):
             "run_id": handle.run_id,
             "scope_id": f"scope-{handle.run_id}",
         }
-        source = SourceRef(framework=self.runtime_type)
+        framework = "ksadk" if self.runtime_type == "harness" else self.runtime_type
+        source = SourceRef(framework=framework)
         yield RunStarted(
             event_id="e1",
             seq=1,
@@ -128,7 +130,7 @@ class _RecordingAdapter(RuntimeAdapter):
                 ),
             ),
             source=SourceRef(
-                framework=self.runtime_type,
+                framework=framework,
                 metadata={"duration_ms": 42},
             ),
             **common,
@@ -372,6 +374,64 @@ async def test_studio_run_service_uses_core_executor_and_persists_runtime_events
 
 
 @pytest.mark.asyncio
+async def test_harness_runtime_keeps_private_deltas_out_of_run_timeline(tmp_path: Path) -> None:
+    class _HarnessDeltaAdapter(_RecordingAdapter):
+        async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+            async for event in super().stream(handle):
+                yield event
+                if isinstance(event, RunStarted):
+                    yield ItemCompleted(
+                        schema_version=2,
+                        event_id="private-reasoning-delta",
+                        seq=0,
+                        timestamp=1.0,
+                        run_id=handle.run_id,
+                        scope_id=f"scope-{handle.run_id}",
+                        item_id="private-status",
+                        item_kind="status",
+                        snapshot=ContentSnapshot(
+                            parts=(
+                                TextContent(
+                                    part_id="status-0",
+                                    text=(
+                                        '{"event":"reasoning.delta",'
+                                        '"details":{"text":"private"}}'
+                                    ),
+                                ),
+                            )
+                        ),
+                        source=SourceRef(
+                            framework="ksadk",
+                            metadata={"native_event_type": "reasoning.delta"},
+                        ),
+                    )
+
+    registry = RuntimeRegistry()
+    registry.register("harness", lambda _context: _HarnessDeltaAdapter([], "harness"))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+
+    record = await service.run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(runtime_type="harness", project_dir=tmp_path),
+            build_id="build-harness-delta",
+            agent_id="harness-delta-agent",
+        ),
+        "run",
+    )
+
+    assert record.status == RunStatus.COMPLETED
+    public_event_ids = {
+        event.data.get("runtimeEvent", {}).get("event_id")
+        for event in service.event_store.events(record.id)
+    }
+    assert "private-reasoning-delta" not in public_event_ids
+    canonical = await service.runtime_events.list(record.session_id)
+    assert "private-reasoning-delta" not in {event.event_id for event in canonical}
+
+
+@pytest.mark.asyncio
 async def test_plugin_provider_runtime_adapter_publishes_deltas_before_completion(
     tmp_path: Path,
 ) -> None:
@@ -478,6 +538,79 @@ async def test_second_turn_receives_transport_neutral_session_history(
         {"role": "user", "content": "第二轮"},
     ]
     assert starts[1].metadata["thread_id"] == "thread-1"
+
+
+@pytest.mark.asyncio
+async def test_harness_followup_receives_verified_child_lifecycle_summary(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("harness", lambda _context: _RecordingAdapter(calls, "harness"))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    spec = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="harness", project_dir=tmp_path),
+        build_id="build-harness",
+        agent_id="research-helper",
+    )
+
+    first = await service.run(spec, "并行调研", session_id="ses-harness")
+    assert first.status == RunStatus.COMPLETED, first.error
+    assert first.runtime_type == "harness"
+    service.event_store.append(
+        first.id,
+        "item.completed",
+        {
+            "runtimeEvent": {
+                "event_id": "child-terminal",
+                "run_id": first.runtime_handle["run_id"],
+                "item_kind": "status",
+                "source": {
+                    "native_run_id": first.runtime_handle["run_id"],
+                    "metadata": {"session_id": "ses-harness"},
+                },
+                "snapshot": {
+                    "parts": [
+                        {
+                            "type": "text",
+                            "part_id": "text-0",
+                            "text": json.dumps(
+                                {
+                                    "event": "run.progress",
+                                    "details": {
+                                        "kind": "subagent.event",
+                                        "call_id": "research-one",
+                                        "label": "调研主题一",
+                                        "status": "succeeded",
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ]
+                },
+            }
+        },
+    )
+
+    await service.run(spec, "进展如何？", session_id="ses-harness")
+
+    starts = [value for name, value in calls if name == "start"]
+    conversation = starts[1].conversation_preprocessing()
+    assert conversation is not None
+    assert conversation.messages[-3:] == [
+        {"role": "user", "content": "并行调研"},
+        {
+            "role": "assistant",
+            "content": (
+                "harness answer\n\n"
+                "[Harness 执行记录] 子智能体“调研主题一”已完成。"
+            ),
+        },
+        {"role": "user", "content": "进展如何？"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -1686,6 +1819,34 @@ async def test_plugin_run_streams_session_store_events_live_without_duplicates(
                     **common,
                 ),
             )
+            await store.append_one(
+                session_id,
+                ItemCompleted(
+                    event_id="live-private-child-delta",
+                    seq=0,
+                    item_id="private-status-1",
+                    item_kind="status",
+                    snapshot=ContentSnapshot(
+                        parts=(
+                            TextContent(
+                                part_id="status-0",
+                                text='{"event":"text.delta","details":{"text":"private"}}',
+                            ),
+                        )
+                    ),
+                    **{
+                        **common,
+                        "source": SourceRef(
+                            framework="ksadk",
+                            native_run_id=f"{run_id}:sub:child-1:child-1",
+                            metadata={
+                                "native_event_type": "text.delta",
+                                "parent_run_id": run_id,
+                            },
+                        ),
+                    },
+                ),
+            )
             await asyncio.wait_for(gate.wait(), timeout=2)
             await store.append_one(
                 session_id,
@@ -1701,7 +1862,13 @@ async def test_plugin_run_streams_session_store_events_live_without_duplicates(
             )
             await store.append_one(
                 session_id,
-                RunCompleted(event_id="live-e5", seq=0, status="completed", output_refs=(), **common),
+                RunCompleted(
+                    event_id="live-e5",
+                    seq=0,
+                    status="completed",
+                    output_refs=(),
+                    **common,
+                ),
             )
             return SimpleNamespace(output_text="hello!", session_id=session_id, usage={})
 
@@ -1729,7 +1896,12 @@ async def test_plugin_run_streams_session_store_events_live_without_duplicates(
             ),
             "stream this live",
             session_id="ses-plugin-live",
-            on_event=lambda event: observed.append((event.type, str(event.data.get("text") or event.data.get("delta") or ""))),
+            on_event=lambda event: observed.append(
+                (
+                    event.type,
+                    str(event.data.get("text") or event.data.get("delta") or ""),
+                )
+            ),
         )
     )
 
@@ -1750,3 +1922,8 @@ async def test_plugin_run_streams_session_store_events_live_without_duplicates(
     deltas = [text for event_type, text in observed if event_type == "message.delta"]
     assert deltas.count("!") == 1
     assert [event_type for event_type, _ in observed].count("run.completed") == 1
+    assert "private" not in [text for _, text in observed]
+    assert all(
+        event.data.get("runtimeEvent", {}).get("event_id") != "live-private-child-delta"
+        for event in await service.events(record.id)
+    )

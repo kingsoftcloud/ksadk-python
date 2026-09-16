@@ -15,7 +15,10 @@ test -n "$wheel" || {
 
 rm -rf "$STUDIO_APP_DIR"
 mkdir -p "$STUDIO_APP_BUNDLE/Contents/MacOS" "$STUDIO_APP_RUNTIME"
-python3 scripts/create_studio_icon.py
+# Do not depend on the host's global/user-site Pillow installation. A stale
+# native Pillow extension there can make an otherwise self-contained package
+# fail before the bundled runtime is created.
+uv run --isolated --no-project --with pillow python scripts/create_studio_icon.py
 uv venv --python "$STUDIO_APP_PYTHON" "$STUDIO_APP_RUNTIME"
 
 # uv may create interpreter symlinks into its user cache. Resolve and copy them
