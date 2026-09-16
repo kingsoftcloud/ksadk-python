@@ -795,14 +795,13 @@ build-studio-static:
 	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
 		set -eu; \
 		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
+		$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci; \
 		if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
 			WEB_TARBALL_PATH="$(KSADK_WEB_TARBALL)"; \
 			case "$$WEB_TARBALL_PATH" in /*) ;; *) WEB_TARBALL_PATH="$(CURDIR)/$$WEB_TARBALL_PATH" ;; esac; \
 			test -f "$$WEB_TARBALL_PATH" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $$WEB_TARBALL_PATH" >&2; exit 1; }; \
 			echo "Install Studio dependencies with the reviewed KsADK Web tarball: $$WEB_TARBALL_PATH"; \
-			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --package-lock=false "$$WEB_TARBALL_PATH"; \
-		else \
-			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci; \
+			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --ignore-scripts "$$WEB_TARBALL_PATH"; \
 		fi; \
 		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
 	else \

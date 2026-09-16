@@ -13,4 +13,4 @@ run(['run', 'build:lib'], web);
 const packed = spawnSync('npm', ['pack', '--ignore-scripts', '--json'], { cwd: web, encoding: 'utf8', shell: false });
 if (packed.status !== 0) throw new Error(packed.stderr);
 const artifact = JSON.parse(packed.stdout)[0].filename;
-run(['install', '--no-save', '--package-lock=false', '--ignore-scripts', '--no-audit', '--no-fund', resolve(web, artifact)], studio);
+run(['install', '--no-save', '--ignore-scripts', '--no-audit', '--no-fund', resolve(web, artifact)], studio);
