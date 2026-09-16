@@ -229,6 +229,21 @@ def _cloud_event_conversation_item(
     return item.model_dump(by_alias=True, exclude_none=True, mode="json")
 
 
+import re as _re
+
+# 内容 hash 文件名（如 index-CQj_Jm9z.js）可安全 immutable 强缓存；
+# index.html 与动态 HTML 仍需每次校验。
+_HASHED_ASSET_RE = _re.compile(r"-[A-Za-z0-9_]{8,}\.(js|css|woff2?|ttf|png|svg|webp|mp4|wasm)$")
+
+
+def _cache_control_for(path: str, response: Any) -> str:
+    if path.startswith(("/api/", "/v1/")):
+        return "no-store"
+    if _HASHED_ASSET_RE.search(path) and 200 <= response.status_code < 300:
+        return "public, max-age=31536000, immutable"
+    return response.headers.get("Cache-Control", "no-cache")
+
+
 def create_studio_app(
     root: Path | str,
     *,
@@ -483,11 +498,7 @@ def create_studio_app(
                     )
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
-        response.headers["Cache-Control"] = (
-            "no-store"
-            if request.url.path.startswith(("/api/", "/v1/"))
-            else response.headers.get("Cache-Control", "no-cache")
-        )
+        response.headers["Cache-Control"] = _cache_control_for(request.url.path, response)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"

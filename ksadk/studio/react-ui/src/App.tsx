@@ -161,6 +161,26 @@ interface OperationScope {
   cloudCredential?: string;
 }
 
+// 会话级 SWR 缓存：刷新时立即以缓存壳层渲染 discovery 数据，后台重验更新。
+// 单用户本地 Studio，sessionStorage 足够，不引入额外存储依赖。
+function readDiscoveryCache<T>(kind: string): T | null {
+  try {
+    const raw = sessionStorage.getItem(`studio.discovery.${kind}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { v?: T };
+    return parsed.v ?? null;
+  } catch {
+    return null;
+  }
+}
+function writeDiscoveryCache(kind: string, value: unknown) {
+  try {
+    sessionStorage.setItem(`studio.discovery.${kind}`, JSON.stringify({ t: Date.now(), v: value }));
+  } catch {
+    // 容量满等场景静默忽略，缓存只是加速层。
+  }
+}
+
 export default function App() {
   const workspacePages = useWorkspaceContributions();
   const viewportMode = useStudioViewportMode();
@@ -170,8 +190,8 @@ export default function App() {
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
-  const [agents, setAgents] = useState<AgentSummary[]>([]);
-  const [agentsLoaded, setAgentsLoaded] = useState(false);
+  const [agents, setAgents] = useState<AgentSummary[]>(() => readDiscoveryCache("agents") || []);
+  const [agentsLoaded, setAgentsLoaded] = useState(() => Boolean(readDiscoveryCache("agents")));
   const [currentAgentId, setCurrentAgentId] = useState(
     initialRoute.detailAgentId
       || initialRoute.editingAgentId
@@ -186,7 +206,7 @@ export default function App() {
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string; workspaceId?: string } | null>(null);
   const [operationScope, setOperationScope] = useState<OperationScope | null>(null);
-  const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>([]);
+  const [workspaces, setWorkspaces] = useState<Array<{ workspaceId: string; name: string; path: string }>>(() => readDiscoveryCache("workspaces") || []);
   const [workspaceRunCount, setWorkspaceRunCount] = useState(0);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [runtimeChecked, setRuntimeChecked] = useState(false);
@@ -194,8 +214,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
-  const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
-  const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
+  const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>(() => readDiscoveryCache("cloudDeployments") || []);
+  const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(() => Boolean(readDiscoveryCache("cloudDeployments")));
   const agentsDiscoveryEpoch = useRef(0);
   const cloudDiscoveryEpoch = useRef(0);
   const [cloudDeploymentId, setCloudDeploymentId] = useState(
@@ -268,25 +288,15 @@ export default function App() {
     try {
       const payload = await apiFetch("/api/v1/agents?limit=100").then(r => r.json());
       const summaries: AgentSummary[] = payload.items || [];
+      // 只取列表摘要；构建详情仅 Agents 页徽标需要，由 AgentsPage 自行懒加载，
+      // 会话首屏不再被 N 个详情请求拖住。
       if (requestEpoch !== agentsDiscoveryEpoch.current) return;
-      // 先用摘要渲染，构建详情（仅 Agents 页徽标需要）逐个后台补齐，
-      // 避免会话首屏等待 N 个详情请求串行排队。
+      writeDiscoveryCache("agents", summaries);
       setAgents(summaries);
       setCurrentAgentId(prev => (
         summaries.some(agent => agent.metadata.id === prev)
           ? prev
           : summaries[0]?.metadata.id || ""
-      ));
-      summaries.map((agent, index) => (
-        apiFetchWithTimeout(`/api/v1/agents/${encodeURIComponent(agent.metadata.id)}`)
-          .then(r => r.ok ? r.json() : null)
-          .then(detail => {
-            if (!detail || requestEpoch !== agentsDiscoveryEpoch.current) return;
-            setAgents(prevItems => prevItems.map((item, i) => (
-              i === index ? { ...item, builds: detail.builds || [] } : item
-            )));
-          })
-          .catch(() => null)
       ));
     } catch {
       // 保留上一次成功加载的数据，刷新按钮可重新触发同步。
@@ -319,6 +329,7 @@ export default function App() {
       // 每个云端 Agent 的详情（版本/别名）后台增量合入。
       const accountByAgentId = new Map(accountItems.map(item => [item.agentId, item]));
       const initialItems = mergeCloudChatTargets(receiptItems, [...accountByAgentId.values()]);
+      writeDiscoveryCache("cloudDeployments", initialItems);
       setCloudDeployments(initialItems);
       setCloudDeploymentId(previous => initialItems.some((item: CloudDeploymentSummary) => (
         item.id === previous
@@ -342,6 +353,7 @@ export default function App() {
         receiptItems,
         [...accountByAgentId.values()],
       );
+      writeDiscoveryCache("cloudDeployments", items);
       setCloudDeployments(items);
       setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => (
         item.id === previous
@@ -382,7 +394,7 @@ export default function App() {
 
   useEffect(() => {
     apiFetch("/api/v1/workspaces").then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.items) setWorkspaces(d.items); }).catch(() => undefined);
+      .then(d => { if (d?.items) { writeDiscoveryCache("workspaces", d.items); setWorkspaces(d.items); } }).catch(() => undefined);
   }, [refreshTick]);
 
   const currentAgent = agents.find(a => a.metadata.id === currentAgentId);
