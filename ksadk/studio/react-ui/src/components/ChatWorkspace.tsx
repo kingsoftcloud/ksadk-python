@@ -185,18 +185,19 @@ export function ChatWorkspace({
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
   const [welcomeCopy, setWelcomeCopy] = useState(() => pickStudioWelcome());
-  const [, setOutboxRevision] = useState(0);
+  const [outboxRevision, setOutboxRevision] = useState(0);
   useEffect(() => chat.conversationOutbox?.subscribe(() => setOutboxRevision(revision => revision + 1)), [chat.conversationOutbox]);
   const unresolvedOutbox = useMemo(() => {
     const id = chat.conversationId || conversationController.getOrCreate(agentId, chat.currentSessionId);
     return chat.conversationOutbox?.listUnresolved(id)
       .filter(entry => entry.status === "pending" || entry.status === "unknown" || entry.status === "failed")
+      .filter(entry => !chat.isOutboxRequestActive(entry.requestId))
       .map(entry => ({
         entry,
         canRetry: entry.attachments.length === 0
           || chat.conversationOutbox?.getRuntimeAttachments(entry.requestId).length === entry.attachments.length,
       })) || [];
-  }, [agentId, chat.conversationId, chat.currentSessionId, chat.conversationOutbox, conversationController]);
+  }, [agentId, chat.conversationId, chat.currentSessionId, chat.conversationOutbox, chat.isOutboxRequestActive, conversationController, outboxRevision]);
   const [retryingOutboxId, setRetryingOutboxId] = useState<string | null>(null);
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const sessionTriggerRef = useRef<HTMLButtonElement>(null);
@@ -534,15 +535,22 @@ export function ChatWorkspace({
           {unresolvedOutbox.length > 0 ? (
             <div className="studio-outbox-notice" role="status" aria-live="polite">
               <strong>{unresolvedOutbox.length === 1 ? "有一条消息需要处理" : `有 ${unresolvedOutbox.length} 条消息需要处理`}</strong>
-              <span>应用重载或网络中断可能导致投递状态未知，请确认后再继续。</span>
+              <span>状态未知的消息会先查询原任务；确认失败后，可检查已有结果并决定是否重试。</span>
               <div className="studio-outbox-items">
                 {unresolvedOutbox.map(({ entry, canRetry }) => (
                   <div className="studio-outbox-item" key={entry.requestId}>
-                    <span title={entry.text}>{entry.status === "pending" ? "待发送 · " : entry.status === "failed" ? "发送失败 · " : "状态未知 · "}{shortText(entry.text, 44)}{!canRetry ? " · 含附件，请重新添加后发送" : ""}</span>
-                    <button type="button" disabled={!canRetry || retryingOutboxId === entry.requestId} onClick={() => {
+                    <div className="studio-outbox-item-copy">
+                      <span title={entry.text}>{entry.status === "pending" ? "待发送 · " : entry.status === "failed" ? "发送失败 · " : "状态未知 · "}{shortText(entry.text, 44)}{!canRetry && entry.status !== "unknown" ? " · 含附件，请重新添加后发送" : ""}</span>
+                      {entry.error && <small>{entry.error}</small>}
+                    </div>
+                    <button type="button" disabled={(entry.status !== "unknown" && !canRetry) || retryingOutboxId === entry.requestId} onClick={() => {
                       setRetryingOutboxId(entry.requestId);
-                      void chat.retryOutbox(entry.requestId).finally(() => setRetryingOutboxId(null));
-                    }}>{!canRetry ? "无法恢复附件" : retryingOutboxId === entry.requestId ? "重试中…" : "确认并重试"}</button>
+                      void chat.retryOutbox(entry.requestId).catch(() => {
+                        chat.conversationOutbox?.update(entry.requestId, { error: "操作未完成，请查看会话状态后再试。" });
+                      }).finally(() => setRetryingOutboxId(null));
+                    }}>{retryingOutboxId === entry.requestId ? (entry.status === "unknown" ? "查询中…" : "发送中…")
+                      : entry.status === "unknown" ? "查询投递状态" : !canRetry ? "无法恢复附件"
+                      : entry.status === "pending" ? "发送消息" : "确认并重试"}</button>
                   </div>
                 ))}
               </div>

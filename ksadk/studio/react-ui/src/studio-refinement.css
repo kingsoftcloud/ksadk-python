@@ -811,7 +811,9 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity
 .studio-draft-conflict-actions button:hover { background: color-mix(in srgb, var(--accent, #1677ff) 10%, transparent); }
 .studio-outbox-items { display: flex; flex-direction: column; gap: 4px; }
 .studio-outbox-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.studio-outbox-item > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-outbox-item-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.studio-outbox-item-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-outbox-item-copy > small { color: var(--text-secondary, #6b7280); overflow-wrap: anywhere; }
 .studio-outbox-item button { flex: 0 0 auto; border: 0; border-radius: 6px; padding: 3px 8px; color: var(--accent, #1677ff); background: transparent; cursor: pointer; }
 .studio-outbox-item button:hover { background: color-mix(in srgb, var(--accent, #1677ff) 10%, transparent); }
 .studio-outbox-item button:disabled { opacity: .55; cursor: wait; }

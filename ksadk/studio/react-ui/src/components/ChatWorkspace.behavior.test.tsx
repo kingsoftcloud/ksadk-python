@@ -1,5 +1,6 @@
 import { createRef } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { OutboxStore, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
 import { ChatWorkspace, type ChatWorkspaceHandle } from "./ChatWorkspace";
@@ -51,6 +52,10 @@ const mocks = vi.hoisted(() => {
     submitAguiAction: vi.fn(),
     respondInteraction: vi.fn(),
     conversationDrafts: undefined as any,
+    conversationId: undefined as ConversationId | undefined,
+    conversationOutbox: undefined as OutboxStore | undefined,
+    retryOutbox: vi.fn(),
+    isOutboxRequestActive: vi.fn(() => false),
   };
   return {
     chat,
@@ -106,9 +111,63 @@ describe("ChatWorkspace shared conversation composition", () => {
     mocks.timelineProps = null;
     mocks.composerProps = null;
     mocks.chat.conversationDrafts = undefined;
+    mocks.chat.conversationId = undefined;
+    mocks.chat.conversationOutbox = undefined;
+    mocks.chat.isOutboxRequestActive.mockReturnValue(false);
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
+  });
+
+  it("updates unresolved delivery notices directly from the ledger", async () => {
+    const outbox = new OutboxStore("test:outbox-notice");
+    outbox.clear();
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument();
+    let requestId = "";
+    act(() => {
+      const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1",
+        text: "一次操作", attachments: [] });
+      requestId = entry.requestId;
+      outbox.update(requestId, { status: "unknown" });
+    });
+    expect(await screen.findByText("有一条消息需要处理")).toBeVisible();
+    expect(screen.getByRole("button", { name: "查询投递状态" })).toBeEnabled();
+    act(() => { outbox.update(requestId, { status: "completed" }); });
+    await waitFor(() => expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument());
+    outbox.clear();
+  });
+
+  it("does not offer recovery for a request still held by the live queue", () => {
+    const outbox = new OutboxStore("test:outbox-live-queue");
+    outbox.clear();
+    outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1", text: "queued", attachments: [] });
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    mocks.chat.isOutboxRequestActive.mockReturnValue(true);
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument();
+    outbox.clear();
+  });
+
+  it("allows unknown attachment deliveries to be queried without restoring file bytes", async () => {
+    const outbox = new OutboxStore("test:outbox-attachment");
+    outbox.clear();
+    const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1",
+      text: "处理附件", attachments: [{ name: "report.txt", type: "text/plain", size: 12 }] });
+    outbox.update(entry.requestId, { status: "unknown", error: "暂时无法查询原任务状态，请稍后重新查询。" });
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    mocks.chat.retryOutbox.mockResolvedValue(false);
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(screen.getByText("暂时无法查询原任务状态，请稍后重新查询。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查询投递状态" }));
+    await waitFor(() => expect(mocks.chat.retryOutbox).toHaveBeenCalledWith(entry.requestId));
+    act(() => { outbox.update(entry.requestId, { status: "failed" }); });
+    expect(screen.getByRole("button", { name: "无法恢复附件" })).toBeDisabled();
+    outbox.clear();
   });
 
   it("shows a product title for an empty session instead of its internal id", () => {
