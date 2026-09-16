@@ -136,7 +136,7 @@ function modelName(item?: EditorCatalogItem) {
 }
 
 function runtimeTitle(runtime: string) {
-  if (runtime === "harness") return "KsADK Harness";
+  if (runtime === "harness") return "通用智能体 · KsADK Harness";
   if (runtime === "adk") return "ADKRuntimeAdapter";
   if (runtime === "langgraph") return "LangGraphRuntimeAdapter";
   if (runtime === "plugin") return "External AgentProvider";
@@ -858,7 +858,7 @@ export function AgentEditor({
             disabled
             value={runtime}
             options={[
-              { value: "harness", label: "KsADK Harness" },
+              { value: "harness", label: "通用智能体 · KsADK Harness" },
               { value: "codex", label: "CodexRuntimeAdapter" },
               { value: "adk", label: "ADKRuntimeAdapter" },
               { value: "langgraph", label: "LangGraphRuntimeAdapter" },
@@ -934,8 +934,8 @@ export function AgentEditor({
           <input type="checkbox" checked={harnessPermission} onChange={event => {
             setHarnessPermission(event.target.checked); setHarnessPermissionTouched(true);
           }} />
-          <span><strong>允许 KsADK Harness 在本机运行</strong>
-            <small>仅授权本地执行引擎启动；工具仍受权限与审批策略约束。撤销后保存到新版本，该版本将无法使用本地 Harness。</small>
+          <span><strong>允许通用智能体在本机运行</strong>
+            <small>仅授权本地执行引擎启动；工具仍受权限与审批策略约束。撤销后保存到新版本，该版本将无法使用通用智能体。</small>
           </span>
         </label></details>}
         <fieldset className="agent-policy-editor soul-editor" aria-describedby="soulPolicyHint">
@@ -1062,7 +1062,7 @@ export function AgentEditor({
           />
         </div>
         <div className="field quick-model-binding-field">
-          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">{runtime === "harness" ? "Skill 与 MCP 由 KsADK Harness 按需加载，并执行权限与审批策略。" : runtime === "codex" ? "Skill 与 MCP 由 Codex Runtime 按能力投影。" : runtime === "plugin" ? "Skill 与 MCP 会通过 PluginHost 投影给外部 Provider。" : "Skill 可编辑；当前 Runtime 尚未实现 MCP 源码注入，历史 MCP 仅保留。"}</span></div>
+          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">{runtime === "harness" ? "Skill 与 MCP 由通用智能体按需加载，并执行权限与审批策略。" : runtime === "codex" ? "Skill 与 MCP 由 Codex Runtime 按能力投影。" : runtime === "plugin" ? "Skill 与 MCP 会通过 PluginHost 投影给外部 Provider。" : "Skill 可编辑；当前 Runtime 尚未实现 MCP 源码注入，历史 MCP 仅保留。"}</span></div>
           <div className="quick-capability-bindings">
             <StudioMultiSelect
               ariaLabel="选择绑定 Skill"

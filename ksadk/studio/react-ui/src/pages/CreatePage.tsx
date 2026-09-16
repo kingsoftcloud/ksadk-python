@@ -97,7 +97,7 @@ function emptyQuickForm(): QuickAgentFormValues {
 }
 const CODEX_AGENT_PROVIDER_PREFIX = "plugin://io.ksadk.codex-provider@";
 const BUILTIN_RUNTIME_OPTIONS = [
-  { value: "harness", label: "KsADK Harness" },
+  { value: "harness", label: "通用智能体 · KsADK Harness" },
   { value: "codex", label: "Codex · ManagedRuntime" },
 ];
 
@@ -125,7 +125,7 @@ const RUNTIME_OPTIONS = BUILTIN_RUNTIME_OPTIONS;
 function HarnessPermission({ approved, onChange }: { approved: boolean; onChange: (value: boolean) => void }) {
   return <details className="template-specific"><summary>本地运行：{approved ? "已授权" : "未授权"} · 高级权限</summary><label className="post-create-option">
     <input type="checkbox" checked={approved} onChange={event => onChange(event.target.checked)} />
-    <span><strong>允许 KsADK Harness 在本机运行</strong>
+    <span><strong>允许通用智能体在本机运行</strong>
       <small>默认开启，用于启动本地执行引擎；可取消。工具调用仍受权限与审批策略约束。</small>
     </span>
   </label></details>;
@@ -1263,7 +1263,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
   }
 
   const templateLabel = template === "research" ? "深度调研" : "空白 Agent";
-  const runtimeLabel = ({ harness: "KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
+  const runtimeLabel = ({ harness: "通用智能体 · KsADK Harness", codex: "Codex", adk: "ADK", langgraph: "LangGraph", plugin: "外部 Provider" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
@@ -1555,7 +1555,7 @@ export function CreatePage({ editingAgentId, viewportMode, workspacePath, onBack
                         />
                       </FormField>
                       {conversationRuntime === "codex" ? (
-                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；Harness 负责 KsADK Tool 的统一执行与审批。</p>
+                        <p className="helper conversation-runtime-note">Codex 使用原生工具、MCP 和 Skill；通用智能体负责 KsADK Tool 的统一执行与审批。</p>
                       ) : (
                         <FormField label="KsADK Tool" className="authoring-model-field">
                           <StudioMultiSelect
