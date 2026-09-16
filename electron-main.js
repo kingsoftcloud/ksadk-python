@@ -2,13 +2,105 @@ const {app, BrowserWindow, dialog, Menu, nativeImage, ipcMain} = require('electr
 const path = require('node:path');
 const fs = require('node:fs');
 const {startRuntime, requestJson} = require('./desktop-runtime');
+// electron-updater is an optional runtime dependency bundled into the app.
+// Require lazily so a missing/failed install never breaks app launch; the
+// user simply gets no auto-update instead of a hard crash.
+let autoUpdater = null;
+try {
+  ({autoUpdater} = require('electron-updater'));
+} catch (error) {
+  console.error('[updater] electron-updater unavailable, auto-update disabled:', error.message);
+}
 let runtime;
 let window;
 let quitting = false;
 let switching = false;
+let updateDownloaded = false;
 app.setName('AgentKit Studio');
 const partition = 'studio-' + process.pid;
 const resources = path.resolve(__dirname, '..');
+
+// Inject bundled toolchain paths so Python/Node/DSH subprocesses find them.
+// On Windows there is no launcher (AgentKitStudio.exe is renamed electron.exe).
+// On macOS we used to use a shell launcher, but that set process.defaultApp
+// which broke app.isPackaged (and thus electron-updater). Doing it in JS keeps
+// the app a "packaged" Electron app on both platforms.
+if (process.platform === 'win32') {
+  process.env.AGENTENGINE_PLUGIN_TOOLCHAIN_HOME = path.join(resources, 'plugin-toolchains');
+  process.env.PATH = path.join(resources, 'node') + ';' + (process.env.PATH || '');
+} else if (process.platform === 'darwin') {
+  process.env.AGENTENGINE_PLUGIN_TOOLCHAIN_HOME = path.join(resources, 'plugin-toolchains');
+  process.env.PATH = path.join(resources, 'node', 'bin') + ':' + (process.env.PATH || '');
+}
+
+// Auto-update: check GitHub Release on launch, download silently in the
+// background, install on quit. STUDIO_APP_UPDATE_REPO overrides the provider:
+// a string URL switches to the generic provider (internal CDN/KS3), otherwise
+// the default GitHub provider reads the public kingsoftcloud/ksadk-python
+// release. We ship hand-rolled bundles (no electron-builder blockmaps), so
+// disable differential download — full zip/exe each update.
+function setupAutoUpdater() {
+  if (!autoUpdater) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.disableDifferentialDownload = true;
+  const override = process.env.STUDIO_APP_UPDATE_REPO;
+  if (override) {
+    // electron-updater resolves manifest URLs with new URL('latest-mac.yml', baseUrl);
+    // a URL without a trailing slash drops the last path segment. Normalize.
+    const url = override.endsWith('/') ? override : override + '/';
+    autoUpdater.setFeedURL({provider: 'generic', url});
+  } else {
+    autoUpdater.setFeedURL({provider: 'github', owner: 'kingsoftcloud', repo: 'ksadk-python'});
+  }
+  autoUpdater.on('update-available', info => {
+    console.log('[updater] update available:', info.version);
+    if (window) window.webContents.send('studio:update-available', {version: info.version});
+  });
+  autoUpdater.on('update-not-available', () => {
+    if (window) window.webContents.send('studio:update-not-available');
+  });
+  autoUpdater.on('download-progress', progress => {
+    if (window) window.webContents.send('studio:update-progress', {percent: progress.percent});
+  });
+  autoUpdater.on('update-downloaded', event => {
+    updateDownloaded = true;
+    console.log('[updater] update downloaded:', event.version);
+    if (window) window.webContents.send('studio:update-downloaded', {version: event.version});
+  });
+  autoUpdater.on('error', (error) => {
+    console.error('[updater] error:', error?.message || error);
+    if (window) window.webContents.send('studio:update-error', {message: error?.message || String(error)});
+  });
+}
+ipcMain.handle('studio:check-for-updates', async () => {
+  if (!autoUpdater) return {available: false, reason: 'disabled'};
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return {available: Boolean(result?.updateInfo), version: result?.updateInfo?.version};
+  } catch (error) {
+    return {available: false, error: error?.message || String(error)};
+  }
+});
+ipcMain.handle('studio:quit-and-install', () => {
+  if (!autoUpdater || !updateDownloaded) return false;
+  quitting = true;
+  // Wait for the Python/Node child to fully release file handles before
+  // installing, otherwise the NSIS installer (Windows) can't overwrite DLLs
+  // and the update leaves the bundle half-replaced. 5s fallback in case the
+  // child is hung and never emits exit.
+  const install = () => autoUpdater.quitAndInstall();
+  if (runtime) {
+    let installed = false;
+    const doInstall = () => { if (!installed) { installed = true; install(); } };
+    runtime.child.once('exit', doInstall);
+    runtime.child.kill('SIGTERM');
+    setTimeout(doInstall, 5000);
+  } else {
+    setImmediate(install);
+  }
+  return true;
+});
 
 function preferencesPath() { return path.join(app.getPath('userData'), 'workspace.json'); }
 function defaultWorkspace() { const root = path.join(app.getPath('home'), '.agentkit', 'studio-workspace'); fs.mkdirSync(root, {recursive: true}); return root; }
@@ -90,13 +182,26 @@ async function showLoadingWindow() {
     <main class="card"><div class="mark">K</div><strong>AgentKit Studio</strong><div class="hint">正在启动本地运行时…</div></main>`));
 }
 async function launch() {
-  const icon = nativeImage.createFromPath(path.join(resources, 'AgentKitStudio.icns'));
+  const iconPath = process.platform === 'win32'
+    ? path.join(resources, 'AgentKitStudio.ico')
+    : path.join(resources, 'AgentKitStudio.icns');
+  const icon = nativeImage.createFromPath(iconPath);
   if (!icon.isEmpty() && app.dock) app.dock.setIcon(icon);
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    {label: 'AgentKit Studio', submenu: [{role: 'about'}, {type: 'separator'}, {role: 'quit'}]},
+    {label: 'AgentKit Studio', submenu: [
+      {role: 'about'},
+      {type: 'separator'},
+      {label: '检查更新…', click: () => {
+        if (!autoUpdater) { dialog.showErrorBox('自动更新', 'electron-updater 未安装,无法检查更新。'); return; }
+        autoUpdater.checkForUpdates().catch(error => dialog.showErrorBox('检查更新失败', error?.message || String(error)));
+      }},
+      {type: 'separator'},
+      {role: 'quit'},
+    ]},
     {label: '工作区', submenu: [{label: '打开工作区…', accelerator: 'CmdOrCtrl+O', click: switchWorkspace}]},
     {role: 'editMenu'}, {role: 'viewMenu'}, {role: 'windowMenu'},
   ]));
+  setupAutoUpdater();
   createWindow();
   await showLoadingWindow();
   const workspace = await chooseWorkspace();
@@ -105,6 +210,10 @@ async function launch() {
   if (workspace !== defaultWorkspace()) saveWorkspace(workspace);
   watchRuntime(runtime);
   await window.loadURL(runtime.url);
+  // Silent background update check after the UI is up. Use checkForUpdates
+  // (not checkForUpdatesAndNotify) so the renderer's own UI is the only
+  // notification surface — the native OS notification would double up.
+  if (autoUpdater) autoUpdater.checkForUpdates().catch(error => console.error('[updater] check failed:', error?.message || error));
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -112,4 +221,4 @@ else {
   app.whenReady().then(launch).catch(error => { dialog.showErrorBox('AgentKit Studio 启动失败', error.message); app.quit(); });
 }
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { quitting = true; if (runtime) runtime.child.kill('SIGTERM'); });
+app.on('before-quit', () => { quitting = true; if (runtime && !runtime.child.killed) runtime.child.kill('SIGTERM'); });

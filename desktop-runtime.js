@@ -70,7 +70,9 @@ async function startRuntime({resources, workspace, logPath, preferredPort = 0, e
   workspace = fs.realpathSync(workspace);
   const port = await reservePort(preferredPort);
   const token = randomBytes(32).toString('hex');
-  const python = path.join(resources, 'runtime', 'bin', 'python3');
+  const python = process.platform === 'win32'
+    ? path.join(resources, 'runtime', 'python.exe')
+    : path.join(resources, 'runtime', 'bin', 'python3');
   const childEnv = {
     ...env,
     KSADK_STUDIO_SESSION_TOKEN: token,

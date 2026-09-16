@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
 KERNEL_CANARY_NAMESPACE ?= agent-kernel
 # Kernel runtime drills must run beside real Agent workloads in the preprod
@@ -72,6 +72,7 @@ help:
 	@echo ""
 	@echo "  \033[1;32mStudio macOS 本地包:\033[0m"
 	@echo "    make studio-app-package  构建 macOS arm64 self-contained Studio 包"
+	@echo "    make studio-app-package-windows  构建 Windows x64 NSIS 安装包(需 makensis)"
 	@echo "    make studio-app-check    校验包内 KsADK/Codex/static 资源"
 	@echo "    make studio-app-run      启动包内 Studio（默认打开浏览器）"
 	@echo "    make studio-app-clean    清理 Studio 本地包"
@@ -843,7 +844,7 @@ studio-app-package: build-wheel
 	@test "$(STUDIO_APP_ARCH)" = "arm64" || (echo "ERROR: only STUDIO_APP_ARCH=arm64 is supported locally" >&2; exit 1)
 	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
 	@command -v sw_vers >/dev/null 2>&1 || (echo "ERROR: this target must run on macOS" >&2; exit 1)
-	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(VERSION)" sh scripts/package_studio_app.sh
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
 	@$(MAKE) --no-print-directory studio-app-check
 	@echo "✅ Studio macOS arm64 bundle: $(STUDIO_APP_BUNDLE)"
 
@@ -863,6 +864,19 @@ studio-app-run: studio-app-check
 studio-app-clean:
 	@rm -rf "$(STUDIO_APP_DIR)"
 	@echo "✅ Studio local bundle cleaned"
+
+# Windows x64 bundle. Built under Git Bash on a Windows runner (or locally on
+# Windows). Produces an UNSIGNED AgentKitStudio-Setup-x64.exe; SignPath signs
+# it in the release workflow. makensis must be on PATH (NSIS via chocolatey).
+studio-app-package-windows: build-wheel
+	@command -v makensis >/dev/null 2>&1 || (echo "ERROR: makensis (NSIS) not found; install NSIS first" >&2; exit 1)
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
+	  STUDIO_APP_PYTHON_VERSION="$(STUDIO_APP_PYTHON_VERSION)" \
+	  ELECTRON_VERSION="$(ELECTRON_VERSION)" \
+	  STUDIO_APP_NODE_VERSION="$(STUDIO_APP_NODE_VERSION)" \
+	  STUDIO_APP_DSH_ROOT="$(STUDIO_APP_DSH_ROOT)" \
+	  sh scripts/package_studio_app_windows.sh
+	@echo "✅ Studio Windows x64 bundle: $(STUDIO_APP_DIR)/AgentKitStudio-Setup-x64.exe"
 
 # 一键：编译前端 → wheel → 打包 → 校验 → 关旧实例 → 打开新包
 studio-app-reopen: studio-app-package
