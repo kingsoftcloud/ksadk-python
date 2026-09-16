@@ -88,6 +88,19 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("limits new Agent authoring to the Phase 2 runtimes", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    const runtime = await screen.findByRole("combobox", { name: "Runtime" });
+    await user.click(runtime);
+    expect(screen.getByRole("option", { name: "KsADK Harness" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Codex · ManagedRuntime" })).toBeVisible();
+    expect(screen.getAllByRole("option").map(option => option.textContent?.trim())).toEqual([
+      "KsADK Harness",
+      "Codex · ManagedRuntime",
+    ]);
+  });
+
   it("starts the one-click flow when requested from the Agent catalog", async () => {
     const onCreated = vi.fn();
     render(<CreatePage quickCreateRequest={1} viewportMode="desktop" onBack={vi.fn()} onCreated={onCreated} />);
