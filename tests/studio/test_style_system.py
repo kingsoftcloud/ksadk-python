@@ -268,9 +268,9 @@ def test_react_chat_keeps_compact_sessions_and_streaming_controls() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet
     assert "<time>" not in source
     assert "chat-composer-hint" not in source
-    assert "onStopGeneration={stopByUser}" in source
-    assert "stopGeneration={stopByUser}" in source
-    assert "onCancelRemote={chat.uiCapabilities.StopRun ? cancelRemoteByUser : undefined}" in source
+    assert "onStopGeneration={chat.stop}" in source
+    assert "stopGeneration={chat.stop}" in source
+    assert "onCancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}" in source
 
 
 def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
