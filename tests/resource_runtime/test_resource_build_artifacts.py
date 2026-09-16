@@ -15,6 +15,9 @@ from ksadk.skills.package_store import PackageStore, SkillPackageError
 from ksadk.skills.runtime import agent
 from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 @pytest.fixture
 def frozen(tmp_path):

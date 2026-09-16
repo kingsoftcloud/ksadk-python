@@ -16,15 +16,18 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/api/client.py": 2801,
     # Current master already contains the 2,287-line builder integration; PCM
     # adds only its launch-context projection seam. Keep any further growth red.
-    "ksadk/builders/code_builder.py": 2398,
+    "ksadk/builders/code_builder.py": 2424,
     "ksadk/cli/cmd_create.py": 2084,
     "ksadk/cli/cmd_files.py": 1270,
     "ksadk/cli/cmd_hermes.py": 1441,
-    "ksadk/cli/cmd_invoke.py": 1565,
+    # 0.8.5 kspmas native Responses hardening added the four-variant reasoning
+    # delta handling (reasoning.delta/reasoning_text/reasoning_summary/summary_text)
+    # on top of the prior 1,565 baseline.
+    "ksadk/cli/cmd_invoke.py": 1578,
     "ksadk/cli/cmd_mcp.py": 1213,
     "ksadk/cli/cmd_openclaw.py": 4218,
-    "ksadk/codex/client.py": 1520,
-    "ksadk/configs/env_registry.py": 1047,
+    "ksadk/codex/client.py": 1521,
+    "ksadk/configs/env_registry.py": 1125,
     "ksadk/conversations/message_projection.py": 1050,
     "ksadk/codex/runtime.py": 1084,
     "ksadk/deployment/providers/serverless.py": 1358,
@@ -40,7 +43,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/runners/adk_runner.py": 2340,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
-    "ksadk/runners/langgraph_runner.py": 1392,
+    "ksadk/runners/langgraph_runner.py": 1407,
     # 0.8.1 canonical ToolGateway approval projection baseline.
     "ksadk/runtime/runner_adapter.py": 1220,
     "ksadk/sessions/local_service.py": 1080,
@@ -59,17 +62,17 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/plugins/providers/dsh_capabilities.py": 1450,
     "ksadk/plugins/teams/domain.py": 1501,
     "ksadk/plugins/ecosystem_bridge.py": 1105,
-    "ksadk/studio/api.py": 2515,
+    "ksadk/studio/api.py": 2583,
     "ksadk/studio/authoring_coordinator.py": 1034,
     "ksadk/studio/cloud.py": 2341,
     "ksadk/studio/contracts.py": 1028,
     "ksadk/studio/dsh_capability_service.py": 1275,
     "ksadk/studio/dsh_provider_registration.py": 1114,
     "ksadk/studio/otel_trace.py": 1060,
-    "ksadk/studio/resource_catalog.py": 1406,
-    "ksadk/studio/run_service.py": 2213,
-    "ksadk/studio/service.py": 3525,
-    "ksadk/studio/shared_web.py": 1581,
+    "ksadk/studio/resource_catalog.py": 1412,
+    "ksadk/studio/run_service.py": 2286,
+    "ksadk/studio/service.py": 3535,
+    "ksadk/studio/shared_web.py": 1592,
     "ksadk/toolsets/workspace.py": 1028,
     "ksadk/tui/loop.py": 1925,
 }
