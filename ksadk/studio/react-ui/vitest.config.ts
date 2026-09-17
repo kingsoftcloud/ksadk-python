@@ -6,22 +6,9 @@ import { defineConfig } from "vitest/config";
 // vitest's jsdom environment cannot load. Stub it to an empty module so App
 // integration tests that transitively import the terminal panel do not fail
 // on the CSS extension.
-const stubXtermCss = {
-  name: "stub-xterm-css",
-  resolveId(source, importer) {
-    if (source.endsWith(".css") && source.includes("xterm")) {
-      return "\0xterm-css-stub";
-    }
-    return null;
-  },
-  load(id) {
-    if (id === "\0xterm-css-stub") return "";
-    return null;
-  },
-};
 
 export default defineConfig({
-  plugins: [react(), stubXtermCss],
+  plugins: [react()],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
