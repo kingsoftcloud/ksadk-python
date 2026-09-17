@@ -20,7 +20,8 @@ test("Studio delegates conversation behavior through its ksadk-web facade", () =
   assert.match(workspaceSource, /AgentConversationTimeline/);
   assert.match(workspaceSource, /AgentConversationComposer/);
   assert.match(workspaceSource, /useAgentChat/);
-  assert.match(workspaceSource, /new StudioChatApiFacade\(\{ fetch: apiFetch, agentId \}\)/);
+  assert.match(workspaceSource, /new ApiFacadeImpl\(\{ fetch: apiFetch, agentId \}\)/);
+  assert.match(workspaceSource, /new ConversationController\(/);
   assert.match(workspaceSource, /conversationClient: null/);
 });
 
