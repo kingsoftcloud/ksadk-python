@@ -172,6 +172,28 @@ class _CancellableAdapter(_Adapter):
         return CancelResult.INTERRUPTED_ACTIVE_TURN
 
 
+class _ScopedRuntime(_Runtime):
+    def __init__(self, runtime_type: str) -> None:
+        self.runtime_type = runtime_type
+
+
+class _ScopedAdapter(_Adapter):
+    """Small dual-runtime fixture used to exercise executor owner isolation."""
+
+    def __init__(self, runtime_type: str) -> None:
+        RuntimeAdapter.__init__(self, _ScopedRuntime(runtime_type))
+        self.requests = []
+        self.resumes = []
+
+    async def start(self, request: StartRequest) -> RunHandle:
+        self.requests.append(request)
+        return RunHandle(
+            run_id=str(request.metadata["invocation_id"]),
+            session_id=request.session_id,
+            runtime_type=self.runtime.runtime_type,
+        )
+
+
 def test_capability_adapter_rejects_stale_entry_from_reused_context_id() -> None:
     created: list[_Adapter] = []
     registry = RuntimeRegistry()
@@ -195,6 +217,41 @@ def test_capability_adapter_rejects_stale_entry_from_reused_context_id() -> None
 
     assert second_adapter is not first_adapter
     assert second_adapter is created[-1]
+
+
+@pytest.mark.asyncio
+async def test_executor_keeps_same_run_identity_isolated_between_runtime_types() -> None:
+    """Codex and DSH may use the same session/invocation IDs without cross-talk."""
+
+    registry = RuntimeRegistry()
+    adapters: dict[str, _ScopedAdapter] = {}
+
+    def factory(context: RuntimeLaunchContext) -> RuntimeAdapter:
+        adapter = _ScopedAdapter(context.runtime_type)
+        adapters[context.runtime_type] = adapter
+        return adapter
+
+    registry.register("codex", factory)
+    registry.register("harness", factory)
+    executor = RuntimeExecutor(registry)
+    request = StartRequest(
+        input="hello",
+        user_id="user-1",
+        session_id="session-shared",
+        metadata={"invocation_id": "invocation-shared"},
+    )
+
+    codex = await executor.start(RuntimeLaunchContext(runtime_type="codex", project_dir="."), request)
+    harness = await executor.start(RuntimeLaunchContext(runtime_type="harness", project_dir="."), request)
+
+    assert codex.runtime_type == "codex"
+    assert harness.runtime_type == "harness"
+    assert executor.find_handle("codex", "invocation-shared", "session-shared") == codex
+    assert executor.find_handle("harness", "invocation-shared", "session-shared") == harness
+
+    await executor.close(codex)
+    assert executor.find_handle("codex", "invocation-shared", "session-shared") is None
+    assert executor.find_handle("harness", "invocation-shared", "session-shared") == harness
 
 
 def test_openai_responses_route_executes_runtime_adapter_without_runner() -> None:

@@ -150,6 +150,12 @@ Skill Runtime 变量继续使用 `KSADK_SKILL_*` 前缀，不作为通用 Sandbo
 - `pod_process` 不会自动 fallback，必须同时配置 `KSADK_SANDBOX_BACKEND=pod_process` 和 `KSADK_ALLOW_POD_PROCESS_TOOLS=true`。
 - `sandbox_status()` 会把 `local_process/pod_process` 标记为 `isolated=false`，并说明其共享文件系统、网络、环境 allowlist 以及 pod service account 边界。
 
+`local_process` 当前增加了同容器风险控制。2026-09-15 收敛后的静态检查只读取实际入口命令及其直接入口 Python/Shell 脚本，不再递归追踪脚本引用，也不扫描包内未执行的 `scripts/` 文件。硬拒绝限于明确的 `rm -rf`、进程信号命令、`nohup` / `setsid` / Shell 后台运算符，以及直接入口 Python 中明确的进程信号、脱离 session 和工作区外递归删除。字面量 shell/subprocess 调用只复用上述窄规则；普通 `subprocess.Popen` / `subprocess.run`（包括动态 argv）、工作区内相对 `shutil.rmtree`、`chmod +x`、网络命令、绝对路径数据和普通 `Path(...)` 构造不会仅因静态检查被拒绝。无法明确判定的动态或间接行为交给实际执行限制与后续隔离边界处理。
+
+Runtime agent 使用明确的内部配置白名单加载固定包，实际 Skill 命令使用另一份最小环境，不继承 `HOME` 或 Agent Secret。命令由 `python -I -S` launcher 在 `exec` 前设置 CPU、地址空间、进程数、文件描述符数和单文件大小 rlimit，父进程同时限制墙钟及 stdout/stderr 捕获；设置结果、超时、输出超限和静态拒绝按实际观察记录。
+
+本地 Skill 命令保留在外层 Runtime agent 的进程组中。外层无论主命令成功还是超时都会清理该组，因此普通后台后代不会仅因主命令成功而保留；内层另建 session 会破坏这一保证，所以没有采用。该机制不能保证清理由动态 `setsid` 等方式逃离的进程。请求目录与 Runtime 文件 API 会拒绝遍历和符号链接，但 `cwd` 不是文件系统隔离，Skill 直接使用系统调用仍能访问同容器可见路径。`RLIMIT_NPROC` 对同 UID 生效，`RLIMIT_FSIZE` 只约束单文件；这些限制均不是 cgroup、namespace 或独立 Pod 的替代品。
+
 ## 7. 当前限制
 
 - 首版 E2B backend 只包装生命周期、命令、文件读写和 host lookup。

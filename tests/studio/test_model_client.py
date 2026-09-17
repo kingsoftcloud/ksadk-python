@@ -101,11 +101,600 @@ async def test_model_client_streams_chat_deltas_without_buffering(monkeypatch):
             messages=[{"role": "user", "content": "test"}],
             network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
             timeout_seconds=10,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                }
+            ],
         )
     ]
     assert captured["json"]["stream"] is True
+    assert captured["json"]["tools"][0]["function"]["name"] == "lookup"
     assert [chunk.text for chunk in chunks if chunk.text] == ["A", "B"]
     assert chunks[-1].done is True
+
+
+@pytest.mark.asyncio
+async def test_model_client_stops_repetitive_stream_output(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    repeated = "Codex 调研失败，我将重新委派这个任务。"
+    body = b"".join(
+        (
+            "data: "
+            + __import__("json").dumps(
+                {"choices": [{"delta": {"content": repeated}}]},
+                ensure_ascii=False,
+            )
+            + "\n\n"
+        ).encode()
+        for _ in range(8)
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=body,
+            )
+        ),
+    )
+
+    with pytest.raises(StudioError) as captured:
+        _ = [
+            chunk
+            async for chunk in client.stream(
+                _model(),
+                messages=[],
+                network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+                timeout_seconds=10,
+            )
+        ]
+
+    assert captured.value.code == "MODEL_REPETITIVE_OUTPUT"
+
+
+@pytest.mark.asyncio
+async def test_model_client_recovers_streamed_dsml_as_declared_tool_call(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        body = (
+            'data: {"choices":[{"delta":{"content":"<｜｜DS"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"ML｜｜calls><｜｜DSML｜｜invoke '
+            'name=\\"WebSearch\\"><query>official docs</query>"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"<｜｜DSML｜｜/invoke>'
+            '<｜｜DSML｜｜/calls>"},"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        ).encode()
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(), transport=httpx.MockTransport(handler)
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[{"role": "user", "content": "research"}],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=tools,
+        )
+    ]
+
+    assert not any("DSML" in chunk.text for chunk in chunks)
+    assert chunks[-1].done is True
+    assert chunks[-1].tool_calls[0].name == "web_search"
+    assert __import__("json").loads(chunks[-1].tool_calls[0].arguments) == {
+        "query": "official docs"
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_client_recovers_spaced_single_pipe_dsml_variant(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    body = (
+        'data: {"choices":[{"delta":{"content":"<| DSML | calls><| DSML | invoke '
+        'name=\\"write_file\\"><| DSML | parameter name=\\"path\\" '
+        'string=\\"true\\">report.md<| DSML | /parameter>"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"<| DSML | parameter name=\\"content\\" '
+        'string=\\"true\\"># Report<| DSML | /parameter><| DSML | /invoke>'
+        '<| DSML | /calls>"},"finish_reason":"stop"}]}\n\n'
+    ).encode()
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_workspace_file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+    ]
+
+    assert not any("DSML" in chunk.text for chunk in chunks)
+    assert chunks[-1].tool_calls[0].name == "write_workspace_file"
+    assert __import__("json").loads(chunks[-1].tool_calls[0].arguments) == {
+        "path": "report.md",
+        "content": "# Report",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_client_recovers_buffered_dsml_as_declared_tool_call(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                '<||DSML||calls><||DSML||invoke name="delegate_task">'
+                                '<||DSML||parameter name="label" string="true">调研 ADK'
+                                "<||DSML||/parameter><||DSML||parameter "
+                                'name="task_kind" string="true">general'
+                                "<||DSML||/parameter><||DSML||/invoke><||DSML||/calls>"
+                            ),
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(), transport=httpx.MockTransport(handler)
+    )
+    result = await client.complete(
+        _model(),
+        messages=[{"role": "user", "content": "research"}],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "delegate_task",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+
+    assert result.content == ""
+    assert result.finish_reason == "tool_calls"
+    assert result.tool_calls[0].name == "delegate_task"
+    assert __import__("json").loads(result.tool_calls[0].arguments) == {
+        "label": "调研 ADK",
+        "task_kind": "general",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_client_recovers_streamed_glm_textual_tool_call(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    fragments = (
+        "重试。<tool_",
+        "call>delegate_task<arg_key>label</arg_key><arg_value>调研 ADK</arg_value>",
+        '<arg_value>task="核验 Google ADK 官方资料"</arg_value>',
+        '<arg_key>task_kind="general"</arg_value></tool_call>',
+    )
+    body = b"".join(
+        (
+            "data: "
+            + __import__("json").dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {"content": fragment},
+                            "finish_reason": "stop" if index == len(fragments) - 1 else None,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            + "\n\n"
+        ).encode()
+        for index, fragment in enumerate(fragments)
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "delegate_task", "parameters": {"type": "object"}},
+                }
+            ],
+        )
+    ]
+
+    assert "".join(chunk.text for chunk in chunks) == "重试。"
+    assert chunks[-1].done is True
+    assert chunks[-1].tool_calls[0].name == "delegate_task"
+    assert __import__("json").loads(chunks[-1].tool_calls[0].arguments) == {
+        "label": "调研 ADK",
+        "task": "核验 Google ADK 官方资料",
+        "task_kind": "general",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "准备创建。<tool_call>write_file<arg_value>filename</arg_key>"
+            "<arg_value>glm52_write_probe.md</arg_value>content</arg_key>"
+            "<arg_value>GLM 5.2 写文件验证</arg_value></think>文件已创建。"
+        ),
+        (
+            "准备创建。<tool_call>write_file_ide49a</arg_value> path</arg_key> "
+            "glm52_write_probe.md</arg_value> content</arg_key><arg_value>"
+            "GLM 5.2 写文件验证</arg_value></arg_value>"
+        ),
+        (
+            '准备创建。<tool_call>write_file</arg_value>filePath="glm52_write_probe.md"'
+            '</arg_value>content="GLM 5.2 写文件验证"</arg_value>文件已创建。'
+        ),
+    ],
+)
+async def test_model_client_recovers_real_glm52_malformed_write_call(monkeypatch, content):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    body = (
+        "data: "
+        + __import__("json").dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {"content": content},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    ).encode()
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_workspace_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    },
+                }
+            ],
+        )
+    ]
+
+    assert "".join(chunk.text for chunk in chunks) == "准备创建。"
+    assert chunks[-1].done is True
+    assert chunks[-1].tool_calls[0].name == "write_workspace_file"
+    assert __import__("json").loads(chunks[-1].tool_calls[0].arguments) == {
+        "path": "glm52_write_probe.md",
+        "content": "GLM 5.2 写文件验证",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_client_repairs_glm_residue_in_native_tool_argument_key(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    payloads = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-adk",
+                                "function": {
+                                    "name": "delegate_task",
+                                    "arguments": (
+                                        '{"label":"ADK","task</arg_key>":"research ADK",'
+                                    ),
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": '"task_kind":"general"}'},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+    ]
+    body = b"".join(
+        f"data: {__import__('json').dumps(payload)}\n\n".encode() for payload in payloads
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_task",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "task": {"type": "string"},
+                                "task_kind": {"type": "string"},
+                            },
+                        },
+                    },
+                }
+            ],
+        )
+    ]
+
+    assert chunks[-1].done is True
+    assert __import__("json").loads(chunks[-1].tool_calls[0].arguments) == {
+        "label": "ADK",
+        "task": "research ADK",
+        "task_kind": "general",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_client_recovers_final_message_tool_call_snapshot(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    payloads = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-write",
+                                "function": {"name": "write_workspace_file"},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {},
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {},
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-write",
+                                "function": {
+                                    "name": "write_workspace_file",
+                                    "arguments": {
+                                        "path": "report.md",
+                                        "content": "# Report\ncomplete",
+                                    },
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+    ]
+    body = (
+        b"".join(f"data: {__import__('json').dumps(payload)}\n\n".encode() for payload in payloads)
+        + b"data: [DONE]\n\n"
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_workspace_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    },
+                }
+            ],
+        )
+    ]
+
+    assert chunks[-1].done is True
+    assert chunks[-1].tool_calls[0].id == "call-write"
+    assert __import__("json").loads(chunks[-1].tool_calls[0].arguments) == {
+        "path": "report.md",
+        "content": "# Report\ncomplete",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_client_rejects_reasoning_only_stream(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    body = (
+        b'data: {"choices":[{"delta":{"reasoning_content":"still thinking"},'
+        b'"finish_reason":null}]}\n\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+
+    with pytest.raises(StudioError) as captured:
+        async for _chunk in client.stream(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+        ):
+            pass
+
+    assert captured.value.code == "MODEL_EMPTY_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_model_client_rejects_dsml_for_undeclared_tool(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    body = (
+        b'data: {"choices":[{"delta":{"content":"<||DSML||invoke name=\\"danger\\">"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"<x>1</x><||DSML||/invoke>"},'
+        b'"finish_reason":"stop"}]}\n\n'
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+        ),
+    )
+
+    with pytest.raises(StudioError) as captured:
+        _ = [
+            chunk
+            async for chunk in client.stream(
+                _model(),
+                messages=[],
+                network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+                timeout_seconds=10,
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            )
+        ]
+
+    assert captured.value.code == "MODEL_TOOL_PROTOCOL_INVALID"
 
 
 @pytest.mark.asyncio
@@ -117,17 +706,25 @@ async def test_model_client_streams_responses_events_and_tool_calls(monkeypatch)
         captured["json"] = __import__("json").loads(request.content)
         body = (
             b'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
-            b'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup"}}\n\n'
-            b'data: {"type":"response.function_call_arguments.delta","item_id":"item_1","delta":"{\\"q\\":\\"x\\"}"}\n\n'
-            b'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}\n\n'
-            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n'
+            b'data: {"type":"response.output_item.added","item":'
+            b'{"type":"function_call","id":"item_1","call_id":"call_1",'
+            b'"name":"lookup"}}\n\n'
+            b'data: {"type":"response.function_call_arguments.delta",'
+            b'"item_id":"item_1","delta":"{\\"q\\":\\"x\\"}"}\n\n'
+            b'data: {"type":"response.output_item.done","item":'
+            b'{"type":"function_call","id":"item_1","call_id":"call_1",'
+            b'"name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}\n\n'
+            b'data: {"type":"response.completed","response":{"usage":'
+            b'{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n'
         )
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
 
     model = _model().model_copy(
         update={"wire_api": "responses", "endpoint_url": "https://model.example.com/v1/responses"}
     )
-    client = OpenAICompatibleModelClient(network_guard=AllowNetwork(), transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(), transport=httpx.MockTransport(handler)
+    )
     chunks = [
         chunk
         async for chunk in client.stream(
@@ -135,7 +732,12 @@ async def test_model_client_streams_responses_events_and_tool_calls(monkeypatch)
             messages=[{"role": "user", "content": "test"}],
             network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
             timeout_seconds=10,
-            tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                }
+            ],
         )
     ]
     assert captured["json"]["stream"] is True
@@ -344,6 +946,30 @@ def test_credential_resolver_prefers_workspace_alias_over_process_primary(
     resolver = CredentialResolver(workspace)
 
     assert resolver.resolve("env://OPENAI_API_KEY") == "workspace-profile-key"
+
+
+def test_credential_resolver_session_overlay_reports_session_over_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """put_session with a workspace configuration must report source == "session"."""
+
+    from ksadk.studio.workspace import Workspace
+
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    resolver = CredentialResolver(workspace)
+
+    assert resolver.status("env://MODEL_API_KEY")["source"] == "missing"
+
+    configured = resolver.put_session("MODEL_API_KEY", "session-secret")
+    assert configured["source"] == "session"
+    assert resolver.status("env://MODEL_API_KEY")["source"] == "session"
+
+    restored = resolver.delete_session("MODEL_API_KEY")
+    assert restored["source"] != "session"
+    assert resolver.status("env://MODEL_API_KEY")["source"] == "missing"
 
 
 def test_credential_resolver_rejects_unsafe_session_values():
@@ -776,7 +1402,9 @@ async def test_model_client_reasoning_absent_is_empty(monkeypatch):
         return httpx.Response(
             200,
             json={
-                "choices": [{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+                "choices": [
+                    {"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}
+                ],
             },
         )
 

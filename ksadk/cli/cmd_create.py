@@ -104,7 +104,7 @@ from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
 model = LiteLlm(
-    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'glm-5.2')}}",
+    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'deepseek-v4.1-flash')}}",
     api_base=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     stream=True,  # 启用流式输出
@@ -147,7 +147,7 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
+    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v4.1-flash"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -194,7 +194,7 @@ from typing import TypedDict, Annotated
 import operator
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
+    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v4.1-flash"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -234,7 +234,7 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
+    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v4.1-flash"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -671,7 +671,7 @@ def _generate_codex_env_content(global_env: dict) -> str:
         "# 本地 Codex 模型配置（仅用于 ksadk web，不会进入 ManagedRuntime bundle）",
         "# OPENAI_API_KEY=",
         f"OPENAI_BASE_URL={base_url}" if base_url else "# OPENAI_BASE_URL=",
-        f"OPENAI_MODEL_NAME={model_name}" if model_name else "# OPENAI_MODEL_NAME=glm-5.2",
+        f"OPENAI_MODEL_NAME={model_name}" if model_name else "# OPENAI_MODEL_NAME=deepseek-v4.1-flash",
         "",
         "# 可选：自定义上游仅支持 Chat Completions 时，强制启用协议转换代理",
         "# KSADK_CODEX_USE_PROXY=1",
@@ -1601,7 +1601,7 @@ runtime:
   name: codex
 
 # codex 的模型与开发者指令（CodexRuntimeAdapter 传入 codex thread）
-model: glm-5.2
+model: deepseek-v4.1-flash
 prompt: |
   你是 codex 编码助手。简洁回答,能跑命令验证就跑(shell 工具),中文回复。
 """,
@@ -1820,7 +1820,7 @@ KSYUN_REGION={ks_region}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5.2\n"
+            env_content += "# OPENAI_MODEL_NAME=deepseek-v4.1-flash\n"
     elif framework == "hermes":
         env_content = f"""# ======================
 # Hermes 标准部署最小配置
@@ -1840,7 +1840,7 @@ KSYUN_REGION={ks_region}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5.2\n"
+            env_content += "# OPENAI_MODEL_NAME=deepseek-v4.1-flash\n"
 
         env_content += """
 # Hermes runtime
@@ -1851,7 +1851,7 @@ HERMES_DASHBOARD_HOST=127.0.0.1
 HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
-# HERMES_FALLBACK_MODEL=deepseek-v4-pro
+# HERMES_FALLBACK_MODEL=glm-5.3-flash
 """
         env_example_content = """# ======================
 # Hermes 标准部署最小配置示例
@@ -1863,7 +1863,7 @@ KSYUN_REGION=cn-beijing-6
 
 OPENAI_API_KEY=your-model-api-key
 OPENAI_BASE_URL=https://kspmas.ksyun.com/v1/
-OPENAI_MODEL_NAME=glm-5.2
+OPENAI_MODEL_NAME=deepseek-v4.1-flash
 
 # Hermes runtime
 API_SERVER_ENABLED=true
@@ -1873,7 +1873,7 @@ HERMES_DASHBOARD_HOST=127.0.0.1
 HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
-# HERMES_FALLBACK_MODEL=deepseek-v4-pro
+# HERMES_FALLBACK_MODEL=glm-5.3-flash
 """
     elif framework == "codex":
         env_content = _generate_codex_env_content(global_env)
@@ -1893,7 +1893,7 @@ PORT=8080
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5.2\n"
+            env_content += "# OPENAI_MODEL_NAME=deepseek-v4.1-flash\n"
 
         env_content += """
 # ======================

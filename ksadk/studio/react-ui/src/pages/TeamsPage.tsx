@@ -84,16 +84,18 @@ export function TeamsPage() {
         正在连接团队服务…
       </p>
     );
-  if (!lifecycle.enabled) return <TeamsAvailability />;
+  const remote = lifecycle.mode === "server" || lifecycle.authorityLocation === "server";
+  if (!lifecycle.enabled || (lifecycle.health !== "ready" && !(remote && lifecycle.health === "degraded"))) return <TeamsAvailability />;
   return (
     <TeamsBrowser
       key={lifecycle.authorityRef}
       authorityRef={lifecycle.authorityRef}
+      serverAuthority={lifecycle.mode === "server" || lifecycle.authorityLocation === "server"}
     />
   );
 }
 
-function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
+function TeamsBrowser({ authorityRef, serverAuthority }: { authorityRef: string; serverAuthority: boolean }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [selected, setSelected] = useState(
@@ -106,7 +108,10 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
   const [candidates, setCandidates] = useState<TeamMemberCandidate[]>([]);
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsNotice, setBindingsNotice] = useState("");
-  const drafts = useRef(new Map<string, string>());
+  const [bindingsError, setBindingsError] = useState("");
+  const [bindingsRevision, setBindingsRevision] = useState(0);
+  const candidateIds = useRef(new Map<string, string>());
+  const drafts = useRef(new Map<string, Record<string, string>>());
   const listGeneration = useRef(0);
   const reload = useCallback(
     async (signal?: AbortSignal, cursor?: string) => {
@@ -156,9 +161,10 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
     };
   }, [reload]);
   useEffect(() => {
-    if (!createOpen) return;
+    if (!createOpen && !serverAuthority) return;
     const controller = new AbortController();
     setBindingsLoading(true);
+    setBindingsError("");
     void teamRequest<{
       items: (ExecutionBinding & { name?: string; displayName?: string })[];
       unavailableBuilds?: number;
@@ -166,9 +172,9 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
       .then((result) => {
         setCandidates(
           result.items.map((binding) => ({
-            memberId: `member-${crypto.randomUUID()}`,
+            memberId: candidateIds.current.get(binding.bindingRef) || (() => { const id = `member-${crypto.randomUUID()}`; candidateIds.current.set(binding.bindingRef, id); return id; })(),
             name: binding.name || binding.displayName || binding.agentId,
-            description: `${binding.kind === "a2a" ? "云端" : "本机"}${binding.buildId ? ` · ${binding.buildId}` : ""}${binding.capabilities.leader ? " · 可担任 Leader" : ""}`,
+            description: binding.description || (binding.capabilities.leader ? "可担任 Leader" : "任务成员"),
             binding,
           })),
         );
@@ -186,13 +192,13 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
         }
       })
       .catch((cause) => {
-        if (!controller.signal.aborted) setError(messageOf(cause));
+        if (!controller.signal.aborted) setBindingsError(messageOf(cause));
       })
       .finally(() => {
         if (!controller.signal.aborted) setBindingsLoading(false);
       });
     return () => controller.abort();
-  }, [createOpen]);
+  }, [createOpen, bindingsRevision, serverAuthority]);
   const choose = (groupId: string) => {
     setSelected(groupId);
     writeSelection(groupId);
@@ -207,7 +213,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
       <aside className="studio-team-directory" aria-label="团队列表">
         <header>
           <div>
-            <span className="studio-teams-eyebrow">协作空间 <b className="studio-beta-badge">Beta</b></span>
+            <span className="studio-teams-eyebrow">协作空间</span>
             <h2>团队</h2>
           </div>
           <button
@@ -303,8 +309,10 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
               key={`${authorityRef}:${selected}`}
               authorityRef={authorityRef}
               groupId={selected}
-              initialDraft={drafts.current.get(selected) || ""}
-              onDraft={(draft) => drafts.current.set(selected, draft)}
+              serverAuthority={serverAuthority}
+              standbyCandidates={candidates.map(candidate => candidate.binding)}
+              initialDrafts={drafts.current.get(selected) || {}}
+              onDraft={(draft, runId = "") => drafts.current.set(selected, { ...(drafts.current.get(selected) || {}), [runId]: draft })}
               onChanged={() => void reload()}
             />
           </>
@@ -313,7 +321,7 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
             <span className="studio-teams-symbol">
               <UsersRound size={26} />
             </span>
-            <span className="studio-teams-eyebrow">AGENT TEAMS <b className="studio-beta-badge">Beta</b></span>
+            <span className="studio-teams-eyebrow">AGENT TEAMS</span>
             <h2>一个目标，团队一起完成</h2>
             <p>
               让 Leader 组织分工，让成员专注任务。
@@ -333,8 +341,11 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
         )}
       </div>
       <CreateGroupDialog
+        serverAuthority={serverAuthority}
         open={createOpen}
         loading={bindingsLoading}
+        error={bindingsError}
+        onRefresh={() => setBindingsRevision(value => value + 1)}
         candidates={candidates}
         onClose={() => setCreateOpen(false)}
         onCreate={async (input) => {
@@ -350,18 +361,21 @@ function TeamsBrowser({ authorityRef }: { authorityRef: string }) {
 function StudioTeamGroup({
   groupId,
   authorityRef,
-  initialDraft,
+  initialDrafts,
+  serverAuthority,
+  standbyCandidates,
   onDraft,
   onChanged,
 }: {
   groupId: string;
   authorityRef: string;
-  initialDraft: string;
-  onDraft: (draft: string) => void;
+  initialDrafts: Record<string, string>;
+  serverAuthority: boolean;
+  standbyCandidates: ExecutionBinding[];
+  onDraft: (draft: string, teamRunId?: string) => void;
   onChanged: () => void;
 }) {
   const chat = useTeamChat({ client, groupId, authorityRef });
-  const [draft, setDraft] = useState(initialDraft);
   const [manage, setManage] = useState(false);
   const [artifactError, setArtifactError] = useState("");
   const initialSelection = useRef({
@@ -388,10 +402,6 @@ function StudioTeamGroup({
       controller.abort();
     };
   }, [groupId, chat.snapshot?.watermark]);
-  function changeDraft(value: string) {
-    setDraft(value);
-    onDraft(value);
-  }
   async function send(input: GroupMessageInput) {
     const receipt = requireReceipt(await client.send(groupId, input));
     onChanged();
@@ -404,13 +414,18 @@ function StudioTeamGroup({
         connection={chat.connection}
         loading={chat.loading}
         error={artifactError || chat.error}
-        draft={draft}
-        onDraftChange={changeDraft}
+        initialDrafts={initialDrafts}
+        onDraftChange={onDraft}
         onSend={send}
         onRetry={chat.reconnect}
         initialSelection={initialSelection.current}
         onSelectionChange={(selection) => writeSelection(groupId, selection)}
         onManage={() => setManage(true)}
+        serverAuthority={serverAuthority}
+        standbyCandidates={standbyCandidates}
+        onConfigureStandby={(run, bindingRef) => client.configureLeaderStandby(groupId, run.teamRunId, { bindingRef, idempotencyKey: actionKey(["standby", run.teamRunId, bindingRef]) })}
+        onLoadReconciliation={(run) => client.reconciliation(groupId, run.teamRunId)}
+        onReconcile={(record, action, reason) => client.reconcile(groupId, record.commandId, { receiptDigest: record.receiptDigest!, action, reason, idempotencyKey: actionKey(["reconcile", record.commandId, record.receiptDigest, action, reason]) })}
         onControl={async (run, action) =>
           requireReceipt(
             await client.control(groupId, run.teamRunId, {
@@ -425,30 +440,34 @@ function StudioTeamGroup({
             }),
           )
         }
-        onAcceptRun={async (run, accepted) =>
+        onAcceptRun={async (run, accepted, reason) =>
           requireReceipt(
             await client.acceptRun(groupId, run.teamRunId, {
-              accepted,
+              action: accepted ? "accept" : "request_changes",
+              ...(reason ? { reason } : {}),
               expectedRevision: run.revision,
               idempotencyKey: actionKey([
                 "accept",
                 run.teamRunId,
                 run.revision,
                 accepted,
+                reason,
               ]),
             }),
           )
         }
-        onTaskAction={async (task, action) =>
+        onTaskAction={async (task, action, reason) =>
           requireReceipt(
             await client.taskAction(groupId, task.taskId, {
               action,
+              ...(reason ? { reason } : {}),
               expectedRevision: task.revision,
               idempotencyKey: actionKey([
                 "task",
                 task.taskId,
                 task.revision,
                 action,
+                reason,
               ]),
             }),
           )
@@ -478,7 +497,8 @@ function StudioTeamGroup({
         }
         renderMember={(member, actions, source) => (
           <TeamsMemberObserver
-            key={member.memberId}
+            key={`${actions.teamRunId || "group"}:${member.memberId}`}
+            teamRunId={actions.teamRunId}
             member={member}
             snapshot={chat.snapshot!}
             requestedSource={source}

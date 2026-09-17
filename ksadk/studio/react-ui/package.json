@@ -11,6 +11,7 @@
     "test:api": "node --test src/api.test.mjs",
     "test:ui": "vitest run",
     "test:e2e:teams": "playwright test --config playwright.teams.config.mjs",
+    "test:e2e:history-search": "playwright test --config playwright.history-search.config.mjs",
     "dev:local-web": "node scripts/use-local-web.mjs",
     "test:teams:contract": "node scripts/test-teams-contract.mjs"
   },

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ksadk.skills.events import SkillEventSink
 from ksadk.skills.models import ContentHash, SkillRef
 from ksadk.skills.package_store import PackageStore, SkillPackageError
 
@@ -54,6 +55,22 @@ def test_package_store_rejects_hash_mismatch(tmp_path: Path):
 
     with pytest.raises(SkillPackageError, match="ContentHash mismatch"):
         store.store_archive(_ref("0" * 64), payload)
+
+
+def test_package_store_emits_distinct_hash_and_extract_intervals(tmp_path: Path):
+    payload = _make_zip({"skill/SKILL.md": "# Skill\n"})
+    digest = hashlib.sha256(payload).hexdigest()
+    sink = SkillEventSink()
+
+    PackageStore(cache_dir=tmp_path).store_archive(
+        _ref(digest), payload, event_sink=sink, skill_invocation_id="inv-1"
+    )
+
+    hash_event, extract_event = sink.events
+    assert hash_event.event_type == "skill.package.hash_verified"
+    assert hash_event.ended_at is not None
+    assert extract_event.event_type == "skill.package.extracted"
+    assert extract_event.started_at >= hash_event.ended_at
 
 
 def test_package_store_rejects_zip_slip(tmp_path: Path):

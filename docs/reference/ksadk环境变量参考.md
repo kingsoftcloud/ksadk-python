@@ -58,6 +58,7 @@
 | `KSADK_LOCAL_SKILLS_DIR` | 条件必传 | `KSADK_SKILL_CACHE_DIR` 可作为 fallback | 否 | 开发者 | 本地已解压 Skill 包目录；目录下每个 skill 应包含 `SKILL.md`。 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | 否 | 无 | 否 | 开发者 | 本地进程模式设为 `local_process`。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | 条件必传 | 默认使用 SDK 内置 agent | 否 | 开发者 | `local_process` backend 的 agent 入口。 |
+| `KSADK_SKILL_SANDBOX_PROTOCOL` | 否 | `pinned_v1` | 否 | 平台 / 开发者 | 沙箱 Skill 交付协议。默认且仅支持 `pinned_v1`；其他值会在创建沙箱前被拒绝。 |
 
 ### 2.5 Skill Runtime 远程 Sandbox / E2B 模式
 
@@ -234,6 +235,14 @@
 | `KSADK_SKILL_RUNTIME_TIMEOUT` | Skill Runtime command | 否 | `900` | `KSADK_SANDBOX_TIMEOUT` 在 E2B 会话层优先 | 否 | 开发者 / 平台 | 否 | workflow 命令超时秒数。 |
 | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | Skill Runtime E2B backend | 否 | `true` | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` 优先 | 否 | 旧部署 / 兼容 | 否 | 兼容变量。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | local_process backend | 条件必传 | SDK 内置 `ksadk/skills/runtime/agent.py` | 无 | 否 | 开发者 | 否 | 本地进程 backend 的 agent 路径。 |
+| `KSADK_LOCAL_PROCESS_WALL_SECONDS` | local_process backend / 通用本地命令 | 否 | `900` | 无 | 否 | 可信宿主 / 平台 | 否 | 单条 Skill 命令墙钟时间硬上限。调用方传入的更短 timeout 仍生效，不能通过请求调大。 |
+| `KSADK_LOCAL_PROCESS_CPU_SECONDS` | local_process 子进程 | 否 | `120` | 无 | 否 | 可信宿主 / 平台 | 否 | Linux `RLIMIT_CPU` 秒数。 |
+| `KSADK_LOCAL_PROCESS_ADDRESS_SPACE_BYTES` | local_process 子进程 | 否 | `1073741824` | 无 | 否 | 可信宿主 / 平台 | 否 | Linux `RLIMIT_AS` 地址空间字节数；不是 Pod 内存隔离。 |
+| `KSADK_LOCAL_PROCESS_MAX_PROCESSES` | local_process 子进程 | 否 | `64` | 无 | 否 | 可信宿主 / 平台 | 否 | Linux `RLIMIT_NPROC`；按 UID 计数，同 UID 进程会共享该约束。 |
+| `KSADK_LOCAL_PROCESS_MAX_OPEN_FILES` | local_process 子进程 | 否 | `256` | 无 | 否 | 可信宿主 / 平台 | 否 | `RLIMIT_NOFILE` 打开文件描述符上限。 |
+| `KSADK_LOCAL_PROCESS_MAX_FILE_BYTES` | local_process 子进程 | 否 | `67108864` | 无 | 否 | 可信宿主 / 平台 | 否 | `RLIMIT_FSIZE` 单文件上限；不限制许多小文件的聚合大小。 |
+| `KSADK_LOCAL_PROCESS_MAX_OUTPUT_BYTES` | local_process 子进程 | 否 | `1048576` | 无 | 否 | 可信宿主 / 平台 | 否 | stdout 和 stderr 各自的捕获上限；超限终止命令并记录截断/超限状态。 |
+| `KSADK_LOCAL_PROCESS_ENV_ALLOWLIST` | local_process Skill 脚本环境 | 否 | 空 | 无 | 否 | 可信宿主 / 平台 | 否 | 逗号分隔的额外环境变量名。脚本默认只得到 `PATH/LANG/LC_ALL/TZ/SYSTEMROOT/CI` 与 Runtime 生成的工作流变量，不继承 `HOME`、配置目录或 Agent Secret。不得列入 `KSADK_LOCAL_PROCESS_*` 控制变量。 |
 | `KSADK_SKILL_SERVICE_URL` | Runtime agent / Skill Service client | 条件必传 | 未设置 | 无 | 否 | Skill Service / 平台 | 否 | 配置后从 Skill Center 拉取技能。支持直连 REST 和 AICP KOP endpoint。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | Runtime agent / AICP resolver | 否 | 按 `KSADK_AICP_ENDPOINT_MODE` 自动选择 | 无 | 否 | Skill Service / 平台 | 否 | 未设置 `KSADK_SKILL_SERVICE_URL` 时覆盖 Skill Service AICP endpoint。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | Runtime agent / AICP resolver | 否 | 内网 endpoint 为 `http`，公网默认 `https` | 无 | 否 | Skill Service / 平台 | 否 | 未设置 `KSADK_SKILL_SERVICE_URL` 时覆盖 Skill Service AICP URL scheme。 |
@@ -253,11 +262,14 @@
 | `KSADK_SELECTED_SKILL_NAMES` | Runtime agent | 否 | 未设置 | 无 | 否 | Runner / Runtime agent | 否 | `execute_skills` 选中的 skill 名称列表，Runtime agent 优先按它下载。 |
 | `KSADK_SKILL_ALLOW_HASH_MISMATCH` | Runtime agent / PackageStore | 否 | `false` | 无 | 否 | 调试 / 兼容旧包 | 否 | 允许 ContentHash 校验失败后以 unverified cache 加载旧 skill 包；生产不建议开启。 |
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
-| `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
+| `KSADK_SKILL_WORKDIR` | Runtime agent / local_process backend | 否 | 直接运行 agent 时为系统临时目录下 `ksadk-skill-workflow`；backend 未配置时使用系统临时父目录 | 无 | 否 | Runtime agent / 开发者 | 否 | 直接运行 agent 时是 workflow 工作目录；`local_process` backend 配置时是调用方持有的请求父目录。backend 每次在其下创建唯一请求目录，将其中 `work/` 注入 agent，并在产物交付后删除请求目录，不复用旧工作目录。 |
 | `KSADK_SKILL_OUTPUT_DIR` | Runtime agent workflow | 否 | `KSADK_SKILL_WORKDIR/artifacts` | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的产物输出目录。 |
+| `KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES` | Runtime agent | 否 | `65536` | 无 | 否 | 平台 / 开发者 | 否 | 返回给外层 Agent 的文本产物总字节上限；取值限制在 `0` 到 `1048576`。 |
 | `KSADK_SKILL_ROOT_DIR` | Runtime agent workflow | 否 | 当前执行 skill 根目录 | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的 skill 根目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |
 | `KSADK_WORKFLOW_PROMPT` | Runtime agent workflow | 否 | 当前 workflow prompt | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的用户请求文本。 |
+
+`local_process` 的静态检查、环境过滤、墙钟和 `rlimit` 只降低同容器执行可信/半可信 Skill 时的常见风险。它仍标记 `isolated=false`，与 Agent 共享文件系统、网络、UID 和容器资源，不阻止动态绕过、`setsid` 逃逸或直接读取所有可见绝对路径。Linux launcher 会如实记录已应用、部分支持或失败的限制；限制设置失败时不执行 Skill 命令。E2B backend 不使用这些变量。
 
 ## 7. MCP Runtime
 
@@ -397,6 +409,10 @@
 | `KSADK_STUDIO_NO_SECURITY` | AgentKit Studio | 否 | `0` | 无 | 否 | 测试环境 | 否 | 仅受控自动化测试可设为 `1`；正常启动必须保留 loopback session 与 CSRF 校验。 |
 | `KSADK_STUDIO_SESSION_TOKEN` | AgentKit Studio | 否 | 随机生成 | 无 | 是 | CLI / 测试 Secret | 否 | 显式指定本地浏览器 session token；正常启动由 CLI 随机生成并写入启动 URL。 |
 | `KSADK_STUDIO_TRACE_CONTENT` | AgentKit Studio | 否 | `1` | 无 | 否 | 开发者 / Studio 设置 | 否 | 是否保存 Trace 事件正文；设为 `0` 时只保留排障所需元数据。 |
+| `KSADK_TEAMS_SERVER_URL` | Studio Teams | 否 | 空，使用本地团队存储 | 无 | 否 | 开发者 / 工作区配置 | 否 | 显式连接兼容 Teams 协议的服务端；未设置时保留本地模式。 |
+| `KSADK_TEAMS_ACCESS_TOKEN` | Studio Teams | 按服务端鉴权要求 | 空 | 未设置时使用已配置的请求签名 | 是 | 本地 Secret / 环境变量 | 否 | 配置远端团队服务的 Bearer 凭据，不写入源码或日志。 |
+| `KSADK_TEAMS_NODE_KIND` | Studio Teams | 否 | `local` | 无 | 否 | 执行节点配置 | 否 | 节点注册时报告的类型，应匹配服务端支持的节点类型。 |
+| `KSADK_TEAMS_NODE_NAME` | Studio Teams | 否 | 系统主机名 | 无 | 否 | 执行节点配置 | 否 | 发送给已配置团队服务的节点显示名称；可设置不包含主机信息的名称。 |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex model proxy | 否 | `OPENAI_BASE_URL` / `OPENAI_API_BASE` | 无 | 否 | 开发者 / 平台 | 否 | Codex proxy 上游 base URL 覆盖。 |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex model proxy | 否 | `OPENAI_API_KEY` | 无 | 是 | 开发者 / 平台 | 否 | Codex proxy 上游凭据覆盖。 |
 | `KSADK_PROXY_TOKEN` | Codex model proxy | 否 | 运行时生成 | 无 | 是 | SDK 内部 | 否 | 本地回环 proxy 与 Codex 子进程之间的 bearer token；通常不应手动设置。 |

@@ -1386,17 +1386,37 @@ class DirectAgentEngineCloudDeploymentGateway:
         request: DeploymentRequest = kwargs["request"]
         digest = str(kwargs["manifest_digest"])
         runtime_environment = dict(kwargs.get("runtime_environment") or {})
-        result = await self._managed_runtime_client().create_agent(
-            self._managed_runtime_payload(
-                agent_name=str(kwargs["agent_name"]),
-                manifest=str(kwargs["manifest"]),
-                runtime_name=str(kwargs["runtime_name"]),
-                runtime_version=str(kwargs["runtime_version"]),
-                request=request,
-                runtime_environment=runtime_environment,
-                plugin_artifacts=kwargs.get("plugin_artifacts"),
-            )
+        payload = self._managed_runtime_payload(
+            agent_name=str(kwargs["agent_name"]),
+            manifest=str(kwargs["manifest"]),
+            runtime_name=str(kwargs["runtime_name"]),
+            runtime_version=str(kwargs["runtime_version"]),
+            request=request,
+            runtime_environment=runtime_environment,
+            plugin_artifacts=kwargs.get("plugin_artifacts"),
         )
+        try:
+            result = await self._managed_runtime_client().create_agent(payload)
+        except AgentEngineAPIError as error:
+            message = str(error)
+            if error.code in {400, 404} and (
+                "资源不存在" in message or "not found in catalog" in message.lower()
+            ):
+                runtime = f"{kwargs['runtime_name']}@{kwargs['runtime_version']}"
+                request_id = str(error.details.get("request_id") or "")
+                raise StudioError(
+                    "CLOUD_RUNTIME_RESOURCE_UNAVAILABLE",
+                    f"云端创建 {runtime} 失败：{message} 请核对当前云环境的运行时版本和镜像登记。"
+                    + (f" 请求 ID：{request_id}" if request_id else ""),
+                    status_code=error.code,
+                    details={
+                        **error.details,
+                        "buildId": kwargs["build_id"],
+                        "runtimeName": kwargs["runtime_name"],
+                        "runtimeVersion": kwargs["runtime_version"],
+                    },
+                ) from error
+            raise
         agent_id = str(result.get("agent_id") or "").strip()
         if not agent_id:
             raise StudioError(

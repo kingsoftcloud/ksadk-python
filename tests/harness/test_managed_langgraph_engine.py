@@ -23,7 +23,18 @@ from ksadk.runtime import ResumePayload, ResumeTarget, StartRequest
 def _spec() -> HarnessSpec:
     return HarnessSpec(
         agent_revision_ref="agent-revision://proj-1@2",
-        model=ModelBinding(profile_ref="model-profile://kimi-k3@1.0.0"),
+        # Most engine tests exercise lifecycle/conformance rather than retry
+        # timing. Keep their failure fixtures single-shot now that production
+        # defaults intentionally span ten progressively delayed attempts.
+        model=ModelBinding(
+            profile_ref="model-profile://kimi-k3@1.0.0",
+            provider_policy=ModelProviderPolicy(
+                max_attempts_per_model=1,
+                total_attempt_budget=1,
+                initial_backoff_ms=0,
+                max_backoff_ms=0,
+            ),
+        ),
         prompt=PromptSpec(instructions="你是财务分析助手。"),
     )
 

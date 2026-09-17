@@ -190,9 +190,8 @@ phase1-canary-delete:
 studio-react-install-browser:
 	uv run playwright install chromium
 
-studio-react-test:
+studio-react-test: build-studio-static
 	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
-		$(KSADK_WEB_NPM) --prefix ksadk/studio/react-ui ci; \
 		npm --prefix ksadk/studio/react-ui test; \
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
@@ -217,7 +216,7 @@ studio-react-test:
 # ============================================================
 
 # 获取当前版本
-VERSION := $(shell python -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
+VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
 
 # 版本管理
 version:
@@ -311,7 +310,7 @@ build-only: check-build-deps build-studio-static
 # Print provenance for the artifact that will actually be uploaded.  The Git
 # state is deliberately included: a commit alone must not imply a clean tree.
 print-build-provenance:
-	@python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
+	@uv run python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
 
 # 带版本号构建: make release V=0.2.0
 release:
@@ -617,7 +616,7 @@ public-review: public-status public-preflight
 
 # 离线包输出目录
 OFFLINE_DIR = offline-packages
-VERSION := $(shell python -c "from ksadk.version import VERSION; print(VERSION)")
+VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)")
 
 # 平台参数
 LINUX_PLATFORM = manylinux2014_x86_64
@@ -796,14 +795,13 @@ build-studio-static:
 	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
 		set -eu; \
 		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
+		$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci; \
 		if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
 			WEB_TARBALL_PATH="$(KSADK_WEB_TARBALL)"; \
 			case "$$WEB_TARBALL_PATH" in /*) ;; *) WEB_TARBALL_PATH="$(CURDIR)/$$WEB_TARBALL_PATH" ;; esac; \
 			test -f "$$WEB_TARBALL_PATH" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $$WEB_TARBALL_PATH" >&2; exit 1; }; \
 			echo "Install Studio dependencies with the reviewed KsADK Web tarball: $$WEB_TARBALL_PATH"; \
-			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --package-lock=false "$$WEB_TARBALL_PATH"; \
-		else \
-			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" ci; \
+			$(KSADK_WEB_NPM) --prefix "$(STUDIO_REACT_DIR)" install --no-save --ignore-scripts "$$WEB_TARBALL_PATH"; \
 		fi; \
 		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
 	else \

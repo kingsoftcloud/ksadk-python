@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -421,6 +422,56 @@ async def test_start_failures_keep_one_host_and_its_circuit_history(tmp_path: Pa
     ]
 
 
+@pytest.mark.asyncio
+async def test_start_failure_status_retains_stage_until_successful_retry(tmp_path):
+    from unittest.mock import AsyncMock
+
+    service = _RecordingService(tmp_path)
+    host = _FakeHost(service.descriptor_value)
+    original_lease = host.lease
+    host.lease = AsyncMock(side_effect=PluginHostError(
+        "dsh_capability_start_failed", "private://transport-detail"
+    ))
+    service._host = host
+    service._projection = service._project_profile(("/pinned/dsh",))
+    try:
+        with pytest.raises(StudioError) as failure:
+            await service.describe()
+        assert failure.value.details["stage"] == "core_start"
+        assert service.startup_status["failure"]["reason"] == "dsh_capability_start_failed"
+        assert "private://transport-detail" not in str(service.startup_status)
+        assert service.startup_status["state"] == "failed"
+        host.lease = original_lease
+        await service.describe()
+        assert service.startup_status["state"] == "ready"
+        assert service.startup_status["failure"] is None
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_companion_graph_has_recoverable_structured_error(tmp_path):
+    from ksadk.plugins.companions import DshCompanionDefinition
+
+    service = _RecordingService(tmp_path, profile="studio")
+    service.configure_companions([DshCompanionDefinition(
+        plugin_id="fixture", profile="studio",
+        components={"one": "@example/plugin", "two": "@example/missing"},
+        operations=frozenset(), start=lambda: None, revoke=lambda: None,
+        close=lambda: None, invoke=lambda *args: {},
+    )])
+    try:
+        with pytest.raises(StudioError) as failure:
+            await service.describe()
+        assert failure.value.code == "COMPANION_GRAPH_INCOMPLETE"
+        assert failure.value.details["stage"] == "companion_graph"
+        assert failure.value.details["retryable"] is False
+        assert failure.value.details["recoveryUrl"] == "/studio-recovery/"
+        assert service.companion_manager is None
+    finally:
+        await service.aclose()
+
+
 def test_command_resolution_always_uses_exact_version_manager(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -827,3 +878,89 @@ async def test_resource_core_startup_failure_cleans_socket_and_can_retry_same_bu
     finally:
         await service.aclose()
     assert not paths[-1].exists()
+
+
+async def test_enabled_plugin_probe_result_is_cached_until_state_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+    calls: list[int] = []
+    monkeypatch.setattr(service, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _fake_probe(command: object) -> bool:
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(service, "_profile_has_enabled_plugins", _fake_probe)
+
+    assert await service.has_enabled_profile_plugins() is True
+    assert await service.has_enabled_profile_plugins() is True
+    assert len(calls) == 1
+
+    # The managed state file is authoritative: writing it invalidates the
+    # cached bridge probe and the fast path answers without Node.
+    state_dir = tmp_path / "dsh-home" / "profiles" / "web"
+    state_dir.mkdir(parents=True)
+    (state_dir / ".ksadk-dsh-plugins.json").write_text(
+        json.dumps({"order": ["p"], "disabled": ["p"]}), encoding="utf-8"
+    )
+    assert await service.has_enabled_profile_plugins() is False
+    assert len(calls) == 1
+    await service.aclose()
+
+
+async def test_plugin_probe_warmup_populates_the_cache_off_the_request_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+    calls: list[int] = []
+    monkeypatch.setattr(service, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _fake_probe(command: object) -> bool:
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(service, "_profile_has_enabled_plugins", _fake_probe)
+
+    service.schedule_plugin_probe_warmup()
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if service._plugins_probe_cache is not None:
+            break
+    assert service._plugins_probe_cache is not None
+    assert await service.has_enabled_profile_plugins() is True
+    assert len(calls) == 1
+    await service.aclose()
+
+
+async def test_plugin_probe_warmup_swallows_probe_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+
+    def _missing(_command: object) -> tuple[str, ...]:
+        raise StudioError("DSH_CAPABILITY_HOST_UNAVAILABLE", "no toolchain", status_code=503)
+
+    monkeypatch.setattr(service, "_resolve_command", _missing)
+    service.schedule_plugin_probe_warmup()
+    await asyncio.sleep(0.05)
+    assert service._plugins_probe_cache is None
+    await service.aclose()
+
+
+async def test_probe_cancellation_releases_the_service_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+    monkeypatch.setattr(service, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _slow_probe(_command: object) -> bool:
+        time.sleep(0.2)
+        return False
+
+    monkeypatch.setattr(service, "_profile_has_enabled_plugins", _slow_probe)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(service.has_enabled_profile_plugins(), timeout=0.05)
+    # asyncio.Lock releases on cancellation, so the next caller proceeds.
+    assert await asyncio.wait_for(service.has_enabled_profile_plugins(), timeout=5) is False
+    await service.aclose()

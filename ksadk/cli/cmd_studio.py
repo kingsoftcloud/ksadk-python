@@ -232,6 +232,9 @@ def studio(
             host="127.0.0.1",
             port=port,
             log_level="info",
+            # Lifespan cleanup releases local authority only after HTTP draining.
+            # Bound long-lived/stalled streams so a restart can acquire that authority.
+            timeout_graceful_shutdown=10,
             # Access logging stays enabled through the Studio log config while
             # retaining filename/line-number context for both API and business
             # logs.  This preserves master's observability intent and the

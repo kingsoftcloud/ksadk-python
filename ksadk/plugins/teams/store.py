@@ -27,6 +27,7 @@ KINDS = frozenset(
         "group",
         "group_revision",
         "member",
+        "run_member",
         "team_run",
         "message",
         "task",
@@ -43,6 +44,12 @@ KINDS = frozenset(
         "child_invocation",
         "installation",
         "member_control",
+        "execution_node",
+        "execution_command",
+        "execution_lease",
+        "leader_checkpoint",
+        "leader_takeover",
+        "teams_import",
     }
 )
 
@@ -97,11 +104,20 @@ class Transaction:
             )
         ]
 
-    def recent(self, kind: str, group_id: str, limit: int = 12) -> list[dict[str, Any]]:
+    def recent(
+        self, kind: str, group_id: str, limit: int = 12, *, team_run_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        scope = " AND team_run_id=?" if team_run_id is not None else ""
+        params = (
+            (kind, group_id, team_run_id, limit)
+            if team_run_id is not None
+            else (kind, group_id, limit)
+        )
         rows = self.connection.execute(
-            "SELECT body FROM team_objects WHERE kind=? AND group_id=? "
-            "ORDER BY ordinal DESC LIMIT ?",
-            (kind, group_id, limit),
+            "SELECT body FROM team_objects WHERE kind=? AND group_id=?"
+            + scope
+            + " ORDER BY ordinal DESC LIMIT ?",
+            params,
         ).fetchall()
         return [json.loads(row[0]) for row in reversed(rows)]
 
@@ -135,7 +151,7 @@ class Transaction:
     ) -> dict[str, Any]:
         self.connection.execute(
             "INSERT INTO group_sequences(group_id,watermark) VALUES(?,1) "
-            "ON CONFLICT(group_id) DO UPDATE SET watermark=watermark+1",
+            "ON CONFLICT(group_id) DO UPDATE SET watermark=group_sequences.watermark+1",
             (group_id,),
         )
         seq = self.watermark(group_id)

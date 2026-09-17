@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from ksadk.configs.env_registry_pcm import PCM_ENV_VAR_REGISTRY_ITEMS
 from ksadk.configs.env_var_spec import EnvVarSpec
+from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    *STUDIO_ENV_VAR_REGISTRY_ITEMS,
     EnvVarSpec(
         "KSADK_MEMORY_POSTGRES_DSN", "memory", "Harness memory PostgreSQL DSN.",
         sensitive=True, documented=False,
@@ -276,39 +278,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "studio",
     ),
     EnvVarSpec(
-        "KSADK_STUDIO_LAZY_START",
-        "studio",
-        "Internal desktop startup mode; keep the Studio window responsive while optional DSH warmup runs.",
-        "0",
-        documented=False,
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_NO_SECURITY",
-        "studio",
-        "Disable Studio loopback session and CSRF checks for controlled tests only.",
-        "0",
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_AUTHORIZER",
-        "studio",
-        "Internal authoring backend selector; bounded chat is the default and the "
-        "filesystem-capable Codex authorizer requires an explicit opt-in.",
-        "chat",
-        documented=False,
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_SESSION_TOKEN",
-        "studio",
-        "Explicit local Studio browser session token; generated randomly when unset.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "KSADK_STUDIO_TRACE_CONTENT",
-        "studio",
-        "Persist Studio trace event content; set to 0 to retain metadata only.",
-        "1",
-    ),
-    EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
     ),
     EnvVarSpec(
@@ -429,7 +398,78 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Internal bundled LangGraph PostgreSQL checkpointer requirement constant.",
     ),
     EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_ADDRESS_SPACE_BYTES",
+        "skills",
+        "Local-process RLIMIT_AS address-space bytes.",
+        "1073741824",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_CONTROLS",
+        "skills",
+        "Internal marker injected by the local Skill runtime backend.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_CPU_SECONDS",
+        "skills",
+        "Local-process RLIMIT_CPU seconds.",
+        "120",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_ENV_ALLOWLIST",
+        "skills",
+        "Additional environment names allowed into local Skill commands.",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_FILE_BYTES",
+        "skills",
+        "Local-process RLIMIT_FSIZE bytes per file.",
+        "67108864",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_OPEN_FILES",
+        "skills",
+        "Local-process RLIMIT_NOFILE descriptor count.",
+        "256",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_OUTPUT_BYTES",
+        "skills",
+        "Maximum captured bytes for each local-process output stream.",
+        "1048576",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_MAX_PROCESSES",
+        "skills",
+        "Local-process RLIMIT_NPROC per-UID process count.",
+        "64",
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_PROCESS_WALL_SECONDS",
+        "skills",
+        "Local-process hard wall-clock command limit.",
+        "900",
+    ),
+    EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_SANDBOX_PROTOCOL",
+        "skills",
+        "Sandbox Skill delivery protocol. Only pinned_v1 is supported.",
+        "pinned_v1",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_EVENT_FILE",
+        "skills",
+        "Internal per-run sandbox Skill event file.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES",
+        "skills",
+        "Maximum text artifact bytes returned by the Skill runtime agent.",
+        "65536",
     ),
     EnvVarSpec("KSADK_LTM", "memory", "AICP long-term-memory connection prefix."),
     EnvVarSpec(

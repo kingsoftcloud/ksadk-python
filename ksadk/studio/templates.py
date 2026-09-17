@@ -58,9 +58,9 @@ def _blank_behavior_design(goal: str, policy_template: str) -> AgentBehaviorDesi
     explicit = _explicit_boundaries(goal)
     safety = list(explicit)
     policy_boundary = (
-        "执行外部写入、生产变更或其他高风险操作前，说明影响并取得用户确认。"
+        "高风险操作前说明影响并取得用户确认。"
         if policy_template == "strict"
-        else "调用工具和外部服务时遵守当前权限策略，不宣称未实际完成的操作。"
+        else "遵守当前权限策略，不宣称未实际完成的操作。"
     )
     if policy_boundary not in safety:
         safety.append(policy_boundary)
@@ -68,25 +68,24 @@ def _blank_behavior_design(goal: str, policy_template: str) -> AgentBehaviorDesi
         role=f"以“{primary_goal[:80]}”为核心职责的智能助手",
         objective=goal,
         operating_principles=[
-            "优先理解当前目标、已知事实和成功标准，不把假设表述为事实。",
-            "信息不足或存在关键歧义时，先提出最少必要问题。",
-            "只在确有需要时调用已绑定能力，并检查工具输入与返回结果。",
+            "优先理解目标与已知事实，不把假设当事实。",
+            "信息不足时先问最少必要的问题。",
+            "按需调用已绑定能力，检查输入与返回。",
         ],
         workflow=[
-            "识别本次请求、约束条件和期望结果",
-            "检查信息是否充分并澄清关键缺口",
-            "制定并执行必要步骤，使用可用 Tool、MCP 或 Skill",
-            "核对结果、说明限制并按约定结构交付",
+            "明确请求、约束与期望结果",
+            "调用可用 Tool/MCP/Skill 执行",
+            "核对结果并按约定结构交付",
         ],
         explicit_boundaries=explicit,
         safety_boundaries=safety,
         output_expectations=[
-            "回答准确、清晰、可执行，并区分事实、判断和建议。",
-            "涉及风险、假设或未完成事项时明确说明，不伪造执行结果。",
+            "回答准确清晰，区分事实、判断与建议。",
+            "涉及风险或未完成事项时明确说明。",
         ],
         source_notes=[
             "用户输入：核心目标和明确提出的边界",
-            "模板补充：通用执行流程、澄清原则和交付要求",
+            "模板补充：通用执行流程与交付要求",
             "平台策略：工具权限与高风险操作边界",
         ],
     )
@@ -95,19 +94,17 @@ def _blank_behavior_design(goal: str, policy_template: str) -> AgentBehaviorDesi
 def _blank_system_prompt(design: AgentBehaviorDesign) -> str:
     principles = "\n".join(f"- {item}" for item in design.operating_principles)
     boundaries = "\n".join(f"- {item}" for item in design.safety_boundaries)
-    outputs = "\n".join(f"- {item}" for item in design.output_expectations)
     return (
         f"# 角色\n{design.role}\n\n"
         f"# 核心目标\n{design.objective}\n\n"
-        f"# 工作原则\n{principles}\n\n"
-        f"# 安全与边界\n{boundaries}\n\n"
-        f"# 回答要求\n{outputs}"
+        f"# 原则\n{principles}\n\n"
+        f"# 边界\n{boundaries}"
     )
 
 
 def _blank_task_prompt(design: AgentBehaviorDesign) -> str:
     workflow = "\n".join(f"{index}. {item}" for index, item in enumerate(design.workflow, 1))
-    return f"每次收到请求时遵循以下执行契约：\n{workflow}"
+    return f"按以下步骤处理请求：\n{workflow}"
 
 _RESEARCH_SKILL_MANIFEST = {
     "name": RESEARCH_SKILL_NAME,

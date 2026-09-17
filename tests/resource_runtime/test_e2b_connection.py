@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ksadk.sandbox.backends.e2b import E2BSandboxBackend
+from ksadk.sandbox.backends.e2b import E2BSandboxBackend, E2BSandboxSessionError
 from ksadk.sandbox.base import SandboxError, SandboxSpec
 from ksadk.sandbox.e2b_connection import ExplicitE2BConnection
 from ksadk.skills.runtime.backends.e2b import E2BSkillRuntimeBackend
@@ -75,9 +75,12 @@ def test_created_sandbox_is_killed_when_initialization_fails(monkeypatch):
         raise RuntimeError("startup failed")
 
     monkeypatch.setattr(backend, "_wait_until_ready", fail)
-    with pytest.raises(RuntimeError, match="startup failed"):
+    with pytest.raises(E2BSandboxSessionError, match="startup failed") as raised:
         backend.create_session(session_id="operation")
     assert killed == [True]
+    assert raised.value.instance_status == "created"
+    assert raised.value.failure_stage == "initialize"
+    assert raised.value.cleanup_status == "completed"
 
 
 def test_real_pinned_sdk_accepts_connection_options(monkeypatch):

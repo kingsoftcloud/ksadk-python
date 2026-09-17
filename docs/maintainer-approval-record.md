@@ -1,6 +1,6 @@
 # KsADK Public Release Approval Record
 
-This record approves the public `0.8.4` release candidate described below. It is the evidence consumed by the release gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages deployment.
+This record approves the public `0.8.5` release candidate described below. It is the evidence consumed by the release gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages deployment.
 
 ## Required Approval Decisions
 
@@ -9,7 +9,7 @@ This record approves the public `0.8.4` release candidate described below. It is
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.8.4 |
+| Python package version | 0.8.5 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |

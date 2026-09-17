@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { KingIcon } from "../components/KingIcon";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -23,12 +23,13 @@ function isDeclarativeAgent(agent: AgentItem): boolean {
   return agent.spec?.runtime?.type === "codex";
 }
 
-export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, workspaceName, onCreate, onDetail, onChat, onBuild, onChanged }: {
+export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, workspaceName, onCreate, onQuickCreate, onDetail, onChat, onBuild, onChanged }: {
   agents: AgentItem[];
   runtimeReady: boolean;
   runtimeChecked?: boolean;
   workspaceName: string;
   onCreate: () => void;
+  onQuickCreate?: () => void;
   onDetail: (id: string) => void;
   onChat: (id: string) => void;
   onBuild: (id: string) => void;
@@ -39,8 +40,30 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
   const [pendingDelete, setPendingDelete] = useState<AgentItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState("");
+  // 构建徽标数据按需懒加载：App 只提供列表摘要，本页挂载后才逐个取详情，
+  // 避免会话首屏被 N 个详情请求拖住。
+  const [buildsByAgent, setBuildsByAgent] = useState<Record<string, Array<{ id: string; status: string }>>>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    for (const agent of agents) {
+      const id = agent.metadata.id;
+      if (agent.builds || buildsByAgent[id]) continue;
+      apiFetch(`/api/v1/agents/${encodeURIComponent(id)}`, { signal: controller.signal })
+        .then(r => r.ok ? r.json() : null)
+        .then(detail => {
+          if (detail && !controller.signal.aborted) {
+            setBuildsByAgent(prev => ({ ...prev, [id]: detail.builds || [] }));
+          }
+        })
+        .catch(() => undefined);
+    }
+    return () => controller.abort();
+  }, [agents, buildsByAgent]);
+  const agentsWithBuilds = useMemo(() => agents.map(agent => (
+    agent.builds ? agent : { ...agent, builds: buildsByAgent[agent.metadata.id] }
+  )), [agents, buildsByAgent]);
 
-  const filtered = useMemo(() => agents.filter(agent => {
+  const filtered = useMemo(() => agentsWithBuilds.filter(agent => {
     const built = Boolean(agent.builds?.some(b => b.status === "SUCCEEDED"));
     const q = query.trim().toLowerCase();
     const matchesQuery = !q || agent.metadata.name.toLowerCase().includes(q) || agent.metadata.id.toLowerCase().includes(q);
@@ -156,6 +179,11 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
   return (
     <div className="page-container agents-page" data-layout="data">
       <PageHeaderActions>
+        {onQuickCreate && (
+          <button className="button secondary" type="button" disabled={!runtimeReady} onClick={onQuickCreate} title="使用默认模板、模型和权限直接创建并打开会话">
+            <KingIcon name="add" size={16} /><span>快速创建</span>
+          </button>
+        )}
         <button className="button accent" type="button" disabled={!runtimeReady} onClick={onCreate}>
           <KingIcon name="add" size={16} /><span>创建 Agent</span>
         </button>

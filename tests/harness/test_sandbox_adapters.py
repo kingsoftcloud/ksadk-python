@@ -40,6 +40,9 @@ from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
 from ksadk.sandbox.base import SandboxCommandResult
 from ksadk.sandbox.base import SandboxSpec as SdkSandboxSpec
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 def _run(coro):
     return asyncio.run(coro)

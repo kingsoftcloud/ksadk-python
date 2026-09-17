@@ -28,6 +28,8 @@ DSH 安装可输入裸 npm 包名（如 `@xmanrui/dsh-im`）或精确版本。�
 
 ## 模型与凭证
 
+快速创建从已配置模型中优先绑定 `deepseek-v4.1-flash`（默认）与 `glm-5.3-flash`，不会生成未配置的模型引用。默认执行限制为 100 步、600 秒；编辑已有 Agent 时保留其明确保存的限制。
+
 `dsh_models.py` 从 Studio 的 CLI 默认模型及模型资源目录生成官方 `llm-pi-ai` 路由。默认模型通过 `agent-default-model` 指向 Studio 路由。
 
 - 模型协议、地址、模型名与 credential reference 使用 Studio 解析器的结果。
@@ -40,6 +42,12 @@ DSH 安装可输入裸 npm 包名（如 `@xmanrui/dsh-im`）或精确版本。�
 这解决插件重复填写模型 API key 的问题。DSH 插件使用 Core 原生会话服务；本次未将其历史记录迁入 Studio 既有 Agent 会话库，不能据此宣称两者会话已合并。真实 IM 收发还需要用户连接渠道账号，并单独验证。
 
 ## 同源传输与权限
+
+Agent Teams 默认在 Studio 启动后异步启用，`KSADK_STUDIO_TEAMS_DEFAULT=0` 可关闭这次自动激活。后台激活与页面重试共用生命周期锁。页面持续读取实际状态，区分准备中、可用及激活失败；启用不等于创建团队或开始执行任务。
+
+同一工作区的团队数据库只能由一个 Studio 宿主持有。另一个实例占用时保留其数据与独占锁，返回 `authority_in_use`；页面提示关闭该实例后重试，不自动删除锁文件或重建数据库。
+
+Studio 退出时，HTTP 长连接最多等待 10 秒，然后进入运行时清理；已打开的 SSE 观察连接不应无限阻止团队锁释放。会话等待用户填写表单时仍保持原响应流，收到实际执行终态后才关闭。`CancelRun` 同时接受客户端 Invocation ID 和 `GetSession.ActiveInvocationId` 返回的运行 ID，并用实际运行 ID 检查团队占用权限。
 
 `dsh_application.py` 把官方资源、HTTP RPC/事件流与 WebSocket 转发到同一个 Core。Studio 已注册 API 和静态路由优先，未知 Studio API 不落入 Core。
 

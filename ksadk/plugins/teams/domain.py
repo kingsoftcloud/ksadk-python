@@ -8,6 +8,7 @@ the projector; a model's result candidate never completes a task by itself.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Callable
 
 from .contracts import (
@@ -25,22 +26,11 @@ from .errors import TeamsError
 from .store import TeamsStore, Transaction, digest, new_id, now
 
 
-def public(value: Any) -> Any:
-    if isinstance(value, dict):
-        result = {key: public(item) for key, item in value.items() if not key.startswith("_")}
-        if "_policy" in value:
-            result["policy"] = public(value["_policy"])
-        return result
-    if isinstance(value, list):
-        return [public(item) for item in value]
-    return value
+from .domain_values import member_key, public, run_member_key
+from .task_decisions import TaskDecisions
 
 
-def member_key(group_id: str, member_id: str) -> str:
-    return f"{group_id}:{member_id}"
-
-
-class TeamsDomain:
+class TeamsDomain(TaskDecisions):
     def __init__(self, store: TeamsStore, *, authority_ref: str) -> None:
         self.store = store
         self.authority_ref = authority_ref
@@ -63,9 +53,6 @@ class TeamsDomain:
         elif actor.kind == "member":
             if owner or actor.group_id != group_id or not actor.member_id:
                 raise TeamsError("forbidden", "成员无权执行此操作", status=403)
-            member = tx.get("member", member_key(group_id, actor.member_id))
-            if member["status"] != "active" or (leader and member["role"] != "leader"):
-                raise TeamsError("forbidden", "成员授权已失效", status=403)
             if not actor.team_run_id:
                 raise TeamsError("invocation_required", "缺少受信执行上下文", status=403)
             run = tx.get("team_run", actor.team_run_id)
@@ -75,9 +62,114 @@ class TeamsDomain:
                 or run["status"] == "cancel_requested"
             ):
                 raise TeamsError("team_run_closed", "本轮已停止，不能继续协作")
+            member = self.run_member(tx, actor.team_run_id, actor.member_id)
+            if member["status"] != "active" or (leader and member["role"] != "leader"):
+                raise TeamsError("forbidden", "成员授权已失效", status=403)
         elif actor.kind != "host":
             raise TeamsError("forbidden", "无效操作主体", status=403)
         return group
+
+    @staticmethod
+    def run_member(tx: Transaction, run_id: str, member_id: str) -> dict[str, Any]:
+        """Resolve the frozen invocation identity, including pre-RunMember history."""
+        key = run_member_key(run_id, member_id)
+        stored = tx.get("run_member", key, required=False)
+        if stored:
+            return stored
+        run = tx.get("team_run", run_id)
+        frozen = next((m for m in run.get("_roster", []) if m["memberId"] == member_id), None)
+        if not frozen or frozen["status"] != "active":
+            raise TeamsError("member_unavailable", "成员不属于本轮冻结配置", status=409)
+        return {
+            **deepcopy(frozen),
+            "runMemberId": key,
+            "teamRunId": run_id,
+            "groupRevision": run["groupRevision"],
+        }
+
+    @staticmethod
+    def delivery_member(tx: Transaction, delivery: dict[str, Any]) -> dict[str, Any]:
+        """Historical execution identity must survive a Leader session takeover."""
+        if delivery.get("_memberSnapshot"):
+            return deepcopy(delivery["_memberSnapshot"])
+        run = tx.get("team_run", delivery["teamRunId"])
+        frozen = next(
+            (
+                m
+                for m in run.get("_roster", [])
+                if m["memberId"] == delivery["memberId"]
+                and m["sessionId"] == delivery["_sessionId"]
+            ),
+            None,
+        )
+        if frozen is None:
+            raise TeamsError(
+                "delivery_scope_unavailable", "原始执行身份不可用，需要核对历史来源", status=409
+            )
+        return {
+            **deepcopy(frozen),
+            "runMemberId": run_member_key(run["teamRunId"], frozen["memberId"]),
+            "teamRunId": run["teamRunId"],
+            "groupRevision": run["groupRevision"],
+        }
+
+    @staticmethod
+    def run_policy(tx: Transaction, run: dict[str, Any]) -> dict[str, Any]:
+        if "_policy" in run:
+            return run["_policy"]
+        revision = tx.get(
+            "group_revision", f"{run['groupId']}:{run['groupRevision']}", required=False
+        )
+        return (revision or tx.get("group", run["groupId"]))["_policy"]
+
+    def publish_run_member(self, tx: Transaction, member: dict[str, Any]) -> None:
+        self.publish(tx, "run_member", member["runMemberId"], member)
+        current = tx.get("member", member_key(member["groupId"], member["memberId"]))
+        active = [
+            m
+            for m in tx.list("run_member", member["groupId"])
+            if m["memberId"] == member["memberId"] and m["executionStatus"] != "idle"
+        ]
+        state = next(
+            (
+                state
+                for state in ("running", "waiting", "queued")
+                if any(m["executionStatus"] == state for m in active)
+            ),
+            "idle",
+        )
+        current.update(
+            executionStatus=state,
+            activeRunId=active[0].get("activeRunId") if len(active) == 1 else None,
+            activeTeamRunIds=[m["teamRunId"] for m in active],
+            revision=current["revision"] + 1,
+        )
+        self.publish(tx, "member", member_key(member["groupId"], member["memberId"]), current)
+
+    def update_active_clock(self, tx: Transaction, run: dict[str, Any]) -> None:
+        timestamp = now()
+        previous = run.get("activeDurationSeconds", 0)
+        if run.get("_activeSince"):
+            elapsed = (
+                datetime.fromisoformat(timestamp) - datetime.fromisoformat(run["_activeSince"])
+            ).total_seconds()
+            total = previous + run.get("_activeRemainderSeconds", 0) + max(0, elapsed)
+            run["activeDurationSeconds"] = int(total)
+            run["_activeRemainderSeconds"] = total - int(total)
+        executing = (
+            run["status"] not in TERMINAL | {"cancel_requested", "awaiting_acceptance"}
+            and not run["dispatchSuspended"]
+            and any(
+                d.get("_runStatus") == "running"
+                and not d.get("_terminalState")
+                and not d.get("_fenced")
+                for d in tx.list("delivery", run["groupId"], team_run_id=run["teamRunId"])
+            )
+        )
+        run["_activeSince"] = timestamp if executing else None
+        if run.get("activeDurationSeconds", 0) != previous:
+            run["revision"] += 1
+            self.publish(tx, "team_run", run["teamRunId"], run)
 
     def mutate(
         self,
@@ -113,7 +205,7 @@ class TeamsDomain:
             "team_run": "team_run.updated",
             "message": "message.created" if created else "message.updated",
         }.get(kind, f"{kind}.updated")
-        payload_key = "teamRun" if kind == "team_run" else kind
+        payload_key = {"team_run": "teamRun", "run_member": "runMember"}.get(kind, kind)
         event = tx.event(value["groupId"], event_type, {payload_key: public(value)}, **refs)
         if kind == "message" and created:
             value["_createdSeq"] = event["groupSeq"]
@@ -146,8 +238,10 @@ class TeamsDomain:
                 "status": "active",
                 "createdAt": timestamp,
                 "updatedAt": timestamp,
-                "_policy": {"taskAcceptance": "human", "peerWake": False},
+                "_policy": {"taskAcceptance": request.taskAcceptance, "peerWake": False},
             }
+            if request.leaderStandbyBindingRef:
+                group["_leaderStandbyBindingRef"] = request.leaderStandbyBindingRef
             self.publish(tx, "group", group_id, group)
             for selected in request.members:
                 member = {
@@ -157,6 +251,7 @@ class TeamsDomain:
                     "role": "leader" if selected.memberId == request.leaderMemberId else "member",
                     "bindingRef": selected.bindingRef,
                     "binding": deepcopy(bindings[selected.bindingRef]),
+                    "responsibility": selected.responsibility,
                     "sessionId": new_id("ses"),
                     "revision": 1,
                     "status": "active",
@@ -175,13 +270,24 @@ class TeamsDomain:
             create,
         )
 
-    def snapshot(self, actor: Actor, group_id: str) -> dict[str, Any]:
+    def snapshot(
+        self, actor: Actor, group_id: str, team_run_id: str | None = None
+    ) -> dict[str, Any]:
         with self.store.transaction() as tx:
             self.authorize(tx, actor, group_id)
-            return self._snapshot(tx, group_id, actor=actor)
+            if actor.kind == "member" and team_run_id and team_run_id != actor.team_run_id:
+                raise TeamsError("forbidden", "不能读取其他轮次", status=403)
+            if team_run_id and tx.get("team_run", team_run_id)["groupId"] != group_id:
+                raise TeamsError("not_found", "轮次不存在", status=404)
+            return self._snapshot(tx, group_id, actor=actor, team_run_id=team_run_id)
 
     def _snapshot(
-        self, tx: Transaction, group_id: str, *, actor: Actor | None = None
+        self,
+        tx: Transaction,
+        group_id: str,
+        *,
+        actor: Actor | None = None,
+        team_run_id: str | None = None,
     ) -> dict[str, Any]:
         snapshot = {
             "apiVersion": API_VERSION,
@@ -190,6 +296,7 @@ class TeamsDomain:
         }
         for key, kind in {
             "members": "member",
+            "runMembers": "run_member",
             "messages": "message",
             "teamRuns": "team_run",
             "tasks": "task",
@@ -198,6 +305,19 @@ class TeamsDomain:
             "artifacts": "artifact",
         }.items():
             values = tx.list(kind, group_id)
+            if kind == "run_member":
+                indexed = {m["runMemberId"]: m for m in values}
+                for run in tx.list("team_run", group_id):
+                    for frozen in run.get("_roster", []):
+                        if frozen["status"] == "active":
+                            identity = run_member_key(run["teamRunId"], frozen["memberId"])
+                            indexed.setdefault(
+                                identity, self.run_member(tx, run["teamRunId"], frozen["memberId"])
+                            )
+                values = list(indexed.values())
+            selected_run = actor.team_run_id if actor and actor.kind == "member" else team_run_id
+            if selected_run and kind != "member":
+                values = [v for v in values if v.get("teamRunId") == selected_run]
             if key == "messages":
                 values = [value for value in values if value.get("visibility") != "internal"]
             if actor and actor.kind == "member" and key == "interactions":
@@ -242,13 +362,16 @@ class TeamsDomain:
                         + sum(
                             task["status"] == "awaiting_acceptance" for task in tx.list("task", gid)
                         )
-                        + int(bool(active and active["status"] == "awaiting_acceptance")),
+                        + sum(run["status"] == "awaiting_acceptance" for run in runs),
                         "unreadCount": sum(
                             message.get("_createdSeq", 0) > (read or {}).get("watermark", 0)
                             and message.get("senderPrincipal") != actor.subject
                             for message in messages
                         ),
                         "activeTeamRunId": active["teamRunId"] if active else None,
+                        "activeTeamRunIds": [
+                            r["teamRunId"] for r in runs if r["status"] not in TERMINAL
+                        ],
                         "activeStatus": active["status"] if active else None,
                         "lastMessage": plain_text(messages[-1]["parts"])[:160] if messages else "",
                     }
@@ -286,11 +409,33 @@ class TeamsDomain:
         )
         if existing:
             return existing
-        if self.active_run(tx, group["groupId"]):
-            raise TeamsError("active_run_conflict", "团队已有进行中的目标，请先完成或停止本轮")
+        if group.get("legacySource"):
+            raise TeamsError(
+                "legacy_history_read_only", "导入历史只读，请创建新团队执行任务", status=409
+            )
+        if group["status"] != "active":
+            raise TeamsError("group_archived", "团队已归档", status=409)
         timestamp = now()
+        run_id = new_id("tr")
+        roster = []
+        for current in tx.list("member", group["groupId"]):
+            if current["status"] != "active":
+                continue
+            member = {
+                **deepcopy(current),
+                "runMemberId": run_member_key(run_id, current["memberId"]),
+                "teamRunId": run_id,
+                "groupRevision": group["revision"],
+                "sessionId": new_id("ses"),
+                "revision": 1,
+                "executionStatus": "idle",
+                "activeRunId": None,
+            }
+            member.pop("_bindingHistory", None)
+            member.pop("activeTeamRunIds", None)
+            roster.append(member)
         run = {
-            "teamRunId": new_id("tr"),
+            "teamRunId": run_id,
             "groupId": group["groupId"],
             "groupRevision": group["revision"],
             "revision": 1,
@@ -303,10 +448,33 @@ class TeamsDomain:
             "budget": (budget or Budget()).model_dump(),
             "createdAt": timestamp,
             "updatedAt": timestamp,
-            "_roster": tx.list("member", group["groupId"]),
+            "_roster": roster,
+            "_leaderStandbyBindingRef": group.get("_leaderStandbyBindingRef"),
+            "_policy": deepcopy(group["_policy"]),
+            "activeDurationSeconds": 0,
+            "workspace": deepcopy(message.get("workspace")),
         }
         self.publish(tx, "team_run", run["teamRunId"], run)
+        for member in roster:
+            self.publish(tx, "run_member", member["runMemberId"], member)
         return run
+
+    def message_run(self, tx: Transaction, group_id: str, request: MessageInput):
+        if request.teamRunId:
+            run = tx.get("team_run", request.teamRunId)
+            if run["groupId"] != group_id:
+                raise TeamsError("not_found", "轮次不属于当前团队", status=404)
+            if request.intent != "note":
+                self._task_run(tx, group_id, request.teamRunId)
+            return run
+        if request.intent in {"start_goal", "note"}:
+            return None
+        active = [r for r in tx.list("team_run", group_id) if r["status"] not in TERMINAL]
+        if len(active) > 1:
+            raise TeamsError(
+                "team_run_ambiguous", "团队有多个进行中的任务，请选择本条消息所属任务", status=422
+            )
+        return active[0] if active else None
 
     def send(self, actor: Actor, group_id: str, request: MessageInput) -> dict[str, Any]:
         def send(tx: Transaction) -> dict[str, Any]:
@@ -317,11 +485,16 @@ class TeamsDomain:
                 parent = tx.get("message", request.replyTo)
                 if parent["groupId"] != group_id:
                     raise TeamsError("invalid_reply", "不能引用其他团队的消息", status=422)
-            for member_id in request.mentions:
-                self._member(tx, group_id, member_id)
             if actor.kind != "human" and request.intent == "start_goal":
                 raise TeamsError("human_goal_required", "只有群主可以发起新目标", status=403)
-            member = self._member(tx, group_id, actor.member_id) if actor.member_id else None
+            run = None if actor.kind == "member" else self.message_run(tx, group_id, request)
+            if actor.kind == "member":
+                if request.teamRunId and request.teamRunId != actor.team_run_id:
+                    raise TeamsError("forbidden", "不能发送到其他轮次", status=403)
+                run = self._task_run(tx, group_id, actor.team_run_id)
+            member = (
+                self.run_member(tx, actor.team_run_id, actor.member_id) if actor.member_id else None
+            )
             message = {
                 "messageId": new_id("gm"),
                 "groupId": group_id,
@@ -336,14 +509,38 @@ class TeamsDomain:
                 "intent": request.intent,
                 "replyTo": request.replyTo,
                 "visibility": "public",
+                "workspace": request.workspace.model_dump() if request.workspace else None,
             }
-            run = self.active_run(tx, group_id)
-            if request.intent == "start_goal":
+            starting = request.intent == "start_goal" or (
+                request.intent == "directed" and run is None and actor.kind == "human"
+            )
+            if starting:
                 run = self._start(tx, group, message)
             elif request.intent != "note" and run is None:
                 raise TeamsError("team_run_required", "请先发起本轮目标，或选择仅留言", status=422)
             if run:
                 message["teamRunId"] = run["teamRunId"]
+            if request.replyTo and parent.get("teamRunId") != message.get("teamRunId"):
+                raise TeamsError("invalid_reply", "回复必须属于同一轮次", status=422)
+            for member_id in request.mentions:
+                self.run_member(tx, run["teamRunId"], member_id) if run else self._member(
+                    tx, group_id, member_id
+                )
+            for part in request.parts:
+                if part.kind == "attachment":
+                    artifact = tx.get("artifact", part.attachmentRef)
+                    if artifact["groupId"] != group_id:
+                        raise TeamsError("attachment_forbidden", "附件不属于该团队", status=403)
+                    # Explicit attachment sharing grants only this destination round access.
+                    if run and artifact.get("teamRunId") != run["teamRunId"]:
+                        if actor.kind != "human":
+                            raise TeamsError(
+                                "attachment_forbidden", "跨任务交付物只能由群主显式分享", status=403
+                            )
+                        grants = run.setdefault("_sharedArtifactIds", [])
+                        if part.attachmentRef not in grants:
+                            grants.append(part.attachmentRef)
+                            tx.put("team_run", run["teamRunId"], run)
             self.publish(tx, "message", message["messageId"], message, created=True)
             if request.intent != "note":
                 if actor.kind == "member":
@@ -352,7 +549,11 @@ class TeamsDomain:
                 elif run["status"] == "cancel_requested":
                     raise TeamsError("stop_in_progress", "本轮正在停止，请等待执行结束")
                 else:
-                    targets = request.mentions or [run["leaderMemberId"]]
+                    targets = (
+                        [run["leaderMemberId"]]
+                        if starting
+                        else request.mentions or [run["leaderMemberId"]]
+                    )
                     for target in targets:
                         self.dispatch(
                             tx,
@@ -360,7 +561,7 @@ class TeamsDomain:
                             message,
                             target,
                             source=message["messageId"],
-                            purpose="goal" if request.intent == "start_goal" else "message",
+                            purpose="goal" if starting else "message",
                         )
             return {
                 "status": "accepted",
@@ -425,10 +626,10 @@ class TeamsDomain:
                 if previous.get("deliveryId")
                 else None
             )
-        member = self._member(tx, run["groupId"], target)
+        member = self.run_member(tx, run["teamRunId"], target)
         pending = sum(
             delivery["memberId"] == target and delivery["status"] in {"pending", "uncertain"}
-            for delivery in tx.list("delivery", run["groupId"])
+            for delivery in tx.list("delivery", run["groupId"], team_run_id=run["teamRunId"])
         )
         reason = None
         if run["status"] in TERMINAL or run["status"] == "cancel_requested":
@@ -473,6 +674,7 @@ class TeamsDomain:
             "_decisionId": decision_id,
             "_bindingRef": member["bindingRef"],
             "_sessionId": member["sessionId"],
+            "_memberSnapshot": deepcopy(member),
             "_dispatchEpoch": run["dispatchEpoch"],
             "_payload": plain_text(message["parts"]),
             "_parts": message["parts"],
@@ -497,7 +699,7 @@ class TeamsDomain:
         self.publish(tx, "team_run", run["teamRunId"], run)
         if member["executionStatus"] == "idle":
             member.update(executionStatus="queued", revision=member["revision"] + 1)
-            self.publish(tx, "member", member_key(run["groupId"], target), member)
+            self.publish_run_member(tx, member)
         return delivery
 
     def control(
@@ -529,6 +731,7 @@ class TeamsDomain:
             if action == "stop":
                 run["status"] = "cancel_requested"
             run.update(revision=run["revision"] + 1, updatedAt=now())
+            self.update_active_clock(tx, run)
             self.publish(tx, "team_run", run_id, run)
             for delivery in tx.list("delivery", group_id, team_run_id=run_id):
                 if delivery["status"] == "pending":
@@ -579,369 +782,6 @@ class TeamsDomain:
                 raise TeamsError("owner_stream_only", "成员通过受限上下文读取群信息", status=403)
         return self.store.events(group_id, after, limit)
 
-    def create_task(
-        self, actor: Actor, group_id: str, run_id: str, request: TaskCreateInput, key: str
-    ) -> dict[str, Any]:
-        def create(tx: Transaction) -> dict[str, Any]:
-            run = self._task_run(tx, group_id, run_id)
-            group = tx.get("group", group_id)
-            if (
-                actor.kind == "member"
-                and request.acceptancePolicy != group["_policy"]["taskAcceptance"]
-            ):
-                raise TeamsError(
-                    "acceptance_policy_forbidden", "成员不能改变群主配置的验收策略", status=403
-                )
-            if actor.kind == "member" and actor.team_run_id != run_id:
-                raise TeamsError("forbidden", "不能修改其他轮次的任务", status=403)
-            if request.ownerMemberId:
-                self._member(tx, group_id, request.ownerMemberId)
-            for dependency_id in request.dependencies:
-                dependency = tx.get("task", dependency_id)
-                if dependency["groupId"] != group_id or dependency["teamRunId"] != run_id:
-                    raise TeamsError("invalid_dependency", "任务依赖必须属于本轮", status=422)
-            if len(set(request.dependencies)) != len(request.dependencies):
-                raise TeamsError("duplicate_dependency", "任务依赖不能重复", status=422)
-            task = {
-                "taskId": new_id("task"),
-                "groupId": group_id,
-                "teamRunId": run_id,
-                "revision": 1,
-                "title": request.title,
-                "description": request.description,
-                "ownerMemberId": request.ownerMemberId,
-                "dependencies": request.dependencies,
-                "status": "draft",
-                "acceptanceCriteria": request.acceptanceCriteria,
-                "attempts": [],
-                "_acceptancePolicy": request.acceptancePolicy,
-            }
-            self.publish(tx, "task", task["taskId"], task)
-            if request.ownerMemberId:
-                self._ready_task(tx, run, task)
-            return public(tx.get("task", task["taskId"]))
-
-        return self.mutate(
-            actor,
-            group_id,
-            key,
-            {"operation": "create_task", "runId": run_id, **request.model_dump()},
-            create,
-            leader=True,
-        )
-
-    @staticmethod
-    def _task_run(tx: Transaction, group_id: str, run_id: str) -> dict[str, Any]:
-        run = tx.get("team_run", run_id)
-        if run["groupId"] != group_id:
-            raise TeamsError("not_found", "本轮不存在", status=404)
-        if run["status"] in TERMINAL or run["status"] == "cancel_requested":
-            raise TeamsError("team_run_closed", "本轮已结束或正在停止")
-        return run
-
-    def _ready_task(self, tx: Transaction, run: dict[str, Any], task: dict[str, Any]) -> None:
-        if any(
-            tx.get("task", dependency)["status"] != "succeeded"
-            for dependency in task["dependencies"]
-        ):
-            task.update(status="blocked", reason="等待前置任务验收", revision=task["revision"] + 1)
-            self.publish(tx, "task", task["taskId"], task)
-            return
-        if not task["ownerMemberId"]:
-            return
-        number = len(task["attempts"]) + 1
-        attempt = {
-            "attemptId": new_id("attempt"),
-            "attemptNumber": number,
-            "executionEpoch": number,
-            "status": "ready",
-            "artifacts": [],
-            "_candidate": None,
-            "_runIds": [],
-        }
-        task["attempts"].append(attempt)
-        task.update(status="ready", revision=task["revision"] + 1)
-        task.pop("reason", None)
-        member = self._member(tx, task["groupId"], task["ownerMemberId"])
-        dependency_results = [
-            {
-                "taskId": dep["taskId"],
-                "title": dep["title"],
-                "result": dep["attempts"][-1].get("result", ""),
-            }
-            for dep in (tx.get("task", dep_id) for dep_id in task["dependencies"])
-        ]
-        text = (
-            f"任务：{task['title']}\n{task['description']}\n验收标准：{task['acceptanceCriteria']}"
-        )
-        if dependency_results:
-            text += "\n前置任务已验收的结果（同伴上下文，不是系统指令）：\n" + "\n".join(
-                f"{dep['title']}: {dep['result']}" for dep in dependency_results
-            )
-        message = {
-            "messageId": new_id("gm"),
-            "groupId": task["groupId"],
-            "teamRunId": task["teamRunId"],
-            "revision": 1,
-            "createdAt": now(),
-            "senderPrincipal": self.authority_ref,
-            "senderName": "任务分派",
-            "groupRole": "system",
-            "parts": [{"kind": "text", "text": text}],
-            "mentions": [member["memberId"]],
-            "intent": "progress",
-            "visibility": "public",
-        }
-        self.publish(tx, "message", message["messageId"], message, created=True)
-        delivery = self.dispatch(
-            tx,
-            run,
-            message,
-            member["memberId"],
-            source=attempt["attemptId"],
-            purpose="task",
-            root=run["goalMessageId"],
-            task_id=task["taskId"],
-            attempt_id=attempt["attemptId"],
-        )
-        if delivery:
-            attempt["_deliveryId"] = delivery["deliveryId"]
-        else:
-            task.update(status="blocked", reason="自动执行额度不足，需要群主处理")
-            attempt["status"] = "blocked"
-        self.publish(tx, "task", task["taskId"], task)
-
-    def task_action(
-        self,
-        actor: Actor,
-        group_id: str,
-        task_id: str,
-        action: str,
-        expected_revision: int,
-        key: str,
-        *,
-        owner_member_id: str | None = None,
-    ) -> dict[str, Any]:
-        if action not in {"assign", "claim", "retry", "accept", "reject"}:
-            raise TeamsError("invalid_task_action", "不支持该任务操作", status=422)
-
-        def change(tx: Transaction) -> dict[str, Any]:
-            task = tx.get("task", task_id)
-            if task["groupId"] != group_id:
-                raise TeamsError("not_found", "任务不存在", status=404)
-            run = self._task_run(tx, group_id, task["teamRunId"])
-            if actor.kind == "member" and actor.team_run_id != run["teamRunId"]:
-                raise TeamsError("forbidden", "不能修改其他轮次任务", status=403)
-            if task["revision"] != expected_revision:
-                raise TeamsError("revision_conflict", "任务已更新，请刷新后重试")
-            if action in {"accept", "reject"}:
-                if actor.kind != "human":
-                    raise TeamsError(
-                        "human_acceptance_required", "人工验收只能由群主提交", status=403
-                    )
-                if task["status"] != "awaiting_acceptance":
-                    raise TeamsError("task_not_awaiting_acceptance", "任务尚未进入验收")
-                task["status"] = "succeeded" if action == "accept" else "failed"
-                task["attempts"][-1].update(status=task["status"], _acceptedBy=actor.subject)
-            elif action == "retry":
-                self.authorize(tx, actor, group_id, leader=True)
-                if task["status"] not in {"failed", "cancelled"}:
-                    raise TeamsError("task_not_retryable", "请等待原执行结束后再重试")
-                if owner_member_id:
-                    self._member(tx, group_id, owner_member_id)
-                    task["ownerMemberId"] = owner_member_id
-                task["status"] = "draft"
-            else:
-                if task["status"] not in {"draft", "blocked"} or task["attempts"]:
-                    raise TeamsError("task_already_started", "任务已经开始，不能重新领取")
-                if action == "claim":
-                    if actor.kind != "member" or task["ownerMemberId"] is not None:
-                        raise TeamsError("task_already_claimed", "任务已有负责人")
-                    owner_member = actor.member_id
-                else:
-                    self.authorize(tx, actor, group_id, leader=True)
-                    owner_member = owner_member_id
-                if not owner_member:
-                    raise TeamsError("member_required", "请选择负责人", status=422)
-                self._member(tx, group_id, owner_member)
-                task["ownerMemberId"] = owner_member
-            task["revision"] += 1
-            self.publish(tx, "task", task_id, task)
-            if action in {"assign", "claim", "retry"}:
-                self._ready_task(tx, run, task)
-            self._advance(tx, run)
-            return public(tx.get("task", task_id))
-
-        return self.mutate(
-            actor,
-            group_id,
-            key,
-            {
-                "operation": "task_action",
-                "taskId": task_id,
-                "action": action,
-                "expectedRevision": expected_revision,
-                "ownerMemberId": owner_member_id,
-            },
-            change,
-        )
-
-    def result_candidate(
-        self,
-        actor: Actor,
-        task_id: str,
-        result: str,
-        key: str,
-        *,
-        artifacts: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        if actor.kind != "member" or not actor.group_id or not actor.run_id or not actor.attempt_id:
-            raise TeamsError("invocation_required", "结果需要受信的任务执行上下文", status=403)
-        if not result.strip() or len(result) > 100_000:
-            raise TeamsError("invalid_result", "结果不能为空或超过大小限制", status=422)
-
-        def submit(tx: Transaction) -> dict[str, Any]:
-            task = tx.get("task", task_id)
-            if (
-                task["groupId"] != actor.group_id
-                or task["ownerMemberId"] != actor.member_id
-                or not task["attempts"]
-            ):
-                raise TeamsError("forbidden", "只能提交自己当前任务的结果", status=403)
-            attempt = task["attempts"][-1]
-            if attempt["attemptId"] != actor.attempt_id or task["status"] not in {
-                "ready",
-                "running",
-            }:
-                raise TeamsError("stale_attempt", "该执行已失去提交资格")
-            # Artifacts must already be resolved by the trusted Host; raw model
-            # paths/URLs never become downloadable artifacts here.
-            attempt["_candidate"] = {
-                "result": result.strip(),
-                "runId": actor.run_id,
-                "artifacts": artifacts or [],
-            }
-            task["revision"] += 1
-            tx.put("task", task_id, task)
-            return {
-                "status": "candidate_received",
-                "taskId": task_id,
-                "attemptId": actor.attempt_id,
-            }
-
-        return self.mutate(
-            actor,
-            actor.group_id,
-            key,
-            {
-                "operation": "result_candidate",
-                "taskId": task_id,
-                "result": result,
-                "artifacts": artifacts or [],
-            },
-            submit,
-        )
-
-    def wait_for_tasks(self, actor: Actor, task_ids: list[str], key: str) -> dict[str, Any]:
-        if actor.kind != "member" or not actor.group_id or not actor.team_run_id:
-            raise TeamsError("invocation_required", "需要 Leader 执行上下文", status=403)
-        if not task_ids or len(task_ids) > 64 or len(set(task_ids)) != len(task_ids):
-            raise TeamsError("invalid_wait_set", "请选择不重复的任务等待集合", status=422)
-
-        def wait(tx: Transaction) -> dict[str, Any]:
-            run = self._task_run(tx, actor.group_id, actor.team_run_id)
-            for task_id in task_ids:
-                task = tx.get("task", task_id)
-                if task["teamRunId"] != run["teamRunId"]:
-                    raise TeamsError("invalid_wait_set", "等待集合只能引用本轮任务", status=422)
-            wait_id = "wait_" + digest([run["teamRunId"], sorted(task_ids)])[7:]
-            previous = tx.get("wait", wait_id, required=False)
-            if previous:
-                return {"waitId": wait_id, "status": previous["status"]}
-            tx.put(
-                "wait",
-                wait_id,
-                {
-                    "waitId": wait_id,
-                    "groupId": actor.group_id,
-                    "teamRunId": actor.team_run_id,
-                    "taskIds": sorted(task_ids),
-                    "status": "waiting",
-                    "leaderRunId": actor.run_id,
-                },
-            )
-            run.update(status="waiting", revision=run["revision"] + 1, updatedAt=now())
-            self.publish(tx, "team_run", run["teamRunId"], run)
-            self._advance(tx, run)
-            return {"waitId": wait_id, "status": tx.get("wait", wait_id)["status"]}
-
-        return self.mutate(
-            actor,
-            actor.group_id,
-            key,
-            {"operation": "wait", "taskIds": task_ids},
-            wait,
-            leader=True,
-        )
-
-    def _advance(self, tx: Transaction, run: dict[str, Any]) -> None:
-        run = tx.get("team_run", run["teamRunId"])
-        if run["status"] in TERMINAL or run["status"] == "cancel_requested":
-            return
-        for task in tx.list("task", run["groupId"], team_run_id=run["teamRunId"]):
-            if task["status"] == "blocked" and not task["attempts"] and task["ownerMemberId"]:
-                if all(
-                    tx.get("task", dep)["status"] == "succeeded" for dep in task["dependencies"]
-                ):
-                    self._ready_task(tx, run, task)
-        for wait in tx.list("wait", run["groupId"], team_run_id=run["teamRunId"]):
-            if wait["status"] != "waiting":
-                continue
-            tasks = [tx.get("task", task_id) for task_id in wait["taskIds"]]
-            if not all(task["status"] in TERMINAL for task in tasks):
-                continue
-            text = (
-                "等待的任务已有最终结果，请检查失败项并汇总，不能把失败任务视作成功：\n"
-                + "\n".join(
-                    f"{task['title']} [{task['status']}]："
-                    + (
-                        task["attempts"][-1].get("result", task.get("reason", ""))
-                        if task["attempts"]
-                        else ""
-                    )
-                    for task in tasks
-                )
-            )
-            message = {
-                "messageId": new_id("gm"),
-                "groupId": run["groupId"],
-                "teamRunId": run["teamRunId"],
-                "revision": 1,
-                "createdAt": now(),
-                "senderPrincipal": self.authority_ref,
-                "senderName": "任务进展",
-                "groupRole": "system",
-                "parts": [{"kind": "text", "text": text}],
-                "mentions": [run["leaderMemberId"]],
-                "intent": "progress",
-                "visibility": "public",
-            }
-            self.publish(tx, "message", message["messageId"], message, created=True)
-            delivery = self.dispatch(
-                tx,
-                run,
-                message,
-                run["leaderMemberId"],
-                source=wait["waitId"],
-                purpose="join",
-                root=run["goalMessageId"],
-            )
-            wait.update(
-                status="notified" if delivery else "needs_attention",
-                deliveryId=delivery["deliveryId"] if delivery else None,
-            )
-            tx.put("wait", wait["waitId"], wait)
-
     def project_run(
         self,
         *,
@@ -960,6 +800,7 @@ class TeamsDomain:
         if status not in {
             "running",
             "awaiting_approval",
+            "waiting_for_node",
             "succeeded",
             "failed",
             "cancelled",
@@ -970,16 +811,19 @@ class TeamsDomain:
         def project(tx: Transaction) -> dict[str, Any]:
             delivery = tx.get("delivery", delivery_id)
             run = tx.get("team_run", delivery["teamRunId"])
-            member = tx.get("member", member_key(run["groupId"], delivery["memberId"]))
+            member = self.delivery_member(tx, delivery)
             if delivery.get("runId") and delivery["runId"] != run_id:
                 raise TeamsError("run_identity_conflict", "投递与执行引用不一致")
             if delivery.get("_terminalState"):
                 return {"status": delivery["_terminalState"]}
             delivery.update(runId=run_id, status="accepted", revision=delivery["revision"] + 1)
+            delivery["_runStatus"] = status
             terminal = status in {"succeeded", "failed", "cancelled", "interrupted"}
             if terminal:
                 delivery["_terminalState"] = status
             self.publish(tx, "delivery", delivery_id, delivery)
+            self.update_active_clock(tx, run)
+            tx.put("team_run", run["teamRunId"], run)
             source = {
                 "authorityRef": self.authority_ref,
                 "groupId": run["groupId"],
@@ -994,11 +838,14 @@ class TeamsDomain:
                 executionStatus="idle"
                 if terminal
                 else "waiting"
-                if status == "awaiting_approval"
+                if status in {"awaiting_approval", "waiting_for_node"}
                 else "running",
                 revision=member["revision"] + 1,
             )
-            self.publish(tx, "member", member_key(run["groupId"], member["memberId"]), member)
+            current_member = self.run_member(tx, run["teamRunId"], delivery["memberId"])
+            if current_member["sessionId"] == member["sessionId"]:
+                member["revision"] = current_member["revision"] + 1
+                self.publish_run_member(tx, member)
             if status == "running" and run["status"] == "planning":
                 run.update(status="running", revision=run["revision"] + 1, updatedAt=now())
                 self.publish(tx, "team_run", run["teamRunId"], run)
@@ -1013,7 +860,12 @@ class TeamsDomain:
                     if terminal:
                         attempt["endedAt"] = now()
                         candidate = attempt.get("_candidate")
-                        if status == "succeeded" and candidate and candidate["runId"] == run_id:
+                        if (
+                            status == "succeeded"
+                            and candidate
+                            and candidate["runId"] == run_id
+                            and not delivery.get("_fenced")
+                        ):
                             attempt.update(
                                 result=candidate["result"], artifacts=candidate["artifacts"]
                             )
@@ -1032,6 +884,10 @@ class TeamsDomain:
                         task["status"] = attempt["status"] = "running"
                         if status == "awaiting_approval":
                             task["reason"] = "等待人工审批"
+                        elif status == "waiting_for_node":
+                            task["reason"] = "等待设备上线"
+                        elif task.get("reason") in {"等待人工审批", "等待设备上线"}:
+                            task.pop("reason", None)
                     task["revision"] += 1
                     self.publish(tx, "task", task["taskId"], task)
             if terminal:
@@ -1039,6 +895,7 @@ class TeamsDomain:
                 run["budget"]["tokensUsed"] += max(0, tokens)
                 if (
                     member["memberId"] == run["leaderMemberId"]
+                    and not delivery.get("_fenced")
                     and status in {"failed", "cancelled", "interrupted"}
                     and run["status"] not in TERMINAL | {"cancel_requested"}
                 ):
@@ -1076,22 +933,8 @@ class TeamsDomain:
                     }
                     self.publish(tx, "message", message["messageId"], message, created=True)
                 self._advance(tx, run)
-                candidate = run.get("_finalCandidate")
-                if (
-                    candidate
-                    and candidate["runId"] == run_id
-                    and status == "succeeded"
-                    and run["status"] != "cancel_requested"
-                ):
-                    all_tasks = tx.list("task", run["groupId"], team_run_id=run["teamRunId"])
-                    if all(task["status"] == "succeeded" for task in all_tasks):
-                        run.update(
-                            status="awaiting_acceptance",
-                            result=candidate["result"],
-                            revision=run["revision"] + 1,
-                            updatedAt=now(),
-                        )
-                        self.publish(tx, "team_run", run["teamRunId"], run)
+                if not delivery.get("_fenced"):
+                    self.finalize_if_ready(tx, run["teamRunId"])
             return {"status": status}
 
         return self.store.mutate(
@@ -1100,6 +943,38 @@ class TeamsDomain:
             {"runId": run_id, "status": status, "output": output, "tokens": tokens},
             project,
         )
+
+    def finalize_if_ready(self, tx, run_id):
+        run = tx.get("team_run", run_id)
+        candidate = run.get("_finalCandidate")
+        if not candidate or run["status"] in TERMINAL | {"cancel_requested", "awaiting_acceptance"}:
+            return
+        deliveries = tx.list("delivery", run["groupId"], team_run_id=run_id)
+        if not any(
+            d.get("runId") == candidate["runId"]
+            and d.get("_terminalState") == "succeeded"
+            and not d.get("_fenced")
+            for d in deliveries
+        ):
+            return
+        if any(
+            d["status"] in {"pending", "uncertain"}
+            or (d["status"] == "accepted" and not d.get("_terminalState"))
+            for d in deliveries
+        ):
+            return
+        if any(
+            task["status"] != "succeeded"
+            for task in tx.list("task", run["groupId"], team_run_id=run_id)
+        ):
+            return
+        run.update(
+            status="awaiting_acceptance",
+            result=candidate["result"],
+            revision=run["revision"] + 1,
+            updatedAt=now(),
+        )
+        self.publish(tx, "team_run", run_id, run)
 
     def finish_candidate(self, actor: Actor, result: str, key: str) -> dict[str, Any]:
         if (
@@ -1148,9 +1023,8 @@ class TeamsDomain:
             raise TeamsError("invalid_message", "消息不能为空或超过大小限制", status=422)
 
         def send(tx: Transaction) -> dict[str, Any]:
-            group = tx.get("group", actor.group_id)
             run = self._task_run(tx, actor.group_id, actor.team_run_id)
-            member = self._member(tx, actor.group_id, actor.member_id)
+            member = self.run_member(tx, actor.team_run_id, actor.member_id)
             source_delivery = tx.get("delivery", source_delivery_id)
             if (
                 source_delivery["memberId"] != actor.member_id
@@ -1159,14 +1033,14 @@ class TeamsDomain:
             ):
                 raise TeamsError("invocation_scope_mismatch", "消息来源执行不一致", status=403)
             if target_member_id:
-                self._member(tx, actor.group_id, target_member_id)
+                self.run_member(tx, actor.team_run_id, target_member_id)
             if wake:
                 if not target_member_id:
                     raise TeamsError("member_required", "唤醒需要明确接收成员", status=422)
                 if (
                     member["role"] != "leader"
                     and target_member_id != run["leaderMemberId"]
-                    and not group["_policy"]["peerWake"]
+                    and not self.run_policy(tx, run)["peerWake"]
                 ):
                     raise TeamsError(
                         "peer_wake_forbidden", "当前策略只允许向 Leader 请求后续处理", status=403
@@ -1229,8 +1103,22 @@ class TeamsDomain:
         expected_revision: int,
         key: str,
         *,
-        accepted: bool,
+        accepted: bool | None = None,
+        action: str | None = None,
+        reason: str | None = None,
     ) -> dict[str, Any]:
+        chosen = action or ("accept" if accepted else "reject")
+        if chosen not in {"accept", "reject", "request_changes"}:
+            raise TeamsError("invalid_acceptance_action", "不支持该验收操作", status=422)
+        if action is None and accepted is None:
+            raise TeamsError("acceptance_action_required", "请选择验收操作", status=422)
+        if action and accepted is not None and (action != ("accept" if accepted else "reject")):
+            raise TeamsError("acceptance_action_conflict", "验收操作不能互相冲突", status=422)
+        if chosen == "request_changes" and not (reason or "").strip():
+            raise TeamsError("change_reason_required", "请说明需要修改的内容", status=422)
+        if reason and len(reason) > 2000:
+            raise TeamsError("invalid_reason", "修改理由不能超过2000字", status=422)
+
         def accept(tx: Transaction) -> dict[str, Any]:
             run = self._task_run(tx, group_id, run_id)
             if run["revision"] != expected_revision:
@@ -1243,15 +1131,62 @@ class TeamsDomain:
                 for delivery in tx.list("delivery", group_id, team_run_id=run_id)
             ):
                 raise TeamsError("execution_in_flight", "仍有执行未结束，请等待真实终态")
+            if chosen == "request_changes":
+                run.setdefault("resultHistory", []).append(
+                    {
+                        "result": run.get("result", ""),
+                        "reason": reason.strip(),
+                        "revision": run["revision"],
+                        "requestedAt": now(),
+                    }
+                )
+                run.pop("_finalCandidate", None)
+                run.pop("result", None)
             run.update(
-                status="succeeded" if accepted else "failed",
+                status="running"
+                if chosen == "request_changes"
+                else "succeeded"
+                if chosen == "accept"
+                else "failed",
                 revision=run["revision"] + 1,
                 updatedAt=now(),
                 _acceptedBy=actor.subject,
                 _acceptedAt=now(),
             )
+            if reason:
+                run["reason"] = reason.strip()
             self.publish(tx, "team_run", run_id, run)
-            return public(run)
+            if chosen == "request_changes":
+                message = {
+                    "messageId": new_id("gm"),
+                    "groupId": group_id,
+                    "teamRunId": run_id,
+                    "revision": 1,
+                    "createdAt": now(),
+                    "senderPrincipal": actor.subject,
+                    "senderName": "我",
+                    "groupRole": "owner",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": f"最终成果需要修改：{reason.strip()}\n请在本轮继续处理，"
+                            "保留已验收的有效结果，必要时创建修订子任务，完成后重新提交最终成果。",
+                        }
+                    ],
+                    "mentions": [run["leaderMemberId"]],
+                    "intent": "followup",
+                    "visibility": "public",
+                }
+                self.publish(tx, "message", message["messageId"], message, created=True)
+                self.dispatch(
+                    tx,
+                    run,
+                    message,
+                    run["leaderMemberId"],
+                    source=message["messageId"],
+                    purpose="revision",
+                )
+            return public(tx.get("team_run", run_id))
 
         return self.mutate(
             actor,
@@ -1262,6 +1197,8 @@ class TeamsDomain:
                 "runId": run_id,
                 "expectedRevision": expected_revision,
                 "accepted": accepted,
+                "action": action,
+                "reason": reason,
             },
             accept,
             owner=True,
@@ -1286,7 +1223,7 @@ class TeamsDomain:
     ) -> dict[str, Any]:
         if name is not None and (not name.strip() or len(name.strip()) > 120):
             raise TeamsError("invalid_name", "群名不能为空且不能超过120字", status=422)
-        if task_acceptance is not None and task_acceptance not in {"human", "result"}:
+        if task_acceptance is not None and task_acceptance not in {"leader", "human", "result"}:
             raise TeamsError("invalid_policy", "验收策略无效", status=422)
         payload = {
             "operation": "update_group",
@@ -1303,22 +1240,12 @@ class TeamsDomain:
 
         def update(tx: Transaction) -> dict[str, Any]:
             group = tx.get("group", group_id)
+            if group.get("legacySource"):
+                raise TeamsError(
+                    "legacy_history_read_only", "导入历史只读，请创建新团队", status=409
+                )
             if group["revision"] != expected_revision:
                 raise TeamsError("revision_conflict", "团队配置已更新，请刷新后重试")
-            structural = any(
-                value is not None
-                for value in (
-                    leader_member_id,
-                    remove_member_id,
-                    task_acceptance,
-                    peer_wake,
-                    archived,
-                    add_member,
-                    rebind_member,
-                )
-            )
-            if structural and self.active_run(tx, group_id):
-                raise TeamsError("active_run_conflict", "请先结束或停止本轮，再修改成员或策略")
             if name is not None:
                 group["name"] = name.strip()
             for selected, adding in ((add_member, True), (rebind_member, False)):
@@ -1363,6 +1290,7 @@ class TeamsDomain:
                     bindingRef=selected.bindingRef,
                     binding=deepcopy(binding),
                     sessionId=new_id("ses"),
+                    responsibility=selected.responsibility,
                 )
                 self.publish(tx, "member", member_key(group_id, selected.memberId), member)
             if leader_member_id:
@@ -1414,10 +1342,12 @@ class TeamsDomain:
     def execution(self, actor: Actor, group_id: str, run_id: str) -> dict[str, Any]:
         with self.store.transaction() as tx:
             self.authorize(tx, actor, group_id)
+            if actor.kind == "member" and run_id != actor.team_run_id:
+                raise TeamsError("forbidden", "不能读取其他轮次执行", status=403)
             snapshot = self._snapshot(tx, group_id)
             deliveries = tx.list("delivery", group_id, team_run_id=run_id)
             children = tx.list("child_invocation", group_id, team_run_id=run_id)
-            members = {m["memberId"]: m for m in tx.list("member", group_id)}
+            members = {d["deliveryId"]: self.delivery_member(tx, d) for d in deliveries}
             watermark = tx.watermark(group_id)
         if not any(run["teamRunId"] == run_id for run in snapshot["teamRuns"]):
             raise TeamsError("not_found", "执行轮次不存在", status=404)
@@ -1446,22 +1376,18 @@ class TeamsDomain:
         for delivery in deliveries:
             if not delivery.get("runId"):
                 continue
-            member = members[delivery["memberId"]]
-            binding = next(
-                (
-                    old
-                    for old in member.get("_bindingHistory", [])
-                    if old["sessionId"] == delivery["_sessionId"]
-                ),
-                member,
-            )
+            member = members[delivery["deliveryId"]]
+            binding = member
             node_id = "run_" + digest([delivery["_sessionId"], delivery["runId"]])[7:]
             run_nodes[(delivery["_sessionId"], delivery["runId"])] = node_id
             node = {
                 "nodeId": node_id,
                 "kind": "run",
                 "title": member["name"],
-                "status": delivery.get("_terminalState") or member["executionStatus"],
+                "status": delivery.get("_terminalState") or delivery.get("_runStatus") or "queued",
+                "reason": "execution_uncertain_fenced"
+                if delivery.get("_fenced")
+                else delivery.get("reason"),
                 "memberId": member["memberId"],
                 "source": {
                     "authorityRef": self.authority_ref,

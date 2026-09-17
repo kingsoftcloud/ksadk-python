@@ -50,6 +50,7 @@ def test_explicit_override_wins_without_persisting_and_dotenv_is_unchanged(tmp_p
 def test_saved_credentials_create_authority_immediately_and_survive_restart(tmp_path, monkeypatch):
     for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "AGENTENGINE_SERVER_URL"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("ksadk.studio.configuration.get_env_from_global_config", lambda: {})
     studio = StudioService(tmp_path)
     assert studio.resource_authority is None
     settings = studio.update_settings(

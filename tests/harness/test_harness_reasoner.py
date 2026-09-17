@@ -247,6 +247,93 @@ async def test_stream_complete_uses_explicit_provider_configuration(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_stream_complete_retries_truncated_tool_call_with_larger_budget(monkeypatch):
+    import litellm
+
+    requested_budgets = []
+
+    async def truncated_chunks():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content="准备长报告",
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call-truncated",
+                                function=SimpleNamespace(
+                                    name="write_workspace_file",
+                                    arguments="{}",
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason="length",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=2048),
+        )
+
+    async def completed_chunks():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content="已生成精炼报告",
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call-complete",
+                                function=SimpleNamespace(
+                                    name="write_workspace_file",
+                                    arguments='{"path":"report.md","content":"# Report"}',
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+        )
+
+    async def fake_acompletion(**kwargs):
+        requested_budgets.append(kwargs["max_tokens"])
+        return truncated_chunks() if len(requested_budgets) == 1 else completed_chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    tool = SimpleNamespace(
+        openai_schema={
+            "type": "function",
+            "function": {
+                "name": "write_workspace_file",
+                "parameters": {"type": "object"},
+            },
+        }
+    )
+    items = [
+        item
+        async for item in LiteLLMHarnessReasoner(streaming=True).stream_complete(
+            model="glm-5.2",
+            prompt="",
+            messages=({"role": "user", "content": "write a report"},),
+            tools=(tool,),
+            max_output_tokens=2048,
+        )
+    ]
+
+    assert requested_budgets == [2048, 16384]
+    assert items[0] == {"reasoning_delta": "已生成精炼报告"}
+    assert items[-1]["turn"].tool_calls[0].arguments == {
+        "path": "report.md",
+        "content": "# Report",
+    }
+
+
+@pytest.mark.asyncio
 async def test_stream_complete_forwards_reasoning_deltas(monkeypatch):
     import litellm
 

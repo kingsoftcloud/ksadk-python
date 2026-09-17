@@ -170,10 +170,29 @@ def decide_model_failure_action(
 
 
 def retry_delay_ms(policy: ModelProviderPolicy, *, model_attempt: int) -> int:
-    """确定性指数退避；不加随机数，保证重放与测试可解释。"""
+    """确定性渐进退避；最后一次重试达到上限，不引入随机抖动。
 
-    delay = policy.initial_backoff_ms * (2 ** max(0, model_attempt - 1))
-    return min(delay, policy.max_backoff_ms)
+    ``model_attempt`` 是刚失败的本模型尝试序号。默认十次尝试对应九次
+    等待，按几何曲线从 1 秒平滑增加到 60 秒。整秒策略会对齐到整秒，
+    让 Studio 的公开进度保持易读；毫秒级自定义策略仍保留其精度。
+    """
+
+    initial = policy.initial_backoff_ms
+    maximum = policy.max_backoff_ms
+    if initial <= 0 or maximum <= initial:
+        return min(initial, maximum)
+
+    retry_slots = max(1, policy.max_attempts_per_model - 1)
+    index = min(max(0, model_attempt - 1), retry_slots - 1)
+    if retry_slots == 1:
+        delay = initial
+    else:
+        progress = index / (retry_slots - 1)
+        delay = initial * ((maximum / initial) ** progress)
+
+    quantum = 1_000 if initial >= 1_000 and maximum >= 1_000 else 1
+    rounded = int(round(delay / quantum) * quantum)
+    return min(max(initial, rounded), maximum)
 
 
 def _status_code(error: Exception) -> int | None:

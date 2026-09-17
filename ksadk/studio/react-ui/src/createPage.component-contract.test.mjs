@@ -8,7 +8,7 @@ const editorSource = readFileSync(new URL("./pages/AgentEditor.tsx", import.meta
 const detailSource = readFileSync(new URL("./pages/AgentDetailPage.tsx", import.meta.url), "utf8");
 
 test("Harness uses one runtime list and no source-graph or ADK context fallback", () => {
-  assert.match(source, /const BUILTIN_RUNTIME_OPTIONS = \[\s*\{ value: "harness", label: "KsADK Harness" \}/);
+  assert.match(source, /const BUILTIN_RUNTIME_OPTIONS = \[\s*\{ value: "harness", label: "通用智能体 · KsADK Harness" \}/);
   assert.match(source, /const RUNTIME_OPTIONS = BUILTIN_RUNTIME_OPTIONS;/);
   assert.match(source, /if \(runtime === "harness"\) \{\s*return \[automatic, \{ value: "ksadk"/);
   assert.match(editorSource, /const contextOwnershipOptions = runtime === "harness"/);

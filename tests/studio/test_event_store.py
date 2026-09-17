@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ksadk.studio.contracts import RunRecord, RunStatus
 from ksadk.studio.event_store import RunEventStore
+from ksadk.studio.run_service import _ProjectedRunEventWriter
 from ksadk.studio.workspace import Workspace
 
 
@@ -35,6 +36,46 @@ def test_event_store_writes_only_run_record(tmp_path: Path) -> None:
 
     payload = json.loads((tmp_path / ".agentkit/runs/run_demo.json").read_text())
     assert set(payload) == {"record"}
+
+
+def test_list_runs_reuses_cached_run_instead_of_reparsing_on_every_poll(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+    record = _record("run_cached")
+    store.create(record)
+
+    def fail_reparse(_payload: str):
+        raise AssertionError("unchanged run file must be served from the stat-aware cache")
+
+    monkeypatch.setattr("ksadk.studio.event_store.json.loads", fail_reparse)
+
+    assert store.list_runs(session_id=record.session_id) == [record]
+
+
+def test_projected_writer_coalesces_adjacent_token_envelopes() -> None:
+    def entry(text: str, *, operation: str = "append") -> tuple[str, dict]:
+        return (
+            "message.delta",
+            {
+                "itemId": "item-1",
+                "partId": "text-0",
+                "operation": operation,
+                "text": text,
+                "conversationItem": {"payload": {"text": text}},
+                "runtimeEvent": {"update": {"text": text}},
+            },
+        )
+
+    projected = _ProjectedRunEventWriter._coalesce_stream_entries(
+        [entry("长"), entry("任务"), entry("最终", operation="replace")]
+    )
+
+    assert len(projected) == 2
+    assert projected[0][1]["text"] == "长任务"
+    assert projected[0][1]["conversationItem"]["payload"]["text"] == "长任务"
+    assert projected[0][1]["runtimeEvent"]["update"]["text"] == "长任务"
+    assert projected[1][1]["text"] == "最终"
 
 
 def test_event_store_reads_legacy_events_but_drops_them_on_save(tmp_path: Path) -> None:

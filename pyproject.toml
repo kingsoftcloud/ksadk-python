@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.4"
+version = "0.8.5"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -233,3 +233,6 @@ warn_unused_configs = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "local_process_heavy: spawns real OS subprocesses (sandbox/skill runtime). 在单进程全量套件尾部 fork 资源受限的 runner 上会 Cannot fork / 超时,CI 用独立 job 跑(见 ci.yml test-local-process-heavy)。",
+]

@@ -55,7 +55,7 @@ def quick_creation(page: Page, base: str, width: int, record) -> None:
     )
     name = f"布局验证助手 {width}"
     slug = f"layout-created-{width}"
-    page.goto(base + "/#/create", wait_until="domcontentloaded")
+    page.goto(base + "/#/create", wait_until="domcontentloaded", timeout=60000)
     expect(page.locator("#quickAgentName")).to_be_visible()
     page.get_by_role("button", name="继续", exact=True).click()
     expect(page.locator("#quickPrompt")).to_have_attribute("aria-invalid", "true")
@@ -148,7 +148,7 @@ def quick_creation(page: Page, base: str, width: int, record) -> None:
 def scheduling(page: Page, base: str, width: int, build_id: str, record) -> None:
     name = f"工作计划复盘 {width}"
     edited_name = name + " 已调整"
-    page.goto(base + "/#/automations", wait_until="domcontentloaded")
+    page.goto(base + "/#/automations", wait_until="domcontentloaded", timeout=60000)
     expect(page.get_by_text("本地调度运行中", exact=True)).to_be_visible()
     expect(page.get_by_text("保持 Studio 运行，任务才会自动执行。", exact=True)).to_be_visible()
     record("scheduler-runtime-status")
@@ -229,7 +229,7 @@ def scheduling(page: Page, base: str, width: int, build_id: str, record) -> None
     page.get_by_role("tab", name="执行记录", exact=True).click()
     expect(page.locator(".automation-history")).to_contain_text("成功")
     record("scheduler-global-history")
-    page.goto(base + f"/#/agents/{AGENT_ID}", wait_until="domcontentloaded")
+    page.goto(base + f"/#/agents/{AGENT_ID}", wait_until="domcontentloaded", timeout=60000)
     expect(page.get_by_role("banner", name="当前页面")).to_contain_text(AGENT_NAME)
     page.get_by_role("tab", name="自动化", exact=True).click()
     page.get_by_role("button", name=f"查看定时任务 {edited_name} 的详情").click()
@@ -301,7 +301,14 @@ def run(output: Path, workflow: str = "all", only_width: int | None = None) -> N
                         f"localStorage.setItem('agentkit-studio-theme', '{theme}');"
                     )
                     page = context.new_page()
+                    # 首次文档请求可能触发 DSH/Core 冷启动（投影 + Node host，
+                    # 本机实测 ~20s），给 goto 留出余量，其余交互仍用 10s。
                     page.set_default_timeout(10000)
+                    page.goto(
+                        base + "/#/create",
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
                     errors = []
                     page.on("pageerror", lambda error: errors.append(str(error)))
 
@@ -342,12 +349,16 @@ def run(output: Path, workflow: str = "all", only_width: int | None = None) -> N
                             scheduling(page, base, width, build_id, record)
                         assert not errors, errors
                     except Exception:
-                        page.screenshot(
-                            path=str(output / f"{width}-{theme}-failure.png"), full_page=True
-                        )
-                        (output / f"{width}-{theme}-failure.txt").write_text(
-                            page.locator("body").aria_snapshot()
-                        )
+                        # 失败时页面可能已崩溃，截图/快照自身失败不应掩盖原始异常。
+                        try:
+                            page.screenshot(
+                                path=str(output / f"{width}-{theme}-failure.png"), full_page=True
+                            )
+                            (output / f"{width}-{theme}-failure.txt").write_text(
+                                page.locator("body").aria_snapshot()
+                            )
+                        except Exception:
+                            pass
                         raise
                     finally:
                         context.close()

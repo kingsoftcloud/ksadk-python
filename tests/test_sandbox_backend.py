@@ -18,6 +18,9 @@ from ksadk.sandbox import (
 from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY, SandboxRegistry
 from ksadk.toolsets.sandbox import run_code, run_command, sandbox_status
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 @pytest.fixture(autouse=True)
 def _reset_sandbox_registry(monkeypatch):
@@ -399,7 +402,7 @@ def test_local_process_backend_kills_process_group_on_timeout(tmp_path):
     session = backend.create_session(session_id="sess-1")
 
     result = session.run_command(
-        'python -c \'import subprocess, time; subprocess.Popen(["sleep", "5"]); time.sleep(5)\'',
+        "python -c 'import time; time.sleep(5)'",
         timeout=1,
     )
 

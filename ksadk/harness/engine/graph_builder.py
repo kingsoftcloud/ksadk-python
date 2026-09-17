@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -31,6 +32,13 @@ from ksadk.harness.loop import (
 from ksadk.harness.loop.reason import ReasoningLimitError
 from ksadk.harness.reasoner import HarnessReasoningTurn
 from ksadk.harness.run_control import ControlAction, RunControlStop
+
+_DELEGATION_PREFACE = re.compile(
+    r"(?:\blet\s+me\s+(?:delegate|dispatch)|"
+    r"\bi\s+(?:will|'ll|am\s+going\s+to)\s+(?:delegate|dispatch)|"
+    r"(?:让我|我会|我将|接下来|准备|正在)(?:先)?(?:并行)?(?:派发|分派|调度|处理).{0,80}(?:子任务|子智能体|subtasks?))",
+    re.IGNORECASE,
+)
 
 
 def build_graph(engine, run):
@@ -178,20 +186,52 @@ def build_graph(engine, run):
                 run.seq = max(run.seq, event.seq_id)
                 _capture_control_event(event)
 
+            delegation_synthesis = bool(state.get("delegation_synthesis_pending"))
             closing_turn = state["turn_count"] >= engine._max_reasoning_turns and any(
                 message.get("role") == "tool" for message in state["messages"]
             )
             instructions = spec.prompt.instructions or ""
+            if delegation_synthesis:
+                instructions += (
+                    "\n\n已调度的子任务均已结束。现在必须直接综合已有子任务结果回答"
+                    "用户；不得再次派发、描述将要执行的计划或把处理中话术当成答案。"
+                    "若部分子任务失败，应明确指出失败项，并基于其余结果给出当前最佳结论。"
+                )
             if closing_turn:
                 instructions += (
                     "\n\n这是本次执行的最后一轮。禁止再调用或模拟调用工具，禁止描述"
                     "后续计划或说将继续查找。必须现在基于已有证据输出完整、可交付的"
                     "当前最佳答案；证据不足的部分直接标为未验证。"
                 )
-            available_tools = (
+            reason_messages = list(state["messages"])
+            if closing_turn:
+                # Several OpenAI-compatible models follow the newest user
+                # message more reliably than a system-prompt suffix.  Without
+                # this explicit hand-off GLM can keep emitting a textual call
+                # to a tool used in the previous turn even though the closing
+                # turn deliberately has no tool schema.  The provider then
+                # (correctly) rejects that call as undeclared and turns an
+                # otherwise useful research run into a failure.  Keep the
+                # safety boundary -- no tools are disclosed -- but make the
+                # required transition from evidence collection to synthesis
+                # unambiguous in the conversational context as well.
+                reason_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "资料收集阶段已经结束。不要再搜索、查看网页或调用任何工具；"
+                            "请只使用上文已有证据，现在直接给出最终结论。若证据不足，"
+                            "明确标为未验证。"
+                        ),
+                    }
+                )
+            synthesis_tools = (
                 list(run.tools.values())
                 + engine._skill_disclosure.tools(run.skill_catalog)
                 + engine._mcp_disclosure.tools(run.mcp_catalog)
+            )
+            available_tools = (
+                synthesis_tools
                 + list(run.sub_agents.values())
                 + (
                     [engine._delegation_runtime]
@@ -205,8 +245,18 @@ def build_graph(engine, run):
                 fallback_model_refs=spec.model.fallback_profile_refs,
                 provider_policy=spec.model.provider_policy,
                 instructions=instructions,
-                messages=state["messages"],
-                tools=[] if closing_turn else available_tools,
+                messages=reason_messages,
+                # A synthesis turn must not spawn more children, but it still
+                # needs ordinary tools to produce the deliverable the user
+                # requested (for example, save a Markdown report). Removing
+                # every tool here made GLM emit a textual write call against an
+                # empty schema, which could only fail after all children had
+                # already completed.
+                tools=(
+                    []
+                    if closing_turn
+                    else synthesis_tools if delegation_synthesis else available_tools
+                ),
                 reasoner=engine._reasoner,
                 agent_id=run.state.agent_id,
                 user_id=run.state.user_id,
@@ -252,13 +302,18 @@ def build_graph(engine, run):
         # 部分 Provider 在最后一个披露工具返回后会给出空 assistant 消息，
         # 随即把 Run 当成正常结束。只在本 Run 已执行过工具且尚未重试时，
         # 增加一次无工具收口轮；避免 Skill/MCP 已拿到 L3 证据却没有最终答案。
+        assistant_text = "\n".join(
+            str(message.get("content") or "").strip()
+            for message in out.new_messages
+            if message.get("role") == "assistant"
+        ).strip()
+        unfinished_delegation_answer = bool(
+            state.get("delegation_synthesis_pending")
+            and _DELEGATION_PREFACE.search(assistant_text)
+        )
         if (
             out.route == "final"
-            and not any(
-                str(message.get("content") or "").strip()
-                for message in out.new_messages
-                if message.get("role") == "assistant"
-            )
+            and (not assistant_text or unfinished_delegation_answer)
             and any(message.get("role") == "tool" for message in state["messages"])
             and int(state.get("finalization_retries") or 0) < 1
             and ("reason", "tool_calls") in set(run.compiled.plan.edges or ())
@@ -278,12 +333,14 @@ def build_graph(engine, run):
                 {
                     "role": "user",
                     "content": (
-                        "上一轮没有返回可展示内容。若回答仍依赖尚未读取的资源，"
-                        "请继续按披露层级调用必要能力；否则请立即基于现有结果"
-                        "给出非空的最终答案。"
+                        "上一轮没有形成可交付答案。所有已派发任务都已经结束，"
+                        "请立即基于现有工具和子任务结果给出完整答案；不得描述"
+                        "将要派发、继续处理或稍后完成。"
                     ),
                 }
             )
+        if out.route == "final" and state.get("delegation_synthesis_pending"):
+            state["delegation_synthesis_pending"] = False
         for ev in out.events:
             if ev.seq_id <= run.seq:
                 continue
@@ -350,6 +407,37 @@ def build_graph(engine, run):
             return name == MCP_CALL_TOOL_TOOL and engine._mcp_disclosure.approval_decider(arguments)
 
         class _EngineToolExecutor:
+            @staticmethod
+            def validate_arguments(name, arguments):  # type: ignore[no-untyped-def]
+                tool = run.tools.get(name)
+                if tool is None:
+                    return None
+                raw_schema = getattr(tool, "parameters", None)
+                # Host tests and backward-compatible integrations may still
+                # register a plain callable.  With no published schema there
+                # is nothing to validate here; execution retains its previous
+                # behaviour.
+                if not isinstance(raw_schema, dict):
+                    return None
+                schema = raw_schema
+                required = schema.get("required") or ()
+                missing = [
+                    str(field)
+                    for field in required
+                    if str(field) not in arguments
+                    or arguments.get(str(field)) is None
+                ]
+                if missing:
+                    return "missing required fields: " + ", ".join(missing)
+                try:
+                    from jsonschema.validators import validator_for
+
+                    validator = validator_for(schema)(schema)
+                    error = next(validator.iter_errors(arguments), None)
+                except Exception as exc:  # malformed host schema is not a model error
+                    return f"tool schema validation failed: {exc}"
+                return f"schema mismatch: {error.message}" if error is not None else None
+
             async def execute(self, name, arguments):  # type: ignore[no-untyped-def]
                 return await engine._invoke_tool(name, arguments, run=run, mcp_cursors=cursors)
 
@@ -390,7 +478,11 @@ def build_graph(engine, run):
             return bool(
                 engine._delegation_runtime is not None
                 and engine._delegation_runtime.is_tool(name)
-                and not run.approval_required and engine._capability_runtime is None
+                and engine._capability_runtime is None
+                and engine._delegation_runtime.parallel_safe(
+                    arguments,
+                    parent_run=run,
+                )
             )
 
         # Commit sequential siblings at separate checkpoint boundaries. Only
@@ -560,6 +652,7 @@ def build_graph(engine, run):
                     succeeded_tools=frozenset(state.get("tool_batch_succeeded") or ()),
                     prior_failure=bool(state.get("tool_batch_failed")),
                     live_event_sink=_live_tool_event,
+                    argument_validator=_EngineToolExecutor.validate_arguments,
                     approval_resolver=_GraphApprovalResolver(),
                     tool_executor=_EngineToolExecutor(),
                     agent_id=run.state.agent_id,
@@ -621,6 +714,7 @@ def build_graph(engine, run):
                 for event in out.events
             )
             _emit_delegation_progress("failed" if failed else "completed")
+            state["delegation_synthesis_pending"] = True
         state["messages"].extend(out.new_messages)
         if out.working_context is not None:
             run.state.working_context = out.working_context

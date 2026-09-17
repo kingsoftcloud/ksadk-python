@@ -120,6 +120,7 @@ export interface NavigationRailProps {
   onMobileOpenChange?: (open: boolean) => void;
   onExpand?: () => void;
   onStartChat?: () => void;
+  /** @deprecated New chat remains available while a run is streaming. */
   chatStreaming?: boolean;
   onHistoryHostChange?: (host: HTMLDivElement | null) => void;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
@@ -140,7 +141,6 @@ export function NavigationRail({
   onMobileOpenChange,
   onExpand,
   onStartChat,
-  chatStreaming = false,
   onHistoryHostChange,
   onNavigate,
   onOpenSettings,
@@ -207,7 +207,6 @@ export function NavigationRail({
               type="button"
               className={`studio-nav-link${view === "conversations" ? " active" : ""}`}
               aria-label="新对话"
-              disabled={chatStreaming}
               aria-current={view === "conversations" ? "page" : undefined}
               onClick={() => {
                 if (onStartChat) onStartChat();

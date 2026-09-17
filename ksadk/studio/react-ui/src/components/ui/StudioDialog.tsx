@@ -83,6 +83,7 @@ function ModalLayer({
   closeDisabled = false,
   role = "dialog",
   onRequestClose,
+  onCloseAutoFocus,
   children,
 }: {
   open: boolean;
@@ -90,6 +91,7 @@ function ModalLayer({
   closeDisabled?: boolean;
   role?: "dialog" | "alertdialog";
   onRequestClose: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
   children: ReactNode;
 }) {
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -126,6 +128,8 @@ function ModalLayer({
             if (closeDisabled) event.preventDefault();
           }}
           onCloseAutoFocus={event => {
+            onCloseAutoFocus?.(event);
+            if (event.defaultPrevented) return;
             const previousFocus = previousFocusRef.current;
             if (!previousFocus?.isConnected) return;
             event.preventDefault();
@@ -197,6 +201,7 @@ export function StudioDialog({
 export function StudioDrawer({
   open,
   onOpenChange,
+  onCloseAutoFocus,
   title,
   subtitle,
   wide = false,
@@ -207,6 +212,7 @@ export function StudioDrawer({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
   title: string;
   subtitle?: string;
   wide?: boolean;
@@ -222,6 +228,7 @@ export function StudioDrawer({
         className={`drawer${wide ? " wide" : ""}${compact ? " compact" : ""}`}
         closeDisabled={closeDisabled}
         onRequestClose={() => onOpenChange(false)}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
         <header className="drawer-header">
           <div>

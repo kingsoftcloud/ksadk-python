@@ -10,14 +10,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ksadk.plugins.execution_host import ExecutionReceipt, PluginExecutionHost, PluginExecutionScope
 
 from .contracts import API_VERSION, PLUGIN_VERSION, TERMINAL, Actor
-from .domain import TeamsDomain, member_key
+from .domain import TeamsDomain
 from .errors import TeamsError
 from .store import TeamsStore, digest, now
 
@@ -47,12 +46,40 @@ class TeamsRuntime:
         self._authority_file: Any = None
         self._tick_lock = asyncio.Lock()
         self.last_error: str | None = None
+        self._closing = False
+        self._shutdown_tasks: set[asyncio.Task] = set()
 
     async def start(self, *, background: bool = True) -> None:
+        if self._closing and (self.domain is not None or self._shutdown_tasks):
+            raise TeamsError("shutdown_in_progress", "旧执行仍在关闭，请稍后重试", status=503)
+        self._closing = False
         if self.domain is not None:
             if background and self._task is None:
                 self._task = asyncio.create_task(self._run(), name="teams-plugin-outbox")
             return
+        if self.path.exists():
+            import sqlite3
+
+            connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='team_objects'"
+                ).fetchone()
+                transferred = (
+                    exists
+                    and connection.execute(
+                        "SELECT 1 FROM team_objects WHERE kind='installation' "
+                        "AND object_id='teams:authority-transfer'"
+                    ).fetchone()
+                )
+                if transferred:
+                    raise TeamsError(
+                        "authority_transferred",
+                        "本地团队历史已转为只读归档，请连接已迁移的团队服务端",
+                        status=409,
+                    )
+            finally:
+                connection.close()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._authority_file = self.path.with_suffix(".authority.lock").open("a+b")
         try:
@@ -152,18 +179,57 @@ class TeamsRuntime:
                     "authority_in_use", "该团队存储已有运行中的宿主", status=409
                 ) from error
 
-    async def close(self) -> None:
-        task, self._task = self._task, None
-        if task:
+    async def flush_controls(self, timeout: float = 2.0) -> None:
+        async def flush() -> None:
+            async with self._tick_lock:
+                if self.domain:
+                    await self._controls(self.domain)
+
+        task = asyncio.create_task(flush(), name="teams-plugin-shutdown-controls")
+        self._shutdown_tasks.add(task)
+
+        def finished(completed: asyncio.Task) -> None:
+            self._shutdown_tasks.discard(completed)
+            if not completed.cancelled():
+                completed.exception()  # Retrieve late host failures after the bounded wait.
+
+        task.add_done_callback(finished)
+        _, pending = await asyncio.wait({task}, timeout=timeout)
+        if pending:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        async with self._tick_lock:
+            self.last_error = "teams_shutdown_timeout"
+        else:
+            await task
+
+    async def close(self, *, timeout: float = 2.0) -> None:
+        self._closing = True
+        pending = set(self._shutdown_tasks)
+        if self._task:
+            pending.add(self._task)
+        for task in pending:
+            task.cancel()
+        if pending:
+            _, pending = await asyncio.wait(pending, timeout=timeout)
+        if pending:
+            # Retain the store and authority lock while an uncooperative host
+            # call can still write. A replacement must never become authority.
+            self.last_error = "teams_shutdown_timeout"
+            return
+        self._task = None
+        try:
+            await asyncio.wait_for(self._tick_lock.acquire(), timeout=timeout)
+        except TimeoutError:
+            self.last_error = "teams_shutdown_timeout"
+            return
+        try:
             if self.domain:
                 self.domain.store.close()
                 self.domain = None
             if self._authority_file:
                 self._authority_file.close()
                 self._authority_file = None
+        finally:
+            self._tick_lock.release()
 
     def require_domain(self) -> TeamsDomain:
         if self.domain is None:
@@ -171,7 +237,7 @@ class TeamsRuntime:
         return self.domain
 
     async def _run(self) -> None:
-        while True:
+        while not self._closing:
             try:
                 await self.tick()
                 self.last_error = None
@@ -200,6 +266,8 @@ class TeamsRuntime:
 
     async def tick(self) -> None:
         async with self._tick_lock:
+            if self._closing:
+                return
             domain = self.require_domain()
             # First close start eligibility, then reconcile accepted execution,
             # then submit new work. No network operation holds a DB transaction.
@@ -222,7 +290,8 @@ class TeamsRuntime:
                 candidates = tx.list("delivery")
             for candidate in candidates:
                 if (
-                    candidate["status"] == "pending"
+                    not self._closing
+                    and candidate["status"] == "pending"
                     and candidate.get("_nextRetryAt", 0) <= time.time()
                 ):
                     await self._submit(domain, candidate["deliveryId"])
@@ -234,7 +303,7 @@ class TeamsRuntime:
             with domain.store.transaction() as tx:
                 delivery = tx.get("delivery", control["deliveryId"])
                 group = tx.get("group", control["groupId"])
-                member = tx.get("member", member_key(group["groupId"], control["memberId"]))
+                member = domain.delivery_member(tx, delivery)
             if delivery.get("_terminalState"):
                 status = "settled"
             else:
@@ -262,17 +331,24 @@ class TeamsRuntime:
             groups = tx.list("group")
         for group in groups:
             with domain.store.transaction() as tx:
-                members = tx.list("member", group["groupId"])
                 deliveries = tx.list("delivery", group["groupId"])
+                members = list(
+                    {d["_sessionId"]: domain.delivery_member(tx, d) for d in deliveries}.values()
+                )
                 known = tx.list("interaction", group["groupId"])
             for member in members:
                 own = [
-                    d for d in deliveries if d["memberId"] == member["memberId"] and d.get("runId")
+                    d
+                    for d in deliveries
+                    if d["memberId"] == member["memberId"]
+                    and d["_sessionId"] == member["sessionId"]
+                    and d.get("runId")
                 ]
                 prior = [
                     i
                     for i in known
                     if i["ref"]["memberId"] == member["memberId"]
+                    and i["ref"]["sessionId"] == member["sessionId"]
                     and i["status"] in {"pending", "resolving"}
                 ]
                 if not prior and not any(not d.get("_terminalState") for d in own):
@@ -310,6 +386,7 @@ class TeamsRuntime:
                     presentation = record.get("presentation") or {}
                     projected = {
                         "groupId": group["groupId"],
+                        "teamRunId": member["teamRunId"],
                         "ref": ref,
                         "revision": record["revision"],
                         "title": presentation.get("title") or "等待你的确认",
@@ -331,9 +408,10 @@ class TeamsRuntime:
             delivery = tx.get("delivery", delivery_id)
             run = tx.get("team_run", delivery["teamRunId"])
             group = tx.get("group", delivery["groupId"])
-            member = tx.get("member", member_key(group["groupId"], delivery["memberId"]))
+            member = domain.run_member(tx, run["teamRunId"], delivery["memberId"])
             if (
                 delivery["status"] != "pending"
+                or delivery.get("_fenced")
                 or run["dispatchSuspended"]
                 or run["status"] in TERMINAL | {"cancel_requested"}
             ):
@@ -353,8 +431,9 @@ class TeamsRuntime:
                 for item in tx.list("delivery", group["groupId"], team_run_id=run["teamRunId"])
                 if item["status"] in {"accepted", "uncertain"} and not item.get("_terminalState")
             ]
-            if len(outstanding) >= run["budget"]["maxConcurrent"] or any(
-                item["memberId"] == member["memberId"] for item in outstanding
+            admitted = [item for item in outstanding if not item.get("_fenced")]
+            if len(admitted) >= run["budget"]["maxConcurrent"] or any(
+                item["memberId"] == member["memberId"] for item in admitted
             ):
                 return
             available_tokens = (
@@ -372,9 +451,6 @@ class TeamsRuntime:
                     // min(run["budget"]["maxConcurrent"], len(run["_roster"])),
                 ),
             )
-            delivery["_tokenLimit"] = token_limit
-            delivery.update(status="uncertain", revision=delivery["revision"] + 1)
-            domain.publish(tx, "delivery", delivery_id, delivery)
             scope = self._scope(group, member)
             policy_context = {
                 "groupId": group["groupId"],
@@ -386,9 +462,60 @@ class TeamsRuntime:
                 "groupRevision": run["groupRevision"],
                 "dispatchEpoch": run["dispatchEpoch"],
                 "tokenLimit": token_limit,
+                "workspace": run.get("workspace"),
             }
         try:
             await self.host.ensure_session(scope)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            code = str(getattr(error, "code", "execution_preflight_failed"))
+            if code in {"execution_node_offline", "node_offline", "node_unavailable"}:
+                with domain.store.transaction() as tx:
+                    current = tx.get("delivery", delivery_id)
+                    if current["status"] == "pending":
+                        current.update(
+                            reason="waiting_for_node",
+                            _nextRetryAt=time.time() + 5,
+                            revision=current["revision"] + 1,
+                        )
+                        domain.publish(tx, "delivery", delivery_id, current)
+            else:
+                safe_code = (
+                    code
+                    if code
+                    in {
+                        "BUILD_UNAVAILABLE",
+                        "PROVIDER_UNAVAILABLE",
+                        "binding_unavailable",
+                        "binding_unsupported",
+                        "member_revoked",
+                    }
+                    else "execution_preflight_failed"
+                )
+                self._receipt(domain, delivery_id, ExecutionReceipt("rejected", reason=safe_code))
+            return
+        # Preparation cannot execute. Only the submit boundary creates uncertain
+        # admission, after rechecking a stop that may have arrived during preflight.
+        with domain.store.transaction() as tx:
+            current = tx.get("delivery", delivery_id)
+            latest = tx.get("team_run", delivery["teamRunId"])
+            if (
+                self._closing
+                or current["status"] != "pending"
+                or latest["dispatchSuspended"]
+                or latest["status"] in TERMINAL | {"cancel_requested"}
+                or current["_dispatchEpoch"] != latest["dispatchEpoch"]
+            ):
+                return
+            current.update(
+                status="uncertain",
+                _tokenLimit=token_limit,
+                reason=None,
+                revision=current["revision"] + 1,
+            )
+            domain.publish(tx, "delivery", delivery_id, current)
+        try:
             receipt = await self.host.submit(
                 scope,
                 content=delivery["_payload"],
@@ -409,11 +536,13 @@ class TeamsRuntime:
         with domain.store.transaction() as tx:
             runs = tx.list("team_run")
         for run in runs:
-            if run["status"] in TERMINAL | {"cancel_requested"}:
+            if run["status"] in TERMINAL | {"cancel_requested", "awaiting_acceptance"}:
                 continue
-            elapsed = (
-                datetime.now(timezone.utc) - datetime.fromisoformat(run["createdAt"])
-            ).total_seconds()
+            with domain.store.transaction() as tx:
+                run = tx.get("team_run", run["teamRunId"])
+                domain.update_active_clock(tx, run)
+                tx.put("team_run", run["teamRunId"], run)
+            elapsed = run.get("activeDurationSeconds", 0)
             reason = (
                 "duration_budget_exhausted"
                 if elapsed >= run["budget"]["maxDurationSeconds"]
@@ -440,7 +569,7 @@ class TeamsRuntime:
     async def _reconcile(self, domain: TeamsDomain, delivery: dict[str, Any]) -> None:
         with domain.store.transaction() as tx:
             group = tx.get("group", delivery["groupId"])
-            member = tx.get("member", member_key(group["groupId"], delivery["memberId"]))
+            member = domain.delivery_member(tx, delivery)
         try:
             receipt = await self.host.lookup(self._scope(group, member), delivery["deliveryId"])
         except asyncio.CancelledError:
@@ -448,7 +577,7 @@ class TeamsRuntime:
         except Exception:
             return
         if receipt.status == "missing":
-            if delivery["status"] == "uncertain":
+            if delivery["status"] == "uncertain" and not delivery.get("_fenced"):
                 with domain.store.transaction() as tx:
                     current = tx.get("delivery", delivery["deliveryId"])
                     run = tx.get("team_run", current["teamRunId"])
@@ -463,7 +592,13 @@ class TeamsRuntime:
             return
         self._receipt(domain, delivery["deliveryId"], receipt)
         if receipt.run_id and receipt.run_status:
-            event_id = receipt.source_event_id or digest([receipt.run_id, receipt.run_status])
+            with domain.store.transaction() as tx:
+                current = tx.get("delivery", delivery["deliveryId"])
+            if current.get("_runStatus") == receipt.run_status:
+                return
+            # A run may return to running after offline/approval waits. The
+            # same native running event must not suppress this new transition.
+            event_id = digest([receipt.run_id, receipt.run_status, current["revision"]])
             domain.project_run(
                 delivery_id=delivery["deliveryId"],
                 event_id=event_id,
@@ -502,6 +637,27 @@ class TeamsRuntime:
                         revision=run["revision"] + 1,
                     )
                     domain.publish(tx, "team_run", run["teamRunId"], run)
+                if delivery.get("_taskId"):
+                    task = tx.get("task", delivery["_taskId"])
+                    if task["attempts"] and task["attempts"][-1]["attemptId"] == delivery.get(
+                        "_attemptId"
+                    ):
+                        task.update(
+                            status="failed",
+                            reason=receipt.reason or "delivery_rejected",
+                            revision=task["revision"] + 1,
+                        )
+                        task["attempts"][-1]["status"] = "failed"
+                        domain.publish(tx, "task", task["taskId"], task)
+                member = domain.delivery_member(tx, delivery)
+                member.update(
+                    executionStatus="idle", activeRunId=None, revision=member["revision"] + 1
+                )
+                current = domain.run_member(tx, delivery["teamRunId"], delivery["memberId"])
+                if current["sessionId"] == member["sessionId"]:
+                    member["revision"] = current["revision"] + 1
+                    domain.publish_run_member(tx, member)
+                domain._advance(tx, run)
 
     async def _controls(self, domain: TeamsDomain) -> None:
         with domain.store.transaction() as tx:
@@ -587,9 +743,7 @@ class TeamsRuntime:
                 deliveries = tx.list(
                     "delivery", control["groupId"], team_run_id=control["teamRunId"]
                 )
-                members = {
-                    member["memberId"]: member for member in tx.list("member", group["groupId"])
-                }
+                members = {d["deliveryId"]: domain.delivery_member(tx, d) for d in deliveries}
             pending = False
             for delivery in deliveries:
                 if delivery["status"] == "uncertain" or (
@@ -599,7 +753,7 @@ class TeamsRuntime:
                     if delivery.get("runId"):
                         try:
                             await self.host.cancel(
-                                self._scope(group, members[delivery["memberId"]]),
+                                self._scope(group, members[delivery["deliveryId"]]),
                                 delivery["runId"],
                                 f"{control['controlId']}:{delivery['runId']}",
                             )

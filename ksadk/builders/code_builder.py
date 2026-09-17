@@ -236,6 +236,14 @@ class CodeBuilder(BaseBuilder):
         ".ruff_cache",
     }
     IGNORED_FILE_NAMES = {".DS_Store"}
+    BUNDLED_SOURCE_IGNORED_DIR_NAMES = {
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
     KSADK_ALLOWED_SUFFIXES = {
         ".py",
         ".yaml",
@@ -850,18 +858,36 @@ class CodeBuilder(BaseBuilder):
             yield from self._iter_bundled_source_package(package_name, package_root)
 
     def _iter_bundled_source_package(self, package_name: str, package_root: Path):
-        for file_path in sorted(package_root.rglob("*")):
-            if not file_path.is_file():
-                continue
-            relative_path = file_path.relative_to(package_root)
-            if package_name == "ksadk" and self._should_skip_ksadk_relative_path(relative_path):
-                continue
-            if "__pycache__" in file_path.parts:
-                continue
-            suffix = file_path.suffix.lower()
-            if suffix not in self.KSADK_ALLOWED_SUFFIXES:
-                continue
-            yield package_name, relative_path.as_posix(), file_path
+        bundled_files = []
+        for current_root, dirnames, filenames in os.walk(package_root):
+            current_path = Path(current_root)
+            dirnames[:] = sorted(
+                dir_name
+                for dir_name in dirnames
+                if dir_name not in self.BUNDLED_SOURCE_IGNORED_DIR_NAMES
+                and not (
+                    package_name == "ksadk"
+                    and self._should_skip_ksadk_relative_path(
+                        (current_path / dir_name).relative_to(package_root)
+                    )
+                )
+            )
+            for file_name in sorted(filenames):
+                file_path = current_path / file_name
+                if not file_path.is_file():
+                    continue
+                relative_path = file_path.relative_to(package_root)
+                if (
+                    package_name == "ksadk"
+                    and self._should_skip_ksadk_relative_path(relative_path)
+                ):
+                    continue
+                if file_path.suffix.lower() not in self.KSADK_ALLOWED_SUFFIXES:
+                    continue
+                bundled_files.append((relative_path.as_posix(), file_path))
+
+        for relative_path, file_path in sorted(bundled_files):
+            yield package_name, relative_path, file_path
 
     def _should_skip_ksadk_relative_path(self, relative_path: Path) -> bool:
         parts = relative_path.parts

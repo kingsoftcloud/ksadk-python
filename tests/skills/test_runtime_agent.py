@@ -9,11 +9,13 @@ from pathlib import Path
 
 import httpx
 
+from ksadk.skills.events import SKILL_EVENT_FILE_ENV, SkillEventSink
 from ksadk.skills.loader import load_local_skill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime import agent as runtime_agent
 from ksadk.skills.runtime import executor as runtime_executor
 from ksadk.skills.runtime.agent import run_agent
+from ksadk.skills.runtime.artifacts import collect_text_output
 from ksadk.skills.runtime.registry import select_remote_skill_refs
 
 
@@ -61,6 +63,8 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
     monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
     monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+    event_path = tmp_path / "skill-events.jsonl"
+    monkeypatch.setenv("KSADK_SKILL_EVENT_FILE", str(event_path))
 
     code = run_agent(
         ["使用 demo-skill build something"],
@@ -72,6 +76,38 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     assert "workflow=使用 demo-skill build something" in out
     assert "loaded_skills=demo-skill" in out
     assert len(list((tmp_path / "cache").glob("*/extracted/demo-skill/SKILL.md"))) == 1
+    event_types = {
+        json.loads(line)["event_type"]
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    }
+    assert {
+        "skill.package.downloaded",
+        "skill.package.hash_verified",
+        "skill.package.extracted",
+        "skill.manifest.parsed",
+        "skill.load.started",
+        "skill.load.completed",
+        "skill.execution.completed",
+    } <= event_types
+    events_by_type = {
+        json.loads(line)["event_type"]: json.loads(line)
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    }
+    load_invocation_id = events_by_type["skill.load.completed"]["skill_invocation_id"]
+    assert events_by_type["skill.package.downloaded"]["skill_invocation_id"] == load_invocation_id
+    assert (
+        events_by_type["skill.package.hash_verified"]["skill_invocation_id"] == load_invocation_id
+    )
+    assert events_by_type["skill.package.extracted"]["skill_invocation_id"] == load_invocation_id
+    assert events_by_type["skill.manifest.parsed"]["skill_invocation_id"] == load_invocation_id
+    for event_type in (
+        "skill.package.downloaded",
+        "skill.package.hash_verified",
+        "skill.package.extracted",
+    ):
+        event = events_by_type[event_type]
+        assert event["ended_at"] is not None
+        assert event["ended_at"] >= event["started_at"]
 
 
 def test_runtime_selects_remote_skill_by_alias_tag_and_description():
@@ -698,6 +734,55 @@ def test_runtime_agent_collects_generic_workflow_output_dir(monkeypatch, tmp_pat
     assert result.status == "ok"
     assert result.output_files == [artifact]
     assert result.artifacts == [artifact]
+    assert result.output_text == "generated"
+    assert result.output_text_truncated is False
+
+
+def test_runtime_agent_bounds_text_artifact_output(monkeypatch, tmp_path: Path):
+    skill_root = tmp_path / "skills" / "bounded-output-workflow"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: bounded-output-workflow\ndescription: Bounded output workflow\n---\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "run-workflow.sh").write_text(
+        "#!/bin/bash\n"
+        'mkdir -p "$KSADK_SKILL_OUTPUT_DIR"\n'
+        "printf '0123456789' > \"$KSADK_SKILL_OUTPUT_DIR/result.txt\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KSADK_SKILL_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("KSADK_SKILL_OUTPUT_TEXT_MAX_BYTES", "5")
+
+    result = runtime_agent._execute_workflow(
+        "run bounded output workflow",
+        [load_local_skill(skill_root)],
+        selected_skill_names=["bounded-output-workflow"],
+    )
+
+    assert result.output_text == "01234"
+    assert result.output_text_truncated is True
+
+
+def test_text_output_rejects_paths_outside_workdir_and_non_text_artifacts(tmp_path: Path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    report = workdir / "report.md"
+    report.write_text("safe report", encoding="utf-8")
+    binary = workdir / "bundle.bin"
+    binary.write_bytes(b"binary payload")
+    outside = tmp_path / "outside.md"
+    outside.write_text("must not escape", encoding="utf-8")
+
+    output_text, truncated = collect_text_output(
+        [str(outside), str(binary), str(report)],
+        allowed_root=workdir,
+        max_bytes=1024,
+    )
+
+    assert output_text == "safe report"
+    assert truncated is False
 
 
 def test_runtime_agent_returns_instructions_for_instruction_only_skill(tmp_path: Path):
@@ -708,10 +793,12 @@ def test_runtime_agent_returns_instructions_for_instruction_only_skill(tmp_path:
         encoding="utf-8",
     )
 
+    event_sink = SkillEventSink()
     result = runtime_agent._execute_workflow(
         "run instruction-only",
         [load_local_skill(skill_root)],
         selected_skill_names=["instruction-only"],
+        event_sink=event_sink,
     )
 
     assert result.status == "instructions"
@@ -720,6 +807,23 @@ def test_runtime_agent_returns_instructions_for_instruction_only_skill(tmp_path:
     assert result.executed_skill == "instruction-only"
     assert result.instructions == "# Demo\n"
     assert any("instruction-only" in w for w in result.warnings)
+
+
+def test_runtime_executor_does_not_expose_event_envelope_to_skill_command(
+    monkeypatch, tmp_path: Path
+):
+    captured_env: dict[str, str] = {}
+
+    def fake_run(args, **kwargs):
+        captured_env.update(kwargs["env"])
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setenv(SKILL_EVENT_FILE_ENV, "/private/event-envelope.jsonl")
+    monkeypatch.setattr(runtime_executor.subprocess, "run", fake_run)
+
+    runtime_executor._run_command(["true"], cwd=tmp_path, timeout=1)
+
+    assert SKILL_EVENT_FILE_ENV not in captured_env
 
 
 def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypatch, tmp_path: Path):
@@ -771,26 +875,28 @@ def test_parse_workflow_result_extracts_status_and_instructions():
         "output_files": ["result.txt"],
     }) + "\nmore output\n"
     result = parse_workflow_result(stdout)
-    assert result["status"] == "ok"
-    assert result["executed_skill"] == "demo-skill"
-    assert result["instructions"] == "# Demo\n"
-    assert result["output_files"] == ["result.txt"]
+    assert result.workflow_status == "ok"
+    assert result.executed_skill == "demo-skill"
+    assert result.instructions == "# Demo\n"
+    assert list(result.output_files) == ["result.txt"]
 
 
 def test_parse_workflow_result_returns_empty_on_no_result_line():
-    """parse_workflow_result returns empty dict when no workflow_result= line."""
+    """parse_workflow_result returns an empty result when no workflow_result= line."""
     from ksadk.skills.runtime.base import parse_workflow_result
 
     result = parse_workflow_result("just stdout\nno workflow result here\n")
-    assert result == {}
+    assert result.output_files == ()
+    assert result.workflow_status == ""
 
 
 def test_parse_workflow_result_returns_empty_on_invalid_json():
-    """parse_workflow_result returns empty dict when JSON is malformed."""
+    """parse_workflow_result returns an empty result when JSON is malformed."""
     from ksadk.skills.runtime.base import parse_workflow_result
 
     result = parse_workflow_result("workflow_result={invalid json}\n")
-    assert result == {}
+    assert result.output_files == ()
+    assert result.workflow_status == ""
 
 
 def test_parse_output_files_delegates_to_parse_workflow_result():

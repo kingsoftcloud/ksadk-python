@@ -12,6 +12,7 @@ import pytest
 from ksadk.harness.config import HarnessConfig
 from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.managed_runtime import ManagedHarnessRuntimeAdapter
 from ksadk.harness.reasoner import (
     HarnessReasoningTurn,
@@ -21,6 +22,7 @@ from ksadk.harness.runtime_server import DeploymentRunStore
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 from ksadk.plugins.providers.harness_managed import build_managed_provider_adapter
 from ksadk.runtime import (
+    CancelResult,
     ResumePayload,
     ResumeTarget,
     RunHandle,
@@ -59,6 +61,7 @@ class _FakeEngine:
         self._status = status
         self.attached: list[str] = []
         self.resumed: list[str] = []
+        self.stream_events: list[RuntimeEvent] = []
 
     def is_handle_attached(self, handle) -> bool:  # noqa: ANN001
         return False
@@ -66,7 +69,8 @@ class _FakeEngine:
     async def compile(self, _spec):  # noqa: ANN001
         return object()
 
-    async def start(self, request, _compiled):  # noqa: ANN001
+    async def start(self, request, _compiled, **kwargs):  # noqa: ANN001
+        del kwargs  # 0.154 起 managed adapter 会透传 execution_policy_request
         from ksadk.runtime import RunHandle
 
         return RunHandle(
@@ -90,6 +94,13 @@ class _FakeEngine:
     async def resume(self, handle, _target, _payload):  # noqa: ANN001, ANN202
         self.resumed.append(handle.run_id)
         return handle
+
+    async def cancel(self, _handle):  # noqa: ANN001, ANN202
+        return CancelResult.INTERRUPTED_ACTIVE_TURN
+
+    async def stream(self, _handle):  # noqa: ANN001
+        for event in self.stream_events:
+            yield event
 
 
 def _adapter(engine: _FakeEngine, state_dir: Path) -> ManagedHarnessRuntimeAdapter:
@@ -122,6 +133,51 @@ async def test_adapter_persists_run_handle_for_later_restore(tmp_path: Path) -> 
     assert handle.run_id in payload["handles"]
     assert payload["handles"][handle.run_id]["native_ref"].get("thread_id")
     assert payload["handles"][handle.run_id]["runtime_type"] == "harness"
+
+
+@pytest.mark.asyncio
+async def test_adapter_removes_durable_handle_after_cancellation(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    adapter = _adapter(_FakeEngine(pending=True), state_dir)
+    handle = await adapter.start(_request())
+
+    result = await adapter.cancel(handle)
+
+    assert result is CancelResult.INTERRUPTED_ACTIVE_TURN
+    payload = json.loads((state_dir / "runs.json").read_text(encoding="utf-8"))
+    assert payload["runs"][handle.run_id]["status"] == "canceled"
+    assert handle.run_id not in payload["handles"]
+
+
+@pytest.mark.asyncio
+async def test_adapter_removes_durable_handle_before_yielding_terminal_event(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    engine = _FakeEngine(pending=True)
+    adapter = _adapter(engine, state_dir)
+    handle = await adapter.start(_request())
+    engine.stream_events.append(
+        RuntimeEvent(
+            event_id="terminal",
+            timestamp=1.0,
+            user_id="user",
+            seq_id=1,
+            event_type=EventType.RUN_COMPLETED,
+            agent_id="agent-1",
+            session_id=handle.session_id,
+            invocation_id=handle.run_id,
+            payload={"status": "completed"},
+        )
+    )
+
+    stream = adapter.stream(handle)
+    terminal = await anext(stream)
+
+    assert terminal.event_type == "run.completed"
+    payload = json.loads((state_dir / "runs.json").read_text(encoding="utf-8"))
+    assert payload["runs"][handle.run_id]["status"] == "completed"
+    assert handle.run_id not in payload["handles"]
 
 
 @pytest.mark.asyncio

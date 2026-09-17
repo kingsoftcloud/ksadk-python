@@ -1,0 +1,24 @@
+name: Prepare shared Web source candidate
+description: Build the exact companion Web commit for source-only Studio checks.
+runs:
+  using: composite
+  steps:
+    - name: Check out the companion source
+      uses: actions/checkout@v7
+      with:
+        repository: kingsoftcloud/ksadk-web
+        ref: 4c5d490020c19af02748903277d2286f42506314
+        path: .cache/ksadk-web-candidate
+        persist-credentials: false
+    - name: Pack the companion source
+      shell: bash
+      working-directory: .cache/ksadk-web-candidate
+      run: |
+        npm ci
+        mkdir -p "$RUNNER_TEMP/ksadk-web-candidate"
+        npm pack --pack-destination "$RUNNER_TEMP/ksadk-web-candidate"
+        version=$(node -p 'require("./package.json").version')
+        tarball="$RUNNER_TEMP/ksadk-web-candidate/kingsoftcloud-ksadk-web-$version.tgz"
+        test -f "$tarball"
+        echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
+        echo 'Shared Web source: kingsoftcloud/ksadk-web@4c5d490020c19af02748903277d2286f42506314 (PR #19). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"

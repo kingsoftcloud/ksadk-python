@@ -21,6 +21,9 @@ from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 from tests.resource_runtime.test_broker import scope
 from tests.resource_runtime.test_resource_build_artifacts import frozen as frozen
 
+# 真实 fork 子进程,见 ci.yml test-local-process-heavy。
+pytestmark = pytest.mark.local_process_heavy
+
 
 def service(tmp_path, frozen):
     snapshot, package = frozen
@@ -74,11 +77,15 @@ def test_execute_selected_build_package_with_existing_runtime(tmp_path, frozen, 
     bound = service(tmp_path, (ResourceSnapshot.model_validate(payload), package))
     shutil.rmtree(tmp_path / "source")
     monkeypatch.setenv("KSADK_SELECTED_SKILL_NAMES", "unrelated-skill")
+    artifact_directory = tmp_path / "artifacts"
+    artifact_directory.mkdir()
     # Real local subprocess exercises the shared transport. It is not an E2B
     # isolation assertion; production admission must choose the promised backend.
     result = bound.execute(
         {"workflowPrompt": "Generate a report", "skillIds": ["skill-a"]},
-        backend=LocalProcessSkillRuntimeBackend(Path(agent.__file__)),
+        backend=LocalProcessSkillRuntimeBackend(
+            Path(agent.__file__), artifact_directory=artifact_directory
+        ),
         operation_id="a" * 64,
         timeout=10,
     )

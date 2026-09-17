@@ -229,6 +229,21 @@ def _cloud_event_conversation_item(
     return item.model_dump(by_alias=True, exclude_none=True, mode="json")
 
 
+import re as _re
+
+# 内容 hash 文件名（如 index-CQj_Jm9z.js）可安全 immutable 强缓存；
+# index.html 与动态 HTML 仍需每次校验。
+_HASHED_ASSET_RE = _re.compile(r"-[A-Za-z0-9_]{8,}\.(js|css|woff2?|ttf|png|svg|webp|mp4|wasm)$")
+
+
+def _cache_control_for(path: str, response: Any) -> str:
+    if path.startswith(("/api/", "/v1/")):
+        return "no-store"
+    if _HASHED_ASSET_RE.search(path) and 200 <= response.status_code < 300:
+        return "public, max-age=31536000, immutable"
+    return response.headers.get("Cache-Control", "no-cache")
+
+
 def create_studio_app(
     root: Path | str,
     *,
@@ -287,6 +302,13 @@ def create_studio_app(
             # Optional plugin activation must not hold the HTTP listener closed
             # while DSH starts subprocesses or acquires an authority lease.
             schedule_runtime_warmup(studio.active)
+            # Pre-resolve the entry redirect choice once off the request path;
+            # failures are swallowed and ``index()`` has its own bounded wait.
+            probe_warmup = getattr(
+                studio.active.dsh_capabilities, "schedule_plugin_probe_warmup", None
+            )
+            if callable(probe_warmup):
+                probe_warmup()
             await studio.run_service.recover_interrupted(studio.resolve_run_spec)
             await studio.scheduler.start_if_available()
             yield
@@ -476,11 +498,7 @@ def create_studio_app(
                     )
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
-        response.headers["Cache-Control"] = (
-            "no-store"
-            if request.url.path.startswith(("/api/", "/v1/"))
-            else response.headers.get("Cache-Control", "no-cache")
-        )
+        response.headers["Cache-Control"] = _cache_control_for(request.url.path, response)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -538,29 +556,12 @@ def create_studio_app(
         )
 
     @app.get("/")
+    @app.get("/studio-recovery/")
+    @app.get("/studio-shell/")
     async def index(request: Request):
-        # Workspace navigation is contributed by the official Core client.
-        # Opening the standalone React shell with enabled plugins silently
-        # hides those pages. Select the host from Profile metadata, without
-        # starting Core just to decide which entry to serve.
-        try:
-            use_core = await studio.dsh_capabilities.has_enabled_profile_plugins()
-        except (StudioError, OSError, RuntimeError):
-            # The optional toolchain may be absent in a plain SDK workspace.
-            use_core = False
-        if use_core and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
-            target = "/studio-core/"
-            if request.url.query:
-                target += "?" + request.url.query
-            # Browsers inherit the original fragment across this redirect,
-            # preserving Agent/session/group deep links and CLI bootstrap.
-            response = RedirectResponse(target, status_code=307)
-        else:
-            path = static_root / "index.html"
-            html = path.read_text(encoding="utf-8")
-            # Keep hashed module URLs identical to internal lazy imports.
-            response = Response(content=html, media_type="text/html")
-        response.headers["Cache-Control"] = "no-store"
+        from ksadk.studio.entry import studio_entry_response
+
+        response = await studio_entry_response(studio, request, static_root)
         if security_enabled:
             response.set_cookie(
                 session_cookie_name,
@@ -579,6 +580,12 @@ def create_studio_app(
                 path="/",
             )
         return response
+
+    @app.get("/api/v1/plugin-ecosystems/dsh/recovery")
+    async def dsh_recovery_status():
+        # This endpoint must remain a read-only snapshot: no Core startup, Profile
+        # projection, credential resolution, or filesystem repair is attempted.
+        return studio.dsh_capabilities.startup_status
 
     @app.get("/favicon.ico")
     async def favicon():
@@ -718,7 +725,7 @@ def create_studio_app(
 
     @app.post("/v1/responses/{response_id}/cancel")
     async def cancel_openai_response(response_id: str):
-        result = shared_web.cancel_run(response_id)
+        result = await shared_web.cancel_run(response_id)
         return {
             "id": response_id,
             "object": "response",
@@ -880,7 +887,7 @@ def create_studio_app(
                     },
                 )
             elif action == "CancelRun":
-                data = shared_web.cancel_run(str(payload.get("InvocationId") or ""))
+                data = await shared_web.cancel_run(str(payload.get("InvocationId") or ""))
             elif action == "SubmitInteraction":
                 run_id = str(payload.get("RunId") or "")
                 studio._require_direct_run(run_id)
@@ -2601,7 +2608,11 @@ def create_studio_app(
     from ksadk.studio.dsh_application import register_dsh_application
 
     register_dsh_application(
-        app, studio, session_secret=session_secret, security_enabled=security_enabled
+        app,
+        studio,
+        session_secret=session_secret,
+        security_enabled=security_enabled,
+        fallback_url="/studio-shell/",
     )
 
     return app

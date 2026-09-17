@@ -1,124 +1,3 @@
-:root {
-  color-scheme: light;
-  /* Studio colors are complete CSS values. ksadk-web owns the unprefixed
-     HSL channel tokens inside its scope; Studio components use --studio-*.
-     Keep root aliases for existing external theme readers. */
-  --surface: var(--studio-surface);
-  --accent: var(--studio-accent);
-  --border: var(--studio-border);
-  --text-secondary: var(--studio-text-secondary);
-  --code-bg: var(--studio-code-bg);
-  --sidebar: var(--studio-sidebar);
-  /* Typography is a product contract. Add new semantic roles here before using them. */
-  --font-sans: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei UI",
-    "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
-  --font-size-nano: 9px;
-  --font-size-micro: 10px;
-  --font-size-fine: 11px;
-  --font-size-caption: 12px;
-  --font-size-meta: 13px;
-  --font-size-control: 14px;
-  --font-size-body: 15px;
-  --font-size-subtitle: 16px;
-  --font-size-card-metric: 18px;
-  --font-size-section-title: 20px;
-  --font-size-page-title: 26px;
-  --font-size-metric: 28px;
-  --font-weight-regular: 400;
-  --font-weight-medium: 500;
-  --font-weight-semibold: 600;
-  --line-height-none: 1;
-  --line-height-code-compact: 1.55;
-  --line-height-caption: 1.5;
-  --line-height-control: 1.55;
-  --line-height-body: 1.6;
-  --line-height-tight: 1.35;
-  --line-height-editor: 1.72;
-  --line-height-title: 1.4;
-  --canvas: #f8fafc;
-  --studio-sidebar: #ffffff;
-  --studio-surface: #ffffff;
-  --surface-subtle: #f1f5f9;
-  --surface-raised: #ffffff;
-  --surface-sunken: #f5f7fa;
-  --surface-hover: #eef2f7;
-  --hover: #eef2f7;
-  --selected: #e0edff;
-  --text: #1e293b;
-  --text-primary: #1e293b;
-  --text-label: #334155;
-  --studio-text-secondary: #475569;
-  --text-tertiary: #64748b;
-  --text-faint: #94a3b8;
-  --text-disabled: #94a3b8;
-  --studio-border: #e2e8f0;
-  --border-card: #dce3ec;
-  --border-strong: #cad4e0;
-  --studio-accent: #2167d5;
-  --accent-strong: #1857b4;
-  --accent-soft: #eaf3ff;
-  --accent-hover: #ddeeff;
-  --accent-active: #cfe4fc;
-  --accent-border: #bfd7f3;
-  /* Primary actions must keep a concrete fill.  Kingdesign and Soft Block
-     deliberately consume these semantic aliases rather than their own color
-     literals; leaving them undefined makes the cascade discard background and
-     border while retaining white text (an invisible but still clickable CTA). */
-  --button-primary-bg: #4d8fe8;
-  --button-primary-bg-hover: #5d9ef1;
-  --button-primary-bg-active: #3e7fd3;
-  --button-primary-text: #ffffff;
-  --success: #28745a;
-  --success-soft: #ecf7f1;
-  --info: #3e6f9f;
-  --info-soft: #eef4fa;
-  --warning: #8a641f;
-  --warning-text: #765314;
-  --warning-soft: #fbf5e8;
-  --edge: #28745a;
-  --edge-soft: #ecf7f1;
-  --edge-border: #bfe2d2;
-  --cloud: #2167d5;
-  --cloud-soft: #eaf3ff;
-  --cloud-border: #bfd7f3;
-  --route: #8a641f;
-  --route-soft: #fbf5e8;
-  --danger: #b5473c;
-  --danger-soft: #fff1ef;
-  --studio-code-bg: #f6f8fb;
-  --code-text: #263548;
-  --code-token-comment: #7a8798;
-  --code-token-punctuation: #596579;
-  --code-token-property: #356b8c;
-  --code-token-number: #9a5b1c;
-  --code-token-string: #24745b;
-  --code-token-operator: #5b6677;
-  --code-token-keyword: #81529b;
-  --code-token-function: #1d609b;
-  --code-token-class: #9b4e73;
-  --code-token-variable: #8a6120;
-  --radius-control: 6px;
-  --radius-surface: 8px;
-  --radius-small: 4px;
-  --radius-badge: 4px;
-  --radius-indicator: 2px;
-  --radius-circle: 50%;
-  --radius-pill: 999px;
-  --radius-message: 12px 12px 2px 12px;
-  --control-height: 42px;
-  --button-height: 40px;
-  --button-height-small: 34px;
-  --status-height: 24px;
-  --shadow-overlay: 0 20px 48px rgb(15 23 42 / 14%);
-  --shadow-focus: 0 0 0 3px rgb(37 99 235 / 14%);
-  --shadow-focus-subtle: 0 0 0 3px rgb(37 99 235 / 10%);
-  --shadow-control: 0 1px 2px rgb(15 23 42 / 6%), 0 1px 3px rgb(15 23 42 / 5%);
-  --shadow-toast: 0 12px 32px rgb(15 23 42 / 12%);
-  --motion-fast: 120ms;
-  --motion-base: 180ms;
-  --ease: cubic-bezier(0.2, 0, 0, 1);
-}
 
 * {
   box-sizing: border-box;
@@ -477,7 +356,7 @@ svg {
   position: sticky;
   z-index: 30;
   top: 0;
-  height: 64px;
+  min-height: var(--studio-header-height);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -603,7 +482,7 @@ svg {
 
 .view {
   display: none;
-  min-height: calc(100dvh - 64px);
+  min-height: calc(100dvh - var(--studio-header-height));
 }
 
 .view.active {
@@ -1517,7 +1396,7 @@ td.actions-column {
 /* Create wizard */
 
 .create-shell {
-  min-height: calc(100dvh - 64px);
+  min-height: calc(100dvh - var(--studio-header-height));
 }
 
 .create-header {
@@ -6427,7 +6306,7 @@ body.create-mode .global-context {
   position: sticky;
   top: 64px;
   align-self: start;
-  min-height: calc(100dvh - 64px);
+  min-height: calc(100dvh - var(--studio-header-height));
   padding: 24px 14px;
   border-right: 1px solid var(--studio-border);
   background: var(--surface-subtle);
@@ -8708,3 +8587,72 @@ select {
   padding: 0 16px;
   font-size: var(--font-size-meta);
 }
+
+/* 空会话欢迎语在 harness timeline（滚动容器）内正确居中。 */
+.harness-timeline > .studio-conversation-welcome {
+  min-height: 60vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+/* Keep every runtime's empty conversation aligned to the same visual center. */
+.studio-chat-shell .studio-conversation-welcome {
+  width: min(100%, 832px);
+  box-sizing: border-box;
+  margin-inline: auto;
+  min-height: clamp(300px, 52vh, 560px);
+  justify-content: center;
+  padding: 0 24px;
+}
+.studio-chat-shell .studio-conversation-welcome p {
+  color: var(--studio-text-secondary);
+  font-size: var(--font-size-meta);
+  letter-spacing: .01em;
+}
+.studio-chat-shell .studio-conversation-welcome h2 {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 3vw, 38px);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -.04em;
+}
+.studio-chat-shell .studio-conversation-welcome h2 span {
+  color: transparent;
+  background: linear-gradient(105deg, var(--text-primary) 12%, var(--studio-accent) 46%, var(--text-primary) 78%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: studio-welcome-shimmer 5s ease-in-out infinite;
+}
+@keyframes studio-welcome-shimmer {
+  0%, 100% { background-position: 100% 0; }
+  50% { background-position: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-chat-shell .studio-conversation-welcome h2 span { animation: none; }
+}
+.conversation-find {
+  flex: 0 0 auto;
+  width: min(100%, 832px);
+  margin-inline: auto;
+  padding: 12px 16px;
+  background: var(--studio-surface);
+  border: 1px solid var(--studio-border);
+  border-radius: var(--radius-surface);
+}
+.conversation-find-controls { display: flex; align-items: center; gap: 8px; }
+.conversation-find-controls input { flex: 1; min-width: 0; }
+.conversation-find-status { margin: 8px 0; color: var(--studio-text-secondary); font-size: var(--font-size-meta); }
+.conversation-find-results { list-style: none; margin: 0; padding: 0; max-height: min(240px, 30vh); overflow-y: auto; }
+.conversation-find-results button {
+  display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px;
+  width: 100%; padding: 8px; text-align: left; border: 0;
+  background: transparent; color: var(--text-primary); border-radius: var(--radius-small);
+  font-size: var(--font-size-meta); line-height: var(--line-height-body);
+}
+.conversation-find-results button:hover { background: var(--surface-hover); }
+.conversation-find-results button span { overflow-wrap: anywhere; }
+.studio-chat-timeline [data-search-target="true"] { outline: 2px solid var(--studio-accent); outline-offset: -2px; }

@@ -1,5 +1,6 @@
 import { createRef } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { OutboxStore, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
 import { ChatWorkspace, type ChatWorkspaceHandle } from "./ChatWorkspace";
@@ -34,10 +35,13 @@ const mocks = vi.hoisted(() => {
     interactionRecords: [],
     localCatalog: [],
     createNewSession: vi.fn(),
+    startNewConversation: vi.fn(),
     deleteSession: vi.fn(),
     selectSession: vi.fn(),
     loadMoreSessions: vi.fn(),
     loadOlderMessages: vi.fn(),
+    searchConversation: vi.fn(),
+    messageHistory: { hasMore: false },
     refresh: vi.fn(),
     send: vi.fn(),
     stop: vi.fn(),
@@ -47,6 +51,11 @@ const mocks = vi.hoisted(() => {
     respondToApproval: vi.fn(),
     submitAguiAction: vi.fn(),
     respondInteraction: vi.fn(),
+    conversationDrafts: undefined as any,
+    conversationId: undefined as ConversationId | undefined,
+    conversationOutbox: undefined as OutboxStore | undefined,
+    retryOutbox: vi.fn(),
+    isOutboxRequestActive: vi.fn(() => false),
   };
   return {
     chat,
@@ -101,9 +110,64 @@ describe("ChatWorkspace shared conversation composition", () => {
     mocks.facadeOptions.length = 0;
     mocks.timelineProps = null;
     mocks.composerProps = null;
+    mocks.chat.conversationDrafts = undefined;
+    mocks.chat.conversationId = undefined;
+    mocks.chat.conversationOutbox = undefined;
+    mocks.chat.isOutboxRequestActive.mockReturnValue(false);
     Object.values(mocks.chat).forEach(value => {
       if (typeof value === "function" && "mockClear" in value) value.mockClear();
     });
+  });
+
+  it("updates unresolved delivery notices directly from the ledger", async () => {
+    const outbox = new OutboxStore("test:outbox-notice");
+    outbox.clear();
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument();
+    let requestId = "";
+    act(() => {
+      const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1",
+        text: "一次操作", attachments: [] });
+      requestId = entry.requestId;
+      outbox.update(requestId, { status: "unknown" });
+    });
+    expect(await screen.findByText("有一条消息需要处理")).toBeVisible();
+    expect(screen.getByRole("button", { name: "查询投递状态" })).toBeEnabled();
+    act(() => { outbox.update(requestId, { status: "completed" }); });
+    await waitFor(() => expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument());
+    outbox.clear();
+  });
+
+  it("does not offer recovery for a request still held by the live queue", () => {
+    const outbox = new OutboxStore("test:outbox-live-queue");
+    outbox.clear();
+    outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1", text: "queued", attachments: [] });
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    mocks.chat.isOutboxRequestActive.mockReturnValue(true);
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(screen.queryByText("有一条消息需要处理")).not.toBeInTheDocument();
+    outbox.clear();
+  });
+
+  it("allows unknown attachment deliveries to be queried without restoring file bytes", async () => {
+    const outbox = new OutboxStore("test:outbox-attachment");
+    outbox.clear();
+    const entry = outbox.enqueue({ conversationId: "conversation_test", agentId: "local-1",
+      text: "处理附件", attachments: [{ name: "report.txt", type: "text/plain", size: 12 }] });
+    outbox.update(entry.requestId, { status: "unknown", error: "暂时无法查询原任务状态，请稍后重新查询。" });
+    mocks.chat.conversationId = "conversation_test";
+    mocks.chat.conversationOutbox = outbox;
+    mocks.chat.retryOutbox.mockResolvedValue(false);
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    expect(screen.getByText("暂时无法查询原任务状态，请稍后重新查询。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查询投递状态" }));
+    await waitFor(() => expect(mocks.chat.retryOutbox).toHaveBeenCalledWith(entry.requestId));
+    act(() => { outbox.update(entry.requestId, { status: "failed" }); });
+    expect(screen.getByRole("button", { name: "无法恢复附件" })).toBeDisabled();
+    outbox.clear();
   });
 
   it("shows a product title for an empty session instead of its internal id", () => {
@@ -119,6 +183,74 @@ describe("ChatWorkspace shared conversation composition", () => {
 
     expect(screen.getByText("新会话")).toBeInTheDocument();
     expect(screen.queryByText("ses_internal_id")).not.toBeInTheDocument();
+  });
+
+  it("restores the selected session so active runs reconnect after refresh", () => {
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+
+    const call = mocks.useAgentChat.mock.calls.at(-1) as unknown[] | undefined;
+    expect((call?.[0] as { restoreSession?: boolean }).restoreSession).toBe(true);
+  });
+
+  it("scopes conversation storage by the opaque credential tenant scope", () => {
+    render(
+      <ChatWorkspace
+        agentId="local-1"
+        agentName="Agent"
+        workspaceId="workspace-a"
+        credentialScope="tenant-a"
+        targetId="target-a"
+      />,
+    );
+
+    const lastCall = mocks.useAgentChat.mock.calls[mocks.useAgentChat.mock.calls.length - 1] as unknown[] | undefined;
+    const options = lastCall?.[0] as { conversationController: { storageKey?: string } };
+    expect(options.conversationController.storageKey).toBe("ksadk.studio:workspace-a:tenant-a:local-1:target-a");
+  });
+
+  it("surfaces a multi-window draft conflict and resolves the selected side", () => {
+    let notify!: () => void;
+    let conflicted = true;
+    const conflictStore = {
+      getConflict: vi.fn(() => conflicted ? { conversationId: "conversation_conflict", local: { text: "本窗口", revision: 1, updatedAt: 1, attachments: [] }, remote: { text: "另一个窗口", revision: 1, updatedAt: 2 }, detectedAt: 2 } : undefined),
+      subscribe: vi.fn((listener: () => void) => { notify = listener; return () => {}; }),
+      resolveConflict: vi.fn(() => { conflicted = false; notify(); }),
+    };
+    mocks.chat.conversationDrafts = conflictStore;
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("检测到其他窗口修改了草稿");
+    fireEvent.click(screen.getByRole("button", { name: "使用其他窗口" }));
+    expect(conflictStore.resolveConflict).toHaveBeenCalledWith(expect.any(String), "remote");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    delete mocks.chat.conversationDrafts;
+  });
+
+  it("finds the active conversation body and leaves browser find available on other pages", () => {
+    const props = { agentId: "local-1", agentName: "Agent" };
+    const { rerender } = render(<ChatWorkspace {...props} />);
+    const shortcut = new KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true });
+    fireEvent(window, shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+    expect(screen.getByRole("searchbox", { name: "查找当前会话正文" })).toHaveFocus();
+    expect(screen.getByRole("searchbox", { name: "搜索会话" })).toHaveValue("");
+    rerender(<ChatWorkspace {...props} active={false} />);
+    const otherPage = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, cancelable: true });
+    fireEvent(window, otherPage);
+    expect(otherPage.defaultPrevented).toBe(false);
+    expect(screen.queryByRole("region", { name: "查找当前会话" })).not.toBeInTheDocument();
+  });
+
+  it("passes the chosen history result to the active timeline", async () => {
+    mocks.chat.searchConversation.mockResolvedValue({ matches: [{ messageId: "old-user", role: "user", excerpt: "历史目标" }],
+      matchedMessages: 1, searchedMessages: 2000, complete: true });
+    render(<ChatWorkspace agentId="local-1" agentName="Agent" />);
+    fireEvent.click(screen.getByRole("button", { name: "查找当前会话" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "查找当前会话正文" }), { target: { value: "历史目标" } });
+    fireEvent.click(await screen.findByRole("button", { name: /历史目标/ }));
+    expect(mocks.timelineProps?.revealMessage).toEqual({ id: "old-user", request: 1 });
+    fireEvent.click(screen.getByRole("button", { name: /历史目标/ }));
+    expect(mocks.timelineProps?.revealMessage).toEqual({ id: "old-user", request: 2 });
   });
 
   it("reports the selected session so the host inspector follows it", async () => {
@@ -170,33 +302,33 @@ describe("ChatWorkspace shared conversation composition", () => {
     unmount(); historyHost.remove(); headerHost.remove();
   });
 
-  it("fulfills a new-chat request after mounting and bootstrap instead of restoring history", async () => {
+  it("creates a local draft immediately without waiting for bootstrap or session loading", async () => {
     mocks.chat.bootstrapStatus = "loading";
     const onNewChatStarted = vi.fn();
     const props = { agentId: "local-1", agentName: "Agent", newChatRequest: 1, onNewChatStarted };
     const { rerender } = render(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.createNewSession).not.toHaveBeenCalled();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.bootstrapStatus = "ready";
     mocks.chat.isLoadingSessions = true;
     rerender(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.createNewSession).not.toHaveBeenCalled();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.isLoadingSessions = false;
     rerender(<ChatWorkspace {...props}/>);
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     await waitFor(() => expect(onNewChatStarted).toHaveBeenCalledOnce());
     rerender(<ChatWorkspace {...props} refreshTick={1}/>);
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
   });
 
   it("starts new conversations through the product rail without interrupting a stream", () => {
     const ref = createRef<ChatWorkspaceHandle>();
     const { rerender } = render(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
     ref.current?.startNewChat();
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     mocks.chat.isStreaming = true;
     rerender(<ChatWorkspace ref={ref} agentId="local-1" agentName="Agent"/>);
     ref.current?.startNewChat();
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledTimes(2);
     expect(mocks.chat.stop).not.toHaveBeenCalled();
   });
 
@@ -250,7 +382,7 @@ describe("ChatWorkspace shared conversation composition", () => {
       isMobile: false,
       onRespondToApproval: mocks.chat.respondToApproval,
       onSubmitAguiAction: mocks.chat.submitAguiAction,
-      onCancelRemote: mocks.chat.cancelRemote,
+      onCancelRemote: expect.any(Function),
     });
     expect(mocks.composerProps).toMatchObject({
       isMobile: false,
@@ -259,6 +391,9 @@ describe("ChatWorkspace shared conversation composition", () => {
       thinkingEnabled: true,
       pendingInteractions: mocks.chat.pendingInteractions,
     });
+
+    (mocks.timelineProps?.onStopGeneration as () => void)();
+    expect(mocks.chat.stop).toHaveBeenCalledOnce();
   });
 
   it("keeps Studio session navigation and refresh wired to the shared controller", async () => {
@@ -268,7 +403,7 @@ describe("ChatWorkspace shared conversation composition", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "新对话" }));
     fireEvent.click(screen.getByRole("button", { name: "已有会话" }));
-    expect(mocks.chat.createNewSession).toHaveBeenCalledOnce();
+    expect(mocks.chat.startNewConversation).toHaveBeenCalledOnce();
     expect(mocks.chat.selectSession).toHaveBeenCalledWith("session-1");
 
     rerender(<ChatWorkspace agentId="local-1" agentName="本地 Agent" refreshTick={1} />);

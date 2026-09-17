@@ -158,10 +158,13 @@ class _CdpBrowser:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # 独立进程组:chromium 会再派生 renderer/GPU/utility 子进程,
+            # 让整组可被杀干净,避免泄漏累积耗尽 runner 进程表(Cannot fork)。
+            start_new_session=True,
         )
 
         version_url = f"http://127.0.0.1:{self.port}/json/version"
-        deadline = time.time() + 10
+        deadline = time.time() + 30
         version_payload: dict[str, str] | None = None
         async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
             while time.time() < deadline:
@@ -187,14 +190,30 @@ class _CdpBrowser:
         if self._websocket is not None:
             await self._websocket.close()
         if self._process is not None:
-            self._process.terminate()
+            # 整组(SIGTERM 整个进程组):terminate() 只杀主进程,renderer/GPU
+            # 子进程会泄漏累积,连续 browser 测试后 runner 进程表耗尽 Cannot fork。
+            import os
+            import signal
+
+            try:
+                os.killpg(self._process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
             try:
                 self._process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._process.kill()
+                try:
+                    os.killpg(self._process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
                 self._process.wait(timeout=5)
         if self._user_data_dir is not None:
-            self._user_data_dir.cleanup()
+            # chromium 是多进程(renderer/GPU 子进程);terminate 主进程后子进程
+            # 可能仍在写 Default profile,cleanup 立刻删会撞 "Directory not empty"。
+            # 用 ignore_errors 容错删除——这是我们自有的临时目录,丢弃即可。
+            import shutil
+
+            shutil.rmtree(self._user_data_dir.name, ignore_errors=True)
 
     async def send(
         self,
@@ -648,6 +667,7 @@ async def test_real_http_static_ui_bundle_contains_responses_input_payload_build
 
 
 @pytest.mark.asyncio
+@pytest.mark.local_process_heavy  # spawn chromium 子进程,满载 runner 上 DevTools 起不来;见 ci.yml
 async def test_real_browser_hosted_ui_file_upload_sends_responses_input_to_runner(
     real_http_runtime,
 ):
@@ -724,6 +744,7 @@ async def test_real_browser_hosted_ui_file_upload_sends_responses_input_to_runne
 
 
 @pytest.mark.asyncio
+@pytest.mark.local_process_heavy  # spawn chromium 子进程,满载 runner 上 DevTools 起不来;见 ci.yml
 async def test_real_browser_hosted_ui_image_upload_sends_input_image_to_runner(
     real_http_runtime,
 ):

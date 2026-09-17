@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import threading
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
@@ -61,6 +62,7 @@ from ksadk.resource_runtime.supervisor import (
 )
 from ksadk.resource_runtime.worker import WorkerInitialization
 from ksadk.studio.errors import StudioError
+from ksadk.studio.dsh_lifecycle import DshStartupLifecycle
 
 _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -128,7 +130,7 @@ def _reject_non_finite(value: str) -> None:
     raise ValueError(f"non-finite JSON number: {value}")
 
 
-class StudioDshCapabilityService:
+class StudioDshCapabilityService(DshStartupLifecycle):
     """Lazy, generation-fenced access to a DSH Profile's real MCP lease."""
 
     def __init__(
@@ -180,6 +182,36 @@ class StudioDshCapabilityService:
         self.model_projection = None
         self._companion_definitions: tuple[DshCompanionDefinition, ...] = ()
         self._companion_manager: DshPluginCompanionManager | None = None
+        self._startup_stage = "not_started"
+        self._startup_failure: dict[str, Any] | None = None
+        # Cached result of ``has_enabled_profile_plugins`` keyed by the managed
+        # state file mtime (``None`` when the file is absent), so repeated page
+        # loads never re-run the Node bridge probe.
+        self._plugins_probe_cache: tuple[float | None, bool] | None = None
+        self._probe_warmup_tasks: set[asyncio.Task[None]] = set()
+        self._probe_inflight: asyncio.Task[bool] | None = None
+        self._resolved_command: tuple[str, ...] | None = None
+        self._resolve_lock = threading.Lock()
+
+    def schedule_plugin_probe_warmup(self) -> None:
+        """Warm the enabled-plugin probe once, off the request path.
+
+        Fire and forget: failures are swallowed because the entry point has
+        its own bounded fallback, and tasks are tracked so shutdown can
+        cancel them.
+        """
+
+        async def _warm() -> None:
+            try:
+                await self.has_enabled_profile_plugins()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return
+
+        task = asyncio.create_task(_warm())
+        self._probe_warmup_tasks.add(task)
+        task.add_done_callback(self._probe_warmup_tasks.discard)
 
     def configure_companions(self, definitions: Sequence[DshCompanionDefinition]) -> None:
         """Configure trusted lifecycle callbacks before this Profile starts."""
@@ -298,18 +330,56 @@ class StudioDshCapabilityService:
             # managed state file is the same source consumed by
             # ``DshProfilePluginBridge.list_plugins``; read it directly and
             # fall back to the validated bridge only for legacy/incomplete
-            # profiles.
+            # profiles.  The result is cached against the state file mtime so
+            # legacy profiles do not pay a cold Node bridge on every page.
+            state_mtime = self._profile_state_mtime()
+            cached = self._plugins_probe_cache
+            if cached is not None and cached[0] == state_mtime:
+                return cached[1]
             fast = self._profile_has_enabled_plugins_from_state()
             if fast is not None:
+                self._plugins_probe_cache = (state_mtime, fast)
                 return fast
+            if self._probe_inflight is None:
+                self._probe_inflight = asyncio.create_task(
+                    self._run_bridge_probe(state_mtime)
+                )
+            inflight = self._probe_inflight
+        # The slow Node bridge probe must run WITHOUT ``self._lock`` held:
+        # every DSH-dependent request (session creation, /studio-core/ lease)
+        # queues on that lock, so pinning it for the whole cold probe turned
+        # warmup into a service-wide stall.  ``shield`` keeps the shared
+        # probe alive when a bounded caller (index timeout) gives up.
+        return await asyncio.shield(inflight)
+
+    async def _run_bridge_probe(self, state_mtime: float | None) -> bool:
+        result: bool | None = None
+        try:
             command = await asyncio.to_thread(self._resolve_command)
-            return await asyncio.to_thread(self._profile_has_enabled_plugins, command)
+            result = await asyncio.to_thread(self._profile_has_enabled_plugins, command)
+        finally:
+            async with self._lock:
+                self._probe_inflight = None
+                if result is not None and not self._closed:
+                    self._plugins_probe_cache = (self._profile_state_mtime(), result)
+        return result
+
+    def _profile_state_mtime(self) -> float | None:
+        """Return the managed plugin state file mtime, or ``None`` if absent."""
+
+        try:
+            return self._profile_state_path().stat().st_mtime
+        except OSError:
+            return None
+
+    def _profile_state_path(self) -> Path:
+        return self._dsh_home / "profiles" / self._profile / ".ksadk-dsh-plugins.json"
 
     def _profile_has_enabled_plugins_from_state(self) -> bool | None:
         """Return enabled state without invoking npm/Node, or ``None`` if unavailable."""
-        manifest_path = self._dsh_home / "profiles" / self._profile / ".ksadk-dsh-plugins.json"
+
         try:
-            state = json.loads(manifest_path.read_text(encoding="utf-8"))
+            state = json.loads(self._profile_state_path().read_text(encoding="utf-8"))
             order = state.get("order")
             disabled = set(state.get("disabled") or ())
             if not isinstance(order, list) or not all(isinstance(item, str) for item in order):
@@ -607,6 +677,17 @@ class StudioDshCapabilityService:
             await self._dispose_generation_locked()
 
     async def aclose(self) -> None:
+        # Cancel tracked warmup probes first; a slow Node bridge probe must
+        # not delay shutdown.  The shared in-flight probe is shielded from
+        # its awaiters, so cancel it explicitly here.
+        for task in tuple(self._probe_warmup_tasks):
+            task.cancel()
+        if self._probe_warmup_tasks:
+            await asyncio.gather(*self._probe_warmup_tasks, return_exceptions=True)
+        inflight = self._probe_inflight
+        if inflight is not None:
+            inflight.cancel()
+            await asyncio.gather(inflight, return_exceptions=True)
         async with self._lock:
             if self._closed:
                 return
@@ -619,7 +700,7 @@ class StudioDshCapabilityService:
         async with self._lock:
             return await self._ensure_ready_locked()
 
-    async def _ensure_ready_locked(
+    async def _ensure_ready_generation_locked(
         self,
     ) -> tuple[DshProfileCapabilityHost, DshMcpConnectorLease]:
         if self._closed:
@@ -644,8 +725,11 @@ class StudioDshCapabilityService:
             return await self._start_host_locked(host, projection)
 
         try:
+            self._startup_stage = "toolchain"
             command = await asyncio.to_thread(self._resolve_command)
+            self._startup_stage = "profile_projection"
             projection = await asyncio.to_thread(self._project_profile, command)
+            self._startup_stage = "host_configuration"
             host = self._host_factory(
                 command,
                 projection=projection,
@@ -681,10 +765,12 @@ class StudioDshCapabilityService:
         # A restarted Core must never inherit workers or resource handles from
         # the previous generation, including when the restart subsequently fails.
         self._resource_generation_snapshot = None
+        self._startup_stage = "previous_generation_cleanup"
         await self._close_companions_locked()
         await self._close_resource_supervisor_locked()
         generation_id = f"dshgen_{secrets.token_urlsafe(24)}"
         try:
+            self._startup_stage = "companion_graph"
             definitions = []
             for definition in self._companion_definitions:
                 packages = set(definition.components.values())
@@ -694,6 +780,7 @@ class StudioDshCapabilityService:
                 if present:
                     definitions.append(definition)
             if definitions:
+                self._startup_stage = "companion_artifact"
                 command = await asyncio.to_thread(self._resolve_command)
                 artifacts = await asyncio.to_thread(
                     self._capture_companion_artifacts, command, definitions, projection,
@@ -704,11 +791,13 @@ class StudioDshCapabilityService:
                     artifacts=artifacts,
                 )
                 self._companion_manager = manager
+                self._startup_stage = "companion_broker"
                 await manager.start_broker()
                 await host.configure_companions(manager.configuration)
             elif self._companion_definitions:
                 await host.configure_companions(None)
             if "@kingsoftcloud/dsh-platform-resources" in projection.bundles:
+                self._startup_stage = "resource_broker"
                 ledger = await asyncio.to_thread(
                     OperationLedger, self._workspace / ".agentkit" / "resource-operations"
                 )
@@ -717,7 +806,9 @@ class StudioDshCapabilityService:
                 )
                 socket_path = await self._resource_supervisor.start_broker()
                 await host.configure_resource_socket(socket_path)
+            self._startup_stage = "core_start"
             lease = await host.lease()
+            self._startup_stage = "core_protocol"
             descriptor = host.descriptor
             if (
                 lease.profile != projection.profile
@@ -727,11 +818,13 @@ class StudioDshCapabilityService:
                 raise self._protocol_error()
             await self._initialize_lease(lease)
             if self._companion_manager is not None:
+                self._startup_stage = "companion_artifact_verification"
                 verified = await asyncio.to_thread(
                     self._capture_companion_artifacts, command, definitions, projection,
                 )
                 if verified != artifacts:
                     raise CompanionError("COMPANION_ARTIFACT_CHANGED_DURING_BOOT")
+                self._startup_stage = "companion_start"
                 await self._companion_manager.confirm_core_ready()
         except StudioError as error:
             self._lease = None
@@ -928,17 +1021,28 @@ class StudioDshCapabilityService:
             await self._finish_cleanup(supervisor.aclose())
 
     def _resolve_command(self) -> tuple[str, ...]:
-        try:
-            prepare_studio_dsh_home(self._dsh_home)
-            return tuple(DshToolchainManager().require_command(self._explicit_dsh_executable))
-        except DshHomeVersionError as error:
-            raise self._unavailable(error) from error
-        except Exception as error:
-            raise StudioError(
-                "DSH_CAPABILITY_HOST_UNAVAILABLE",
-                "DSH capability host 未安装、版本不匹配或不可用",
-                status_code=503,
-            ) from error
+        # pnpm/toolchain inspection is a multi-second cold subprocess chain;
+        # the result is deterministic for this process, so memoize it — both
+        # the warmup probe and the first Core startup otherwise re-pay it.
+        if self._resolved_command is not None:
+            return self._resolved_command
+        with self._resolve_lock:
+            if self._resolved_command is None:
+                try:
+                    prepare_studio_dsh_home(self._dsh_home)
+                    command = tuple(
+                        DshToolchainManager().require_command(self._explicit_dsh_executable)
+                    )
+                except DshHomeVersionError as error:
+                    raise self._unavailable(error) from error
+                except Exception as error:
+                    raise StudioError(
+                        "DSH_CAPABILITY_HOST_UNAVAILABLE",
+                        "DSH capability host 未安装、版本不匹配或不可用",
+                        status_code=503,
+                    ) from error
+                self._resolved_command = command
+            return self._resolved_command
 
     def _project_profile(self, command: Sequence[str]) -> DshProfileProjection:
         try:
@@ -1056,11 +1160,6 @@ class StudioDshCapabilityService:
 
     async def _dispose_generation_locked(self) -> None:
         await self._finish_cleanup(self._dispose_generation_owned_locked())
-
-    async def _close_companions_locked(self) -> None:
-        manager, self._companion_manager = self._companion_manager, None
-        if manager is not None:
-            await manager.close()
 
     async def _dispose_generation_owned_locked(self) -> None:
         """Finish generation teardown before propagating caller cancellation."""

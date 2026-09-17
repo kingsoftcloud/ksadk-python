@@ -39,8 +39,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build frontend static assets
         run: make build-frontend
+
+      - name: Verify Studio types and components
+        working-directory: ksadk/studio/react-ui
+        run: |
+          npx tsc --noEmit
+          npm test
+          npm run test:ui
 
       - name: Build package artifacts
         run: uv build
@@ -103,6 +113,9 @@ jobs:
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
 
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Run React Studio browser gate
         run: make studio-react-test
 
@@ -150,6 +163,9 @@ jobs:
 
       # Both internal and public branches compile Studio from source.
       # Generated assets belong in packages, never in the Git tree.
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build frontend static assets
         run: make build-frontend
 
@@ -159,8 +175,67 @@ jobs:
         run: uv build
 
       # --no-sync: 防止 uv run 按 lock 重新同步、把上一步行覆盖的 adk 版本回退。
+      # -m "not local_process_heavy": 单进程跑 ~7000 测试到尾部时,真实 fork 子进程
+      # 的 sandbox/skill 测试在 2-core runner 上进程表/内存耗尽(Cannot fork/超时)。
+      # 这些测试由下方 test-local-process-heavy job 在干净进程表里单独跑,不丢覆盖。
       - name: Run full test suite
-        run: uv run --no-sync pytest tests/ -q
+        run: uv run --no-sync pytest tests/ -q -m "not local_process_heavy"
+
+  # goal-00 补充:真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
+  # 与全量套件拆开跑——单独 pytest 进程没有前面 7000 测试累积的资源占用,不会 Cannot fork。
+  # 版本矩阵对齐主套件,防止 adk 1.34/2.5 两端回归。
+  test-local-process-heavy:
+    name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
+    runs-on: ubuntu-latest
+    env:
+      KSADK_WEB_VERSION: "0.3.8"
+    strategy:
+      fail-fast: false
+      matrix:
+        google-adk: ["1.34.3", "2.5.0"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm for DSH toolchain tests
+        uses: pnpm/action-setup@v6
+        with:
+          version: "10.33.2"
+
+      - name: Install dependencies
+        run: uv sync --extra all
+
+      - name: Pin google-adk for this matrix leg
+        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+
+      # browser e2e 起真实 HTTP server 服务 Studio 静态 bundle;resource_build_artifacts
+      # 校验打包产物。与主套件同样构建,避免 heavy job 缺产物。
+      - name: Prepare companion Web source
+        uses: ./.github/actions/prepare-web-candidate
+
+      - name: Build frontend static assets
+        run: make build-frontend
+
+      - name: Build package artifacts
+        run: uv build
+
+      - name: Run local_process_heavy tests
+        run: uv run --no-sync pytest tests/ -q -m local_process_heavy
 
   # goal-16: Windows a2a 命令 bug 回归(用户首报:"No such command 'a2a'")。
   # 在本机 macOS 无法闭环 Windows,故 CI 加 Windows runner 跑 CLI smoke:
