@@ -845,7 +845,7 @@ studio-app-package: build-wheel
 	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
 	@command -v sw_vers >/dev/null 2>&1 || (echo "ERROR: this target must run on macOS" >&2; exit 1)
 	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
-	@$(MAKE) --no-print-directory studio-app-check
+	@PYTHONDONTWRITEBYTECODE=1 $(MAKE) --no-print-directory studio-app-check
 	@echo "✅ Studio macOS arm64 bundle: $(STUDIO_APP_BUNDLE)"
 
 studio-app-check:
