@@ -63,7 +63,9 @@ def test_env_registry_docs_cover_registered_names():
     # The public reference must cover every documented variable on its own:
     # internal design documents are not included in clean public exports.
     doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
-    doc_text += Path("docs/KsADK-Harness分支技术总览.md").read_text(encoding="utf-8")
+    _harness_doc = Path("docs/KsADK-Harness分支技术总览.md")
+    if _harness_doc.is_file():
+        doc_text += _harness_doc.read_text(encoding="utf-8")
 
     missing = [
         item.name for item in ENV_VAR_REGISTRY if item.documented and item.name not in doc_text

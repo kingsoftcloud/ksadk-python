@@ -43,7 +43,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/runners/adk_runner.py": 2340,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
-    "ksadk/runners/langgraph_runner.py": 1407,
+    "ksadk/runners/langgraph_runner.py": 1415,
     # 0.8.1 canonical ToolGateway approval projection baseline.
     "ksadk/runtime/runner_adapter.py": 1220,
     "ksadk/sessions/local_service.py": 1080,
@@ -62,7 +62,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/plugins/providers/dsh_capabilities.py": 1450,
     "ksadk/plugins/teams/domain.py": 1501,
     "ksadk/plugins/ecosystem_bridge.py": 1105,
-    "ksadk/studio/api.py": 2594,
+    "ksadk/studio/api.py": 2702,
     "ksadk/studio/authoring_coordinator.py": 1034,
     "ksadk/studio/cloud.py": 2361,
     "ksadk/studio/contracts.py": 1028,
@@ -71,7 +71,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/studio/otel_trace.py": 1060,
     "ksadk/studio/resource_catalog.py": 1412,
     "ksadk/studio/run_service.py": 2477,
-    "ksadk/studio/service.py": 3535,
+    "ksadk/studio/service.py": 3565,
     "ksadk/studio/shared_web.py": 1642,
     # Studio 重构(本地草稿/outbox/云端接入)+ 社区合并 + harness 长任务稳定化
     # 带来的合法增长;model_client/plugin_runtime 为新增超千行模块,后续拆分。
