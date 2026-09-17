@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentKernel control/worker 测试共用 harness（Phase 1 Task 6）。
+"""AgentKernel control/worker 测试共用 harness（Kernel Task 6）。
 
 提供：
 - ``PermitAuthority``：Ed25519 签发方 + 静态 JWKS 源（记录 fetch 次数）。

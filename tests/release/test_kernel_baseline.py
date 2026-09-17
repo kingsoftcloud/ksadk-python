@@ -1,6 +1,6 @@
-"""Phase 1 跨仓基线 manifest 的构建与校验测试（plan Task 0）。
+"""Kernel 跨仓基线 manifest 的构建与校验测试（plan Task 0）。
 
-约束来自 docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md：
+约束来自 docs/superpowers/plans/2026-08-17-agent-runtime-v2-kernel-agent-kernel.md：
 - phase0_gate_status 必须来自 Phase 0 release manifest 的 accepted=true，不能伪造；
 - 拒绝 dirty worktree、缺 commit、缺 remote、重复 repo key。
 """
@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_phase1_baseline import (
+from scripts.build_kernel_baseline import (
     BaselineError,
     Phase0Gate,
     Phase1Baseline,
     RepoBaseline,
 )
-from scripts.verify_phase1_baseline import verify_manifest
+from scripts.verify_kernel_baseline import verify_manifest
 
 
 def make_repo(**overrides) -> RepoBaseline:
@@ -60,7 +60,7 @@ def write_manifest(tmp_path: Path, manifest: Phase1Baseline) -> Path:
     return path
 
 
-def test_phase1_baseline_rejects_dirty_or_unaccepted_repo(tmp_path):
+def test_kernel_baseline_rejects_dirty_or_unaccepted_repo(tmp_path):
     manifest = make_manifest(phase0_gate_status="failed", dirty=True)
     path = write_manifest(tmp_path, manifest)
     with pytest.raises(BaselineError, match="phase0_not_accepted|dirty_worktree"):
@@ -90,7 +90,7 @@ def test_accepts_valid_manifest(tmp_path):
 
 def test_baseline_matches_real_git_facts(tmp_path):
     """build_manifest 必须读真实 git 事实，不能由参数伪造。"""
-    from scripts.build_phase1_baseline import build_manifest
+    from scripts.build_kernel_baseline import build_manifest
 
     repo_root = Path(__file__).resolve().parents[2]
     baseline = build_manifest({"ksadk-python": repo_root})
@@ -106,7 +106,7 @@ def test_baseline_matches_real_git_facts(tmp_path):
 
 
 def test_phase0_manifest_missing_is_not_accepted(tmp_path):
-    from scripts.build_phase1_baseline import load_phase0_gate
+    from scripts.build_kernel_baseline import load_phase0_gate
 
     gate = load_phase0_gate(tmp_path)
     assert gate.accepted is False
@@ -114,7 +114,7 @@ def test_phase0_manifest_missing_is_not_accepted(tmp_path):
 
 
 def test_phase0_manifest_accepted_round_trip(tmp_path):
-    from scripts.build_phase1_baseline import load_phase0_gate
+    from scripts.build_kernel_baseline import load_phase0_gate
 
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"accepted": True, "digest": "0" * 64}))

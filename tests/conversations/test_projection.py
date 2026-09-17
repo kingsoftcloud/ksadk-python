@@ -242,7 +242,7 @@ def test_codex_native_plan_and_goal_keep_typed_conversation_items() -> None:
             parts=(
                 DataContent(
                     part_id="goal-data",
-                    data={"objective": "ship Phase 2", "status": "active"},
+                    data={"objective": "ship Release", "status": "active"},
                 ),
             )
         ),
@@ -259,7 +259,7 @@ def test_codex_native_plan_and_goal_keep_typed_conversation_items() -> None:
     assert projected_goal.operation == "completed"
     assert projected_goal.capability_ref == "goal"
     assert projected_goal.payload == {
-        "objective": "ship Phase 2",
+        "objective": "ship Release",
         "status": "active",
     }
 

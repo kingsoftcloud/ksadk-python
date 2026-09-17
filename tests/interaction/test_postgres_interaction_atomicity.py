@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""PostgreSQL interaction 台账 crash-window 原子性测试（Phase 1 Task 5 Step 5）。
+"""PostgreSQL interaction 台账 crash-window 原子性测试（Kernel Task 5 Step 5）。
 
 需要真实 PostgreSQL：``KSADK_TEST_POSTGRES_DSN``（未提供时明确 skip）。
 可选 ``KSADK_TEST_POSTGRES_DOCKER=1`` 时尝试用 docker 起临时 postgres:16。

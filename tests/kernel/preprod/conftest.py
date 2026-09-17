@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Phase 1 预发测试组 conftest（Task 13 Step 1）。
+"""Agent Kernel Kernel 预发测试组 conftest（Task 13 Step 1）。
 
 - ``--preprod`` 显式 opt-in：未传时整组预发测试 skip；但
   ``pytest --collect-only`` 仍能看到全部用例。
@@ -31,7 +31,7 @@ def pytest_addoption(parser):
             "--preprod",
             action="store_true",
             default=False,
-            help="opt in to real preprod E2E tests (tests/phase1)",
+            help="opt in to real preprod E2E tests (tests/kernel)",
         )
     except (ValueError, pytest.OptionError):  # pragma: no cover - defensive
         pass

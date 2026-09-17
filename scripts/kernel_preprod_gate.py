@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Phase 1 预发 release gate（Task 13 Step 1/10）。
+"""Kernel 预发 release gate（Task 13 Step 1/10）。
 
 聚合各 closed-loop 演练产出的 evidence JSON，输出机器可读 pass/fail report：
 
@@ -11,10 +11,10 @@
 
 用法::
 
-    uv run python scripts/phase1_preprod_gate.py \
+    uv run python scripts/kernel_preprod_gate.py \
         --environment pre \
-        --output docs/superpowers/evidence/phase1/preprod-report.json \
-        --evidence docs/superpowers/evidence/phase1/*.json
+        --output docs/superpowers/evidence/kernel/preprod-report.json \
+        --evidence docs/superpowers/evidence/kernel/*.json
 
 本脚本不做任何部署 / helm / kubectl 操作；它只消费已存在的 evidence 文件。
 """
@@ -378,7 +378,7 @@ def evaluate_evidence(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Aggregate Phase 1 preprod closure evidence into a pass/fail gate report."
+        description="Aggregate Kernel preprod closure evidence into a pass/fail gate report."
     )
     parser.add_argument("--environment", default="pre", help="target environment label")
     parser.add_argument(

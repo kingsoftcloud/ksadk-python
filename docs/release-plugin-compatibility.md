@@ -66,7 +66,7 @@ Phase 2 的插件化能力是增量能力，不要求已有 Agent 重建或升�
 ```bash
 uv sync --extra all
 uv run playwright install chromium
-make phase2-release-preflight
+make release-preflight
 ```
 
 该入口会先清空 `dist/`、生成绑定当前 commit 与 clean source tree 的 provenance，再构建唯一一份 wheel 和一份 sdist。门禁会拒绝旧版本残留、dirty 来源、commit 不匹配或两个制品 provenance 不一致，避免误审计或误上传历史制品。

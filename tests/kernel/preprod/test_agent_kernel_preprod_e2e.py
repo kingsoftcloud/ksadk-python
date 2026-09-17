@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Phase 1 预发真实闭环 E2E（Task 13 Step 5-7）。
+"""Agent Kernel Kernel 预发真实闭环 E2E（Task 13 Step 5-7）。
 
 需要 ``--preprod`` 且预发 env vars（见 conftest.PreprodConfig）。未 opt-in 时
 整组 skip，但 ``pytest --collect-only`` 能看到全部用例。
@@ -17,7 +17,7 @@ import uuid
 import httpx
 import pytest
 
-from tests.phase1.conftest import PreprodConfig
+from tests.kernel.preprod.conftest import PreprodConfig
 
 pytestmark = pytest.mark.usefixtures("preprod_config")
 
@@ -56,7 +56,7 @@ class PreprodClient:
                 "command_type": "enqueue",
                 "idempotency_key": idempotency_key,
                 "payload": {"content": {"text": text}},
-                "source": {"kind": "phase1-e2e", "ref": "pytest"},
+                "source": {"kind": "kernel-e2e", "ref": "pytest"},
             },
         )
         response.raise_for_status()
@@ -90,7 +90,7 @@ async def preprod_client(preprod_config):
 
 
 def _session_id() -> str:
-    return "phase1-" + uuid.uuid4().hex[:12]
+    return "kernel-" + uuid.uuid4().hex[:12]
 
 
 def _key() -> str:
@@ -196,7 +196,7 @@ async def test_capability_unsupported_steer_is_typed(preprod_client):
             "command_type": "steer",
             "idempotency_key": _key(),
             "payload": {"content": {"text": "new direction"}},
-            "source": {"kind": "phase1-e2e", "ref": "pytest"},
+            "source": {"kind": "kernel-e2e", "ref": "pytest"},
         },
     )
     payload = response.json()

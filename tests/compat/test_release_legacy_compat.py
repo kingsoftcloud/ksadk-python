@@ -1,4 +1,4 @@
-"""Phase 2 compatibility gate for pre-plugin local Agents.
+"""Release compatibility gate for pre-plugin local Agents.
 
 These tests exercise the established Studio/runtime paths.  They deliberately
 do not construct a PluginHost or a PostgreSQL service: a historical 0.8.2
@@ -61,7 +61,7 @@ def _build_langgraph_bundle(workspace: Path):
 
 def _rewrite_as_historical_v1(studio: StudioService, build, bundle_root: Path) -> None:
     # Construct the historical shape from its stable v1 members instead of
-    # naming today's v2-only sidecars.  If Phase 2 grows another sidecar later,
+    # naming today's v2-only sidecars.  If Release grows another sidecar later,
     # this fixture cannot accidentally start accepting it as part of v1.
     legacy_files = {
         "agentkit.lock",

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Phase 1 Task 8 hosted-authority canary runtime app.
+"""Kernel Task 8 hosted-authority canary runtime app.
 
 与旧 canary_app.py 的区别：
 
@@ -55,9 +55,9 @@ from ksadk.runtime.adapter import (
 )
 
 CONTRACT_DIGEST = os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", "")
-BUNDLE_DIGEST = os.environ.get("AGENT_BUNDLE_DIGEST", "phase1-canary-v4")
+BUNDLE_DIGEST = os.environ.get("AGENT_BUNDLE_DIGEST", "kernel-canary-v4")
 
-app = FastAPI(title="agent-kernel-phase1-canary-hosted")
+app = FastAPI(title="agent-kernel-kernel-canary-hosted")
 
 _state: dict[str, object] = {}
 
@@ -213,7 +213,7 @@ class FakeFrameworkRuntimeAdapter(RuntimeAdapter):
                     request=ApprovalRequest(
                         call_id=f"call-{uuid.uuid4().hex[:12]}",
                         kind="command_execution",
-                        detail={"command": "echo phase1-canary"},
+                        detail={"command": "echo kernel-canary"},
                     ),
                     source=source,
                 )
@@ -309,8 +309,8 @@ if kernel_ingress_enabled():
                 try:
                     if await service.get_session(session_id) is None:
                         await service.create_session(
-                            agent_id=os.environ.get("AGENT_INSTANCE_ID", "phase1-canary-1"),
-                            user_id="phase1-canary",
+                            agent_id=os.environ.get("AGENT_INSTANCE_ID", "kernel-canary-1"),
+                            user_id="kernel-canary",
                             session_id=session_id,
                         )
                 except Exception:
@@ -377,7 +377,7 @@ async def healthz() -> JSONResponse:
 
 @app.post("/test/expire-interaction")
 async def expire_interaction(body: dict) -> dict:
-    """测试钩子：确定性演练 ledger expiry（生产 expiry sweep 不在 Phase 1 范围）。
+    """测试钩子：确定性演练 ledger expiry（生产 expiry sweep 不在 Kernel 范围）。
 
     直接在当前 activation guard 下调用 store.expire；仍走同一事务性
     ledger transition + terminal SessionEvent 路径。
@@ -399,7 +399,7 @@ async def expire_interaction(body: dict) -> dict:
                 activation_id=f"expire-hook-{uuid.uuid4().hex[:8]}",
                 runtime_type="canary-echo",
                 bundle_digest=BUNDLE_DIGEST,
-                capability_digest="phase1-canary",
+                capability_digest="kernel-canary",
                 lease_ttl_seconds=30.0,
             )
         )

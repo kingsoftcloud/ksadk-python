@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Phase 1 agent-kernel canary runtime app.
+"""Kernel agent-kernel canary runtime app.
 
 Minimal FastAPI surface exposing the kernel control contract:
 - GET  /healthz
@@ -77,9 +77,9 @@ class StaticJwks:
 
 
 CONTRACT_DIGEST = AGENT_KERNEL_V1_AGGREGATE_DIGEST
-TENANT = "phase1-canary"
+TENANT = "kernel-canary"
 
-app = FastAPI(title="agent-kernel-phase1-canary")
+app = FastAPI(title="agent-kernel-kernel-canary")
 
 if kernel_ingress_enabled():
     app.include_router(agent_kernel_router())
@@ -100,7 +100,7 @@ if kernel_ingress_enabled():
                 if await service.get_session(session_id) is None:
                     await service.create_session(
                         agent_id=instance_id(),
-                        user_id="phase1-canary",
+                        user_id="kernel-canary",
                         session_id=session_id,
                     )
 
@@ -113,7 +113,7 @@ if kernel_ingress_enabled():
 
 class _CanaryAuthority:
     def __init__(self) -> None:
-        self.key_id = "phase1-canary-key"
+        self.key_id = "kernel-canary-key"
         self._private = Ed25519PrivateKey.generate()
         self._public = self._private.public_key()
 
@@ -129,7 +129,7 @@ class _CanaryAuthority:
     ) -> AgentControlPermit:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         claims = {
-            "subject": "phase1-canary",
+            "subject": "kernel-canary",
             "operations": operations,
             "session_id": session_id,
         }
@@ -138,14 +138,14 @@ class _CanaryAuthority:
         ).hexdigest()
         unsigned = AgentControlPermit(
             permit_id=f"permit-{uuid.uuid4().hex[:8]}",
-            subject_ref="phase1-canary",
+            subject_ref="kernel-canary",
             tenant_id=TENANT,
             agent_instance_id=agent_instance_id,
             session_id=session_id,
             allowed_operations=operations,
             issued_at=now.isoformat(),
             expires_at=(now + timedelta(minutes=5)).isoformat(),
-            nonce=f"phase1-canary-{agent_instance_id}-{uuid.uuid4().hex[:8]}",
+            nonce=f"kernel-canary-{agent_instance_id}-{uuid.uuid4().hex[:8]}",
             key_id=self.key_id,
             claims_digest=claims_digest,
             signature="",
@@ -210,7 +210,7 @@ class EchoAdapter(RuntimeAdapter):
                 scope_id=f"run:{run_id}",
                 status="running",
                 progress=1.0,
-                message="phase1 canary echo turn complete",
+                message="kernel canary echo turn complete",
                 source=source,
             )
 
@@ -265,7 +265,7 @@ async def _worker_loop() -> None:
                 if await service.get_session(session_id) is None:
                     await service.create_session(
                         agent_id=instance_id(),
-                        user_id="phase1-canary",
+                        user_id="kernel-canary",
                         session_id=session_id,
                     )
                 try:
@@ -275,8 +275,8 @@ async def _worker_loop() -> None:
                             session_id=session_id,
                             activation_id=activation_id(),
                             runtime_type="canary-echo",
-                            bundle_digest="phase1-canary",
-                            capability_digest="phase1-canary",
+                            bundle_digest="kernel-canary",
+                            capability_digest="kernel-canary",
                             lease_ttl_seconds=lease_ttl_seconds(),
                         )
                     )
@@ -308,7 +308,7 @@ def authority() -> _CanaryAuthority:
 
 
 def instance_id() -> str:
-    return os.environ.get("AGENT_INSTANCE_ID", "phase1-canary-1")
+    return os.environ.get("AGENT_INSTANCE_ID", "kernel-canary-1")
 
 
 def activation_id() -> str:
@@ -455,7 +455,7 @@ async def server_agent_control_submit(body: dict) -> dict:
     if await service.get_session(session_id) is None:
         await service.create_session(
             agent_id=instance_id(),
-            user_id="phase1-canary",
+            user_id="kernel-canary",
             session_id=session_id,
         )
     kernel_command = AgentControlCommand(
@@ -572,7 +572,7 @@ async def test_stale_fence(body: dict) -> dict:
     if await service.get_session(session_id) is None:
         await service.create_session(
             agent_id=instance_id(),
-            user_id="phase1-canary",
+            user_id="kernel-canary",
             session_id=session_id,
         )
 
@@ -582,7 +582,7 @@ async def test_stale_fence(body: dict) -> dict:
             session_id=session_id,
             activation_id=owner,
             runtime_type="canary-echo",
-            bundle_digest="phase1-canary",
+            bundle_digest="kernel-canary",
             capability_digest=CONTRACT_DIGEST,
             lease_ttl_seconds=lease_ttl_seconds(),
         )
@@ -640,7 +640,7 @@ async def test_cleanup() -> dict:
     _require_test_hooks()
     pool: asyncpg.Pool = _state["pool"]  # type: ignore[assignment]
     permit_cache = _state.get("permit_cache")
-    nonce_prefix = f"phase1-canary-{instance_id()}-"
+    nonce_prefix = f"kernel-canary-{instance_id()}-"
     async with pool.acquire() as connection:
         async with connection.transaction():
             session_rows = await connection.fetch(
@@ -722,7 +722,7 @@ async def submit_agent_control(body: dict) -> dict:
     if await service.get_session(body["session_id"]) is None:
         await service.create_session(
             agent_id=instance_id(),
-            user_id="phase1-canary",
+            user_id="kernel-canary",
             session_id=body["session_id"],
         )
     permit_cache: dict[tuple[str, str], AgentControlPermit] = _state.setdefault(  # type: ignore[assignment]

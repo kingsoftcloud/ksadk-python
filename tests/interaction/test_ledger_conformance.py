@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""InteractionLedger 跨后端 conformance（Phase 1 Task 5 Step 2）。
+"""InteractionLedger 跨后端 conformance（Kernel Task 5 Step 2）。
 
 任何 InteractionLedger 实现（InMemory / SQLite / PostgreSQL AgentKernelStore）
 都必须通过这里的全部行为断言：request 幂等、revision 递增、terminal

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind Phase 2 local, registry, deployment and pre-production evidence.
+"""Bind Release local, registry, deployment and pre-production evidence.
 
 The local preflight deliberately cannot claim release completion.  This gate is
 the second half of the release contract: it accepts independently collected
@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 if __package__:
-    from scripts.phase2_release_preflight import (
+    from scripts.release_preflight import (
         PHASE2_E2E_STATUS_KEYS,
         PHASE2_EVIDENCE_SCHEMA_VERSION,
     )
 else:
-    from phase2_release_preflight import (  # type: ignore[no-redef]
+    from release_preflight import (  # type: ignore[no-redef]
         PHASE2_E2E_STATUS_KEYS,
         PHASE2_EVIDENCE_SCHEMA_VERSION,
     )
@@ -99,14 +99,14 @@ def _require_web_identity(payload: Mapping[str, Any], *, location: str) -> tuple
 def _validate_local(payload: Mapping[str, Any], expected_commit: str) -> None:
     if (
         payload.get("schemaVersion") != PHASE2_EVIDENCE_SCHEMA_VERSION
-        or payload.get("phase") != "phase2"
+        or payload.get("phase") != "release"
         or payload.get("scope") != "local-source-and-package"
     ):
-        raise ReleaseCandidateGateError("local Phase 2 evidence schema is invalid")
+        raise ReleaseCandidateGateError("local Release evidence schema is invalid")
     if payload.get("sourceCommit") != expected_commit:
         raise ReleaseCandidateGateError("local evidence is not bound to the final commit")
     if payload.get("localStatus") != "passed":
-        raise ReleaseCandidateGateError("local Phase 2 preflight has not passed")
+        raise ReleaseCandidateGateError("local Release preflight has not passed")
     if (
         payload.get("overallStatus") != "incomplete"
         or payload.get("releaseStatus") != "not_evaluated"
@@ -114,9 +114,9 @@ def _validate_local(payload: Mapping[str, Any], expected_commit: str) -> None:
         raise ReleaseCandidateGateError("local evidence makes an invalid release claim")
     statuses = payload.get("e2e")
     if not isinstance(statuses, Mapping) or set(statuses) != set(PHASE2_E2E_STATUS_KEYS):
-        raise ReleaseCandidateGateError("local Phase 2 E2E evidence is incomplete")
+        raise ReleaseCandidateGateError("local Release E2E evidence is incomplete")
     if any(status != "passed" for status in statuses.values()):
-        raise ReleaseCandidateGateError("a local Phase 2 E2E gate did not pass")
+        raise ReleaseCandidateGateError("a local Release E2E gate did not pass")
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, Mapping) or set(artifacts) != {"wheel", "sdist"}:
         raise ReleaseCandidateGateError("local release artifact evidence is incomplete")
@@ -231,7 +231,7 @@ def build_release_candidate_report(
     )
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "phase": "phase2",
+        "phase": "release",
         "scope": "final-release-candidate",
         "overallStatus": "passed",
         "sourceCommit": expected_commit,
@@ -279,14 +279,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             preprod_path=args.preprod,
         )
     except ReleaseCandidateGateError as error:
-        print(f"Phase 2 release candidate gate failed: {error}", file=sys.stderr)
+        print(f"Release release candidate gate failed: {error}", file=sys.stderr)
         return 1
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    print(f"Phase 2 release candidate gate passed: {args.output}")
+    print(f"Release release candidate gate passed: {args.output}")
     return 0
 
 

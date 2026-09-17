@@ -39,7 +39,7 @@ spec:
                   name: agent-kernel-store
                   key: dsn
             - name: AGENT_INSTANCE_ID
-              value: phase1-canary-1
+              value: kernel-canary-1
             - name: AGENT_KERNEL_STORE_NAMESPACE
               value: default
             - name: PHASE1_CANARY_TEST_HOOKS
@@ -49,7 +49,7 @@ spec:
             - name: AGENT_KERNEL_CONTRACT_DIGEST
               value: d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62
             - name: AGENT_BUNDLE_DIGEST
-              value: phase1-canary-v4
+              value: kernel-canary-v4
             - name: AGENT_KERNEL_LEASE_TTL_SECONDS
               value: "30"
             - name: POD_UID

@@ -1,4 +1,4 @@
-"""ManagedLangGraphEngine Phase 1 测试（fake reasoner，无网络）。"""
+"""ManagedLangGraphEngine Kernel 测试（fake reasoner，无网络）。"""
 
 from __future__ import annotations
 

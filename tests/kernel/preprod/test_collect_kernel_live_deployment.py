@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from scripts.collect_phase1_live_deployment import collect_live_deployment_evidence
+from scripts.collect_kernel_live_deployment import collect_live_deployment_evidence
 
 
 def _deployment(*, name: str, image: str, available: int = 1, generation: int = 4, observed: int = 4):

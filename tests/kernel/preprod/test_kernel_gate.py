@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Phase 1 预发 gate 测试（Task 13 Step 1）。
+"""Agent Kernel Kernel 预发 gate 测试（Task 13 Step 1）。
 
-对 ``scripts/phase1_preprod_gate.py`` 的 gate 逻辑本身做单元验证：
+对 ``scripts/kernel_preprod_gate.py`` 的 gate 逻辑本身做单元验证：
 用 fake evidence 驱动 report 对象，不需要 --preprod，也不需要真实预发环境。
 """
 
@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from scripts.phase1_preprod_gate import (
+from scripts.kernel_preprod_gate import (
     REQUIRED_CHECKS,
     TRACE_IDENTIFIERS_BY_CHECK,
     evaluate_evidence,

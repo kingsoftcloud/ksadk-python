@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Regression locks for the deployable Phase 1 canary harness."""
+"""Regression locks for the deployable Kernel canary harness."""
 
 from pathlib import Path
 
@@ -7,9 +7,9 @@ import pytest
 from fastapi import HTTPException
 
 from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST
-from tests.phase1 import canary_app
+from tests.kernel.preprod import canary_app
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_canary_reports_the_packaged_frozen_contract() -> None:
@@ -27,8 +27,8 @@ def test_canary_lease_ttl_comes_from_projection(monkeypatch) -> None:
 
 
 def test_canary_store_namespace_is_explicitly_isolated(monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_KERNEL_STORE_NAMESPACE", "phase1-run-42")
-    assert canary_app.store_namespace() == "phase1-run-42"
+    monkeypatch.setenv("AGENT_KERNEL_STORE_NAMESPACE", "kernel-run-42")
+    assert canary_app.store_namespace() == "kernel-run-42"
 
 
 def test_canary_drill_hooks_fail_closed(monkeypatch) -> None:
@@ -51,10 +51,10 @@ def test_canary_exposes_required_managed_pg_drill_hooks() -> None:
 def test_canary_requires_an_external_managed_postgres() -> None:
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     deployment = (
-        REPO_ROOT / "docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml"
+        REPO_ROOT / "docs/superpowers/evidence/kernel/canary-hosted/deployment.yaml"
     ).read_text(encoding="utf-8")
 
     assert "PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL" in makefile
     assert "PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d" in makefile
     assert "agent-kernel-store" in deployment
-    assert not (REPO_ROOT / "docs/superpowers/evidence/phase1/canary/postgres.yaml").exists()
+    assert not (REPO_ROOT / "docs/superpowers/evidence/kernel/canary/postgres.yaml").exists()

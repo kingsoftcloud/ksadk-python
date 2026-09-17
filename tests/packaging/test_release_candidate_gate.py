@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.phase2_release_candidate_gate import (
+from scripts.release_candidate_gate import (
     ReleaseCandidateGateError,
     build_release_candidate_report,
 )
-from scripts.phase2_release_preflight import PHASE2_E2E_STATUS_KEYS
+from scripts.release_preflight import PHASE2_E2E_STATUS_KEYS
 
 COMMIT = "a" * 40
 WEB_COMMIT = "b" * 40
@@ -25,7 +25,7 @@ def _write(path: Path, payload: dict) -> Path:
 def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     local = {
         "schemaVersion": 2,
-        "phase": "phase2",
+        "phase": "release",
         "scope": "local-source-and-package",
         "overallStatus": "incomplete",
         "localStatus": "passed",

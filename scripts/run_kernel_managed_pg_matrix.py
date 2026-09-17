@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run the Phase 1 durability matrix against a managed PostgreSQL canary.
+"""Run the Kernel durability matrix against a managed PostgreSQL canary.
 
-The script never receives or persists a DSN.  ``make phase1-canary-deploy``
+The script never receives or persists a DSN.  ``make kernel-canary-deploy``
 places the externally managed PostgreSQL DSN in a temporary Kubernetes Secret;
 this runner talks only to the isolated runtime through ``kubectl port-forward``.
 It produces raw, gate-compatible behavioral evidence and removes its database
@@ -34,7 +34,7 @@ def _now_iso() -> str:
 
 
 def _session(label: str) -> str:
-    return f"phase1-{label}-{uuid.uuid4().hex[:12]}"
+    return f"kernel-{label}-{uuid.uuid4().hex[:12]}"
 
 
 def _command_id() -> str:
@@ -607,7 +607,7 @@ def run_rollback(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kubeconfig", required=True)
-    parser.add_argument("--namespace", default="agent-kernel-phase1")
+    parser.add_argument("--namespace", default="agent-kernel")
     parser.add_argument("--deployment", default="agent-kernel-canary")
     parser.add_argument("--service", default="agent-kernel-canary")
     parser.add_argument("--expected-contract-digest", required=True)

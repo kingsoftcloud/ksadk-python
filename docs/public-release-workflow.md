@@ -76,7 +76,7 @@ git diff --check
 Phase 2 发布还必须在最终内部 `master` 提交上重新生成本地制品证据，并在 npm 包发布、Hosted UI 以 digest 部署、发布候选环境浏览器矩阵完成后运行：
 
 ```bash
-make phase2-release-candidate-gate \
+make release-candidate-gate \
   PHASE2_FINAL_COMMIT=<final-internal-master-commit> \
   PHASE2_LOCAL_EVIDENCE=<local-phase2-evidence.json> \
   PHASE2_WEB_REGISTRY_EVIDENCE=<npm-registry-evidence.json> \

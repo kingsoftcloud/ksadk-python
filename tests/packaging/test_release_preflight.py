@@ -11,30 +11,30 @@ from pathlib import Path
 import pytest
 
 from ksadk.version import VERSION
-from scripts.phase2_release_preflight import (
+from scripts.release_preflight import (
     BROWSER_GATES,
     COMPATIBILITY_TESTS,
     CREDENTIAL_FREE_NATIVE_TESTS,
     MANAGED_DSH_TOOLCHAIN_TESTS,
     PHASE2_E2E_STATUS_KEYS,
     Phase2PreflightError,
-    build_phase2_evidence_report,
+    build_release_evidence_report,
     is_public_export,
-    phase2_contract_digest,
+    release_contract_digest,
     run_release_test_gates,
     validate_clean_artifact_installations,
     validate_distribution_archives,
     validate_generated_static_tracking_policy,
-    validate_phase2_evidence_report,
-    write_phase2_evidence_report,
+    validate_release_evidence_report,
+    write_release_evidence_report,
 )
 
 SOURCE_COMMIT = "a" * 40
 
 
-def test_preflight_executes_phase2_release_journeys() -> None:
+def test_preflight_executes_release_journeys() -> None:
     assert "tests/compat/test_release_082_asset_compat.py" in COMPATIBILITY_TESTS
-    assert "tests/compat/test_phase2_legacy_compat.py" in COMPATIBILITY_TESTS
+    assert "tests/compat/test_release_legacy_compat.py" in COMPATIBILITY_TESTS
     assert "tests/e2e/test_codex_plugin_bridge_e2e.py" in CREDENTIAL_FREE_NATIVE_TESTS
     assert "tests/e2e/test_codex_provider_app_server_e2e.py" in CREDENTIAL_FREE_NATIVE_TESTS
     assert "tests/e2e/test_codex_subagent_provider_e2e.py" in CREDENTIAL_FREE_NATIVE_TESTS
@@ -67,7 +67,7 @@ def test_preflight_enables_real_managed_dsh_toolchain_gate(monkeypatch) -> None:
     def record(command, *, environment=None) -> None:
         calls.append((tuple(command), environment))
 
-    monkeypatch.setattr("scripts.phase2_release_preflight._run", record)
+    monkeypatch.setattr("scripts.release_preflight._run", record)
     statuses = run_release_test_gates()
 
     toolchain_calls = [
@@ -101,7 +101,7 @@ def test_preflight_enables_real_managed_dsh_toolchain_gate(monkeypatch) -> None:
     }
 
 
-def test_release_check_builds_provenance_bound_pair_before_phase2_gate() -> None:
+def test_release_check_builds_provenance_bound_pair_before_release_gate() -> None:
     root = Path(__file__).resolve().parents[2]
     workflow = (root / ".github/workflows/release-check.yml").read_text(encoding="utf-8")
 
@@ -111,7 +111,7 @@ def test_release_check_builds_provenance_bound_pair_before_phase2_gate() -> None
     assert "rm -rf dist" in workflow
     provenance = workflow.index("scripts/write_build_provenance.py")
     build = workflow.index("uv build --out-dir dist")
-    preflight = workflow.index("scripts/phase2_release_preflight.py --dist-dir dist")
+    preflight = workflow.index("scripts/release_preflight.py --dist-dir dist")
     assert provenance < build < preflight
 
 
@@ -314,7 +314,7 @@ def test_clean_public_export_rejects_tracked_compiled_static(monkeypatch, tmp_pa
     )
 
     monkeypatch.setattr(
-        "scripts.phase2_release_preflight.subprocess.run",
+        "scripts.release_preflight.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args=args[0], returncode=0, stdout=tracked, stderr=""
         ),
@@ -330,7 +330,7 @@ def test_git_free_clean_export_uses_attested_source_identity(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    from scripts.phase2_release_preflight import _current_source_commit
+    from scripts.release_preflight import _current_source_commit
 
     assert _current_source_commit(tmp_path) == SOURCE_COMMIT
     validate_generated_static_tracking_policy(tmp_path, public_export=True)
@@ -388,7 +388,7 @@ def _passed_e2e_statuses() -> dict[str, str]:
     return {name: "passed" for name in PHASE2_E2E_STATUS_KEYS}
 
 
-def test_phase2_evidence_report_binds_contract_commit_artifacts_and_e2e(
+def test_release_evidence_report_binds_contract_commit_artifacts_and_e2e(
     tmp_path: Path,
 ) -> None:
     dist_dir = tmp_path / "dist"
@@ -397,15 +397,15 @@ def test_phase2_evidence_report_binds_contract_commit_artifacts_and_e2e(
         dist_dir,
         expected_source_commit=SOURCE_COMMIT,
     )
-    contract_digest = phase2_contract_digest()
-    report = build_phase2_evidence_report(
+    contract_digest = release_contract_digest()
+    report = build_release_evidence_report(
         artifacts,
         source_commit=SOURCE_COMMIT,
         contract_digest=contract_digest,
         e2e_statuses=_passed_e2e_statuses(),
     )
 
-    validate_phase2_evidence_report(
+    validate_release_evidence_report(
         report,
         artifacts=artifacts,
         source_commit=SOURCE_COMMIT,
@@ -420,20 +420,20 @@ def test_phase2_evidence_report_binds_contract_commit_artifacts_and_e2e(
     assert set(report["artifacts"]) == {"wheel", "sdist"}
     assert all(item["sha256"].startswith("sha256:") for item in report["artifacts"].values())
 
-    output = tmp_path / "phase2-evidence.json"
-    write_phase2_evidence_report(output, report)
+    output = tmp_path / "release-evidence.json"
+    write_release_evidence_report(output, report)
     assert json.loads(output.read_text(encoding="utf-8")) == report
 
 
-def test_phase2_evidence_report_rejects_artifact_tampering(tmp_path: Path) -> None:
+def test_release_evidence_report_rejects_artifact_tampering(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     _write_pair(dist_dir, STATIC_FILES)
     artifacts = validate_distribution_archives(
         dist_dir,
         expected_source_commit=SOURCE_COMMIT,
     )
-    contract_digest = phase2_contract_digest()
-    report = build_phase2_evidence_report(
+    contract_digest = release_contract_digest()
+    report = build_release_evidence_report(
         artifacts,
         source_commit=SOURCE_COMMIT,
         contract_digest=contract_digest,
@@ -442,7 +442,7 @@ def test_phase2_evidence_report_rejects_artifact_tampering(tmp_path: Path) -> No
     artifacts[0].write_bytes(artifacts[0].read_bytes() + b"tampered")
 
     with pytest.raises(Phase2PreflightError, match="artifact digest"):
-        validate_phase2_evidence_report(
+        validate_release_evidence_report(
             report,
             artifacts=artifacts,
             source_commit=SOURCE_COMMIT,
@@ -451,7 +451,7 @@ def test_phase2_evidence_report_rejects_artifact_tampering(tmp_path: Path) -> No
         )
 
 
-def test_phase2_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
+def test_release_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
     tmp_path: Path,
 ) -> None:
     dist_dir = tmp_path / "dist"
@@ -460,10 +460,10 @@ def test_phase2_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
         dist_dir,
         expected_source_commit=SOURCE_COMMIT,
     )
-    contract_digest = phase2_contract_digest()
+    contract_digest = release_contract_digest()
     statuses = _passed_e2e_statuses()
     statuses["studioBrowser"] = "not_run"
-    report = build_phase2_evidence_report(
+    report = build_release_evidence_report(
         artifacts,
         source_commit=SOURCE_COMMIT,
         contract_digest=contract_digest,
@@ -472,7 +472,7 @@ def test_phase2_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
 
     assert report["localStatus"] == "incomplete"
     with pytest.raises(Phase2PreflightError, match="local status is incomplete"):
-        validate_phase2_evidence_report(
+        validate_release_evidence_report(
             report,
             artifacts=artifacts,
             source_commit=SOURCE_COMMIT,
@@ -490,7 +490,7 @@ def test_phase2_evidence_report_cannot_be_complete_when_a_key_e2e_was_not_run(
         ("overallStatus", "passed", "overall release completion"),
     ],
 )
-def test_phase2_evidence_report_rejects_unbound_or_incomplete_claims(
+def test_release_evidence_report_rejects_unbound_or_incomplete_claims(
     tmp_path: Path,
     field: str,
     value: str,
@@ -502,8 +502,8 @@ def test_phase2_evidence_report_rejects_unbound_or_incomplete_claims(
         dist_dir,
         expected_source_commit=SOURCE_COMMIT,
     )
-    contract_digest = phase2_contract_digest()
-    report = build_phase2_evidence_report(
+    contract_digest = release_contract_digest()
+    report = build_release_evidence_report(
         artifacts,
         source_commit=SOURCE_COMMIT,
         contract_digest=contract_digest,
@@ -512,7 +512,7 @@ def test_phase2_evidence_report_rejects_unbound_or_incomplete_claims(
     report[field] = value
 
     with pytest.raises(Phase2PreflightError, match=message):
-        validate_phase2_evidence_report(
+        validate_release_evidence_report(
             report,
             artifacts=artifacts,
             source_commit=SOURCE_COMMIT,

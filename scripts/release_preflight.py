@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the minimum local Phase 2 compatibility and package preflight.
+"""Run the minimum local Release compatibility and package preflight.
 
 This is intentionally a local/source-and-artifact gate.  It does not deploy a
 Runtime and must not be used as evidence of cloud or pre-production acceptance.
@@ -47,9 +47,9 @@ PHASE2_CONTRACT_MANIFESTS = (
 )
 COMPATIBILITY_TESTS = (
     "tests/compat/test_release_082_asset_compat.py",
-    "tests/compat/test_phase2_legacy_compat.py",
+    "tests/compat/test_release_legacy_compat.py",
     "tests/studio/test_framework_bundle_integrity.py",
-    "tests/packaging/test_phase2_release_preflight.py",
+    "tests/packaging/test_release_preflight.py",
 )
 CREDENTIAL_FREE_NATIVE_TESTS = (
     "tests/e2e/test_codex_plugin_bridge_e2e.py",
@@ -339,7 +339,7 @@ def _canonical_json_bytes(path: Path) -> bytes:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise Phase2PreflightError(f"invalid Phase 2 contract JSON: {path}") from error
+        raise Phase2PreflightError(f"invalid Release contract JSON: {path}") from error
     return json.dumps(
         payload,
         sort_keys=True,
@@ -352,9 +352,9 @@ def _validated_contract_set_digest(manifest_path: Path) -> tuple[str, str]:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise Phase2PreflightError(f"invalid Phase 2 contract manifest: {manifest_path}") from error
+        raise Phase2PreflightError(f"invalid Release contract manifest: {manifest_path}") from error
     if not isinstance(manifest, dict):
-        raise Phase2PreflightError(f"Phase 2 contract manifest must be an object: {manifest_path}")
+        raise Phase2PreflightError(f"Release contract manifest must be an object: {manifest_path}")
 
     contract_set = manifest.get("contract_set")
     recorded_digest = manifest.get("aggregate_digest")
@@ -364,7 +364,7 @@ def _validated_contract_set_digest(manifest_path: Path) -> tuple[str, str]:
         or not isinstance(recorded_digest, str)
         or not re.fullmatch(r"[0-9a-f]{64}", recorded_digest)
     ):
-        raise Phase2PreflightError(f"invalid Phase 2 contract digest metadata: {manifest_path}")
+        raise Phase2PreflightError(f"invalid Release contract digest metadata: {manifest_path}")
 
     contract_dir = manifest_path.parent
     aggregate = hashlib.sha256()
@@ -384,19 +384,19 @@ def _validated_contract_set_digest(manifest_path: Path) -> tuple[str, str]:
         aggregate.update(relative.encode("utf-8") + b"\0" + canonical)
 
     if manifest.get("files") != current_files or aggregate.hexdigest() != recorded_digest:
-        raise Phase2PreflightError(f"stale Phase 2 contract manifest: {manifest_path}")
+        raise Phase2PreflightError(f"stale Release contract manifest: {manifest_path}")
     return contract_set, recorded_digest
 
 
-def phase2_contract_digest(root: Path = ROOT) -> str:
-    """Return one digest over the three frozen Phase 2 contract sets."""
+def release_contract_digest(root: Path = ROOT) -> str:
+    """Return one digest over the three frozen Release contract sets."""
 
     aggregate = hashlib.sha256()
     seen_sets: set[str] = set()
     for relative_path in PHASE2_CONTRACT_MANIFESTS:
         contract_set, digest = _validated_contract_set_digest(root / relative_path)
         if contract_set in seen_sets:
-            raise Phase2PreflightError(f"duplicate Phase 2 contract set: {contract_set}")
+            raise Phase2PreflightError(f"duplicate Release contract set: {contract_set}")
         seen_sets.add(contract_set)
         aggregate.update(contract_set.encode("utf-8") + b"\0" + bytes.fromhex(digest))
     return f"sha256:{aggregate.hexdigest()}"
@@ -461,7 +461,7 @@ def validate_clean_artifact_installations(
         "PYTHONPATH": "",
     }
 
-    with tempfile.TemporaryDirectory(prefix="ksadk-phase2-wheel-") as raw_root:
+    with tempfile.TemporaryDirectory(prefix="ksadk-release-wheel-") as raw_root:
         root = Path(raw_root)
         venv_dir = _create_clean_venv(run, root=root, environment=clean_environment)
         python = _venv_executable(venv_dir, "python")
@@ -484,7 +484,7 @@ def validate_clean_artifact_installations(
             environment=clean_environment,
         )
 
-    with tempfile.TemporaryDirectory(prefix="ksadk-phase2-sdist-") as raw_root:
+    with tempfile.TemporaryDirectory(prefix="ksadk-release-sdist-") as raw_root:
         root = Path(raw_root)
         venv_dir = _create_clean_venv(run, root=root, environment=clean_environment)
         python = _venv_executable(venv_dir, "python")
@@ -542,7 +542,7 @@ def _artifact_kind(path: Path) -> str:
     raise Phase2PreflightError(f"unsupported evidence artifact: {path}")
 
 
-def build_phase2_evidence_report(
+def build_release_evidence_report(
     artifacts: Sequence[Path],
     *,
     source_commit: str,
@@ -575,7 +575,7 @@ def build_phase2_evidence_report(
     local_complete = all(value == "passed" for value in ordered_statuses.values())
     return {
         "schemaVersion": PHASE2_EVIDENCE_SCHEMA_VERSION,
-        "phase": "phase2",
+        "phase": "release",
         "scope": "local-source-and-package",
         # This local preflight deliberately cannot claim release completion:
         # registry publication, consumer images and deployed targets are
@@ -590,7 +590,7 @@ def build_phase2_evidence_report(
     }
 
 
-def validate_phase2_evidence_report(
+def validate_release_evidence_report(
     report: Mapping[str, object],
     *,
     artifacts: Sequence[Path],
@@ -600,7 +600,7 @@ def validate_phase2_evidence_report(
 ) -> None:
     if (
         report.get("schemaVersion") != PHASE2_EVIDENCE_SCHEMA_VERSION
-        or report.get("phase") != "phase2"
+        or report.get("phase") != "release"
     ):
         raise Phase2PreflightError("evidence schema is invalid")
     if report.get("sourceCommit") != source_commit.lower():
@@ -640,7 +640,7 @@ def validate_phase2_evidence_report(
             raise Phase2PreflightError(f"evidence {kind} artifact digest does not match")
 
 
-def write_phase2_evidence_report(path: Path, report: Mapping[str, object]) -> None:
+def write_release_evidence_report(path: Path, report: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -721,7 +721,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--evidence-output",
         type=Path,
         default=None,
-        help="Phase 2 evidence report path (default: DIST_DIR/phase2-evidence.json)",
+        help="Release evidence report path (default: DIST_DIR/release-evidence.json)",
     )
     return parser.parse_args(argv)
 
@@ -754,14 +754,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if _current_source_commit() != source_commit:
         raise Phase2PreflightError("source commit changed while release preflight was running")
-    contract_digest = phase2_contract_digest()
-    report = build_phase2_evidence_report(
+    contract_digest = release_contract_digest()
+    report = build_release_evidence_report(
         artifacts,
         source_commit=source_commit,
         contract_digest=contract_digest,
         e2e_statuses={**source_gate_statuses, **install_statuses},
     )
-    validate_phase2_evidence_report(
+    validate_release_evidence_report(
         report,
         artifacts=artifacts,
         source_commit=source_commit,
@@ -771,14 +771,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence_output = (
         args.evidence_output.resolve()
         if args.evidence_output is not None
-        else dist_dir / "phase2-evidence.json"
+        else dist_dir / "release-evidence.json"
     )
-    write_phase2_evidence_report(evidence_output, report)
+    write_release_evidence_report(evidence_output, report)
 
     if report["localStatus"] == "passed":
-        print("Phase 2 local compatibility/package preflight passed")
+        print("Release local compatibility/package preflight passed")
     else:
-        print("Phase 2 package preflight passed; release evidence is incomplete")
+        print("Release package preflight passed; release evidence is incomplete")
     for artifact in artifacts:
         print(f"- {artifact} sha256:{_sha256(artifact)}")
     print(f"- evidence: {evidence_output}")
@@ -791,5 +791,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (Phase2PreflightError, subprocess.CalledProcessError) as error:
-        print(f"Phase 2 preflight failed: {error}", file=sys.stderr)
+        print(f"Release preflight failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

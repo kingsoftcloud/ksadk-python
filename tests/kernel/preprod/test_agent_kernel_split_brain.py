@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Phase 1 split-brain 旧 writer 拒绝演练（Task 13 Step 8）。
+"""Agent Kernel Kernel split-brain 旧 writer 拒绝演练（Task 13 Step 8）。
 
 需要 ``--preprod``。Pod 保留到 Store 的旧网络路径、新 activation takeover 后，
 旧 stream 的 token / terminal 写必须被 stale fence 拒绝；canonical log 只含

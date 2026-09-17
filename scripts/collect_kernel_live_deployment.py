@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Collect non-secret, live Phase 1 deployment provenance from Kubernetes.
+"""Collect non-secret, live Kernel deployment provenance from Kubernetes.
 
 This collector intentionally proves only what Kubernetes can prove now: a
 named deployment is current, available, digest-pinned, and has an immutable
 running image ID.  It does *not* manufacture behavioral checks such as FIFO,
 permit rejection, or recovery.  Those must still be supplied by correlated
-scenario evidence to :mod:`phase1_preprod_gate`.
+scenario evidence to :mod:`kernel_preprod_gate`.
 
 The generated JSON has one ``cross_repo_versions`` check and can be passed to
 the gate alongside behaviour evidence.  A missing deployment, a stale
@@ -172,7 +172,7 @@ def collect_live_deployment_evidence(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Collect current, digest-pinned Phase 1 deployment evidence."
+        description="Collect current, digest-pinned Kernel deployment evidence."
     )
     parser.add_argument("--kubeconfig", default=None, help="explicit kubeconfig path")
     parser.add_argument("--namespace", required=True, help="isolated verification namespace")

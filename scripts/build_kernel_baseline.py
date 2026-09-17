@@ -1,4 +1,4 @@
-"""构建 Phase 1 跨仓基线 manifest（plan Task 0）。
+"""构建 Kernel 跨仓基线 manifest（plan Task 0）。
 
 phase0_gate_status 只能来自 Phase 0 release manifest 的 accepted 字段，
 不接受任何命令行布尔参数伪造。git 事实（commit/remote/dirty）通过
@@ -22,7 +22,7 @@ PHASE0_MANIFEST_RELATIVE = "docs/superpowers/evidence/phase0/manifest.json"
 
 
 class BaselineError(Exception):
-    """基线不满足 Phase 1 前置条件。"""
+    """基线不满足 Kernel 前置条件。"""
 
 
 class RepoBaseline(BaseModel):
@@ -118,7 +118,7 @@ def build_manifest(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build Phase 1 cross-repo baseline manifest")
+    parser = argparse.ArgumentParser(description="Build Kernel cross-repo baseline manifest")
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

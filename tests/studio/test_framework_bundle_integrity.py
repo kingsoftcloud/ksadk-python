@@ -1,6 +1,6 @@
 """Bundle 完整性校验：FrameworkRunSpecResolver 加载前必须拦截被篡改的 bundle。
 
-覆盖本地 phase1 的等价场景，但入口改为 -ksadk 的 FrameworkRunSpecResolver.resolve：
+覆盖内核基线的等价场景，但入口改为 -ksadk 的 FrameworkRunSpecResolver.resolve：
 manifest 自身摘要、与 Build 记录的权威摘要一致、文件清单无增删、每文件 sha256/size 匹配。
 """
 
@@ -67,7 +67,7 @@ def _assert_rejected(studio: StudioService, build) -> None:
     assert captured.value.code == "BUILD_ARTIFACT_INVALID"
 
 
-def test_legacy_bundle_manifest_without_phase2_fields_remains_readable() -> None:
+def test_legacy_bundle_manifest_without_v2_fields_remains_readable() -> None:
     manifest = BundleManifest.model_validate(
         {
             "bundleFormat": "agentkit.bundle/v1",
@@ -83,11 +83,11 @@ def test_legacy_bundle_manifest_without_phase2_fields_remains_readable() -> None
     assert manifest.composition_profile_digest is None
 
 
-def test_legacy_v1_bundle_runs_without_phase2_sidecars(tmp_path: Path) -> None:
+def test_legacy_v1_bundle_runs_without_v2_sidecars(tmp_path: Path) -> None:
     """A deployed v1 Code bundle must not acquire a PluginHost requirement.
 
     The fixture starts from a verified runnable bundle, removes the files that
-    Phase 2 adds, and rewrites a valid v1 manifest.  The established resolver
+    Release adds, and rewrites a valid v1 manifest.  The established resolver
     must still select its original ADK/LangGraph launch path rather than
     requiring a PluginLock, Soul source, or hosted-kernel requirement.
     """

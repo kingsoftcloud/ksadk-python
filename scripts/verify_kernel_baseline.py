@@ -1,7 +1,7 @@
-"""校验 Phase 1 跨仓基线 manifest（plan Task 0）。
+"""校验 Kernel 跨仓基线 manifest（plan Task 0）。
 
 拒绝 dirty、缺 commit、缺 remote、未验收 Phase 0 和重复 repo key。
-退出码非 0 时阻断 Phase 1 合并与部署。
+退出码非 0 时阻断 Kernel 合并与部署。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from scripts.build_phase1_baseline import BaselineError, Phase1Baseline
+from scripts.build_kernel_baseline import BaselineError, Phase1Baseline
 
 
 def verify_manifest(path: Path) -> None:
@@ -33,7 +33,7 @@ def verify_manifest(path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify Phase 1 baseline manifest")
+    parser = argparse.ArgumentParser(description="Verify Kernel baseline manifest")
     parser.add_argument("path", type=Path)
     args = parser.parse_args(argv)
     try:

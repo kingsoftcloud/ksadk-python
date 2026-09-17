@@ -31,7 +31,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/conversations/message_projection.py": 1050,
     "ksadk/codex/runtime.py": 1084,
     "ksadk/deployment/providers/serverless.py": 1358,
-    # Agent Runtime v2 Phase 1 delivery baseline. These files contain the
+    # Agent Runtime v2 Kernel delivery baseline. These files contain the
     # frozen contract/store implementations; any post-0.8.2 growth stays red
     # until the corresponding responsibility is extracted.
     "ksadk/kernel/bootstrap.py": 1082,
@@ -49,7 +49,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/sessions/local_service.py": 1080,
     "ksadk/server/routes/projection.py": 1103,
     "ksadk/sessions/postgres_service.py": 1287,
-    # Agent Runtime v2 Phase 2 reviewed integration baseline. The 0.8.3
+    # Agent Runtime v2 Release reviewed integration baseline. The 0.8.3
     # release deliberately freezes these exact post-integration sizes rather
     # than silently raising the global limit. Any additional line in one of
     # these modules turns the guard red again; responsibility extraction is a

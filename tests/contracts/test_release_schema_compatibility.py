@@ -1,4 +1,4 @@
-"""Phase 2 v1 contracts may grow additively, but cannot change old wire shapes."""
+"""Release v1 contracts may grow additively, but cannot change old wire shapes."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE_ROOT = ROOT / "tests" / "contracts" / "baselines" / "phase2"
+BASELINE_ROOT = ROOT / "tests" / "contracts" / "baselines" / "release"
 CONTRACT_ROOT = ROOT / "contracts"
 CONTRACT_SETS = {
     "plugin": CONTRACT_ROOT / "plugin" / "v1",
@@ -102,7 +102,7 @@ def assert_additive_schema(old: Any, new: Any, *, path: str = "$") -> None:
 
 
 @pytest.mark.parametrize("contract_set", sorted(CONTRACT_SETS))
-def test_phase2_v1_schemas_are_additive_against_frozen_baseline(
+def test_release_v1_schemas_are_additive_against_frozen_baseline(
     contract_set: str,
 ) -> None:
     current_dir = CONTRACT_SETS[contract_set]
@@ -120,7 +120,7 @@ def test_phase2_v1_schemas_are_additive_against_frozen_baseline(
         )
 
 
-def test_phase2_schema_artifact_inventory_excludes_unpublished_package_formats() -> None:
+def test_release_schema_artifact_inventory_excludes_unpublished_package_formats() -> None:
     inventory = {
         contract_set: sorted(path.name for path in directory.glob("*.schema.json"))
         for contract_set, directory in CONTRACT_SETS.items()

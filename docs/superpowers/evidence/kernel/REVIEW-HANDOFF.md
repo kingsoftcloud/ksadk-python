@@ -38,7 +38,7 @@
 > 2026-08-24 PG 验证边界修正：预发验收不得在 Serverless/Kubernetes 内自建
 > PostgreSQL。一次隔离验证部署曾短暂创建 PostgreSQL Pod，发现架构边界错误后已
 > 删除整个 `agent-kernel-phase1` namespace，并删除对应内部镜像仓库 artifact；
-> 没有触碰共享预发主流程。现在 `phase1-canary-deploy` 强制要求
+> 没有触碰共享预发主流程。现在 `kernel-canary-deploy` 强制要求
 > `PHASE1_CANARY_POSTGRES_DSN` 指向外部托管云 PostgreSQL，并仅通过临时 Secret
 > 注入。`long_task_pg_e2e/.env` 中现有 DSN 从本机及预发管理集群连接超时，但已
 > 从真实预发算力集群 `config-2fc1210d` 内的 Agent Runtime Pod 验证 TCP 可达；
@@ -54,7 +54,7 @@
 
 - `docs/superpowers/evidence/phase0/manifest.json` 已存在且 `accepted=true`。以该
   manifest 和既有 `preprod-report.json` 重跑
-  `scripts/phase1_preprod_gate.py`，得到 **27 checks / 0 failed**（本次本地
+  `scripts/kernel_preprod_gate.py`，得到 **27 checks / 0 failed**（本次本地
   report 仅写入 `/tmp/phase1-current-gate.json`，不覆写历史证据）。因此下文中
   “17 pass / 1 fail” 与 “Phase 0 manifest 未产出”均为历史快照，不再代表当前
   gate 结论。

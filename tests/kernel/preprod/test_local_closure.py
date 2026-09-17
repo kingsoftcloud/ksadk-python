@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Phase 1 本地 closed-loop 验证（Task 13 本地等价物）。
+"""Agent Kernel Kernel 本地 closed-loop 验证（Task 13 本地等价物）。
 
 预发 E2E（``--preprod``）的六项核心断言在本地用 InMemory / SQLite store +
 真实 kernel / worker / recovery 组件先跑通同一套断言；真实预发执行时换成

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from scripts.run_phase1_managed_pg_matrix import (
+from scripts.run_kernel_managed_pg_matrix import (
     KubeDriver,
     MatrixFailure,
     run_http_matrix,
@@ -20,7 +20,7 @@ class _FakeCanaryClient:
         self.accepted: dict[str, list[dict[str, Any]]] = {}
 
     def contract(self) -> dict[str, Any]:
-        return {"digest": "d" * 64, "instance": "phase1-managed-pg"}
+        return {"digest": "d" * 64, "instance": "kernel-managed-pg"}
 
     def worker(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -159,7 +159,7 @@ def test_http_matrix_preserves_completed_checks_on_late_failure() -> None:
 def test_rollbacks_must_use_an_immutable_image() -> None:
     driver = KubeDriver(
         kubeconfig="/does/not/matter",
-        namespace="phase1",
+        namespace="kernel",
         deployment="canary",
     )
     with pytest.raises(MatrixFailure, match="not digest pinned"):
@@ -169,7 +169,7 @@ def test_rollbacks_must_use_an_immutable_image() -> None:
 def test_pod_replacement_waits_for_ready_before_port_forward(monkeypatch) -> None:
     driver = KubeDriver(
         kubeconfig="/does/not/matter",
-        namespace="phase1",
+        namespace="kernel",
         deployment="canary",
     )
     calls: list[tuple[str, ...]] = []

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Phase 1 合同 digest 预检（Task 13 Step 4）。
+"""Agent Kernel Kernel 合同 digest 预检（Task 13 Step 4）。
 
 需要 ``--preprod``。六方（Server / Gateway / Runtime Service / Operator
 condition / Runtime health / Web build metadata）的 aggregate contract digest

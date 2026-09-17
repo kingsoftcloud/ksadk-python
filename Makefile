@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-check studio-app-run studio-app-clean studio-app-reopen phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
 PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
 # Phase 1 runtime drills must run beside real Agent workloads in the preprod
@@ -12,7 +12,7 @@ PHASE1_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
 PHASE1_CANARY_TAG ?= phase1-contract-$(shell git rev-parse --short=8 HEAD)
 PHASE1_CANARY_IMAGE := $(PHASE1_CANARY_REGISTRY)/agent-kernel-canary:$(PHASE1_CANARY_TAG)
 PHASE1_CANARY_KUBECTL := kubectl --kubeconfig=$(PHASE1_CANARY_KUBECONFIG)
-PHASE1_CANARY_INSTANCE_ID ?= phase1-canary-managed-pg
+PHASE1_CANARY_INSTANCE_ID ?= kernel-canary-managed-pg
 PHASE1_CANARY_STORE_NAMESPACE ?= default
 PHASE1_CANARY_EVIDENCE_OUTPUT ?= /tmp/phase1-managed-pg-matrix.json
 
@@ -31,10 +31,10 @@ help:
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
-	@echo "    make phase1-canary-push   构建并推送当前合同 PG canary 镜像"
-	@echo "    make phase1-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
-	@echo "    make phase1-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
-	@echo "    make phase1-canary-delete 删除隔离 canary namespace"
+	@echo "    make kernel-canary-push   构建并推送当前合同 PG canary 镜像"
+	@echo "    make kernel-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
+	@echo "    make kernel-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
+	@echo "    make kernel-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -53,8 +53,8 @@ help:
 	@echo "    make public-version-gate  版本号门禁(防降版/重复发版,对比 PyPI 已发版本)"
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
-	@echo "    make phase2-release-preflight  Phase 2 兼容/原生宿主/浏览器/制品门禁"
-	@echo "    make phase2-release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
+	@echo "    make release-preflight  Phase 2 兼容/原生宿主/浏览器/制品门禁"
+	@echo "    make release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
 	@echo "    make public-publish-gate  PyPI/GitHub Release 写操作前的审批门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
@@ -132,7 +132,7 @@ test:
 # Phase 1 preproduction canary
 # ============================================================
 
-phase1-canary-build:
+kernel-canary-build:
 	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "ERROR: tracked source tree is dirty"; exit 2; }
 	@echo "Building Phase 1 canary: $(PHASE1_CANARY_IMAGE)"
 	docker build --platform $(PHASE1_CANARY_PLATFORM) \
@@ -141,12 +141,12 @@ phase1-canary-build:
 		-f docs/superpowers/evidence/phase1/canary/canary.e2e.Dockerfile \
 		-t $(PHASE1_CANARY_IMAGE) .
 
-phase1-canary-push: phase1-canary-build
+kernel-canary-push: kernel-canary-build
 	docker push $(PHASE1_CANARY_IMAGE)
 	@echo "Canary source: commit=$$(git rev-parse HEAD), contract=$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')"
 	@docker buildx imagetools inspect $(PHASE1_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
 
-phase1-canary-deploy:
+kernel-canary-deploy:
 	@test -f "$(PHASE1_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(PHASE1_CANARY_KUBECONFIG)"; exit 2; }
 	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
 	@$(PHASE1_CANARY_KUBECTL) create namespace $(PHASE1_CANARY_NAMESPACE) --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f -
@@ -164,16 +164,16 @@ phase1-canary-deploy:
 		PHASE1_CANARY_TEST_HOOKS=1
 	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
 
-phase1-canary-matrix:
+kernel-canary-matrix:
 	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
 	@test -n "$$PHASE1_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
 	@case "$$PHASE1_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
 	@set -eu; \
-		cleanup() { $(MAKE) phase1-canary-delete; }; \
+		cleanup() { $(MAKE) kernel-canary-delete; }; \
 		trap cleanup EXIT INT TERM; \
-		$(MAKE) phase1-canary-push; \
-		PHASE1_CANARY_POSTGRES_DSN="$$PHASE1_CANARY_POSTGRES_DSN" $(MAKE) phase1-canary-deploy; \
-		uv run python scripts/run_phase1_managed_pg_matrix.py \
+		$(MAKE) kernel-canary-push; \
+		PHASE1_CANARY_POSTGRES_DSN="$$PHASE1_CANARY_POSTGRES_DSN" $(MAKE) kernel-canary-deploy; \
+		uv run python scripts/run_kernel_managed_pg_matrix.py \
 			--kubeconfig "$(PHASE1_CANARY_KUBECONFIG)" \
 			--namespace "$(PHASE1_CANARY_NAMESPACE)" \
 			--expected-contract-digest "$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')" \
@@ -181,10 +181,10 @@ phase1-canary-matrix:
 			--rollback-image "$$PHASE1_CANARY_ROLLBACK_IMAGE" \
 			--output "$(PHASE1_CANARY_EVIDENCE_OUTPUT)"
 
-phase1-canary-status:
+kernel-canary-status:
 	@$(PHASE1_CANARY_KUBECTL) get deployment,pod,service -n $(PHASE1_CANARY_NAMESPACE) -o wide
 
-phase1-canary-delete:
+kernel-canary-delete:
 	$(PHASE1_CANARY_KUBECTL) delete namespace $(PHASE1_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
 
 studio-react-install-browser:
@@ -537,9 +537,9 @@ public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
 	uv run python scripts/check_release_version.py --mode "$(PUBLIC_PREFLIGHT_MODE)"
 
-phase2-release-preflight: public-build-check
+release-preflight: public-build-check
 	@echo "==> Phase 2 compatibility, native host, browser, and artifact preflight"
-	@uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist
+	@uv run --extra all python scripts/release_preflight.py --dist-dir dist
 
 PHASE2_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
 PHASE2_LOCAL_EVIDENCE ?= dist/phase2-evidence.json
@@ -548,8 +548,8 @@ PHASE2_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
 PHASE2_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
 PHASE2_FINAL_EVIDENCE ?= dist/phase2-release-candidate.json
 
-phase2-release-candidate-gate:
-	@uv run python scripts/phase2_release_candidate_gate.py \
+release-candidate-gate:
+	@uv run python scripts/release_candidate_gate.py \
 		--expected-commit "$(PHASE2_FINAL_COMMIT)" \
 		--local "$(PHASE2_LOCAL_EVIDENCE)" \
 		--web-registry "$(PHASE2_WEB_REGISTRY_EVIDENCE)" \
@@ -557,7 +557,7 @@ phase2-release-candidate-gate:
 		--preprod "$(PHASE2_PREPROD_EVIDENCE)" \
 		--output "$(PHASE2_FINAL_EVIDENCE)"
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build phase2-release-preflight
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs
@@ -566,7 +566,7 @@ public-preflight: public-version-gate public-audit sync-ksadk-web-static public-
 # pull-request release-check workflow before merge.  Re-running phase2 here
 # doubles the work and stalls on the shared CI runner.  So the publish
 # preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test
-# + build/twine check, without docs-site-build or phase2-release-preflight.
+# + build/twine check, without docs-site-build or release-preflight.
 public-release-version-gate:
 	uv run python scripts/check_release_version.py --mode release
 

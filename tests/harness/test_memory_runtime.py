@@ -1,4 +1,4 @@
-"""Phase 2 Memory Runtime 测试（plan §17 验收：隔离 / 权限 / 审计）。"""
+"""Release Memory Runtime 测试（plan §17 验收：隔离 / 权限 / 审计）。"""
 
 from __future__ import annotations
 
