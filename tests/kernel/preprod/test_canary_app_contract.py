@@ -32,7 +32,7 @@ def test_canary_store_namespace_is_explicitly_isolated(monkeypatch) -> None:
 
 
 def test_canary_drill_hooks_fail_closed(monkeypatch) -> None:
-    monkeypatch.delenv("PHASE1_CANARY_TEST_HOOKS", raising=False)
+    monkeypatch.delenv("KERNEL_CANARY_TEST_HOOKS", raising=False)
     with pytest.raises(HTTPException) as exc_info:
         canary_app._require_test_hooks()
     assert exc_info.value.status_code == 404
@@ -54,7 +54,7 @@ def test_canary_requires_an_external_managed_postgres() -> None:
         REPO_ROOT / "docs/superpowers/evidence/kernel/canary-hosted/deployment.yaml"
     ).read_text(encoding="utf-8")
 
-    assert "PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL" in makefile
-    assert "PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d" in makefile
+    assert "KERNEL_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL" in makefile
+    assert "KERNEL_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d" in makefile
     assert "agent-kernel-store" in deployment
     assert not (REPO_ROOT / "docs/superpowers/evidence/kernel/canary/postgres.yaml").exists()

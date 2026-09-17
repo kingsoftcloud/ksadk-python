@@ -17,10 +17,10 @@ from dataclasses import dataclass
 import pytest
 
 PREPROD_ENV_VARS = (
-    "KSADK_PHASE1_SERVER_URL",
-    "KSADK_PHASE1_GATEWAY_URL",
-    "KSADK_PHASE1_AGENT_INSTANCE_ID",
-    "KSADK_PHASE1_AUTHORIZATION_HEADER",
+    "KSADK_KERNEL_SERVER_URL",
+    "KSADK_KERNEL_GATEWAY_URL",
+    "KSADK_KERNEL_AGENT_INSTANCE_ID",
+    "KSADK_KERNEL_AUTHORIZATION_HEADER",
 )
 
 
@@ -70,10 +70,10 @@ class PreprodConfig:
                 "missing required preprod env vars: " + ", ".join(sorted(missing))
             )
         return cls(
-            server_url=os.environ["KSADK_PHASE1_SERVER_URL"],
-            gateway_url=os.environ["KSADK_PHASE1_GATEWAY_URL"],
-            agent_instance_id=os.environ["KSADK_PHASE1_AGENT_INSTANCE_ID"],
-            authorization_header=os.environ["KSADK_PHASE1_AUTHORIZATION_HEADER"],
+            server_url=os.environ["KSADK_KERNEL_SERVER_URL"],
+            gateway_url=os.environ["KSADK_KERNEL_GATEWAY_URL"],
+            agent_instance_id=os.environ["KSADK_KERNEL_AGENT_INSTANCE_ID"],
+            authorization_header=os.environ["KSADK_KERNEL_AUTHORIZATION_HEADER"],
         )
 
 

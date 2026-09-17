@@ -16,7 +16,7 @@ from scripts.release_preflight import (
     COMPATIBILITY_TESTS,
     CREDENTIAL_FREE_NATIVE_TESTS,
     MANAGED_DSH_TOOLCHAIN_TESTS,
-    PHASE2_E2E_STATUS_KEYS,
+    RELEASE_E2E_STATUS_KEYS,
     Phase2PreflightError,
     build_release_evidence_report,
     is_public_export,
@@ -385,7 +385,7 @@ def test_clean_install_gate_installs_wheel_and_rebuilt_sdist_wheel_separately(
 
 
 def _passed_e2e_statuses() -> dict[str, str]:
-    return {name: "passed" for name in PHASE2_E2E_STATUS_KEYS}
+    return {name: "passed" for name in RELEASE_E2E_STATUS_KEYS}
 
 
 def test_release_evidence_report_binds_contract_commit_artifacts_and_e2e(

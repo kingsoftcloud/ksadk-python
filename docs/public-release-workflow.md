@@ -77,11 +77,11 @@ Phase 2 发布还必须在最终内部 `master` 提交上重新生成本地制�
 
 ```bash
 make release-candidate-gate \
-  PHASE2_FINAL_COMMIT=<final-internal-master-commit> \
-  PHASE2_LOCAL_EVIDENCE=<local-phase2-evidence.json> \
-  PHASE2_WEB_REGISTRY_EVIDENCE=<npm-registry-evidence.json> \
-  PHASE2_DEPLOYMENT_EVIDENCE=<hosted-ui-deployment-evidence.json> \
-  PHASE2_PREPROD_EVIDENCE=<release-environment-browser-e2e.json>
+  RELEASE_FINAL_COMMIT=<final-internal-master-commit> \
+  RELEASE_LOCAL_EVIDENCE=<local-phase2-evidence.json> \
+  RELEASE_WEB_REGISTRY_EVIDENCE=<npm-registry-evidence.json> \
+  RELEASE_DEPLOYMENT_EVIDENCE=<hosted-ui-deployment-evidence.json> \
+  RELEASE_PREPROD_EVIDENCE=<release-environment-browser-e2e.json>
 ```
 
 该门禁要求 npm integrity、Hosted UI 镜像 digest、Helm revision、wheel/sdist digest 和最终源码提交互相一致；Studio 新建 Agent 与历史 0.8.2 Agent 都必须通过 Studio/Hosted UI 两个入口的多轮流式验证。测试新建的 Agent 必须删除，历史 Agent 必须保留。缺少 registry 正式版本、使用可变镜像 tag、单轮响应或仅本地 mock 时，报告不会变绿。

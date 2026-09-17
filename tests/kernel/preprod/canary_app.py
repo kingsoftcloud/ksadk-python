@@ -335,7 +335,7 @@ def _require_test_hooks() -> None:
 
     from fastapi import HTTPException
 
-    if os.environ.get("PHASE1_CANARY_TEST_HOOKS") != "1":
+    if os.environ.get("KERNEL_CANARY_TEST_HOOKS") != "1":
         raise HTTPException(status_code=404, detail="not found")
 
 

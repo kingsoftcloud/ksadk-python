@@ -9,7 +9,7 @@ from scripts.release_candidate_gate import (
     ReleaseCandidateGateError,
     build_release_candidate_report,
 )
-from scripts.release_preflight import PHASE2_E2E_STATUS_KEYS
+from scripts.release_preflight import RELEASE_E2E_STATUS_KEYS
 
 COMMIT = "a" * 40
 WEB_COMMIT = "b" * 40
@@ -36,7 +36,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
             "wheel": {"file": "ksadk-0.8.3-py3-none-any.whl", "sha256": "sha256:" + ("e" * 64)},
             "sdist": {"file": "ksadk-0.8.3.tar.gz", "sha256": "sha256:" + ("f" * 64)},
         },
-        "e2e": {name: "passed" for name in PHASE2_E2E_STATUS_KEYS},
+        "e2e": {name: "passed" for name in RELEASE_E2E_STATUS_KEYS},
     }
     web = {
         "schemaVersion": 1,

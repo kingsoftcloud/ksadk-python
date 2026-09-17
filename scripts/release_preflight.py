@@ -40,7 +40,7 @@ FORBIDDEN_FRONTEND_SOURCE_PREFIXES = (
     "ksadk/server/web-ui/",
     "ksadk/studio/react-ui/",
 )
-PHASE2_CONTRACT_MANIFESTS = (
+RELEASE_CONTRACT_MANIFESTS = (
     "contracts/plugin/v1/manifest.json",
     "contracts/conversation/v1/manifest.json",
     "contracts/scheduler/v1/manifest.json",
@@ -76,12 +76,12 @@ SOURCE_E2E_STATUS_KEYS = (
     "managedDshToolchain",
     "studioBrowser",
 )
-PHASE2_E2E_STATUS_KEYS = (
+RELEASE_E2E_STATUS_KEYS = (
     *SOURCE_E2E_STATUS_KEYS,
     "cleanWheelInstall",
     "cleanSdistInstall",
 )
-PHASE2_EVIDENCE_SCHEMA_VERSION = 2
+RELEASE_EVIDENCE_SCHEMA_VERSION = 2
 
 CLEAN_INSTALL_SMOKE = """
 from pathlib import Path
@@ -393,7 +393,7 @@ def release_contract_digest(root: Path = ROOT) -> str:
 
     aggregate = hashlib.sha256()
     seen_sets: set[str] = set()
-    for relative_path in PHASE2_CONTRACT_MANIFESTS:
+    for relative_path in RELEASE_CONTRACT_MANIFESTS:
         contract_set, digest = _validated_contract_set_digest(root / relative_path)
         if contract_set in seen_sets:
             raise Phase2PreflightError(f"duplicate Release contract set: {contract_set}")
@@ -554,7 +554,7 @@ def build_release_evidence_report(
         raise Phase2PreflightError("evidence source commit must be a full Git SHA")
     if not _DIGEST_PATTERN.fullmatch(contract_digest):
         raise Phase2PreflightError("evidence contract digest must be sha256")
-    if set(e2e_statuses) != set(PHASE2_E2E_STATUS_KEYS):
+    if set(e2e_statuses) != set(RELEASE_E2E_STATUS_KEYS):
         raise Phase2PreflightError("evidence E2E statuses are incomplete")
     if any(value not in {"passed", "failed", "not_run"} for value in e2e_statuses.values()):
         raise Phase2PreflightError("evidence E2E status is invalid")
@@ -571,10 +571,10 @@ def build_release_evidence_report(
     if set(artifact_evidence) != {"wheel", "sdist"}:
         raise Phase2PreflightError("evidence requires one wheel and one sdist")
 
-    ordered_statuses = {name: e2e_statuses[name] for name in PHASE2_E2E_STATUS_KEYS}
+    ordered_statuses = {name: e2e_statuses[name] for name in RELEASE_E2E_STATUS_KEYS}
     local_complete = all(value == "passed" for value in ordered_statuses.values())
     return {
-        "schemaVersion": PHASE2_EVIDENCE_SCHEMA_VERSION,
+        "schemaVersion": RELEASE_EVIDENCE_SCHEMA_VERSION,
         "phase": "release",
         "scope": "local-source-and-package",
         # This local preflight deliberately cannot claim release completion:
@@ -599,7 +599,7 @@ def validate_release_evidence_report(
     require_complete: bool,
 ) -> None:
     if (
-        report.get("schemaVersion") != PHASE2_EVIDENCE_SCHEMA_VERSION
+        report.get("schemaVersion") != RELEASE_EVIDENCE_SCHEMA_VERSION
         or report.get("phase") != "release"
     ):
         raise Phase2PreflightError("evidence schema is invalid")
@@ -609,7 +609,7 @@ def validate_release_evidence_report(
         raise Phase2PreflightError("evidence contract digest does not match current contracts")
 
     raw_statuses = report.get("e2e")
-    if not isinstance(raw_statuses, dict) or set(raw_statuses) != set(PHASE2_E2E_STATUS_KEYS):
+    if not isinstance(raw_statuses, dict) or set(raw_statuses) != set(RELEASE_E2E_STATUS_KEYS):
         raise Phase2PreflightError("evidence E2E statuses are incomplete")
     if any(value not in {"passed", "failed", "not_run"} for value in raw_statuses.values()):
         raise Phase2PreflightError("evidence E2E status is invalid")

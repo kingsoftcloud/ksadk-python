@@ -19,13 +19,13 @@ from typing import Any, Mapping, Sequence
 
 if __package__:
     from scripts.release_preflight import (
-        PHASE2_E2E_STATUS_KEYS,
-        PHASE2_EVIDENCE_SCHEMA_VERSION,
+        RELEASE_E2E_STATUS_KEYS,
+        RELEASE_EVIDENCE_SCHEMA_VERSION,
     )
 else:
     from release_preflight import (  # type: ignore[no-redef]
-        PHASE2_E2E_STATUS_KEYS,
-        PHASE2_EVIDENCE_SCHEMA_VERSION,
+        RELEASE_E2E_STATUS_KEYS,
+        RELEASE_EVIDENCE_SCHEMA_VERSION,
     )
 
 SCHEMA_VERSION = 1
@@ -98,7 +98,7 @@ def _require_web_identity(payload: Mapping[str, Any], *, location: str) -> tuple
 
 def _validate_local(payload: Mapping[str, Any], expected_commit: str) -> None:
     if (
-        payload.get("schemaVersion") != PHASE2_EVIDENCE_SCHEMA_VERSION
+        payload.get("schemaVersion") != RELEASE_EVIDENCE_SCHEMA_VERSION
         or payload.get("phase") != "release"
         or payload.get("scope") != "local-source-and-package"
     ):
@@ -113,7 +113,7 @@ def _validate_local(payload: Mapping[str, Any], expected_commit: str) -> None:
     ):
         raise ReleaseCandidateGateError("local evidence makes an invalid release claim")
     statuses = payload.get("e2e")
-    if not isinstance(statuses, Mapping) or set(statuses) != set(PHASE2_E2E_STATUS_KEYS):
+    if not isinstance(statuses, Mapping) or set(statuses) != set(RELEASE_E2E_STATUS_KEYS):
         raise ReleaseCandidateGateError("local Release E2E evidence is incomplete")
     if any(status != "passed" for status in statuses.values()):
         raise ReleaseCandidateGateError("a local Release E2E gate did not pass")

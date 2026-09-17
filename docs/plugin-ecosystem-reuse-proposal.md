@@ -282,7 +282,7 @@ uv run pytest -q \
   tests/plugins/test_dsh_capability_host_e2e.py \
   tests/plugins/test_dsh_upstream_plugin_e2e.py
 
-make phase2-release-preflight
+make release-preflight
 make public-preflight
 ```
 
