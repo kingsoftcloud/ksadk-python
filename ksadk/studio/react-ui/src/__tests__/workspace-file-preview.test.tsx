@@ -14,7 +14,7 @@ beforeEach(() => {
 
 describe("workspace file preview integration", () => {
   it("previews a markdown file created by the agent from its path in chat", async () => {
-    const filePath = "/Users/xiayu/agentengine-test/studio-test/AI芯片最新消息_2026年9月.md";
+    const filePath = "/home/ci/workspace/AI芯片最新消息_2026年9月.md";
     apiFetchMock.mockResolvedValue(
       response({
         path: filePath,
