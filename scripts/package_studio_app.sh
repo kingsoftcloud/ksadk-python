@@ -258,16 +258,22 @@ if [ -n "${STUDIO_APP_CODESIGN_IDENTITY:-}" ]; then
   echo "==> codesign (identity: $STUDIO_APP_CODESIGN_IDENTITY)"
   test -f "$ENTITLEMENTS" || { echo "ERROR: entitlements missing: $ENTITLEMENTS" >&2; exit 1; }
   # Sign Electron's nested helpers and frameworks explicitly, innermost-first.
-  # codesign --deep is unreliable for Electron: it misses dylibs (libffmpeg,
-  # Squirrel's ShipIt) and skips secure timestamps / hardened runtime on them,
-  # which Apple notarization rejects. Sign each binary with --timestamp (secure
-  # timestamp) and --options runtime (hardened runtime), then the top-level app
-  # last. Entitlements only apply to the main executable and helpers, not to
-  # pure libraries.
+  # codesign --deep is unreliable for Electron + Python: it misses dylibs
+  # (libffmpeg, libpython) and skips secure timestamps / hardened runtime,
+  # which Apple notarization rejects. Sign each binary with --timestamp and
+  # --options runtime, then the top-level app last. Entitlements only apply to
+  # main executable + helpers, not pure libraries.
   sign_with() {
     codesign --force --timestamp --options runtime --sign "$STUDIO_APP_CODESIGN_IDENTITY" "$@"
   }
-  # Helper apps (in Frameworks) — apply entitlements so JIT/x86 work in sandbox.
+  # Bundled Python runtime binaries and dylibs (uv venv python, libpython).
+  for bin in "$STUDIO_APP_RUNTIME"/bin/python*; do
+    [ -f "$bin" ] && sign_with "$bin"
+  done
+  for dylib in "$STUDIO_APP_RUNTIME"/lib/*.dylib; do
+    [ -f "$dylib" ] && sign_with "$dylib"
+  done
+  # Electron helper apps — apply entitlements so JIT/x86 work in sandbox.
   for helper in "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper.app" \
                 "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (GPU).app" \
                 "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (Renderer).app" \
