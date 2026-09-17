@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FilePreviewHost } from "@kingsoftcloud/ksadk-web/components";
 import { apiFetch } from "./api";
 import { AgentsPage } from "./pages/AgentsPage";
 import { CreatePage } from "./pages/CreatePage";
@@ -641,6 +642,7 @@ export default function App() {
 
   return (
     <>
+      <FilePreviewHost />
       <a className="skip-link" href="#mainContent">跳到主要内容</a>
       <div className="app-shell" data-view={view} data-viewport={viewportMode} data-focused={focusedView} data-rail={railExpanded ? "expanded" : "compact"}>
       <NavigationRail

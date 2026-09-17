@@ -1163,6 +1163,86 @@ def create_studio_app(
         studio.get_agent_schedule(agent_id, task_id)
         return {"items": studio.scheduler.list_occurrences(task_id, limit=limit)}
 
+    @app.get("/api/v1/workspace/file")
+    async def read_workspace_file(path: str = Query(...), download: bool = Query(default=False)):
+        """Read one file inside the workspace (or a linked directory) for preview.
+
+        Absolute paths outside the workspace and its linked directories are
+        rejected, as are oversized files; preview clients render the payload
+        according to the returned contentType.
+        """
+        import mimetypes
+        from urllib.parse import quote
+
+        raw = Path(path).expanduser()
+        candidate = raw if raw.is_absolute() else studio.workspace.root / raw
+        try:
+            resolved = candidate.resolve()
+        except OSError as error:
+            raise StudioError("WORKSPACE_FILE_INVALID", "文件路径无效", status_code=422) from error
+
+        allowed_roots = [studio.workspace.root.resolve()]
+        for item in LinkedDirectoryPolicy(studio.workspace.root).list():
+            linked = Path(item.path).expanduser().resolve()
+            if linked.is_dir():
+                allowed_roots.append(linked)
+        if not any(
+            resolved == root or resolved.is_relative_to(root) for root in allowed_roots
+        ):
+            raise StudioError(
+                "WORKSPACE_FILE_FORBIDDEN", "路径不在工作区（或链接目录）内", status_code=403
+            )
+        if not resolved.is_file():
+            raise StudioError("WORKSPACE_FILE_NOT_FOUND", "文件不存在", status_code=404)
+        size = resolved.stat().st_size
+        if size > 2 * 1024 * 1024:
+            raise StudioError(
+                "WORKSPACE_FILE_TOO_LARGE", "文件超过 2MB 预览上限", status_code=413
+            )
+        suffix = resolved.suffix.lower()
+        if suffix in {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+        }:
+            content_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+            media_category = "image"
+            payload: bytes | str = resolved.read_bytes()
+        elif suffix in {".md", ".markdown"}:
+            content_type, media_category, payload = "text/markdown", "markdown", None
+            payload = resolved.read_text(encoding="utf-8", errors="replace")
+        else:
+            text_types = {
+                ".txt", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".ts", ".tsx",
+                ".jsx", ".html", ".css", ".yaml", ".yml", ".toml", ".xml", ".sh",
+                ".sql", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".diff", ".ini",
+            }
+            if suffix not in text_types:
+                raise StudioError(
+                    "WORKSPACE_FILE_UNSUPPORTED", "该文件类型暂不支持预览", status_code=415
+                )
+            content_type, media_category = "text/plain", "text"
+            payload = resolved.read_text(encoding="utf-8", errors="replace")
+        response = {
+            "path": str(resolved),
+            "name": resolved.name,
+            "sizeBytes": size,
+            "contentType": content_type,
+            "mediaCategory": media_category,
+        }
+        if download:
+            quoted = quote(resolved.name)
+            return Response(
+                content=payload if isinstance(payload, bytes) else payload.encode("utf-8"),
+                media_type=content_type,
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+            )
+        if media_category == "image":
+            import base64
+
+            response["dataBase64"] = base64.b64encode(payload).decode("ascii")
+        else:
+            response["content"] = payload
+        return response
+
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
         try:
