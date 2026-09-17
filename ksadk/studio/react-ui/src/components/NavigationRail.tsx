@@ -19,7 +19,6 @@ import type { ResourceKind } from "../pages/ResourcesPage";
 export const NAVIGATION_RAIL_PREFERENCE_KEY = "agentkit.studio.rail-expanded";
 export type NavigationView =
   | "agents"
-  | "channels"
   | "create"
   | "agent-detail"
   | "conversations"
