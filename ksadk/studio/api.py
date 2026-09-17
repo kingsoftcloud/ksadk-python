@@ -1156,6 +1156,17 @@ def create_studio_app(
         studio.get_agent_schedule(agent_id, task_id)
         return {"items": studio.scheduler.list_occurrences(task_id, limit=limit)}
 
+    def _decode_text_file(path: Path) -> str:
+        """Decode with an encoding fallback chain so legacy GBK/GB18030 files
+        written by agents preview correctly instead of turning into mojibake."""
+        raw = path.read_bytes()
+        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="replace")
+
     @app.get("/api/v1/workspace/file")
     async def read_workspace_file(path: str = Query(...), download: bool = Query(default=False)):
         """Read one file inside the workspace (or a linked directory) for preview.
@@ -1200,8 +1211,8 @@ def create_studio_app(
             media_category = "image"
             payload: bytes | str = resolved.read_bytes()
         elif suffix in {".md", ".markdown"}:
-            content_type, media_category, payload = "text/markdown", "markdown", None
-            payload = resolved.read_text(encoding="utf-8", errors="replace")
+            content_type, media_category = "text/markdown", "markdown"
+            payload = _decode_text_file(resolved)
         else:
             text_types = {
                 ".txt", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".ts", ".tsx",
@@ -1213,7 +1224,7 @@ def create_studio_app(
                     "WORKSPACE_FILE_UNSUPPORTED", "该文件类型暂不支持预览", status_code=415
                 )
             content_type, media_category = "text/plain", "text"
-            payload = resolved.read_text(encoding="utf-8", errors="replace")
+            payload = _decode_text_file(resolved)
         response = {
             "path": str(resolved),
             "name": resolved.name,
