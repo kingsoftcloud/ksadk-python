@@ -920,6 +920,30 @@ def create_studio_app(
             elif action == "ListToolReceipts":
                 data = {"ToolReceipts": []}
             else:
+                # Channel-related actions: proxy to channel backend
+                _channel_actions = {
+                    "ListChannels", "CreateChannel", "UpdateChannel", "DeleteChannel", "GetChannel", "GetConnectQr",
+                    "ListPairingRequests", "ApprovePairing", "RejectPairing",
+                    "ListBindings", "UpdateBinding", "DeleteBinding",
+                    "ListMessages", "CountMessages",
+                    "Takeover", "ReleaseTakeover", "GetActiveTakeover", "ListTakeovers",
+                }
+                if action in _channel_actions:
+                    import httpx
+                    channel_backend = os.environ.get("AGENTENGINE_CHANNEL_URL", "http://127.0.0.1:8082")
+                    try:
+                        resp = httpx.post(
+                            f"{channel_backend}/agentengine/api/v1/{action}",
+                            json=payload,
+                            headers={"X-Ksc-Account-Id": request.headers.get("X-Ksc-Account-Id", "")},
+                            timeout=30,
+                        )
+                        return JSONResponse(status_code=resp.status_code, content=resp.json())
+                    except Exception as exc:
+                        return JSONResponse(
+                            status_code=502,
+                            content={"Code": 502, "Message": f"Channel backend unavailable: {exc}", "Data": {}},
+                        )
                 return JSONResponse(
                     status_code=404,
                     content={
