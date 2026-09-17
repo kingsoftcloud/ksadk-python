@@ -815,7 +815,7 @@ async function submitChannel(event: React.FormEvent) {
     if (!releaseTarget) return;
     const takeoverId = activeTakeovers[releaseTarget.Id];
     if (!takeoverId) {
-      showToast("无需释放", "当前没有活跃的接管", "info");
+      showToast("无需释放", "当前没有活跃的接管");
       setReleaseTarget(null);
       return;
     }
