@@ -178,7 +178,7 @@ async def test_memory_flush_rejects_secret(monkeypatch):
     from ksadk.conversations.runtime_compaction import _maybe_memory_flush
 
     monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "true")
-    events = [_user_event(1, "记住：api_key=sk-abcdefghijklmnopqrstuvwxyz")]
+    events = [_user_event(1, "记住：api_key=sk-test-secret-placeholder")]
     result = await _maybe_memory_flush(events)
     assert result is not None
     # secret 被 Policy 拒绝 → rejected，不 commit
