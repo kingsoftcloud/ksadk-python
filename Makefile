@@ -3,18 +3,18 @@
 
 .PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
-PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
-# Phase 1 runtime drills must run beside real Agent workloads in the preprod
+KERNEL_CANARY_NAMESPACE ?= agent-kernel
+# Kernel runtime drills must run beside real Agent workloads in the preprod
 # compute cluster. The management-cluster kubeconfig cannot reach the managed PG.
-PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d
-PHASE1_CANARY_PLATFORM ?= linux/amd64
-PHASE1_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
-PHASE1_CANARY_TAG ?= phase1-contract-$(shell git rev-parse --short=8 HEAD)
-PHASE1_CANARY_IMAGE := $(PHASE1_CANARY_REGISTRY)/agent-kernel-canary:$(PHASE1_CANARY_TAG)
-PHASE1_CANARY_KUBECTL := kubectl --kubeconfig=$(PHASE1_CANARY_KUBECONFIG)
-PHASE1_CANARY_INSTANCE_ID ?= kernel-canary-managed-pg
-PHASE1_CANARY_STORE_NAMESPACE ?= default
-PHASE1_CANARY_EVIDENCE_OUTPUT ?= /tmp/phase1-managed-pg-matrix.json
+KERNEL_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d
+KERNEL_CANARY_PLATFORM ?= linux/amd64
+KERNEL_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
+KERNEL_CANARY_TAG ?= kernel-contract-$(shell git rev-parse --short=8 HEAD)
+KERNEL_CANARY_IMAGE := $(KERNEL_CANARY_REGISTRY)/agent-kernel-canary:$(KERNEL_CANARY_TAG)
+KERNEL_CANARY_KUBECTL := kubectl --kubeconfig=$(KERNEL_CANARY_KUBECONFIG)
+KERNEL_CANARY_INSTANCE_ID ?= kernel-canary-managed-pg
+KERNEL_CANARY_STORE_NAMESPACE ?= default
+KERNEL_CANARY_EVIDENCE_OUTPUT ?= /tmp/kernel-managed-pg-matrix.json
 
 # 默认目标
 help:
@@ -53,7 +53,7 @@ help:
 	@echo "    make public-version-gate  版本号门禁(防降版/重复发版,对比 PyPI 已发版本)"
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
-	@echo "    make release-preflight  Phase 2 兼容/原生宿主/浏览器/制品门禁"
+	@echo "    make release-preflight  Release 兼容/原生宿主/浏览器/制品门禁"
 	@echo "    make release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
 	@echo "    make public-publish-gate  PyPI/GitHub Release 写操作前的审批门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
@@ -129,63 +129,63 @@ test:
 	uv run --extra all pytest tests/ -v
 
 # ============================================================
-# Phase 1 preproduction canary
+# Kernel preproduction canary
 # ============================================================
 
 kernel-canary-build:
 	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "ERROR: tracked source tree is dirty"; exit 2; }
-	@echo "Building Phase 1 canary: $(PHASE1_CANARY_IMAGE)"
-	docker build --platform $(PHASE1_CANARY_PLATFORM) \
+	@echo "Building Kernel canary: $(KERNEL_CANARY_IMAGE)"
+	docker build --platform $(KERNEL_CANARY_PLATFORM) \
 		--build-arg KSADK_SOURCE_COMMIT=$$(git rev-parse HEAD) \
 		--label org.opencontainers.image.revision=$$(git rev-parse HEAD) \
-		-f docs/superpowers/evidence/phase1/canary/canary.e2e.Dockerfile \
-		-t $(PHASE1_CANARY_IMAGE) .
+		-f docs/superpowers/evidence/kernel/canary/canary.e2e.Dockerfile \
+		-t $(KERNEL_CANARY_IMAGE) .
 
 kernel-canary-push: kernel-canary-build
-	docker push $(PHASE1_CANARY_IMAGE)
+	docker push $(KERNEL_CANARY_IMAGE)
 	@echo "Canary source: commit=$$(git rev-parse HEAD), contract=$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')"
-	@docker buildx imagetools inspect $(PHASE1_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
+	@docker buildx imagetools inspect $(KERNEL_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
 
 kernel-canary-deploy:
-	@test -f "$(PHASE1_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(PHASE1_CANARY_KUBECONFIG)"; exit 2; }
-	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
-	@$(PHASE1_CANARY_KUBECTL) create namespace $(PHASE1_CANARY_NAMESPACE) --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f -
-	@$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(PHASE1_CANARY_NAMESPACE) \
-		--from-literal=dsn="$$PHASE1_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f - >/dev/null
-	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml
-	@image="$(PHASE1_CANARY_IMAGE)"; \
+	@test -f "$(KERNEL_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(KERNEL_CANARY_KUBECONFIG)"; exit 2; }
+	@test -n "$$KERNEL_CANARY_POSTGRES_DSN" || { echo "ERROR: KERNEL_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@$(KERNEL_CANARY_KUBECTL) create namespace $(KERNEL_CANARY_NAMESPACE) --dry-run=client -o yaml | $(KERNEL_CANARY_KUBECTL) apply -f -
+	@$(KERNEL_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(KERNEL_CANARY_NAMESPACE) \
+		--from-literal=dsn="$$KERNEL_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(KERNEL_CANARY_KUBECTL) apply -f - >/dev/null
+	$(KERNEL_CANARY_KUBECTL) apply -f docs/superpowers/evidence/kernel/canary-hosted/deployment.yaml
+	@image="$(KERNEL_CANARY_IMAGE)"; \
 		digest=$$(docker buildx imagetools inspect "$$image" | awk '/^Digest:/ { print $$2; exit }'); \
-		test -n "$$digest" || { echo "ERROR: cannot resolve immutable digest for $(PHASE1_CANARY_IMAGE)"; exit 2; }; \
+		test -n "$$digest" || { echo "ERROR: cannot resolve immutable digest for $(KERNEL_CANARY_IMAGE)"; exit 2; }; \
 		repository=$${image%:*}; \
-		$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime="$${repository}@$${digest}" -n $(PHASE1_CANARY_NAMESPACE)
-	$(PHASE1_CANARY_KUBECTL) set env deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) \
-		AGENT_INSTANCE_ID=$(PHASE1_CANARY_INSTANCE_ID) \
-		AGENT_KERNEL_STORE_NAMESPACE=$(PHASE1_CANARY_STORE_NAMESPACE) \
-		PHASE1_CANARY_TEST_HOOKS=1
-	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+		$(KERNEL_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime="$${repository}@$${digest}" -n $(KERNEL_CANARY_NAMESPACE)
+	$(KERNEL_CANARY_KUBECTL) set env deployment/agent-kernel-canary -n $(KERNEL_CANARY_NAMESPACE) \
+		AGENT_INSTANCE_ID=$(KERNEL_CANARY_INSTANCE_ID) \
+		AGENT_KERNEL_STORE_NAMESPACE=$(KERNEL_CANARY_STORE_NAMESPACE) \
+		KERNEL_CANARY_TEST_HOOKS=1
+	$(KERNEL_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(KERNEL_CANARY_NAMESPACE) --timeout=180s
 
 kernel-canary-matrix:
-	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
-	@test -n "$$PHASE1_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
-	@case "$$PHASE1_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
+	@test -n "$$KERNEL_CANARY_POSTGRES_DSN" || { echo "ERROR: KERNEL_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@test -n "$$KERNEL_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: KERNEL_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
+	@case "$$KERNEL_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: KERNEL_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
 	@set -eu; \
 		cleanup() { $(MAKE) kernel-canary-delete; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) kernel-canary-push; \
-		PHASE1_CANARY_POSTGRES_DSN="$$PHASE1_CANARY_POSTGRES_DSN" $(MAKE) kernel-canary-deploy; \
+		KERNEL_CANARY_POSTGRES_DSN="$$KERNEL_CANARY_POSTGRES_DSN" $(MAKE) kernel-canary-deploy; \
 		uv run python scripts/run_kernel_managed_pg_matrix.py \
-			--kubeconfig "$(PHASE1_CANARY_KUBECONFIG)" \
-			--namespace "$(PHASE1_CANARY_NAMESPACE)" \
+			--kubeconfig "$(KERNEL_CANARY_KUBECONFIG)" \
+			--namespace "$(KERNEL_CANARY_NAMESPACE)" \
 			--expected-contract-digest "$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')" \
 			--source-commit "$$(git rev-parse HEAD)" \
-			--rollback-image "$$PHASE1_CANARY_ROLLBACK_IMAGE" \
-			--output "$(PHASE1_CANARY_EVIDENCE_OUTPUT)"
+			--rollback-image "$$KERNEL_CANARY_ROLLBACK_IMAGE" \
+			--output "$(KERNEL_CANARY_EVIDENCE_OUTPUT)"
 
 kernel-canary-status:
-	@$(PHASE1_CANARY_KUBECTL) get deployment,pod,service -n $(PHASE1_CANARY_NAMESPACE) -o wide
+	@$(KERNEL_CANARY_KUBECTL) get deployment,pod,service -n $(KERNEL_CANARY_NAMESPACE) -o wide
 
 kernel-canary-delete:
-	$(PHASE1_CANARY_KUBECTL) delete namespace $(PHASE1_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
+	$(KERNEL_CANARY_KUBECTL) delete namespace $(KERNEL_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
 
 studio-react-install-browser:
 	uv run playwright install chromium
@@ -538,32 +538,32 @@ public-version-gate:
 	uv run python scripts/check_release_version.py --mode "$(PUBLIC_PREFLIGHT_MODE)"
 
 release-preflight: public-build-check
-	@echo "==> Phase 2 compatibility, native host, browser, and artifact preflight"
+	@echo "==> Release compatibility, native host, browser, and artifact preflight"
 	@uv run --extra all python scripts/release_preflight.py --dist-dir dist
 
-PHASE2_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
-PHASE2_LOCAL_EVIDENCE ?= dist/phase2-evidence.json
-PHASE2_WEB_REGISTRY_EVIDENCE ?= dist/evidence/ksadk-web-registry.json
-PHASE2_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
-PHASE2_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
-PHASE2_FINAL_EVIDENCE ?= dist/phase2-release-candidate.json
+RELEASE_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
+RELEASE_LOCAL_EVIDENCE ?= dist/release-evidence.json
+RELEASE_WEB_REGISTRY_EVIDENCE ?= dist/evidence/ksadk-web-registry.json
+RELEASE_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
+RELEASE_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
+RELEASE_FINAL_EVIDENCE ?= dist/release-candidate.json
 
 release-candidate-gate:
 	@uv run python scripts/release_candidate_gate.py \
-		--expected-commit "$(PHASE2_FINAL_COMMIT)" \
-		--local "$(PHASE2_LOCAL_EVIDENCE)" \
-		--web-registry "$(PHASE2_WEB_REGISTRY_EVIDENCE)" \
-		--deployment "$(PHASE2_DEPLOYMENT_EVIDENCE)" \
-		--preprod "$(PHASE2_PREPROD_EVIDENCE)" \
-		--output "$(PHASE2_FINAL_EVIDENCE)"
+		--expected-commit "$(RELEASE_FINAL_COMMIT)" \
+		--local "$(RELEASE_LOCAL_EVIDENCE)" \
+		--web-registry "$(RELEASE_WEB_REGISTRY_EVIDENCE)" \
+		--deployment "$(RELEASE_DEPLOYMENT_EVIDENCE)" \
+		--preprod "$(RELEASE_PREPROD_EVIDENCE)" \
+		--output "$(RELEASE_FINAL_EVIDENCE)"
 
 public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs
 # alongside the deploy-pages job (which already builds/deploys the docs site),
-# and the heavy Phase 2 native/browser E2E gates are already enforced by the
-# pull-request release-check workflow before merge.  Re-running phase2 here
+# and the heavy Release native/browser E2E gates are already enforced by the
+# pull-request release-check workflow before merge.  Re-running the release gate here
 # doubles the work and stalls on the shared CI runner.  So the publish
 # preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test
 # + build/twine check, without docs-site-build or release-preflight.
