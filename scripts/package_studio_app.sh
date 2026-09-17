@@ -257,14 +257,32 @@ export PYTHONDONTWRITEBYTECODE=1
 if [ -n "${STUDIO_APP_CODESIGN_IDENTITY:-}" ]; then
   echo "==> codesign (identity: $STUDIO_APP_CODESIGN_IDENTITY)"
   test -f "$ENTITLEMENTS" || { echo "ERROR: entitlements missing: $ENTITLEMENTS" >&2; exit 1; }
-  # --deep walks every binary/framework inside the bundle. This is the
-  # practical starting point for a mixed Electron+Python bundle; if Apple
-  # rejects a nested helper during notarization, split the sign into
-  # per-framework passes instead of dropping --deep.
-  codesign --force --deep --options runtime \
-    --entitlements "$ENTITLEMENTS" \
-    --sign "$STUDIO_APP_CODESIGN_IDENTITY" \
-    "$STUDIO_APP_BUNDLE"
+  # Sign Electron's nested helpers and frameworks explicitly, innermost-first.
+  # codesign --deep is unreliable for Electron: it misses dylibs (libffmpeg,
+  # Squirrel's ShipIt) and skips secure timestamps / hardened runtime on them,
+  # which Apple notarization rejects. Sign each binary with --timestamp (secure
+  # timestamp) and --options runtime (hardened runtime), then the top-level app
+  # last. Entitlements only apply to the main executable and helpers, not to
+  # pure libraries.
+  sign_with() {
+    codesign --force --timestamp --options runtime --sign "$STUDIO_APP_CODESIGN_IDENTITY" "$@"
+  }
+  # Helper apps (in Frameworks) — apply entitlements so JIT/x86 work in sandbox.
+  for helper in "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper.app" \
+                "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (GPU).app" \
+                "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (Renderer).app" \
+                "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (Plugin).app"; do
+    [ -d "$helper" ] && sign_with --entitlements "$ENTITLEMENTS" "$helper"
+  done
+  # Frameworks — sign the framework version dir; no entitlements for pure libs.
+  for fw in "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Framework.framework" \
+            "$STUDIO_APP_BUNDLE/Contents/Frameworks/Squirrel.framework" \
+            "$STUDIO_APP_BUNDLE/Contents/Frameworks/Mantle.framework" \
+            "$STUDIO_APP_BUNDLE/Contents/Frameworks/ReactiveObjC.framework"; do
+    [ -d "$fw/Versions/Current" ] && sign_with "$fw/Versions/Current"
+  done
+  # Top-level app last, with entitlements.
+  sign_with --entitlements "$ENTITLEMENTS" "$STUDIO_APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$STUDIO_APP_BUNDLE"
 else
   echo "==> STUDIO_APP_CODESIGN_IDENTITY not set; leaving bundle unsigned" >&2

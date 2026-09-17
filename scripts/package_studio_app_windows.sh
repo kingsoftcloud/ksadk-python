@@ -165,7 +165,7 @@ cat > "$resources/manifest.json" <<MANIFEST
   "platform": "windows",
   "arch": "x64",
   "source_commit": "$(git rev-parse HEAD 2>/dev/null || echo unavailable)",
-  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.8}"
+  "ksadk_web_version": "${KSADK_WEB_VERSION:-0.3.10}"
 }
 MANIFEST
 

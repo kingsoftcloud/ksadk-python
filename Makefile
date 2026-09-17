@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen studio-app-dmg kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
 KERNEL_CANARY_NAMESPACE ?= agent-kernel
 # Kernel runtime drills must run beside real Agent workloads in the preprod
@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.8"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.10"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -73,6 +73,7 @@ help:
 	@echo "  \033[1;32mStudio macOS 本地包:\033[0m"
 	@echo "    make studio-app-package  构建 macOS arm64 self-contained Studio 包"
 	@echo "    make studio-app-package-windows  构建 Windows x64 NSIS 安装包(需 makensis)"
+	@echo "    make studio-app-dmg       构建美观 DMG(需 create-dmg,自动签名公证)"
 	@echo "    make studio-app-check    校验包内 KsADK/Codex/static 资源"
 	@echo "    make studio-app-run      启动包内 Studio（默认打开浏览器）"
 	@echo "    make studio-app-clean    清理 Studio 本地包"
@@ -726,7 +727,7 @@ STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
-# The shared Conversation v1 Web 0.3.8 release; a normal release build must
+# The shared Conversation v1 Web 0.3.10 release; a normal release build must
 # fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
@@ -877,6 +878,26 @@ studio-app-package-windows: build-wheel
 	  STUDIO_APP_DSH_ROOT="$(STUDIO_APP_DSH_ROOT)" \
 	  sh scripts/package_studio_app_windows.sh
 	@echo "✅ Studio Windows x64 bundle: $(STUDIO_APP_DIR)/AgentKitStudio-Setup-x64.exe"
+
+# 美观 DMG(带背景+拖拽 Applications 布局)。依赖 create-dmg(brew install create-dmg)。
+# 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg
+STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(STUDIO_APP_VERSION:=$(VERSION))-macos-arm64.dmg
+studio-app-dmg: studio-app-package
+	@command -v create-dmg >/dev/null 2>&1 || (echo "ERROR: create-dmg not found; brew install create-dmg" >&2; exit 1)
+	@test -d "$(STUDIO_APP_BUNDLE)" || (echo "ERROR: Studio bundle missing; run make studio-app-package first" >&2; exit 1)
+	@rm -f "$(STUDIO_APP_DMG)"
+	@create-dmg \
+	  --volname "AgentKit Studio" \
+	  --volicon "scripts/studio_icon.ico" \
+	  --background "scripts/studio_dmg_background.png" \
+	  --window-pos 200 120 \
+	  --window-size 660 400 \
+	  --icon-size 100 \
+	  --icon "AgentKitStudio.app" 180 190 \
+	  --app-drop-link 480 190 \
+	  --no-internet-enable \
+	  "$(STUDIO_APP_DMG)" "$(STUDIO_APP_BUNDLE)" 2>&1 || { echo "ERROR: create-dmg failed" >&2; exit 1; }
+	@echo "✅ Studio DMG: $(STUDIO_APP_DMG)"
 
 # 一键：编译前端 → wheel → 打包 → 校验 → 关旧实例 → 打开新包
 studio-app-reopen: studio-app-package
