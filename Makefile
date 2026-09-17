@@ -819,7 +819,7 @@ build-frontend: sync-ksadk-web-static build-studio-static
 
 build-wheel: build-frontend
 	@uv run python scripts/write_build_provenance.py
-	uv build
+	uv build --python 3.13
 	@$(MAKE) --no-print-directory print-build-provenance
 
 build-all: build-wheel
