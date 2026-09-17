@@ -188,6 +188,10 @@ def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest, contra
     assert payload["scenario"] == "closure"
 
 
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[3] / "docs/superpowers/evidence/phase0/manifest.json").is_file(),
+    reason="internal phase0 manifest is not published in the public tree",
+)
 def test_gate_cli_fails_and_exits_nonzero_on_missing_evidence(tmp_path):
     output = tmp_path / "report.json"
     code = main(

@@ -48,6 +48,13 @@ def test_canary_exposes_required_managed_pg_drill_hooks() -> None:
     } <= paths
 
 
+CANARY_EVIDENCE = REPO_ROOT / "docs/superpowers/evidence/kernel/canary-hosted/deployment.yaml"
+
+
+@pytest.mark.skipif(
+    not CANARY_EVIDENCE.is_file(),
+    reason="internal canary evidence is not published in the public tree",
+)
 def test_canary_requires_an_external_managed_postgres() -> None:
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     deployment = (
