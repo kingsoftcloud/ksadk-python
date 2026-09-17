@@ -52,7 +52,7 @@
 
 ## 2026-08-21 运行态补充（历史快照）
 
-- `docs/superpowers/evidence/phase0/manifest.json` 已存在且 `accepted=true`。以该
+- `docs/superpowers/evidence/kernel-contract/manifest.json` 已存在且 `accepted=true`。以该
   manifest 和既有 `preprod-report.json` 重跑
   `scripts/kernel_preprod_gate.py`，得到 **27 checks / 0 failed**（本次本地
   report 仅写入 `/tmp/phase1-current-gate.json`，不覆写历史证据）。因此下文中

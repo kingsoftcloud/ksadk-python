@@ -589,14 +589,7 @@ def create_studio_app(
 
     @app.get("/favicon.ico")
     async def favicon():
-        return Response(
-            content=(
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-                '<rect width="32" height="32" rx="8" fill="#1677ff"/>'
-                '<path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>'
-            ),
-            media_type="image/svg+xml",
-        )
+        return Response(status_code=204)
 
     async def runtime_model_catalog():
         api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")

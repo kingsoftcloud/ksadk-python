@@ -1,4 +1,4 @@
-"""Phase 3 完善：Memory Flush + 摘要 v2 解析 + Memory Candidate 抽取（方案 §9.2/§9.3/§10.3）。"""
+"""admission boundary 完善：Memory Flush + 摘要 v2 解析 + Memory Candidate 抽取（方案 §9.2/§9.3/§10.3）。"""
 
 from __future__ import annotations
 

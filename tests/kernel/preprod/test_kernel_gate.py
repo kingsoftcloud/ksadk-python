@@ -40,7 +40,7 @@ def complete_fake_evidence() -> dict:
     """全部 required check pass 的最小合法 evidence（status + 可追溯 detail）。"""
 
     checks = {}
-    for name in sorted(REQUIRED_CHECKS - {"phase0_baseline"}):
+    for name in sorted(REQUIRED_CHECKS - {"contract_baseline"}):
         checks[name] = {
             "status": "pass",
             "detail": _trace_detail(name),
@@ -54,8 +54,8 @@ def complete_fake_evidence() -> dict:
 
 
 @pytest.fixture
-def phase0_manifest(tmp_path):
-    manifest = tmp_path / "phase0" / "manifest.json"
+def baseline_manifest(tmp_path):
+    manifest = tmp_path / "kernel-contract" / "manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"schema_version": 1, "accepted": True, "commit": _HEX40}),
@@ -72,23 +72,23 @@ def contract_manifest(tmp_path):
     return manifest
 
 
-def evaluate(evidence: dict, *, phase0_manifest=None, contract_manifest=None):
+def evaluate(evidence: dict, *, baseline_manifest=None, contract_manifest=None):
     return evaluate_evidence(
         evidence,
         environment="fake",
         scenario="closure",
-        phase0_manifest=phase0_manifest,
+        baseline_manifest=baseline_manifest,
         contract_manifest=contract_manifest,
     )
 
 
 @pytest.fixture
-def report(phase0_manifest, contract_manifest):
+def report(baseline_manifest, contract_manifest):
     """验收矩阵里的 report fixture：完整 fake evidence 的 gate 结果。"""
 
     return evaluate(
         complete_fake_evidence(),
-        phase0_manifest=phase0_manifest,
+        baseline_manifest=baseline_manifest,
         contract_manifest=contract_manifest,
     )
 
@@ -97,7 +97,7 @@ async def test_gate_requires_every_closed_loop_evidence(report):
     required = {
         "contract_digest", "fifo", "idempotency", "queue_full", "reconnect",
         "cold_recovery", "stale_fence", "audit", "cross_repo_versions", "rollback",
-        "phase0_baseline",
+        "contract_baseline",
     }
     assert required <= report.passed_checks
     assert report.skipped_checks.isdisjoint(required)
@@ -168,7 +168,7 @@ def test_gate_report_is_machine_readable(report):
     assert set(payload["passed_checks"]) == set(REQUIRED_CHECKS)
 
 
-def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest, contract_manifest):
+def test_gate_cli_writes_report_and_exits_zero(tmp_path, baseline_manifest, contract_manifest):
     evidence_path = tmp_path / "evidence.json"
     evidence_path.write_text(json.dumps(complete_fake_evidence()))
     output = tmp_path / "report.json"
@@ -177,7 +177,7 @@ def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest, contra
             "--environment", "pre",
             "--scenario", "closure",
             "--evidence", str(evidence_path),
-            "--phase0-manifest", str(phase0_manifest),
+            "--baseline-manifest", str(baseline_manifest),
             "--contract-manifest", str(contract_manifest),
             "--output", str(output),
         ]
@@ -190,8 +190,8 @@ def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest, contra
 
 
 @pytest.mark.skipif(
-    not (Path(__file__).resolve().parents[3] / "docs/superpowers/evidence/phase0/manifest.json").is_file(),
-    reason="internal phase0 manifest is not published in the public tree",
+    not (Path(__file__).resolve().parents[3] / "docs/superpowers/evidence/kernel-contract/manifest.json").is_file(),
+    reason="internal contract manifest is not published in the public tree",
 )
 def test_gate_cli_fails_and_exits_nonzero_on_missing_evidence(tmp_path):
     output = tmp_path / "report.json"
@@ -206,20 +206,20 @@ def test_gate_cli_fails_and_exits_nonzero_on_missing_evidence(tmp_path):
     assert code == 1
     payload = json.loads(output.read_text())
     assert payload["status"] == "fail"
-    # Phase 0 is a separately accepted manifest now; a missing scenario file
+    # contract baseline is a separately accepted manifest now; a missing scenario file
     # must still fail every behaviour check instead of regressing that fact.
-    assert set(REQUIRED_CHECKS - {"phase0_baseline"}) <= set(payload["failed_checks"])
-    assert payload["checks"]["phase0_baseline"]["status"] == "pass"
+    assert set(REQUIRED_CHECKS - {"contract_baseline"}) <= set(payload["failed_checks"])
+    assert payload["checks"]["contract_baseline"]["status"] == "pass"
 
 
 def test_gate_rejects_evidence_for_a_different_frozen_contract(
-    phase0_manifest, contract_manifest
+    baseline_manifest, contract_manifest
 ):
     evidence = complete_fake_evidence()
     evidence["checks"]["contract_digest"]["detail"]["digest"] = "b" * 64
     report = evaluate(
         evidence,
-        phase0_manifest=phase0_manifest,
+        baseline_manifest=baseline_manifest,
         contract_manifest=contract_manifest,
     )
     assert not report.ok
@@ -257,31 +257,31 @@ def test_gate_rejects_identifier_kind_outside_whitelist():
     assert "audit" in report.failed_checks
 
 
-def test_phase0_baseline_requires_accepted_manifest():
+def test_contract_baseline_requires_accepted_manifest():
     evidence = complete_fake_evidence()
-    report = evaluate(evidence, phase0_manifest=None)
+    report = evaluate(evidence, baseline_manifest=None)
     assert not report.ok
-    assert "phase0_baseline" in report.failed_checks
-    assert any("phase0" in reason for reason in report.reasons)
+    assert "contract_baseline" in report.failed_checks
+    assert any("contract" in reason for reason in report.reasons)
 
 
-def test_phase0_baseline_rejects_manifest_not_accepted(tmp_path):
-    manifest = tmp_path / "phase0" / "manifest.json"
+def test_contract_baseline_rejects_manifest_not_accepted(tmp_path):
+    manifest = tmp_path / "kernel-contract" / "manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({"schema_version": 1, "accepted": False}))
     evidence = complete_fake_evidence()
-    report = evaluate(evidence, phase0_manifest=manifest)
+    report = evaluate(evidence, baseline_manifest=manifest)
     assert not report.ok
-    assert "phase0_baseline" in report.failed_checks
+    assert "contract_baseline" in report.failed_checks
 
 
-def test_phase0_baseline_ignores_evidence_claim(tmp_path, phase0_manifest):
+def test_contract_baseline_ignores_evidence_claim(tmp_path, baseline_manifest):
     evidence = complete_fake_evidence()
-    evidence["checks"]["phase0_baseline"] = {
+    evidence["checks"]["contract_baseline"] = {
         "status": "pass",
         "detail": {"contract_digest": _HEX64},
     }
-    # phase0_baseline 只认 manifest 文件；evidence 里的自述不能替代。
-    report = evaluate(evidence, phase0_manifest=None)
+    # contract_baseline 只认 manifest 文件；evidence 里的自述不能替代。
+    report = evaluate(evidence, baseline_manifest=None)
     assert not report.ok
-    assert "phase0_baseline" in report.failed_checks
+    assert "contract_baseline" in report.failed_checks

@@ -327,15 +327,15 @@ flowchart LR
 
 **Interfaces:**
 - Consumes: Phase 0 release manifest、六个仓库当前 remote refs、每仓干净 worktree 状态。
-- Produces: `build_manifest(repo_roots: Mapping[str, Path]) -> Phase1Baseline` 和 `verify_manifest(path: Path) -> None`；输出包含 repo、remote、branch_base、commit_sha、dirty、contract_digest、phase0_gate_status、captured_at。
+- Produces: `build_manifest(repo_roots: Mapping[str, Path]) -> Phase1Baseline` 和 `verify_manifest(path: Path) -> None`；输出包含 repo、remote、branch_base、commit_sha、dirty、contract_digest、contract_gate_status、captured_at。
 
 - [ ] **Step 1: 写 baseline 失败测试**
 
 ```python
 def test_kernel_baseline_rejects_dirty_or_unaccepted_repo(tmp_path):
-    manifest = make_manifest(phase0_gate_status="failed", dirty=True)
+    manifest = make_manifest(contract_gate_status="failed", dirty=True)
     path = write_manifest(tmp_path, manifest)
-    with pytest.raises(BaselineError, match="phase0_not_accepted|dirty_worktree"):
+    with pytest.raises(BaselineError, match="contract_not_accepted|dirty_worktree"):
         verify_manifest(path)
 ```
 
@@ -347,7 +347,7 @@ Expected: FAIL，错误显示 `verify_manifest` 尚不存在。
 
 - [ ] **Step 3: 实现 baseline 生成与校验**
 
-`build_kernel_baseline.py` 对映射中的每个 `repo_root` 执行 `git -C "$repo_root" rev-parse HEAD`、`status --porcelain=v1`、`remote get-url` 读取事实；KsADK 的 `phase0_gate_status` 必须来自 Phase 0 release manifest 的 `accepted=true`，不能由命令行布尔参数伪造。`verify_kernel_baseline.py` 拒绝 dirty、缺 commit、缺 remote、未验收 Phase 0 和重复 repo key。
+`build_kernel_baseline.py` 对映射中的每个 `repo_root` 执行 `git -C "$repo_root" rev-parse HEAD`、`status --porcelain=v1`、`remote get-url` 读取事实；KsADK 的 `contract_gate_status` 必须来自 Phase 0 release manifest 的 `accepted=true`，不能由命令行布尔参数伪造。`verify_kernel_baseline.py` 拒绝 dirty、缺 commit、缺 remote、未验收 Phase 0 和重复 repo key。
 
 ```python
 @dataclass(frozen=True)
@@ -360,8 +360,8 @@ class RepoBaseline:
 
 def verify_manifest(path: Path) -> None:
     baseline = Phase1Baseline.model_validate_json(path.read_text())
-    if not baseline.phase0.accepted:
-        raise BaselineError("phase0_not_accepted")
+    if not baseline.contract.accepted:
+        raise BaselineError("contract_not_accepted")
     if any(repo.dirty for repo in baseline.repositories):
         raise BaselineError("dirty_worktree")
 ```
@@ -370,7 +370,7 @@ def verify_manifest(path: Path) -> None:
 
 Run: `uv run python scripts/build_kernel_baseline.py --workspace /Users/xiayu/kingsoft/code/agent-sdk --output docs/superpowers/evidence/phase1/baseline.json`
 
-Expected: 在 Phase 0 尚未验收时明确退出 `phase0_not_accepted`；Phase 0 验收后生成全是 40 位 commit SHA 的 JSON。
+Expected: 在 Phase 0 尚未验收时明确退出 `contract_not_accepted`；Phase 0 验收后生成全是 40 位 commit SHA 的 JSON。
 
 - [ ] **Step 5: 建立各仓隔离 worktree**
 
