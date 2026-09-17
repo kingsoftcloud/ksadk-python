@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -386,6 +387,12 @@ class StudioService:
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
         self._current_codex_builds: dict[str, CodexBuildRecord] = {}
+        # agent_detail 进程内 TTL 缓存：bootstrap/list_models/list_sessions 等
+        # 转发接口在会话切换时反复调用 agent_detail，每次都重做 builds 全扫 +
+        # validator.validate（100-300ms）。5s TTL 把切换/刷新的重复读折叠掉；
+        # create/update/delete agent 时主动失效。
+        self._agent_detail_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._agent_detail_ttl = 5.0
 
     async def start(self, *, wait_for_dsh: bool = True) -> None:
         """Start local state and optionally wait for the managed DSH profile."""
@@ -1267,6 +1274,7 @@ class StudioService:
             labels=labels,
         )
         self._current_codex_builds.pop(agent_id, None)
+        self.invalidate_agent_detail(agent_id)
         return created
 
     def update_codex_agent(
@@ -1284,11 +1292,13 @@ class StudioService:
             name=name,
         )
         self._current_codex_builds.pop(agent_id, None)
+        self.invalidate_agent_detail(agent_id)
         return updated
 
     def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
         self.codex_agents.delete(agent_id, purge=purge)
         self._current_codex_builds.pop(agent_id, None)
+        self.invalidate_agent_detail(agent_id)
 
     def codex_agent_detail(self, agent_id: str | None = None) -> dict:
         return self.codex_agents.detail(agent_id)
@@ -1945,17 +1955,29 @@ class StudioService:
         return values[:limit]
 
     def agent_detail(self, agent_id: str) -> dict:
+        cached = self._agent_detail_cache.get(agent_id)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
         if self.is_codex_agent(agent_id):
             detail = self.codex_agent_detail(agent_id)
             detail["soulProjection"] = self._soul_projection(detail["draft"])
-            return detail
-        draft = self.drafts.get(agent_id)
-        return {
-            "draft": draft,
-            "builds": self.builds.list_for_agent(agent_id)[:10],
-            "validation": self.validator.validate(draft),
-            "soulProjection": self._soul_projection(draft),
-        }
+        else:
+            draft = self.drafts.get(agent_id)
+            detail = {
+                "draft": draft,
+                "builds": self.builds.list_for_agent(agent_id)[:10],
+                "validation": self.validator.validate(draft),
+                "soulProjection": self._soul_projection(draft),
+            }
+        self._agent_detail_cache[agent_id] = (time.monotonic() + self._agent_detail_ttl, detail)
+        return detail
+
+    def invalidate_agent_detail(self, agent_id: str | None = None) -> None:
+        """Invalidate cached agent_detail after create/update/delete/build."""
+        if agent_id is None:
+            self._agent_detail_cache.clear()
+        else:
+            self._agent_detail_cache.pop(agent_id, None)
 
     @staticmethod
     def _soul_projection(draft: AgentDraft) -> dict[str, object]:
@@ -2008,7 +2030,7 @@ class StudioService:
                     labels=labels,
                 ),
             )
-        return cast(
+        created = cast(
             AgentDraft,
             self.create_agent(
                 agent_id=agent_id,
@@ -2019,6 +2041,8 @@ class StudioService:
                 labels=labels,
             ),
         )
+        self.invalidate_agent_detail(agent_id)
+        return created
 
     def update_studio_agent(
         self,
@@ -2090,17 +2114,21 @@ class StudioService:
                 appearance,
                 expected_revision=expected_revision,
             )
-        return self.drafts.update_appearance(
+        updated = self.drafts.update_appearance(
             agent_id,
             appearance,
             expected_revision=expected_revision,
         )
+        self.invalidate_agent_detail(agent_id)
+        return updated
 
     def delete_studio_agent(self, agent_id: str, *, purge: bool = False) -> None:
         if self.is_codex_agent(agent_id):
             self.delete_codex_agent(agent_id, purge=purge)
+            self.invalidate_agent_detail(agent_id)
             return
         delete_framework_agent(self, agent_id, purge=purge)
+        self.invalidate_agent_detail(agent_id)
 
     def validate_studio_agent(
         self,
@@ -2384,12 +2412,14 @@ class StudioService:
             preview,
             catalog=self.catalog,
         )
-        return self.drafts.update(
+        updated = self.drafts.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
             name=name,
         )
+        self.invalidate_agent_detail(agent_id)
+        return updated
 
     def update_agent_bindings(
         self,

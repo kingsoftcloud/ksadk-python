@@ -1192,9 +1192,7 @@ class StudioSharedWebBridge:
             and not self.studio.execution_host.is_reserved_session(session.id)
         }
         grouped: dict[str, list[RunRecord]] = {}
-        for run in self.studio.event_store.list_runs():
-            if run.agent_id != agent_id:
-                continue
+        for run in self.studio.event_store.list_runs(agent_id=agent_id):
             grouped.setdefault(run.session_id, []).append(run)
         for session_id, runs in grouped.items():
             records[session_id] = self._session_record(runs)
