@@ -193,7 +193,7 @@ channel = [
 ]
 # 全部依赖
 all = [
-    "ksadk[a2a,adk,agui,codex,langchain,langgraph,deepagents,kb,skills,tracing,judge,channel,dev]",
+    "ksadk[a2a,adk,agui,codex,langchain,langgraph,deepagents,kb,skills,tracing,judge,dev]",
 ]
 
 [project.scripts]
