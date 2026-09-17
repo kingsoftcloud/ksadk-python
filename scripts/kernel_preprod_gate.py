@@ -43,7 +43,7 @@ REQUIRED_CHECKS: frozenset[str] = frozenset(
         "audit",
         "cross_repo_versions",
         "rollback",
-        "phase0_baseline",
+        "contract_baseline",
     }
 )
 
@@ -68,7 +68,8 @@ _EVENT_ID_KEYS = ("event_id", "replay_event_count", "seq", "accepted_seq", "seq_
 _COMMAND_ID_KEYS = ("command_id",)
 _DURATION_KEYS = ("duration_seconds", "rollback_seconds", "rollforward_seconds", "duration", "耗时")
 
-DEFAULT_PHASE0_MANIFEST = "docs/superpowers/evidence/phase0/manifest.json"
+DEFAULT_CONTRACT_MANIFEST = "docs/superpowers/evidence/kernel-contract/manifest.json"
+DEFAULT_BASELINE_MANIFEST = "docs/superpowers/evidence/kernel-contract/manifest.json"
 DEFAULT_CONTRACT_MANIFEST = "contracts/agent-kernel/v1/manifest.json"
 
 # evidence 值里出现这些模式即视为疑似凭据/DSN 泄露。
@@ -191,8 +192,8 @@ def _find_trace_identifiers(value: Any) -> set[str]:
     return found
 
 
-def _load_phase0_manifest(path: Path) -> dict[str, Any] | None:
-    """读取 phase0 baseline manifest；缺失/损坏返回 None（诚实 fail）。"""
+def _load_contract_manifest(path: Path) -> dict[str, Any] | None:
+    """读取 contract baseline manifest；缺失/损坏返回 None（诚实 fail）。"""
 
     if not path.exists():
         return None
@@ -226,7 +227,7 @@ def evaluate_evidence(
     *,
     environment: str,
     scenario: str,
-    phase0_manifest: Path | None = None,
+    baseline_manifest: Path | None = None,
     contract_manifest: Path | None = None,
 ) -> GateReport:
     """把 evidence dict 折叠成 GateReport。
@@ -238,7 +239,7 @@ def evaluate_evidence(
     - required check 状态为 pass 时必须有非空 detail，且 detail 包含该 check
       白名单内至少一种可追溯标识（command_id/event_id/commit/digest/duration），
       否则视为 invalid -> failed。裸 ``{"status": "pass"}`` 不被信任。
-    - ``phase0_baseline`` 只能由 phase0 manifest（accepted=true）支撑，
+    - ``contract_baseline`` 只能由 contract manifest（accepted=true）支撑，
       evidence 里的自述不能替代。
     - 非 required check 允许 skip/缺失，不计入 fail。
     - 任何 forbidden 字段 -> 整体 fail。
@@ -250,31 +251,31 @@ def evaluate_evidence(
     failed: set[str] = set()
     reasons: list[str] = []
 
-    phase0_detail: dict[str, Any] | None = None
-    if phase0_manifest is None:
-        failed.add("phase0_baseline")
-        reasons.append("phase0_baseline requires a manifest path; none was provided")
+    contract_detail: dict[str, Any] | None = None
+    if contract_manifest is None:
+        failed.add("contract_baseline")
+        reasons.append("contract_baseline requires a manifest path; none was provided")
     else:
-        manifest = _load_phase0_manifest(phase0_manifest)
+        manifest = _load_contract_manifest(baseline_manifest)
         accepted = bool(manifest and manifest.get("accepted") is True)
         if manifest is not None and accepted:
-            phase0_detail = {
-                "manifest": str(phase0_manifest),
+            contract_detail = {
+                "manifest": str(baseline_manifest),
                 "accepted": True,
                 "manifest_digest": hashlib.sha256(
-                    phase0_manifest.read_bytes()
+                    baseline_manifest.read_bytes()
                 ).hexdigest(),
             }
-            passed.add("phase0_baseline")
+            passed.add("contract_baseline")
         else:
-            failed.add("phase0_baseline")
+            failed.add("contract_baseline")
             reasons.append(
-                "phase0_baseline requires an accepted manifest at "
-                f"'{phase0_manifest}' (missing or accepted != true)"
+                "contract_baseline requires an accepted manifest at "
+                f"'{baseline_manifest}' (missing or accepted != true)"
             )
-    checks.pop("phase0_baseline", None)
+    checks.pop("contract_baseline", None)
 
-    for name in sorted(REQUIRED_CHECKS - {"phase0_baseline"}):
+    for name in sorted(REQUIRED_CHECKS - {"contract_baseline"}):
         detail = checks.get(name)
         if detail is None:
             failed.add(name)
@@ -362,8 +363,8 @@ def evaluate_evidence(
 
     status = "pass" if not failed and not findings else "fail"
     report_checks = {name: dict(detail) for name, detail in checks.items()}
-    if "phase0_baseline" in passed and phase0_detail is not None:
-        report_checks["phase0_baseline"] = {"status": "pass", "detail": phase0_detail}
+    if "contract_baseline" in passed and contract_detail is not None:
+        report_checks["contract_baseline"] = {"status": "pass", "detail": contract_detail}
     return GateReport(
         environment=environment,
         scenario=scenario,
@@ -393,13 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="path(s) to evidence JSON files; may be passed multiple times",
     )
     parser.add_argument(
-        "--phase0-manifest",
-        default=DEFAULT_PHASE0_MANIFEST,
-        help="path to the phase0 baseline manifest (must have accepted=true)",
-    )
-    parser.add_argument(
         "--contract-manifest",
         default=DEFAULT_CONTRACT_MANIFEST,
+        help="path to the contract baseline manifest (must have accepted=true)",
+    )
+    parser.add_argument(
+        "--baseline-manifest",
+        default=DEFAULT_BASELINE_MANIFEST,
         help="path to the frozen Agent Kernel contract manifest",
     )
     parser.add_argument(
@@ -429,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         merged,
         environment=args.environment,
         scenario=args.scenario,
-        phase0_manifest=Path(args.phase0_manifest),
+        baseline_manifest=Path(args.baseline_manifest),
         contract_manifest=Path(args.contract_manifest),
     )
 

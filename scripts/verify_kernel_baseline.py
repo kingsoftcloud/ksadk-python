@@ -1,6 +1,6 @@
 """校验 Kernel 跨仓基线 manifest（plan Task 0）。
 
-拒绝 dirty、缺 commit、缺 remote、未验收 Phase 0 和重复 repo key。
+拒绝 dirty、缺 commit、缺 remote、未验收 Contract 和重复 repo key。
 退出码非 0 时阻断 Kernel 合并与部署。
 """
 
@@ -17,8 +17,8 @@ from scripts.build_kernel_baseline import BaselineError, Phase1Baseline
 
 def verify_manifest(path: Path) -> None:
     baseline = Phase1Baseline.model_validate_json(path.read_text())
-    if not baseline.phase0.accepted:
-        raise BaselineError(f"phase0_not_accepted: {baseline.phase0.status}")
+    if not baseline.contract.accepted:
+        raise BaselineError(f"contract_not_accepted: {baseline.contract.status}")
     seen: set[str] = set()
     for repo in baseline.repositories:
         if repo.repo in seen:

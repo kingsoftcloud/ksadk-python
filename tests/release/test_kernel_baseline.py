@@ -1,7 +1,7 @@
 """Kernel 跨仓基线 manifest 的构建与校验测试（plan Task 0）。
 
 约束来自 docs/superpowers/plans/2026-08-17-agent-runtime-v2-kernel-agent-kernel.md：
-- phase0_gate_status 必须来自 Phase 0 release manifest 的 accepted=true，不能伪造；
+- contract_gate_status 必须来自 contract release manifest 的 accepted=true，不能伪造；
 - 拒绝 dirty worktree、缺 commit、缺 remote、重复 repo key。
 """
 
@@ -15,7 +15,7 @@ import pytest
 
 from scripts.build_kernel_baseline import (
     BaselineError,
-    Phase0Gate,
+    ContractGate,
     Phase1Baseline,
     RepoBaseline,
 )
@@ -36,17 +36,17 @@ def make_repo(**overrides) -> RepoBaseline:
 
 def make_manifest(
     *,
-    phase0_gate_status: str = "accepted",
+    contract_gate_status: str = "accepted",
     dirty: bool = False,
     repos: list[RepoBaseline] | None = None,
 ) -> Phase1Baseline:
     return Phase1Baseline(
         schema_version=1,
         repositories=repos if repos is not None else [make_repo(dirty=dirty)],
-        phase0=Phase0Gate(
-            accepted=phase0_gate_status == "accepted",
-            status=phase0_gate_status,
-            manifest_path="docs/superpowers/evidence/phase0/manifest.json",
+        contract=ContractGate(
+            accepted=contract_gate_status == "accepted",
+            status=contract_gate_status,
+            manifest_path="docs/superpowers/evidence/kernel-contract/manifest.json",
             manifest_digest="0" * 64,
         ),
         contract_digest=None,
@@ -61,9 +61,9 @@ def write_manifest(tmp_path: Path, manifest: Phase1Baseline) -> Path:
 
 
 def test_kernel_baseline_rejects_dirty_or_unaccepted_repo(tmp_path):
-    manifest = make_manifest(phase0_gate_status="failed", dirty=True)
+    manifest = make_manifest(contract_gate_status="failed", dirty=True)
     path = write_manifest(tmp_path, manifest)
-    with pytest.raises(BaselineError, match="phase0_not_accepted|dirty_worktree"):
+    with pytest.raises(BaselineError, match="contract_not_accepted|dirty_worktree"):
         verify_manifest(path)
 
 
@@ -105,18 +105,18 @@ def test_baseline_matches_real_git_facts(tmp_path):
     assert len(repo.commit_sha) == 40
 
 
-def test_phase0_manifest_missing_is_not_accepted(tmp_path):
-    from scripts.build_kernel_baseline import load_phase0_gate
+def test_contract_manifest_missing_is_not_accepted(tmp_path):
+    from scripts.build_kernel_baseline import load_contract_gate
 
-    gate = load_phase0_gate(tmp_path)
+    gate = load_contract_gate(tmp_path)
     assert gate.accepted is False
-    assert gate.status == "phase0_manifest_missing"
+    assert gate.status == "contract_manifest_missing"
 
 
-def test_phase0_manifest_accepted_round_trip(tmp_path):
-    from scripts.build_kernel_baseline import load_phase0_gate
+def test_contract_manifest_accepted_round_trip(tmp_path):
+    from scripts.build_kernel_baseline import load_contract_gate
 
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"accepted": True, "digest": "0" * 64}))
-    gate = load_phase0_gate(tmp_path)
+    gate = load_contract_gate(tmp_path)
     assert gate.accepted is True

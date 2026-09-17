@@ -1,4 +1,4 @@
-"""Phase 0 冻结契约单测：HarnessSpec / HarnessState / thread_ids / CapabilityRegistry。"""
+"""contract 冻结契约单测：HarnessSpec / HarnessState / thread_ids / CapabilityRegistry。"""
 
 from __future__ import annotations
 

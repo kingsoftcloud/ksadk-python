@@ -1,4 +1,4 @@
-"""Harness 冻结契约架构守卫（plan Phase 0 验收）。
+"""Harness 冻结契约架构守卫（plan Contract 验收）。
 
 HarnessSpec / HarnessState / ExecutionEngine 协议不得 import LangGraph
 或任何 Runner 专有类型（plan §4.3/§6.1）。用 AST 扫描，不依赖运行时。
