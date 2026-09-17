@@ -807,7 +807,7 @@ class BundleManifest(ContractModel):
 
 
 # ``BundleManifest`` is the existing, installed source type.  The explicit
-# name documents that its ``agentkit.bundle/v2`` branch is the Phase 2
+# name documents that its ``agentkit.bundle/v2`` branch is the Release
 # AgentBundleManifest/v2 contract; it is an alias, not a parallel manifest.
 AgentBundleManifest = BundleManifest
 

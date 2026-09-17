@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentKernelStore 跨后端 conformance 契约（Phase 1 Task 3）。
+"""AgentKernelStore 跨后端 conformance 契约（Kernel Task 3）。
 
 任何 AgentKernelStore 实现（InMemory / SQLite / PostgreSQL）都必须通过这里
 全部行为断言：FIFO、幂等 duplicate、typed queue_full、lease 过期 reclaim、

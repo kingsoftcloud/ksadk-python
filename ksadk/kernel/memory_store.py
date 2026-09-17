@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""InMemory ``AgentKernelStore``（Phase 1 Task 3 Step 4）。
+"""InMemory ``AgentKernelStore``（Kernel Task 3 Step 4）。
 
 只用于单进程开发与 conformance 测试，不宣称跨进程 durable。
 以 per-(agent, session) asyncio lock 保证 accept/claim/transition 的原子语义；

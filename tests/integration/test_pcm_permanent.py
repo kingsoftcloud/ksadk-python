@@ -260,7 +260,7 @@ def test_secret_rejected_by_policy():
         memory_type="profile",
         scope="user",
         scope_id="u1",
-        content="api_key=sk-1234567890abcdefghijklmnop",
+        content="api_key=sk-test-secret-placeholder",
         confidence=0.99,
         importance=0.99,
         source_event_ids=["e1"],

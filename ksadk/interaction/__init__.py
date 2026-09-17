@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Durable Interaction ledger（Phase 1 Task 5，Interaction/v1）。"""
+"""Durable Interaction ledger（Kernel Task 5，Interaction/v1）。"""
 
 from ksadk.interaction.contracts import (
     InteractionRecord,

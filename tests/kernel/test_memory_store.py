@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""InMemoryAgentKernelStore conformance（Phase 1 Task 3）。"""
+"""InMemoryAgentKernelStore conformance（Kernel Task 3）。"""
 
 from __future__ import annotations
 

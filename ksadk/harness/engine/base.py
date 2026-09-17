@@ -98,14 +98,14 @@ def single_agent_plan() -> ExecutionPlan:
 
 
 def default_capability_matrix() -> EngineCapabilityMatrix:
-    """基线矩阵：Phase 0 引擎未实现前，除 stream/start 外全部诚实标为不支持。"""
+    """基线矩阵：合同基线引擎未实现前，除 stream/start 外全部诚实标为不支持。"""
     unsupported = lambda reason: EngineCapability(supported=False, reason=reason)  # noqa: E731
     return EngineCapabilityMatrix(
-        cancel=unsupported("Phase 0: engine implementation lands in Phase 1"),
-        resume=unsupported("Phase 0: engine implementation lands in Phase 1"),
-        checkpoint=unsupported("Phase 0: engine implementation lands in Phase 1"),
-        interrupt=unsupported("Phase 0: engine implementation lands in Phase 1"),
-        durable_across_process=unsupported("Phase 0: engine implementation lands in Phase 1"),
+        cancel=unsupported("Contract baseline: engine implementation lands in Kernel"),
+        resume=unsupported("Contract baseline: engine implementation lands in Kernel"),
+        checkpoint=unsupported("Contract baseline: engine implementation lands in Kernel"),
+        interrupt=unsupported("Contract baseline: engine implementation lands in Kernel"),
+        durable_across_process=unsupported("Contract baseline: engine implementation lands in Kernel"),
         streaming=EngineCapability(supported=True),
     )
 

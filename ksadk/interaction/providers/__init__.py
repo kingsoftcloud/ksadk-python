@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""框架原生 InteractionProvider 注册表（Phase 1 Task 6）。
+"""框架原生 InteractionProvider 注册表（Kernel Task 6）。
 
 provider 是无状态映射器（adapter/handle 由
 :class:`~ksadk.interaction.provider.InteractionResolveContext` 注入），

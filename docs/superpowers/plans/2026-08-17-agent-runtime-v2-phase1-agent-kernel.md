@@ -301,7 +301,7 @@ flowchart LR
 | `agent-platform-operator` | `api/v1/agentruntime_types.go`、`internal/controller/agentruntime_controller.go`、CRD YAML | Pod identity/env/readiness condition |
 | `agentengine-gateway` | `app/api/endpoints.py`、`app/router_service.py`、`app/lifecycle.py` | action allowlist、trusted route、stream lifecycle |
 | `ksadk-web` | `src/types/agent-control.ts`、`src/types/session-events.ts`、`src/core/run/engine.ts` | typed receipt/capability/event cursor |
-| 跨仓验收 | `ksadk-python/tests/phase1/`、各仓合同测试、`docs/superpowers/evidence/phase1/` | contract digest、preprod E2E、回滚证据 |
+| 跨仓验收 | `ksadk-python/tests/kernel/`、各仓合同测试、`docs/superpowers/evidence/phase1/` | contract digest、preprod E2E、回滚证据 |
 
 ## 5. 实施波次
 
@@ -320,34 +320,34 @@ flowchart LR
 ### Task 0: 锁定 Phase 0 基线和跨仓实施工作区
 
 **Files:**
-- Create: `ksadk-python/scripts/build_phase1_baseline.py`
-- Create: `ksadk-python/scripts/verify_phase1_baseline.py`
-- Create: `ksadk-python/tests/release/test_phase1_baseline.py`
+- Create: `ksadk-python/scripts/build_kernel_baseline.py`
+- Create: `ksadk-python/scripts/verify_kernel_baseline.py`
+- Create: `ksadk-python/tests/release/test_kernel_baseline.py`
 - Create: `ksadk-python/docs/superpowers/evidence/phase1/baseline.json`
 
 **Interfaces:**
 - Consumes: Phase 0 release manifest、六个仓库当前 remote refs、每仓干净 worktree 状态。
-- Produces: `build_manifest(repo_roots: Mapping[str, Path]) -> Phase1Baseline` 和 `verify_manifest(path: Path) -> None`；输出包含 repo、remote、branch_base、commit_sha、dirty、contract_digest、phase0_gate_status、captured_at。
+- Produces: `build_manifest(repo_roots: Mapping[str, Path]) -> Phase1Baseline` 和 `verify_manifest(path: Path) -> None`；输出包含 repo、remote、branch_base、commit_sha、dirty、contract_digest、contract_gate_status、captured_at。
 
 - [ ] **Step 1: 写 baseline 失败测试**
 
 ```python
-def test_phase1_baseline_rejects_dirty_or_unaccepted_repo(tmp_path):
-    manifest = make_manifest(phase0_gate_status="failed", dirty=True)
+def test_kernel_baseline_rejects_dirty_or_unaccepted_repo(tmp_path):
+    manifest = make_manifest(contract_gate_status="failed", dirty=True)
     path = write_manifest(tmp_path, manifest)
-    with pytest.raises(BaselineError, match="phase0_not_accepted|dirty_worktree"):
+    with pytest.raises(BaselineError, match="contract_not_accepted|dirty_worktree"):
         verify_manifest(path)
 ```
 
 - [ ] **Step 2: 运行测试并确认失败**
 
-Run: `uv run pytest tests/release/test_phase1_baseline.py -q`
+Run: `uv run pytest tests/release/test_kernel_baseline.py -q`
 
 Expected: FAIL，错误显示 `verify_manifest` 尚不存在。
 
 - [ ] **Step 3: 实现 baseline 生成与校验**
 
-`build_phase1_baseline.py` 对映射中的每个 `repo_root` 执行 `git -C "$repo_root" rev-parse HEAD`、`status --porcelain=v1`、`remote get-url` 读取事实；KsADK 的 `phase0_gate_status` 必须来自 Phase 0 release manifest 的 `accepted=true`，不能由命令行布尔参数伪造。`verify_phase1_baseline.py` 拒绝 dirty、缺 commit、缺 remote、未验收 Phase 0 和重复 repo key。
+`build_kernel_baseline.py` 对映射中的每个 `repo_root` 执行 `git -C "$repo_root" rev-parse HEAD`、`status --porcelain=v1`、`remote get-url` 读取事实；KsADK 的 `contract_gate_status` 必须来自 Phase 0 release manifest 的 `accepted=true`，不能由命令行布尔参数伪造。`verify_kernel_baseline.py` 拒绝 dirty、缺 commit、缺 remote、未验收 Phase 0 和重复 repo key。
 
 ```python
 @dataclass(frozen=True)
@@ -360,17 +360,17 @@ class RepoBaseline:
 
 def verify_manifest(path: Path) -> None:
     baseline = Phase1Baseline.model_validate_json(path.read_text())
-    if not baseline.phase0.accepted:
-        raise BaselineError("phase0_not_accepted")
+    if not baseline.contract.accepted:
+        raise BaselineError("contract_not_accepted")
     if any(repo.dirty for repo in baseline.repositories):
         raise BaselineError("dirty_worktree")
 ```
 
 - [ ] **Step 4: 从实际 worktree 生成 manifest 并校验**
 
-Run: `uv run python scripts/build_phase1_baseline.py --workspace /Users/xiayu/kingsoft/code/agent-sdk --output docs/superpowers/evidence/phase1/baseline.json`
+Run: `uv run python scripts/build_kernel_baseline.py --workspace /Users/xiayu/kingsoft/code/agent-sdk --output docs/superpowers/evidence/phase1/baseline.json`
 
-Expected: 在 Phase 0 尚未验收时明确退出 `phase0_not_accepted`；Phase 0 验收后生成全是 40 位 commit SHA 的 JSON。
+Expected: 在 Phase 0 尚未验收时明确退出 `contract_not_accepted`；Phase 0 验收后生成全是 40 位 commit SHA 的 JSON。
 
 - [ ] **Step 5: 建立各仓隔离 worktree**
 
@@ -378,12 +378,12 @@ Expected: 在 Phase 0 尚未验收时明确退出 `phase0_not_accepted`；Phase 
 
 - [ ] **Step 6: 运行通过并提交**
 
-Run: `uv run pytest tests/release/test_phase1_baseline.py -q && uv run python scripts/verify_phase1_baseline.py docs/superpowers/evidence/phase1/baseline.json`
+Run: `uv run pytest tests/release/test_kernel_baseline.py -q && uv run python scripts/verify_kernel_baseline.py docs/superpowers/evidence/phase1/baseline.json`
 
 Expected: PASS，输出六仓 commit、Phase 0 manifest digest 和 `baseline_verified`。
 
 ```bash
-git add scripts/build_phase1_baseline.py scripts/verify_phase1_baseline.py tests/release/test_phase1_baseline.py docs/superpowers/evidence/phase1/baseline.json
+git add scripts/build_kernel_baseline.py scripts/verify_kernel_baseline.py tests/release/test_kernel_baseline.py docs/superpowers/evidence/phase1/baseline.json
 git commit -m "chore: lock phase1 cross-repo baseline"
 ```
 
@@ -1608,17 +1608,17 @@ git commit -m "feat: align studio with agent control contracts"
 - Modify: `agentengine-server/deploy/helm/agentengine/values-pre.yaml`
 - Modify: `agent-runtime-service/deploy/helm/agent-runtime-service/values-pre.yaml`
 - Modify: `agentengine-gateway/deploy/helm/agentengine-gateway/values-pre.yaml`
-- Create: `ksadk-python/tests/phase1/test_agent_kernel_preprod_e2e.py`
-- Create: `ksadk-python/tests/phase1/test_agent_kernel_split_brain.py`
-- Create: `ksadk-python/tests/phase1/test_contract_digest_preprod.py`
-- Create: `ksadk-python/tests/phase1/conftest.py`
-- Create: `ksadk-python/scripts/phase1_preprod_gate.py`
+- Create: `ksadk-python/tests/kernel/test_agent_kernel_preprod_e2e.py`
+- Create: `ksadk-python/tests/kernel/test_agent_kernel_split_brain.py`
+- Create: `ksadk-python/tests/kernel/test_contract_digest_preprod.py`
+- Create: `ksadk-python/tests/kernel/conftest.py`
+- Create: `ksadk-python/scripts/kernel_preprod_gate.py`
 - Create: `ksadk-python/docs/superpowers/evidence/phase1/preprod-report.json`
 - Create: `ksadk-python/docs/superpowers/evidence/phase1/rollback-report.json`
 
 **Interfaces:**
 - Consumes: Tasks 0-12 的六仓 commits/images、预发 shared PostgreSQL Secret ref、Helm releases、真实测试 Agent。
-- Produces: `phase1_preprod_gate.py --environment pre` 的机器可读 pass/fail report；可追溯到 command_id/event_id/trace_id/contract digest/Helm revision。
+- Produces: `kernel_preprod_gate.py --environment pre` 的机器可读 pass/fail report；可追溯到 command_id/event_id/trace_id/contract digest/Helm revision。
 
 - [ ] **Step 1: 先写 gate 的失败验收**
 
@@ -1632,7 +1632,7 @@ def test_gate_requires_every_closed_loop_evidence(report):
     assert report.skipped_checks.isdisjoint(required)
 ```
 
-`tests/phase1/conftest.py` 增加显式 `--preprod` 开关；未传开关时整组测试 skip，Phase 1 release gate 反向检查 required check 不能 skip。endpoint、测试租户和凭据从既有预发 Secret/env fixture 读取，报告只保存 resource ref/digest。
+`tests/kernel/conftest.py` 增加显式 `--preprod` 开关；未传开关时整组测试 skip，Phase 1 release gate 反向检查 required check 不能 skip。endpoint、测试租户和凭据从既有预发 Secret/env fixture 读取，报告只保存 resource ref/digest。
 
 ```python
 @dataclass(frozen=True)
@@ -1659,7 +1659,7 @@ def preprod_config(pytestconfig):
     return PreprodConfig.from_environment()
 ```
 
-Run: `uv run pytest tests/phase1 -q`
+Run: `uv run pytest tests/kernel -q`
 
 Expected: FAIL；部署前无 report/endpoint evidence。
 
@@ -1698,7 +1698,7 @@ Operator 和 ksadk-web 使用各仓已有 CI 发布流程；Release Owner 只接
 `test_contract_digest_preprod.py` 查询 Server、Gateway、Runtime Service、Operator condition、Runtime health、Web build metadata，六者 aggregate digest 必须完全相同；Postgres schema version、connectivity、lease clock skew 小于 2s；任一 mismatch 停止流量切换。
 
 ```bash
-uv run pytest tests/phase1/test_contract_digest_preprod.py -q --preprod
+uv run pytest tests/kernel/test_contract_digest_preprod.py -q --preprod
 ```
 
 - [ ] **Step 5: 跑真实闭环 happy path**
@@ -1706,7 +1706,7 @@ uv run pytest tests/phase1/test_contract_digest_preprod.py -q --preprod
 通过 Studio 创建/选择真实预发 AgentInstance，发送三条 enqueue，验证 receipt accepted、ControlEvent accepted/claimed、RuntimeEvent progress/final、Session history replay；断开 SSE 后从最后 seq 续连，无丢失/重复，最终输出与 replay fold 一致。
 
 ```bash
-uv run pytest tests/phase1/test_agent_kernel_preprod_e2e.py -q --preprod -k happy_path
+uv run pytest tests/kernel/test_agent_kernel_preprod_e2e.py -q --preprod -k happy_path
 ```
 
 - [ ] **Step 6: 跑并发、幂等、背压和 capability**
@@ -1714,7 +1714,7 @@ uv run pytest tests/phase1/test_agent_kernel_preprod_e2e.py -q --preprod -k happ
 同 Session 100 条命令 FIFO；10 个 Session 并发；ack 前断网后同 key 重试只执行一次；队列 101 条返回 queue_full；对不支持 steer/pause 的 runtime 返回 typed unsupported，对支持项执行真实调用并观察审计事件。
 
 ```bash
-uv run pytest tests/phase1/test_agent_kernel_preprod_e2e.py -q --preprod -k 'fifo or concurrent or idempotency or queue_full or capability'
+uv run pytest tests/kernel/test_agent_kernel_preprod_e2e.py -q --preprod -k 'fifo or concurrent or idempotency or queue_full or capability'
 ```
 
 - [ ] **Step 7: 跑 Pod kill 冷恢复**
@@ -1722,7 +1722,7 @@ uv run pytest tests/phase1/test_agent_kernel_preprod_e2e.py -q --preprod -k 'fif
 在 running/waiting 两种状态分别 delete 当前 Pod；等待 lease 过期和新 Pod takeover。支持 durable attach/resume 的 runtime 继续并只有一个 terminal；不支持的 runtime 产生确定性 interrupted，Studio 状态和 Server read model 一致。
 
 ```bash
-uv run pytest tests/phase1/test_agent_kernel_preprod_e2e.py -q --preprod -k 'cold_attach or cold_non_attach'
+uv run pytest tests/kernel/test_agent_kernel_preprod_e2e.py -q --preprod -k 'cold_attach or cold_non_attach'
 ```
 
 - [ ] **Step 8: 跑 split-brain 旧 writer 拒绝**
@@ -1730,7 +1730,7 @@ uv run pytest tests/phase1/test_agent_kernel_preprod_e2e.py -q --preprod -k 'col
 保留旧 Pod 网络到 Store、强制创建新 activation 并 takeover；让旧 stream 尝试写 token/terminal，数据库拒绝 stale fence，canonical log 只含新 owner 事实，指标 `stale_fence_total` 增加，审计记录 old/new activation refs。
 
 ```bash
-uv run pytest tests/phase1/test_agent_kernel_split_brain.py -q --preprod
+uv run pytest tests/kernel/test_agent_kernel_split_brain.py -q --preprod
 ```
 
 - [ ] **Step 9: 做滚动兼容和回滚**
@@ -1738,12 +1738,12 @@ uv run pytest tests/phase1/test_agent_kernel_split_brain.py -q --preprod
 先让新 Gateway/Server 面向一组新 runtime canary，再扩大；随后回滚应用镜像到 Phase 0 版本但不回滚 append-only DB/CRD migration，确认旧 API/历史读取仍工作；再前滚 Phase 1 并确认 pending Inbox 恢复。rollback report 记录耗时、数据差异和残留资源。
 
 ```bash
-uv run python scripts/phase1_preprod_gate.py --environment pre --scenario rollback --output docs/superpowers/evidence/phase1/rollback-report.json
+uv run python scripts/kernel_preprod_gate.py --environment pre --scenario rollback --output docs/superpowers/evidence/phase1/rollback-report.json
 ```
 
 - [ ] **Step 10: 生成 release evidence 和 gate 结果**
 
-Run: `uv run python scripts/phase1_preprod_gate.py --environment pre --output docs/superpowers/evidence/phase1/preprod-report.json && uv run pytest tests/phase1 -q`
+Run: `uv run python scripts/kernel_preprod_gate.py --environment pre --output docs/superpowers/evidence/phase1/preprod-report.json && uv run pytest tests/kernel -q`
 
 Expected: PASS；required checks 无 skip，报告不含 DSN、Secret、authorization token 或用户 prompt 原文。
 
@@ -1768,7 +1768,7 @@ Expected: 全部 PASS；任何 required preprod check 或合同测试 skip 都�
 KsADK:
 
 ```bash
-git add tests/phase1 scripts/phase1_preprod_gate.py docs/superpowers/evidence/phase1
+git add tests/kernel scripts/kernel_preprod_gate.py docs/superpowers/evidence/phase1
 git commit -m "test: gate agent kernel phase1 preprod closure"
 ```
 

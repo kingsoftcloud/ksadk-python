@@ -1,4 +1,4 @@
-"""ManagedLangGraphEngine Phase 1 测试（fake reasoner，无网络）。"""
+"""ManagedLangGraphEngine Kernel 测试（fake reasoner，无网络）。"""
 
 from __future__ import annotations
 
@@ -514,7 +514,7 @@ def test_process_restart_recovers_from_sqlite_checkpoint(tmp_path):
 
     db_path = str(tmp_path / "harness.db")
 
-    async def phase_one():
+    async def first_phase():
         cm = AsyncSqliteSaver.from_conn_string(db_path)
         saver = await cm.__aenter__()
         try:
@@ -552,7 +552,7 @@ def test_process_restart_recovers_from_sqlite_checkpoint(tmp_path):
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    handle, first, _ = asyncio.run(phase_one())
+    handle, first, _ = asyncio.run(first_phase())
     assert any(e.event_type == EventType.RUN_INTERRUPTED for e in first)
 
     second, executed = asyncio.run(phase_two(handle))

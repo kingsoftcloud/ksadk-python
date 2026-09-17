@@ -1,6 +1,6 @@
 """Harness Memory Runtime（plan §9）——受控写入 + Core Memory Block 读取。
 
-Phase 2 交付（plan §17）：
+Release 交付（plan §17）：
 - Core Memory Block：常驻 Block 数量与总预算有限（§9.2）；
 - 长期 Memory 检索与受控写入（§9.3 写入管线）。
 

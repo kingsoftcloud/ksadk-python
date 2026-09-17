@@ -1,4 +1,4 @@
-"""Phase 5 Execution Strategy 测试（plan §17 验收项）。"""
+"""多 Agent 拓扑 Execution Strategy 测试（plan §17 验收项）。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class TestStrategies:
         assert set(plan.nodes) == {"prepare_context", "reason", "tool_calls", "final"}
 
     def test_same_spec_can_choose_different_strategies(self):
-        """同一模板/Spec 可选择不同策略（§17 Phase 5 验收）。"""
+        """同一模板/Spec 可选择不同策略（§17 多 Agent 拓扑 验收）。"""
         registry = ExecutionStrategyRegistry()
         spec = _spec()
         single = registry.compile(spec, strategy="single-agent")

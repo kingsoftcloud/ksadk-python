@@ -38,6 +38,7 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
 
     def __init__(self, detection_result: Any, project_dir: str):
         super().__init__(detection_result, project_dir)
+        self._module: Any = None
         self._managed_checkpoint_lock = asyncio.Lock()
         self._managed_checkpoint_prepared = False
         self._managed_checkpoint_state = "uninitialized"
@@ -519,6 +520,13 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
                 self._managed_checkpoint_prepared = True
                 self._managed_checkpoint_state = "terminal_failure"
                 return
+
+            # 探测路径可能先于首个 chat 请求 probe（本地调试与手动部署形态的
+            # capability adapter 均未 preflight）。此时驻留图还没加载，先完成
+            # 模块加载：既避免把"未加载"误判为"无 durable checkpointer"，
+            # 也避免对未初始化的 _module 抛 AttributeError 被静默吞掉。
+            if self._agent is None:
+                self.load_agent()
 
             factory = getattr(self._module, "ksadk_graph_factory", None)
             if not callable(factory):

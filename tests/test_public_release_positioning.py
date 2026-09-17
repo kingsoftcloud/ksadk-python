@@ -549,7 +549,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "verify-ksadk-web-wheel-static" in makefile
     assert (
         "public-preflight: public-version-gate public-audit sync-ksadk-web-static "
-        "public-test docs-site-build phase2-release-preflight" in makefile
+        "public-test docs-site-build release-preflight" in makefile
     )
     assert "NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static" in makefile
     assert "scripts/audit_docs_site_output.py" in makefile

@@ -1,4 +1,4 @@
-"""Phase 4 生命周期闭环测试（plan §17 验收：Build→Deploy→Activate→Invoke）。"""
+"""生命周期闭环测试（plan §17 验收：Build→Deploy→Activate→Invoke）。"""
 
 from __future__ import annotations
 

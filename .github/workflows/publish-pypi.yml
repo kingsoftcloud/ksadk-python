@@ -70,7 +70,7 @@ jobs:
         if: env.PUBLISH_TARGET == 'full'
         # Mirror the 0.8.2 publish preflight shape: version + audit + ksadk-web
         # sync + test + build/twine check. docs-site-build runs in the
-        # deploy-pages job; the heavy Phase 2 native/browser E2E gates are
+        # deploy-pages job; the heavy Release native/browser E2E gates are
         # already enforced by the pull-request release-check workflow, so
         # re-running them here only doubles work and stalls on the shared CI
         # runner.

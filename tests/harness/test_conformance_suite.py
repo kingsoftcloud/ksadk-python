@@ -1,4 +1,4 @@
-"""Conformance 校验器测试（Phase 0 最小套件，plan §15）。"""
+"""Conformance 校验器测试（contract 最小套件，plan §15）。"""
 
 from __future__ import annotations
 

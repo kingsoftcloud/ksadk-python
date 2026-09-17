@@ -1,4 +1,4 @@
-"""Harness 冻结契约架构守卫（plan Phase 0 验收）。
+"""Harness 冻结契约架构守卫（plan Contract 验收）。
 
 HarnessSpec / HarnessState / ExecutionEngine 协议不得 import LangGraph
 或任何 Runner 专有类型（plan §4.3/§6.1）。用 AST 扫描，不依赖运行时。
@@ -58,7 +58,7 @@ def test_contract_modules_do_not_import_engine_frameworks() -> None:
 
 
 def test_engine_langgraph_is_the_only_langgraph_entrypoint() -> None:
-    """LangGraph 只允许出现在 engine 的图构建模块（Phase 1 落地后）。
+    """LangGraph 只允许出现在 engine 的图构建模块（Kernel 落地后）。
 
     langgraph.py（引擎主体）与 graph_builder.py（图组装拆分，同属
     engine 包的 LangGraph 职责）之外，任何 harness 模块不得 import langgraph。

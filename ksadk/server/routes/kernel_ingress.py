@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RunAgent / Responses 入口的 kernel 路径（Phase 1 Task 8 Step 3-5）。
+"""RunAgent / Responses 入口的 kernel 路径（Kernel Task 8 Step 3-5）。
 
 只在 ``kernel_route_active()`` 时启用（灰度 opt-in）；旧 HTTP 行为保持兼容：
 - accepted -> 202、duplicate -> 200、rejected -> 400、unsupported -> 409、

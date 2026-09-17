@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""InteractionProvider seam（Phase 1 Task 6 Step 1）。
+"""InteractionProvider seam（Kernel Task 6 Step 1）。
 
 Interaction 回包的分发 seam：Worker 载入权威 :class:`InteractionRecord`
 后，把回包交给 record 绑定的 provider，由 provider 用 **activation 持有的**

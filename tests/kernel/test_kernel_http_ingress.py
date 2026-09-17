@@ -429,8 +429,8 @@ async def test_get_agent_status_returns_real_state_not_fail_closed(app_with_real
             session_id="sess-1",
             activation_id="act-status-1",
             runtime_type="fake",
-            bundle_digest="phase1-test",
-            capability_digest="phase1-test",
+            bundle_digest="kernel-test",
+            capability_digest="kernel-test",
             lease_ttl_seconds=60.0,
         )
     )

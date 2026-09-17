@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""PostgreSQL ``AgentKernelStore``（Phase 1 Task 4）。
+"""PostgreSQL ``AgentKernelStore``（Kernel Task 4）。
 
 预发多写者 durable Inbox / Run / ActivationLease 存储：
 - schema 见 ``ksadk/kernel/sql/001_agent_kernel.sql``（BIGINT fencing_token、

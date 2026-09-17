@@ -589,14 +589,7 @@ def create_studio_app(
 
     @app.get("/favicon.ico")
     async def favicon():
-        return Response(
-            content=(
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-                '<rect width="32" height="32" rx="8" fill="#1677ff"/>'
-                '<path d="M9 8h14v4h-5v12h-4V12H9z" fill="white"/></svg>'
-            ),
-            media_type="image/svg+xml",
-        )
+        return Response(status_code=204)
 
     async def runtime_model_catalog():
         api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
@@ -1186,6 +1179,97 @@ def create_studio_app(
     ):
         studio.get_agent_schedule(agent_id, task_id)
         return {"items": studio.scheduler.list_occurrences(task_id, limit=limit)}
+
+    def _decode_text_file(path: Path) -> str:
+        """Decode with an encoding fallback chain so legacy GBK/GB18030 files
+        written by agents preview correctly instead of turning into mojibake."""
+        raw = path.read_bytes()
+        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="replace")
+
+    @app.get("/api/v1/workspace/file")
+    async def read_workspace_file(path: str = Query(...), download: bool = Query(default=False)):
+        """Read one file inside the workspace (or a linked directory) for preview.
+
+        Absolute paths outside the workspace and its linked directories are
+        rejected, as are oversized files; preview clients render the payload
+        according to the returned contentType.
+        """
+        import mimetypes
+        from urllib.parse import quote
+
+        raw = Path(path).expanduser()
+        candidate = raw if raw.is_absolute() else studio.workspace.root / raw
+        try:
+            resolved = candidate.resolve()
+        except OSError as error:
+            raise StudioError("WORKSPACE_FILE_INVALID", "文件路径无效", status_code=422) from error
+
+        allowed_roots = [studio.workspace.root.resolve()]
+        for item in LinkedDirectoryPolicy(studio.workspace.root).list():
+            linked = Path(item.path).expanduser().resolve()
+            if linked.is_dir():
+                allowed_roots.append(linked)
+        if not any(
+            resolved == root or resolved.is_relative_to(root) for root in allowed_roots
+        ):
+            raise StudioError(
+                "WORKSPACE_FILE_FORBIDDEN", "路径不在工作区（或链接目录）内", status_code=403
+            )
+        if not resolved.is_file():
+            raise StudioError("WORKSPACE_FILE_NOT_FOUND", "文件不存在", status_code=404)
+        size = resolved.stat().st_size
+        if size > 2 * 1024 * 1024:
+            raise StudioError(
+                "WORKSPACE_FILE_TOO_LARGE", "文件超过 2MB 预览上限", status_code=413
+            )
+        suffix = resolved.suffix.lower()
+        if suffix in {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+        }:
+            content_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+            media_category = "image"
+            payload: bytes | str = resolved.read_bytes()
+        elif suffix in {".md", ".markdown"}:
+            content_type, media_category = "text/markdown", "markdown"
+            payload = _decode_text_file(resolved)
+        else:
+            text_types = {
+                ".txt", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".ts", ".tsx",
+                ".jsx", ".html", ".css", ".yaml", ".yml", ".toml", ".xml", ".sh",
+                ".sql", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".diff", ".ini",
+            }
+            if suffix not in text_types:
+                raise StudioError(
+                    "WORKSPACE_FILE_UNSUPPORTED", "该文件类型暂不支持预览", status_code=415
+                )
+            content_type, media_category = "text/plain", "text"
+            payload = _decode_text_file(resolved)
+        response = {
+            "path": str(resolved),
+            "name": resolved.name,
+            "sizeBytes": size,
+            "contentType": content_type,
+            "mediaCategory": media_category,
+        }
+        if download:
+            quoted = quote(resolved.name)
+            return Response(
+                content=payload if isinstance(payload, bytes) else payload.encode("utf-8"),
+                media_type=content_type,
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+            )
+        if media_category == "image":
+            import base64
+
+            response["dataBase64"] = base64.b64encode(payload).decode("ascii")
+        else:
+            response["content"] = payload
+        return response
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
