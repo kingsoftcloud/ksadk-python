@@ -73,7 +73,7 @@ class A2UICore:
         self._seq = 0
         self._seen_surfaces: set[str] = set()
         # InteractionLedger 存在时它是 pending interaction 的唯一权威
-        # （Phase 1 Task 5 Step 6）；本地 dict 只作无 ledger 的降级路径。
+        # （Kernel Task 5 Step 6）；本地 dict 只作无 ledger 的降级路径。
         self._ledger = interaction_ledger
         self._guard = interaction_guard
         self._tenant_id = tenant_id
@@ -181,7 +181,7 @@ class A2UICore:
         await self.display_ui(surface, invocation_id=invocation_id, origin=origin)
         interaction_id = f"int_{uuid.uuid4().hex[:12]}"
         if self._ledger is not None and self._guard is not None:
-            # Phase 1 Task 5 Step 6:durable ledger 是 pending interaction 的
+            # Kernel Task 5 Step 6:durable ledger 是 pending interaction 的
             # 唯一权威;持久化身份与 interaction.requested 事实由 ledger 落盘。
             from datetime import datetime, timezone
 
@@ -264,7 +264,7 @@ class A2UICore:
         ``action``: ``{"action_id","surface_id","name","actor"?,"component_id"?}``;
         携带 ``interaction_id`` 且配置了 InteractionLedger 时,对原 ID 建
         InteractionSubmission 走 durable resolve,不再发第二个
-        InteractionRequested(Phase 1 Task 5 Step 6)。
+        InteractionRequested(Kernel Task 5 Step 6)。
         """
         receipt = ActionReceipt(
             action_id=str(action.get("action_id") or f"act_{uuid.uuid4().hex[:12]}"),

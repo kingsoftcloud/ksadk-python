@@ -885,7 +885,7 @@ class StudioService:
                     ConversationCapability(name="attachment.image", mode="native"),
                     # Bounded UTF-8/code attachments are made model-visible as
                     # deterministic text parts by the Responses compatibility
-                    # adapter.  Binary files remain unavailable in Phase 2.
+                    # adapter.  Binary files remain unavailable in Release.
                     ConversationCapability(name="attachment.file", mode="translated"),
                     ConversationCapability(name="reasoning.effort", mode="native"),
                     ConversationCapability(name="goal", mode="native"),

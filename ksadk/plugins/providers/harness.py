@@ -686,7 +686,7 @@ def _build_direct_backend(
     workspace_root: Path,
     reasoner: HarnessReasoner,
 ) -> tuple[RuntimeExecutor, RuntimeLaunchContext]:
-    """Internal execution seam; Phase 2 does not expose strategy as a plugin."""
+    """Internal execution seam; Release does not expose strategy as a plugin."""
 
     history_reasoner = _ConversationHistoryReasoner(reasoner)
     registry = RuntimeRegistry()

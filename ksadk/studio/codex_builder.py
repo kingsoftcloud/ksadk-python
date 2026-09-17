@@ -71,7 +71,7 @@ class CodexBuildRecord(ContractModel):
     # Studio bindings separately so currentness checks never compare a model
     # name (``glm-5.2``) with a Catalog id (``model:provider:glm-5-2:live``).
     # ``None`` only allows older local records to be read and rejected as
-    # stale with an actionable rebuild; Phase 2 has not shipped yet, so the
+    # stale with an actionable rebuild; Release has not shipped yet, so the
     # deployment path does not carry a legacy identity-migration branch.
     model_profile_ids: list[str] | None = None
     # Omitted for builds without native plugins so existing on-disk receipts

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel ingress 收敛层（Phase 1 Task 8）。
+"""Agent Kernel ingress 收敛层（Kernel Task 8）。
 
 把 KsADK 现有五个入口（RunAgent / Responses / AG-UI / A2A / Studio）的
 mutation 统一收敛到 ``AgentKernel.submit``：

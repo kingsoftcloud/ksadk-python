@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``InteractionLedger`` port 与跨后端共享的台账语义（Phase 1 Task 5）。
+"""``InteractionLedger`` port 与跨后端共享的台账语义（Kernel Task 5）。
 
 所有 mutation 都接受 :class:`~ksadk.kernel.contracts.ActivationWriteGuard`
 并在 store 事务内与 activation lease 做 fence CAS；request 写 pending 行 +

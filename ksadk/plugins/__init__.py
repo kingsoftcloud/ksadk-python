@@ -1,4 +1,4 @@
-"""Versioned contracts for the Phase 2 plugin composition boundary.
+"""Versioned contracts for the Release plugin composition boundary.
 
 This package models discovery, deterministic locking, and the controlled
 PluginHost lifecycle.  It does not create a second runtime/event store;

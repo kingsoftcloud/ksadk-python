@@ -1,6 +1,6 @@
 """Harness ExecutionEngine 子包（plan §6.3/§16）。
 
-``base`` 与 ``thread_ids`` 引擎无关；``langgraph`` 引擎实现在 Phase 1 落地。
+``base`` 与 ``thread_ids`` 引擎无关；``langgraph`` 引擎实现在 Kernel 落地。
 """
 
 from ksadk.harness.engine.base import (

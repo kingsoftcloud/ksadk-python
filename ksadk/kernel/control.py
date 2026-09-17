@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""深模块 AgentKernel control facade（Phase 1 Task 6 Step 3）。
+"""深模块 AgentKernel control facade（Kernel Task 6 Step 3）。
 
 小接口 ``submit`` / ``status`` / ``subscribe``：
 
