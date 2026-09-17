@@ -15,6 +15,7 @@ import { useWorkspaceContributions } from "./plugins/workspaceSlots";
 import { AutomationsPage } from "./pages/AutomationsPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
+import { ChannelsPage } from "./pages/ChannelsPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { MoreActionsMenu } from "./components/MoreActionsMenu";
 import { ChatRunPanel } from "./components/ChatRunPanel";
@@ -45,6 +46,7 @@ type View = NavigationView;
 
 const VIEW_TITLE: Record<View, string> = {
   agents: "Agent",
+  channels: "消息渠道",
   create: "创建 Agent",
   "agent-detail": "Agent 配置",
   conversations: "会话",
@@ -908,6 +910,7 @@ export default function App() {
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "plugins" && <PluginsPage refreshTick={refreshTick} />}
             {view === "automations" && <AutomationsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} scopedAgentId={automationAgentScopeId} refreshTick={refreshTick} />}
+            {view === "channels" && <ChannelsPage refreshTick={refreshTick} />}
           </div>
         </main>
       </div>
