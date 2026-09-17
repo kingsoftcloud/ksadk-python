@@ -23,7 +23,13 @@ const stubXtermCss = {
 export default defineConfig({
   plugins: [react(), stubXtermCss],
   resolve: {
-    alias: { "@": path.resolve(import.meta.dirname, "./src") },
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src"),
+      // Node ESM resolver in vitest does not hand .css to the plugin chain;
+      // alias the xterm stylesheet to an empty module file so imports of
+      // @xterm/xterm/css/xterm.css resolve to nothing at runtime.
+      "@xterm/xterm/css/xterm.css": path.resolve(import.meta.dirname, "./src/test/empty.ts"),
+    },
   },
   test: {
     environment: "jsdom",
@@ -31,5 +37,10 @@ export default defineConfig({
     css: true,
     include: ["src/**/*.test.{ts,tsx}"],
     maxWorkers: 1,
+    server: {
+      deps: {
+        inline: ["@xterm/xterm", "@kingsoftcloud/ksadk-web"],
+      },
+    },
   },
 });
