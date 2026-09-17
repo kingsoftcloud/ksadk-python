@@ -13,6 +13,7 @@
   <a href="https://kingsoftcloud.github.io/ksadk-python/"><img alt="Docs" src="https://img.shields.io/badge/Docs-ksadk--python-2f6fdf?style=flat" /></a>
   <a href="https://pypi.org/project/ksadk/"><img alt="PyPI" src="https://img.shields.io/pypi/v/ksadk?style=flat&color=2f6fdf" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
+  <a href="https://deepwiki.com/kingsoftcloud/ksadk-python"><img alt="Ask DeepWiki" src="https://deepwiki.com/kingsoftcloud/ksadk-python" /></a>
 </p>
 
 <p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/agentkit-studio-overview.png"><img alt="KsADK AgentKit Studio 真实 Agent 工作区" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/agentkit-studio-overview.png" width="860" /></a></p>
