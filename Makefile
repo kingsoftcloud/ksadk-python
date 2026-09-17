@@ -851,10 +851,10 @@ studio-app-check:
 	@test -x "$(STUDIO_APP_BUNDLE)/Contents/MacOS/AgentKitStudio" || (echo "ERROR: Studio bundle is missing; run make studio-app-package" >&2; exit 1)
 	@test -x "$(STUDIO_APP_RUNTIME)/bin/python" || (echo "ERROR: bundled Python runtime is missing" >&2; exit 1)
 	@test -x "$(STUDIO_APP_RUNTIME)/bin/agentengine" || (echo "ERROR: bundled agentengine entrypoint is missing" >&2; exit 1)
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'from importlib.metadata import version; print("ksadk", version("ksadk")); print("openai-codex", version("openai-codex"))'
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'from codex_cli_bin import bundled_codex_path; import subprocess; p=bundled_codex_path(); print("codex", p); subprocess.run([str(p), "--version"], check=True)'
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'import ksadk.studio; from pathlib import Path; p=Path(ksadk.studio.__file__).with_name("static")/"index.html"; assert p.is_file(), p; print("studio-static", p)'
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'import importlib.metadata as m; assert not any(name in m.packages_distributions() for name in ("rapidocr_onnxruntime", "cv2", "onnxruntime")), "retired OCR dependency still bundled"; from pathlib import Path; root=Path(__import__("ksadk.studio").studio.__file__).with_name("static"); js=next(root.glob("assets/index-*.js")); text=js.read_text(encoding="utf-8"); assert "Google ADK" not in text and "LangGraph · Python graph" not in text, "retired runtime option still in Studio static"; print("studio-runtime-options", "harness,codex")'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'from importlib.metadata import version; print("ksadk", version("ksadk")); print("openai-codex", version("openai-codex"))'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'from codex_cli_bin import bundled_codex_path; import subprocess; p=bundled_codex_path(); print("codex", p); subprocess.run([str(p), "--version"], check=True)'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'import ksadk.studio; from pathlib import Path; p=Path(ksadk.studio.__file__).with_name("static")/"index.html"; assert p.is_file(), p; print("studio-static", p)'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'import importlib.metadata as m; assert not any(name in m.packages_distributions() for name in ("rapidocr_onnxruntime", "cv2", "onnxruntime")), "retired OCR dependency still bundled"; from pathlib import Path; root=Path(__import__("ksadk.studio").studio.__file__).with_name("static"); js=next(root.glob("assets/index-*.js")); text=js.read_text(encoding="utf-8"); assert "Google ADK" not in text and "LangGraph · Python graph" not in text, "retired runtime option still in Studio static"; print("studio-runtime-options", "harness,codex")'
 	@echo "✅ Studio bundle checks passed ($(STUDIO_APP_PLATFORM)/$(STUDIO_APP_ARCH))"
 
 studio-app-run: studio-app-check
