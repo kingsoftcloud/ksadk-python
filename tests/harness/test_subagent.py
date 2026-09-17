@@ -941,7 +941,7 @@ def test_cross_process_resume_replays_completed_child_receipt(tmp_path):
             },
         )
 
-    async def phase_one():
+    async def first_phase():
         cm = AsyncSqliteSaver.from_conn_string(checkpoint_path)
         saver = await cm.__aenter__()
         try:
@@ -986,7 +986,7 @@ def test_cross_process_resume_replays_completed_child_receipt(tmp_path):
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    handle, first = asyncio.run(phase_one())
+    handle, first = asyncio.run(first_phase())
     assert any(event.event_type == "run.interrupted" for event in first)
     assert child_executions == ["child"]
 
@@ -1024,12 +1024,12 @@ def test_cross_process_recovers_unfinished_child_checkpoint_without_restarting(t
                 )
             )
 
-    async def phase_one_effect(_arguments):
+    async def first_phase_effect(_arguments):
         assert tool_entered is not None
         tool_entered.set()
         await asyncio.Event().wait()
 
-    async def phase_one():
+    async def first_phase():
         nonlocal tool_entered
         tool_entered = asyncio.Event()
         cm = AsyncSqliteSaver.from_conn_string(checkpoint_path)
@@ -1038,7 +1038,7 @@ def test_cross_process_recovers_unfinished_child_checkpoint_without_restarting(t
             child_engine = ManagedLangGraphEngine(
                 reasoner=_PhaseOneChildReasoner(),
                 checkpointer=saver,
-                tools={"effect": phase_one_effect},
+                tools={"effect": first_phase_effect},
             )
             compiled = await child_engine.compile(child_spec(parent_spec, sub))
             handle = await child_engine.start(
@@ -1109,7 +1109,7 @@ def test_cross_process_recovers_unfinished_child_checkpoint_without_restarting(t
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    asyncio.run(phase_one())
+    asyncio.run(first_phase())
     events = asyncio.run(phase_two())
     assert side_effects == ["effect"], [
         (event.event_type, event.payload)
