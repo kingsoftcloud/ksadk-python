@@ -939,10 +939,10 @@ def create_studio_app(
                             timeout=30,
                         )
                         return JSONResponse(status_code=resp.status_code, content=resp.json())
-                    except Exception as exc:
+                    except Exception:
                         return JSONResponse(
                             status_code=502,
-                            content={"Code": 502, "Message": f"Channel backend unavailable: {exc}", "Data": {}},
+                            content={"Code": 502, "Message": "Channel backend unavailable", "Data": {}},
                         )
                 return JSONResponse(
                     status_code=404,

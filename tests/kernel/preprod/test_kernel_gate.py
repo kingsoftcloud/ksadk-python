@@ -144,7 +144,7 @@ def test_gate_fails_on_failed_check():
         {"dsn": "postgresql://user:pw@host/db"},
         {"secret_ref": "agent-kernel-postgres"},
         {"authorization": "Bearer abcdefghijklmnop"},
-        {"api_key": "sk-1234567890"},
+        {"api_key": "sk-test-secret-placeholder"},
     ],
 )
 def test_gate_rejects_secret_shaped_evidence(forbidden):
