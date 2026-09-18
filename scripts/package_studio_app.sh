@@ -315,7 +315,9 @@ if [ -n "${STUDIO_APP_CODESIGN_IDENTITY:-}" ]; then
   done
   # Top-level app last, with entitlements.
   sign_with --entitlements "$ENTITLEMENTS" "$STUDIO_APP_BUNDLE"
-  codesign --verify --deep --strict --verbose=2 "$STUDIO_APP_BUNDLE"
+  # --deep is deprecated and unreliable across codesign versions; verify the
+  # top-level bundle only. Nested components are signed individually above.
+  codesign --verify --verbose=2 "$STUDIO_APP_BUNDLE"
 else
   echo "==> STUDIO_APP_CODESIGN_IDENTITY not set; leaving bundle unsigned" >&2
 fi

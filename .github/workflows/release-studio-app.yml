@@ -181,7 +181,12 @@ jobs:
           version: 9
 
       - name: Install NSIS
-        run: choco install nsis -y --no-progress
+        shell: bash
+        run: |
+          choco install nsis -y --no-progress
+          # choco installs NSIS to C:\Program Files (x86)\NSIS; add to GITHUB_PATH
+          # so the Git Bash shell in later steps finds makensis.
+          echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
 
       # create_studio_icon.py uses PIL; not in the runner's system Python.
       - name: Install icon build dependency
