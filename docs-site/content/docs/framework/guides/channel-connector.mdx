@@ -1,0 +1,86 @@
+---
+title: Channel Connector
+description: 让本地和高代码 Agent 通过出站 WSS 接入云端消息渠道。
+---
+
+Channel Connector 把 IM 消息路由到 Agent。Agent 主动建立出站 WebSocket，云端 Channel 服务不需要反向连接本地网络，因此适合本机、NAT 和内网运行时。
+
+```text
+IM ──> Channel service ──> outbound WSS ──> local Agent
+```
+
+Channel 服务是独立部署的服务。KsADK wheel 只包含 Connector 客户端和 Studio 的官方 Channel UI bundle，不安装或启动 `agentengine-channel` Python 服务；本地 Studio 也不会因为 Channel 服务暂时不可用而阻塞首屏。
+
+## Studio 中使用
+
+安装 KsADK 后启动 Studio，Channel 页面默认随官方 DSH bundle 在后台激活。监听器先启动，后台装配失败只会让 Channel 页面暂时不可用，不会阻塞其他 Studio 页面。
+
+在 **消息渠道** 页面配置：
+
+| 配置 | 作用 |
+| --- | --- |
+| 服务地址 | Channel API 的 HTTPS 地址；Connector 会使用对应的 WSS 地址 |
+| 账号 | Channel 服务的租户或账号标识 |
+| Workspace | 隔离本地 Connector 和绑定关系的 workspace |
+| API token | 仅由本地 Studio 保存，用于管理 Channel API |
+| Agent 连接凭证 | 每个被选中的本地 Agent 使用独立的短期 Connector JWT |
+
+Studio 只为明确启用的 Agent 建立出站连接。Agent 目标会同时记录 `agent_id` 和 `ConnectorWorkspaceId`；本地目标离线时不会静默切换到云端 Agent。
+
+可用环境变量提供默认值或关闭默认 UI 激活：
+
+| 变量 | 说明 |
+| --- | --- |
+| `AGENTENGINE_CHANNEL_URL` | Channel 服务 HTTPS 地址 |
+| `KSYUN_ACCOUNT_ID` | 默认账号标识 |
+| `KSADK_CHANNEL_WORKSPACE_ID` | 默认 Connector workspace；不设置时由 Studio 工作区稳定生成 |
+| `KSADK_CHANNEL_API_TOKEN` | Channel API 管理 token；属于敏感值，不要提交到 Git |
+| `KSADK_STUDIO_CHANNEL_DEFAULT` | 默认 `1`；设为 `0`、`false`、`no` 或 `off` 可关闭后台默认激活 |
+
+这些变量只提供启动默认值。Studio 设置页写入的敏感值保存在工作区 `.agentkit/config.yaml` 的受保护配置中，状态接口不会返回 token。
+
+## 高代码 Agent 接入
+
+ADK、LangGraph 或其他 Python Agent 不需要 Studio，也不需要安装 Channel 服务。把自己的 Agent runner 包装成 `invoke` 回调即可：
+
+```python
+import asyncio
+
+from ksadk.connector import InvokeRequest, create_channel_connector
+
+
+async def invoke(request: InvokeRequest) -> str:
+    # 在这里调用 ADK/LangGraph runner，并沿用 request.session_id。
+    return await my_agent_runner(
+        request.message,
+        session_id=request.session_id,
+    )
+
+
+async def main() -> None:
+    connector = create_channel_connector(
+        url="wss://channel.example.com/agentengine/connector/v1",
+        token="<short-lived-jwt>",
+        tenant_id="tenant-example",
+        workspace_id="workspace-example",
+        agent_id="agent-example",
+        invoke=invoke,
+    )
+    try:
+        await connector.start()
+    finally:
+        await connector.stop()
+
+
+asyncio.run(main())
+```
+
+生产环境使用由部署方签发的 JWT。JWT 身份必须与 `tenant_id`、`workspace_id` 和 `agent_id` 一致；签发密钥、刷新和过期策略由 Channel 服务或平台负责，不能写进 Agent 代码。Connector 负责注册、调用、取消、心跳、指数退避重连和有限的终态缓存。
+
+连接断开且一次调用的结果未知时，Connector 不会自动重放回调，避免重复执行有副作用的工具。跨副本 relay 不提供 durable queue 或 exactly-once；需要业务重试时，请使用 `idempotency_key` 实现幂等。
+
+## 与 A2A 的边界
+
+Channel Connector 是 **IM ↔ Agent** 的路由和会话入口；A2A 是 **Agent ↔ Agent** 的互操作协议。一个 Agent 可以同时暴露 A2A 能力并连接 Channel，但两者的身份、任务语义和失败处理不能混用。Connector v1 当前传递文本调用和终态结果，不把它描述成通用 A2A transport。
+
+完整消息信封和版本兼容规则见仓库中的 [Channel Connector Protocol v1](https://github.com/kingsoftcloud/ksadk-python/blob/main/docs/connector/channel-connector-protocol-v1.md)。

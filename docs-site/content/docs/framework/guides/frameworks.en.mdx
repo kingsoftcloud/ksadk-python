@@ -118,6 +118,10 @@ Common ADK loading failures:
 
 ## LangGraph
 
+<Callout type="warning" title="Managed checkpoint boundary">
+  `root_agent = graph.compile()` is suitable for local runs. When managed PostgreSQL checkpointing is enabled, the entry module must also export callable `ksadk_graph_factory(checkpointer=...)` and `ksadk_prepare_state(payload, session_context)` hooks. Missing the factory or prepare hook returns `LANGGRAPH_FACTORY_REQUIRED` or `PREPARE_STATE_HOOK_REQUIRED`, respectively, instead of silently falling back to an in-memory checkpoint. See [Agent Context](./agent-context.mdx) for the full contract.
+</Callout>
+
 ```python title="agent.py"
 from langgraph.graph import END, StateGraph
 

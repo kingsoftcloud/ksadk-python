@@ -3,8 +3,8 @@ title: AgentKit Local Studio
 description: A local workspace for authoring, builds, conversations, and cloud lifecycle operations.
 ---
 
-<Callout type="info" title="Current in 0.8.3">
-  AgentKit Local Studio creates, builds, and tests Agents in the browser and manages cloud lifecycle operations through existing platform APIs. Version 0.8.3 also exposes controlled plugin entry points, one conversation surface, and local Scheduler Lite while preserving Provider, permission, and local-runtime boundaries.
+<Callout type="info" title="Current in 0.8.5">
+  AgentKit Local Studio creates, builds, and tests Agents in the browser and manages cloud lifecycle operations through existing platform APIs. Version 0.8.5 also exposes controlled plugin entry points, one conversation surface, local Scheduler Lite, and a Channel workspace while preserving Provider, permission, and local-runtime boundaries.
 </Callout>
 
 `agentengine studio` is KsADK's local-first workspace. It brings Agent definitions, build history, conversations, resources, traces, and orchestration into one browser surface, while model calls and builds still run through the local KsADK runtime.
@@ -75,7 +75,17 @@ Cloud targets combine Studio deployment receipts with Agents already present in 
 
 Ordinary chat is a foreground streaming request and does not require Background mode. Background sessions are reserved for tasks that must continue after the foreground connection closes. Conversations support incremental text, reasoning, tools, approvals, attachments, model selection, three approval levels, and Goal / Plan controls. There is no separate “Loop” mode in the composer.
 
-## Plugins and local automation in 0.8.3
+## Messaging channels and local Agent connections
+
+Studio ships the official Channel page in the KsADK wheel and activates it in the background after the Studio listener is ready. The first page does not wait for the DSH toolchain or the Channel service; a failed background activation only affects the Channels page. Set `KSADK_STUDIO_CHANNEL_DEFAULT=0` to disable the default activation.
+
+On the **Channels** page, configure the independently deployed Channel service's HTTPS URL, account, workspace, and API token, then enable the local Agents that should receive IM messages. Studio opens outbound WSS only for explicitly enabled Agents. You do not run `agentengine-channel` locally or expose a local listening port. The service owns deployment and credential issuance; ksadk provides the client protocol and UI.
+
+ADK, LangGraph, and other high-code Agents can skip Studio and call `ksadk.connector.create_channel_connector` directly against the same Channel service. Channel routes IM to an Agent; A2A handles Agent-to-Agent interoperability. They can be used together, but they are different protocols.
+
+See [Channel Connector](./channel-connector.mdx) for configuration, failure boundaries, and a code example.
+
+## Plugins and local automation in 0.8.5
 
 The Studio plugin page exposes two explicit host boundaries. A managed DSH toolchain owns DSH Bundle/Profile lifecycle operations, while official Codex plugins remain owned by Codex App Server. KsADK does not copy plugin implementations or present an arbitrary local directory as an installed capability.
 

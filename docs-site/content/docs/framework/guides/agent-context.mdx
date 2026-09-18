@@ -24,6 +24,10 @@ KsADK 把运行时上下文收敛到一个 `PlatformInvocationContext`，runner 
   `account_id` 默认空串。Skill / Workspace / Sandbox / Memory 等托管资源按 `account_id` 做账号边界读取：同一账号下数据互相可见，跨账号隔离。
 </Callout>
 
+<Callout type="warning" title="托管 LangGraph checkpoint 要求">
+  本地 SQLite 或 memory checkpointer 适合本地开发。托管 PostgreSQL checkpoint 只有在入口模块导出可调用的 `ksadk_graph_factory(checkpointer=...)` 和 `ksadk_prepare_state(payload, session_context)` 时才会启用；缺少任一 hook 都会 fail-closed，分别返回 `LANGGRAPH_FACTORY_REQUIRED` 或 `PREPARE_STATE_HOOK_REQUIRED`。使用 durable checkpointer 时，compaction 归属由 hook 安全降级到 framework，不要假设任意 LangGraph 图都能在托管恢复链路中运行。
+</Callout>
+
 ## HTTP 入口与 account_id 透传
 
 以下三个公开 HTTP 入口都会把请求里的账号标识透传进 `PlatformInvocationContext`：
@@ -86,4 +90,3 @@ account_id = get_current_account_id()    # 默认 ''
 <Callout type="warning" title="账号边界">
   Skill / Workspace / Sandbox / Memory 按 `account_id` 做账号边界读取。在工具代码里应优先用 `get_current_account_id()` 取当前账号，而不是自己从请求里解析，以保证与托管运行时一致的隔离语义。
 </Callout>
-

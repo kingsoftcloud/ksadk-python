@@ -102,6 +102,10 @@ ADK 项目的知识库、长期记忆、MCP toolset 和 Skill Runtime 工具都�
 
 ## LangGraph
 
+<Callout type="warning" title="托管 checkpoint 边界">
+  `root_agent = graph.compile()` 适合本地运行。若启用托管 PostgreSQL checkpoint，入口模块还必须导出可调用的 `ksadk_graph_factory(checkpointer=...)` 与 `ksadk_prepare_state(payload, session_context)`；缺少 factory 或 prepare hook 时分别返回 `LANGGRAPH_FACTORY_REQUIRED` 或 `PREPARE_STATE_HOOK_REQUIRED`，不会静默回退到内存 checkpoint。完整要求见[Agent Context](./agent-context.mdx)。
+</Callout>
+
 ```python title="agent.py"
 from langgraph.graph import END, StateGraph
 
