@@ -82,33 +82,27 @@ jobs:
           echo "STUDIO_APP_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "CSC_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
 
-      # Materialize the App Store Connect API Key .p8 for notarytool. This is
-      # the team-level credential (no personal Apple ID); reuse Wegent's.
-      - name: Prepare Apple notarization key
-        if: ${{ secrets.STUDIO_APPLE_API_KEY_BASE64 != '' }}
-        env:
-          APPLE_API_KEY_BASE64: ${{ secrets.STUDIO_APPLE_API_KEY_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.STUDIO_APPLE_API_KEY_ID }}
-        run: |
-          set -euo pipefail
-          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          printf '%s' "$APPLE_API_KEY_BASE64" | base64 -D > "$key_path"
-          chmod 0600 "$key_path"
-          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
-
+      # Notarization uses the Apple ID + app-specific password flow (the team
+      # account holder's credential, stored as repo secrets). The App Store
+      # Connect API Key path needs admin-gated keys we don't have; the Apple ID
+      # flow was verified locally against the same secret set.
       - name: Package + sign + notarize
         # studio-app-package depends on build-wheel, which depends on
         # build-frontend (sync-ksadk-web-static + build-studio-static), so one
-        # make invocation produces the full signed .app bundle. Codesign identity
-        # and API key path are set by the two steps above.
+        # make invocation produces the full signed .app bundle.
         run: make studio-app-package
         env:
           KSADK_WEB_VERSION: "0.3.10"
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
-          STUDIO_APP_NOTARIZE: ${{ secrets.STUDIO_APPLE_API_KEY_BASE64 != '' && '1' || '0' }}
-          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.STUDIO_APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.STUDIO_APPLE_API_ISSUER }}
+          STUDIO_APP_NOTARIZE: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' && '1' || '0' }}
+          APPLE_ID: ${{ secrets.STUDIO_APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.STUDIO_APPLE_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.STUDIO_APPLE_TEAM_ID }}
+
+      - name: Build DMG (with Applications shortcut)
+        run: make studio-app-dmg
+        env:
+          STUDIO_APP_VERSION: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
 
       - name: Zip the .app bundle
         run: |
@@ -131,6 +125,7 @@ jobs:
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           files: |
+            dist/studio-app/AgentKitStudio-*.dmg
             dist/studio-app/AgentKitStudio-macos-arm64.zip
             dist/studio-app/latest-mac.yml
           fail_on_unmatched_files: true

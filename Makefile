@@ -865,16 +865,20 @@ studio-app-clean:
 	@rm -rf "$(STUDIO_APP_DIR)"
 	@echo "✅ Studio local bundle cleaned"
 
-# 最简 DMG:hdiutil UDZO(zlib 压缩只读镜像),无美化布局、无 AppleScript。
+# DMG:hdiutil UDZO(zlib 压缩只读镜像),含 Applications 软链接(拖拽安装)。
 # 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg
-STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(STUDIO_APP_VERSION:=$(VERSION))-macos-arm64.dmg
+STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(VERSION)-macos-arm64.dmg
 studio-app-dmg: studio-app-package
 	@test -d "$(STUDIO_APP_BUNDLE)" || (echo "ERROR: Studio bundle missing; run make studio-app-package first" >&2; exit 1)
 	@rm -f "$(STUDIO_APP_DMG)"
-	hdiutil create -volname "AgentKit Studio" \
-	  -srcfolder "$(STUDIO_APP_BUNDLE)" \
-	  -ov -format UDZO \
-	  "$(STUDIO_APP_DMG)"
+	@staging="$$(mktemp -d)"; \
+	  ditto "$(STUDIO_APP_BUNDLE)" "$$staging/AgentKitStudio.app"; \
+	  ln -s /Applications "$$staging/Applications"; \
+	  hdiutil create -volname "AgentKit Studio" \
+	    -srcfolder "$$staging" \
+	    -ov -format UDZO \
+	    "$(STUDIO_APP_DMG)"; \
+	  rm -rf "$$staging"
 	@echo "✅ Studio DMG: $(STUDIO_APP_DMG)"
 
 # Windows x64 bundle. Built under Git Bash on a Windows runner (or locally on
