@@ -87,6 +87,13 @@ jobs:
           echo "STUDIO_APP_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "CSC_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
 
+      # Resolve the ksadk version once; both Package and DMG steps use it.
+      # workflow_dispatch has no release tag, and github.ref_name is the
+      # branch name — package_studio_app.sh requires STUDIO_APP_VERSION.
+      - name: Resolve version
+        run: |
+          echo "STUDIO_APP_VERSION=$(python -c 'from ksadk.version import VERSION; print(VERSION)')" >> "$GITHUB_ENV"
+
       # Notarization uses the Apple ID + app-specific password flow (the team
       # account holder's credential, stored as repo secrets). The App Store
       # Connect API Key path needs admin-gated keys we don't have; the Apple ID
@@ -98,6 +105,7 @@ jobs:
         run: make studio-app-package
         env:
           KSADK_WEB_VERSION: "0.3.10"
+          STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
           STUDIO_APP_NOTARIZE: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' && '1' || '0' }}
           APPLE_ID: ${{ secrets.STUDIO_APPLE_ID }}
@@ -107,7 +115,7 @@ jobs:
       - name: Build DMG (with Applications shortcut)
         run: make studio-app-dmg
         env:
-          STUDIO_APP_VERSION: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
 
       - name: Zip the .app bundle
         run: |
@@ -187,6 +195,10 @@ jobs:
           npm install --no-audit --no-fund
           test -d node_modules/@deepseek-ai/dsh || { echo "ERROR: @deepseek-ai/dsh not installed"; exit 1; }
 
+      - name: Resolve version
+        run: |
+          echo "STUDIO_APP_VERSION=$(python -c 'from ksadk.version import VERSION; print(VERSION)')" >> "$GITHUB_ENV"
+
       - name: Package Windows bundle + NSIS installer
         # studio-app-package-windows depends on build-wheel → build-frontend
         # (sync + build-studio-static), so one make invocation builds everything.
@@ -194,7 +206,7 @@ jobs:
         run: make studio-app-package-windows
         env:
           KSADK_WEB_VERSION: "0.3.10"
-          STUDIO_APP_VERSION: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 
       - name: Upload unsigned installer as artifact (SignPath input)
