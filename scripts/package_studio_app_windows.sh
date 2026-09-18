@@ -185,8 +185,8 @@ if ! command -v cygpath >/dev/null 2>&1; then
   echo "ERROR: cygpath not found; this script must run under Git Bash on Windows" >&2
   exit 1
 fi
-bundle_win=$(cygpath -w "$bundle")
-out_win=$(cygpath -w "$setup_exe")
+bundle_win=$(cygpath -wa "$bundle")
+out_win=$(cygpath -wa "$setup_exe")
 makensis -V2 -DAPP_VERSION="$STUDIO_APP_VERSION" \
   -DBUNDLE_DIR="$bundle_win" \
   -DOUTPUT_FILE="$out_win" \
