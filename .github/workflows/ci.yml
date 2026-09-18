@@ -178,8 +178,9 @@ jobs:
       # -m "not local_process_heavy": 单进程跑 ~7000 测试到尾部时,真实 fork 子进程
       # 的 sandbox/skill 测试在 2-core runner 上进程表/内存耗尽(Cannot fork/超时)。
       # 这些测试由下方 test-local-process-heavy job 在干净进程表里单独跑,不丢覆盖。
+      # -n auto: pytest-xdist 并行(实测 4 核 19:52→6:25, 7039 全过)。
       - name: Run full test suite
-        run: uv run --no-sync pytest tests/ -q -m "not local_process_heavy"
+        run: uv run --no-sync pytest tests/ -q -m "not local_process_heavy" -n auto
 
   # goal-00 补充:真实 fork 子进程的 sandbox/skill/browser 测试(local_process_heavy)。
   # 与全量套件拆开跑——单独 pytest 进程没有前面 7000 测试累积的资源占用,不会 Cannot fork。
