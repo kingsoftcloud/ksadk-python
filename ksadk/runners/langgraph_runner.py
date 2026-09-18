@@ -539,6 +539,23 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
                 self._managed_checkpoint_state = "terminal_failure"
                 return
 
+            # 托管 checkpointer 从 checkpoint 恢复 messages（append-only reducer）。
+            # 若接入方未导出 ksadk_prepare_state，runner 走 _to_state 把 history 再注入
+            # 一遍，与 checkpointer 恢复的 messages 双重叠加。托管 checkpoint 必须同时
+            # 提供 hook，否则 fail-closed，避免生产 auto checkpoint 下静默双重注入。
+            prepare_state_hook = getattr(self._module, "ksadk_prepare_state", None)
+            if not callable(prepare_state_hook):
+                self._managed_checkpoint_error = (
+                    "PREPARE_STATE_HOOK_REQUIRED",
+                    "Managed PostgreSQL checkpoint requires ksadk_prepare_state hook to "
+                    "avoid double history injection (checkpointer messages restore + "
+                    "_to_state history). Export ksadk_prepare_state(payload, "
+                    "session_context) in the agent module.",
+                )
+                self._managed_checkpoint_prepared = True
+                self._managed_checkpoint_state = "terminal_failure"
+                return
+
             pool = None
             try:
                 saver, pool = await self._create_managed_postgres_saver(checkpoint_target.dsn)

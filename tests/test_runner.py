@@ -1018,6 +1018,7 @@ async def test_langgraph_runner_rebuilds_studio_graph_with_managed_postgres_chec
         return SimpleNamespace(invoke=lambda *_args, **_kwargs: None, checkpointer=checkpointer)
 
     module.ksadk_graph_factory = ksadk_graph_factory
+    module.ksadk_prepare_state = lambda payload, session_context: {"messages": []}
     runner = _ManagedRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
     runner._module = module
     runner._agent = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
@@ -1062,6 +1063,41 @@ async def test_langgraph_runner_fails_closed_when_managed_checkpoint_factory_is_
 
 
 @pytest.mark.asyncio
+async def test_langgraph_runner_fails_closed_when_managed_checkpoint_prepare_state_hook_is_missing(
+    monkeypatch,
+):
+    """托管 checkpoint 要求 ksadk_prepare_state hook，避免双重 history 注入。
+
+    配了 checkpointer 后 messages 是 append-only reducer，checkpointer 会恢复历史；
+    若接入方未导出 ksadk_prepare_state，runner 走 _to_state 再注入一遍 history，
+    两者叠加。本测试验证无 hook 时 fail-closed，不托管重建图。
+    """
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    original_graph = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    module = ModuleType("graph_without_prepare_state_hook")
+
+    def ksadk_graph_factory(*, checkpointer):
+        return SimpleNamespace(invoke=lambda *_a, **_k: None, checkpointer=checkpointer)
+
+    module.ksadk_graph_factory = ksadk_graph_factory
+    # 故意不导出 ksadk_prepare_state
+
+    runner = LangGraphRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = module
+    runner._agent = original_graph
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
+
+    await runner.prepare_runtime_capabilities()
+
+    capability = runner.describe_checkpoint_capability()
+    assert runner._agent is original_graph
+    assert capability["Supported"] is False
+    assert capability["ReasonCode"] == "PREPARE_STATE_HOOK_REQUIRED"
+
+
+@pytest.mark.asyncio
 async def test_langgraph_runner_deferred_probe_loads_module_before_managed_takeoff(
     monkeypatch,
 ):
@@ -1086,6 +1122,7 @@ async def test_langgraph_runner_deferred_probe_loads_module_before_managed_takeo
         return SimpleNamespace(invoke=lambda *_a, **_k: None, checkpointer=checkpointer)
 
     module.ksadk_graph_factory = ksadk_graph_factory
+    module.ksadk_prepare_state = lambda payload, session_context: {"messages": []}
 
     class _ManagedRunner(LangGraphRunner):
         async def _create_managed_postgres_saver(self, dsn):
