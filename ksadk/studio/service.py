@@ -371,6 +371,9 @@ class StudioService:
         )
         self.plugin_runs.execution_policy_resolver = self.execution_host
         self.teams_installation = create_teams_installation(self)
+        from ksadk.studio.channel_connections import StudioChannelConnections
+
+        self.channel_connections = StudioChannelConnections(self)
         from ksadk.studio.scheduler_assistant import StudioScheduleAssistant
 
         self.run_service.schedule_assistant = StudioScheduleAssistant(self)
@@ -408,6 +411,7 @@ class StudioService:
                 await self.scheduler_runtimes.start()
                 self._started = True
                 self._dsh_startup_task = asyncio.create_task(self._initialize_dsh())
+                self.channel_connections.start_background()
             task = self._dsh_startup_task
         if wait_for_dsh and task is not None:
             await asyncio.shield(task)
@@ -1400,6 +1404,7 @@ class StudioService:
         await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
         owned = [
+            self.channel_connections.close,
             self.workspace_plugins.close, self.plugin_runs.aclose, self.dsh_capabilities.aclose,
             self.scheduler_runtimes.close, self.execution_host.close,
         ]

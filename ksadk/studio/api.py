@@ -85,6 +85,11 @@ from ksadk.studio.api_helpers import (
 from ksadk.studio.api_memory_routes import register_memory_routes
 from ksadk.studio.api_plugin_routes import register_plugin_routes
 from ksadk.studio.api_resource_connections import register_resource_connection_routes
+from ksadk.studio.channel_connections import (
+    CHANNEL_ACTIONS,
+    ChannelAgentConnectionInput,
+    ChannelConnectionSettings,
+)
 from ksadk.studio.cloud_shared_web import CloudSharedWebBridge, cloud_chat_target, is_cloud_agent_id
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
@@ -276,21 +281,51 @@ def create_studio_app(
                     # Runtime warmup is best effort; core Studio remains usable
                     # while optional DSH capability discovery is unavailable.
                     return
+                # The Channel UI is a wheel-owned client bundle.  Bootstrap it
+                # after the listener is available and through the same Profile
+                # maintenance fence used by other DSH mutations.
+                if (
+                    os.environ.get("KSADK_STUDIO_CHANNEL_DEFAULT", "1")
+                    .strip()
+                    .lower()
+                    not in {"0", "false", "no", "off"}
+                    and not os.environ.get("KSADK_DSH_HOME", "").strip()
+                    and not os.environ.get("KSADK_DSH_PROFILE", "").strip()
+                ):
+                    try:
+                        from ksadk.plugins.dsh_channels import (
+                            channel_default_bootstrap_needed,
+                            configure_channel_profile,
+                        )
+                        from ksadk.studio.api_plugin_routes import _studio_dsh_options
+
+                        home, profile, command, _ = _studio_dsh_options(runtime)
+                        if profile == "web" and command and channel_default_bootstrap_needed(home):
+                            async def configure_channel():
+                                await asyncio.to_thread(
+                                    configure_channel_profile,
+                                    workspace=runtime.workspace.root,
+                                    dsh_home=home,
+                                    dsh_command=command,
+                                )
+
+                            await runtime.reconfigure_dsh_profile(configure_channel)
+                    except Exception as error:
+                        logger.info("Channel 默认激活未完成（可手动启用）: %s", error)
+
                 if os.environ.get(
                     "KSADK_STUDIO_TEAMS_DEFAULT", "1"
-                ).strip().lower() in {"0", "false", "no", "off"}:
-                    return
-                installation = getattr(runtime, "teams_installation", None)
-                if installation is None or installation.status().get("enabled"):
-                    return
-                try:
-                    await installation.enable()
-                except Exception as error:
-                    # 默认启用是预期行为，但 DSH 工具链/权威不可用时必须静默
-                    # 降级，核心 Studio 与其他插件不受影响；页面仍保留手动入口。
-                    logger.info(
-                        "Teams 默认激活未完成（可手动启用）: %s", error
-                    )
+                ).strip().lower() not in {"0", "false", "no", "off"}:
+                    installation = getattr(runtime, "teams_installation", None)
+                    if installation is not None and not installation.status().get("enabled"):
+                        try:
+                            await installation.enable()
+                        except Exception as error:
+                            # 默认启用是预期行为，但 DSH 工具链/权威不可用时必须静默
+                            # 降级，核心 Studio 与其他插件不受影响；页面仍保留手动入口。
+                            logger.info(
+                                "Teams 默认激活未完成（可手动启用）: %s", error
+                            )
 
             task = asyncio.create_task(warm_runtime())
             warmups.add(task)
@@ -485,7 +520,8 @@ def create_studio_app(
                     ),
                     request,
                 )
-            if (studio_api or responses_api) and request.method in _WRITE_METHODS:
+            channel_api = shared_web_api and request.url.path.rsplit("/", 1)[-1] in CHANNEL_ACTIONS
+            if (studio_api or responses_api or channel_api) and request.method in _WRITE_METHODS:
                 csrf = request.headers.get("X-CSRF-Token")
                 if not csrf or not hmac.compare_digest(csrf, csrf_secret):
                     return _error_response(
@@ -586,6 +622,36 @@ def create_studio_app(
         # This endpoint must remain a read-only snapshot: no Core startup, Profile
         # projection, credential resolution, or filesystem repair is attempted.
         return studio.dsh_capabilities.startup_status
+
+    @app.get("/api/v1/plugins/workspace-contributions")
+    async def workspace_contributions():
+        """Expose enabled UI contributions without booting the DSH Core."""
+        from ksadk.plugins.dsh_channels import channel_workspace_contributions
+        from ksadk.plugins.dsh_home import studio_dsh_home
+
+        runtime = studio.active
+        contributions = await asyncio.to_thread(
+            channel_workspace_contributions,
+            studio_dsh_home(runtime.workspace.root),
+            os.environ.get("KSADK_DSH_PROFILE", "").strip() or "web",
+        )
+        # Teams remains served by its existing lifecycle endpoint; this endpoint
+        # only adds client-only contributions that have no domain lifecycle.
+        return {"items": contributions}
+
+    @app.get("/api/v1/channels/connection")
+    async def channel_connection_status():
+        return studio.channel_connections.status()
+
+    @app.put("/api/v1/channels/connection")
+    async def configure_channel_connection(payload: ChannelConnectionSettings):
+        return await studio.channel_connections.configure(payload)
+
+    @app.put("/api/v1/channels/agents/{agent_id}/connection")
+    async def configure_channel_agent_connection(
+        agent_id: str, payload: ChannelAgentConnectionInput
+    ):
+        return await studio.channel_connections.configure_agent(agent_id, payload)
 
     @app.get("/favicon.ico")
     async def favicon():
@@ -921,29 +987,9 @@ def create_studio_app(
                 data = {"ToolReceipts": []}
             else:
                 # Channel-related actions: proxy to channel backend
-                _channel_actions = {
-                    "ListChannels", "CreateChannel", "UpdateChannel", "DeleteChannel", "GetChannel", "GetConnectQr",
-                    "ListPairingRequests", "ApprovePairing", "RejectPairing",
-                    "ListBindings", "UpdateBinding", "DeleteBinding",
-                    "ListMessages", "CountMessages",
-                    "Takeover", "ReleaseTakeover", "GetActiveTakeover", "ListTakeovers",
-                }
-                if action in _channel_actions:
-                    import httpx
-                    channel_backend = os.environ.get("AGENTENGINE_CHANNEL_URL", "http://127.0.0.1:8082")
-                    try:
-                        resp = httpx.post(
-                            f"{channel_backend}/agentengine/api/v1/{action}",
-                            json=payload,
-                            headers={"X-Ksc-Account-Id": request.headers.get("X-Ksc-Account-Id", "")},
-                            timeout=30,
-                        )
-                        return JSONResponse(status_code=resp.status_code, content=resp.json())
-                    except Exception:
-                        return JSONResponse(
-                            status_code=502,
-                            content={"Code": 502, "Message": "Channel backend unavailable", "Data": {}},
-                        )
+                if action in CHANNEL_ACTIONS:
+                    status, body = await studio.channel_connections.proxy(action, payload)
+                    return JSONResponse(status_code=status, content=body)
                 return JSONResponse(
                     status_code=404,
                     content={
