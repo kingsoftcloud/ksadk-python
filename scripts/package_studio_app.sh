@@ -150,13 +150,16 @@ tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
 # runtime libraries only.
 rm -rf "$node_root/include" "$node_root/share" \
   "$node_root/CHANGELOG.md" "$node_root/LICENSE" "$node_root/README.md"
-pnpm_root="${STUDIO_APP_PNPM_ROOT:-$HOME/.cache/node/corepack/v1/pnpm/11.7.0}"
-test -f "$pnpm_root/bin/pnpm.cjs" || {
-  echo "ERROR: pnpm 11.7.0 cache is missing: $pnpm_root" >&2
+# Install pnpm into the bundled node using the node's own npm. Previously we
+# copied from a corepack cache (~/.cache/node/corepack/...), but that path is
+# only populated on developer machines — CI runners are clean and the copy
+# failed. `npm install -g pnpm@<ver>` works everywhere node + npm exist.
+pnpm_version="${STUDIO_APP_PNPM_VERSION:-11.7.0}"
+"$node_root/bin/npm" install -g "pnpm@${pnpm_version}" --prefix "$node_root" --no-audit --no-fund --loglevel=error 2>&1 | tail -3
+test -f "$node_root/lib/node_modules/pnpm/bin/pnpm.cjs" || {
+  echo "ERROR: pnpm install failed" >&2
   exit 1
 }
-mkdir -p "$node_root/lib/node_modules/pnpm"
-cp -R "$pnpm_root/." "$node_root/lib/node_modules/pnpm/"
 cat > "$node_root/bin/pnpm" <<'PNPM'
 #!/bin/sh
 set -eu
