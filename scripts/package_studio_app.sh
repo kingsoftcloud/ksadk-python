@@ -266,13 +266,24 @@ if [ -n "${STUDIO_APP_CODESIGN_IDENTITY:-}" ]; then
   sign_with() {
     codesign --force --timestamp --options runtime --sign "$STUDIO_APP_CODESIGN_IDENTITY" "$@"
   }
-  # Bundled Python runtime binaries and dylibs (uv venv python, libpython).
-  for bin in "$STUDIO_APP_RUNTIME"/bin/python*; do
-    [ -f "$bin" ] && sign_with "$bin"
-  done
-  for dylib in "$STUDIO_APP_RUNTIME"/lib/*.dylib; do
-    [ -f "$dylib" ] && sign_with "$dylib"
-  done
+  # Sign every Mach-O binary in the bundle, innermost-first. Notarization
+  # rejects ANY unsigned Mach-O: the Python interpreter + libpython, 100+ C
+  # extension .so under site-packages, pnpm/DSH .node modules, bundled CLI
+  # binaries (codex, rg), and framework internals (libffmpeg.dylib). Detect by
+  # magic number so the extension (.so/.dylib/.node/none) doesn't matter. This
+  # runs before the helper/framework/app passes below so each bundle-level seal
+  # covers already-signed contents.
+  find "$STUDIO_APP_BUNDLE" -type f -size +0 -exec sh -c '
+    identity="$1"; shift
+    for f do
+      magic=$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d " \n")
+      case "$magic" in
+        cffaedfe|cefaedfe|cafebabe|cafebabf|feedfacf|feedface)
+          codesign --force --timestamp --options runtime --sign "$identity" "$f" || exit 1
+          ;;
+      esac
+    done
+  ' sh "$STUDIO_APP_CODESIGN_IDENTITY" {} +
   # Electron helper apps — apply entitlements so JIT/x86 work in sandbox.
   for helper in "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper.app" \
                 "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (GPU).app" \
