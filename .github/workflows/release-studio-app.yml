@@ -99,6 +99,12 @@ jobs:
         run: |
           echo "STUDIO_APP_VERSION=$(python -c 'from ksadk.version import VERSION; print(VERSION)')" >> "$GITHUB_ENV"
 
+      # package_studio_app.sh copies the DSH toolchain from
+      # ~/.agentengine/plugin-toolchains/dsh/<ver>. CI runners are clean, so
+      # install it first via the ksadk CLI (pnpm install of @deepseek-ai/dsh).
+      - name: Install DSH toolchain
+        run: uv run agentengine plugin toolchain install
+
       # Notarization uses the Apple ID + app-specific password flow (the team
       # account holder's credential, stored as repo secrets). The App Store
       # Connect API Key path needs admin-gated keys we don't have; the Apple ID
