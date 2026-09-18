@@ -812,8 +812,7 @@ select {
 
 .more-actions-menu,
 .studio-select-content,
-.studio-tooltip,
-[role="dialog"] {
+.studio-tooltip {
   z-index: 120;
   padding: 6px;
   border-radius: var(--radius-inset);
@@ -1441,7 +1440,7 @@ select {
 }
 
 .conversation-composer {
-  padding: 10px 12px 8px;
+  padding: 16px 16px 12px;
   border: 1px solid var(--border-strong, var(--studio-border));
   border-radius: 16px;
   background: var(--studio-surface);
@@ -1449,11 +1448,13 @@ select {
 }
 
 .conversation-composer:focus-within {
-  border-color: var(--studio-accent);
-  box-shadow: 0 0 0 3px var(--accent-soft), 0 8px 22px color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
-.conversation-composer textarea {
+.conversation-composer textarea,
+.conversation-composer textarea:is(:hover, :focus) {
   display: block;
   width: 100%;
   min-height: 66px;
@@ -1461,6 +1462,7 @@ select {
   padding: 2px 0;
   resize: vertical;
   border: 0;
+  border-radius: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
@@ -1476,7 +1478,7 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 5px;
+  margin-top: 12px;
 }
 
 .conversation-composer-footer > span {

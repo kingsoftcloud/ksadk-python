@@ -556,6 +556,8 @@ svg {
 
 .button svg,
 .icon-button svg {
+  display: block;
+  flex-shrink: 0;
   width: 16px;
   height: 16px;
 }
@@ -2378,17 +2380,17 @@ td.actions-column {
   min-width: 0;
 }
 
-.review-agent strong,
-.review-agent span {
+.review-agent > div > strong,
+.review-agent > div > span {
   display: block;
 }
 
-.review-agent strong {
+.review-agent > div > strong {
   font-size: var(--font-size-subtitle);
   font-weight: var(--font-weight-semibold);
 }
 
-.review-agent span {
+.review-agent > div > span {
   margin-top: 2px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
@@ -3320,7 +3322,8 @@ td.actions-column {
 .automation-schedule-preview { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); font-size: var(--font-size-meta); }
 .automation-schedule-preview span { display: grid; gap: 3px; }
 .automation-advanced { font-size: var(--font-size-caption); color: var(--text-tertiary); overflow-wrap: anywhere; }
-.automation-advanced summary { cursor: pointer; margin-bottom: 14px; }
+.automation-advanced summary { cursor: pointer; }
+.automation-advanced[open] > summary { margin-bottom: 14px; }
 .automation-advanced label { margin: 14px 0; }
 .automation-local-note { color: var(--text-tertiary); font-size: var(--font-size-caption); line-height: var(--line-height-editor); margin: 0; }
 @media (max-width: 1200px) { .automation-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } .automation-filters { flex-wrap: wrap; } }
@@ -3394,15 +3397,18 @@ td.actions-column {
 .automation-task-cell span { color: var(--text-tertiary); font-size: var(--font-size-caption); }
 .automation-history { margin-top: 22px; padding: 22px; border: 1px solid var(--studio-border); border-radius: var(--radius-surface); background: var(--studio-surface); }
 .automation-history { margin-top: 0; }
-.automation-detail-heading { align-items: flex-start; }
-.automation-detail-actions { justify-content: flex-end; flex-wrap: wrap; }
-.automation-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 4px 0; }
-.automation-detail-grid > div { padding: 14px; border: 1px solid var(--studio-border); border-radius: var(--radius-control); background: var(--surface-subtle); }
+.automation-detail { display: grid; gap: 24px; min-width: 0; }
+.automation-detail-heading { align-items: center; flex-wrap: wrap; gap: 12px; }
+.automation-detail-actions { justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.automation-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.automation-detail-grid > div { min-width: 0; padding: 16px; border: 1px solid var(--studio-border); border-radius: var(--radius-control); background: var(--surface-subtle); }
 .automation-detail-grid span { color: var(--text-tertiary); font-size: var(--font-size-caption); }
 .automation-detail-grid p { margin: 6px 0 0; color: var(--studio-text-secondary); font-size: var(--font-size-caption); white-space: pre-wrap; }
-.automation-inspector-history { display: grid; gap: 10px; padding-top: 4px; border-top: 1px solid var(--studio-border); }
-.automation-inspector-history h3 { display: flex; align-items: center; gap: 7px; margin: 10px 0 0; font-size: var(--font-size-body); }
-.automation-inspector-history .automation-occurrence-card { padding: 10px; }
+.automation-inspector-history { display: grid; gap: 16px; padding-top: 24px; border-top: 1px solid var(--studio-border); }
+.automation-inspector-history h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--font-size-body); }
+.automation-inspector-history h3 > svg { flex-shrink: 0; }
+.automation-inspector-history .automation-occurrence-card { padding: 16px; }
+.automation-detail .automation-occurrence-summary { grid-template-columns: auto minmax(0, 1fr); }
 .automation-inspector-empty { display: grid; place-items: center; align-content: center; min-height: 240px; padding: 24px; color: var(--text-tertiary); text-align: center; }
 .automation-inspector-empty strong { margin-top: 10px; color: var(--studio-text-secondary); }
 .automation-inspector-empty p { margin: 5px 0 16px; font-size: var(--font-size-caption); }
@@ -5748,6 +5754,7 @@ ksadk-message {
   inset: 0 0 0 auto;
   width: min(620px, 100%);
   display: grid;
+  padding: 0;
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--studio-surface);
   box-shadow: var(--shadow-overlay);
@@ -5772,6 +5779,7 @@ ksadk-message {
   width: min(520px, calc(100vw - 40px));
   max-height: min(760px, calc(100dvh - 40px));
   display: grid;
+  padding: 0;
   grid-template-rows: auto minmax(0, 1fr) auto;
   border: 1px solid var(--studio-border);
   border-radius: var(--radius-surface);
