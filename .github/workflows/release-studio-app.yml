@@ -181,14 +181,6 @@ jobs:
         with:
           version: 9
 
-      - name: Install NSIS
-        shell: bash
-        run: |
-          choco install nsis -y --no-progress
-          # choco installs NSIS to C:\Program Files (x86)\NSIS; add to GITHUB_PATH
-          # so the Git Bash shell in later steps finds makensis.
-          echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
-
       # create_studio_icon.py uses PIL; not in the runner's system Python.
       - name: Install icon build dependency
         shell: bash
@@ -222,9 +214,11 @@ jobs:
         run: |
           echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
-      - name: Package Windows bundle + NSIS installer
+      - name: Package Windows zip
         # studio-app-package-windows depends on build-wheel → build-frontend
-        # (sync + build-studio-static), so one make invocation builds everything.
+        # (sync + build-studio-static). Ships a zip (not NSIS) because DSH
+        # toolchain's pnpm nested node_modules exceeds Windows 260-char path
+        # limit, which NSIS File /r cannot traverse.
         shell: bash
         run: make studio-app-package-windows
         env:
@@ -232,56 +226,14 @@ jobs:
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 
-      - name: Upload unsigned installer as artifact (SignPath input)
-        id: upload-unsigned
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentkit-studio-windows-unsigned
-          path: dist/studio-app/AgentKitStudio-Setup-x64.exe
-          if-no-files-found: error
-
-      # SignPath signs the artifact on its HSM and returns the signed .exe.
-      # Requires the SignPath GitHub App installed on the repo and a signing
-      # policy configured for this project. Until SignPath is approved, set
-      # SIGNPATH_SIGNING_POLICY_SLUG to 'test-signing' or skip this step.
-      - name: Sign via SignPath
-        id: signpath
-        # Gate on a variable (not a secret — GitHub Actions `if` cannot read
-        # secrets directly). Set vars.SIGNPATH_ENABLED=true once SignPath is
-        # approved and the API token is stored in secrets.SIGNPATH_API_TOKEN.
-        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: AgentKitStudio
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
-          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
-          output-artifact-directory: dist/studio-app/signed
-          wait-for-completion: true
-
-      - name: Select signed vs unsigned installer
-        id: pick
-        shell: bash
-        run: |
-          if [ -f "dist/studio-app/signed/AgentKitStudio-Setup-x64.exe" ]; then
-            cp "dist/studio-app/signed/AgentKitStudio-Setup-x64.exe" "dist/studio-app/AgentKitStudio-Setup-x64-signed.exe"
-            echo "path=dist/studio-app/AgentKitStudio-Setup-x64-signed.exe" >> "$GITHUB_OUTPUT"
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=dist/studio-app/AgentKitStudio-Setup-x64.exe" >> "$GITHUB_OUTPUT"
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Generate latest.yml
         # electron-updater reads this from the release to discover Windows
-        # updates. Point at whichever installer (signed/unsigned) exists.
-        shell: bash
+        # updates. version = release tag, files[].url = bare zip name,
+        # sha512 = base64.
         run: |
-          installer_path="${{ steps.pick.outputs.path }}"
           python3 scripts/write_studio_update_manifest.py \
-            --version "${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}" \
-            --artifact "$installer_path" \
+            --version "${{ env.STUDIO_APP_VERSION }}" \
+            --artifact dist/studio-app/AgentKitStudio-windows-x64.zip \
             --release-date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --channel win \
             --out dist/studio-app/latest.yml
@@ -291,6 +243,6 @@ jobs:
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           files: |
-            ${{ steps.pick.outputs.path }}
+            dist/studio-app/AgentKitStudio-windows-x64.zip
             dist/studio-app/latest.yml
           fail_on_unmatched_files: true

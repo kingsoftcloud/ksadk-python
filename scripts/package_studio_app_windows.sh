@@ -176,24 +176,22 @@ MANIFEST
 
 echo "Windows bundle staged at $bundle"
 
-# ── NSIS installer ────────────────────────────────────────────────────
-# makensis must be on PATH (workflow installs NSIS via chocolatey). NSIS
-# expects Windows-style paths; bash variables are MSYS-style, so convert
-# with cygpath. The .nsi packages the staged bundle into one unsigned .exe.
-setup_exe="$STUDIO_APP_DIR/AgentKitStudio-Setup-x64.exe"
-if ! command -v cygpath >/dev/null 2>&1; then
-  echo "ERROR: cygpath not found; this script must run under Git Bash on Windows" >&2
-  exit 1
+# ── Zip distribution ──────────────────────────────────────────────────
+# We ship a zip (not an NSIS installer) because DSH toolchain's pnpm
+# nested node_modules produces paths exceeding Windows' 260-char limit,
+# which NSIS File /r cannot traverse. Users unzip and run directly.
+setup_zip="$STUDIO_APP_DIR/AgentKitStudio-windows-x64.zip"
+rm -f "$setup_zip"
+# 7z is preinstalled on GitHub Actions windows runners; fall back to
+# PowerShell Compress-Archive if absent (local dev).
+if command -v 7z >/dev/null 2>&1; then
+  7z a -tzip "$setup_zip" "$bundle" >/dev/null
+else
+  powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$bundle")' -DestinationPath '$(cygpath -w "$setup_zip")' -Force"
 fi
-bundle_win=$(cygpath -wa "$bundle")
-out_win=$(cygpath -wa "$setup_exe")
-makensis -V2 -DAPP_VERSION="$STUDIO_APP_VERSION" \
-  -DBUNDLE_DIR="$bundle_win" \
-  -DOUTPUT_FILE="$out_win" \
-  scripts/studio_installer.nsi
 
-test -f "$setup_exe" || {
-  echo "ERROR: NSIS did not produce $setup_exe" >&2
+test -f "$setup_zip" || {
+  echo "ERROR: zip did not produce $setup_zip" >&2
   exit 1
 }
-echo "Unsigned installer: $setup_exe"
+echo "Unsigned zip: $setup_zip"
