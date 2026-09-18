@@ -25,9 +25,10 @@ UninstPage instfiles
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  ; File /r recurses the staged bundle. BUNDLE_DIR is a Windows path injected
-  ; via -D so NSIS resolves it natively (MSYS paths from bash would fail here).
-  File /r "${BUNDLE_DIR}\*.*"
+  ; File /r recurses the staged bundle into $INSTDIR. BUNDLE_DIR is a Windows
+  ; path injected via -D (cygpath-converted from MSYS). NSIS File /r takes a
+  ; directory or file glob; recurse the bundle dir contents directly.
+  File /r "${BUNDLE_DIR}"
 
   WriteRegStr HKCU "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\${APP_NAME}" "Version" "${APP_VERSION}"
