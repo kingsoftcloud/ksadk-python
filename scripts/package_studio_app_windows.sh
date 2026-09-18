@@ -101,13 +101,15 @@ node_src="$node_cache/node-extract/node-v${node_version}-win-x64"
 cp "$node_src/node.exe" "$resources/node/"
 cp -R "$node_src/node_modules" "$resources/node/" 2>/dev/null || true
 rm -rf "$resources/node/include"
-pnpm_root="${STUDIO_APP_PNPM_ROOT:-$HOME/.cache/node/corepack/v1/pnpm/11.7.0}"
-test -f "$pnpm_root/bin/pnpm.cjs" || {
-  echo "ERROR: pnpm 11.7.0 cache is missing: $pnpm_root" >&2
+# Install pnpm via the bundled node's npm — corepack cache only exists on
+# dev machines, CI runners are clean. `npm install -g pnpm@<ver>` works
+# everywhere node + npm exist.
+pnpm_version="${STUDIO_APP_PNPM_VERSION:-11.7.0}"
+"$resources/node/node.exe" "$resources/node/node_modules/npm/bin/npm-cli.js" install -g "pnpm@${pnpm_version}" --prefix "$resources/node" --no-audit --no-fund --loglevel=error 2>&1 | tail -3
+test -f "$resources/node/node_modules/pnpm/bin/pnpm.cjs" || {
+  echo "ERROR: pnpm install failed" >&2
   exit 1
 }
-mkdir -p "$resources/node/node_modules/pnpm"
-cp -R "$pnpm_root/." "$resources/node/node_modules/pnpm/"
 cat > "$resources/node/pnpm.cmd" <<'PNPM'
 @echo off
 setlocal
