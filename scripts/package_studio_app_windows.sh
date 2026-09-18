@@ -48,6 +48,9 @@ if [ -f "$pth_file" ]; then
 fi
 curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$python_cache/get-pip.py"
 "$resources/runtime/python.exe" "$python_cache/get-pip.py" --quiet
+# Python embeddable ships without setuptools; ksadk's pyproject uses
+# setuptools.build_meta as build backend, so pip install fails without it.
+"$resources/runtime/python.exe" -m pip install --quiet setuptools wheel
 "$resources/runtime/python.exe" -m pip install --quiet "$wheel[codex]"
 # Same slimming as the macOS build: drop OCR/opencv/onnx (~240 MiB) and
 # orphaned numpy/shapely/pip. Best-effort; ignore if already absent.
