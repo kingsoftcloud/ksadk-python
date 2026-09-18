@@ -440,14 +440,14 @@ button:disabled {
   background: var(--studio-surface);
 }
 
-:where(input, textarea, select):focus,
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), textarea, select):focus,
 .studio-select-trigger:focus-visible,
 .studio-select-trigger[data-state="open"],
 .studio-multi-select-trigger:focus-visible,
 .studio-multi-select-trigger[aria-expanded="true"] {
   border-color: var(--studio-accent);
   outline: 2px solid var(--focus-ring);
-  outline-offset: 0;
+  outline-offset: -2px;
   background: var(--studio-surface);
 }
 
@@ -461,7 +461,7 @@ button:disabled {
 .search-field:focus-within {
   border-color: var(--studio-accent);
   outline: 2px solid var(--focus-ring);
-  outline-offset: 0;
+  outline-offset: -2px;
   background: var(--studio-surface);
 }
 

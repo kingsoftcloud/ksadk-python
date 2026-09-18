@@ -6,7 +6,11 @@
 .plugin-store button { font: inherit; cursor: pointer; }
 .plugin-store button:disabled { cursor: default; opacity: .5; }
 .plugin-store-search { display: flex; align-items: center; gap: 10px; border: 1px solid var(--studio-border); border-radius: 24px; padding: 8px 14px; background: var(--studio-surface); color: var(--studio-text-secondary); }
+.plugin-store-search:focus-within { border-color: var(--focus-ring); outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.plugin-store-search > svg { flex-shrink: 0; }
 .plugin-store-search input { width: 100%; border: 0; border-radius: 0; background: transparent; padding: 0; box-shadow: none; outline: none; }
+.plugin-store [role="status"], .studio-plugin-surface > p[role="status"] { display: flex; align-items: center; gap: 8px; }
+.plugin-store [role="status"] > svg, .studio-plugin-surface > p[role="status"] > svg { flex-shrink: 0; }
 .plugin-installed-strip { margin: 28px 0; }
 .plugin-installed-strip > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .plugin-installed-strip h3 small { font-size: 12px; font-weight: 400; color: var(--studio-text-secondary); margin-left: 6px; }

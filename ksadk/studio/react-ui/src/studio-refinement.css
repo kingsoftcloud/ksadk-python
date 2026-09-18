@@ -57,11 +57,11 @@ input, textarea, select, .studio-select-trigger, .studio-multi-select-trigger,
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
-:is(input, textarea, select):focus,
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), textarea, select):focus,
 .search-field:focus-within {
   outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-  border-color: var(--studio-accent);
+  outline-offset: -2px;
+  border-color: var(--focus-ring);
 }
 /* Selection controls share neutral hover and keyboard focus states. */
 .studio-select-trigger:hover:not(:disabled),
@@ -76,7 +76,7 @@ select:hover:not(:disabled), select:focus {
   background: var(--studio-surface);
   border-color: var(--studio-accent);
   outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 /* Scope compact form metrics to Studio primitives; shared chat owns its input. */
 .studio-select-trigger, .studio-multi-select-trigger, .search-field {

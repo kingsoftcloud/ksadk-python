@@ -377,7 +377,9 @@ async def test_timeout_cancels_native_child_task():
                         name="child",
                         instructions="child",
                         tools=("write",),
-                        timeout_seconds=0.02,
+                        # The deadline includes graph startup. Allow the tool
+                        # to start on busy CI runners before testing cancellation.
+                        timeout_seconds=1.0,
                     )
                 ]
             )

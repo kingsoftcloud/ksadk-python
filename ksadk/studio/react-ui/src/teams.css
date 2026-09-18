@@ -125,8 +125,9 @@
   background: transparent;
 }
 .studio-team-search:focus-within {
-  outline: 2px solid var(--studio-accent);
-  outline-offset: 2px;
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .studio-team-list {
   overflow: auto;
@@ -460,6 +461,18 @@
   border-radius: var(--chat-composer-radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow-composer);
+}
+.app-shell .ksadk-teams .team-composer:focus-within {
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  box-shadow: var(--shadow-composer);
+}
+.app-shell .ksadk-teams .team-composer textarea:is(:hover, :focus) {
+  border: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
 }
 .ksadk-teams .team-composer textarea,
 .ksadk-teams .team-message-body { font-size: var(--font-size-subtitle); }
