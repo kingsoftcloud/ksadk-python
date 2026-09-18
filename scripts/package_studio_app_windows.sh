@@ -178,8 +178,13 @@ echo "Windows bundle staged at $bundle"
 
 # ── Zip distribution ──────────────────────────────────────────────────
 # We ship a zip (not an NSIS installer) because DSH toolchain's pnpm
-# nested node_modules produces paths exceeding Windows' 260-char limit,
-# which NSIS File /r cannot traverse. Users unzip and run directly.
+# nested node_modules exceeds Windows' 260-char path limit, which NSIS
+# File /r cannot traverse. 7z handles long paths; users unzip and run
+# AgentKitStudio.exe directly.
+#
+# A self-extracting SFX exe was tried but the 7-Zip "Extra" package does
+# not ship 7zSD.sfx (only 7za.exe), and third-party SFX modules carry
+# supply-chain risk. Revisit when a trusted SFX source is available.
 setup_zip="$STUDIO_APP_DIR/AgentKitStudio-windows-x64.zip"
 rm -f "$setup_zip"
 # 7z is preinstalled on GitHub Actions windows runners; fall back to

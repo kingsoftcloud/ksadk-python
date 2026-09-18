@@ -541,7 +541,7 @@ public-version-gate:
 
 release-preflight: public-build-check
 	@echo "==> Release compatibility, native host, browser, and artifact preflight"
-	@uv run --extra all python scripts/release_preflight.py --dist-dir dist
+	@uv run --extra all python scripts/release_preflight.py --dist-dir dist $(RELEASE_PREFLIGHT_FLAGS)
 
 RELEASE_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
 RELEASE_LOCAL_EVIDENCE ?= dist/release-evidence.json

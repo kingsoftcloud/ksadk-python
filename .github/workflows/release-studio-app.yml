@@ -146,6 +146,10 @@ jobs:
             --out dist/studio-app/latest-mac.yml
 
       - name: Upload to GitHub Release
+        # Only upload when triggered by a real release publish. workflow_dispatch
+        # (manual testing) would otherwise create spurious releases tagged with
+        # the branch name.
+        if: ${{ github.event_name == 'release' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
@@ -240,6 +244,10 @@ jobs:
             --out dist/studio-app/latest.yml
 
       - name: Upload to GitHub Release
+        # Only upload when triggered by a real release publish. workflow_dispatch
+        # (manual testing) would otherwise create spurious releases tagged with
+        # the branch name.
+        if: ${{ github.event_name == 'release' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
