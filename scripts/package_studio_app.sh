@@ -284,6 +284,18 @@ if [ -n "${STUDIO_APP_CODESIGN_IDENTITY:-}" ]; then
       esac
     done
   ' sh "$STUDIO_APP_CODESIGN_IDENTITY" {} +
+  # Re-sign the bundled node with JIT entitlements. The generic pass above
+  # signs it without entitlements, but node spawns from the hardened-runtime
+  # Python process inherit the restricted flag — without allow-jit V8 cannot
+  # mmap executable memory and dies with SIGTRAP before dsh --version runs.
+  # Verified 2026-09-18: entitled node runs V8 fine under the app process tree.
+  NODE_ENTITLEMENTS="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/node.entitlements"
+  if [ -f "$STUDIO_APP_BUNDLE/Contents/Resources/node/bin/node" ] && [ -f "$NODE_ENTITLEMENTS" ]; then
+    codesign --force --timestamp --options runtime \
+      --entitlements "$NODE_ENTITLEMENTS" \
+      --sign "$STUDIO_APP_CODESIGN_IDENTITY" \
+      "$STUDIO_APP_BUNDLE/Contents/Resources/node/bin/node" || exit 1
+  fi
   # Electron helper apps — apply entitlements so JIT/x86 work in sandbox.
   for helper in "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper.app" \
                 "$STUDIO_APP_BUNDLE/Contents/Frameworks/Electron Helper (GPU).app" \
