@@ -87,6 +87,11 @@ jobs:
           echo "STUDIO_APP_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "CSC_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
 
+      # create_studio_icon.py uses PIL to render the app icon. Pillow isn't in
+      # the runner's system Python; install it before packaging.
+      - name: Install icon build dependency
+        run: python -m pip install --quiet pillow
+
       # Resolve the ksadk version once; both Package and DMG steps use it.
       # workflow_dispatch has no release tag, and github.ref_name is the
       # branch name — package_studio_app.sh requires STUDIO_APP_VERSION.
@@ -171,6 +176,11 @@ jobs:
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
+
+      # create_studio_icon.py uses PIL; not in the runner's system Python.
+      - name: Install icon build dependency
+        shell: bash
+        run: python -m pip install --quiet pillow
 
       - name: Build wheel + sync static assets
         shell: bash
