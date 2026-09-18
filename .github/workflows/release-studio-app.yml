@@ -49,9 +49,14 @@ jobs:
       # reuse the same .p12 across both products. Skipped when the cert secret
       # is absent (unsigned local-style build). Auto-discovers the identity
       # name so we don't need a separate CODESIGN_IDENTITY secret.
+      #
+      # GitHub Actions `if` cannot read secrets directly (returns empty / parse
+      # error), so we map the secret to an env var and test the env var. The
+      # env var is also what the step uses, avoiding a second secret read.
       - name: Prepare Apple signing keychain
-        if: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' }}
+        if: ${{ env.P12_PRESENT == 'true' }}
         env:
+          P12_PRESENT: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' && 'true' || 'false' }}
           MACOS_CERTIFICATE_BASE64: ${{ secrets.STUDIO_APPLE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.STUDIO_APPLE_P12_PASSWORD }}
         run: |
