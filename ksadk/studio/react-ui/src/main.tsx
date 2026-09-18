@@ -5,11 +5,13 @@ import { mountWorkspace } from "./plugins/workspaceRegistry";
 import App from "./App.tsx";
 import { initializeStudioSession } from "./api";
 import { initializeStudioTheme } from "./studioTheme";
+import studioFavicon from "./assets/kingsoft-cloud.ico?url";
 import "./index.css";
 import "./kingdesign.css";
 import "./studio-refinement.css";
 import "./plugins.css";
 import "./layout-simplification.css";
+import "./interaction-panel.css";
 import "./mobile-resource-lists.css";
 import "./teams.css";
 import "@kingsoftcloud/ksadk-web/teams/styles";
@@ -41,6 +43,16 @@ function WorkspaceApp() {
 async function mount(container: HTMLElement) {
   initializeStudioTheme();
   document.title = 'AgentKit Studio';
+  // The embedded Core owns its document head, so replace its inherited icon too.
+  const icons = document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"]');
+  const faviconLinks = icons.length ? Array.from(icons) : [document.createElement('link')];
+  for (const icon of faviconLinks) {
+    icon.rel = 'icon';
+    icon.type = 'image/x-icon';
+    icon.href = studioFavicon;
+    icon.removeAttribute('sizes');
+    if (!icon.isConnected) document.head.append(icon);
+  }
   try {
     await initializeStudioSession();
   } catch {
