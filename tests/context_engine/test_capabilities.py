@@ -178,3 +178,74 @@ def test_capability_hash_ignores_prompt_projection_order() -> None:
     caps = adk_context_capabilities()
     reordered = replace(caps, prompt_projection=frozenset(reversed(sorted(caps.prompt_projection))))
     assert capability_hash(caps) == capability_hash(reordered)
+
+
+class _CheckpointHookRunner:
+    """模拟 LangGraphRunner：可选导出 prepare_state hook，可选报 checkpoint 能力。"""
+
+    def __init__(
+        self,
+        *,
+        with_hook: bool = True,
+        checkpoint_supported: bool = True,
+        managed_state: str = "ready",
+    ) -> None:
+        self.detection_result = SimpleNamespace(type=SimpleNamespace(value="langgraph"))
+        self._module = (
+            SimpleNamespace(ksadk_prepare_state=lambda payload, session_context: {"messages": []})
+            if with_hook
+            else SimpleNamespace()
+        )
+        if checkpoint_supported:
+            self.describe_checkpoint_capability = lambda: {"Supported": True}
+        else:
+            self.describe_checkpoint_capability = lambda: {"Supported": False}
+        self._managed_checkpoint_state = managed_state
+
+
+def test_checkpoint_hook_mode_downgrades_compaction_owner_to_framework() -> None:
+    # durable checkpointer + ksadk_prepare_state hook：messages 单一来源是 checkpointer，
+    # ksadk compaction 输出对模型输入零贡献，compaction 归还 framework，避免白耗摘要 LLM 调用。
+    caps = capabilities_for_runner(_CheckpointHookRunner())
+    assert caps.compaction_owner == "framework"
+    # 其余字段不变
+    baseline = langgraph_context_capabilities()
+    assert caps.history_owner == baseline.history_owner
+    assert caps.prompt_owner == baseline.prompt_owner
+    assert caps.integration_mode == baseline.integration_mode
+
+
+def test_no_hook_keeps_ksadk_compaction_owner() -> None:
+    # 无 prepare_state hook（可能回退 _to_state 注入历史）→ 不降级，维持原声明。
+    caps = capabilities_for_runner(_CheckpointHookRunner(with_hook=False))
+    assert caps.compaction_owner == "ksadk"
+
+
+def test_without_durable_checkpoint_keeps_ksadk_compaction_owner() -> None:
+    # 无 durable checkpointer（描述不支持 + 托管状态未 ready）→ 不降级。
+    runner = _CheckpointHookRunner(
+        checkpoint_supported=False,
+        managed_state="uninitialized",
+    )
+    caps = capabilities_for_runner(runner)
+    assert caps.compaction_owner == "ksadk"
+
+
+def test_managed_state_ready_downgrades_even_if_describe_raises() -> None:
+    # describe_checkpoint_capability 抛异常时回退 _managed_checkpoint_state == "ready" 判断。
+    runner = _CheckpointHookRunner(checkpoint_supported=False, managed_state="ready")
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    runner.describe_checkpoint_capability = _boom
+    caps = capabilities_for_runner(runner)
+    assert caps.compaction_owner == "framework"
+
+
+def test_explicit_describe_with_non_ksadk_owner_not_affected() -> None:
+    # 非 ksadk owner（如 langchain 已是 framework / codex native）不做任何覆盖。
+    runner = _CheckpointHookRunner()
+    runner.detection_result = SimpleNamespace(type=SimpleNamespace(value="langchain"))
+    caps = capabilities_for_runner(runner)
+    assert caps.compaction_owner == "framework"  # 原本就是 framework，不变
