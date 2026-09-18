@@ -96,8 +96,9 @@ jobs:
       # workflow_dispatch has no release tag, and github.ref_name is the
       # branch name — package_studio_app.sh requires STUDIO_APP_VERSION.
       - name: Resolve version
+        shell: bash
         run: |
-          echo "STUDIO_APP_VERSION=$(python -c 'from ksadk.version import VERSION; print(VERSION)')" >> "$GITHUB_ENV"
+          echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
       # package_studio_app.sh copies the DSH toolchain from
       # ~/.agentengine/plugin-toolchains/dsh/<ver>. CI runners are clean, so
@@ -217,8 +218,9 @@ jobs:
           test -d node_modules/@deepseek-ai/dsh || { echo "ERROR: @deepseek-ai/dsh not installed"; exit 1; }
 
       - name: Resolve version
+        shell: bash
         run: |
-          echo "STUDIO_APP_VERSION=$(python -c 'from ksadk.version import VERSION; print(VERSION)')" >> "$GITHUB_ENV"
+          echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
       - name: Package Windows bundle + NSIS installer
         # studio-app-package-windows depends on build-wheel → build-frontend

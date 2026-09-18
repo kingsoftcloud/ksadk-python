@@ -216,8 +216,9 @@ studio-react-test: build-studio-static
 # 构建和发布
 # ============================================================
 
-# 获取当前版本
-VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
+# 获取当前版本 (grep from pyproject.toml so it works without a Python interpreter
+# on PATH — CI Windows Git Bash may not expose python3 to Make's $(shell)).
+VERSION := $(shell grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 
 # 版本管理
 version:
@@ -617,7 +618,7 @@ public-review: public-status public-preflight
 
 # 离线包输出目录
 OFFLINE_DIR = offline-packages
-VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)")
+VERSION := $(shell grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 
 # 平台参数
 LINUX_PLATFORM = manylinux2014_x86_64
