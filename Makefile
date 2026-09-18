@@ -886,7 +886,6 @@ studio-app-dmg: studio-app-package
 # Windows). Produces an UNSIGNED AgentKitStudio-Setup-x64.exe; SignPath signs
 # it in the release workflow. makensis must be on PATH (NSIS via chocolatey).
 studio-app-package-windows: build-wheel
-	@command -v makensis >/dev/null 2>&1 || (echo "ERROR: makensis (NSIS) not found; install NSIS first" >&2; exit 1)
 	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
 	  STUDIO_APP_PYTHON_VERSION="$(STUDIO_APP_PYTHON_VERSION)" \
 	  ELECTRON_VERSION="$(ELECTRON_VERSION)" \
