@@ -230,6 +230,7 @@ jobs:
         # electron-updater reads this from the release to discover Windows
         # updates. version = release tag, files[].url = bare zip name,
         # sha512 = base64.
+        shell: bash
         run: |
           python3 scripts/write_studio_update_manifest.py \
             --version "${{ env.STUDIO_APP_VERSION }}" \
