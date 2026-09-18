@@ -178,8 +178,16 @@ function createWindow() {
 }
 async function showLoadingWindow() {
   await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html>
-    <meta charset="utf-8"><style>html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f5f7fa;color:#1f2937;font:16px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.card{text-align:center}.mark{margin:auto auto 18px;width:56px;height:56px;border-radius:16px;background:#1683e8;color:#fff;display:grid;place-items:center;font-size:30px;font-weight:700;box-shadow:0 8px 24px #1683e844}.hint{color:#64748b;margin-top:8px}</style>
-    <main class="card"><div class="mark">K</div><strong>AgentKit Studio</strong><div class="hint">正在启动本地运行时…</div></main>`));
+    <meta charset="utf-8"><style>
+      html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f5f7fa;color:#1f2937;font:16px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
+      .card{text-align:center;animation:fadein .5s ease}
+      .mark{margin:0 auto 20px;width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#1683e8,#0d5cb8);color:#fff;display:grid;place-items:center;font-size:30px;font-weight:700;box-shadow:0 8px 24px #1683e844}
+      .brand{font-size:17px;font-weight:600;letter-spacing:.01em}
+      .hint{margin-top:10px;font-size:13px;background:linear-gradient(90deg,#94a3b8 0%,#1683e8 45%,#0d5cb8 50%,#1683e8 55%,#94a3b8 100%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:flow 2.2s linear infinite}
+      @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+      @keyframes flow{0%{background-position:210% 0}100%{background-position:-210% 0}}
+    </style>
+    <main class="card"><div class="mark">K</div><div class="brand">AgentKit Studio</div><div class="hint">正在启动本地运行时</div></main>`));
 }
 async function launch() {
   const iconPath = process.platform === 'win32'
