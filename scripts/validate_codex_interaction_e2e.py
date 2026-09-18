@@ -22,7 +22,7 @@ import requests
 from ksadk.api.client import AgentEngineClient
 
 DEFAULT_PROMPT = (
-    "请使用 run_command 工具执行命令 echo phase1-interaction-gate；"
+    "请使用 run_command 工具执行命令 echo kernel-interaction-gate；"
     "需要批准时停下来等待，不要把工具调用写成普通文本。"
 )
 
@@ -281,7 +281,7 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         created = await client.create_session(
             args.agent_id,
-            user_id="phase1-codex-interaction-gate",
+            user_id="kernel-codex-interaction-gate",
             expires_hours=1,
         )
         session_id = _session_id(created)
@@ -342,7 +342,7 @@ async def _run(args: argparse.Namespace) -> int:
         )
         if requested is not None and args.decision != "request-only":
             idempotency_key = (
-                f"phase1-codex-interaction-{args.decision}-{uuid.uuid4().hex}"
+                f"kernel-codex-interaction-{args.decision}-{uuid.uuid4().hex}"
             )
             response = {"decision": args.decision}
             submission = await client.submit_interaction(
@@ -477,7 +477,7 @@ async def _run(args: argparse.Namespace) -> int:
                     expected_revision=int(requested["revision"]),
                     action="reject",
                     response={"decision": "reject"},
-                    idempotency_key=f"phase1-gate-cleanup-{uuid.uuid4().hex}",
+                    idempotency_key=f"kernel-gate-cleanup-{uuid.uuid4().hex}",
                 )
                 await asyncio.sleep(min(args.poll_seconds, 1.0))
             except Exception:

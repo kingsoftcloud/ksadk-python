@@ -89,7 +89,7 @@ def test_bundle_security_rejects_high_confidence_runtime_key(tmp_path: Path) -> 
     runtime = root / "runtime"
     runtime.mkdir(parents=True)
     (runtime / "agent.py").write_text(
-        "api_key = 'sk-test-secret-placeholder-123'\n",
+        "api_key = 'sk-test-secret-placeholder'\n",
         encoding="utf-8",
     )
 
@@ -168,7 +168,7 @@ def test_builder_rejects_secret_in_runtime_snapshot(tmp_path: Path) -> None:
     source = studio.workspace.resolve("agents/bundle-security/source")
     source.mkdir(parents=True, exist_ok=True)
     (source / "agent.py").write_text(
-        "api_key = 'sk-test-secret-placeholder-123'\n",
+        "api_key = 'sk-test-secret-placeholder'\n",
         encoding="utf-8",
     )
     with pytest.raises(BundleSecurityError, match="literal secret"):
@@ -182,7 +182,7 @@ def test_studio_build_reports_the_rejected_bundle_file(tmp_path: Path) -> None:
     source = studio.workspace.resolve("agents/bundle-security/source")
     source.mkdir(parents=True, exist_ok=True)
     (source / "agent.py").write_text(
-        "api_key = 'sk-test-secret-placeholder-123'\n",
+        "api_key = 'sk-test-secret-placeholder'\n",
         encoding="utf-8",
     )
 
@@ -191,7 +191,7 @@ def test_studio_build_reports_the_rejected_bundle_file(tmp_path: Path) -> None:
 
     assert captured.value.code == "BUNDLE_SECURITY_REJECTED"
     assert "runtime/agent.py" in captured.value.message
-    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in captured.value.message
+    assert "sk-test-secret-placeholder" not in captured.value.message
 
 
 def test_v2_resolver_rechecks_security_without_changing_v1_compatibility(tmp_path: Path) -> None:

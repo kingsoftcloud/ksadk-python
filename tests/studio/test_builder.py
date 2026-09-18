@@ -164,7 +164,7 @@ def test_builder_creates_complete_bundle(tmp_path: Path):
     assert manifest["bundleFormat"] == "agentkit.bundle/v2"
     assert manifest["runtimeContract"] == "agentkit.runtime/v1"
     assert manifest["pluginLockDigest"].startswith("sha256:")
-    # A 0.8.2-compatible Bundle does not have to opt into Phase 2 composition.
+    # A 0.8.2-compatible Bundle does not have to opt into Release composition.
     # Its empty lock remains on the explicit legacy execution path.
     assert manifest["compositionMode"] == "legacy"
     assert "compositionProfileDigest" not in manifest

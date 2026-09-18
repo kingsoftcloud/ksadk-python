@@ -1,4 +1,4 @@
-"""Harness Session/Transcript 持久化（plan §6.2.1 / §17 Phase 2）。
+"""Harness Session/Transcript 持久化（plan §6.2.1 / §17 Release）。
 
 - Transcript 是会话事实源：完整事件与消息持久化，压缩不删除（§8.4）；
 - 恢复语义：进程重启后先恢复图 Checkpoint（路由），再从 Transcript 重建

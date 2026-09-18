@@ -1,15 +1,15 @@
-"""ManagedLangGraphEngine —— 默认执行引擎（plan §7 / Phase 1）。
+"""ManagedLangGraphEngine —— 默认执行引擎（plan §7 / Kernel）。
 
-实现 §7.1 默认 Agent Loop 的 Phase 1 子集：prepare_context -> reason ->
+实现 §7.1 默认 Agent Loop 的 Kernel 子集：prepare_context -> reason ->
 tool_calls -> final，reason 自环。LangGraph 类型不越出本模块
 （tests/architecture/test_harness_contract.py 守卫）。
 
-Phase 1 能力范围（诚实声明）：
+Kernel 能力范围（诚实声明）：
 - Cancel：支持（终止语义，不伪装 Pause）；
 - Interrupt/Resume：支持（approval 通道，resume 携带 payload 重放）；
 - Checkpoint：LangGraph Checkpointer 注入（内存/SQLite），thread_id 走
   租户复合编码（plan §6.2.2）；
-- Context 压缩：Phase 2 交付，本引擎留 policy 读取口。
+- Context 压缩：Release 交付，本引擎留 policy 读取口。
 """
 
 from __future__ import annotations
@@ -490,6 +490,7 @@ class ManagedLangGraphEngine:
                     "mcp_listed": [],
                     "mcp_schema_read": [],
                     "finalization_retries": 0,
+                    "delegation_synthesis_pending": False,
                     "run_control": (
                         run.controller.snapshot() if run.controller is not None else {}
                     ),
@@ -537,6 +538,15 @@ class ManagedLangGraphEngine:
             # final_state 补发，stream 已消费 reason 事件时会造成同一答案重复展示。
             if run.cancel_requested:
                 raise asyncio.CancelledError
+            from ksadk.harness.engine.completion_guard import unfinished_delegations
+
+            unfinished = unfinished_delegations(run.events)
+            if unfinished:
+                labels = ", ".join(unfinished.values())
+                raise ExecutionEngineError(
+                    "parent run cannot complete while delegated children lack terminal "
+                    f"evidence: {labels}"
+                )
             run.state.status = RunStatus.COMPLETED
             run.events.append(
                 self._event(

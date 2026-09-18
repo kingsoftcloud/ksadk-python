@@ -1,6 +1,6 @@
 """Harness ContextEngine（plan §8）——复用 PCM 模块的默认上下文引擎。
 
-Phase 2 交付（plan §17）：
+Release 交付（plan §17）：
 - Context 分层：Stable Prompt 与动态 Context 分开构建、分别算 Hash（§8.1）；
 - ContextEngine 接口：plan / compact / recover（§8.2）；
 - 动态 Token Budget：预算来源优先级链（§8.3，无固定常数）；

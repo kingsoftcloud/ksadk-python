@@ -115,6 +115,28 @@ class _ManagedMcpReasoner:
 
 
 @pytest.mark.asyncio
+async def test_dynamic_child_timeout_cannot_exceed_agent_execution_timeout(tmp_path):
+    adapter = await build_managed_provider_adapter(
+        HarnessConfig(model="fixture", prompt="test"),
+        agent_name="bounded-child-agent",
+        workspace_root=tmp_path,
+        reasoner=_ManagedMcpReasoner(),
+        tool_contracts={
+            "execution": {
+                "timeoutSeconds": 120,
+                "childTimeoutSeconds": 300,
+                "childMaxTotalTokens": 1536,
+            }
+        },
+    )
+
+    assert adapter._engine._delegation_runtime._child_timeout_seconds == 120
+    assert adapter._engine._delegation_runtime._child_max_total_tokens == 1536
+    assert "只在对话中展示同格式文本不算完成" in adapter.harness_spec.prompt.instructions
+    await adapter.close_all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("decision,written", [("approve", True), ("reject", False)])
 async def test_builtin_write_runs_only_after_studio_approval(tmp_path, decision, written):
     import hashlib

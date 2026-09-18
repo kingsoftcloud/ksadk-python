@@ -13,11 +13,13 @@ selection, lineage and progress observable rather than prompt-only behaviour.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from ksadk.harness.events import EventType, RuntimeEvent
+from ksadk.harness.public_activity import public_commentary_text
 from ksadk.harness.subagent import SubAgentSpec, run_subagent
 from ksadk.plugins.subagent_providers.codex import DEFAULT_CODEX_CHILD_PROVIDER_REF
 from ksadk.plugins.subagents import (
@@ -32,10 +34,12 @@ DELEGATE_TASK_TOOL = "delegate_task"
 HARNESS_CHILD_PROVIDER_REF = "plugin://io.ksadk.harness-child@1.0.0"
 
 _CODING_SIGNALS = re.compile(
-    r"(?:\b(?:implement|refactor|debug|fix|patch|commit|modify|edit)\b|"
+    r"(?:\b(?:implement|refactor|debug|fix|patch|modify|edit)\s+"
+    r"(?:(?:the|this|a|an)\s+)?(?:code|files?|repository|repo|bug|tests?|"
+    r"function|method|class|module|feature|api|script|program|implementation)\b|"
+    r"\bcommit\s+(?:(?:the|this)\s+)?(?:changes?|patch|code)\b|"
     r"\bwrite\s+(?:the\s+)?(?:code|tests?|implementation)\b|"
     r"\badd\s+(?:unit\s+|integration\s+)?tests?\b|"
-    r"\bcoding\s+task\b|"
     r"(?:编写|重构|调试|修复|修改)\s*"
     r"(?:(?:Python|TypeScript|JavaScript|Java|Go|Rust|C\+\+|C#|SQL)\s*)?(?:代码|程序|脚本)|"
     r"写代码|实现(?:功能|需求|接口|类|方法|模块)|"
@@ -47,6 +51,29 @@ _NEGATED_CODING_SIGNALS = re.compile(
     r"(?:write|modify|edit|change|create)\s+(?:any\s+)?(?:code|files?|scripts?)\b|"
     r"(?:不要|无需|不得|禁止)(?:编写|写|修改|编辑|创建)(?:任何)?(?:代码|文件|脚本)"
     r"(?:(?:或|、)(?:编写|写|修改|编辑|创建)(?:任何)?(?:代码|文件|脚本))*)",
+    re.IGNORECASE,
+)
+_DIRECT_FILE_DELIVERY_SIGNALS = re.compile(
+    r"(?:创建|生成|保存|写入|输出)(?:一个|一份|为)?[^。；\n]{0,80}"
+    r"(?:\.(?:md|txt|json|csv|html?)\b|(?:Markdown|MD|文本|JSON|CSV|HTML)\s*文档|文件)|"
+    r"\b(?:create|generate|save|write)\b[^.\n]{0,80}"
+    r"(?:\.(?:md|txt|json|csv|html?)\b|\b(?:markdown|text|json|csv|html)\s+file\b)",
+    re.IGNORECASE,
+)
+_RESEARCH_SIGNALS = re.compile(
+    r"(?:调研|研究|检索|搜索|查找|核对|资料|证据|比较|对比|"
+    r"\b(?:research|investigate|search|compare|verify)\b)",
+    re.IGNORECASE,
+)
+_RESEARCH_LEAD = re.compile(
+    r"^\s*(?:请\s*)?(?:调研|研究|检索|搜索|查找|核对|比较|对比|"
+    r"(?:research|investigate|search|compare|verify)\b)",
+    re.IGNORECASE,
+)
+_MUTATING_TASK_SIGNALS = re.compile(
+    r"^\s*(?:请\s*|please\s+)?(?:将|把)?[^。；\n]{0,40}"
+    r"(?:保存|写入|编辑|修改|上传|发布|删除|"
+    r"\b(?:save|write|edit|modify|upload|publish|delete)\b)",
     re.IGNORECASE,
 )
 
@@ -71,6 +98,7 @@ class AdaptiveDelegationRuntime:
         max_children: int = 8,
         child_timeout_seconds: int = 300,
         child_max_turns: int = 8,
+        child_max_total_tokens: int | None = None,
     ) -> None:
         if not 1 <= max_children <= 32:
             raise ValueError("dynamic delegation max_children must be in 1..32")
@@ -79,6 +107,7 @@ class AdaptiveDelegationRuntime:
         self._max_children = max_children
         self._child_timeout_seconds = child_timeout_seconds
         self._child_max_turns = child_max_turns
+        self._child_max_total_tokens = child_max_total_tokens
         self._active: dict[str, dict[str, ChildHandle]] = {}
         self._started: dict[str, int] = {}
 
@@ -91,10 +120,13 @@ class AdaptiveDelegationRuntime:
                 "description": (
                     "Delegate one independent subtask when parallel or specialist work is useful. "
                     "Use task_kind=coding for repository/code implementation, debugging, "
-                    "refactoring or tests; use general for research and analysis. Multiple "
-                    "calls in one turn may "
-                    "run in parallel. After successful delegation, synthesize the child outputs; "
-                    "do not repeat the same research with parent tools unless a child explicitly "
+                    "refactoring or tests; use general for research and analysis. When a request "
+                    "contains N independent subjects, emit N delegate_task calls in the same "
+                    "model turn so they run in parallel; never delegate only the first subject "
+                    "and process the rest serially. After successful delegation, synthesize the "
+                    "child outputs; do not delegate creating or saving the final deliverable "
+                    "file—the parent must use its workspace write tool after synthesis; do not "
+                    "repeat the same research with parent tools unless a child explicitly "
                     "reports missing evidence. Do not delegate a simple task that you can "
                     "answer directly."
                 ),
@@ -155,6 +187,37 @@ class AdaptiveDelegationRuntime:
     def is_tool(self, name: str) -> bool:
         return name == self.name
 
+    def parallel_safe(self, arguments: dict[str, Any], *, parent_run: Any) -> bool:
+        """Whether an adaptive child can safely share a parallel tool batch.
+
+        Research children never need the parent's mutating/approval-gated tools:
+        they return evidence to the parent, which owns the final artifact.  By
+        removing those tools from the child we avoid concurrent approval
+        interrupts while allowing independent product research to run in
+        parallel.  Other general tasks retain the existing sequential,
+        approval-capable behaviour.
+        """
+        task = str(arguments.get("task") or "").strip()
+        if (
+            not task
+            or self.route(task, str(arguments.get("task_kind") or "auto")).task_kind
+            != "general"
+        ):
+            return False
+        if not _RESEARCH_SIGNALS.search(task):
+            return False
+        mutating = (
+            bool(_DIRECT_FILE_DELIVERY_SIGNALS.search(task))
+            if _RESEARCH_LEAD.search(task)
+            else bool(_MUTATING_TASK_SIGNALS.search(task))
+        )
+        if mutating:
+            return False
+        return not (
+            bool(getattr(parent_run, "skill_catalog", ()))
+            or bool(getattr(parent_run, "mcp_catalog", ()))
+        )
+
     def preview_route(self, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
         """Return the public route decision before the child starts."""
         task = str(arguments.get("task") or "").strip()
@@ -180,6 +243,16 @@ class AdaptiveDelegationRuntime:
         task = str(arguments.get("task") or "").strip()
         if not task:
             raise ValueError("delegate_task requires a non-empty task")
+        # The parent owns final artifact delivery. A child conclusion is only
+        # evidence for synthesis; allowing the model to delegate a direct file
+        # write lets a text-only child claim success without any durable write
+        # receipt. Fail before spawning so the next parent turn can call the
+        # bound workspace tool itself.
+        if _DIRECT_FILE_DELIVERY_SIGNALS.search(task):
+            raise SubagentProviderError(
+                "delegation_requires_parent_tool",
+                "final file delivery must use the parent workspace write tool",
+            )
         run_id = parent_run.handle.run_id
         calls = getattr(parent_run, "dynamic_calls", None)
         if calls is None:
@@ -216,21 +289,42 @@ class AdaptiveDelegationRuntime:
             provider_ref=decision.provider_ref,
             child_event_kind="lifecycle",
         )
-        if decision.task_kind == "general":
-            result, events = await self._run_harness(
-                engine=engine,
-                parent_run=parent_run,
-                task=task,
-                label=label,
+        try:
+            if decision.task_kind == "general":
+                result, events = await self._run_harness(
+                    engine=engine,
+                    parent_run=parent_run,
+                    task=task,
+                    label=label,
+                    call_id=call_id,
+                )
+            else:
+                result, events = await self._run_codex(
+                    parent_run=parent_run,
+                    task=task,
+                    label=label,
+                    call_id=call_id,
+                )
+        except asyncio.CancelledError:
+            self._publish_progress(
+                parent_run,
+                status="cancelled",
                 call_id=call_id,
-            )
-        else:
-            result, events = await self._run_codex(
-                parent_run=parent_run,
-                task=task,
                 label=label,
-                call_id=call_id,
+                provider_ref=decision.provider_ref,
+                child_event_kind="terminal",
             )
+            raise
+        except Exception:
+            self._publish_progress(
+                parent_run,
+                status="failed",
+                call_id=call_id,
+                label=label,
+                provider_ref=decision.provider_ref,
+                child_event_kind="terminal",
+            )
+            raise
         if decision.task_kind == "general":
             if result.get("status") != "completed":
                 from ksadk.harness.subagent import SubAgentExecutionError
@@ -254,17 +348,76 @@ class AdaptiveDelegationRuntime:
                 label=label,
                 provider_ref=decision.provider_ref,
                 child_event_kind="terminal",
+                **(
+                    {"public_summary": summary}
+                    if (summary := self._public_result_summary(result))
+                    else {}
+                ),
+            )
+        else:
+            self._publish_progress(
+                parent_run,
+                status="succeeded",
+                call_id=call_id,
+                label=label,
+                provider_ref=decision.provider_ref,
+                child_event_kind="terminal",
+                **(
+                    {"public_summary": summary}
+                    if (summary := self._public_result_summary(result))
+                    else {}
+                ),
             )
         return (
-            {
-                "provider": "codex" if decision.task_kind == "coding" else "harness",
-                "provider_ref": decision.provider_ref,
-                "task_kind": decision.task_kind,
-                "label": label,
-                "output": result,
-            },
+            self._parent_result(
+                result=result,
+                provider="codex" if decision.task_kind == "coding" else "harness",
+                task_kind=decision.task_kind,
+                label=label,
+            ),
             events,
         )
+
+    @staticmethod
+    def _parent_result(
+        *,
+        result: Any,
+        provider: str,
+        task_kind: str,
+        label: str,
+    ) -> dict[str, Any]:
+        """Return only the child conclusion needed by the parent model.
+
+        Harness child results also contain audit evidence, usage counters and
+        internal execution metadata. Those details remain available through
+        the child event stream; copying them into the parent tool message made
+        synthesis prompts unnecessarily large and exposed implementation
+        details to the model. Keep the parent-facing contract compact and
+        stable instead.
+        """
+        output = result
+        artifact_refs: tuple[str, ...] = ()
+        if isinstance(result, dict):
+            output = result.get("output")
+            refs = result.get("artifact_refs") or ()
+            if isinstance(refs, (list, tuple)):
+                artifact_refs = tuple(str(ref) for ref in refs if str(ref).strip())
+        payload: dict[str, Any] = {
+            "status": "completed",
+            "provider": provider,
+            "task_kind": task_kind,
+            "label": label,
+            "output": output,
+        }
+        if artifact_refs:
+            payload["artifact_refs"] = artifact_refs
+        return payload
+
+    @staticmethod
+    def _public_result_summary(result: Any) -> str:
+        """Extract only a child's public conclusion, never its trace metadata."""
+        output = result.get("output") if isinstance(result, dict) else result
+        return public_commentary_text(output, limit=220)
 
     async def _run_harness(
         self,
@@ -276,6 +429,10 @@ class AdaptiveDelegationRuntime:
         call_id: str,
     ) -> tuple[Any, list[RuntimeEvent]]:
         child_name = self._child_name("harness", call_id)
+        child_tools = tuple(name for name in parent_run.tools if name != self.name)
+        if self.parallel_safe({"task": task, "task_kind": "general"}, parent_run=parent_run):
+            approval_required = set(getattr(parent_run, "approval_required", ()))
+            child_tools = tuple(name for name in child_tools if name not in approval_required)
         sub = SubAgentSpec(
             name=child_name,
             description=label,
@@ -284,11 +441,13 @@ class AdaptiveDelegationRuntime:
                 "使用可用证据，明确未验证内容，并把可供父 Agent 汇总的结论返回。"
                 "调研任务应优先使用官方一手资料；当六条以内的高质量证据已足以回答时，"
                 "立即停止继续搜索并形成结论。不得为了穷尽资料重复检索，最后一轮必须"
-                "直接返回当前最佳结论以及仍未验证的事项。"
+                "直接返回当前最佳结论以及仍未验证的事项。输出控制在 1200 中文字以内，"
+                "避免替父 Agent 重复撰写完整报告。"
             ),
-            tools=tuple(name for name in parent_run.tools if name != self.name),
+            tools=child_tools,
             timeout_seconds=float(self._child_timeout_seconds),
             max_turns=self._child_max_turns,
+            max_total_tokens=self._child_max_total_tokens,
             inherit_skills=True,
             inherit_mcp=True,
             failure_policy="return_error",

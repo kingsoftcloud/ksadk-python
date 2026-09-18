@@ -5,8 +5,8 @@ type Message = ComponentProps<typeof ChatMessageList>["messages"][number];
 type Block = NonNullable<Message["blocks"]>[number];
 
 /** Presentation only: never mutate shared chat state or the durable transcript. */
-export function compactHarnessMessages(messages: Message[]): Message[] {
-  const output: Message[] = [];
+export function compactHarnessMessages(messages: Message[]): Array<Message & { sourceMessageIds?: string[] }> {
+  const output: Array<Message & { sourceMessageIds?: string[] }> = [];
   let turn: Message[] = [];
   const flush = () => {
     if (!turn.length) return;
@@ -71,7 +71,7 @@ export function compactHarnessMessages(messages: Message[]): Message[] {
       id: `${turn[0].id}:activity`, type: "thinking", status: active ? "streaming" : "done",
       content: content || (active ? "正在分析任务" : "已完成分析"),
     });
-    output.push({ ...last, id: turn[0].id, blocks, reasoning: undefined, tools: undefined });
+    output.push({ ...last, id: turn[0].id, sourceMessageIds: turn.map(message => message.id), blocks, reasoning: undefined, tools: undefined });
     turn = [];
   };
   for (const message of messages) {

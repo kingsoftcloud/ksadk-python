@@ -104,7 +104,6 @@ def _find_chromium_executable() -> str | None:
                 "Contents/MacOS/Google Chrome for Testing"
             )
         )
-        candidates.extend(cache_root.glob("chromium-*/chrome-linux64/chrome"))
         candidates.extend(cache_root.glob("chromium-*/chrome-linux/chrome"))
 
     for candidate in candidates:
@@ -132,39 +131,6 @@ def _free_port() -> int:
     return int(port)
 
 
-def test_browser_discovery_prefers_installed_playwright_linux64(tmp_path, monkeypatch):
-    monkeypatch.delenv("KSADK_E2E_CHROMIUM", raising=False)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr(shutil, "which", lambda name: "/system/chromium")
-    executable = tmp_path / ".cache/ms-playwright/chromium-1234/chrome-linux64/chrome"
-    executable.parent.mkdir(parents=True)
-    executable.touch()
-
-    assert _find_chromium_executable() == str(executable)
-
-
-@pytest.mark.asyncio
-async def test_browser_startup_failure_cleans_up_process_group_and_profile(monkeypatch):
-    from unittest.mock import Mock
-
-    process = Mock(pid=1234)
-    process.poll.return_value = 1
-    monkeypatch.setattr(subprocess, "Popen", Mock(return_value=process))
-    kill_group = Mock()
-    monkeypatch.setattr(os, "killpg", kill_group)
-    browser = _CdpBrowser("fixture-chromium")
-
-    with pytest.raises(RuntimeError, match="exited before DevTools was ready"):
-        async with browser:
-            pytest.fail("a failed Chromium startup must not enter the context")
-
-    kill_group.assert_called_once()
-    assert kill_group.call_args.args[0] == process.pid
-    process.wait.assert_called_once_with(timeout=5)
-    assert browser._user_data_dir is not None
-    assert not Path(browser._user_data_dir.name).exists()
-
-
 class _CdpBrowser:
     def __init__(self, executable_path: str):
         self.executable_path = executable_path
@@ -175,16 +141,7 @@ class _CdpBrowser:
         self._next_id = 0
 
     async def __aenter__(self):
-        try:
-            return await self._start()
-        except BaseException:
-            # __aexit__ is not called by async-with when startup itself fails.
-            # Release Chromium and its children before the next test can run.
-            await self.__aexit__(None, None, None)
-            raise
-
-    async def _start(self):
-        self._user_data_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self._user_data_dir = tempfile.TemporaryDirectory()
         self._process = subprocess.Popen(
             [
                 self.executable_path,

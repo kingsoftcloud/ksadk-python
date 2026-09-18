@@ -402,7 +402,7 @@ class _ToolCallStreamingUpstream(BaseHTTPRequestHandler):
                                     "type": "function",
                                     "function": {
                                         "name": "functions__exec_command",
-                                        "arguments": '{"cmd": "echo phase1-ok"}',
+                                        "arguments": '{"cmd": "echo kernel-ok"}',
                                     },
                                 }
                             ]
@@ -482,7 +482,7 @@ def test_tool_round_trip_through_streaming_proxy():
             {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": "run echo phase1-ok"}],
+                "content": [{"type": "input_text", "text": "run echo kernel-ok"}],
             },
         ],
         "tool_choice": "auto",

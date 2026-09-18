@@ -1,4 +1,21 @@
-from ksadk.harness.public_activity import tool_public_action
+from ksadk.harness.public_activity import public_commentary_text, tool_public_action
+
+
+def test_public_commentary_keeps_domain_terms_but_rejects_real_credentials():
+    assert public_commentary_text("已核对上下文 token 预算和 checkpoint 行为。") == (
+        "已核对上下文 token 预算和 checkpoint 行为。"
+    )
+    assert public_commentary_text("access_token=private-value") == ""
+    assert public_commentary_text("Bearer private-value") == ""
+
+
+def test_public_commentary_flattens_markdown_and_tool_protocol():
+    assert public_commentary_text("# ADK 结论\n\n- **Checkpoint**：支持持久化。") == (
+        "ADK 结论 Checkpoint：支持持久化。"
+    )
+    assert public_commentary_text('<|DSML|><invoke name="search">') == ""
+    assert public_commentary_text("。") == ""
+    assert public_commentary_text("...！？") == ""
 
 
 def test_only_display_safe_fields_leave_tool_payload():

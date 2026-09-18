@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLiteAgentKernelStore conformance（Phase 1 Task 3 Step 5/6）。"""
+"""SQLiteAgentKernelStore conformance（Kernel Task 3 Step 5/6）。"""
 
 from __future__ import annotations
 

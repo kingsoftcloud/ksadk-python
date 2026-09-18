@@ -8598,3 +8598,61 @@ select {
   align-items: center;
   text-align: center;
 }
+
+/* Keep every runtime's empty conversation aligned to the same visual center. */
+.studio-chat-shell .studio-conversation-welcome {
+  width: min(100%, 832px);
+  box-sizing: border-box;
+  margin-inline: auto;
+  min-height: clamp(300px, 52vh, 560px);
+  justify-content: center;
+  padding: 0 24px;
+}
+.studio-chat-shell .studio-conversation-welcome p {
+  color: var(--studio-text-secondary);
+  font-size: var(--font-size-meta);
+  letter-spacing: .01em;
+}
+.studio-chat-shell .studio-conversation-welcome h2 {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 3vw, 38px);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -.04em;
+}
+.studio-chat-shell .studio-conversation-welcome h2 span {
+  color: transparent;
+  background: linear-gradient(105deg, var(--text-primary) 12%, var(--studio-accent) 46%, var(--text-primary) 78%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: studio-welcome-shimmer 5s ease-in-out infinite;
+}
+@keyframes studio-welcome-shimmer {
+  0%, 100% { background-position: 100% 0; }
+  50% { background-position: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-chat-shell .studio-conversation-welcome h2 span { animation: none; }
+}
+.conversation-find {
+  flex: 0 0 auto;
+  width: min(100%, 832px);
+  margin-inline: auto;
+  padding: 12px 16px;
+  background: var(--studio-surface);
+  border: 1px solid var(--studio-border);
+  border-radius: var(--radius-surface);
+}
+.conversation-find-controls { display: flex; align-items: center; gap: 8px; }
+.conversation-find-controls input { flex: 1; min-width: 0; }
+.conversation-find-status { margin: 8px 0; color: var(--studio-text-secondary); font-size: var(--font-size-meta); }
+.conversation-find-results { list-style: none; margin: 0; padding: 0; max-height: min(240px, 30vh); overflow-y: auto; }
+.conversation-find-results button {
+  display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px;
+  width: 100%; padding: 8px; text-align: left; border: 0;
+  background: transparent; color: var(--text-primary); border-radius: var(--radius-small);
+  font-size: var(--font-size-meta); line-height: var(--line-height-body);
+}
+.conversation-find-results button:hover { background: var(--surface-hover); }
+.conversation-find-results button span { overflow-wrap: anywhere; }
+.studio-chat-timeline [data-search-target="true"] { outline: 2px solid var(--studio-accent); outline-offset: -2px; }

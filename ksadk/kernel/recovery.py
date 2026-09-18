@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""冷恢复决策表：RecoveryCoordinator（Phase 1 Task 7）。
+"""冷恢复决策表：RecoveryCoordinator（Kernel Task 7）。
 
 接管一个 agent_instance 的 open run 时按固定决策表收口：
 

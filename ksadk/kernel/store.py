@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``AgentKernelStore`` port：durable Inbox / Run / ActivationLease 状态（Phase 1 Task 3）。
+"""``AgentKernelStore`` port：durable Inbox / Run / ActivationLease 状态（Kernel Task 3）。
 
 所有 mutation 都接受 ``expected_fence: int`` 并与当前 activation lease 的
 fencing token 做事务内 CAS 比较；不匹配抛 :class:`StaleFenceError`。

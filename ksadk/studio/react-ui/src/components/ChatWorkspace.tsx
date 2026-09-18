@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { Bot, MessageSquarePlus, PanelLeftOpen, Search, Trash2, X } from "lucide-react";
 import { AgentConversationTimeline } from "@kingsoftcloud/ksadk-web/chat/timeline";
 import { AgentConversationComposer } from "@kingsoftcloud/ksadk-web/chat/composer";
@@ -10,6 +10,9 @@ import { AgentAvatar, type AgentAppearance } from "./AgentAvatar";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
 import { useRunDocumentActions } from "./RunDocumentActions";
+import { ConversationController, type ConversationId } from "@kingsoftcloud/ksadk-web/conversation";
+import { pickStudioWelcome } from "./studioWelcome";
+import { ConversationFind } from "./ConversationFind";
 
 export interface ChatWorkspaceHandle { startNewChat: () => void; }
 
@@ -20,12 +23,15 @@ interface ChatWorkspaceProps {
   integratedHistory?: boolean;
   onStreamingChange?: (streaming: boolean) => void;
   historyHost?: HTMLElement | null;
-  searchHost?: HTMLElement | null;
   headerHost?: HTMLElement | null;
-  agentSelector?: ReactNode;
   onSelectConversation?: () => void;
   agentId: string;
   agentName: string;
+  workspacePath?: string;
+  workspaceId?: string;
+  /** Opaque credential/tenant scope from /system/bootstrap. Never expose credentials. */
+  credentialScope?: string;
+  targetId?: string;
   agentAppearance?: AgentAppearance;
   active?: boolean;
   refreshTick?: number;
@@ -67,18 +73,35 @@ function sessionDisplayTitle(session: { SessionId: string; Title?: string }): st
 export function ChatWorkspace({
   agentId,
   agentName,
+  workspacePath = "",
+  workspaceId = "",
+  credentialScope = "",
+  targetId = "",
   agentAppearance,
   active = true,
   refreshTick = 0,
   requestedSessionId = "",
   onSessionChanged,
   newChatRequest = 0, onNewChatStarted,
-  ref, integratedHistory = false, onStreamingChange, historyHost, searchHost, headerHost, agentSelector, onSelectConversation,
+  ref, integratedHistory = false, onStreamingChange, historyHost, headerHost, onSelectConversation,
 }: ChatWorkspaceProps) {
   const api = useMemo(() => new ApiFacadeImpl({ fetch: apiFetch, agentId }), [agentId]);
-  const chat = useAgentChat({ api, agentId, conversationClient: null });
+  // Keep the local identity ledger scoped to the selected Agent. A single
+  // browser-wide key would let drafts/outbox entries from one Agent appear
+  // after switching to another Agent (and would make tenant changes unsafe).
+  // Recreating the controller is intentional: its persisted stores restore
+  // when the user returns to this Agent while in-flight engines remain owned
+  // by the previous hook instance.
+  const conversationController = useMemo(
+    () => new ConversationController(`ksadk.studio:${encodeURIComponent(workspaceId || workspacePath)}:${encodeURIComponent(credentialScope)}:${encodeURIComponent(agentId)}:${encodeURIComponent(targetId)}`),
+    [agentId, credentialScope, targetId, workspaceId, workspacePath],
+  );
+  // Restore the last selected session on mount so an active run can reconnect
+  // after a browser refresh instead of silently falling back to a blank draft.
+  const chat = useAgentChat({ api, agentId, targetId, conversationClient: null, conversationController, restoreSession: true });
   const documents = useRunDocumentActions();
-  const Timeline = chat.agentFramework === "harness" ? CompactHarnessTimeline : AgentConversationTimeline;
+  const compactTimeline = chat.uiCapabilities.ConversationPresentation?.Timeline === "compact";
+  const Timeline = compactTimeline ? CompactHarnessTimeline : AgentConversationTimeline;
   const startedNewChatRequest = useRef(0);
   // facade 的 createNewSession 没有在途去重：连点"新对话"会连发
   // CreateSession 产生多条空会话。这里统一加互斥，创建完成后才允许下一次。
@@ -87,46 +110,108 @@ export function ChatWorkspace({
   // 一旦在其中发了消息或切到其他会话，即恢复正常新建。
   const autoCreatedEmptySessionId = useRef<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
+  const openedRequest = useRef("");
+  const currentRequest = useRef("");
+  const conversationIdFor = useCallback((sessionId: string | null) => {
+    return chat.conversationId || conversationController.getOrCreate(agentId, sessionId, targetId);
+  }, [agentId, chat.conversationId, conversationController, targetId]);
+  const draftKey = conversationIdFor(chat.currentSessionId);
+  const [draftConflict, setDraftConflict] = useState(() => chat.conversationDrafts?.getConflict(draftKey));
+  useEffect(() => {
+    const store = chat.conversationDrafts;
+    if (!store) {
+      setDraftConflict(undefined);
+      return;
+    }
+    const refreshConflict = () => setDraftConflict(store.getConflict(draftKey));
+    refreshConflict();
+    return store.subscribe(refreshConflict);
+  }, [chat.conversationDrafts, draftKey]);
+  const resolveDraftConflict = useCallback((choice: 'local' | 'remote') => {
+    const store = chat.conversationDrafts;
+    if (!store) return;
+    store.resolveConflict(draftKey, choice);
+    setDraftConflict(store.getConflict(draftKey));
+  }, [chat.conversationDrafts, draftKey]);
   useEffect(() => { currentSessionIdRef.current = chat.currentSessionId; }, [chat.currentSessionId]);
+  useEffect(() => {
+    // A target change invalidates pending reads, while the runtime task keeps
+    // running in the broker. This is intentionally separate from aborting the
+    // execution subscription.
+    conversationController.navigate();
+    openedRequest.current = "";
+  }, [agentId]);
   useEffect(() => {
     if (chat.messages?.length) autoCreatedEmptySessionId.current = null;
   }, [chat.messages]);
   const guardedCreateNewSession = useCallback(async () => {
-    if (creatingSession.current || chat.isStreaming) return;
+    if (creatingSession.current) return;
     if (currentSessionIdRef.current
       && currentSessionIdRef.current === autoCreatedEmptySessionId.current) return;
     creatingSession.current = true;
     try {
-      await chat.createNewSession();
-      autoCreatedEmptySessionId.current = currentSessionIdRef.current;
+      setWelcomeCopy(pickStudioWelcome());
+      if (chat.startNewConversation) {
+        // A local draft is an explicit user action: every click gets a new
+        // owner, even while the previous run is still streaming.
+        chat.startNewConversation();
+        autoCreatedEmptySessionId.current = null;
+      } else {
+        await chat.createNewSession();
+        autoCreatedEmptySessionId.current = currentSessionIdRef.current;
+      }
     } finally {
       creatingSession.current = false;
     }
-  }, [chat.isStreaming, chat.createNewSession]);
+  }, [chat.startNewConversation, chat.createNewSession]);
   useEffect(() => {
     if (!newChatRequest) { startedNewChatRequest.current = 0; return; }
-    if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId
-      || chat.isLoadingSessions || startedNewChatRequest.current === newChatRequest) return;
+    if (!active || chat.agentId !== agentId || startedNewChatRequest.current === newChatRequest) return;
     startedNewChatRequest.current = newChatRequest;
     void guardedCreateNewSession().finally(() => onNewChatStarted?.());
-  }, [active, agentId, newChatRequest, onNewChatStarted, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, guardedCreateNewSession]);
-  const openedRequest = useRef("");
-  const currentRequest = useRef("");
+  }, [active, agentId, newChatRequest, onNewChatStarted, chat.agentId, guardedCreateNewSession]);
   currentRequest.current = active && requestedSessionId ? `${agentId}:${requestedSessionId}` : "";
   useEffect(() => {
     if (!requestedSessionId) { openedRequest.current = ""; return; }
     const request = `${agentId}:${requestedSessionId}`;
     if (!active || chat.bootstrapStatus !== "ready" || chat.agentId !== agentId || chat.isLoadingSessions || openedRequest.current === request) return;
     openedRequest.current = request;
+    const requestEpoch = conversationController.navigate();
     void (async () => {
       await chat.refresh();
-      if (currentRequest.current === request) chat.selectSession(requestedSessionId);
+      if (currentRequest.current === request
+        && conversationController.navigationEpoch === requestEpoch) chat.selectSession(requestedSessionId);
     })();
   }, [active, agentId, requestedSessionId, chat.bootstrapStatus, chat.agentId, chat.isLoadingSessions, chat.selectSession, chat.refresh]);
   const [query, setQuery] = useState("");
+  const [welcomeCopy, setWelcomeCopy] = useState(() => pickStudioWelcome());
+  const [outboxRevision, setOutboxRevision] = useState(0);
+  useEffect(() => chat.conversationOutbox?.subscribe(() => setOutboxRevision(revision => revision + 1)), [chat.conversationOutbox]);
+  const unresolvedOutbox = useMemo(() => {
+    const id = chat.conversationId || conversationController.getOrCreate(agentId, chat.currentSessionId);
+    return chat.conversationOutbox?.listUnresolved(id)
+      .filter(entry => entry.status === "pending" || entry.status === "unknown" || entry.status === "failed")
+      .filter(entry => !chat.isOutboxRequestActive(entry.requestId))
+      .map(entry => ({
+        entry,
+        canRetry: entry.attachments.length === 0
+          || chat.conversationOutbox?.getRuntimeAttachments(entry.requestId).length === entry.attachments.length,
+      })) || [];
+  }, [agentId, chat.conversationId, chat.currentSessionId, chat.conversationOutbox, chat.isOutboxRequestActive, conversationController, outboxRevision]);
+  const [retryingOutboxId, setRetryingOutboxId] = useState<string | null>(null);
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const sessionTriggerRef = useRef<HTMLButtonElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [revealMessage, setRevealMessage] = useState<{ id: string; request: number } | null>(null);
+  const findReturnFocus = useRef<HTMLElement | null>(null);
+  const findOwner = `${agentId}:${chat.conversationId || chat.currentSessionId || 'draft'}`;
+  useEffect(() => { setFindOpen(false); setRevealMessage(null); }, [findOwner, active]);
+  const openFind = useCallback(() => {
+    findReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFindOpen(true);
+  }, []);
+  const closeFind = () => { setFindOpen(false); findReturnFocus.current?.focus(); };
   const [deleteSessionId, setDeleteSessionId] = useState("");
   const [deleting, setDeleting] = useState(false);
   const isStreamingRef = useRef(false);
@@ -159,7 +244,7 @@ export function ChatWorkspace({
   // 进入/切换会话时后台预热 harness Provider 激活（MCP spawn/health/list
   // ~12s），把这段开销移到用户输入之前；失败静默，首轮照旧现场预热。
   useEffect(() => {
-    if (chat.agentFramework !== "harness" || chat.bootstrapStatus !== "ready"
+    if (!chat.uiCapabilities.RuntimePrewarm || chat.bootstrapStatus !== "ready"
       || !chat.currentSessionId) return;
     const controller = new AbortController();
     void apiFetch(
@@ -172,7 +257,7 @@ export function ChatWorkspace({
       },
     ).catch(() => {});
     return () => controller.abort();
-  }, [agentId, chat.agentFramework, chat.bootstrapStatus, chat.currentSessionId]);
+  }, [agentId, chat.uiCapabilities.RuntimePrewarm, chat.bootstrapStatus, chat.currentSessionId]);
 
   // facade bootstrap 会自动 adopt 最近会话；切 Agent 应回到初始对话框，
   // 仅当路由显式要求打开某会话时才保留。只在 bootstrap 完成时执行一次。
@@ -198,6 +283,17 @@ export function ChatWorkspace({
   useEffect(() => {
     if (sessionPanelOpen) sessionSearchRef.current?.focus();
   }, [sessionPanelOpen]);
+
+  useEffect(() => {
+    const findInConversation = (event: KeyboardEvent) => {
+      if (!active || chat.bootstrapStatus !== "ready" || event.defaultPrevented || event.isComposing
+        || event.altKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
+      event.preventDefault();
+      openFind();
+    };
+    window.addEventListener("keydown", findInConversation);
+    return () => window.removeEventListener("keydown", findInConversation);
+  }, [active, chat.bootstrapStatus, openFind]);
 
   useEffect(() => {
     const previous = previousTransport.current;
@@ -258,18 +354,10 @@ export function ChatWorkspace({
             <PanelLeftOpen size={17} />
           </button>}
           {!integratedHistory && <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />}
-          {agentSelector}
-          <h1 className={agentSelector ? "sr-only" : undefined}>{conversationTitle}</h1>
+          <h1>{conversationTitle}</h1>
+          <button className="icon-button tertiary" type="button" aria-label="查找当前会话" title="查找当前会话（⌘/Ctrl+F）"
+            onClick={openFind} disabled={chat.bootstrapStatus !== "ready"}><Search size={16} /></button>
         </div>
-  );
-
-  const sessionSearch = (
-    <label className={`chat-session-search${searchHost ? " chat-session-search--navigation" : ""}`}>
-      <Search size={20} aria-hidden="true" />
-      <span className="sr-only">搜索会话</span>
-      <input ref={sessionSearchRef} type="search" value={query}
-        onChange={event => setQuery(event.target.value)} placeholder="搜索会话" />
-    </label>
   );
 
   const history = (
@@ -288,7 +376,6 @@ export function ChatWorkspace({
               aria-label="新对话"
               title="新对话"
               onClick={() => { void guardedCreateNewSession(); if (sessionPanelOpen) closeSessionPanel(); }}
-              disabled={chat.isStreaming}
             >
               <MessageSquarePlus size={16} />
             </button>
@@ -303,7 +390,16 @@ export function ChatWorkspace({
             </button>
           </div>}
         </header>
-        {integratedHistory && searchHost ? createPortal(sessionSearch, searchHost) : sessionSearch}
+        <label className="chat-session-search">
+          <span className="sr-only">搜索会话</span>
+          <input
+            ref={sessionSearchRef}
+            type="search"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="搜索会话"
+          />
+        </label>
         <div
           className="chat-session-list"
           onScroll={event => {
@@ -376,18 +472,19 @@ export function ChatWorkspace({
 
       <section className="chat-conversation" aria-label={`与 ${agentName} 对话`}>
         {headerHost ? (active ? createPortal(conversationHeader, headerHost) : null) : conversationHeader}
+        {findOpen && active && <ConversationFind key={findOwner} search={chat.searchConversation}
+          onClose={closeFind} onReveal={id => setRevealMessage(previous => ({ id, request: (previous?.request || 0) + 1 }))} />}
 
-        {chat.bootstrapStatus === "loading" || newChatRequest !== 0 ? (
-          <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent">
-            <i />
-          </div>
-        ) : chat.bootstrapStatus !== "ready" ? (
+        {chat.bootstrapStatus === "loading" && !chat.messages?.length ? (
+          <div className="chat-bootstrap-loading" role="status" aria-label="正在连接 Agent"><i /></div>
+        ) : chat.bootstrapStatus !== "ready" && !chat.messages?.length ? (
           <div className="chat-empty" role="alert">
             <span className="chat-empty-icon"><Bot size={22} /></span>
             <h2>会话暂不可用</h2>
             <p>{chat.bootstrapErrorMessage || "Agent 会话能力未开启。"}</p>
           </div>
-        ) : (
+        ) : null}
+        {(chat.bootstrapStatus === "ready" || Boolean(chat.messages?.length)) && (
           <>
             <Timeline
               className="studio-chat-timeline"
@@ -396,11 +493,12 @@ export function ChatWorkspace({
               isStreaming={chat.isStreaming || submitPending}
               activity={chat.activity}
               sessionId={chat.currentSessionId}
-              hasMoreMessages={(chat.messages?.length ?? 0) >= 50}
+              hasMoreMessages={Boolean(chat.messageHistory?.hasMore)}
+              revealMessage={revealMessage}
               emptyState={(
                 <div className="studio-conversation-welcome">
-                  {!agentSelector && <p>{agentName}</p>}
-                  <h2>有什么可以帮你？</h2>
+                  <p>{agentName}</p>
+                  <h2><span>{welcomeCopy}</span></h2>
                 </div>
               )}
               isMobile={chat.isMobile}
@@ -413,7 +511,7 @@ export function ChatWorkspace({
               onLoadOlderSessionMessages={chat.loadOlderMessages}
               interactionRecords={chat.interactionRecords}
             />
-            {chat.agentFramework !== "harness"
+            {!compactTimeline
               && (chat.isStreaming || submitPending)
               && !(chat.messages?.length
                 && chat.messages[chat.messages.length - 1].role === "model") ? (
@@ -424,27 +522,61 @@ export function ChatWorkspace({
           </>
         )}
         <div className="studio-composer-area">
-          {chat.bootstrapStatus === "ready" && newChatRequest === 0 && (
-            <AgentConversationComposer
-              onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
-              composerMaxHeight={176}
-              submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
-                setSubmitPending(true);
-                chat.send(text, { attachments, executionMode });
-              }}
-              stopGeneration={chat.stop}
-              cancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
-              isMobile={chat.isMobile}
-              attachmentsEnabled={chat.uiCapabilities.Attachments !== false}
-              approvalEnabled={Boolean(chat.uiCapabilities.Approval)}
-              approvalPolicy={chat.uiCapabilities.ApprovalPolicy}
-              thinkingEnabled={Boolean(chat.uiCapabilities.Thinking)}
-              runtimeCapabilityMatrix={chat.uiCapabilities.RuntimeCapabilityMatrix}
-              pendingInteractions={chat.pendingInteractions}
-              onRespondInteraction={input => { void chat.respondInteraction(input); }}
-              localCatalog={chat.localCatalog}
-            />
-          )}
+          {draftConflict ? (
+            <div className="studio-draft-conflict" role="alert" aria-live="assertive">
+              <strong>检测到其他窗口修改了草稿</strong>
+              <span>请选择要保留的版本，避免覆盖另一窗口的输入。</span>
+              <div className="studio-draft-conflict-actions">
+                <button type="button" onClick={() => resolveDraftConflict("local")}>保留本窗口</button>
+                <button type="button" onClick={() => resolveDraftConflict("remote")}>使用其他窗口</button>
+              </div>
+            </div>
+          ) : null}
+          {unresolvedOutbox.length > 0 ? (
+            <div className="studio-outbox-notice" role="status" aria-live="polite">
+              <strong>{unresolvedOutbox.length === 1 ? "有一条消息需要处理" : `有 ${unresolvedOutbox.length} 条消息需要处理`}</strong>
+              <span>状态未知的消息会先查询原任务；确认失败后，可检查已有结果并决定是否重试。</span>
+              <div className="studio-outbox-items">
+                {unresolvedOutbox.map(({ entry, canRetry }) => (
+                  <div className="studio-outbox-item" key={entry.requestId}>
+                    <div className="studio-outbox-item-copy">
+                      <span title={entry.text}>{entry.status === "pending" ? "待发送 · " : entry.status === "failed" ? "发送失败 · " : "状态未知 · "}{shortText(entry.text, 44)}{!canRetry && entry.status !== "unknown" ? " · 含附件，请重新添加后发送" : ""}</span>
+                      {entry.error && <small>{entry.error}</small>}
+                    </div>
+                    <button type="button" disabled={(entry.status !== "unknown" && !canRetry) || retryingOutboxId === entry.requestId} onClick={() => {
+                      setRetryingOutboxId(entry.requestId);
+                      void chat.retryOutbox(entry.requestId).catch(() => {
+                        chat.conversationOutbox?.update(entry.requestId, { error: "操作未完成，请查看会话状态后再试。" });
+                      }).finally(() => setRetryingOutboxId(null));
+                    }}>{retryingOutboxId === entry.requestId ? (entry.status === "unknown" ? "查询中…" : "发送中…")
+                      : entry.status === "unknown" ? "查询投递状态" : !canRetry ? "无法恢复附件"
+                      : entry.status === "pending" ? "发送消息" : "确认并重试"}</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <AgentConversationComposer
+            draftKey={draftKey}
+            draftStore={chat.conversationDrafts}
+            onCompactContext={chat.uiCapabilities.ContextCompaction ? chat.compactContext : undefined}
+            composerMaxHeight={176}
+            submitDraft={async (text, attachments, _responsesInput, _previousResponseId, executionMode) => {
+              setSubmitPending(true);
+              chat.send(text, { attachments, executionMode });
+            }}
+            stopGeneration={chat.stop}
+            cancelRemote={chat.uiCapabilities.StopRun ? chat.cancelRemote : undefined}
+            isMobile={chat.isMobile}
+            attachmentsEnabled={chat.uiCapabilities.Attachments !== false}
+            approvalEnabled={Boolean(chat.uiCapabilities.Approval)}
+            approvalPolicy={chat.uiCapabilities.ApprovalPolicy}
+            thinkingEnabled={Boolean(chat.uiCapabilities.Thinking)}
+            runtimeCapabilityMatrix={chat.uiCapabilities.RuntimeCapabilityMatrix}
+            pendingInteractions={chat.pendingInteractions}
+            onRespondInteraction={input => { void chat.respondInteraction(input); }}
+            localCatalog={chat.localCatalog}
+          />
         </div>
       </section>
 

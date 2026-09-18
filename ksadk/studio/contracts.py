@@ -326,8 +326,8 @@ class RetryPolicy(ContractModel):
 
 class ExecutionSpec(ContractModel):
     strategy: Literal["direct", "plan-act-observe"] = "direct"
-    max_steps: int = Field(default=25, ge=1, le=100)
-    timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    max_steps: int = Field(default=100, ge=1, le=100)
+    timeout_seconds: int = Field(default=600, ge=1, le=3600)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     sandbox: str | None = None
     approval_mode: str | None = None
@@ -650,8 +650,8 @@ class AgentTemplateComposeRequest(ContractModel):
     mcp_resource_ids: list[str] = Field(default_factory=list)
     policy_template: Literal["loose", "strict", "custom"] = "strict"
     execution_strategy: Literal["direct", "plan-act-observe"] = "direct"
-    max_steps: int = Field(default=25, ge=1, le=100)
-    timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    max_steps: int = Field(default=100, ge=1, le=100)
+    timeout_seconds: int = Field(default=600, ge=1, le=3600)
     auto_bind_tools: bool = True
     auto_bind_mcp: bool = True
 
@@ -807,7 +807,7 @@ class BundleManifest(ContractModel):
 
 
 # ``BundleManifest`` is the existing, installed source type.  The explicit
-# name documents that its ``agentkit.bundle/v2`` branch is the Phase 2
+# name documents that its ``agentkit.bundle/v2`` branch is the Release
 # AgentBundleManifest/v2 contract; it is an alias, not a parallel manifest.
 AgentBundleManifest = BundleManifest
 

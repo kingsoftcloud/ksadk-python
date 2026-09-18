@@ -234,13 +234,51 @@ _EFFORT_CAP_PREFIXES = (
     ("qwen3.5", "high"),
 )
 
+# 各上游模型的 reasoning_effort 合法值集合(2026-09 实测,见 tests/model_proxy)。
+# 与 _EFFORT_CAP_PREFIXES 的区别:cap 是"单调钳顶"(qwen 超 cap 钳到 cap);
+# 这里是"值域裁剪"——glm-5.3-flash 是始终思考模型,合法值只有 low/high/max,
+# none/minimal/medium/xhigh 全部 400,无法用单调钳顶表达。
+_EFFORT_ALLOWED_SETS = {
+    "glm-5.3-flash": ("low", "high", "max"),
+}
+# 值域裁剪用的档位表:max 视为与 xhigh 同级(5),仅在值域裁剪内部使用,
+# 不改 _EFFORT_RANK(影响 cap 路径)。
+_ALLOWED_RANK = {**_EFFORT_RANK, "max": 5}
+
+
+def remap_reasoning_effort(model, effort):
+    """把 reasoning_effort 向上取整到该模型的合法值集合(值域裁剪)。
+
+    规则:档位 >= 入参的最近合法档;无更高档则取集合最高档;未知档位取集合最低档。
+    未列出的模型/非字符串原样返回(不做发明式映射)。
+
+    实测:glm-5.3-flash 始终思考,medium/xhigh/none/minimal 全 400,
+    medium→high、xhigh→max、none/minimal→low。
+    """
+    if not isinstance(model, str) or not isinstance(effort, str):
+        return effort
+    allowed = None
+    for prefix, vals in _EFFORT_ALLOWED_SETS.items():
+        if model.startswith(prefix):
+            allowed = vals
+            break
+    if not allowed or effort in allowed:
+        return effort
+    r = _ALLOWED_RANK.get(effort)
+    if r is None:
+        return allowed[0]
+    higher = [v for v in allowed if _ALLOWED_RANK[v] >= r]
+    return higher[0] if higher else allowed[-1]
+
 
 def clamp_reasoning_effort(model, effort):
-    """把超出上游模型族支持上限的 reasoning_effort 钳到最高合法档。
+    """把 reasoning_effort 适配到上游模型:先做值域裁剪,再做上限钳制。
 
-    codex 对自家模型默认发 xhigh;qwen3.7 系上游 400,需钳到 high。
+    值域裁剪(remap_reasoning_effort)处理非单调值域(如 glm-5.3-flash 只认
+    low/high/max);上限钳制处理单调超 cap(如 qwen3.7 xhigh→high)。
     未知档位/未知模型族原样返回(不做发明式映射)。
     """
+    effort = remap_reasoning_effort(model, effort)
     if not isinstance(effort, str) or effort not in _EFFORT_RANK:
         return effort
     for prefix, cap in _EFFORT_CAP_PREFIXES:

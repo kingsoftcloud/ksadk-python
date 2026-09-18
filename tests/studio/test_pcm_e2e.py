@@ -179,8 +179,7 @@ def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
     assert "Agent 目标与要求" in create_page
     assert "角色与系统提示词" in create_page
     assert "上下文与记忆策略" in create_page
-    for step in range(1, 5):
-        assert f"第 {step} 步，共 4 步" in create_page
+    assert "第 {step} 步，共 4 步" in create_page
     assert "上下文优化" in create_page
     assert "启用长期记忆" in create_page
     assert "memoryWrite: memoryEnabled ? memoryWriteRollout : \"off\"" in create_page

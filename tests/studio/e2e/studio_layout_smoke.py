@@ -88,11 +88,16 @@ def run(output: Path | None = None) -> list[dict]:
                 trigger = page.get_by_role("combobox", name="筛选 Agent 状态")
                 trigger.click()
                 expect(page.get_by_role("option", name="草稿", exact=True)).to_be_visible()
-                # The trigger keeps its semantic border when the menu opens;
-                # keyboard focus may additionally show the shared focus ring.
-                assert page.locator('.studio-select-trigger[aria-label="筛选 Agent 状态"]').evaluate(
-                    "e => getComputedStyle(e).borderTopWidth"
-                ) == "1px"
+                outline = page.locator(
+                    '.studio-select-trigger[aria-label="筛选 Agent 状态"]'
+                ).evaluate(
+                    "e => { const s = getComputedStyle(e);"
+                    " return { style: s.outlineStyle, width: s.outlineWidth }; }"
+                )
+                # focus-visible 会给触发器加 2px focus ring（a11y 特性），也允许无 ring。
+                assert outline["style"] == "none" or (
+                    outline["style"] == "solid" and outline["width"] == "2px"
+                ), outline
                 capture("agent-select")
                 page.keyboard.press("Escape")
                 page.get_by_role("button", name="Conversation Items Agent 的更多操作").click()
@@ -148,11 +153,8 @@ def run(output: Path | None = None) -> list[dict]:
                 if width >= 1024:
                     steps = page.locator(".wizard-steps .wizard-step").all()
                     tops = [step.bounding_box()["y"] for step in steps]
-                    assert tops == sorted(tops) and tops[-1] - tops[0] > 150, tops
-                    rail = page.locator(".create-rail").bounding_box()
-                    form = page.locator(".wizard-content").bounding_box()
-                    assert rail["x"] + rail["width"] < form["x"]
-                    inside_viewport(page, page.get_by_role("button", name="继续", exact=True))
+                    assert max(tops) - min(tops) <= 1, tops
+                    assert page.locator(".create-rail").bounding_box()["height"] < 150
                 else:
                     page.get_by_role("button", name="查看创建入口与配置步骤").click()
                     expect(page.get_by_role("dialog", name="创建方式", exact=True)).to_be_visible()

@@ -586,6 +586,7 @@ def test_subagent_tool_budget_stops_child_after_limit():
 
 def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
     child_prompts: list[str] = []
+    child_messages: list[list[dict[str, object]]] = []
 
     class _ResearchReasoner:
         async def complete(self, **kwargs):
@@ -593,6 +594,7 @@ def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
             tools = kwargs["tools"]
             if prompt.startswith("child"):
                 child_prompts.append(prompt)
+                child_messages.append(list(kwargs["messages"]))
                 if tools:
                     return HarnessReasoningTurn(
                         tool_calls=(
@@ -653,6 +655,10 @@ def test_last_reasoning_turn_forces_child_to_summarize_existing_evidence():
     assert len(child_prompts) == 3
     assert "最后一轮" in child_prompts[-1]
     assert "禁止描述后续计划" in child_prompts[-1]
+    assert child_messages[-1][-1]["role"] == "user"
+    assert "不要再搜索、查看网页或调用任何工具" in str(
+        child_messages[-1][-1]["content"]
+    )
 
 
 def test_subagent_result_contract_is_additive_and_serializable():
@@ -679,6 +685,17 @@ def test_declared_subagent_output_schema_accepts_json_and_rejects_invalid_output
 
     with pytest.raises(SubAgentOutputValidationError, match="output_schema"):
         validate_subagent_output('{"answer": "forty-two"}', schema)
+
+
+def test_subagent_output_rejects_empty_or_unexecuted_dsml():
+    with pytest.raises(SubAgentOutputValidationError, match="did not produce"):
+        validate_subagent_output("   ", None)
+
+    with pytest.raises(SubAgentOutputValidationError, match="unexecuted tool call"):
+        validate_subagent_output(
+            '<｜｜DSML｜｜invoke name="web_search"><query>x</query><｜｜DSML｜｜/invoke>',
+            None,
+        )
 
 
 def test_subagent_binding_rejects_invalid_output_schema_definition():
@@ -924,7 +941,7 @@ def test_cross_process_resume_replays_completed_child_receipt(tmp_path):
             },
         )
 
-    async def phase_one():
+    async def first_phase():
         cm = AsyncSqliteSaver.from_conn_string(checkpoint_path)
         saver = await cm.__aenter__()
         try:
@@ -969,7 +986,7 @@ def test_cross_process_resume_replays_completed_child_receipt(tmp_path):
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    handle, first = asyncio.run(phase_one())
+    handle, first = asyncio.run(first_phase())
     assert any(event.event_type == "run.interrupted" for event in first)
     assert child_executions == ["child"]
 
@@ -1007,12 +1024,12 @@ def test_cross_process_recovers_unfinished_child_checkpoint_without_restarting(t
                 )
             )
 
-    async def phase_one_effect(_arguments):
+    async def first_phase_effect(_arguments):
         assert tool_entered is not None
         tool_entered.set()
         await asyncio.Event().wait()
 
-    async def phase_one():
+    async def first_phase():
         nonlocal tool_entered
         tool_entered = asyncio.Event()
         cm = AsyncSqliteSaver.from_conn_string(checkpoint_path)
@@ -1021,7 +1038,7 @@ def test_cross_process_recovers_unfinished_child_checkpoint_without_restarting(t
             child_engine = ManagedLangGraphEngine(
                 reasoner=_PhaseOneChildReasoner(),
                 checkpointer=saver,
-                tools={"effect": phase_one_effect},
+                tools={"effect": first_phase_effect},
             )
             compiled = await child_engine.compile(child_spec(parent_spec, sub))
             handle = await child_engine.start(
@@ -1092,7 +1109,7 @@ def test_cross_process_recovers_unfinished_child_checkpoint_without_restarting(t
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    asyncio.run(phase_one())
+    asyncio.run(first_phase())
     events = asyncio.run(phase_two())
     assert side_effects == ["effect"], [
         (event.event_type, event.payload)

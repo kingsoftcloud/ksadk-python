@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Codex InteractionProvider：live JSON-RPC approval 回包（Phase 1 Task 6 Step 6）。
+"""Codex InteractionProvider：live JSON-RPC approval 回包（Kernel Task 6 Step 6）。
 
 Codex 的 HITL 模型是**事件流 + 独立 live 命令通道**：审批卡阻塞在
 ``item/commandExecution/requestApproval``，回包必须经

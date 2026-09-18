@@ -47,6 +47,8 @@ class HarnessReasoner(Protocol):
 
 
 _MODEL_PROFILE_REF = re.compile(r"^model-profile://(?P<name>[^@/]+)(?:@(?P<version>[^/]+))?$")
+_LENGTH_FINISH_REASONS = {"length", "incomplete", "max_tokens", "max_output_tokens"}
+_LENGTH_RETRY_TARGET_TOKENS = 16_384
 
 
 def resolve_model_identifier(model: str) -> str:
@@ -180,10 +182,19 @@ class LiteLLMHarnessReasoner:
         if streaming:
             kwargs["stream"] = True
             kwargs["stream_options"] = {"include_usage": True}
-        response = await acompletion(**kwargs)
-        if streaming:
-            return await self._consume_stream(response, model=model)
-        return self._consume_response(response, model=model)
+        for recovery_attempt in range(2):
+            response = await acompletion(**kwargs)
+            try:
+                if streaming:
+                    return await self._consume_stream(response, model=model)
+                return self._consume_response(response, model=model)
+            except HarnessToolCallValidationError as exc:
+                if exc.code != "model_output_truncated" or recovery_attempt > 0:
+                    raise
+                kwargs["max_tokens"] = self._expanded_length_budget(
+                    kwargs.get("max_tokens")
+                )
+        raise AssertionError("unreachable")
 
     async def stream_complete(
         self,
@@ -228,77 +239,115 @@ class LiteLLMHarnessReasoner:
         if api_key:
             kwargs["api_key"] = api_key
 
-        response = await acompletion(**kwargs)
-        if not hasattr(response, "__aiter__"):
-            raise RuntimeError(f"Harness model {model!r} returned a non-stream response")
+        for recovery_attempt in range(2):
+            response = await acompletion(**kwargs)
+            if not hasattr(response, "__aiter__"):
+                raise RuntimeError(f"Harness model {model!r} returned a non-stream response")
 
-        text_chunks: list[str] = []
-        reasoning_chunks: list[str] = []
-        tool_fragments: dict[int, dict[str, str]] = {}
-        usage_payload: dict[str, int] | None = None
-        saw_choice = False
-        async for chunk in response:
-            usage = self._usage_payload(getattr(chunk, "usage", None))
-            if usage is not None:
-                usage_payload = usage
-            choices = getattr(chunk, "choices", None) or []
-            for choice in choices:
-                saw_choice = True
-                delta = getattr(choice, "delta", None)
-                if delta is None:
-                    continue
-                content = getattr(delta, "content", None)
-                if content is not None:
-                    text_chunks.append(str(content))
-                    yield {"text_delta": str(content)}
-                reasoning_content = getattr(delta, "reasoning_content", None) or getattr(
-                    delta, "reasoning", None
-                )
-                if reasoning_content is not None:
-                    reasoning_chunks.append(str(reasoning_content))
-                    yield {"reasoning_delta": str(reasoning_content)}
-                for call in getattr(delta, "tool_calls", None) or []:
-                    index = int(getattr(call, "index", 0) or 0)
-                    current = tool_fragments.setdefault(
-                        index, {"id": "", "name": "", "arguments": ""}
+            text_chunks: list[str] = []
+            reasoning_chunks: list[str] = []
+            tool_fragments: dict[int, dict[str, str]] = {}
+            usage_payload: dict[str, int] | None = None
+            saw_choice = False
+            finish_reasons: set[str] = set()
+            buffered_deltas: list[dict[str, Any]] = []
+            buffer_until_complete = bool(tools)
+            async for chunk in response:
+                usage = self._usage_payload(getattr(chunk, "usage", None))
+                if usage is not None:
+                    usage_payload = usage
+                choices = getattr(chunk, "choices", None) or []
+                for choice in choices:
+                    saw_choice = True
+                    finish_reason = str(getattr(choice, "finish_reason", "") or "")
+                    if finish_reason:
+                        finish_reasons.add(finish_reason)
+                    delta = getattr(choice, "delta", None)
+                    if delta is None:
+                        continue
+                    content = getattr(delta, "content", None)
+                    if content is not None:
+                        text_chunks.append(str(content))
+                        item = {"text_delta": str(content)}
+                        if buffer_until_complete:
+                            buffered_deltas.append(item)
+                        else:
+                            yield item
+                    reasoning_content = getattr(delta, "reasoning_content", None) or getattr(
+                        delta, "reasoning", None
                     )
-                    incoming_id = str(getattr(call, "id", "") or "")
-                    if incoming_id:
-                        current["id"] = self._merge_stream_call_id(current["id"], incoming_id)
-                    function = getattr(call, "function", None)
-                    if function is not None:
-                        current["name"] += str(getattr(function, "name", "") or "")
-                        current["arguments"] += str(getattr(function, "arguments", "") or "")
-        if not saw_choice and not usage_payload:
-            raise RuntimeError(f"Harness model {model!r} returned an empty stream")
-        raw_calls = [
-            SimpleToolCall(
-                id=fragment["id"],
-                function=SimpleFunctionCall(
-                    name=fragment["name"],
-                    arguments=fragment["arguments"] or "{}",
-                ),
-            )
-            for index, fragment in sorted(tool_fragments.items())
-        ]
-        calls = self._parse_tool_calls(raw_calls)
-        final_text = "".join(text_chunks) or None
-        if final_text is None and not calls:
-            raise RuntimeError(f"Harness model {model!r} stream produced no content")
-        yield {
-            "turn": HarnessReasoningTurn(
-                final_text=final_text,
-                tool_calls=calls,
-                usage=usage_payload,
-                reasoning="".join(reasoning_chunks) or None,
-            )
-        }
+                    if reasoning_content is not None:
+                        reasoning_chunks.append(str(reasoning_content))
+                        item = {"reasoning_delta": str(reasoning_content)}
+                        if buffer_until_complete:
+                            buffered_deltas.append(item)
+                        else:
+                            yield item
+                    for call in getattr(delta, "tool_calls", None) or []:
+                        index = int(getattr(call, "index", 0) or 0)
+                        current = tool_fragments.setdefault(
+                            index, {"id": "", "name": "", "arguments": ""}
+                        )
+                        incoming_id = str(getattr(call, "id", "") or "")
+                        if incoming_id:
+                            current["id"] = self._merge_stream_call_id(
+                                current["id"], incoming_id
+                            )
+                        function = getattr(call, "function", None)
+                        if function is not None:
+                            current["name"] += str(getattr(function, "name", "") or "")
+                            current["arguments"] += str(
+                                getattr(function, "arguments", "") or ""
+                            )
+            if not saw_choice and not usage_payload:
+                raise RuntimeError(f"Harness model {model!r} returned an empty stream")
+            if self._output_was_truncated(finish_reasons):
+                if recovery_attempt == 0 and buffer_until_complete:
+                    kwargs["max_tokens"] = self._expanded_length_budget(
+                        kwargs.get("max_tokens")
+                    )
+                    continue
+                raise HarnessToolCallValidationError(
+                    "model_output_truncated",
+                    f"Harness model {model!r} output was truncated before completion",
+                )
+            raw_calls = [
+                SimpleToolCall(
+                    id=fragment["id"],
+                    function=SimpleFunctionCall(
+                        name=fragment["name"],
+                        arguments=fragment["arguments"] or "{}",
+                    ),
+                )
+                for index, fragment in sorted(tool_fragments.items())
+            ]
+            calls = self._parse_tool_calls(raw_calls)
+            final_text = "".join(text_chunks) or None
+            if final_text is None and not calls:
+                raise RuntimeError(f"Harness model {model!r} stream produced no content")
+            for item in buffered_deltas:
+                yield item
+            yield {
+                "turn": HarnessReasoningTurn(
+                    final_text=final_text,
+                    tool_calls=calls,
+                    usage=usage_payload,
+                    reasoning="".join(reasoning_chunks) or None,
+                )
+            }
+            return
 
     @classmethod
     def _consume_response(cls, response: Any, *, model: str) -> HarnessReasoningTurn:
         choices = getattr(response, "choices", None) or []
         if not choices:
             raise RuntimeError(f"Harness model {model!r} returned no choices")
+        finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
+        if cls._output_was_truncated({finish_reason}):
+            raise HarnessToolCallValidationError(
+                "model_output_truncated",
+                f"Harness model {model!r} output was truncated before completion",
+            )
         message = choices[0].message
         calls = cls._parse_tool_calls(getattr(message, "tool_calls", None) or [])
         content = getattr(message, "content", None)
@@ -317,6 +366,7 @@ class LiteLLMHarnessReasoner:
         tool_fragments: dict[int, dict[str, str]] = {}
         usage_payload: dict[str, int] | None = None
         saw_choice = False
+        finish_reasons: set[str] = set()
         async for chunk in response:
             usage = cls._usage_payload(getattr(chunk, "usage", None))
             if usage is not None:
@@ -324,6 +374,9 @@ class LiteLLMHarnessReasoner:
             choices = getattr(chunk, "choices", None) or []
             for choice in choices:
                 saw_choice = True
+                finish_reason = str(getattr(choice, "finish_reason", "") or "")
+                if finish_reason:
+                    finish_reasons.add(finish_reason)
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
@@ -345,6 +398,11 @@ class LiteLLMHarnessReasoner:
                         current["arguments"] += str(getattr(function, "arguments", "") or "")
         if not saw_choice and not usage_payload:
             raise RuntimeError(f"Harness model {model!r} returned an empty stream")
+        if cls._output_was_truncated(finish_reasons):
+            raise HarnessToolCallValidationError(
+                "model_output_truncated",
+                f"Harness model {model!r} output was truncated before completion",
+            )
         raw_calls = [
             SimpleToolCall(
                 id=fragment["id"],
@@ -364,6 +422,18 @@ class LiteLLMHarnessReasoner:
             tool_calls=calls,
             usage=usage_payload,
         )
+
+    @staticmethod
+    def _output_was_truncated(finish_reasons: set[str]) -> bool:
+        return bool(_LENGTH_FINISH_REASONS.intersection(finish_reasons))
+
+    @staticmethod
+    def _expanded_length_budget(current: Any) -> int:
+        try:
+            parsed = int(current) if current is not None else 0
+        except (TypeError, ValueError):
+            parsed = 0
+        return min(max(_LENGTH_RETRY_TARGET_TOKENS, parsed * 2), 1_000_000)
 
     @staticmethod
     def _merge_stream_call_id(current: str, incoming: str) -> str:

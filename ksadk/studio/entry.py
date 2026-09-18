@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,13 @@ async def studio_entry_response(
     use_core = False
     if request.url.path == "/":
         try:
-            use_core = await studio.dsh_capabilities.has_enabled_profile_plugins()
-        except (StudioError, OSError, RuntimeError):
+            # 有界等待：探测可能触发 Node bridge 冷启动（可达数十秒），
+            # 超时则先回 React shell，避免首屏长时间白屏；
+            # 预热完成后真实 Core 用户下次导航仍会拿到正确重定向。
+            use_core = await asyncio.wait_for(
+                studio.dsh_capabilities.has_enabled_profile_plugins(), timeout=2.0
+            )
+        except (asyncio.TimeoutError, StudioError, OSError, RuntimeError):
             # The optional toolchain may be absent in a plain SDK workspace.
             pass
     if request.url.path == "/studio-recovery/":

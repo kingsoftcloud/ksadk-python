@@ -1,4 +1,4 @@
-"""Phase 2 ContextEngine 测试（plan §17 验收项）。"""
+"""Release ContextEngine 测试（plan §17 验收项）。"""
 
 from __future__ import annotations
 

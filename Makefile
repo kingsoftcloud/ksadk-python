@@ -1,20 +1,20 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check phase2-release-preflight phase2-release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-check studio-app-run studio-app-clean studio-app-reopen phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
-PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
-# Phase 1 runtime drills must run beside real Agent workloads in the preprod
+KERNEL_CANARY_NAMESPACE ?= agent-kernel
+# Kernel runtime drills must run beside real Agent workloads in the preprod
 # compute cluster. The management-cluster kubeconfig cannot reach the managed PG.
-PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d
-PHASE1_CANARY_PLATFORM ?= linux/amd64
-PHASE1_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
-PHASE1_CANARY_TAG ?= phase1-contract-$(shell git rev-parse --short=8 HEAD)
-PHASE1_CANARY_IMAGE := $(PHASE1_CANARY_REGISTRY)/agent-kernel-canary:$(PHASE1_CANARY_TAG)
-PHASE1_CANARY_KUBECTL := kubectl --kubeconfig=$(PHASE1_CANARY_KUBECONFIG)
-PHASE1_CANARY_INSTANCE_ID ?= phase1-canary-managed-pg
-PHASE1_CANARY_STORE_NAMESPACE ?= default
-PHASE1_CANARY_EVIDENCE_OUTPUT ?= /tmp/phase1-managed-pg-matrix.json
+KERNEL_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d
+KERNEL_CANARY_PLATFORM ?= linux/amd64
+KERNEL_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
+KERNEL_CANARY_TAG ?= kernel-contract-$(shell git rev-parse --short=8 HEAD)
+KERNEL_CANARY_IMAGE := $(KERNEL_CANARY_REGISTRY)/agent-kernel-canary:$(KERNEL_CANARY_TAG)
+KERNEL_CANARY_KUBECTL := kubectl --kubeconfig=$(KERNEL_CANARY_KUBECONFIG)
+KERNEL_CANARY_INSTANCE_ID ?= kernel-canary-managed-pg
+KERNEL_CANARY_STORE_NAMESPACE ?= default
+KERNEL_CANARY_EVIDENCE_OUTPUT ?= /tmp/kernel-managed-pg-matrix.json
 
 # 默认目标
 help:
@@ -31,10 +31,10 @@ help:
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
-	@echo "    make phase1-canary-push   构建并推送当前合同 PG canary 镜像"
-	@echo "    make phase1-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
-	@echo "    make phase1-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
-	@echo "    make phase1-canary-delete 删除隔离 canary namespace"
+	@echo "    make kernel-canary-push   构建并推送当前合同 PG canary 镜像"
+	@echo "    make kernel-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
+	@echo "    make kernel-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
+	@echo "    make kernel-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -53,8 +53,8 @@ help:
 	@echo "    make public-version-gate  版本号门禁(防降版/重复发版,对比 PyPI 已发版本)"
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
-	@echo "    make phase2-release-preflight  Phase 2 兼容/原生宿主/浏览器/制品门禁"
-	@echo "    make phase2-release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
+	@echo "    make release-preflight  Release 兼容/原生宿主/浏览器/制品门禁"
+	@echo "    make release-candidate-gate  绑定 npm/镜像/预发 E2E 的最终门禁"
 	@echo "    make public-publish-gate  PyPI/GitHub Release 写操作前的审批门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
@@ -72,6 +72,7 @@ help:
 	@echo ""
 	@echo "  \033[1;32mStudio macOS 本地包:\033[0m"
 	@echo "    make studio-app-package  构建 macOS arm64 self-contained Studio 包"
+	@echo "    make studio-app-package-windows  构建 Windows x64 NSIS 安装包(需 makensis)"
 	@echo "    make studio-app-check    校验包内 KsADK/Codex/static 资源"
 	@echo "    make studio-app-run      启动包内 Studio（默认打开浏览器）"
 	@echo "    make studio-app-clean    清理 Studio 本地包"
@@ -129,63 +130,63 @@ test:
 	uv run --extra all pytest tests/ -v
 
 # ============================================================
-# Phase 1 preproduction canary
+# Kernel preproduction canary
 # ============================================================
 
-phase1-canary-build:
+kernel-canary-build:
 	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "ERROR: tracked source tree is dirty"; exit 2; }
-	@echo "Building Phase 1 canary: $(PHASE1_CANARY_IMAGE)"
-	docker build --platform $(PHASE1_CANARY_PLATFORM) \
+	@echo "Building Kernel canary: $(KERNEL_CANARY_IMAGE)"
+	docker build --platform $(KERNEL_CANARY_PLATFORM) \
 		--build-arg KSADK_SOURCE_COMMIT=$$(git rev-parse HEAD) \
 		--label org.opencontainers.image.revision=$$(git rev-parse HEAD) \
-		-f docs/superpowers/evidence/phase1/canary/canary.e2e.Dockerfile \
-		-t $(PHASE1_CANARY_IMAGE) .
+		-f docs/superpowers/evidence/kernel/canary/canary.e2e.Dockerfile \
+		-t $(KERNEL_CANARY_IMAGE) .
 
-phase1-canary-push: phase1-canary-build
-	docker push $(PHASE1_CANARY_IMAGE)
+kernel-canary-push: kernel-canary-build
+	docker push $(KERNEL_CANARY_IMAGE)
 	@echo "Canary source: commit=$$(git rev-parse HEAD), contract=$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')"
-	@docker buildx imagetools inspect $(PHASE1_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
+	@docker buildx imagetools inspect $(KERNEL_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
 
-phase1-canary-deploy:
-	@test -f "$(PHASE1_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(PHASE1_CANARY_KUBECONFIG)"; exit 2; }
-	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
-	@$(PHASE1_CANARY_KUBECTL) create namespace $(PHASE1_CANARY_NAMESPACE) --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f -
-	@$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(PHASE1_CANARY_NAMESPACE) \
-		--from-literal=dsn="$$PHASE1_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f - >/dev/null
-	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml
-	@image="$(PHASE1_CANARY_IMAGE)"; \
+kernel-canary-deploy:
+	@test -f "$(KERNEL_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(KERNEL_CANARY_KUBECONFIG)"; exit 2; }
+	@test -n "$$KERNEL_CANARY_POSTGRES_DSN" || { echo "ERROR: KERNEL_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@$(KERNEL_CANARY_KUBECTL) create namespace $(KERNEL_CANARY_NAMESPACE) --dry-run=client -o yaml | $(KERNEL_CANARY_KUBECTL) apply -f -
+	@$(KERNEL_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(KERNEL_CANARY_NAMESPACE) \
+		--from-literal=dsn="$$KERNEL_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(KERNEL_CANARY_KUBECTL) apply -f - >/dev/null
+	$(KERNEL_CANARY_KUBECTL) apply -f docs/superpowers/evidence/kernel/canary-hosted/deployment.yaml
+	@image="$(KERNEL_CANARY_IMAGE)"; \
 		digest=$$(docker buildx imagetools inspect "$$image" | awk '/^Digest:/ { print $$2; exit }'); \
-		test -n "$$digest" || { echo "ERROR: cannot resolve immutable digest for $(PHASE1_CANARY_IMAGE)"; exit 2; }; \
+		test -n "$$digest" || { echo "ERROR: cannot resolve immutable digest for $(KERNEL_CANARY_IMAGE)"; exit 2; }; \
 		repository=$${image%:*}; \
-		$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime="$${repository}@$${digest}" -n $(PHASE1_CANARY_NAMESPACE)
-	$(PHASE1_CANARY_KUBECTL) set env deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) \
-		AGENT_INSTANCE_ID=$(PHASE1_CANARY_INSTANCE_ID) \
-		AGENT_KERNEL_STORE_NAMESPACE=$(PHASE1_CANARY_STORE_NAMESPACE) \
-		PHASE1_CANARY_TEST_HOOKS=1
-	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+		$(KERNEL_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime="$${repository}@$${digest}" -n $(KERNEL_CANARY_NAMESPACE)
+	$(KERNEL_CANARY_KUBECTL) set env deployment/agent-kernel-canary -n $(KERNEL_CANARY_NAMESPACE) \
+		AGENT_INSTANCE_ID=$(KERNEL_CANARY_INSTANCE_ID) \
+		AGENT_KERNEL_STORE_NAMESPACE=$(KERNEL_CANARY_STORE_NAMESPACE) \
+		KERNEL_CANARY_TEST_HOOKS=1
+	$(KERNEL_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(KERNEL_CANARY_NAMESPACE) --timeout=180s
 
-phase1-canary-matrix:
-	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
-	@test -n "$$PHASE1_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
-	@case "$$PHASE1_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
+kernel-canary-matrix:
+	@test -n "$$KERNEL_CANARY_POSTGRES_DSN" || { echo "ERROR: KERNEL_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@test -n "$$KERNEL_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: KERNEL_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
+	@case "$$KERNEL_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: KERNEL_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
 	@set -eu; \
-		cleanup() { $(MAKE) phase1-canary-delete; }; \
+		cleanup() { $(MAKE) kernel-canary-delete; }; \
 		trap cleanup EXIT INT TERM; \
-		$(MAKE) phase1-canary-push; \
-		PHASE1_CANARY_POSTGRES_DSN="$$PHASE1_CANARY_POSTGRES_DSN" $(MAKE) phase1-canary-deploy; \
-		uv run python scripts/run_phase1_managed_pg_matrix.py \
-			--kubeconfig "$(PHASE1_CANARY_KUBECONFIG)" \
-			--namespace "$(PHASE1_CANARY_NAMESPACE)" \
+		$(MAKE) kernel-canary-push; \
+		KERNEL_CANARY_POSTGRES_DSN="$$KERNEL_CANARY_POSTGRES_DSN" $(MAKE) kernel-canary-deploy; \
+		uv run python scripts/run_kernel_managed_pg_matrix.py \
+			--kubeconfig "$(KERNEL_CANARY_KUBECONFIG)" \
+			--namespace "$(KERNEL_CANARY_NAMESPACE)" \
 			--expected-contract-digest "$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')" \
 			--source-commit "$$(git rev-parse HEAD)" \
-			--rollback-image "$$PHASE1_CANARY_ROLLBACK_IMAGE" \
-			--output "$(PHASE1_CANARY_EVIDENCE_OUTPUT)"
+			--rollback-image "$$KERNEL_CANARY_ROLLBACK_IMAGE" \
+			--output "$(KERNEL_CANARY_EVIDENCE_OUTPUT)"
 
-phase1-canary-status:
-	@$(PHASE1_CANARY_KUBECTL) get deployment,pod,service -n $(PHASE1_CANARY_NAMESPACE) -o wide
+kernel-canary-status:
+	@$(KERNEL_CANARY_KUBECTL) get deployment,pod,service -n $(KERNEL_CANARY_NAMESPACE) -o wide
 
-phase1-canary-delete:
-	$(PHASE1_CANARY_KUBECTL) delete namespace $(PHASE1_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
+kernel-canary-delete:
+	$(KERNEL_CANARY_KUBECTL) delete namespace $(KERNEL_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
 
 studio-react-install-browser:
 	uv run playwright install chromium
@@ -216,7 +217,7 @@ studio-react-test: build-studio-static
 # ============================================================
 
 # 获取当前版本
-VERSION := $(shell python -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
+VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
 
 # 版本管理
 version:
@@ -310,7 +311,7 @@ build-only: check-build-deps build-studio-static
 # Print provenance for the artifact that will actually be uploaded.  The Git
 # state is deliberately included: a commit alone must not imply a clean tree.
 print-build-provenance:
-	@python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
+	@uv run python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
 
 # 带版本号构建: make release V=0.2.0
 release:
@@ -537,36 +538,36 @@ public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
 	uv run python scripts/check_release_version.py --mode "$(PUBLIC_PREFLIGHT_MODE)"
 
-phase2-release-preflight: public-build-check
-	@echo "==> Phase 2 compatibility, native host, browser, and artifact preflight"
-	@uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist
+release-preflight: public-build-check
+	@echo "==> Release compatibility, native host, browser, and artifact preflight"
+	@uv run --extra all python scripts/release_preflight.py --dist-dir dist
 
-PHASE2_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
-PHASE2_LOCAL_EVIDENCE ?= dist/phase2-evidence.json
-PHASE2_WEB_REGISTRY_EVIDENCE ?= dist/evidence/ksadk-web-registry.json
-PHASE2_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
-PHASE2_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
-PHASE2_FINAL_EVIDENCE ?= dist/phase2-release-candidate.json
+RELEASE_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
+RELEASE_LOCAL_EVIDENCE ?= dist/release-evidence.json
+RELEASE_WEB_REGISTRY_EVIDENCE ?= dist/evidence/ksadk-web-registry.json
+RELEASE_DEPLOYMENT_EVIDENCE ?= dist/evidence/hosted-ui-deployment.json
+RELEASE_PREPROD_EVIDENCE ?= dist/evidence/preprod-e2e.json
+RELEASE_FINAL_EVIDENCE ?= dist/release-candidate.json
 
-phase2-release-candidate-gate:
-	@uv run python scripts/phase2_release_candidate_gate.py \
-		--expected-commit "$(PHASE2_FINAL_COMMIT)" \
-		--local "$(PHASE2_LOCAL_EVIDENCE)" \
-		--web-registry "$(PHASE2_WEB_REGISTRY_EVIDENCE)" \
-		--deployment "$(PHASE2_DEPLOYMENT_EVIDENCE)" \
-		--preprod "$(PHASE2_PREPROD_EVIDENCE)" \
-		--output "$(PHASE2_FINAL_EVIDENCE)"
+release-candidate-gate:
+	@uv run python scripts/release_candidate_gate.py \
+		--expected-commit "$(RELEASE_FINAL_COMMIT)" \
+		--local "$(RELEASE_LOCAL_EVIDENCE)" \
+		--web-registry "$(RELEASE_WEB_REGISTRY_EVIDENCE)" \
+		--deployment "$(RELEASE_DEPLOYMENT_EVIDENCE)" \
+		--preprod "$(RELEASE_PREPROD_EVIDENCE)" \
+		--output "$(RELEASE_FINAL_EVIDENCE)"
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build phase2-release-preflight
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build release-preflight
 	@echo "✅ public preflight passed"
 
 # Lightweight preflight for the PyPI publish workflow.  The publish job runs
 # alongside the deploy-pages job (which already builds/deploys the docs site),
-# and the heavy Phase 2 native/browser E2E gates are already enforced by the
-# pull-request release-check workflow before merge.  Re-running phase2 here
+# and the heavy Release native/browser E2E gates are already enforced by the
+# pull-request release-check workflow before merge.  Re-running the release gate here
 # doubles the work and stalls on the shared CI runner.  So the publish
 # preflight mirrors the 0.8.2 shape: version + audit + ksadk-web sync + test
-# + build/twine check, without docs-site-build or phase2-release-preflight.
+# + build/twine check, without docs-site-build or release-preflight.
 public-release-version-gate:
 	uv run python scripts/check_release_version.py --mode release
 
@@ -616,7 +617,7 @@ public-review: public-status public-preflight
 
 # 离线包输出目录
 OFFLINE_DIR = offline-packages
-VERSION := $(shell python -c "from ksadk.version import VERSION; print(VERSION)")
+VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)")
 
 # 平台参数
 LINUX_PLATFORM = manylinux2014_x86_64
@@ -729,7 +730,7 @@ STUDIO_STATIC_DIR := ksadk/studio/static
 # fail rather than silently substituting an older npm package when that release is not
 # visible.  A reviewed local tarball is permitted for a pre-release image
 # build, but remains explicit in the command and provenance output.
-KSADK_WEB_VERSION ?= 0.3.8
+KSADK_WEB_VERSION ?= 0.3.10
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_TARBALL ?=
@@ -818,7 +819,7 @@ build-frontend: sync-ksadk-web-static build-studio-static
 
 build-wheel: build-frontend
 	@uv run python scripts/write_build_provenance.py
-	uv build
+	uv build --python 3.13
 	@$(MAKE) --no-print-directory print-build-provenance
 
 build-all: build-wheel
@@ -843,18 +844,18 @@ studio-app-package: build-wheel
 	@test "$(STUDIO_APP_ARCH)" = "arm64" || (echo "ERROR: only STUDIO_APP_ARCH=arm64 is supported locally" >&2; exit 1)
 	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
 	@command -v sw_vers >/dev/null 2>&1 || (echo "ERROR: this target must run on macOS" >&2; exit 1)
-	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(VERSION)" sh scripts/package_studio_app.sh
-	@$(MAKE) --no-print-directory studio-app-check
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
+	@PYTHONDONTWRITEBYTECODE=1 $(MAKE) --no-print-directory studio-app-check
 	@echo "✅ Studio macOS arm64 bundle: $(STUDIO_APP_BUNDLE)"
 
 studio-app-check:
 	@test -x "$(STUDIO_APP_BUNDLE)/Contents/MacOS/AgentKitStudio" || (echo "ERROR: Studio bundle is missing; run make studio-app-package" >&2; exit 1)
 	@test -x "$(STUDIO_APP_RUNTIME)/bin/python" || (echo "ERROR: bundled Python runtime is missing" >&2; exit 1)
 	@test -x "$(STUDIO_APP_RUNTIME)/bin/agentengine" || (echo "ERROR: bundled agentengine entrypoint is missing" >&2; exit 1)
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'from importlib.metadata import version; print("ksadk", version("ksadk")); print("openai-codex", version("openai-codex"))'
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'from codex_cli_bin import bundled_codex_path; import subprocess; p=bundled_codex_path(); print("codex", p); subprocess.run([str(p), "--version"], check=True)'
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'import ksadk.studio; from pathlib import Path; p=Path(ksadk.studio.__file__).with_name("static")/"index.html"; assert p.is_file(), p; print("studio-static", p)'
-	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -c 'import importlib.metadata as m; assert not any(name in m.packages_distributions() for name in ("rapidocr_onnxruntime", "cv2", "onnxruntime")), "retired OCR dependency still bundled"; from pathlib import Path; root=Path(__import__("ksadk.studio").studio.__file__).with_name("static"); js=next(root.glob("assets/index-*.js")); text=js.read_text(encoding="utf-8"); assert "Google ADK" not in text and "LangGraph · Python graph" not in text, "retired runtime option still in Studio static"; print("studio-runtime-options", "harness,codex")'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'from importlib.metadata import version; print("ksadk", version("ksadk")); print("openai-codex", version("openai-codex"))'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'from codex_cli_bin import bundled_codex_path; import subprocess; p=bundled_codex_path(); print("codex", p); subprocess.run([str(p), "--version"], check=True)'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'import ksadk.studio; from pathlib import Path; p=Path(ksadk.studio.__file__).with_name("static")/"index.html"; assert p.is_file(), p; print("studio-static", p)'
+	@"$(STUDIO_APP_RUNTIME)/bin/python" -I -B -c 'import importlib.metadata as m; assert not any(name in m.packages_distributions() for name in ("rapidocr_onnxruntime", "cv2", "onnxruntime")), "retired OCR dependency still bundled"; from pathlib import Path; root=Path(__import__("ksadk.studio").studio.__file__).with_name("static"); js=next(root.glob("assets/index-*.js")); text=js.read_text(encoding="utf-8"); assert "Google ADK" not in text and "LangGraph · Python graph" not in text, "retired runtime option still in Studio static"; print("studio-runtime-options", "harness,codex")'
 	@echo "✅ Studio bundle checks passed ($(STUDIO_APP_PLATFORM)/$(STUDIO_APP_ARCH))"
 
 studio-app-run: studio-app-check
@@ -863,6 +864,19 @@ studio-app-run: studio-app-check
 studio-app-clean:
 	@rm -rf "$(STUDIO_APP_DIR)"
 	@echo "✅ Studio local bundle cleaned"
+
+# Windows x64 bundle. Built under Git Bash on a Windows runner (or locally on
+# Windows). Produces an UNSIGNED AgentKitStudio-Setup-x64.exe; SignPath signs
+# it in the release workflow. makensis must be on PATH (NSIS via chocolatey).
+studio-app-package-windows: build-wheel
+	@command -v makensis >/dev/null 2>&1 || (echo "ERROR: makensis (NSIS) not found; install NSIS first" >&2; exit 1)
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
+	  STUDIO_APP_PYTHON_VERSION="$(STUDIO_APP_PYTHON_VERSION)" \
+	  ELECTRON_VERSION="$(ELECTRON_VERSION)" \
+	  STUDIO_APP_NODE_VERSION="$(STUDIO_APP_NODE_VERSION)" \
+	  STUDIO_APP_DSH_ROOT="$(STUDIO_APP_DSH_ROOT)" \
+	  sh scripts/package_studio_app_windows.sh
+	@echo "✅ Studio Windows x64 bundle: $(STUDIO_APP_DIR)/AgentKitStudio-Setup-x64.exe"
 
 # 一键：编译前端 → wheel → 打包 → 校验 → 关旧实例 → 打开新包
 studio-app-reopen: studio-app-package

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +30,60 @@ from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
 from ksadk.studio.templates import default_agent_spec
 from tests.studio.runtime_adapter_fixtures import RuntimeFixture
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_preserves_canonical_run_cancellation() -> None:
+    run_service = SimpleNamespace(cancel_run=AsyncMock(return_value={"status": "cancelling"}))
+    operations = SimpleNamespace(cancel=Mock())
+    studio = SimpleNamespace(
+        _require_direct_run=Mock(),
+        run_service=run_service,
+        operations=operations,
+        event_store=SimpleNamespace(
+            get=Mock(
+                side_effect=[
+                    SimpleNamespace(status=RunStatus.CREATED),
+                    SimpleNamespace(status=RunStatus.RUNNING),
+                    SimpleNamespace(status=RunStatus.CANCELLED),
+                ]
+            )
+        ),
+    )
+    bridge = StudioSharedWebBridge(studio)
+    bridge._operations_by_invocation["inv-1"] = "op-1"
+    bridge._run_ids_by_invocation["inv-1"] = "run-1"
+
+    result = await bridge.cancel_run("inv-1")
+
+    run_service.cancel_run.assert_awaited_once_with("run-1")
+    operations.cancel.assert_not_called()
+    assert studio.event_store.get.call_count == 3
+    assert result == {
+        "InvocationId": "inv-1",
+        "RunId": "run-1",
+        "Cancelled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_falls_back_before_canonical_run_is_created() -> None:
+    run_service = SimpleNamespace(cancel_run=AsyncMock())
+    operations = SimpleNamespace(cancel=Mock())
+    studio = SimpleNamespace(
+        _require_direct_run=Mock(),
+        run_service=run_service,
+        operations=operations,
+    )
+    bridge = StudioSharedWebBridge(studio)
+    bridge._operations_by_invocation["inv-1"] = "op-1"
+
+    result = await bridge.cancel_run("inv-1")
+
+    operations.cancel.assert_called_once_with("op-1")
+    run_service.cancel_run.assert_not_awaited()
+    assert result["Cancelled"] is True
+    assert result["RunId"] == ""
 
 
 class RecordingModelClient:
@@ -654,6 +712,72 @@ def test_session_active_run_survives_newer_failed_turn(status):
     result = bridge._session_record([active, failed])
     assert result["ActiveInvocationId"] == "active"
     assert result["ActiveRunStatus"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_shared_ui_form_keeps_response_open_until_execution_finishes(tmp_path, monkeypatch):
+    studio = StudioService(tmp_path)
+    bridge = StudioSharedWebBridge(studio)
+    release = asyncio.Event()
+    record = RunRecord(id="waiting", build_id="b", agent_id="a", session_id="s",
+                       trace_id="t", input="ask", status=RunStatus.COMPLETED, output="done")
+    monkeypatch.setattr(bridge, "resolve_agent_id", lambda value: "a")
+    monkeypatch.setattr(bridge, "_select_model", lambda *args: "test-model")
+    monkeypatch.setattr(bridge, "_ensure_build", AsyncMock(return_value=SimpleNamespace(id="b")))
+    monkeypatch.setattr(bridge, "_validate_conversation_turn", lambda **kwargs: None)
+
+    async def execute(**kwargs):
+        await release.wait()
+        return record
+
+    sent = False
+
+    async def project(**kwargs):
+        nonlocal sent
+        if sent:
+            return []
+        sent = True
+        return [("a2ui.interaction", {"kind": "form", "interactionId": "q"})]
+
+    monkeypatch.setattr(bridge, "_execute_run", execute)
+    monkeypatch.setattr(bridge, "_project_response_events", project)
+    stream = bridge.stream_run({
+        "AgentId": "a", "SessionId": "s",
+        "Messages": [{"role": "user", "content": "ask"}],
+    }, shared_ui=True)
+    try:
+        assert "response.created" in await anext(stream)
+        assert "response.in_progress" in await anext(stream)
+        assert "a2ui.interaction" in await anext(stream)
+        assert "keep-alive" in await asyncio.wait_for(anext(stream), timeout=2)
+        release.set()
+        remaining = "".join([frame async for frame in stream])
+        assert "response.completed" in remaining
+    finally:
+        release.set()
+        await stream.aclose()
+        await studio.aclose()
+
+
+@pytest.mark.parametrize("reference", ["client-invocation", "canonical-run"])
+async def test_cancel_accepts_the_canonical_identity_reported_by_get_session(reference):
+    cancelled = []
+    checked = []
+    cancelled_runs = []
+
+    async def cancel_run(run_id):
+        cancelled_runs.append(run_id)
+
+    bridge = StudioSharedWebBridge(SimpleNamespace(
+        _require_direct_run=checked.append,
+        operations=SimpleNamespace(cancel=cancelled.append),
+        run_service=SimpleNamespace(cancel_run=cancel_run),
+    ))
+    bridge._run_ids_by_invocation["client-invocation"] = "canonical-run"
+    bridge._operations_by_invocation["client-invocation"] = "operation"
+    assert (await bridge.cancel_run(reference))["Cancelled"] is True
+    assert cancelled_runs == ["canonical-run"]
+    assert checked == ["canonical-run"]
 
 
 @pytest.mark.asyncio

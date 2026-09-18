@@ -15,14 +15,14 @@ on:
       - "tests/e2e/test_dsh_managed_toolchain_e2e.py"
       - "tests/plugins/test_dsh_node_provider_e2e.py"
       - "tests/fixtures/dsh-node-agent-provider/**"
-      - "tests/packaging/test_phase2_release_preflight.py"
+      - "tests/packaging/test_release_preflight.py"
       - "tests/studio/e2e/**"
       - "scripts/open_source_audit.py"
       - "scripts/audit_release_artifacts.py"
-      - "scripts/phase2_release_preflight.py"
+      - "scripts/release_preflight.py"
       - "scripts/verify_ksadk_web_static.py"
       - "scripts/write_build_provenance.py"
-      - "docs/phase2-plugin-compatibility.md"
+      - "docs/release-plugin-compatibility.md"
       - ".github/workflows/release-check.yml"
 
 jobs:
@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
-      - name: Install Chromium for Phase 2 browser gates
+      - name: Install Chromium for Release browser gates
         run: uv run playwright install --with-deps chromium
 
       # Source candidates use the exact companion PR. Manual release checks
@@ -66,7 +66,7 @@ jobs:
 
       - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.8"
+          KSADK_WEB_VERSION: "0.3.10"
         run: make build-frontend
 
       - name: Verify clean release source
@@ -87,12 +87,12 @@ jobs:
       - name: Run package preflight (PR)
         if: github.event_name == 'pull_request'
         run: |
-          uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist --skip-tests
+          uv run --extra all python scripts/release_preflight.py --dist-dir dist --skip-tests
           echo 'Package checks passed. Full release verification still requires local public-preflight; this CI report is incomplete release evidence.' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run full Phase 2 release preflight (manual)
+      - name: Run full Release release preflight (manual)
         if: github.event_name != 'pull_request'
         env:
           PYTHONUNBUFFERED: "1"
           PYTEST_ADDOPTS: "-vv -o faulthandler_timeout=90"
-        run: uv run --extra all python scripts/phase2_release_preflight.py --dist-dir dist
+        run: uv run --extra all python scripts/release_preflight.py --dist-dir dist

@@ -36,8 +36,22 @@ export function TeamsAvailability({ compact = false }: { compact?: boolean }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
-    void readTeamsLifecycle(controller.signal).then(setState).catch(cause => { if (!controller.signal.aborted) setError(cause.message); });
-    return () => controller.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = async () => {
+      try {
+        const next = await readTeamsLifecycle(controller.signal);
+        if (controller.signal.aborted) return;
+        setState(next);
+        setError("");
+      } catch (cause) {
+        if (!controller.signal.aborted)
+          setError(cause instanceof Error ? cause.message : "团队状态读取失败。");
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(() => void read(), 1500);
+      }
+    };
+    void read();
+    return () => { controller.abort(); clearTimeout(timer); };
   }, []);
   const issue = failure || state?.failure;
   const failed = state?.health === "failed" || Boolean(issue);
@@ -68,8 +82,12 @@ export function TeamsAvailability({ compact = false }: { compact?: boolean }) {
     {!failed && <span className="studio-teams-symbol"><UsersRound size={23} /></span>}
     <div><span className="studio-teams-eyebrow">Agent Teams</span><h2>{failed ? "团队暂时无法启动" : compact ? "让多个 Agent 一起完成目标" : state?.enabled ? "打开团队工作区" : "组建你的 Agent 团队"}</h2>
       <p role={failed ? "alert" : undefined}>{failed ? error || issue?.message || issue?.reason || state?.reason || "启动没有完成。修复后可以继续使用已有团队与记录。" : "选择成员与 Leader，为不同目标建立独立任务。"}</p>
-      {error && !failed && <p className="form-error" role="alert">{error}</p>}
-      <div className="studio-teams-recovery-actions"><button className="button primary" disabled={busy || (!state && !error) || (failed && issue?.retryable === false)} onClick={() => void configure(true)}>{busy ? "正在处理…" : failed ? "重新尝试启动" : state?.enabled ? "打开团队" : "启用 Agent Teams"}</button>
+      {!failed && state?.health === "error" && <p className="form-error" role="alert">{state.reason === "authority_in_use"
+        ? "此工作区的团队正在另一个 Studio 中运行。关闭该实例后重试。"
+        : state.reason === "DSH_CAPABILITY_HOST_UNAVAILABLE"
+          ? "团队插件未能连接本地插件服务，请重试。"
+          : "团队插件自动准备未完成，请重试。"}</p>}
+      <div className="studio-teams-recovery-actions"><button className="button primary" disabled={busy || state?.health === "preparing" || (!state && !error) || (failed && issue?.retryable === false)} onClick={() => void configure(true)}>{busy ? "正在处理…" : failed ? "重新尝试启动" : state?.health === "preparing" ? "正在准备团队…" : state?.health === "error" ? "重试准备团队" : state?.enabled ? "打开团队" : "启用 Agent Teams"}</button>
         {failed && (state?.configuredEnabled !== false) && <button className="button secondary" disabled={busy} onClick={() => void configure(false)}>暂时禁用</button>}
         {issue?.code === "artifact_migration_required" && <button className="button secondary" disabled={busy} onClick={() => void repair()}>备份并升级兼容历史</button>}
         {failed ? <a href="/studio-recovery/" className="button tertiary">修复与诊断</a> : !compact && <a href="#/agents" className="button tertiary">管理 Agent</a>}
