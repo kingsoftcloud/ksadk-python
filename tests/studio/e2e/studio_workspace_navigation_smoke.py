@@ -67,7 +67,15 @@ def run(output: Path) -> list[dict]:
                     return page.get_by_role("navigation", name="产品导航")
 
                 nav = open_navigation()
-                expect(nav.get_by_role("button")).to_have_count(4)
+                # 四个主入口必须各自存在；DSH teams 插件 lifecycle 可用时会由
+                # useWorkspaceContributions 动态追加第五个"团队"入口，因此不断言精确总数。
+                for primary in ["新对话", "Agent", "资源库", "运行中心"]:
+                    expect(nav.get_by_role("button", name=primary, exact=True)).to_be_visible()
+                button_count = nav.get_by_role("button").count()
+                assert button_count in (4, 5), button_count
+                assert nav.get_by_role("button", name="团队", exact=True).count() == (
+                    button_count - 4
+                )
                 capture("four-primary-destinations")
                 for group, destinations in [
                     (
@@ -84,7 +92,6 @@ def run(output: Path) -> list[dict]:
                             ("构建", "builds"),
                             ("部署", "deployments"),
                             ("自动化", "automations"),
-                            ("编排", "orchestration"),
                             ("可观测", "observability"),
                             ("评测", "evaluations"),
                         ],

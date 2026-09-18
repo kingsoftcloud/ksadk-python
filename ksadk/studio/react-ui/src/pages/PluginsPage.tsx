@@ -401,7 +401,10 @@ export function PluginsPage({ refreshTick = 0 }: { refreshTick?: number }) {
       {marketplaceTab === 'codex' ? <div className="plugin-category-list" aria-label="可安装 Codex 插件">
         {busy === 'load' && <p role="status"><LoaderCircle className="animate-spin" size={16}/>正在读取插件…</p>}
         {catalogGroups.map(group => <section className="plugin-category" key={group.category}><h3>{group.category}</h3><div className="plugin-discovery-grid">
-          {group.items.map(item => <button className="plugin-discovery-item" key={keyOf(item)} onClick={() => select(item)}><PluginIcon item={item}/><span><strong>{pluginTitle(item)}</strong><small>{pluginSummary(item)}</small></span><Plus size={16}/></button>)}
+          {group.items.map(item => <div className="plugin-discovery-item" key={keyOf(item)}>
+            <button className="plugin-discovery-open" aria-label={pluginTitle(item)} onClick={() => select(item)}><PluginIcon item={item}/><span><strong>{pluginTitle(item)}</strong><small>{pluginSummary(item)}</small></span></button>
+            <button className="icon-button plugin-install-inline" aria-label={isOfficialCodex(item) ? `安装 ${pluginTitle(item)}` : `查看 ${pluginTitle(item)}`} disabled={busy === `codex:${keyOf(item)}`} onClick={() => isOfficialCodex(item) ? void installCodex(item) : select(item)}>{busy === `codex:${keyOf(item)}` ? <LoaderCircle className="animate-spin" size={16}/> : <Plus size={16}/>}</button>
+          </div>)}
         </div></section>)}
         {!catalogGroups.length && busy !== 'load' && <p className="plugin-discovery-empty">{hosts.codex?.available ? '没有匹配的插件。' : 'Codex 插件服务当前不可用，请稍后刷新。'}</p>}
       </div> : <section className="plugin-source-panel"><h3>从来源添加</h3><p>输入 npm 包名安装最新版本，也可用 @版本号指定版本。</p>

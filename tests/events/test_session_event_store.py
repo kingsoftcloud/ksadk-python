@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Generic SessionEventStore（单一日志）+ guard 校验 + typed RuntimeEventStore view。
 
-对应 docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md Task 2。
+对应 docs/superpowers/plans/2026-08-17-agent-runtime-v2-kernel-agent-kernel.md Task 2。
 验证：control 与 runtime 共享同一单调 session cursor、typed guard 写权限、
 store 覆盖调用方未持久化 seq、订阅 replay→live 去重，以及
 RuntimeEventStore 作为 family=runtime/family_version=2 的 typed view。

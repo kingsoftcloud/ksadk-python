@@ -245,3 +245,138 @@ def test_probe_async_responses_without_namespace_prefers_chat():
     assert c.responses_supported is True
     assert c.tool_types == set()
     assert c.preferred_protocol == "chat"
+
+
+# --- opt-in 贵探测: store / reasoning_effort 值域 / reasoning item 可靠性 ---
+
+
+def test_probe_extended_store_supported():
+    """store=true 拿 id,previous_response_id 追问;答出 marker=真支持。"""
+    from ksadk.model_proxy.detect import probe_extended_capability
+
+    def h(req):
+        body = json.loads(req.read())
+        if body.get("store") is True:
+            return httpx.Response(200, json={"id": "resp_1", "output": [], "status": "completed"})
+        if body.get("previous_response_id"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_2",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "cobalt-9173"}],
+                        }
+                    ],
+                },
+            )
+        # effort / reasoning 探测
+        eff = (body.get("reasoning") or {}).get("effort")
+        if eff == "low":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "r",
+                    "status": "completed",
+                    "output": [{"type": "reasoning"}, {"type": "message"}],
+                },
+            )
+        return httpx.Response(200, json={"id": "r", "output": [], "status": "completed"})
+
+    c = probe_extended_capability(_client(h), "https://x/v1", "k", "m")
+    assert c.store_supported is True
+    assert c.reasoning_item_reliable is True
+    assert c.reasoning_effort_values == frozenset(
+        {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+    )
+
+
+def test_probe_extended_store_fake_support():
+    """deepseek 系实测:store/previous_response_id 返回 200 但丢历史 -> False。"""
+    from ksadk.model_proxy.detect import probe_extended_capability
+
+    def h(req):
+        body = json.loads(req.read())
+        if body.get("store") is True:
+            return httpx.Response(200, json={"id": "resp_1", "output": [], "status": "completed"})
+        if body.get("previous_response_id"):
+            # 静默丢历史:答不出 marker
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_2",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "我不知道"}],
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"id": "r", "output": [], "status": "completed"})
+
+    c = probe_extended_capability(_client(h), "https://x/v1", "k", "m")
+    assert c.store_supported is False
+
+
+def test_probe_extended_effort_value_set_glm_flash():
+    """glm-5.3-flash 实测:只有 low/high/max 200,其余 400。"""
+    from ksadk.model_proxy.detect import probe_extended_capability
+
+    accepted = {"low", "high", "max"}
+
+    def h(req):
+        body = json.loads(req.read())
+        eff = (body.get("reasoning") or {}).get("effort")
+        if eff is not None:
+            if eff in accepted:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "r",
+                        "status": "completed",
+                        "output": [{"type": "reasoning"}, {"type": "message"}],
+                    },
+                )
+            return httpx.Response(400, text="该模型始终思考，不支持关闭思考")
+        return httpx.Response(200, json={"id": "r", "output": [], "status": "completed"})
+
+    c = probe_extended_capability(_client(h), "https://x/v1", "k", "glm-5.3-flash")
+    assert c.reasoning_effort_values == frozenset({"low", "high", "max"})
+    # glm-5.3-flash reasoning item 稳定出现
+    assert c.reasoning_item_reliable is True
+
+
+def test_probe_extended_reasoning_item_unreliable():
+    """glm-5.3-flash 非流式约半数缺席 reasoning item;3 次全缺席 -> False。"""
+    from ksadk.model_proxy.detect import probe_extended_capability
+
+    def h(req):
+        body = json.loads(req.read())
+        eff = (body.get("reasoning") or {}).get("effort")
+        if eff == "low":
+            # 始终不返回 reasoning item
+            return httpx.Response(
+                200,
+                json={"id": "r", "status": "completed", "output": [{"type": "message"}]},
+            )
+        return httpx.Response(200, json={"id": "r", "output": [], "status": "completed"})
+
+    c = probe_extended_capability(_client(h), "https://x/v1", "k", "m")
+    assert c.reasoning_item_reliable is False
+
+
+def test_probe_extended_failures_leave_none():
+    """故障/超时一律留 None(未探),不误判 False。"""
+    from ksadk.model_proxy.detect import probe_extended_capability
+
+    def h(req):
+        raise httpx.ConnectTimeout("slow")
+
+    c = probe_extended_capability(_client(h), "https://x/v1", "k", "m")
+    assert c.store_supported is None
+    assert c.reasoning_effort_values is None
+    assert c.reasoning_item_reliable is None

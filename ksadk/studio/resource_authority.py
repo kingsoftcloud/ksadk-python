@@ -612,8 +612,14 @@ def resource_authority_policy_from_environment(environment=None) -> ResourceAuth
     environment = os.environ if environment is None else environment
     access_key = environment.get("KSYUN_ACCESS_KEY", "").strip()
     secret_key = environment.get("KSYUN_SECRET_KEY", "").strip()
+    # AgentEngineClient already has a well-known public control-plane default
+    # (with an inner-endpoint probe).  Resource discovery must use the same
+    # default so global AK/SK credentials do not force a redundant manual
+    # "connect" step just to materialize the local reference declaration.
     endpoint = environment.get("AGENTENGINE_SERVER_URL", "").strip()
-    if not access_key or not secret_key or not endpoint:
+    if not endpoint:
+        endpoint = "https://aicp.api.ksyun.com"
+    if not access_key or not secret_key:
         return None
     logical_region = (
         environment.get("AGENTENGINE_REGION")

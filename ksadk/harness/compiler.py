@@ -1,4 +1,4 @@
-"""Revision -> HarnessSpec Compiler（plan §6.1 / §12.2 / Phase 1）。
+"""Revision -> HarnessSpec Compiler（plan §6.1 / §12.2 / Kernel）。
 
 把 AgentRevisionSpec 编译为引擎无关的 HarnessSpec：引用保持版本固定、
 orchestration pattern 映射到 ExecutionStrategy、policy/deployment 约束下沉。
@@ -53,10 +53,10 @@ class OrchestrationInput(_RevisionInputModel):
 
 
 class RevisionModelProviderPolicyInput(_RevisionInputModel):
-    max_attempts_per_model: int = Field(default=3, ge=1, le=5)
-    total_attempt_budget: int = Field(default=6, ge=1, le=20)
+    max_attempts_per_model: int = Field(default=10, ge=1, le=10)
+    total_attempt_budget: int = Field(default=20, ge=1, le=40)
     initial_backoff_ms: int = Field(default=1_000, ge=0, le=30_000)
-    max_backoff_ms: int = Field(default=8_000, ge=0, le=60_000)
+    max_backoff_ms: int = Field(default=60_000, ge=0, le=60_000)
     retryable_categories: tuple[ModelFailureCategory, ...] = tuple(ModelFailureCategory)
     failover_categories: tuple[ModelFailureCategory, ...] = tuple(ModelFailureCategory)
 
@@ -262,7 +262,7 @@ def _compile_strategy(orchestration: OrchestrationInput | None) -> ExecutionStra
 
 
 def _inline_instructions(spec: HarnessRevisionInput) -> str | None:
-    """无 instructionsRef 时的内联指令来源：role.objective（Phase 1 最小实现）。"""
+    """无 instructionsRef 时的内联指令来源：role.objective（Kernel 最小实现）。"""
     objective = (spec.role.objective or "").strip()
     return objective or None
 

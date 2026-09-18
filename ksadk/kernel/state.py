@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent Kernel Inbox/Run 状态机与事务不变量（Phase 1 Task 3）。
+"""Agent Kernel Inbox/Run 状态机与事务不变量（Kernel Task 3）。
 
 Inbox 固定 ``accepted -> claimed -> completed|discarded``；
 Run 固定 ``pending -> running -> paused|waiting|completed|failed|cancelled|interrupted``，

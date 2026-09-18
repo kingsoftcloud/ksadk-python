@@ -30,6 +30,7 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
     assert result.exit_code == 0
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8899
+    assert captured["timeout_graceful_shutdown"] == 10
     # Access log 必须开启（历史上被 access_log=False 关闭过），且日志格式带
     # filename:lineno（veadk 风格），便于本地排障定位代码。
     assert "access_log" not in captured or captured["access_log"] is not False

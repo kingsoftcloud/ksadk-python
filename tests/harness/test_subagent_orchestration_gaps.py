@@ -447,7 +447,7 @@ def test_7_5_cross_process_multi_branch_recovery_does_not_rerun_completed_childr
             profiles={"publish": ToolProfile(name="publish", risk_level=RiskLevel.HIGH)},
         )
 
-    async def phase_one():
+    async def first_phase():
         cm = AsyncSqliteSaver.from_conn_string(checkpoint_path)
         saver = await cm.__aenter__()
         try:
@@ -495,7 +495,7 @@ def test_7_5_cross_process_multi_branch_recovery_does_not_rerun_completed_childr
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    handle, first = asyncio.run(phase_one())
+    handle, first = asyncio.run(first_phase())
     assert any(event.event_type == "run.interrupted" for event in first)
     assert child_executions == ["A", "B"]
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkspaceContribution } from "./workspaceSlots";
 import { TeamsAvailability } from "../pages/TeamsAvailability";
 import { apiFetch } from "../api";
+import { mountWorkspace } from "./workspaceRegistry";
 
 /** Mount/unmount a live contribution in its original DSH context. */
 export function PluginWorkspacePage({
@@ -19,11 +20,21 @@ export function PluginWorkspacePage({
     setError("");
     if (!contribution || !host.current) return;
     if (!window.__STUDIO_DSH__) {
+      // Built-in contributions (no pluginId) are mounted directly from the
+      // trusted host registry, bypassing the DSH plugin bridge.
+      if (!contribution.pluginId) {
+        let dispose: (() => void) | undefined;
+        let cancelled = false;
+        void mountWorkspace(pageId, host.current, {})
+          .then(d => { if (!cancelled) dispose = d; })
+          .catch(cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : "插件页面打开失败。"); });
+        return () => { cancelled = true; dispose?.(); };
+      }
       let cancelled = false;
       void apiFetch("/api/v1/plugin-ecosystems/dsh/core/session", { method: "POST" })
         .then(response => {
           if (!response.ok) throw new Error("插件服务尚未就绪，请稍后重试");
-          if (!cancelled) window.location.assign("/studio-core/?workspacePage=teams#/workspace/teams");
+          if (!cancelled) window.location.assign(`/studio-core/?workspacePage=${pageId}#/workspace/${pageId}`);
         })
         .catch(cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)); });
       return () => { cancelled = true; };

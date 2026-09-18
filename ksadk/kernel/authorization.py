@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentControlPermit 验证（Phase 1 Task 6 Step 4）。
+"""AgentControlPermit 验证（Kernel Task 6 Step 4）。
 
 - 签名：Ed25519，输入为除 ``signature`` 外、key-sort、无空白 UTF-8 JSON；
   时间戳归一化为 UTC RFC3339 秒精度；签名为 base64url 无 padding。

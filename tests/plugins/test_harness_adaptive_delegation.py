@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.managed_runtime import _project_event
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
+from ksadk.harness.tools import HarnessTool
 from ksadk.plugins.providers.harness_delegation import (
     DELEGATE_TASK_TOOL,
     HARNESS_CHILD_PROVIDER_REF,
@@ -44,7 +46,8 @@ class _DelegatingReasoner:
                 final_text="通用子任务完成", usage={"input_tokens": 2, "output_tokens": 1}
             )
         self.parent_turns += 1
-        self.parent_tools = [tool.openai_schema["function"]["name"] for tool in tools]
+        if tools:
+            self.parent_tools = [tool.openai_schema["function"]["name"] for tool in tools]
         if self.parent_turns == 1:
             return HarnessReasoningTurn(
                 tool_calls=(
@@ -67,6 +70,10 @@ class _DelegatingReasoner:
 async def test_managed_loop_dynamically_spawns_general_harness_child() -> None:
     reasoner = _DelegatingReasoner()
     delegation = AdaptiveDelegationRuntime(codex_available=False)
+    # A model's common 4096 output limit must not silently become the entire
+    # child run's input+output budget. Research tool results can legitimately
+    # make a later prompt larger than one call's output ceiling.
+    assert delegation._child_max_total_tokens is None
     engine = ManagedLangGraphEngine(
         reasoner=reasoner,
         checkpointer=memory_checkpointer(),
@@ -111,6 +118,15 @@ async def test_managed_loop_dynamically_spawns_general_harness_child() -> None:
     assert [event.payload["status"] for event in progress] == ["running", "completed"]
     assert {event.payload["count"] for event in progress} == {1}
     assert {tuple(event.payload["labels"]) for event in progress} == {("产品调研",)}
+    child_terminal = [
+        event
+        for event in events
+        if event.event_type == EventType.RUN_PROGRESS
+        and event.payload.get("kind") == "subagent.event"
+        and event.payload.get("status") == "succeeded"
+        and event.payload.get("public_summary")
+    ]
+    assert [event.payload["public_summary"] for event in child_terminal] == ["通用子任务完成"]
     assert any(
         event.event_type == EventType.AGENT_STARTED and ":harness-research-one" in event.agent_id
         for event in events
@@ -120,6 +136,314 @@ async def test_managed_loop_dynamically_spawns_general_harness_child() -> None:
         and event.payload.get("text") == "父 Agent 已汇总"
         for event in events
     )
+
+
+class _ParallelDelegatingReasoner:
+    _streaming = False
+
+    def __init__(self) -> None:
+        self.parent_turns = 0
+        self.child_prompts: list[str] = []
+        self.parent_tool_messages: list[dict[str, Any]] = []
+        self.child_tool_names: list[tuple[str, ...]] = []
+        self._both_children_started = asyncio.Event()
+
+    async def complete(self, *, model, prompt, messages, tools, **kwargs):  # noqa: ANN001
+        del model, kwargs
+        if "动态调度的通用子 Agent" in prompt:
+            task = str(messages[-1].get("content") or "")
+            self.child_prompts.append(task)
+            self.child_tool_names.append(
+                tuple(tool.openai_schema["function"]["name"] for tool in tools)
+            )
+            if len(self.child_prompts) == 2:
+                self._both_children_started.set()
+            await asyncio.wait_for(self._both_children_started.wait(), timeout=1)
+            return HarnessReasoningTurn(final_text=f"已完成：{task}")
+        self.parent_turns += 1
+        if self.parent_turns == 1:
+            return HarnessReasoningTurn(
+                tool_calls=(
+                    HarnessToolCall(
+                        call_id="research-one",
+                        name=DELEGATE_TASK_TOOL,
+                        arguments={"task": "调研主题一", "label": "主题一"},
+                    ),
+                    HarnessToolCall(
+                        call_id="research-two",
+                        name=DELEGATE_TASK_TOOL,
+                        arguments={"task": "调研主题二", "label": "主题二"},
+                    ),
+                )
+            )
+        self.parent_tool_messages = [
+            dict(message) for message in messages if message.get("role") == "tool"
+        ]
+        # The post-delegation turn is a controller-owned synthesis turn. The
+        # model must not be offered delegate_task again.
+        assert [tool.openai_schema["function"]["name"] for tool in tools] == [
+            "write_workspace_file"
+        ]
+        return HarnessReasoningTurn(final_text="主题一与主题二均已完成，现已汇总。")
+
+
+@pytest.mark.asyncio
+async def test_parallel_dynamic_children_close_before_parent_synthesis() -> None:
+    reasoner = _ParallelDelegatingReasoner()
+
+    async def write(arguments: dict[str, Any], call_id: str | None) -> str:
+        del arguments, call_id
+        return "written"
+
+    writer = HarnessTool(
+        name="write_workspace_file",
+        description="Save a report.",
+        parameters={"type": "object", "properties": {}},
+        handler=write,
+        source="test",
+    )
+    engine = ManagedLangGraphEngine(
+        reasoner=reasoner,
+        checkpointer=memory_checkpointer(),
+        tools={writer.name: writer},
+        approval_required={writer.name},
+        delegation_runtime=AdaptiveDelegationRuntime(codex_available=False),
+    )
+    compiled = await engine.compile(
+        HarnessSpec(
+            agent_revision_ref="agent-revision://parallel-agent@1",
+            model=ModelBinding(profile_ref="model-profile://fixture@1"),
+            prompt=PromptSpec(instructions="按需拆分独立任务并汇总。"),
+        )
+    )
+    handle = await engine.start(
+        StartRequest(
+            input="并行完成两个主题",
+            user_id="user",
+            session_id="session",
+            agent_id="agent",
+            metadata={"invocation_id": "parallel-run"},
+        ),
+        compiled,
+    )
+    events = [event async for event in engine.stream(handle)]
+
+    assert set(reasoner.child_prompts) == {"调研主题一", "调研主题二"}
+    assert reasoner.child_tool_names == [(), ()]
+    assert len(reasoner.parent_tool_messages) == 2
+    assert all("已完成" in str(message.get("content")) for message in reasoner.parent_tool_messages)
+    for message in reasoner.parent_tool_messages:
+        content = str(message.get("content") or "")
+        assert '"status": "completed"' in content
+        assert '"provider": "harness"' in content
+        assert '"evidence"' not in content
+        assert '"usage"' not in content
+    terminal_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.event_type == EventType.RUN_PROGRESS
+        and event.payload.get("kind") == "subagent.event"
+        and event.payload.get("status") == "succeeded"
+    ]
+    final_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type == EventType.TEXT_COMPLETED
+        and event.payload.get("text") == "主题一与主题二均已完成，现已汇总。"
+    )
+    completed_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type == EventType.RUN_COMPLETED and not event.parent_run_id
+    )
+    assert len(terminal_indexes) == 2
+    assert max(terminal_indexes) < final_index < completed_index
+
+
+@pytest.mark.asyncio
+async def test_post_delegation_synthesis_can_write_deliverable_without_redelegating() -> None:
+    writes: list[dict[str, Any]] = []
+
+    async def write(arguments: dict[str, Any], call_id: str | None) -> dict[str, Any]:
+        del call_id
+        writes.append(arguments)
+        return {"path": str(arguments.get("path") or "")}
+
+    writer = HarnessTool(
+        name="write_workspace_file",
+        description="Save a report in the workspace.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+        handler=write,
+        source="test",
+    )
+
+    class _WriterReasoner:
+        def __init__(self) -> None:
+            self.parent_turns = 0
+
+        async def complete(self, *, prompt, tools, **kwargs):  # noqa: ANN001
+            del kwargs
+            if "动态调度的通用子 Agent" in prompt:
+                return HarnessReasoningTurn(final_text="已核对的官方证据")
+            self.parent_turns += 1
+            names = [tool.openai_schema["function"]["name"] for tool in tools]
+            if self.parent_turns == 1:
+                assert DELEGATE_TASK_TOOL in names
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="research-one",
+                            name=DELEGATE_TASK_TOOL,
+                            arguments={"task": "调研主题", "label": "主题调研"},
+                        ),
+                    )
+                )
+            if self.parent_turns == 2:
+                assert DELEGATE_TASK_TOOL not in names
+                assert names == ["write_workspace_file"]
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="write-report",
+                            name="write_workspace_file",
+                            arguments={"path": "report.md", "content": "# 已核对的报告"},
+                        ),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="报告已保存为 report.md。")
+
+    reasoner = _WriterReasoner()
+    engine = ManagedLangGraphEngine(
+        reasoner=reasoner,
+        tools={writer.name: writer},
+        delegation_runtime=AdaptiveDelegationRuntime(codex_available=False),
+    )
+    compiled = await engine.compile(
+        HarnessSpec(
+            agent_revision_ref="agent-revision://writer-agent@1",
+            model=ModelBinding(profile_ref="model-profile://fixture@1"),
+            prompt=PromptSpec(instructions="调研、汇总并保存报告。"),
+        )
+    )
+    handle = await engine.start(
+        StartRequest(
+            input="调研并保存报告",
+            user_id="user",
+            session_id="session",
+            agent_id="agent",
+        ),
+        compiled,
+    )
+    events = [event async for event in engine.stream(handle)]
+
+    assert writes == [{"path": "report.md", "content": "# 已核对的报告"}]
+    assert reasoner.parent_turns == 3
+    assert any(
+        event.event_type == EventType.TEXT_COMPLETED
+        and event.payload.get("text") == "报告已保存为 report.md。"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_delegation_exception_always_publishes_child_terminal_failure() -> None:
+    class _FailingRuntime(AdaptiveDelegationRuntime):
+        async def _run_harness(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            raise RuntimeError("fixture child failure")
+
+    parent = SimpleNamespace(
+        handle=SimpleNamespace(run_id="parent-run"),
+        state=SimpleNamespace(agent_id="agent", user_id="user", session_id="session"),
+        seq=0,
+        events=[],
+        controller=None,
+        control_events=[],
+        observed_event_ids=set(),
+        dynamic_calls=set(),
+        execution_policy=None,
+    )
+    with pytest.raises(RuntimeError, match="fixture child failure"):
+        await _FailingRuntime(codex_available=False).invoke(
+            engine=object(),
+            parent_run=parent,
+            arguments={"task": "调研失败场景", "label": "失败子任务"},
+            call_id="failed-child",
+        )
+
+    progress = [
+        event.payload
+        for event in parent.events
+        if event.event_type == EventType.RUN_PROGRESS
+        and event.payload.get("kind") == "subagent.event"
+    ]
+    assert [item["status"] for item in progress] == ["running", "failed"]
+
+
+@pytest.mark.asyncio
+async def test_post_delegation_preface_is_retried_until_a_real_summary() -> None:
+    class _PrefaceReasoner:
+        def __init__(self) -> None:
+            self.parent_turns = 0
+
+        async def complete(self, *, prompt, messages, tools, **kwargs):  # noqa: ANN001
+            del messages, kwargs
+            if "动态调度的通用子 Agent" in prompt:
+                return HarnessReasoningTurn(final_text="子任务证据")
+            self.parent_turns += 1
+            if self.parent_turns == 1:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="research-one",
+                            name=DELEGATE_TASK_TOOL,
+                            arguments={"task": "调研主题", "label": "主题调研"},
+                        ),
+                    )
+                )
+            assert tools == []
+            if self.parent_turns == 2:
+                return HarnessReasoningTurn(final_text="let me delegate this subtask first")
+            return HarnessReasoningTurn(final_text="已根据子任务证据完成汇总。")
+
+    reasoner = _PrefaceReasoner()
+    engine = ManagedLangGraphEngine(
+        reasoner=reasoner,
+        delegation_runtime=AdaptiveDelegationRuntime(codex_available=False),
+    )
+    compiled = await engine.compile(
+        HarnessSpec(
+            agent_revision_ref="agent-revision://preface-agent@1",
+            model=ModelBinding(profile_ref="model-profile://fixture@1"),
+            prompt=PromptSpec(instructions="调研并汇总。"),
+        )
+    )
+    handle = await engine.start(
+        StartRequest(
+            input="调研并汇总",
+            user_id="user",
+            session_id="session",
+            agent_id="agent",
+            metadata={"invocation_id": "preface-run"},
+        ),
+        compiled,
+    )
+    events = [event async for event in engine.stream(handle)]
+
+    answers = [
+        str(event.payload.get("text") or "")
+        for event in events
+        if event.event_type == EventType.TEXT_COMPLETED and not event.parent_run_id
+    ]
+    assert reasoner.parent_turns == 3
+    assert answers == ["已根据子任务证据完成汇总。"]
 
 
 class _ImmediateCodexProvider:
@@ -223,7 +547,13 @@ async def test_coding_task_is_forced_to_codex_and_emits_provider_progress() -> N
     )
 
     assert result["provider"] == "codex"
-    assert result["output"] == "代码已修复"
+    assert result == {
+        "status": "completed",
+        "provider": "codex",
+        "task_kind": "coding",
+        "label": "修复 Python 代码并补测试",
+        "output": "代码已修复",
+    }
     assert provider.requests[0].provider_ref == DEFAULT_CODEX_CHILD_PROVIDER_REF
     assert provider.requests[0].policy.max_steps == 8
     assert provider.disposed == ["codex-child-1"]
@@ -249,6 +579,7 @@ async def test_coding_task_is_forced_to_codex_and_emits_provider_progress() -> N
 
 def test_non_coding_task_defaults_to_harness_and_simple_task_can_skip_tool() -> None:
     runtime = AdaptiveDelegationRuntime(codex_available=False)
+    parent = SimpleNamespace(skill_catalog=(), mcp_catalog=())
     decision = runtime.route("比较三款产品并总结官方资料")
     assert decision.provider_ref == HARNESS_CHILD_PROVIDER_REF
     assert decision.task_kind == "general"
@@ -259,6 +590,11 @@ def test_non_coding_task_defaults_to_harness_and_simple_task_can_skip_tool() -> 
     assert implementation_research.provider_ref == HARNESS_CHILD_PROVIDER_REF
     source_research = runtime.route("查看三个项目的 source code and repository docs", "coding")
     assert source_research.provider_ref == HARNESS_CHILD_PROVIDER_REF
+    approval_research = runtime.route(
+        "调研 Codex 的工具审批模式，包括 read-only / auto-edit / full-auto",
+        "general",
+    )
+    assert approval_research.provider_ref == HARNESS_CHILD_PROVIDER_REF
     constrained_research = runtime.route(
         "Search official docs. Do not write any code or files; just report findings.",
         "coding",
@@ -266,7 +602,45 @@ def test_non_coding_task_defaults_to_harness_and_simple_task_can_skip_tool() -> 
     assert constrained_research.provider_ref == HARNESS_CHILD_PROVIDER_REF
     chinese_constrained = runtime.route("调研官方资料，不要写代码或修改文件", "coding")
     assert chinese_constrained.provider_ref == HARNESS_CHILD_PROVIDER_REF
+    assert runtime.parallel_safe(
+        {
+            "task": "调研 Codex 的工具审批，包括执行命令、文件写入和删除的确认机制",
+            "task_kind": "general",
+        },
+        parent_run=parent,
+    )
+    assert not runtime.parallel_safe(
+        {"task": "保存已核对的调研摘要", "task_kind": "general"},
+        parent_run=parent,
+    )
     assert "Do not delegate a simple task" in runtime.openai_schema["function"]["description"]
+    assert "final deliverable file" in runtime.openai_schema["function"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_final_file_delivery_cannot_be_delegated_to_text_only_child() -> None:
+    runtime = AdaptiveDelegationRuntime(codex_available=False)
+    parent = SimpleNamespace(
+        handle=SimpleNamespace(run_id="parent-run"),
+        dynamic_calls=set(),
+        events=[],
+    )
+
+    with pytest.raises(SubagentProviderError) as captured:
+        await runtime.invoke(
+            engine=object(),
+            parent_run=parent,
+            arguments={
+                "task": "创建一个名为 report.md 的 Markdown 文档并保存",
+                "task_kind": "general",
+                "label": "保存报告",
+            },
+            call_id="write-report",
+        )
+
+    assert captured.value.code == "delegation_requires_parent_tool"
+    assert parent.dynamic_calls == set()
+    assert parent.events == []
 
 
 @pytest.mark.asyncio
@@ -372,7 +746,7 @@ def test_provider_retry_is_public_but_redacts_provider_details() -> None:
 
     assert [item.item_kind for item in projected] == ["message", "message", "message"]
     text = projected[-1].snapshot.parts[0].text
-    assert text == "模型服务繁忙，1 秒后自动重试（第 2/3 次）"
+    assert text == "模型服务繁忙，1 秒后自动重试（第 2/10 次）"
     assert "secret-provider-model" not in text
     assert "raw provider error" not in text
 
@@ -400,6 +774,35 @@ def test_subagent_provider_retry_uses_declared_next_attempt() -> None:
     assert projected[-1].snapshot.parts[0].text == (
         "模型服务繁忙（调研 Codex），1 秒后自动重试（第 2/3 次）"
     )
+
+
+def test_child_provider_retry_stays_in_structured_activity_instead_of_chat() -> None:
+    event = RuntimeEvent.create(
+        EventType.MODEL_CALL_FAILED,
+        agent_id="child-agent",
+        user_id="user",
+        session_id="session",
+        invocation_id="child-run",
+        run_id="child-run",
+        scope_id="agent:child-agent",
+        parent_scope_id="agent:parent-agent",
+        parent_run_id="parent-run",
+        seq_id=1,
+        payload={
+            "model": "provider-model",
+            "error": "provider busy",
+            "failure_category": "rate_limit",
+            "action": "retry_same_model",
+            "model_attempt": 1,
+            "max_attempts": 10,
+            "retry_delay_ms": 1000,
+        },
+    )
+
+    projected = _project_event(event)
+
+    assert [item.item_kind for item in projected] == ["status"]
+    assert "retry_same_model" in projected[0].snapshot.parts[0].text
 
 
 def test_tool_batch_projects_human_activity_without_arguments() -> None:
@@ -489,6 +892,25 @@ def test_individual_subagent_progress_stays_in_trace_only() -> None:
     )
 
     assert [item.item_kind for item in _project_event(event)] == ["status"]
+
+
+def test_model_authored_commentary_stays_out_of_the_final_answer_channel() -> None:
+    event = RuntimeEvent.create(
+        EventType.TEXT_COMPLETED,
+        agent_id="agent",
+        user_id="user",
+        session_id="session",
+        invocation_id="run",
+        seq_id=1,
+        payload={"text": "我先核对官方资料。"},
+        phase="commentary",
+    )
+
+    projected = _project_event(event)
+
+    assert [item.item_kind for item in projected] == ["status"]
+    assert projected[0].source.metadata["phase"] == "commentary"
+    assert "我先核对官方资料。" in projected[0].snapshot.parts[0].text
 
 
 def test_plan_progress_is_compact() -> None:

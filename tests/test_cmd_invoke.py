@@ -439,6 +439,19 @@ def test_extract_content_supports_response_reasoning_delta():
     assert reasoning == "先分析一下"
 
 
+def test_extract_content_supports_all_reasoning_delta_variants():
+    """reasoning delta 4 个变体名都应被当作思考流(与前端 chatProtocol 对齐)。"""
+    for name in (
+        "response.reasoning.delta",
+        "response.reasoning_text.delta",
+        "response.reasoning_summary.delta",
+        "response.reasoning_summary_text.delta",
+    ):
+        content, reasoning = _extract_content({"_event": name, "delta": "想"})
+        assert content == "", name
+        assert reasoning == "想", name
+
+
 def test_extract_content_ignores_response_completed_payload():
     content, reasoning = _extract_content(
         {

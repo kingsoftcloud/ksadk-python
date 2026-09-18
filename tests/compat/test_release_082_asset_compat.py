@@ -161,7 +161,7 @@ async def test_legacy_management_routes_remain_open() -> None:
     assert code["chatTransport"] == "studio-session-events"
     assert native["chatTransport"] == "official-dashboard"
 
-    # Old receipts omit Phase 2 fields. Their defaults must keep management
+    # Old receipts omit Release fields. Their defaults must keep management
     # and the native/ManagedRuntime Dashboard path usable without admission.
     managed = DeploymentRecord(
         id="dep-existing-managed",

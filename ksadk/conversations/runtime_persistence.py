@@ -35,6 +35,7 @@ async def ensure_conversation_session(
     session_id: Optional[str],
     session_service_provider: Callable[[], Any] | None = None,
     invocation_identity: Any = None,
+    allow_agent_alias: bool = False,
 ) -> Session:
     """确保会话存在，并在读取历史前校验可信业务 owner。"""
     service = (session_service_provider or resolve_session_service)()
@@ -44,18 +45,26 @@ async def ensure_conversation_session(
         existing = await service.get_session_metadata(session_id)
         if existing:
             if existing.agent_id != agent_id:
-                if not identity.is_empty:
+                if allow_agent_alias and not identity.is_empty:
+                    # Hosted workers receive an internal instance alias while
+                    # the control plane persists the public AgentId. The
+                    # worker is already scoped to this session store; adopt
+                    # the persisted owner before validating business identity.
+                    agent_id = existing.agent_id
+                elif not identity.is_empty:
                     raise HTTPException(status_code=404, detail="Session not found")
-                raise HTTPException(
-                    status_code=409,
-                    detail="Session id belongs to a different agent or user",
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Session id belongs to a different agent or user",
+                    )
+            if existing.agent_id == agent_id:
+                return await bind_or_validate_session_identity(
+                    service=service,
+                    session=existing,
+                    identity=identity,
+                    requested_user_id=user_id,
                 )
-            return await bind_or_validate_session_identity(
-                service=service,
-                session=existing,
-                identity=identity,
-                requested_user_id=user_id,
-            )
         native_user_id = identity_native_user_id(identity) or user_id
         created = await service.create_session(agent_id, native_user_id, session_id=session_id)
         if created.agent_id != agent_id:

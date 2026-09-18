@@ -440,6 +440,19 @@ def test_environment_policy_uses_parsed_hostname_for_internal_iam(monkeypatch):
     assert internal_policy.iam_endpoint == "http://iam.inner.api.ksyun.com"
 
 
+def test_environment_policy_uses_default_control_endpoint_with_global_credentials(monkeypatch):
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "fixture-access")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "fixture-secret")
+    monkeypatch.delenv("AGENTENGINE_SERVER_URL", raising=False)
+    monkeypatch.delenv("KSADK_RESOURCE_IAM_ENDPOINT", raising=False)
+
+    policy = resource_authority_policy_from_environment()
+
+    assert policy is not None
+    assert policy.allowed_data_endpoints == ("https://aicp.api.ksyun.com",)
+    assert policy.iam_endpoint == "https://iam.api.ksyun.com"
+
+
 def test_studio_validation_only_reports_verified_after_real_authority_calls(
     tmp_path, authority_upstream
 ):

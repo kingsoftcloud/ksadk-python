@@ -1,4 +1,4 @@
-"""Checkpointer thread_id 租户复合编码（plan §6.2.2，Phase 1 决策）。
+"""Checkpointer thread_id 租户复合编码（plan §6.2.2，Kernel 决策）。
 
 LangGraph Checkpointer 的 ``thread_id`` 是扁平字符串，无租户语义。本模块
 是唯一编码实现，禁止各处手拼。Approval 跨进程恢复依赖该编码。

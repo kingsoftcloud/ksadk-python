@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""command -> RuntimeAdapter 方法映射与 capability 判定（Phase 1 Task 6 Step 5）。
+"""command -> RuntimeAdapter 方法映射与 capability 判定（Kernel Task 6 Step 5）。
 
 映射表是唯一事实来源：enqueue 只在没有 active Run 时执行 start；
 steer/inject 只传给 native adapter method；每条命令产生的

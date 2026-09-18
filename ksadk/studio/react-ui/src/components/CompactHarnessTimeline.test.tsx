@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CompactHarnessTimeline } from "./CompactHarnessTimeline";
 
 vi.mock("@kingsoftcloud/ksadk-web/chat/timeline", () => ({ ChatMessageList: ({ messages }: { messages: unknown[] }) => <div data-testid="shared-message">{JSON.stringify(messages)}</div>, StatusBanner: () => <div data-testid="status-banner" /> }));
-vi.mock("./HarnessActivity", () => ({ HarnessActivity: ({ runId }: { runId: string }) => <div data-testid="activity">{runId}</div> }));
+vi.mock("./HarnessActivity", () => ({ HarnessActivity: ({ runId, fallback }: { runId: string; fallback?: Array<{ label: string }> }) => <div data-testid="activity" data-fallback={fallback?.[0]?.label}>{runId}</div> }));
 const props = { agentName: "Harness", isMobile: false, isStreaming: false, activity: null, sessionId: "ses-1",
   onDeleteFeedback: vi.fn(), onSubmitFeedback: vi.fn(), onRespondToApproval: vi.fn() };
 
@@ -40,6 +40,22 @@ describe("Harness timeline integration", () => {
     rerender(<CompactHarnessTimeline {...props} messages={[]} emptyState={<p>欢迎</p>} />);
     expect(screen.queryByText("正在思考…")).toBeNull();
     expect(screen.getByText("欢迎")).toBeInTheDocument();
+  });
+  it("shows live execution activity before the first public model message", () => {
+    render(<CompactHarnessTimeline {...props} isStreaming activeRunId="run-live" messages={[
+      { id: "user", role: "user", timestamp: 1, content: "执行一个长任务" },
+      { id: "pending", role: "model", timestamp: 2, content: "", eventType: "optimistic_assistant_placeholder" },
+    ]} />);
+    expect(screen.getByTestId("activity")).toHaveTextContent("run-live");
+    expect(screen.getByTestId("activity")).toHaveAttribute("data-fallback", "分析任务");
+    expect(screen.queryByText("正在思考…")).toBeNull();
+  });
+  it("does not duplicate the live activity after a public model item arrives", () => {
+    render(<CompactHarnessTimeline {...props} isStreaming activeRunId="run-live" messages={[
+      { id: "user", role: "user", timestamp: 1, content: "执行一个长任务" },
+      { id: "progress", role: "model", timestamp: 2, content: "", reasoning: "正在分析任务", invocationId: "run-live" },
+    ]} />);
+    expect(screen.getAllByTestId("activity")).toHaveLength(1);
   });
   it("uses real pagination state and keeps a single history control before all messages", () => {
     const messages = [{ id: "user", role: "user" as const, timestamp: 1, content: "当前消息" }];

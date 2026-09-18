@@ -191,6 +191,7 @@ class _StudioHarnessReasoner:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: list[HarnessToolCall] = []
+        invalid_tool_name: str | None = None
         usage = None
         async for chunk in self._client.stream(
             self._model,
@@ -213,25 +214,93 @@ class _StudioHarnessReasoner:
                 for call in chunk.tool_calls:
                     try:
                         arguments = json.loads(call.arguments or "{}")
-                    except json.JSONDecodeError as error:
-                        raise PluginHostError(
-                            "harness_tool_arguments_invalid",
-                            f"model emitted invalid arguments for tool {call.name!r}",
-                        ) from error
+                    except json.JSONDecodeError:
+                        invalid_tool_name = call.name
+                        continue
                     if not isinstance(arguments, dict):
-                        raise PluginHostError(
-                            "harness_tool_arguments_invalid",
-                            f"model emitted non-object arguments for tool {call.name!r}",
-                        )
+                        invalid_tool_name = call.name
+                        continue
                     tool_calls.append(
                         HarnessToolCall(call_id=call.id, name=call.name, arguments=arguments)
                     )
             if chunk.done:
+                if invalid_tool_name:
+                    # Some OpenAI-compatible GLM gateways truncate or slightly
+                    # corrupt a large native function-call JSON object.  The
+                    # first attempt's public prose has already streamed, so ask
+                    # once for the intended call again with a larger budget and
+                    # consume only its structured call.  Raw invalid arguments
+                    # are never placed back into model context or Studio events.
+                    repair = await self._client.complete(
+                        self._model,
+                        messages=[
+                            *[dict(message) for message in messages],
+                            {
+                                "role": "system",
+                                "content": (
+                                    "The previous tool call could not be parsed. "
+                                    f"Retry the intended {invalid_tool_name} call once with "
+                                    "valid JSON arguments. Keep the file content concise enough "
+                                    "to fit in one tool call and do not repeat the analysis."
+                                ),
+                            },
+                        ],
+                        network_policy=self._network_policy,
+                        timeout_seconds=self._timeout_seconds,
+                        max_attempts=self._max_attempts,
+                        backoff_seconds=self._backoff_seconds,
+                        tools=[dict(tool.openai_schema) for tool in tools],
+                        allow_empty=bool(tools),
+                        retry_on_length=True,
+                        max_output_tokens=max(
+                            16_384,
+                            int(
+                                max_output_tokens
+                                or self._model.parameters.max_tokens
+                                or 0
+                            ),
+                        ),
+                    )
+                    tool_calls = []
+                    for call in repair.tool_calls:
+                        try:
+                            arguments = json.loads(call.arguments or "{}")
+                        except json.JSONDecodeError as error:
+                            raise PluginHostError(
+                                "harness_tool_arguments_invalid",
+                                f"model emitted invalid arguments for tool {call.name!r}",
+                            ) from error
+                        if not isinstance(arguments, dict):
+                            raise PluginHostError(
+                                "harness_tool_arguments_invalid",
+                                f"model emitted non-object arguments for tool {call.name!r}",
+                            )
+                        tool_calls.append(
+                            HarnessToolCall(
+                                call_id=call.id,
+                                name=call.name,
+                                arguments=arguments,
+                            )
+                        )
+                    if not tool_calls:
+                        raise PluginHostError(
+                            "harness_tool_arguments_invalid",
+                            f"model did not repair arguments for tool {invalid_tool_name!r}",
+                        )
+                    usage = repair.usage
                 yield {
                     "turn": HarnessReasoningTurn(
-                        final_text="".join(text_parts) or None,
+                        final_text=(
+                            "".join(text_parts)
+                            or (repair.content if invalid_tool_name else "")
+                            or None
+                        ),
                         tool_calls=tuple(tool_calls),
-                        reasoning="".join(reasoning_parts) or None,
+                        reasoning=(
+                            "".join(reasoning_parts)
+                            or (repair.reasoning if invalid_tool_name else "")
+                            or None
+                        ),
                         usage=None
                         if usage is None
                         else {
@@ -835,17 +904,21 @@ class StudioPluginRuntime:
         network = NetworkPolicy.model_validate(security.get("network") or {})
         execution = spec.get("execution")
         execution = execution if isinstance(execution, Mapping) else {}
-        retry = execution.get("retry")
-        retry = retry if isinstance(retry, Mapping) else {}
+        # Managed Harness owns provider retry/failover in ModelProviderPolicy.
+        # Retrying again inside the HTTP client multiplies attempts (for
+        # example 3 outer attempts x 2 hidden HTTP attempts), makes the public
+        # attempt counter dishonest, and applies two independent backoffs.
+        # Keep this transport call single-shot; the Harness loop performs the
+        # visible ten-attempt policy and emits one durable event per retry.
         return _StudioHarnessReasoner(
             self._model_client,
             model=model,
             network_policy=network,
             timeout_seconds=int(
-                execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 300
+                execution.get("timeoutSeconds") or execution.get("timeout_seconds") or 600
             ),
-            max_attempts=int(retry.get("maxAttempts") or retry.get("max_attempts") or 2),
-            backoff_seconds=float(retry.get("backoffSeconds") or retry.get("backoff_seconds") or 1),
+            max_attempts=1,
+            backoff_seconds=0,
         )
 
     def _external_manifest(self, profile: CompositionProfile) -> PluginManifest | None:

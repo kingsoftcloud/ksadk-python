@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -710,7 +711,14 @@ def test_api_workspace_reconnect_preserves_shape_and_can_switch(tmp_path: Path):
         assert switched.json()["path"] == str((tmp_path / "second").resolve())
 
 
-def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path):
+def test_api_session_credential_lifecycle_and_model_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # This test owns the complete missing -> session -> missing lifecycle. Keep
+    # it hermetic when a developer launches the suite from a configured shell.
+    monkeypatch.delenv("AGENTKIT_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
     class CredentialAwareModelClient:
         def __init__(self):
             self.credential_resolver = CredentialResolver()

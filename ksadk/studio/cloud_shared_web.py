@@ -76,11 +76,50 @@ def _timestamp(value: Any) -> str:
 class CloudSharedWebBridge:
     """Shared-web action semantics backed by the cloud-chat proxy."""
 
+    # 云端控制面经由 WAN 往返（实测单次 1-6s）。会话壳层首屏会串 bootstrap、
+    # models、sessions 三次读取；内存 TTL 缓存把刷新/切换的重复往返折叠掉。
+    # 本地 Studio 是单用户单进程，不需要 Redis 级别的共享缓存。
+    _BOOTSTRAP_TTL_SECONDS = 60.0
+    _MODELS_TTL_SECONDS = 60.0
+    _SESSIONS_TTL_SECONDS = 10.0
+
     def __init__(self, cloud: CloudDeploymentService | Any) -> None:
         # The desktop can keep several workspace runtimes alive while the
         # active workspace changes.  Resolve the cloud service per request so
         # an awaited call cannot continue against the previous workspace.
         self._cloud_or_manager = cloud
+        self._read_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._read_inflight: dict[tuple[Any, ...], asyncio.Task[Any]] = {}
+
+    def _cache_key(self, kind: str, *args: Any) -> tuple[Any, ...]:
+        # 工作区切换后缓存必须失效：以当前 CloudDeploymentService 实例区分。
+        return (kind, id(self.cloud), *args)
+
+    async def _cached_read(
+        self,
+        kind: str,
+        ttl: float,
+        args: tuple[Any, ...],
+        producer: Any,
+    ) -> Any:
+        key = self._cache_key(kind, *args)
+        hit = self._read_cache.get(key)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
+        inflight = self._read_inflight.get(key)
+        if inflight is None:
+            inflight = asyncio.ensure_future(producer())
+            self._read_inflight[key] = inflight
+            inflight.add_done_callback(lambda _task: self._read_inflight.pop(key, None))
+        value = await inflight
+        self._read_cache[key] = (time.monotonic() + ttl, value)
+        return value
+
+    def _invalidate(self, kind: str, agent_id: str) -> None:
+        # 会话创建/删除后立刻失效对应列表，避免新会话延迟出现。
+        stale = [key for key in self._read_cache if key[0] == kind and agent_id in key[2:]]
+        for key in stale:
+            self._read_cache.pop(key, None)
 
     @property
     def cloud(self) -> CloudDeploymentService:
@@ -95,6 +134,12 @@ class CloudSharedWebBridge:
         return session_id
 
     async def bootstrap(self, agent_id: str) -> dict[str, Any]:
+        return await self._cached_read(
+            "bootstrap", self._BOOTSTRAP_TTL_SECONDS, (agent_id,),
+            lambda: self._bootstrap(agent_id),
+        )
+
+    async def _bootstrap(self, agent_id: str) -> dict[str, Any]:
         target = cloud_chat_target(agent_id)
         normalized_agent_id = target.removeprefix("account:")
         detail = await self.cloud.get_account_agent(normalized_agent_id)
@@ -147,6 +192,12 @@ class CloudSharedWebBridge:
         }
 
     async def list_models(self, agent_id: str) -> dict[str, Any]:
+        return await self._cached_read(
+            "models", self._MODELS_TTL_SECONDS, (agent_id,),
+            lambda: self._list_models(agent_id),
+        )
+
+    async def _list_models(self, agent_id: str) -> dict[str, Any]:
         payload = await self.cloud.list_cloud_chat_models(cloud_chat_target(agent_id))
         rows = payload.get("models") or payload.get("items") or []
         current = str(payload.get("current") or payload.get("configured_model") or "")
@@ -181,6 +232,18 @@ class CloudSharedWebBridge:
         return {"Models": models, "Current": current, "Source": "agentengine-cloud"}
 
     async def list_sessions(
+        self,
+        agent_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 30,
+    ) -> dict[str, Any]:
+        return await self._cached_read(
+            "sessions", self._SESSIONS_TTL_SECONDS, (agent_id, page, page_size),
+            lambda: self._list_sessions(agent_id, page=page, page_size=page_size),
+        )
+
+    async def _list_sessions(
         self,
         agent_id: str,
         *,
@@ -240,6 +303,7 @@ class CloudSharedWebBridge:
                 "CLOUD_SESSION_CREATE_FAILED", "云端未返回有效会话标识", status_code=502
             )
         now = datetime.now(timezone.utc).isoformat()
+        self._invalidate("sessions", agent_id)
         return {
             "Session": {
                 "SessionId": session_id,
@@ -261,6 +325,7 @@ class CloudSharedWebBridge:
         await self.cloud.delete_cloud_chat_session(
             cloud_chat_target(agent_id), session_id=session_id
         )
+        self._invalidate("sessions", agent_id)
         return {}
 
     async def list_messages(

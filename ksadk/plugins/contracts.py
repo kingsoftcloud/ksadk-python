@@ -1,6 +1,6 @@
 """Frozen source contracts and internal records for plugin composition.
 
-Only the models exported through ``__all__`` are public Phase 2 contracts.
+Only the models exported through ``__all__`` are public Release contracts.
 ``PluginManifest`` and its supporting models are internal admission records:
 they project DSH/Codex host inventory into the Python composition engine and
 are not a third installable package format or a stable public contract.

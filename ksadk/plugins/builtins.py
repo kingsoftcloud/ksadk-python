@@ -87,7 +87,7 @@ def _manifest(
 
 
 def builtin_capability_manifests() -> tuple[PluginManifest, ...]:
-    """Return the exact, deterministic Phase 2 built-in capability catalog."""
+    """Return the exact, deterministic Release built-in capability catalog."""
 
     return (
         _manifest(

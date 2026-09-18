@@ -49,6 +49,7 @@ ApprovalDecider = Callable[[str, dict[str, Any]], bool]
 ParallelSafeDecider = Callable[[str, dict[str, Any]], bool]
 StopOnErrorDecider = Callable[[str, dict[str, Any]], bool]
 CancelPendingDecider = Callable[[str, dict[str, Any]], bool]
+ArgumentValidator = Callable[[str, dict[str, Any]], str | None]
 
 
 #: 同步审批解析器（适合 LangGraph interrupt 同步语义）。
@@ -126,6 +127,10 @@ class ToolCallInput:
     succeeded_tools: frozenset[str] = frozenset()
     prior_failure: bool = False
     live_event_sink: Callable[[RuntimeEvent], None] | None = None
+    #: Validate model-generated arguments before policy/approval.  Returning a
+    #: message records a normal tool error for the model to repair, without
+    #: asking a human to approve an invocation that cannot execute.
+    argument_validator: ArgumentValidator | None = None
 
 
 @dataclass
@@ -249,6 +254,60 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
                     "content": f"[error] {error}",
                 }
             )
+            continue
+
+        validation_error = (
+            inp.argument_validator(name, arguments)
+            if inp.argument_validator is not None
+            else None
+        )
+        if validation_error:
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_BEGIN,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "args": arguments,
+                        "skipped": True,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TOOL_CALL_END,
+                    inp,
+                    seq,
+                    {
+                        "call_id": call_id,
+                        "name": name,
+                        "error": validation_error,
+                        "error_category": "invalid_arguments",
+                        "receipt_committed": False,
+                        "skipped": True,
+                        "reliability": reliability_payload,
+                    },
+                )
+            )
+            out.new_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": f"[error] invalid tool arguments: {validation_error}",
+                }
+            )
+            if out.working_context is not None:
+                out.working_context = record_tool_failure(
+                    out.working_context,
+                    name=name,
+                    error=f"invalid arguments: {validation_error}",
+                )
             continue
 
         # 1. Receipt 幂等回放：审批恢复重放节点时不再重复触发副作用。
@@ -514,6 +573,8 @@ def _parallel_batch_allowed(inp: ToolCallInput) -> bool:
     for pending in inp.pending_tool_calls:
         name = pending["name"]
         arguments = pending["arguments"]
+        if inp.argument_validator is not None and inp.argument_validator(name, arguments):
+            return False
         if name in inp.approval_required:
             return False
         if inp.approval_decider is not None and inp.approval_decider(name, arguments):
@@ -688,6 +749,7 @@ def _event(
 
 __all__ = [
     "APPROVED",
+    "ArgumentValidator",
     "ApprovalResolver",
     "ContextualToolExecutor",
     "ToolCallInput",

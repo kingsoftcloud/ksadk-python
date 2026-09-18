@@ -1,11 +1,26 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatCloudChatTargetLabel,
   isCloudChatTargetSelectable,
   mergeCloudChatTargets,
   resolveCloudChatRoute,
   selectCloudChatDeployments,
 } from "./cloudDeployments";
+
+describe("formatCloudChatTargetLabel", () => {
+  it("includes the managed version so the selected execution target is explicit", () => {
+    expect(formatCloudChatTargetLabel({
+      agentName: "客服 Agent",
+      agentId: "agent-1",
+      versionId: "version-20260916-abcdef1234567890",
+    })).toBe("云端 · 客服 Agent · 版本 version-20…67890");
+  });
+
+  it("falls back to the Agent id when the account has no display name", () => {
+    expect(formatCloudChatTargetLabel({ agentId: "agent-2" })).toBe("云端 · agent-2");
+  });
+});
 
 describe("isCloudChatTargetSelectable", () => {
   it("keeps runnable, failed, and historical status-less Agents available", () => {

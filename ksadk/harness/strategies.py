@@ -71,7 +71,7 @@ def plan_execute_review_plan() -> ExecutionPlan:
     )
 
 
-#: 多 Agent 专属节点名——single-agent 拓扑不得包含（§17 Phase 5 验收）。
+#: 多 Agent 专属节点名——single-agent 拓扑不得包含（§17 多 Agent 拓扑 验收）。
 _MULTI_AGENT_NODES = frozenset({"plan", "execute", "review", "manager", "reviewer"})
 
 

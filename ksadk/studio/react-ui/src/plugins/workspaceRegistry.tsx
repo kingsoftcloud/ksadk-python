@@ -9,6 +9,11 @@ const components = {
       default: module.TeamsPage,
     })),
   ),
+  channels: lazy(() =>
+    import("../pages/ChannelsPage").then((module) => ({
+      default: module.ChannelsPage,
+    })),
+  ),
 };
 export async function mountWorkspace(
   componentId: string,

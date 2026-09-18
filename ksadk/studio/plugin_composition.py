@@ -1,6 +1,6 @@
 """Studio Agent revision -> immutable PluginHost composition binding.
 
-This is the production build seam for Phase 2.  It admits built-in providers
+This is the production build seam for Release.  It admits built-in providers
 or one exact AgentProvider registration emitted by the active DSH host,
 then delegates the deterministic Profile/Lock construction to
 ``CompositionCompiler``.  Legacy ADK/LangGraph drafts intentionally bypass

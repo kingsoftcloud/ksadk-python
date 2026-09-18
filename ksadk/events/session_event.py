@@ -1,4 +1,4 @@
-"""Generic single-log SessionEvent store port（Phase 1 Task 2）。
+"""Generic single-log SessionEvent store port（Kernel Task 2）。
 
 把 control/runtime/workflow 等 family 的 ``SessionEventEnvelope/v1`` 收敛进
 同一个 session event log，复用 Session backend 的原子 per-session seq。
@@ -79,7 +79,7 @@ def validate_write_guard(
     """Typed write permission: no bare booleans, no nullable fences.
 
     AdmissionWriteGuard 只允许 admission 产生的 ``control.command_accepted`` /
-    ``control.command_rejected``。ActivationWriteGuard 在 Phase 1 允许
+    ``control.command_rejected``。ActivationWriteGuard 在 Kernel 允许
     worker/control/runtime facts；activation_id/fencing_token 与 lease 的
     事务内比较由 Task 3 的 AgentKernelStore 承接。
     """

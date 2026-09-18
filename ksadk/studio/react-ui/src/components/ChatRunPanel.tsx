@@ -27,6 +27,7 @@ import {
   type RunEvent,
   type RunInspectorTimelineItem,
 } from "../chatProtocol";
+import { HarnessActivity } from "./HarnessActivity";
 
 interface RunRecord {
   id: string;
@@ -478,6 +479,11 @@ export function ChatRunPanel({ agentId, sessionId, onOpenTrace, onClose }: { age
                   })}
                 </div>
               ) : <div className="chat-run-inline-empty">运行开始后显示 Span 时序</div>}
+            </section>
+
+            <section className="chat-run-section chat-run-events-section">
+              <div className="chat-run-section-title"><span>执行活动</span></div>
+              <HarnessActivity runId={latest.id} streaming={running} fallback={[]} />
             </section>
 
             <section className="chat-run-section chat-run-events-section">

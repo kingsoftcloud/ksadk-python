@@ -33,6 +33,10 @@
 .plugin-discovery-item strong { font-weight: 500; font-size: 14px; }
 .plugin-discovery-item small { color: var(--studio-text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plugin-discovery-item > svg { flex-shrink: 0; color: var(--studio-text-secondary); }
+.plugin-discovery-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; }
+.plugin-discovery-open > span:nth-child(2) { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.plugin-discovery-item .plugin-install-inline { flex: 0 0 auto; margin-left: auto; color: var(--studio-text-secondary); }
+.plugin-discovery-item .plugin-install-inline:hover:not(:disabled) { color: var(--brand); background: var(--surface-hover); }
 .plugin-back { display: flex; margin-bottom: 32px; }
 .plugin-product > header { display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-bottom: 24px; }
 .plugin-product > header p { margin: 0; }

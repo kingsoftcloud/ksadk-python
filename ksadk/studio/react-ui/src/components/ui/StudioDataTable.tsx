@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import {
   createColumnHelper,
   tableFeatures,
@@ -48,6 +48,7 @@ export interface StudioDataTableProps<TData extends RowData> {
   pagination?: StudioDataTablePagination;
   onRowActivate?: (row: TData) => void;
   rowAriaLabel?: (row: TData) => string;
+  expandRowContent?: (row: TData) => ReactNode;
 }
 
 function cssSize(value: number | string | undefined): string | undefined {
@@ -71,6 +72,7 @@ export function StudioDataTable<TData extends RowData>({
   pagination,
   onRowActivate,
   rowAriaLabel,
+  expandRowContent,
 }: StudioDataTableProps<TData>) {
   const helper = useMemo(
     () => createColumnHelper<typeof studioTableFeatures, TData>(),

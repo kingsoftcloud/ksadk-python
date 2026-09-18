@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""生产 composition root（Phase 1 Task 4 Step 4）。
+"""生产 composition root（Kernel Task 4 Step 4）。
 
 ``build_agent_kernel_runtime(config) -> AgentKernelRuntime`` 把 AgentKernel
 栈的全部运行时角色组装成一个可启动 / 可关闭的单元：

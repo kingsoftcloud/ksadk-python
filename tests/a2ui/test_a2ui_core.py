@@ -162,7 +162,7 @@ def test_pinned_a2ui_core_version():
     assert A2UI_CORE_VERSION == "0.1.1"
 
 
-# ------------------------------------------------- Phase 1 Task 5 Step 6
+# ------------------------------------------------- Kernel Task 5 Step 6
 
 
 async def _kernel_backed_core():

@@ -1061,6 +1061,60 @@ async def test_langgraph_runner_fails_closed_when_managed_checkpoint_factory_is_
     assert capability["ReasonCode"] == "LANGGRAPH_FACTORY_REQUIRED"
 
 
+@pytest.mark.asyncio
+async def test_langgraph_runner_deferred_probe_loads_module_before_managed_takeoff(
+    monkeypatch,
+):
+    """Bootstrap-first probes must load the lazy resident graph before takeover.
+
+    Persistence probes may run before the first chat request, so the resident
+    graph has not been loaded yet.  The probe must load the module first
+    instead of crashing with AttributeError on the uninitialized ``_module``
+    attribute or misreporting the unloaded state as a missing factory.
+    """
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+
+    saver = AsyncPostgresSaver()
+    module = ModuleType("lazy_graph")
+
+    def ksadk_graph_factory(*, checkpointer):
+        return SimpleNamespace(invoke=lambda *_a, **_k: None, checkpointer=checkpointer)
+
+    module.ksadk_graph_factory = ksadk_graph_factory
+
+    class _ManagedRunner(LangGraphRunner):
+        async def _create_managed_postgres_saver(self, dsn):
+            class _Pool:
+                async def close(self):
+                    pass
+
+            return saver, _Pool()
+
+        def _load_agent(self, *, force_reload):
+            self._module = module
+            self._agent = SimpleNamespace(invoke=lambda *_a, **_k: None)
+
+    runner = _ManagedRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    # 关键：不预设 _module / _agent —— 模拟探测先于首个 chat 的懒加载状态
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner._module is module
+    capability = runner.describe_checkpoint_capability()
+    assert capability["Supported"] is True
+    assert capability["Backend"] == "postgres"
+    assert capability["ResumeMode"] == "time_travel"
+
+    await runner.close()
+
+
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
     runner_class = _install_runner_module(monkeypatch, "demo_agent.runner", "CustomRunner")
     detection = DetectionResult(

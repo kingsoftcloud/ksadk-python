@@ -26,7 +26,7 @@ HOSTED_KERNEL_REQUIREMENTS_PATH = "hosted-kernel-requirements.json"
 HOSTED_KERNEL_REQUIREMENTS_FORMAT = "agentkit.hosted-kernel-requirements/v1"
 HOSTED_KERNEL_RUNTIME_CONTRACT = "agentkit.runtime/v1"
 HOSTED_KERNEL_BUNDLE_FORMAT = "agentkit.bundle/v2"
-_RUNTIME_TYPES = frozenset({"adk", "codex", "langgraph"})
+_RUNTIME_TYPES = frozenset({"adk", "codex", "harness", "langgraph"})
 
 
 @dataclass(frozen=True)

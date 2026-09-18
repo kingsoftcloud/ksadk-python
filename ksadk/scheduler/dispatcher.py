@@ -30,7 +30,7 @@ class AgentControlSchedulerDispatcher:
     """Translate one occurrence into a single durable AgentControl enqueue.
 
     This dispatcher is intentionally local-runtime only.  A hosted scheduler
-    must obtain a Server-issued permit at its admission boundary in Phase 3;
+    must obtain a Server-issued permit at its admission boundary in admission boundary;
     this class never makes local permits look valid against hosted JWKS.
     """
 

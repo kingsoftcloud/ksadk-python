@@ -447,8 +447,16 @@ export function reduceChatStreamEvent(
     const response = recordOf(event.response);
     return { ...state, responseId: String(response.id || state.responseId) };
   }
-  if (type === "response.reasoning_summary_text.delta") {
-    return { ...state, reasoning: state.reasoning + String(event.delta || "") };
+  // reasoning delta 有 4 个变体名(release gate / remote_runner 均已宽容全收),
+  // 前端也对齐,避免直连不同 emitter(主 runtime 发 reasoning.delta,
+  // Studio shared_web 发 reasoning_summary_text.delta)时丢思考流。
+  if (
+    type === "response.reasoning.delta" ||
+    type === "response.reasoning_text.delta" ||
+    type === "response.reasoning_summary.delta" ||
+    type === "response.reasoning_summary_text.delta"
+  ) {
+    return { ...state, reasoning: state.reasoning + String(event.delta || event.text || "") };
   }
   if (type === "response.output_text.delta") {
     return { ...state, output: state.output + String(event.delta || "") };

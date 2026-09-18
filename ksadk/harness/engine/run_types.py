@@ -25,6 +25,7 @@ class _GraphState(TypedDict, total=False):
     mcp_schema_read: list[tuple[str, str, str]]
     usage_tokens: int
     finalization_retries: int
+    delegation_synthesis_pending: bool
     run_control: dict[str, Any]
     budget: dict[str, Any]
     tool_batch_succeeded: list[str]

@@ -51,6 +51,21 @@ export interface CloudChatRoute {
   reason: CloudChatRoutingReason;
 }
 
+/**
+ * Keep the execution target understandable in the compact chat selector.
+ * The version is part of the target identity: two deployments may share an
+ * Agent name while pointing at different managed versions.
+ */
+export function formatCloudChatTargetLabel(
+  target: Pick<CloudDeploymentSummary, "agentName" | "agentId" | "versionId">,
+): string {
+  const name = target.agentName?.trim() || target.agentId?.trim() || "云端 Agent";
+  const version = target.versionId?.trim();
+  if (!version) return `云端 · ${name}`;
+  const compactVersion = version.length > 18 ? `${version.slice(0, 10)}…${version.slice(-5)}` : version;
+  return `云端 · ${name} · 版本 ${compactVersion}`;
+}
+
 const CLOUD_CHAT_UNAVAILABLE_STATUSES = new Set([
   "CREATING",
   "DEPLOYING",

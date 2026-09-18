@@ -30,13 +30,14 @@ def _run_studio(studio, run_id: str):
 
 
 def document_root(studio, run) -> Path:
-    """harness 文件工具的落盘根：用户当前选择的 Studio 工作区。
+    """Harness 内置文件工具在 Studio 工作区下的受控落盘根。
 
-    与 build_managed_provider_adapter 的 tool_workspace 对齐（用户工作区
-    优先；历史上曾写到 plugin-runtime state 的哈希目录）。
+    ``assemble_python_tools`` 会将 builtin workspace 能力限定在
+    ``.harness-tools/workspace``；文档链接必须与真实写入根一致，
+    不能扫描整个代码库来猜测文件。
     """
     studio = _run_studio(studio, run.id)
-    return studio.workspace.root
+    return studio.workspace.root / ".harness-tools" / "workspace"
 
 
 def referenced_documents(studio, run) -> list[dict]:

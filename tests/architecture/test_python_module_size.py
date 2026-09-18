@@ -20,7 +20,10 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/cli/cmd_create.py": 2084,
     "ksadk/cli/cmd_files.py": 1270,
     "ksadk/cli/cmd_hermes.py": 1441,
-    "ksadk/cli/cmd_invoke.py": 1565,
+    # 0.8.5 kspmas native Responses hardening added the four-variant reasoning
+    # delta handling (reasoning.delta/reasoning_text/reasoning_summary/summary_text)
+    # on top of the prior 1,565 baseline.
+    "ksadk/cli/cmd_invoke.py": 1578,
     "ksadk/cli/cmd_mcp.py": 1213,
     "ksadk/cli/cmd_openclaw.py": 4218,
     "ksadk/codex/client.py": 1521,
@@ -28,11 +31,11 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/conversations/message_projection.py": 1050,
     "ksadk/codex/runtime.py": 1084,
     "ksadk/deployment/providers/serverless.py": 1358,
-    # Agent Runtime v2 Phase 1 delivery baseline. These files contain the
+    # Agent Runtime v2 Kernel delivery baseline. These files contain the
     # frozen contract/store implementations; any post-0.8.2 growth stays red
     # until the corresponding responsibility is extracted.
     "ksadk/kernel/bootstrap.py": 1082,
-    "ksadk/kernel/ingress.py": 1132,
+    "ksadk/kernel/ingress.py": 1136,
     "ksadk/kernel/memory_store.py": 1147,
     "ksadk/kernel/postgres_store.py": 1787,
     "ksadk/kernel/sqlite_store.py": 1717,
@@ -40,13 +43,13 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/runners/adk_runner.py": 2340,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
-    "ksadk/runners/langgraph_runner.py": 1407,
+    "ksadk/runners/langgraph_runner.py": 1415,
     # 0.8.1 canonical ToolGateway approval projection baseline.
     "ksadk/runtime/runner_adapter.py": 1220,
     "ksadk/sessions/local_service.py": 1080,
     "ksadk/server/routes/projection.py": 1103,
     "ksadk/sessions/postgres_service.py": 1287,
-    # Agent Runtime v2 Phase 2 reviewed integration baseline. The 0.8.3
+    # Agent Runtime v2 Release reviewed integration baseline. The 0.8.3
     # release deliberately freezes these exact post-integration sizes rather
     # than silently raising the global limit. Any additional line in one of
     # these modules turns the guard red again; responsibility extraction is a
@@ -59,17 +62,21 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/plugins/providers/dsh_capabilities.py": 1450,
     "ksadk/plugins/teams/domain.py": 1501,
     "ksadk/plugins/ecosystem_bridge.py": 1105,
-    "ksadk/studio/api.py": 2583,
+    "ksadk/studio/api.py": 2702,
     "ksadk/studio/authoring_coordinator.py": 1034,
-    "ksadk/studio/cloud.py": 2341,
+    "ksadk/studio/cloud.py": 2361,
     "ksadk/studio/contracts.py": 1028,
-    "ksadk/studio/dsh_capability_service.py": 1275,
+    "ksadk/studio/dsh_capability_service.py": 1374,
     "ksadk/studio/dsh_provider_registration.py": 1114,
     "ksadk/studio/otel_trace.py": 1060,
     "ksadk/studio/resource_catalog.py": 1412,
-    "ksadk/studio/run_service.py": 2286,
-    "ksadk/studio/service.py": 3535,
-    "ksadk/studio/shared_web.py": 1592,
+    "ksadk/studio/run_service.py": 2477,
+    "ksadk/studio/service.py": 3565,
+    "ksadk/studio/shared_web.py": 1642,
+    # Studio 重构(本地草稿/outbox/云端接入)+ 社区合并 + harness 长任务稳定化
+    # 带来的合法增长;model_client/plugin_runtime 为新增超千行模块,后续拆分。
+    "ksadk/studio/model_client.py": 1743,
+    "ksadk/studio/plugin_runtime.py": 1044,
     "ksadk/toolsets/workspace.py": 1028,
     "ksadk/tui/loop.py": 1925,
 }

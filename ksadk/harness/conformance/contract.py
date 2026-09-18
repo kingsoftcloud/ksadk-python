@@ -461,7 +461,7 @@ def run_conformance_suite(
     *,
     cancel_requested: bool = False,
 ) -> ConformanceReport:
-    """Phase 0 最小套件 + 加固五类：模型配对/工具失败/审批幂等/检查点/压缩/用量。"""
+    """contract 最小套件 + 加固五类：模型配对/工具失败/审批幂等/检查点/压缩/用量。"""
     report = ConformanceReport()
     verify_event_ordering(events, report)
     verify_secret_redaction(events, report)

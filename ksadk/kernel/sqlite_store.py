@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite ``AgentKernelStore``（Phase 1 Task 3 Step 5）。
+"""SQLite ``AgentKernelStore``（Kernel Task 3 Step 5）。
 
 单文件 durable Inbox / Run / ActivationLease 存储：
 - WAL journal + 每次 mutation ``BEGIN IMMEDIATE`` 做跨进程 CAS；

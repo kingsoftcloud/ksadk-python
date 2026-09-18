@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-channels-client
+      name: '@kingsoftcloud/dsh-channels-client'

@@ -31,10 +31,13 @@ export function useWorkspaceContributions() {
       void apiFetch("/api/v1/plugins/teams/lifecycle")
         .then(response => response.ok ? response.json() : null)
         .then(state => {
-          // A tab represents a usable contribution, so an installed but
-          // disabled/unhealthy plugin must not leave a dead navigation entry.
-          if (state?.available && state?.enabled && state?.health === "ready") {
-            setPages([{ id: "teams", label: "团队", pluginId: "teams", order: 30 }]);
+         // A tab represents a usable contribution, so an installed but
+         // disabled/unhealthy plugin must not leave a dead navigation entry.
+         if (state?.available && state?.enabled && state?.health === "ready") {
+            setPages(current => {
+              if (current.some(page => page.id === "teams")) return current;
+              return [...current, { id: "teams", label: "团队", pluginId: "teams", order: 30 }];
+            });
           } else {
             setPages(current => current.filter(page => page.id !== "teams"));
           }

@@ -12,6 +12,7 @@ from ksadk.harness.model_provider import (
     ModelFailureKind,
     classify_model_failure,
     decide_model_failure_action,
+    retry_delay_ms,
 )
 from ksadk.harness.reasoner import HarnessReasoningTurn
 from ksadk.harness.spec import ModelProviderPolicy
@@ -41,6 +42,46 @@ def _input(reasoner: object, *, policy: ModelProviderPolicy) -> ReasonInput:
         tools=(),
         reasoner=reasoner,  # type: ignore[arg-type]
     )
+
+
+def test_default_policy_retries_ten_times_and_reaches_sixty_seconds() -> None:
+    policy = ModelProviderPolicy()
+
+    assert policy.max_attempts_per_model == 10
+    assert policy.total_attempt_budget == 20
+    assert policy.max_backoff_ms == 60_000
+    delays = [retry_delay_ms(policy, model_attempt=attempt) for attempt in range(1, 10)]
+    assert delays == [1_000, 2_000, 3_000, 5_000, 8_000, 13_000, 22_000, 36_000, 60_000]
+    assert delays == sorted(delays)
+
+
+def test_default_policy_stops_after_ten_provider_attempts() -> None:
+    class _Reasoner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_: object) -> HarnessReasoningTurn:
+            self.calls += 1
+            raise _HTTPError(429)
+
+    reasoner = _Reasoner()
+    policy = ModelProviderPolicy(initial_backoff_ms=0, max_backoff_ms=0)
+
+    with pytest.raises(ModelFailoverExhausted) as caught:
+        asyncio.run(reason_turn_async(1, _input(reasoner, policy=policy)))
+
+    # Ten attempts are made against the primary model, then the fallback can
+    # still run because the default total budget reserves a second ten-attempt
+    # window. Both providers therefore obey the same visible 10-attempt cap.
+    assert reasoner.calls == 20
+    failed = [
+        event for event in caught.value.events if event.event_type == EventType.MODEL_CALL_FAILED
+    ]
+    assert len(failed) == 20
+    assert failed[8].payload["max_attempts"] == 10
+    assert failed[8].payload["model_attempt"] == 9
+    assert failed[8].payload["action"] == "retry_same_model"
+    assert failed[9].payload["action"] == "failover"
 
 
 def test_classifier_prefers_structured_status_and_blocks_permanent_errors() -> None:
@@ -129,6 +170,34 @@ def test_retry_failure_is_delivered_live_before_the_next_attempt() -> None:
         "model.call.started",
         "model",
     ]
+
+
+def test_retry_discards_failed_stream_text_before_chat_projection() -> None:
+    live_events = []
+
+    class _Reasoner:
+        def __init__(self) -> None:
+            self.attempt = 0
+
+        async def stream_complete(self, **_: object):
+            self.attempt += 1
+            if self.attempt == 1:
+                yield {"text_delta": "这段失败输出不能显示"}
+                raise _HTTPError(429)
+            yield {"text_delta": "最终答案"}
+            yield {"turn": HarnessReasoningTurn(final_text="最终答案")}
+
+    inp = replace(
+        _input(_Reasoner(), policy=_policy(max_attempts_per_model=2)),
+        streaming=True,
+        live_event_sink=live_events.append,
+    )
+
+    result = asyncio.run(reason_turn_async(1, inp))
+
+    deltas = [event for event in result.events if event.event_type == EventType.TEXT_DELTA]
+    assert [event.payload["text"] for event in deltas] == ["最终答案"]
+    assert not any(event.event_type == EventType.TEXT_DELTA for event in live_events)
 
 
 def test_transient_failure_exhausts_model_then_uses_fallback() -> None:

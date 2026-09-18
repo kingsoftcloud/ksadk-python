@@ -445,7 +445,7 @@ describe("AgentEditor form", () => {
 
     if (runtimeType === "harness") {
       fireEvent.click(await screen.findByText("本地运行：未授权 · 高级权限"));
-      const consent = await screen.findByRole("checkbox", { name: /允许 KsADK Harness/ });
+      const consent = await screen.findByRole("checkbox", { name: /允许通用智能体/ });
       expect(consent).not.toBeChecked();
       fireEvent.click(consent);
     }
@@ -456,7 +456,7 @@ describe("AgentEditor form", () => {
     expect(screen.getByText("Review MCP")).toBeVisible();
     expect(screen.queryByText("New MCP")).not.toBeInTheDocument();
     if (runtimeType === "harness") {
-      expect(screen.getByText(/由 KsADK Harness 按需加载/)).toBeVisible();
+      expect(screen.getByText(/由通用智能体按需加载/)).toBeVisible();
       fireEvent.click(screen.getByRole("button", { name: "选择绑定 MCP" }));
       fireEvent.click(screen.getByRole("option", { name: /New MCP/ }));
       fireEvent.keyDown(document.activeElement!, { key: "Escape" });

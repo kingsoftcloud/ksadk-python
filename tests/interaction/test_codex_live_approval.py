@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Codex live approval 回包（Phase 1 Task 6 Step 2/6）。
+"""Codex live approval 回包（Kernel Task 6 Step 2/6）。
 
 断言 approve/reject 映射为 live JSON-RPC approval response，且：
 - 使用**原 call_id**（requestApproval 的 approvalId），不是新 id；

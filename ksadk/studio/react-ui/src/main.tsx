@@ -1,7 +1,6 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@kingsoftcloud/ksadk-web/styles";
-import "@kingsoftcloud/ksadk-web/teams/styles";
 import { mountWorkspace } from "./plugins/workspaceRegistry";
 import App from "./App.tsx";
 import { initializeStudioSession } from "./api";
@@ -13,7 +12,7 @@ import "./plugins.css";
 import "./layout-simplification.css";
 import "./mobile-resource-lists.css";
 import "./teams.css";
-import "./create-workbench.css";
+import "@kingsoftcloud/ksadk-web/teams/styles";
 
 function WorkspaceApp() {
   const [generation, setGeneration] = useState(0);

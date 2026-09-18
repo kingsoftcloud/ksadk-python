@@ -16,7 +16,13 @@ const agentRequirement = z.string().trim()
   .max(32768, "Agent 目标与要求不能超过 32768 个字符");
 const description = z.string().trim().max(1024, "描述不能超过 1024 个字符").default("");
 
+export const executionLimitFields = {
+  maxSteps: z.number({ error: "请填写最大步骤" }).int("最大步骤须为整数").min(1, "最大步骤至少为 1").max(100, "最大步骤不能超过 100").default(100),
+  timeoutSeconds: z.number({ error: "请填写超时时间" }).int("超时时间须为整数").min(1, "超时时间至少为 1 秒").max(3600, "超时时间不能超过 3600 秒").default(600),
+};
+
 export const quickAgentSchema = z.object({
+  ...executionLimitFields,
   name: agentName,
   slug: agentSlug,
   runtimeType: studioRuntimeType,

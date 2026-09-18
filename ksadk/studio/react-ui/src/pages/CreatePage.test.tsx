@@ -72,6 +72,119 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("creates from the first step with safe defaults", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    const create = await screen.findByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.name).toBe("Studio Assistant");
+      expect(request.spec.instructions.system).toContain("可靠的通用助手");
+      expect(request.spec.bindings.modelProfileIds).toEqual([model.resourceId]);
+      expect(request.spec.execution).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
+    });
+  });
+
+  it("keeps execution limits in collapsed advanced settings and creates with custom values", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    expect(screen.queryByText("起点")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /空白 Agent|深度调研/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex 本地执行权限")).not.toBeInTheDocument();
+    expect(screen.queryByText(/请在插件中心安装并启用官方 Codex Provider/)).not.toBeInTheDocument();
+    expect(screen.getByText("高级配置").closest("details")).not.toHaveAttribute("open");
+    await user.click(screen.getByText("高级配置"));
+    const steps = screen.getByRole("spinbutton", { name: "最大步骤" });
+    const timeout = screen.getByRole("spinbutton", { name: "超时时间（秒）" });
+    expect(steps).toHaveValue(100);
+    expect(timeout).toHaveValue(600);
+    fireEvent.change(steps, { target: { value: "60" } });
+    fireEvent.change(timeout, { target: { value: "900" } });
+    const create = screen.getByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    await waitFor(() => {
+      const compose = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/agent-templates/blank:compose");
+      expect(JSON.parse(String(compose?.[1]?.body))).toMatchObject({ maxSteps: 60, timeoutSeconds: 900 });
+      const saved = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(JSON.parse(String(saved?.[1]?.body)).spec.execution).toMatchObject({ maxSteps: 60, timeoutSeconds: 900 });
+    });
+  });
+
+  it("validates advanced execution limits before one-click creation", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await user.click(screen.getByText("高级配置"));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "最大步骤" }), { target: { value: "101" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "超时时间（秒）" }), { target: { value: "0" } });
+    await user.click(screen.getByText("高级配置"));
+    const create = screen.getByRole("button", { name: "一键创建" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await user.click(create);
+    expect(await screen.findByText("最大步骤不能超过 100")).toBeVisible();
+    expect(screen.getByText("超时时间至少为 1 秒")).toBeVisible();
+    expect(screen.getByText("高级配置").closest("details")).toHaveAttribute("open");
+    expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
+  });
+
+  it("shows the two built-in runtimes when no external Provider is installed", async () => {
+    const user = userEvent.setup();
+    render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    const runtime = await screen.findByRole("combobox", { name: "Runtime" });
+    await user.click(runtime);
+    expect(screen.getByRole("option", { name: "通用智能体 · KsADK Harness" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Codex · ManagedRuntime" })).toBeVisible();
+    expect(screen.getAllByRole("option").map(option => option.textContent?.trim())).toEqual([
+      "通用智能体 · KsADK Harness",
+      "Codex · ManagedRuntime",
+    ]);
+  });
+
+  it("creates with DeepSeek first and GLM second regardless of catalog order", async () => {
+    const base = mockedFetch.getMockImplementation()!;
+    const deepseek = { ...model, resourceId: "model-deepseek", contract: { ...model.contract, model: "deepseek-v4.1-flash" } };
+    const glm = { ...model, resourceId: "model-glm", contract: { ...model.contract, model: "glm-5.3-flash" } };
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/catalog/resources?limit=200")
+        return response({ items: [model, glm, deepseek] });
+      const result = await base(input, init);
+      if (String(input) === "/api/v1/agent-templates/blank:compose") {
+        const request = JSON.parse(String(init?.body));
+        expect(request.modelProfileIds).toEqual([deepseek.resourceId, glm.resourceId]);
+        expect(request).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
+        const composition = await result.json();
+        composition.spec.bindings.modelProfileId = request.modelProfileId;
+        composition.spec.bindings.modelProfileIds = request.modelProfileIds;
+        composition.spec.execution = { maxSteps: request.maxSteps, timeoutSeconds: request.timeoutSeconds };
+        return response(composition);
+      }
+      return result;
+    });
+    render(<CreatePage quickCreateRequest={1} viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+      const request = JSON.parse(String(call?.[1]?.body));
+      expect(request.spec.bindings.modelProfileId).toBe(deepseek.resourceId);
+      expect(request.spec.bindings.modelProfileIds).toEqual([deepseek.resourceId, glm.resourceId]);
+      expect(request.spec.execution).toMatchObject({ maxSteps: 100, timeoutSeconds: 600 });
+    });
+  });
+
+  it("starts the one-click flow when requested from the Agent catalog", async () => {
+    const onCreated = vi.fn();
+    render(<CreatePage quickCreateRequest={1} viewportMode="desktop" onBack={vi.fn()} onCreated={onCreated} />);
+    await waitFor(() => {
+      const call = mockedFetch.mock.calls.find(([path]) => path === "/api/v1/authoring/quick");
+      expect(call).toBeTruthy();
+    });
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("codex-local-test", true));
+  });
+
   it("creates Harness through the manual wizard and preserves composed Tool bindings", async () => {
     const base = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation(async (input, init) => {
@@ -87,16 +200,16 @@ describe("CreatePage quick authoring", () => {
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
-    await user.click(screen.getByRole("option", { name: "KsADK Harness" }));
+    await user.click(screen.getByRole("option", { name: "通用智能体 · KsADK Harness" }));
     expect(screen.getByText("本地运行：已授权 · 高级权限").closest("details")).not.toHaveAttribute("open");
     await user.click(screen.getByText("本地运行：已授权 · 高级权限"));
-    expect(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ })).toBeChecked();
-    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
+    expect(screen.getByRole("checkbox", { name: /允许通用智能体/ })).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: /允许通用智能体/ }));
     await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
     await user.click(screen.getByRole("button", { name: "继续" }));
     expect(await screen.findByText("请先确认 KsADK Harness 本机执行权限")).toBeVisible();
     expect(mockedFetch.mock.calls.some(([path]) => path === "/api/v1/authoring/quick")).toBe(false);
-    await user.click(screen.getByRole("checkbox", { name: /允许 KsADK Harness/ }));
+    await user.click(screen.getByRole("checkbox", { name: /允许通用智能体/ }));
     await user.click(screen.getByRole("button", { name: "继续" }));
     await user.click(await screen.findByRole("button", { name: "选择模型" }));
     await user.click(screen.getByRole("option", { name: /Local Test Model/ }));
@@ -126,8 +239,8 @@ describe("CreatePage quick authoring", () => {
       }] })) : base(input, init));
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    const consent = await screen.findByRole("checkbox", { name: /确认 Codex Provider/ });
-    expect(consent).toBeChecked();
+    expect(screen.queryByText("Codex 本地执行权限")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /确认 Codex Provider/ })).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "你是一个本地验证助手，请简洁回答。");
     await user.click(screen.getByRole("button", { name: "继续" }));
     await user.click(await screen.findByRole("button", { name: "选择模型" }));
@@ -156,7 +269,7 @@ describe("CreatePage quick authoring", () => {
       ] })) : base(input, init));
     const user = userEvent.setup();
     render(<CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />);
-    expect(await screen.findByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /确认 Codex Provider/ })).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: /Agent 目标与要求/ }), "Answer with evidence.");
     await user.click(screen.getByRole("combobox", { name: "Runtime" }));
     await user.click(screen.getByRole("option", { name: /DSH AgentProvider/ }));
@@ -260,8 +373,8 @@ describe("CreatePage quick authoring", () => {
         mcpResourceIds: [],
         policyTemplate: "strict",
         executionStrategy: "direct",
-        maxSteps: 25,
-        timeoutSeconds: 120,
+        maxSteps: 100,
+        timeoutSeconds: 600,
       });
     });
 
@@ -615,7 +728,7 @@ describe("CreatePage quick authoring", () => {
     await screen.findByDisplayValue("Review releases.");
     expect(screen.queryByText(/1\.0元/)).not.toBeInTheDocument();
     expect(screen.queryByText(/models\.example\.test\/v1\/models/)).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /确认 Codex Provider/ })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /确认 Codex Provider/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "确认创建 Agent" }));
 
     await waitFor(() => {

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""per-session FIFO worker（Phase 1 Task 6 Step 6）。
+"""per-session FIFO worker（Kernel Task 6 Step 6）。
 
 - 持有 activation lease（fencing token 通过 Store 的 CAS 校验）才能 claim。
 - 按 per-session accepted_seq 保序；active Run 存在时普通 enqueue 保持排队，

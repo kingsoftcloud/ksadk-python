@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""PostgresAgentKernelStore fencing / 并发 / 故障注入测试（Phase 1 Task 4）。
+"""PostgresAgentKernelStore fencing / 并发 / 故障注入测试（Kernel Task 4）。
 
 需要真实 PostgreSQL：``KSADK_TEST_POSTGRES_DSN``。未提供 DSN 时所有用例
 明确 skip（skip 不等于通过；CI/预发门禁必须提供 DSN）。

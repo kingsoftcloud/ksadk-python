@@ -2,28 +2,17 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  Bot,
   Boxes,
-  ChevronDown,
-  FolderOpen,
-  LayoutGrid,
-  Library,
-  PanelTop,
-  Settings,
-  Users,
-  X,
   ChartSpline,
   Clock3,
   ClipboardCheck,
   CloudUpload,
   PackageCheck,
   Plug,
-  PanelLeftClose,
-  Search,
   ServerCog,
-  SquarePen,
   type LucideIcon,
 } from "lucide-react";
+import { KingIcon, type KingIconName } from "./KingIcon";
 import type { WorkspaceContribution } from "../plugins/workspaceSlots";
 import type { ResourceKind } from "../pages/ResourcesPage";
 
@@ -46,7 +35,7 @@ export type NavigationView =
 const GROUPS: Array<{
   id: string;
   label: string;
-  icon: LucideIcon;
+  icon: KingIconName;
   items: Array<{
     id: NavigationView;
     label: string;
@@ -56,7 +45,7 @@ const GROUPS: Array<{
   {
     id: "resources",
     label: "资源库",
-    icon: Library,
+    icon: "folder",
     items: [
       { id: "resources", label: "模型与工具", icon: Boxes },
       { id: "runtime-resources", label: "运行资源", icon: ServerCog },
@@ -66,7 +55,7 @@ const GROUPS: Array<{
   {
     id: "runs",
     label: "运行中心",
-    icon: PanelTop,
+    icon: "panel",
     items: [
       { id: "builds", label: "构建", icon: PackageCheck },
       { id: "deployments", label: "部署", icon: CloudUpload },
@@ -127,11 +116,10 @@ export interface NavigationRailProps {
   mobileOpen?: boolean;
   onMobileOpenChange?: (open: boolean) => void;
   onExpand?: () => void;
-  onToggle?: () => void;
   onStartChat?: () => void;
+  /** @deprecated New chat remains available while a run is streaming. */
   chatStreaming?: boolean;
   onHistoryHostChange?: (host: HTMLDivElement | null) => void;
-  onSearchHostChange?: (host: HTMLDivElement | null) => void;
   onNavigate: (view: NavigationView, kind?: ResourceKind) => void;
   onOpenSettings: () => void;
   onWorkspaceSwitch?: () => void;
@@ -149,11 +137,8 @@ export function NavigationRail({
   mobileOpen = false,
   onMobileOpenChange,
   onExpand,
-  onToggle,
   onStartChat,
-  chatStreaming = false,
   onHistoryHostChange,
-  onSearchHostChange,
   onNavigate,
   onOpenSettings,
   onWorkspaceSwitch,
@@ -185,18 +170,6 @@ export function NavigationRail({
             AgentKit <span>Studio</span>
           </strong>
         )}
-        {showLabels && !mobile && onToggle && (
-          <button
-            type="button"
-            className="icon-button tertiary studio-nav-collapse"
-            aria-label="收起导航"
-            aria-expanded={true}
-            title="收起导航"
-            onClick={onToggle}
-          >
-            <PanelLeftClose size={20} aria-hidden="true" />
-          </button>
-        )}
         {mobile && (
           <button
             type="button"
@@ -204,35 +177,43 @@ export function NavigationRail({
             aria-label="关闭导航"
             onClick={() => onMobileOpenChange?.(false)}
           >
-            <X size={20} aria-hidden="true" />
+            <KingIcon name="close" size={18} />
           </button>
         )}
       </div>
+      <RailTooltip label={`${workspacePath}（切换工作区）`}>
+        <button
+          type="button"
+          className="studio-nav-workspace workspace-switcher"
+          aria-label={`${workspaceName} 工作区`}
+          onClick={onWorkspaceSwitch}
+        >
+          <KingIcon name="folder" size={15} />
+          {showLabels && <span>{workspaceName}</span>}
+          {showLabels && workspaceRunCount > 0 && <small aria-label={`${workspaceRunCount} 个后台任务`}>{workspaceRunCount}</small>}
+          <i
+            data-ready={runtimeReady}
+            aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"}
+          />
+        </button>
+      </RailTooltip>
       <div className="studio-nav-scroll">
         <nav className="studio-nav-primary" aria-label="产品导航">
           <RailTooltip label="新对话">
             <button
               type="button"
-              className="studio-nav-link"
+              className={`studio-nav-link${view === "conversations" ? " active" : ""}`}
               aria-label="新对话"
-              disabled={chatStreaming}
+              aria-current={view === "conversations" ? "page" : undefined}
               onClick={() => {
                 if (onStartChat) onStartChat();
                 else onNavigate("conversations");
               }}
             >
-              <SquarePen size={20} aria-hidden="true" />
+              <KingIcon name="message" size={18} />
               {showLabels && <span>新对话</span>}
             </button>
           </RailTooltip>
-          {onSearchHostChange && <>
-            <div className="studio-nav-search" ref={onSearchHostChange} hidden={!showLabels} />
-            {!showLabels && <RailTooltip label="搜索会话">
-              <button type="button" className="studio-nav-link" aria-label="搜索会话" onClick={onExpand}>
-                <Search size={20} aria-hidden="true" />
-              </button>
-            </RailTooltip>}
-          </>}
           <RailTooltip label="Agent">
             <button
               type="button"
@@ -245,11 +226,11 @@ export function NavigationRail({
               }
               onClick={() => onNavigate("agents")}
             >
-              <Bot size={20} aria-hidden="true" />
+              <KingIcon name="cpu" size={18} />
               {showLabels && <span>Agent</span>}
             </button>
           </RailTooltip>
-          {navigationPages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}>{page.id === "teams" ? <Users size={20} aria-hidden="true" /> : <LayoutGrid size={20} aria-hidden="true" />}{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
+          {navigationPages.map(page => <RailTooltip key={page.id} label={page.label}><button type="button" className={`studio-nav-link${view === `plugin:${page.id}` ? ' active' : ''}`} aria-label={page.label} aria-current={view === `plugin:${page.id}` ? 'page' : undefined} onClick={() => onNavigate(`plugin:${page.id}`)}><KingIcon name={page.id === "teams" ? "users" : "all"} size={18} />{showLabels && <span>{page.label}</span>}</button></RailTooltip>)}
           {GROUPS.map((group) => {
             const open = showLabels && openGroup === group.id;
             return (
@@ -266,12 +247,12 @@ export function NavigationRail({
                       setOpenGroup(open ? "" : group.id);
                     }}
                   >
-                    <group.icon size={20} aria-hidden="true" />
+                    <KingIcon name={group.icon} size={18} />
                     {showLabels && (
                       <>
                         <span>{group.label}</span>
-                        <ChevronDown
-                          aria-hidden="true"
+                        <KingIcon
+                          name="down"
                           size={14}
                           className="studio-nav-chevron"
                           data-open={open}
@@ -313,19 +294,6 @@ export function NavigationRail({
         />
       </div>
       <div className="studio-nav-footer">
-        <RailTooltip label={`${workspacePath}（切换工作区）`}>
-          <button
-            type="button"
-            className="studio-nav-workspace"
-            aria-label={`${workspaceName} 工作区`}
-            onClick={onWorkspaceSwitch}
-          >
-            <FolderOpen size={20} aria-hidden="true" />
-            {showLabels && <span>{workspaceName}</span>}
-            {showLabels && workspaceRunCount > 0 && <small aria-label={`${workspaceRunCount} 个后台任务`}>{workspaceRunCount}</small>}
-            <i data-ready={runtimeReady} aria-label={runtimeReady ? "工作区已连接" : "工作区未连接"} />
-          </button>
-        </RailTooltip>
         <RailTooltip label="设置">
           <button
             type="button"
@@ -333,7 +301,7 @@ export function NavigationRail({
             aria-label="设置"
             onClick={onOpenSettings}
           >
-            <Settings size={20} aria-hidden="true" />
+            <KingIcon name="settings" size={18} />
             {showLabels && <span>设置</span>}
           </button>
         </RailTooltip>

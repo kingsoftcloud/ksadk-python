@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LangGraph checkpoint resume 回包（Phase 1 Task 6 Step 2/6）。
+"""LangGraph checkpoint resume 回包（Kernel Task 6 Step 2/6）。
 
 断言结构化 response 映射为 request 时存的 checkpoint/thread target，
 经 ``adapter.resume()`` 恢复**同一 thread**（time-travel），不是新 run：

@@ -134,7 +134,7 @@ describe("PluginsPage", () => {
       defaultPrompt: ['Review this change'], developerName: 'OpenAI', category: 'Developer Tools',
     }, description: 'Review code' }]);
     render(<PluginsPage/>);
-    await userEvent.click(await screen.findByRole('button', { name: /GitHub/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'GitHub' }));
     expect(screen.getByText('Inspect repositories')).toBeInTheDocument();
     expect(screen.getByText('Review this change')).toBeInTheDocument();
     expect(screen.getByRole('article').querySelector('img')).toHaveAttribute('src', 'https://example.com/github.png');
@@ -144,20 +144,19 @@ describe("PluginsPage", () => {
   it('does not repeat the summary when there is no distinct long description', async () => {
     catalog([{ ecosystem: 'codex', pluginId: 'sample', displayName: 'Sample', installed: false, description: 'A useful plugin' }]);
     render(<PluginsPage/>);
-    await userEvent.click(await screen.findByRole('button', { name: /Sample/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Sample' }));
     expect(screen.getAllByText('A useful plugin')).toHaveLength(1);
   });
 
-  it('installs official Codex plugins on click without an extra trust checkbox', async () => {
+  it('installs official Codex plugins directly from the marketplace list', async () => {
     const item = { ecosystem: 'codex', pluginId: 'github', displayName: 'GitHub', marketplaceName: 'openai-curated', installed: false };
     catalog([item]);
     const implementation = mockedFetch.getMockImplementation()!;
     mockedFetch.mockImplementation(async (input, init) => String(input).endsWith(':install')
       ? response({ item: { ...item, installed: true, enabled: true } }) : implementation(input, init));
     render(<PluginsPage/>);
-    await userEvent.click(await screen.findByRole('button', { name: /GitHub/ }));
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-    const button = screen.getByRole('button', { name: '安装' });
+    const button = await screen.findByRole('button', { name: '安装 GitHub' });
     expect(button).toBeEnabled();
     await userEvent.click(button);
     await waitFor(() => expect(mockedFetch).toHaveBeenCalledWith(
@@ -169,12 +168,12 @@ describe("PluginsPage", () => {
   it('keeps consent for third-party sources and resets consent between plugins', async () => {
     catalog(['one', 'two'].map(id => ({ ecosystem: 'codex', pluginId: id, displayName: id, marketplaceName: 'community', installed: false })));
     render(<PluginsPage/>);
-    await userEvent.click(await screen.findByRole('button', { name: /one/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'one' }));
     expect(screen.getByRole('button', { name: '安装' })).toBeDisabled();
     await userEvent.click(screen.getByRole('checkbox'));
     expect(screen.getByRole('button', { name: '安装' })).toBeEnabled();
     await userEvent.click(screen.getByRole('button', { name: '插件' }));
-    await userEvent.click(screen.getByRole('button', { name: /two/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'two' }));
     expect(screen.getByRole('button', { name: '安装' })).toBeDisabled();
   });
 

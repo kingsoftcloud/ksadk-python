@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -877,3 +878,89 @@ async def test_resource_core_startup_failure_cleans_socket_and_can_retry_same_bu
     finally:
         await service.aclose()
     assert not paths[-1].exists()
+
+
+async def test_enabled_plugin_probe_result_is_cached_until_state_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+    calls: list[int] = []
+    monkeypatch.setattr(service, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _fake_probe(command: object) -> bool:
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(service, "_profile_has_enabled_plugins", _fake_probe)
+
+    assert await service.has_enabled_profile_plugins() is True
+    assert await service.has_enabled_profile_plugins() is True
+    assert len(calls) == 1
+
+    # The managed state file is authoritative: writing it invalidates the
+    # cached bridge probe and the fast path answers without Node.
+    state_dir = tmp_path / "dsh-home" / "profiles" / "web"
+    state_dir.mkdir(parents=True)
+    (state_dir / ".ksadk-dsh-plugins.json").write_text(
+        json.dumps({"order": ["p"], "disabled": ["p"]}), encoding="utf-8"
+    )
+    assert await service.has_enabled_profile_plugins() is False
+    assert len(calls) == 1
+    await service.aclose()
+
+
+async def test_plugin_probe_warmup_populates_the_cache_off_the_request_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+    calls: list[int] = []
+    monkeypatch.setattr(service, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _fake_probe(command: object) -> bool:
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(service, "_profile_has_enabled_plugins", _fake_probe)
+
+    service.schedule_plugin_probe_warmup()
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if service._plugins_probe_cache is not None:
+            break
+    assert service._plugins_probe_cache is not None
+    assert await service.has_enabled_profile_plugins() is True
+    assert len(calls) == 1
+    await service.aclose()
+
+
+async def test_plugin_probe_warmup_swallows_probe_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+
+    def _missing(_command: object) -> tuple[str, ...]:
+        raise StudioError("DSH_CAPABILITY_HOST_UNAVAILABLE", "no toolchain", status_code=503)
+
+    monkeypatch.setattr(service, "_resolve_command", _missing)
+    service.schedule_plugin_probe_warmup()
+    await asyncio.sleep(0.05)
+    assert service._plugins_probe_cache is None
+    await service.aclose()
+
+
+async def test_probe_cancellation_releases_the_service_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudioDshCapabilityService(tmp_path, dsh_home=tmp_path / "dsh-home")
+    monkeypatch.setattr(service, "_resolve_command", lambda: ("fake-dsh",))
+
+    def _slow_probe(_command: object) -> bool:
+        time.sleep(0.2)
+        return False
+
+    monkeypatch.setattr(service, "_profile_has_enabled_plugins", _slow_probe)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(service.has_enabled_profile_plugins(), timeout=0.05)
+    # asyncio.Lock releases on cancellation, so the next caller proceeds.
+    assert await asyncio.wait_for(service.has_enabled_profile_plugins(), timeout=5) is False
+    await service.aclose()

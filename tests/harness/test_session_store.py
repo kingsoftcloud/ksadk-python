@@ -1,4 +1,4 @@
-"""Phase 2 Session/Transcript 持久化与 Working Context 更新测试（plan §17）。"""
+"""Release Session/Transcript 持久化与 Working Context 更新测试（plan §17）。"""
 
 from __future__ import annotations
 

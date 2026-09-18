@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ADK InteractionProvider：诚实声明 unavailable（Phase 1 Task 6 Step 6）。
+"""ADK InteractionProvider：诚实声明 unavailable（Kernel Task 6 Step 6）。
 
 ADK 的 confirmation/function-response 回包语义上要求以原 invocation 的
 native 身份续跑；当前生产 ``ADKRuntimeAdapter``（forward-only resume 经

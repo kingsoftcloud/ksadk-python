@@ -16,11 +16,12 @@ test("local and cloud targets mount the same shared conversation workspace", () 
   assert.match(appSource, /!isCloudChat && currentAgentId/);
 });
 
-test("Studio delegates conversation behavior to ksadk-web 0.3.7 entrypoints", () => {
+test("Studio delegates conversation behavior through its ksadk-web facade", () => {
   assert.match(workspaceSource, /AgentConversationTimeline/);
   assert.match(workspaceSource, /AgentConversationComposer/);
   assert.match(workspaceSource, /useAgentChat/);
   assert.match(workspaceSource, /new ApiFacadeImpl\(\{ fetch: apiFetch, agentId \}\)/);
+  assert.match(workspaceSource, /new ConversationController\(/);
   assert.match(workspaceSource, /conversationClient: null/);
 });
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LangGraph InteractionProvider：checkpoint resume 回包（Phase 1 Task 6 Step 6）。
+"""LangGraph InteractionProvider：checkpoint resume 回包（Kernel Task 6 Step 6）。
 
 LangGraph 的 HITL 模型是 interrupt + checkpoint：graph 停在
 ``__interrupt__``，durable 状态保存在 thread 的 checkpoint。回包必须映射为

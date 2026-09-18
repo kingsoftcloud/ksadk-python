@@ -1,4 +1,4 @@
-"""Phase 4 生命周期闭环测试（plan §17 验收：Build→Deploy→Activate→Invoke）。"""
+"""生命周期闭环测试（plan §17 验收：Build→Deploy→Activate→Invoke）。"""
 
 from __future__ import annotations
 
@@ -40,10 +40,10 @@ class TestBuild:
         assert payload["modelProfileRef"] == "model-profile://kimi-k3@1.0.0"
         assert payload["fallbackModelProfileRefs"] == ["model-profile://glm@1.0.0"]
         assert payload["modelProviderPolicy"] == {
-            "max_attempts_per_model": 3,
-            "total_attempt_budget": 6,
+            "max_attempts_per_model": 10,
+            "total_attempt_budget": 20,
             "initial_backoff_ms": 1000,
-            "max_backoff_ms": 8000,
+            "max_backoff_ms": 60000,
             "retryable_categories": [
                 "rate_limit",
                 "timeout",

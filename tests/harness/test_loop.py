@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,6 +88,113 @@ def test_reason_final_when_no_tool_calls():
     assert out.route == ROUTE_FINAL
     assert out.new_messages == [{"role": "assistant", "content": "你好"}]
     assert out.pending_tool_calls == []
+
+
+def test_streamed_preface_is_not_exposed_when_turn_calls_a_tool():
+    class _StreamingToolReasoner:
+        async def stream_complete(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            yield {"text_delta": "let me delegate these tasks"}
+            yield {
+                "turn": HarnessReasoningTurn(
+                    final_text="let me delegate these tasks",
+                    tool_calls=(
+                        HarnessToolCall(
+                            call_id="child-one",
+                            name="delegate_task",
+                            arguments={"task": "research"},
+                        ),
+                    ),
+                )
+            }
+
+    live_events = []
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="m",
+                instructions="delegate when useful",
+                messages=[{"role": "user", "content": "research two topics"}],
+                tools=[SimpleNamespace(openai_schema={"type": "function"})],
+                reasoner=_StreamingToolReasoner(),
+                streaming=True,
+                live_event_sink=live_events.append,
+            ),
+        )
+    )
+
+    assert out.route == ROUTE_TOOL_CALLS
+    assert not any(event.event_type == EventType.TEXT_DELTA for event in out.events)
+    assert not any(event.event_type == EventType.TEXT_DELTA for event in live_events)
+
+
+def test_tool_turn_emits_only_safe_model_authored_public_commentary():
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="m",
+                instructions="",
+                messages=[{"role": "user", "content": "调研"}],
+                tools=["t"],
+                reasoner=_ScriptedReasoner(
+                    [
+                        HarnessReasoningTurn(
+                            final_text="我先核对官方资料，再把结论放到同一张对比表里。",
+                            tool_calls=(
+                                HarnessToolCall(
+                                    call_id="c1",
+                                    name="lookup",
+                                    arguments={"q": "private"},
+                                ),
+                            ),
+                        )
+                    ]
+                ),
+            ),
+        )
+    )
+
+    commentary = [
+        event
+        for event in out.events
+        if event.event_type == EventType.TEXT_COMPLETED and event.phase == "commentary"
+    ]
+    assert [event.payload["text"] for event in commentary] == [
+        "我先核对官方资料，再把结论放到同一张对比表里。"
+    ]
+    assert "private" not in str(commentary)
+
+
+def test_tool_protocol_markup_is_not_published_as_commentary():
+    out = _run(
+        reason_turn_async(
+            1,
+            ReasonInput(
+                model_ref="m",
+                instructions="",
+                messages=[{"role": "user", "content": "调研"}],
+                tools=["t"],
+                reasoner=_ScriptedReasoner(
+                    [
+                        HarnessReasoningTurn(
+                            final_text='<|DSML|><invoke name="lookup"><parameter name="q">x',
+                            tool_calls=(
+                                HarnessToolCall(call_id="c1", name="lookup", arguments={}),
+                            ),
+                        )
+                    ]
+                ),
+            ),
+        )
+    )
+
+    assert not [
+        event
+        for event in out.events
+        if event.event_type == EventType.TEXT_COMPLETED and event.phase == "commentary"
+    ]
 
 
 def test_reason_routes_to_tool_calls_when_tools():
@@ -327,6 +435,38 @@ def test_approval_approved_runs_tool():
     )
     assert exec_.calls == [("high_risk", {})]
     assert out.new_messages[0]["content"] == "ran"
+
+
+def test_invalid_arguments_are_rejected_before_approval():
+    class _ApprovalMustNotRun:
+        def request(self, **_):  # type: ignore[no-untyped-def]
+            raise AssertionError("invalid arguments must not reach approval")
+
+    exec_ = _Exec({"write_workspace_file": "must not run"})
+    out = _run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=[
+                    {
+                        "call_id": "write",
+                        "name": "write_workspace_file",
+                        "arguments": {},
+                    }
+                ],
+                approval_required=frozenset({"write_workspace_file"}),
+                approval_resolver=_ApprovalMustNotRun(),
+                tool_executor=exec_,
+                argument_validator=lambda _name, _arguments: (
+                    "missing required fields: path, content"
+                ),
+                working_context=WorkingContext(),
+            )
+        )
+    )
+
+    assert exec_.calls == []
+    assert out.events[-1].payload["error_category"] == "invalid_arguments"
+    assert "path, content" in out.new_messages[0]["content"]
 
 
 def test_multiple_tools_partial_failure_continues():

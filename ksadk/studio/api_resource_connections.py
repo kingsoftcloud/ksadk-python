@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -43,6 +42,51 @@ class ValidateResourceBindings(PluginContractModel):
     expected_revision: int = Field(strict=True, ge=1)
 
 
+async def _bootstrap_default_connection(studio: Any) -> dict[str, Any] | None:
+    """Lazily provision the local declaration from configured credentials."""
+    authority = getattr(studio, "resource_authority", None)
+    configuration = getattr(studio, "configuration", None)
+    environment = configuration.environment() if configuration is not None else {}
+    access_key = environment.get("KSYUN_ACCESS_KEY", "").strip()
+    secret_key = environment.get("KSYUN_SECRET_KEY", "").strip()
+    if authority is None or not access_key or not secret_key:
+        return None
+    connection_ref = "ksyun-platform-default"
+    try:
+        existing = await asyncio.to_thread(studio.resource_connections.get, connection_ref)
+    except StudioError as error:
+        if error.status_code != 404:
+            raise
+    else:
+        return {**existing.model_dump(by_alias=True, mode="json"), "validationState": "verified"}
+    tenant_ref, principal_ref = await asyncio.to_thread(
+        authority.resolve_signed_identity, access_key, secret_key
+    )
+    declaration = ResourceConnectionDeclaration(
+        label="金山云平台资源",
+        target=ConnectionTarget(
+            connection_ref=connection_ref,
+            tenant_ref=tenant_ref,
+            principal_ref=principal_ref,
+            endpoint=authority.policy.allowed_data_endpoints[0],
+            auth_mode="signed",
+        ),
+        credentials=ResourceCredentialReferences(
+            access_key_ref="env://KSYUN_ACCESS_KEY",
+            secret_key_ref="env://KSYUN_SECRET_KEY",
+        ),
+    )
+    try:
+        record = await asyncio.to_thread(
+            studio.resource_connections.save, declaration, expected_revision=0
+        )
+    except StudioError as error:
+        if error.status_code != 409:
+            raise
+        record = await asyncio.to_thread(studio.resource_connections.get, connection_ref)
+    return {**record.model_dump(by_alias=True, mode="json"), "validationState": "verified"}
+
+
 def _binding_region(kind: PlatformResourceKind, service_region: str, control_region: str) -> str:
     """Memory's Default-CN is a service label, not an API signing region.
 
@@ -80,6 +124,9 @@ def register_resource_connection_routes(app: FastAPI, studio: Any) -> None:
             / plugin_id.split(".", 1)[1]
         )
         connections = await asyncio.to_thread(studio.resource_connections.list)
+        if not connections:
+            await _bootstrap_default_connection(studio)
+            connections = await asyncio.to_thread(studio.resource_connections.list)
         connection_ref = connections[0].target.connection_ref if connections else None
         return {
             "kind": kind,
@@ -110,50 +157,28 @@ def register_resource_connection_routes(app: FastAPI, studio: Any) -> None:
 
     @app.post("/api/v1/resource-connections:bootstrap", status_code=201)
     async def bootstrap_resource_connection():
-        authority = studio.resource_authority
-        access_key = os.environ.get("KSYUN_ACCESS_KEY", "").strip()
-        secret_key = os.environ.get("KSYUN_SECRET_KEY", "").strip()
+        authority = getattr(studio, "resource_authority", None)
+        # Resolve through Studio's configuration precedence (workspace,
+        # global config, inherited environment, dotenv), rather than only the
+        # process environment. This keeps discovery and connection bootstrap
+        # on the same credential source.
+        environment = studio.configuration.environment()
+        access_key = environment.get("KSYUN_ACCESS_KEY", "").strip()
+        secret_key = environment.get("KSYUN_SECRET_KEY", "").strip()
         if authority is None or not access_key or not secret_key:
             raise StudioError(
                 "RESOURCE_CONNECTION_BOOTSTRAP_UNAVAILABLE",
                 "请先在设置的云端连接中填写账号凭据和控制面地址",
                 status_code=503,
             )
-        tenant_ref, principal_ref = await asyncio.to_thread(
-            authority.resolve_signed_identity, access_key, secret_key
-        )
-        connection_ref = "ksyun-platform-default"
-        try:
-            existing = await asyncio.to_thread(studio.resource_connections.get, connection_ref)
-        except StudioError as error:
-            if error.status_code != 404:
-                raise
-        else:
-            return {
-                **existing.model_dump(by_alias=True, mode="json"),
-                "validationState": "verified",
-            }
-        declaration = ResourceConnectionDeclaration(
-            label="金山云平台资源",
-            target=ConnectionTarget(
-                connection_ref=connection_ref,
-                tenant_ref=tenant_ref,
-                principal_ref=principal_ref,
-                endpoint=authority.policy.allowed_data_endpoints[0],
-                auth_mode="signed",
-            ),
-            credentials=ResourceCredentialReferences(
-                access_key_ref="env://KSYUN_ACCESS_KEY",
-                secret_key_ref="env://KSYUN_SECRET_KEY",
-            ),
-        )
-        record = await asyncio.to_thread(
-            studio.resource_connections.save, declaration, expected_revision=0
-        )
-        return {
-            **record.model_dump(by_alias=True, mode="json"),
-            "validationState": "verified",
-        }
+        result = await _bootstrap_default_connection(studio)
+        if result is None:
+            raise StudioError(
+                "RESOURCE_CONNECTION_BOOTSTRAP_UNAVAILABLE",
+                "请先在设置的云端连接中填写账号凭据和控制面地址",
+                status_code=503,
+            )
+        return result
 
     @app.get("/api/v1/agents/{agent_id}/resource-bindings/status")
     async def binding_status(

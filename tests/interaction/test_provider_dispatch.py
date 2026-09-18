@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Interaction 回包分发（Phase 1 Task 6 Step 2）。
+"""Interaction 回包分发（Kernel Task 6 Step 2）。
 
 断言 Worker 不再走静态 ``submit_interaction -> adapter.submit`` 空回包映射：
 - 权威 InteractionRecord 的绑定 provider 收到完整 response；

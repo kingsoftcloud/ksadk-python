@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -54,7 +54,7 @@ describe("workspace-scoped quick drafts", () => {
     renderPage();
     await waitFor(() => expect(screen.getByRole("textbox", { name: /角色与系统提示词/ })).toHaveValue(fields.systemPrompt));
     await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
-    expect(JSON.parse(values.get(key)!).fields.runtimeType).toBe("harness");
+    expect(JSON.parse(values.get(key)!).fields).toMatchObject({ runtimeType: "harness", maxSteps: 100, timeoutSeconds: 600 });
     expect(showToast).toHaveBeenCalledWith("草稿已保存", expect.any(String));
   });
 
@@ -63,6 +63,9 @@ describe("workspace-scoped quick drafts", () => {
     const view = renderPage();
     await user.clear(screen.getByRole("textbox", { name: /Agent 名称/ }));
     await user.type(screen.getByRole("textbox", { name: /Agent 名称/ }), "Partial assistant");
+    await user.click(screen.getByText("高级配置"));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "最大步骤" }), { target: { value: "60" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "超时时间（秒）" }), { target: { value: "900" } });
     await user.click(screen.getByRole("button", { name: "保存草稿" }));
     expect(JSON.parse(values.get(key)!)).toMatchObject({ version: 2, workspacePath: workspace, fields: { name: "Partial assistant", prompt: "" } });
     expect(showToast).toHaveBeenCalledWith("草稿已保存", expect.any(String));
@@ -70,6 +73,9 @@ describe("workspace-scoped quick drafts", () => {
     renderPage();
     await waitFor(() => expect(screen.getByRole("textbox", { name: /Agent 名称/ })).toHaveValue("Partial assistant"));
     expect(screen.getByRole("textbox", { name: /Agent 目标与要求/ })).toHaveValue("");
+    await user.click(screen.getByText("高级配置"));
+    expect(screen.getByRole("spinbutton", { name: "最大步骤" })).toHaveValue(60);
+    expect(screen.getByRole("spinbutton", { name: "超时时间（秒）" })).toHaveValue(900);
   });
 
   it("restores the step, bindings and policy without overwriting edited prompts", async () => {

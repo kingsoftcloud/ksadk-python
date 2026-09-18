@@ -63,9 +63,9 @@ def test_env_registry_docs_cover_registered_names():
     # The public reference must cover every documented variable on its own:
     # internal design documents are not included in clean public exports.
     doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
-    harness_doc = Path("docs/KsADK-Harness分支技术总览.md")
-    if harness_doc.is_file():
-        doc_text += harness_doc.read_text(encoding="utf-8")
+    _harness_doc = Path("docs/KsADK-Harness分支技术总览.md")
+    if _harness_doc.is_file():
+        doc_text += _harness_doc.read_text(encoding="utf-8")
 
     missing = [
         item.name for item in ENV_VAR_REGISTRY if item.documented and item.name not in doc_text
@@ -91,7 +91,7 @@ def test_internal_env_registry_items_do_not_expand_the_public_reference():
 def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "0.3.8"
+    assert specs["KSADK_WEB_VERSION"].default == "0.3.10"
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

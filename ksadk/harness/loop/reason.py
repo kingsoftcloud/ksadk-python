@@ -23,6 +23,7 @@ from ksadk.harness.model_provider import (
     retry_delay_ms,
     safe_model_error_message,
 )
+from ksadk.harness.public_activity import public_commentary_text
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
 from ksadk.harness.spec import ModelProviderPolicy
 
@@ -164,6 +165,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                 "model": model_ref,
                 "attempt": total_attempt,
                 "model_attempt": model_attempt,
+                "max_attempts": inp.provider_policy.max_attempts_per_model,
                 "candidate_index": candidate_index,
                 "fallback": candidate_index > 1,
             }
@@ -200,7 +202,24 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                                 },
                             )
                             out.events.append(delta_event)
-                            if inp.live_event_sink is not None:
+                            # A provider may stream explanatory text before it
+                            # emits tool-call fragments (for example, "let me
+                            # delegate...").  Until the turn is complete we do
+                            # not know whether that text is a final answer.  A
+                            # tools-enabled turn therefore buffers answer
+                            # deltas; final-only turns retain live streaming.
+                            # A retryable/failover attempt may fail after it has
+                            # streamed partial prose.  Publishing that prose
+                            # immediately makes every retry append another
+                            # abandoned answer to Studio.  Keep it buffered
+                            # until the attempt succeeds unless the policy has
+                            # exactly one possible model attempt.
+                            if (
+                                inp.live_event_sink is not None
+                                and not inp.tools
+                                and inp.provider_policy.max_attempts_per_model == 1
+                                and not inp.fallback_model_refs
+                            ):
                                 inp.live_event_sink(delta_event)
                         if "reasoning_delta" in item:
                             reasoning_parts.append(item["reasoning_delta"])
@@ -233,6 +252,15 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                         ),
                     )
             except Exception as exc:  # noqa: BLE001 - 每次 started 必被 failed 闭合
+                # Failed-attempt output is not a user answer.  Retain the
+                # model.call.failed fact, but remove its partial text/reasoning
+                # before retry/failover so it cannot be replayed into chat.
+                out.events = [
+                    event
+                    for event in out.events
+                    if event.event_type
+                    not in {EventType.TEXT_DELTA, EventType.REASONING_DELTA}
+                ]
                 last_error = exc
                 failure = classify_model_failure(exc)
                 action = decide_model_failure_action(
@@ -294,6 +322,14 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
     assert turn is not None and selected_model_ref is not None
     out.selected_model_ref = selected_model_ref
 
+    # Text streamed alongside a tool call is provider scratch narration, not
+    # a completed assistant answer.  Keeping those deltas would leave an
+    # orphan message in Studio even though the real work continues in tools.
+    if turn.tool_calls:
+        out.events = [
+            event for event in out.events if event.event_type != EventType.TEXT_DELTA
+        ]
+
     if turn.usage:
         usage = dict(turn.usage)
         usage_payload = {
@@ -333,6 +369,18 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         )
 
     if turn.tool_calls:
+        commentary = public_commentary_text(turn.final_text)
+        if commentary:
+            seq += 1
+            out.events.append(
+                _event(
+                    EventType.TEXT_COMPLETED,
+                    inp,
+                    seq,
+                    {"text": commentary, "streamed": False},
+                    phase="commentary",
+                )
+            )
         out.new_messages.append(
             {
                 "role": "assistant",

@@ -185,7 +185,10 @@ describe("Conversation v1 browser contract", () => {
       expect.objectContaining({ id: "future-text" }),
     ]);
     expect(presentation.artifacts).toEqual([
-      { id: "artifact", name: "report.md", mimeType: "text/markdown", uri: null },
+      expect.objectContaining({
+        id: "artifact", artifactId: "artifact", itemId: "artifact", runId: "run-1",
+        sourceEventIds: ["event-artifact"], name: "report.md", mimeType: "text/markdown", uri: null,
+      }),
     ]);
   });
 });

@@ -35,7 +35,7 @@ from ksadk.studio.hosted_kernel import (
 from ksadk.studio.workspace import Workspace
 
 
-def _build_hosted_bundle(tmp_path: Path):
+def _build_hosted_bundle(tmp_path: Path, runtime_type: str = "langgraph"):
     workspace = Workspace(tmp_path / "workspace")
     workspace.initialize()
     source = workspace.root / "runtime"
@@ -52,7 +52,7 @@ def _build_hosted_bundle(tmp_path: Path):
                     credential_ref="env://MODEL_API_KEY",
                 ),
                 runtime=RuntimeRef(
-                    type="langgraph",
+                    type=runtime_type,
                     project_path="runtime",
                     entry_point="agent.py",
                     agent_variable="graph",
@@ -140,6 +140,14 @@ def test_builder_embeds_current_kernel_contract_requirement_in_the_uploaded_zip(
     }
     assert checked.provenance["hostedKernel"]["requirementDigest"] == checked.requirement_digest
     assert checked.manifest["hostedKernelRequirementDigest"] == checked.requirement_digest
+
+
+def test_harness_bundle_runtime_is_admitted_by_hosted_kernel(tmp_path: Path):
+    _workspace, record, archive = _build_hosted_bundle(tmp_path, runtime_type="harness")
+
+    checked = preflight_hosted_kernel_bundle(archive.read_bytes())
+
+    assert checked.requirement["runtime"]["type"] == "harness"
 
 
 def test_plugin_bundle_embeds_a_content_addressed_plugin_host_launch(tmp_path: Path) -> None:

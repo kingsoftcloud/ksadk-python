@@ -68,6 +68,12 @@ class StudioSharedWebBridge:
             "ApiFormats": ["responses"],
             "Model": model,
             "Capabilities": {
+                "ConversationPresentation": {
+                    "Timeline": "compact"
+                    if self.studio.agent_runtime_type(agent_id) == "harness"
+                    else "standard",
+                },
+                "RuntimePrewarm": self.studio.agent_runtime_type(agent_id) == "harness",
                 "HostedChat": {
                     "Enabled": True,
                     "ApiFormats": ["responses"],
@@ -498,12 +504,54 @@ class StudioSharedWebBridge:
             yield ": ping\n\n"
             await asyncio.sleep(0.25)
 
-    def cancel_run(self, invocation_id: str) -> dict[str, Any]:
-        self.studio._require_direct_run(invocation_id)
+    async def cancel_run(self, invocation_id: str) -> dict[str, Any]:
         operation_id = self._operations_by_invocation.get(invocation_id)
-        if operation_id:
+        run_id = self._run_ids_by_invocation.get(invocation_id)
+        if run_id is None and operation_id is None:
+            # get_session reports the canonical run id; accept it as a cancel
+            # reference by resolving back to the invoking client id.
+            client_id = next((
+                client_id
+                for client_id, canonical_id in self._run_ids_by_invocation.items()
+                if canonical_id == invocation_id and client_id in self._operations_by_invocation
+            ), None)
+            if client_id is not None:
+                operation_id = self._operations_by_invocation[client_id]
+                run_id = invocation_id
+        self.studio._require_direct_run(run_id or invocation_id)
+        if run_id:
+            # Preserve the canonical Run terminal event. Cancelling only the
+            # outer Operation can strand the already-created Run in CREATED.
+            await self.studio.run_service.cancel_run(run_id)
+            # ListSessions is refreshed as soon as this response returns. Give
+            # the run task a short bounded window to persist its terminal state
+            # so the sidebar does not keep a stale "running" indicator.
+            event_store = getattr(self.studio, "event_store", None)
+            if event_store is not None:
+                # Provider cancellation may need to unwind an in-flight model
+                # request before RunService can append run.canceled.  Keep the
+                # CancelRun response pending for a bounded 10 seconds so the
+                # refresh issued by ksadk-web observes the terminal record
+                # instead of permanently caching a transient RUNNING badge.
+                for _ in range(200):
+                    try:
+                        status = event_store.get(run_id).status
+                    except Exception:  # noqa: BLE001 - cancellation already accepted
+                        break
+                    if status not in {
+                        RunStatus.CREATED,
+                        RunStatus.RUNNING,
+                        RunStatus.WAITING_INPUT,
+                    }:
+                        break
+                    await asyncio.sleep(0.05)
+        elif operation_id:
             self.studio.operations.cancel(operation_id)
-        return {"InvocationId": invocation_id, "Cancelled": bool(operation_id)}
+        return {
+            "InvocationId": invocation_id,
+            "RunId": run_id or "",
+            "Cancelled": bool(run_id or operation_id),
+        }
 
     async def pause_run(self, invocation_id: str) -> dict[str, Any]:
         self.studio._require_direct_run(invocation_id)
@@ -536,6 +584,10 @@ class StudioSharedWebBridge:
     ) -> AsyncIterator[str]:
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
+        # Keep the client correlation key through the operation layer. It is
+        # only an idempotency key when the caller explicitly supplies one;
+        # otherwise each invocation remains independently executable.
+        idempotency_key = str(payload.get("IdempotencyKey") or f"responses:{invocation_id}")
         try:
             agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
             prompt = self._input_text(payload)
@@ -581,6 +633,7 @@ class StudioSharedWebBridge:
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
                 reasoning_effort=reasoning_effort,
+                idempotency_key=idempotency_key,
             )
         )
 
@@ -622,15 +675,9 @@ class StudioSharedWebBridge:
                         if event_name == "response.output_text.delta":
                             emitted_text += str(event_payload.get("delta") or "")
                         yield self._sse(event_name, event_payload)
-                        if (
-                            shared_ui
-                            and event_name == "a2ui.interaction"
-                            and event_payload.get("kind") in {"form", "structured_input"}
-                        ):
-                            # The shared UI restores the durable Interaction/v1
-                            # request, then subscribes to this same live run.
-                            # Leave the execution attached while input is pending.
-                            return
+                        # A form pauses the Agent, not its response stream.
+                        # Keep delivery attached through input and emit the
+                        # eventual terminal frame after the same run resumes.
                 else:
                     idle_polls += 1
                     if idle_polls >= 20:
@@ -681,6 +728,7 @@ class StudioSharedWebBridge:
         agent_id = self.resolve_agent_id(str(payload.get("AgentId") or "") or None)
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
+        idempotency_key = str(payload.get("IdempotencyKey") or f"responses:{invocation_id}")
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
         model_explicit = bool(payload.get("ModelExplicit", str(payload.get("Model") or "")))
         approval_mode, collaboration_mode, goal_objective, reasoning_effort = (
@@ -714,6 +762,7 @@ class StudioSharedWebBridge:
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
                 reasoning_effort=reasoning_effort,
+                idempotency_key=idempotency_key,
             )
             return self._response_payload(
                 run,
@@ -737,6 +786,7 @@ class StudioSharedWebBridge:
         collaboration_mode: str = "",
         goal_objective: str = "",
         reasoning_effort: str = "",
+        idempotency_key: str = "",
     ) -> RunRecord:
         if build is None:
             build = await self._ensure_build(agent_id)
@@ -764,7 +814,7 @@ class StudioSharedWebBridge:
             goal_objective=goal_objective or None,
             reasoning_effort=reasoning_effort or None,
             runtime_input=runtime_input or None,
-            idempotency_key=f"responses:{invocation_id}",
+            idempotency_key=idempotency_key or f"responses:{invocation_id}",
             on_event=observe,
         )
         self._operations_by_invocation[invocation_id] = operation.id
@@ -1142,9 +1192,7 @@ class StudioSharedWebBridge:
             and not self.studio.execution_host.is_reserved_session(session.id)
         }
         grouped: dict[str, list[RunRecord]] = {}
-        for run in self.studio.event_store.list_runs():
-            if run.agent_id != agent_id:
-                continue
+        for run in self.studio.event_store.list_runs(agent_id=agent_id):
             grouped.setdefault(run.session_id, []).append(run)
         for session_id, runs in grouped.items():
             records[session_id] = self._session_record(runs)

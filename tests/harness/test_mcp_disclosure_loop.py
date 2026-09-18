@@ -483,7 +483,7 @@ def test_cross_process_approval_resume_preserves_cursors(tmp_path):
         )
         return rt
 
-    async def phase_one():
+    async def first_phase():
         cm = AsyncSqliteSaver.from_conn_string(db_path)
         saver = await cm.__aenter__()
         try:
@@ -532,7 +532,7 @@ def test_cross_process_approval_resume_preserves_cursors(tmp_path):
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
 
-    handle, first, transport = asyncio.run(phase_one())
+    handle, first, transport = asyncio.run(first_phase())
     assert any(e.event_type == EventType.RUN_INTERRUPTED for e in first)
     assert transport.calls == []  # 审批前未执行
 

@@ -123,7 +123,7 @@ async def _collect_turn(client: AsyncCodexClient, thread_id: str) -> list[dict]:
         event
         async for event in client.run_turn(
             thread_id,
-            "Use the command tool to print phase1-tool-surface.",
+            "Use the command tool to print kernel-tool-surface.",
             config={},
         )
     ]

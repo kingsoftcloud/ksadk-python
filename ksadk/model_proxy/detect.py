@@ -44,6 +44,16 @@ class ModelCapabilities:
     preferred_protocol: str = "chat"  # "responses" | "chat":路由该走哪条
     checked_at: float = 0.0
     verdict: Verdict = "unknown"  # 最近一次探测结论
+    # --- 以下为 opt-in 贵探测,默认 None(未探),由 probe_extended_capability 按需填充 ---
+    # store/previous_response_id 服务端会话链是否真生效(2026-09 实测 deepseek 系
+    # 返回 200 但静默丢历史=假支持)。False 时客户端必须每次带全量历史。
+    store_supported: bool | None = None
+    # 该模型 reasoning_effort 的合法值集合(2026-09 实测 glm-5.3-flash 只认
+    # low/high/max,medium/none/xhigh 全 400;且不能按 family 前缀推断,逐模型实测)。
+    reasoning_effort_values: frozenset[str] | None = None
+    # 非流式响应里 reasoning item 是否稳定出现(2026-09 实测 glm-5.3-flash
+    # 同 effort 下约半数响应只有 message 没有 reasoning item;流式不受影响)。
+    reasoning_item_reliable: bool | None = None
 
 
 def _classify_responses_error(status: int, body: str) -> Verdict:
@@ -335,4 +345,248 @@ def _finalize(caps: ModelCapabilities) -> ModelCapabilities:
         # unsupported 或 unknown 都默认 chat(走转换层):unknown 时走转换层更安全,
         # 因为转换层对 chat 模型是确定可用的,而直连 responses 在 unknown 下有风险
         caps.preferred_protocol = "chat"
+    return caps
+
+
+# ---------------------------------------------------------------------------
+# Opt-in 贵探测:store 会话链 / reasoning_effort 值域 / reasoning item 可靠性
+# 这三个探测各需多次真实请求,默认不并入 probe_responses_capability,由调用方按需触发。
+# 全部遵循同一铁律:只在确凿证据下置 True/False,故障/超时/不确定一律留 None(未探)。
+# ---------------------------------------------------------------------------
+
+# reasoning_effort 候选值,覆盖 OpenAI/Codex 主流档 + glm 的 max。
+_EFFORT_CANDIDATES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def probe_extended_capability(
+    client: httpx.Client | httpx.AsyncClient,
+    base: str,
+    key: str,
+    model: str,
+    timeout: float = 60.0,
+):
+    """按需探测 store/reasoning 三项能力,返回填充了对应字段的 ModelCapabilities。
+
+    - ``store_supported``: store=true 拿 response_id,再用 previous_response_id
+      追问一个只有上一轮才知道的事实;答出=真支持,答不出=假支持(静默丢历史)。
+    - ``reasoning_effort_values``: 逐个候选值发最小请求,200=接受,400=拒绝;
+      其余(超时/5xx)不计入(故障≠值域缺失)。
+    - ``reasoning_item_reliable``: 非流式带 reasoning 请求,检查 output 是否含
+      reasoning item。单次缺席不足以判 False(可能模型本来没想),需 N 次全缺席才判。
+
+    按 client 类型分发:sync 返回 ModelCapabilities,async 返回 coroutine。
+    """
+    if isinstance(client, httpx.AsyncClient):
+        return _probe_extended_async(client, base, key, model, timeout)
+    if isinstance(client, httpx.Client):
+        return _probe_extended_sync(client, base, key, model, timeout)
+    raise TypeError(f"client 必须是 httpx.Client/AsyncClient,不是 {type(client).__name__}")
+
+
+def _reasoning_item_present(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("type") == "reasoning"
+        for item in data.get("output", [])
+    )
+
+
+def _post_json(client, url, payload, headers, timeout):
+    """统一 sync post + json 解析;返回 (status, data) 或 None(故障)。"""
+    try:
+        r = client.post(url, json=payload, headers=headers, timeout=timeout)
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError):
+        return None
+    try:
+        return r.status_code, r.json()
+    except ValueError:
+        return r.status_code, None
+
+
+async def _post_json_async(client, url, payload, headers, timeout):
+    try:
+        r = await client.post(url, json=payload, headers=headers, timeout=timeout)
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError):
+        return None
+    try:
+        return r.status_code, r.json()
+    except ValueError:
+        return r.status_code, None
+
+
+def _store_first_payload(model: str, marker: str) -> dict:
+    return {
+        "model": model,
+        "input": f"记住代号 {marker},只回 OK",
+        "max_output_tokens": 200,
+        "store": True,
+    }
+
+
+def _probe_store_sync(client, url, headers, model, timeout):
+    marker = "cobalt-9173"
+    first = _post_json(client, url, _store_first_payload(model, marker), headers, timeout)
+    if not first or first[0] != 200 or not isinstance(first[1], dict):
+        return None
+    rid = first[1].get("id")
+    if not rid:
+        return None
+    second = _post_json(
+        client,
+        url,
+        {"model": model, "input": "我刚才让你记的代号是什么?只回答代号",
+         "max_output_tokens": 200, "previous_response_id": rid},
+        headers,
+        timeout,
+    )
+    if not second or second[0] != 200 or not isinstance(second[1], dict):
+        return None
+    text = "".join(
+        c.get("text", "")
+        for item in second[1].get("output", [])
+        if isinstance(item, dict) and item.get("type") == "message"
+        for c in item.get("content", [])
+        if isinstance(c, dict)
+    )
+    return marker in text
+
+
+async def _probe_store_async(client, url, headers, model, timeout):
+    marker = "cobalt-9173"
+    first = await _post_json_async(
+        client, url, _store_first_payload(model, marker), headers, timeout
+    )
+    if not first or first[0] != 200 or not isinstance(first[1], dict):
+        return None
+    rid = first[1].get("id")
+    if not rid:
+        return None
+    second = await _post_json_async(
+        client,
+        url,
+        {"model": model, "input": "我刚才让你记的代号是什么?只回答代号",
+         "max_output_tokens": 200, "previous_response_id": rid},
+        headers,
+        timeout,
+    )
+    if not second or second[0] != 200 or not isinstance(second[1], dict):
+        return None
+    text = "".join(
+        c.get("text", "")
+        for item in second[1].get("output", [])
+        if isinstance(item, dict) and item.get("type") == "message"
+        for c in item.get("content", [])
+        if isinstance(c, dict)
+    )
+    return marker in text
+
+
+def _probe_effort_values_sync(client, url, headers, model, timeout):
+    accepted = set()
+    saw_any = False
+    for eff in _EFFORT_CANDIDATES:
+        res = _post_json(
+            client,
+            url,
+            {"model": model, "input": "hi", "max_output_tokens": 30,
+             "reasoning": {"effort": eff}},
+            headers,
+            timeout,
+        )
+        if res is None:
+            continue  # 故障,不计入
+        status, _ = res
+        saw_any = True
+        if status == 200:
+            accepted.add(eff)
+        # 400 = 明确拒绝该值,不计入 accepted
+    return frozenset(accepted) if saw_any else None
+
+
+async def _probe_effort_values_async(client, url, headers, model, timeout):
+    accepted = set()
+    saw_any = False
+    for eff in _EFFORT_CANDIDATES:
+        res = await _post_json_async(
+            client,
+            url,
+            {"model": model, "input": "hi", "max_output_tokens": 30,
+             "reasoning": {"effort": eff}},
+            headers,
+            timeout,
+        )
+        if res is None:
+            continue
+        status, _ = res
+        saw_any = True
+        if status == 200:
+            accepted.add(eff)
+    return frozenset(accepted) if saw_any else None
+
+
+def _probe_reasoning_reliable_sync(client, url, headers, model, timeout, trials=3):
+    """N 次非流式全缺席 reasoning item 才判 False;任一故障或出现就留 None/True。"""
+    absences = 0
+    for _ in range(trials):
+        res = _post_json(
+            client,
+            url,
+            {"model": model, "input": "9.11 和 9.9 哪个大?", "max_output_tokens": 600,
+             "reasoning": {"effort": "low"}},
+            headers,
+            timeout,
+        )
+        if res is None or res[0] != 200:
+            return None  # 故障,无法判定
+        if _reasoning_item_present(res[1]):
+            return True
+        absences += 1
+    return False if absences == trials else None
+
+
+async def _probe_reasoning_reliable_async(client, url, headers, model, timeout, trials=3):
+    absences = 0
+    for _ in range(trials):
+        res = await _post_json_async(
+            client,
+            url,
+            {"model": model, "input": "9.11 和 9.9 哪个大?", "max_output_tokens": 600,
+             "reasoning": {"effort": "low"}},
+            headers,
+            timeout,
+        )
+        if res is None or res[0] != 200:
+            return None
+        if _reasoning_item_present(res[1]):
+            return True
+        absences += 1
+    return False if absences == trials else None
+
+
+def _probe_extended_sync(client, base, key, model, timeout) -> ModelCapabilities:
+    caps = ModelCapabilities(checked_at=time.time(), verdict="unknown")
+    url = f"{base.rstrip('/')}/responses"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    caps.store_supported = _probe_store_sync(client, url, headers, model, timeout)
+    caps.reasoning_effort_values = _probe_effort_values_sync(
+        client, url, headers, model, timeout
+    )
+    caps.reasoning_item_reliable = _probe_reasoning_reliable_sync(
+        client, url, headers, model, timeout
+    )
+    return caps
+
+
+async def _probe_extended_async(client, base, key, model, timeout) -> ModelCapabilities:
+    caps = ModelCapabilities(checked_at=time.time(), verdict="unknown")
+    url = f"{base.rstrip('/')}/responses"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    caps.store_supported = await _probe_store_async(client, url, headers, model, timeout)
+    caps.reasoning_effort_values = await _probe_effort_values_async(
+        client, url, headers, model, timeout
+    )
+    caps.reasoning_item_reliable = await _probe_reasoning_reliable_async(
+        client, url, headers, model, timeout
+    )
     return caps

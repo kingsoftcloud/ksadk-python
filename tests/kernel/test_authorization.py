@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentControlPermitVerifier：Ed25519 permit 验证（Phase 1 Task 6 Step 4）。"""
+"""AgentControlPermitVerifier：Ed25519 permit 验证（Kernel Task 6 Step 4）。"""
 
 from __future__ import annotations
 

@@ -25,7 +25,7 @@ paths = [
     '''tests/test_cmd_hermes\.py''',
     # 公开树新增测试的假 fixture (同一种占位符)
     '''tests/events/''',
-    '''tests/phase1/''',
+    '''tests/kernel/''',
     '''tests/kernel/''',
     '''tests/studio/test_api\.py''',
     '''tests/compat/''',

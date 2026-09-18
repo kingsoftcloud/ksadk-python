@@ -855,6 +855,30 @@ async def test_preonline_managed_runtime_uses_dedicated_server_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_cloud_runtime_keeps_version_and_request_identity() -> None:
+    class MissingRuntimeClient:
+        async def create_agent(self, payload):
+            raise AgentEngineAPIError(400, "请求的资源不存在或已被删除。",
+                                      details={"request_id": "fixture-request"})
+
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="test-region", client=MissingRuntimeClient(),
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    with pytest.raises(StudioError) as caught:
+        await gateway.create_managed_runtime_deployment(
+            build_id="build-test", agent_name="fixture", manifest="fixture",
+            manifest_digest="a" * 64, runtime_name="codex", runtime_version="0.154.0",
+            request=DeploymentRequest(target=DeploymentTarget(region="test-region", environment="cloud")),
+        )
+    assert caught.value.code == "CLOUD_RUNTIME_RESOURCE_UNAVAILABLE"
+    assert "codex@0.154.0" in caught.value.message
+    assert "fixture-request" in caught.value.message
+    assert caught.value.details["buildId"] == "build-test"
+    assert "test-secret" not in str(caught.value.as_dict())
+
+
+@pytest.mark.asyncio
 async def test_replacing_managed_runtime_uses_complete_declaration() -> None:
     client = _Client()
     gateway = DirectAgentEngineCloudDeploymentGateway(

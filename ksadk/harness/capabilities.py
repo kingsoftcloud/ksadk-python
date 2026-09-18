@@ -1,6 +1,6 @@
 """统一 Capability Registry 描述符（plan §10.1）。
 
-Phase 0 只落描述符与注册表数据结构；发现/加载/降级在 Phase 3 落地。
+Contract 只落描述符与注册表数据结构；发现/加载/降级在 admission boundary 落地。
 """
 
 from __future__ import annotations
