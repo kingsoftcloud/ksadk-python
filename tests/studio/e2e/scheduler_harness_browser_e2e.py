@@ -337,6 +337,26 @@ def _assert_harness_vertical(
     ], requests
 
 
+def _fill_composer(page: Page, text: str) -> None:
+    """Type into the composer, retrying across the async session switch.
+
+    The conversation surface resolves its session asynchronously; a fill that
+    lands before the switch completes is wiped by the new session's empty
+    draft hydration.  Refill until the draft sticks and send is enabled.
+    """
+    composer = page.get_by_role("textbox", name="发送消息…", exact=True)
+    send = page.get_by_role("button", name="发送消息")
+    for _ in range(6):
+        composer.fill(text)
+        try:
+            expect(composer).to_have_value(text, timeout=1500)
+            expect(send).to_be_enabled(timeout=1500)
+            return
+        except AssertionError:
+            continue
+    expect(send).to_be_enabled(timeout=5000)
+
+
 def _assert_conversation_scheduling(page: Page, base_url: str) -> None:
     page.goto(f"{base_url}/#/conversations?agentId={AGENT_ID}", wait_until="domcontentloaded")
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
@@ -345,7 +365,7 @@ def _assert_conversation_scheduling(page: Page, base_url: str) -> None:
         ("每天10点帮我生成昨日工作日报", "每日简报"),
         ("每7分钟帮我检查服务状态", "服务巡检"),
     ):
-        composer.fill(text)
+        _fill_composer(page, text)
         page.get_by_role("button", name="发送消息").click()
         expect(page.get_by_text(f"已创建定时任务「{name}」。", exact=False)).to_be_visible(
             timeout=20000
