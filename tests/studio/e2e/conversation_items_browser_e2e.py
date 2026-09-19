@@ -538,7 +538,13 @@ def main() -> None:
                 page_errors: list[str] = []
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
                 second_page.on("pageerror", lambda error: page_errors.append(str(error)))
-                _exercise_conversation_items(page, second_page, base_url)
+                try:
+                    _exercise_conversation_items(page, second_page, base_url)
+                except Exception:
+                    page.screenshot(path="/tmp/items_fail.png", full_page=True)
+                    body = page.evaluate("() => (document.body.innerText || '').slice(-1200)")
+                    print("!!! FAIL BODY TAIL:", body, flush=True)
+                    raise
                 assert page_errors == [], f"Uncaught React page errors: {page_errors}"
             finally:
                 browser.close()
