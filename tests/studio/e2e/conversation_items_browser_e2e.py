@@ -145,6 +145,19 @@ class CanonicalConversationEvents:
                 source=codex,
                 **common,
             )
+            # reasoning 块必须以 item.completed 收尾：缺失时 lifecycle 恒为
+            # streaming，"已思考" 永不渲染（审批暂停也不豁免这一状态机）。
+            yield ItemCompleted(
+                event_id=event_id(21),
+                seq=21,
+                item_id="reasoning-1",
+                item_kind="reasoning",
+                snapshot=ContentSnapshot(
+                    parts=(TextContent(part_id="reasoning-text", text=REASONING),)
+                ),
+                source=codex,
+                **common,
+            )
             tool_args = {"command": "echo safe", "cwd": "/workspace"}
             yield ItemStarted(
                 event_id=event_id(3),
