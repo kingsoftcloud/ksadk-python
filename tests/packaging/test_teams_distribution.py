@@ -17,6 +17,10 @@ PACKAGES = ROOT / "ksadk/plugins/providers/bundles"
 def archives():
     wheels = list((ROOT / "dist").glob("ksadk-*.whl"))
     sdists = list((ROOT / "dist").glob("ksadk-*.tar.gz"))
+    if not wheels and not sdists:
+        # 本测试验证发布产物内容，只在构建出 wheel/sdist 的上下文（release
+        # 管线 / make public-build-check）里有意义；纯源码 pytest 运行跳过。
+        pytest.skip("dist artifacts not built; run the release build first")
     assert len(wheels) == len(sdists) == 1, "Build exactly one wheel and sdist first"
     with zipfile.ZipFile(wheels[0]) as wheel, tarfile.open(sdists[0]) as sdist:
         prefix = sdists[0].name.removesuffix(".tar.gz") + "/"

@@ -17,6 +17,7 @@
     "workspace-files",
     "---[Network]统一事件与互操作---",
     "hosted-ui-events",
+    "channel-connector",
     "a2a-runtime",
     "---[Cloud]构建与部署---",
     "managed-runtime",

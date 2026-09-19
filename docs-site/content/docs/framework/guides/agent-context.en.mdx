@@ -54,6 +54,10 @@ Session context can include:
   `platform_context.account_id` defaults to an empty string. Skill / Workspace / Sandbox / Memory isolate per account boundary: data is visible within the same account and isolated across accounts.
 </Callout>
 
+<Callout type="warning" title="Managed LangGraph checkpoint requirements">
+  Local SQLite or memory checkpointers are suitable for local development. A managed PostgreSQL checkpoint is enabled only when the entry module exports callable `ksadk_graph_factory(checkpointer=...)` and `ksadk_prepare_state(payload, session_context)` hooks. Missing either hook fails closed with `LANGGRAPH_FACTORY_REQUIRED` or `PREPARE_STATE_HOOK_REQUIRED`, respectively. With a durable checkpointer, compaction ownership safely downgrades to the framework; do not assume that any LangGraph graph can enter the hosted recovery path.
+</Callout>
+
 ## LangGraph Hook
 
 ```python title="ksadk_prepare_state"
