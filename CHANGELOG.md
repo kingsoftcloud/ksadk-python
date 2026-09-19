@@ -20,7 +20,7 @@
 - Connector 支持 JWT 身份校验、`register` / `invoke` / `cancel`、deadline、idempotency key、心跳、指数退避重连、有限终态缓存和取消回收；连接断开且结果未知时不自动重放可能带副作用的 Agent 调用。
 - Channel API 支持多副本 owner/relay 路由和 workspace 隔离；跨副本 relay 使用 Redis Pub/Sub，不宣称 durable queue 或 exactly-once，业务重试由宿主按 `idempotency_key` 实现。
 - Channels 页面从 Studio 静态路由迁移为 DSH workspace 插件；公开协议参考为 `docs/connector/channel-connector-protocol-v1.md`。默认插件激活失败时只影响 Channel 页面，不阻塞 Studio 主服务。
-- 公开 `pyproject.toml` 移除未发布的 channel extra；wheel 构建不再解析 `agentengine-channel`。Web companion 固定使用 `@kingsoftcloud/ksadk-web@0.3.10`。
+- 公开 `pyproject.toml` 移除未发布的 channel extra；wheel 构建不再解析 `agentengine-channel`。Web companion 固定使用 `@kingsoftcloud/ksadk-web@0.3.11`。
 - harness 流式输出透传到 reasoner 包装层，live-tail canonical 事件按 seq 去重；MCP envRefs 凭据回退、Codex bearer 合并、`tool_search` 目录隐藏和 `mcp_tool_call` 审批放行保持统一。
 - `tool_approval_mode=full` 时 composer 完全访问不再被 Harness 审批门重复拦截；新建会话互斥、切 Agent 回欢迎页、流式删除先取消、僵尸 RUNNING 回收和稳定排序继续生效。
 - 增加 prewarm 端点与跨轮激活复用；裁剪孤儿依赖和其他平台产物；默认模型为 `deepseek-v4.1-flash`，回退 `glm-5.3-flash`；Codex Runtime 升级至 `openai-codex==0.154.0`。
