@@ -1037,16 +1037,41 @@ async def test_invoke_checkpoint_resume_preserves_checkpoint_namespace_when_pres
 
 
 @pytest.mark.asyncio
-async def test_invoke_checkpoint_resume_drops_non_subgraph_namespace():
-    """租户/agent scope 不是子图：必须退回根 namespace，不得写入 checkpoint_ns。
+async def test_invoke_checkpoint_resume_rejects_non_subgraph_namespace():
+    """非子图寻址的 checkpoint_ns（含历史租户/agent scope 残留）必须显性报错。
 
-    历史教训：把租户 scope（tenant:xxx / agent:xxx）塞进 configurable.checkpoint_ns
-    会让 Pregel 的 aget_state 走子图重定向并抛 "Subgraph <scope> not found"，
-    静默打掉流式路径的待审批探测（审批卡不弹）。
+    绝不静默改写成根地址——静默改写曾让恢复悄悄指向不存在的 checkpoint
+    （原地址 next=('pause',)，改写后 next=()），排查极难。
     """
     runner = _make_runner()
     # 图没有子图：任何 namespace 都不是合法子图寻址。
     runner._agent.get_subgraphs = lambda: []
+
+    with pytest.raises(ValueError, match="does not address any subgraph"):
+        await runner.invoke(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant-a:agent-b:sess-1",
+                        "checkpoint_ns": "tenant:acct-1",
+                        "checkpoint_id": "ckpt-123",
+                    }
+                },
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_keeps_full_subgraph_task_namespace():
+    """真实运行时子图 ns 带 task 路径（inner:<task-id>）：必须原样保留。
+
+    get_subgraphs() 返回裸名 inner，但 checkpoint 真实地址是
+    inner:<task-id>；按裸名校验、保留完整 ns，恢复才能定位到 checkpoint。
+    """
+    runner = _make_runner()
+    runner._agent.get_subgraphs = lambda: [("inner", object())]
 
     await runner.invoke(
         {
@@ -1055,7 +1080,7 @@ async def test_invoke_checkpoint_resume_drops_non_subgraph_namespace():
             "framework_ref": {
                 "langgraph": {
                     "thread_id": "tenant-a:agent-b:sess-1",
-                    "checkpoint_ns": "tenant:acct-1",
+                    "checkpoint_ns": "inner:1f2e3d4c-5b6a-4789-9abc-def012345678",
                     "checkpoint_id": "ckpt-123",
                 }
             },
@@ -1064,7 +1089,7 @@ async def test_invoke_checkpoint_resume_drops_non_subgraph_namespace():
 
     assert runner._agent.last_ainvoke_config["configurable"] == {
         "thread_id": "tenant-a:agent-b:sess-1",
-        "checkpoint_ns": "",
+        "checkpoint_ns": "inner:1f2e3d4c-5b6a-4789-9abc-def012345678",
         "checkpoint_id": "ckpt-123",
     }
 

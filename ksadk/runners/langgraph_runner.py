@@ -655,13 +655,22 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         next_config = dict(config)
         configurable = dict(next_config.get("configurable") or {})
         configurable["thread_id"] = thread_id
-        # checkpoint_ns 只承载 LangGraph 子图寻址语义：只有该图里真实存在的子图
-        # namespace 才允许透传；其余（含历史租户/agent scope 残留）一律退回根
-        # namespace，否则 Pregel 的 aget_state 会按子图重定向并抛
-        # "Subgraph <scope> not found"。
+        # checkpoint_ns 只承载 LangGraph 子图寻址语义。真实运行时 namespace 的
+        # 格式是 "<子图名>:<task_path>"（如 inner:<task-id>），get_subgraphs()
+        # 返回的是裸子图名——所以校验必须只比对首段，合法时保留原始完整
+        # namespace（带任务路径；否则 aget_state 定位不到对应 checkpoint）。
+        # 不匹配的地址（含历史租户/agent scope 残留）显性报错，绝不静默改写
+        # 成根地址——静默改写曾让恢复悄悄指向不存在的 checkpoint。
         requested_namespace = str(checkpoint_ref.get("checkpoint_ns") or "").strip()
-        if requested_namespace and requested_namespace not in self._known_subgraph_namespaces():
-            requested_namespace = ""
+        if requested_namespace:
+            known = self._known_subgraph_namespaces()
+            leading = requested_namespace.split(":", 1)[0]
+            if leading not in known:
+                raise ValueError(
+                    "checkpoint_resume checkpoint_ns does not address any subgraph "
+                    f"of this graph: {requested_namespace!r} "
+                    f"(known subgraphs: {sorted(known) or 'none'})"
+                )
         configurable["checkpoint_ns"] = requested_namespace
         configurable["checkpoint_id"] = checkpoint_id
         next_config["configurable"] = configurable

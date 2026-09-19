@@ -767,7 +767,9 @@ class _LangGraphStreamMixin:
                     # consumers (agui agent) can resolve the resumable
                     # checkpoint_id before processing the terminal interrupt.
                     try:
-                        ckpt_state = self._agent.get_state(config)
+                        # 统一异步状态读取入口：managed 模式挂 AsyncPostgresSaver，
+                        # 在事件循环里同步 get_state 会直接报错。
+                        ckpt_state, ckpt_read_error = await self._read_graph_state(config)
                         ckpt_config = getattr(ckpt_state, "config", {}) or {}
                         ckpt_id = str(
                             (ckpt_config.get("configurable") or {}).get("checkpoint_id", "") or ""
@@ -820,7 +822,14 @@ class _LangGraphStreamMixin:
                                         "thread_id", session_id
                                     )
                                 ),
-                                "checkpoint_ns": "",
+                                # 保留状态自报的真实寻址（子图 ns 带任务路径），
+                                # 根 checkpoint 时为空串。恢复按原地址定位。
+                                "checkpoint_ns": str(
+                                    (ckpt_config.get("configurable") or {}).get(
+                                        "checkpoint_ns", ""
+                                    )
+                                    or ""
+                                ),
                                 "checkpoint_id": ckpt_id,
                                 **({"next_node": ckpt_next_node} if ckpt_next_node else {}),
                             }
@@ -860,8 +869,15 @@ class _LangGraphStreamMixin:
                             )
                             reducer.apply(cont_event)
                             yield cont_event
-                    except Exception:
-                        pass
+                    except Exception as ckpt_error:
+                        # 恢复指针丢失会让这次 interrupt 无法恢复——绝不能静默：
+                        # RunInterrupted 仍然发出（下游知道 run 已暂停），但必须
+                        # 留下显性告警指向根因。
+                        logger.warning(
+                            "LangGraph resume checkpoint 读取失败，ContinuationCreated "
+                            "未发出（run 可标记为 interrupted 但不可恢复）: %s",
+                            ckpt_error,
+                        )
                     reducer.apply(event)
                     last_timestamp = float(getattr(event, "timestamp", 0.0) or last_timestamp)
                     yield event
