@@ -777,7 +777,7 @@ sync-ksadk-web-static:
 	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
 	@$(MAKE) verify-ksadk-web-static
 	@printf 'KsADK Web static provenance: version=%s, tarball_sha256=%s\n' \
-		"$(patsubst v%,%,$(KSADK_WEB_VERSION))" "$$(shasum -a 256 "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" | awk '{print $$1}')"
+		"$(patsubst v%,%,$(KSADK_WEB_VERSION))" "$$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")")"
 	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
 verify-ksadk-web-static:
