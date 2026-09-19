@@ -434,7 +434,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
     second_page.get_by_role("button", name="已思考").first.click()
     expect(second_page.get_by_text(REASONING, exact=True)).to_be_visible()
-    second_page.get_by_role("button", name="已完成 codex.command").first.click()
+    second_page.get_by_role("button", name="已完成 codex.command").click()
     expect(second_page.get_by_text(TOOL_OUTPUT, exact=False)).to_be_visible()
     # Two Studio windows submit the same authoritative revision.  Both receive
     # the persisted receipt while the provider observes exactly one resume.
@@ -538,13 +538,7 @@ def main() -> None:
                 page_errors: list[str] = []
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
                 second_page.on("pageerror", lambda error: page_errors.append(str(error)))
-                try:
-                    _exercise_conversation_items(page, second_page, base_url)
-                except Exception:
-                    page.screenshot(path="/tmp/items_fail.png", full_page=True)
-                    body = page.evaluate("() => (document.body.innerText || '').slice(-1500)")
-                    print("!!! FAIL BODY TAIL:", body, flush=True)
-                    raise
+                _exercise_conversation_items(page, second_page, base_url)
                 assert page_errors == [], f"Uncaught React page errors: {page_errors}"
             finally:
                 browser.close()
