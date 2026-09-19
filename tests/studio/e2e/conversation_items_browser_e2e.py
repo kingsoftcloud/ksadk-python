@@ -418,7 +418,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     expect(page.get_by_role("combobox", name="切换会话目标")).to_contain_text(AGENT_NAME)
     composer = page.locator(".studio-composer-area textarea")
     expect(composer).to_be_enabled()
-    composer.fill("展示 canonical 会话项目")
+    composer.press_sequentially("展示 canonical 会话项目", delay=12)
     page.get_by_role("button", name="发送消息").click()
 
     page.get_by_role("button", name="已思考").first.click()
