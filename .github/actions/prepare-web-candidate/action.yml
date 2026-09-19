@@ -7,7 +7,7 @@ runs:
       uses: actions/checkout@v7
       with:
         repository: kingsoftcloud/ksadk-web
-        ref: 8de8e8b76376d757abf697d66084ecfa42dd5852
+        ref: e6ad58bf5d04c3b3797a405521c5368fc033a1dd
         path: .cache/ksadk-web-candidate
         persist-credentials: false
     - name: Pack the companion source
@@ -21,4 +21,4 @@ runs:
         tarball="$RUNNER_TEMP/ksadk-web-candidate/kingsoftcloud-ksadk-web-$version.tgz"
         test -f "$tarball"
         echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
-        echo 'Shared Web source: kingsoftcloud/ksadk-web@4c5d490020c19af02748903277d2286f42506314 (0.3.10). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
+        echo 'Shared Web source: kingsoftcloud/ksadk-web@e6ad58bf5d04c3b3797a405521c5368fc033a1dd (0.3.11). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
