@@ -421,7 +421,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     composer.fill("展示 canonical 会话项目")
     page.get_by_role("button", name="发送消息").click()
 
-    page.get_by_role("button", name="已思考").click()
+    page.get_by_role("button", name="已思考").first.click()
     expect(page.get_by_text(REASONING, exact=True)).to_be_visible(timeout=15_000)
     # Typed ConversationItems keep their stream order: the tool is its own
     # card after the reasoning block rather than being folded into thinking.
@@ -432,7 +432,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     second_page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
     second_approval_tray = second_page.locator('[data-ui="interaction-tray"]')
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
-    second_page.get_by_role("button", name="已思考").click()
+    second_page.get_by_role("button", name="已思考").first.click()
     expect(second_page.get_by_text(REASONING, exact=True)).to_be_visible()
     second_page.get_by_role("button", name="已完成 codex.command").click()
     expect(second_page.get_by_text(TOOL_OUTPUT, exact=False)).to_be_visible()
