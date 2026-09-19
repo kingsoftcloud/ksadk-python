@@ -701,7 +701,15 @@ def run_release_test_gates(*, skip_browser_gates: bool = False) -> dict[str, str
         )
         _run(
             [sys.executable, browser_gate],
-            environment={"PYTHONPATH": python_path},
+            environment={
+                "PYTHONPATH": python_path,
+                # Browser gates verify core Studio + Scheduler.  The optional
+                # DSH Channel/Teams default activations run a Profile-maintenance
+                # fence whose toolchain is absent on gate machines; they are not
+                # what these gates assert.
+                "KSADK_STUDIO_CHANNEL_DEFAULT": "0",
+                "KSADK_STUDIO_TEAMS_DEFAULT": "0",
+            },
         )
     return {name: "passed" for name in SOURCE_E2E_STATUS_KEYS}
 

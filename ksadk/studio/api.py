@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -300,7 +301,15 @@ def create_studio_app(
                         from ksadk.studio.api_plugin_routes import _studio_dsh_options
 
                         home, profile, command, _ = _studio_dsh_options(runtime)
-                        if profile == "web" and command and channel_default_bootstrap_needed(home):
+                        # 可选 bootstrap 必须先确认 DSH 命令真实可用：无工具链的
+                        # 环境进入 Profile 维护栅栏后，恢复失败会按契约保持
+                        # admission 关闭，导致整个会话面永久 503（回归过）。
+                        if command and shutil.which(str(command[0])) is None:
+                            logger.info(
+                                "Channel 默认激活跳过：DSH 命令不可用 (%s)",
+                                command[0],
+                            )
+                        elif profile == "web" and command and channel_default_bootstrap_needed(home):
                             async def configure_channel():
                                 await asyncio.to_thread(
                                     configure_channel_profile,
