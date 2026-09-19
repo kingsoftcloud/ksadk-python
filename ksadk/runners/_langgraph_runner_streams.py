@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import inspect
+import logging
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Mapping
@@ -17,6 +17,8 @@ from ksadk.events.runtime_event import RuntimeEvent
 from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runtime.skill_eval_result import skill_eval_response_fields
 from ksadk.runtime.timing import extract_timing
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     pass
@@ -421,20 +423,14 @@ class _LangGraphStreamMixin:
                         # 直接 yield 会导致下游拿不到 tool_name/description（非 Mapping）。
                         # 用 _get_interrupt_info 从 state 提取结构化 interrupt_info，
                         # 与 406-412 的异常路径和 419-436 的 pending_approval 兜底一致。
-                        _interrupt_info = {}
-                        try:
-                            _get_state = getattr(self._agent, "aget_state", None) or getattr(
-                                self._agent, "get_state", None
-                            )
-                            if _get_state is not None:
-                                _maybe_state = _get_state(config)
-                                if inspect.isawaitable(_maybe_state):
-                                    _maybe_state = await _maybe_state
-                                _interrupt_info = self._get_interrupt_info(_maybe_state)
-                        except Exception:
-                            _interrupt_info = {}
+                        state, _error = await self._read_graph_state(
+                            config, include_subgraphs=True
+                        )
+                        _interrupt_info = (
+                            self._get_interrupt_info(state) if state is not None else {}
+                        )
                         if not _interrupt_info:
-                            # 取不到 state 时 fallback 到原始 __interrupt__（兼容旧行为）。
+                            # state 里读不到结构化信息时，退回原始 __interrupt__。
                             _interrupt_info = output["__interrupt__"]
                         yield {
                             "type": "interrupt",
@@ -450,9 +446,15 @@ class _LangGraphStreamMixin:
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
+                state, error = await self._read_graph_state(config, include_subgraphs=True)
+                if state is None:
+                    # 图已经抛出 interrupt 但状态读不回来：显性失败，不返回空信息。
+                    raise RuntimeError(
+                        "graph interrupted but its checkpoint state could not be read"
+                    ) from error
                 yield {
                     "type": "interrupt",
-                    "interrupt_info": self._get_interrupt_info(self._agent.get_state(config)),
+                    "interrupt_info": self._get_interrupt_info(state),
                     "session_id": session_id,
                 }
                 return
@@ -460,20 +462,26 @@ class _LangGraphStreamMixin:
 
         # goal-18(ksadk-web 人机交互):图因审批门(HITL)在流式中静默暂停时,
         # 这里把审批详情(action_requests)作为 approval 事件冒出,供 UI 渲染审批卡。
-        # 此前流式路径只在 checkpoint 标 resumable,UI 拿不到"该批哪个工具/什么参数/允许哪些决定"。
-        # 注:get_state 在部分 agent 上是 async,统一按 awaitable 处理;取不到则跳过,不破坏事件流。
+        # 失败语义(0.8.5 契约):interrupt 依赖 checkpointer——
+        # - 配了 checkpointer 的图(含内存版),状态读不出来必须显性失败——绝不能把
+        #   "读不到"当成"没有待审批"继续走 completed(审批卡会无声消失)。
+        # - 没配 checkpointer 的图不可能有 interrupt,读不到属于正常情况。
         pending_approval = None
-        try:
-            _get_state = getattr(self._agent, "aget_state", None) or getattr(
-                self._agent, "get_state", None
+        state, error = await self._read_graph_state(config, include_subgraphs=True)
+        if state is None:
+            agent = getattr(self, "_agent", None)
+            has_checkpointer = (
+                getattr(agent, "checkpointer", None) is not None
+                or getattr(agent, "_checkpointer", None) is not None
             )
-            if _get_state is not None:
-                _maybe_state = _get_state(config)
-                if inspect.isawaitable(_maybe_state):
-                    _maybe_state = await _maybe_state
-                pending_approval = self._get_interrupt_info(_maybe_state)
-        except Exception:
-            pending_approval = None
+            if has_checkpointer:
+                raise RuntimeError(
+                    "stream ended without a terminal event and the checkpoint "
+                    "state could not be read; refusing to report the run as completed"
+                ) from error
+            logger.debug("graph has no checkpointer; skipping pending-approval probe")
+        else:
+            pending_approval = self._get_interrupt_info(state)
         if pending_approval:
             yield {
                 "type": "approval",

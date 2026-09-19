@@ -212,6 +212,72 @@ async def test_runner_interrupt_detectable_via_checkpoint_metadata():
     assert md["framework_ref"]["langgraph"]["checkpoint_id"]
 
 
+@pytest.mark.asyncio
+async def test_runner_stream_yields_approval_on_silent_pause():
+    """流式静默暂停(审批门)必须冒出 approval 事件(goal-18 探测,0.8.5 契约)。"""
+    runner = _make_runner()
+    events = [c async for c in runner.stream({"session_id": "s-approval", "input": "写文件"})]
+    approval = next((e for e in events if e.get("type") == "approval"), None)
+    assert approval is not None, f"无 approval 事件:{[e.get('type') for e in events]}"
+    info = approval["interrupt_info"]
+    assert info["action_requests"][0]["name"] == "write_file"
+    assert info.get("approval_request_id")
+
+
+@pytest.mark.asyncio
+async def test_runner_stream_refuses_completed_when_state_unreadable():
+    """状态读不出来时必须显性失败——不能伪装成 completed(审批卡会无声消失)。
+
+    复现 0.8.5 checkpoint_ns 事故的形状:aget_state 抛 "Subgraph tenant not found",
+    旧实现吞掉异常并把 run 标成 completed,审批卡从此不弹。
+    """
+    runner = _make_runner()
+
+    class _UnreadableStateAgent:
+        """流照常跑，但状态读取永远失败。"""
+
+        def __init__(self, agent):
+            self._agent = agent
+
+        def __getattr__(self, name):
+            return getattr(self._agent, name)
+
+        async def astream_events(self, *args, **kwargs):
+            async for ev in self._agent.astream_events(*args, **kwargs):
+                yield ev
+
+        def get_state(self, config):
+            raise ValueError("Subgraph tenant not found")
+
+        async def aget_state(self, config):
+            raise ValueError("Subgraph tenant not found")
+
+    runner._agent = _UnreadableStateAgent(runner._agent)
+    with pytest.raises(RuntimeError, match="could not be read"):
+        _ = [c async for c in runner.stream({"session_id": "s-broken", "input": "写文件"})]
+
+
+@pytest.mark.asyncio
+async def test_runner_stream_surfaces_nested_subgraph_interrupt():
+    """审批门在子图内时，流结束探测也要能拿到 interrupt（subgraphs=True 下钻）。"""
+    pytest.importorskip("langgraph.graph")
+
+    from langgraph.checkpoint.memory import InMemorySaver as _Saver
+    from langgraph.graph import START, MessagesState, StateGraph
+
+    inner = _make_agent()
+    parent = StateGraph(MessagesState)
+    parent.add_node("inner", inner)
+    parent.add_edge(START, "inner")
+    runner = _make_runner()
+    runner._agent = parent.compile(checkpointer=_Saver())
+
+    events = [c async for c in runner.stream({"session_id": "s-nested", "input": "写文件"})]
+    approval = next((e for e in events if e.get("type") == "approval"), None)
+    assert approval is not None, f"无 approval 事件:{[e.get('type') for e in events]}"
+    assert approval["interrupt_info"]["action_requests"][0]["name"] == "write_file"
+
+
 @pytest.mark.xfail(reason="langgraph stream_canonical_events normal completion path: checkpoint() on non-interrupted run requires checkpoint_id in native_ref, but v3 stream completion doesn't set it (only interrupt path sets via ContinuationCreated). Requires v3 stream completion checkpoint extraction, beyond Task 7 scope.")
 @pytest.mark.asyncio
 async def test_runtime_adapter_resume_approve_decision_executes_tool():

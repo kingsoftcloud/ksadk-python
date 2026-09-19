@@ -1033,9 +1033,9 @@ async def test_langgraph_runner_rebuilds_studio_graph_with_managed_postgres_chec
         "checkpointer": saver,
     }
     assert runner.describe_checkpoint_capability()["Backend"] == "postgres"
-    assert runner._get_config("session-1")["configurable"]["checkpoint_ns"] == (
-        "tenant:acct:agent:studio-graph"
-    )
+    # checkpoint_ns 是 LangGraph 的子图寻址字段，租户/agent scope 不得写入
+    # configurable（否则 aget_state 会被子图重定向逻辑炸掉）。
+    assert "checkpoint_ns" not in runner._get_config("session-1")["configurable"]
 
     await runner.close()
     assert pool.closed is True

@@ -258,7 +258,11 @@ async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(
         assert checkpointer is not None
         return SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
 
-    runner._module = SimpleNamespace(ksadk_graph_factory=graph_factory)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=graph_factory,
+        # managed 流程要求 prepare_state 钩子（避免双重历史注入）。
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
+    )
     monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
     monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
@@ -282,7 +286,8 @@ async def test_managed_langgraph_checkpoint_reports_target_unreachable(
     )
     runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
     runner._module = SimpleNamespace(
-        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(invoke=lambda: checkpointer)
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(invoke=lambda: checkpointer),
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
     )
 
     async def fail_to_create_saver(_dsn):
@@ -312,7 +317,8 @@ async def test_managed_langgraph_checkpoint_retries_transient_initialization_fai
         ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
             invoke=lambda *_args, **_kwargs: None,
             checkpointer=checkpointer,
-        )
+        ),
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
     )
     attempts = 0
 
@@ -360,7 +366,8 @@ async def test_managed_langgraph_checkpoint_does_not_retry_authentication_failur
         ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
             invoke=lambda *_args, **_kwargs: None,
             checkpointer=checkpointer,
-        )
+        ),
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
     )
     attempts = 0
 
@@ -1005,6 +1012,8 @@ async def test_invoke_checkpoint_resume_uses_checkpoint_id_and_none_input():
 @pytest.mark.asyncio
 async def test_invoke_checkpoint_resume_preserves_checkpoint_namespace_when_present():
     runner = _make_runner()
+    # 只有真实存在的子图 namespace 才允许透传（子图寻址语义）。
+    runner._agent.get_subgraphs = lambda: [("subgraph-ns", object())]
 
     await runner.invoke(
         {
@@ -1023,6 +1032,39 @@ async def test_invoke_checkpoint_resume_preserves_checkpoint_namespace_when_pres
     assert runner._agent.last_ainvoke_config["configurable"] == {
         "thread_id": "tenant-a:agent-b:sess-1",
         "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_drops_non_subgraph_namespace():
+    """租户/agent scope 不是子图：必须退回根 namespace，不得写入 checkpoint_ns。
+
+    历史教训：把租户 scope（tenant:xxx / agent:xxx）塞进 configurable.checkpoint_ns
+    会让 Pregel 的 aget_state 走子图重定向并抛 "Subgraph <scope> not found"，
+    静默打掉流式路径的待审批探测（审批卡不弹）。
+    """
+    runner = _make_runner()
+    # 图没有子图：任何 namespace 都不是合法子图寻址。
+    runner._agent.get_subgraphs = lambda: []
+
+    await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_ns": "tenant:acct-1",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "",
         "checkpoint_id": "ckpt-123",
     }
 

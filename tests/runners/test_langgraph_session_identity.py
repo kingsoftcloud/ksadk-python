@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ksadk.runners._session_identity import LangGraphSessionIdentityMixin
 from ksadk.runners.langgraph_runner import LangGraphRunner
 from ksadk.sessions import bind_session_service
 from ksadk.sessions.continuity import ConversationSessionCore
@@ -117,3 +118,43 @@ def test_identity_resume_cannot_override_the_bound_thread(tmp_path) -> None:
             checkpoint_ref={"thread_id": "lgt-foreign", "checkpoint_id": "cp-1"},
             enforce_bound_thread=True,
         )
+
+
+def test_identity_thread_id_includes_agent_scope() -> None:
+    """同租户同 session、不同 agent → 不同 thread。
+
+    共享 checkpoint 库下，thread_id 是唯一的隔离键；缺 agent 维度会让两个
+    agent 的同名 session 落到同一个 thread 互相覆盖 checkpoint。
+    """
+    a = LangGraphSessionIdentityMixin._identity_thread_id(
+        "sess-1", "aei-owner-a", "ar-agent-aaa"
+    )
+    b = LangGraphSessionIdentityMixin._identity_thread_id(
+        "sess-1", "aei-owner-a", "ar-agent-bbb"
+    )
+    assert a.startswith("lgt_") and b.startswith("lgt_")
+    assert a != b
+    # 同一 (identity, agent, session) 映射必须稳定。
+    assert a == LangGraphSessionIdentityMixin._identity_thread_id(
+        "sess-1", "aei-owner-a", "ar-agent-aaa"
+    )
+
+
+@pytest.mark.asyncio
+async def test_langgraph_binding_does_not_persist_checkpoint_ns(
+    tmp_path, monkeypatch
+) -> None:
+    """binding 表不得再保存 checkpoint_ns 字段（历史上曾存租户 scope 造成事故）。"""
+    canonical = InMemorySessionService()
+    await canonical.create_session("agent-1", "aeu-owner-a", "session-1")
+    runner = _runner(tmp_path)
+    monkeypatch.setattr(runner, "_invocation_identity_scope_ref", lambda: "aei-owner-a")
+
+    with bind_session_service(canonical):
+        await runner._get_session_config("session-1")
+        binding = await ConversationSessionCore(canonical).get_binding_by_session_id(
+            "session-1", "langgraph"
+        )
+
+    assert "checkpoint_ns" not in binding
+    assert binding["thread_id"].startswith("lgt_")
