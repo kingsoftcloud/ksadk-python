@@ -28,6 +28,8 @@ import { StudioDialog } from "../components/ui/StudioDialog";
 import { StudioDataTable, type StudioDataColumn } from "../components/ui/StudioDataTable";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import "./channels.css";
+import { channelApi } from "./channelApi";
+import { ChannelConnectionPanel } from "./ChannelConnectionPanel";
 
 // ── Channel API helper ─────────────────────────────────────────────────────
 // 契约: agentengine-channel-api-contract.md
@@ -35,45 +37,9 @@ import "./channels.css";
 // 请求头: X-Ksc-Account-Id (必填), X-Ksc-User-uuid (可选)
 // 统一响应: { Code, Message, RequestId, Action, Data }  Code=0 表示成功
 
-const CHANNEL_API_BASE = "/agentengine/api/v1";
-// 测试租户 ID，正式环境应从 Studio session 获取
-const CHANNEL_ACCOUNT_ID = "2000003485";
-
-interface ChannelEnvelope<T> {
-  Code: number;
-  Message: string;
-  RequestId: string;
-  Action: string;
-  Data: T;
-}
-
 interface ListResult<T> {
   Items: T[];
   Total: number;
-}
-
-async function channelApi<T>(action: string, body: Record<string, unknown> = {}): Promise<T> {
-  const response = await apiFetch(`${CHANNEL_API_BASE}/${action}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Ksc-Account-Id": CHANNEL_ACCOUNT_ID,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    let message = `HTTP ${response.status}`;
-    try {
-      const errorBody = await response.json();
-      message = errorBody.Message || errorBody.message || message;
-    } catch { /* keep HTTP status fallback */ }
-    throw new Error(message);
-  }
-  const payload: ChannelEnvelope<T> = await response.json();
-  if (payload.Code !== 0) {
-    throw new Error(payload.Message || `错误码 ${payload.Code}`);
-  }
-  return payload.Data;
 }
 
 // ── Types (PascalCase 对齐契约) ──────────────────────────────────────────────
@@ -96,6 +62,7 @@ interface Channel {
   GroupPolicy: GroupPolicy;
   RequireMention: boolean;
   SessionScope: SessionScope;
+  ConnectorWorkspaceId?: string;
   SecretRef: string;
   ConfigJson: string;
   CreatedBy: string;
@@ -252,204 +219,6 @@ const CHAT_TYPE_LABEL: Record<ChatType, string> = {
 
 // ── Seed data (后端未就绪时保留预览) ───────────────────────────────────────────
 
-const SEED_CHANNELS: Channel[] = [
-  {
-    Id: "9b8939273af74e98",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "wps-xiezuo",
-    ChannelAccountId: "wps-default",
-    Enabled: true,
-    DmPolicy: "pairing",
-    GroupPolicy: "allowlist",
-    RequireMention: true,
-    SessionScope: "per-peer",
-    SecretRef: "cred-xxxxxxxx",
-    ConfigJson: "{}",
-    CreatedBy: "user-xxx",
-    CreatedAt: "2026-08-27T10:00:00",
-    UpdatedAt: "2026-08-27T10:00:00",
-  },
-  {
-    Id: "a1c2d3e4f5g6h7i8",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "feishu",
-    ChannelAccountId: "feishu-cs",
-    Enabled: true,
-    DmPolicy: "open",
-    GroupPolicy: "open",
-    RequireMention: false,
-    SessionScope: "per-group",
-    SecretRef: "cred-yyyyyyyy",
-    ConfigJson: "{}",
-    CreatedBy: "user-xxx",
-    CreatedAt: "2026-08-25T14:30:00",
-    UpdatedAt: "2026-08-26T09:00:00",
-  },
-  {
-    Id: "b2d3e4f5g6h7i8j9",
-    AgentId: "",
-    Channel: "wecom",
-    ChannelAccountId: "wecom-internal",
-    Enabled: false,
-    DmPolicy: "pairing",
-    GroupPolicy: "allowlist",
-    RequireMention: true,
-    SessionScope: "per-peer",
-    SecretRef: "cred-zzzzzzzz",
-    ConfigJson: "{}",
-    CreatedBy: "user-xxx",
-    CreatedAt: "2026-08-22T10:00:00",
-    UpdatedAt: "2026-08-22T10:00:00",
-  },
-];
-
-const SEED_PAIRINGS: PairingRequest[] = [
-  {
-    Id: "pair-001",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "wps-xiezuo",
-    ChannelAccountId: "wps-default",
-    ChatType: "dm",
-    PeerId: "user-zhang3",
-    SenderId: "user-zhang3",
-    SenderName: "张三",
-    Status: "pending",
-    ExpiresAt: "2026-08-27T18:00:00",
-    ApprovedBy: null,
-    ApprovedAt: null,
-    CreatedAt: "2026-08-27T08:15:00",
-  },
-  {
-    Id: "pair-002",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "feishu",
-    ChannelAccountId: "feishu-cs",
-    ChatType: "dm",
-    PeerId: "user-li4",
-    SenderId: "user-li4",
-    SenderName: "李四",
-    Status: "pending",
-    ExpiresAt: "2026-08-27T20:00:00",
-    ApprovedBy: null,
-    ApprovedAt: null,
-    CreatedAt: "2026-08-27T08:40:00",
-  },
-  {
-    Id: "pair-003",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "wps-xiezuo",
-    ChannelAccountId: "wps-default",
-    ChatType: "dm",
-    PeerId: "user-wang5",
-    SenderId: "user-wang5",
-    SenderName: "王五",
-    Status: "approved",
-    ExpiresAt: "2026-08-27T12:00:00",
-    ApprovedBy: "user-xxx",
-    ApprovedAt: "2026-08-26T16:20:00",
-    CreatedAt: "2026-08-26T16:00:00",
-  },
-];
-
-const SEED_BINDINGS: ChannelBinding[] = [
-  {
-    Id: "bind-001",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "wps-xiezuo",
-    ChannelAccountId: "wps-default",
-    ChatType: "dm",
-    PeerId: "user-wang5",
-    GroupId: "",
-    SenderId: "user-wang5",
-    SessionId: "sess-20260826-001",
-    UserId: "u-wang5",
-    CreatedAt: "2026-08-26T16:20:00",
-    UpdatedAt: "2026-08-27T09:15:00",
-  },
-  {
-    Id: "bind-002",
-    AgentId: "ar-20260825114524-bf942afc",
-    Channel: "feishu",
-    ChannelAccountId: "feishu-cs",
-    ChatType: "group",
-    PeerId: "",
-    GroupId: "grp-tech-team",
-    SenderId: "user-zhao6",
-    SessionId: "sess-20260825-002",
-    UserId: "u-zhao6",
-    CreatedAt: "2026-08-25T11:00:00",
-    UpdatedAt: "2026-08-26T14:30:00",
-  },
-];
-
-const SEED_MESSAGES: ChannelMessage[] = [
-  {
-    Id: "msg-001",
-    Channel: "wps-xiezuo",
-    ChannelAccountId: "wps-default",
-    PlatformEventId: "evt-20260827-001",
-    Direction: "inbound",
-    DedupeKey: "wps-xiezuo:wps-default:evt-20260827-001",
-    Payload: { text: "帮我查一下本周的销售数据汇总", sender_name: "张三" },
-    Error: "",
-    RetryCount: 0,
-    NextRetryAt: null,
-    CreatedAt: "2026-08-27T09:01:00",
-  },
-  {
-    Id: "msg-002",
-    Channel: "wps-xiezuo",
-    ChannelAccountId: "wps-default",
-    PlatformEventId: "evt-20260827-002",
-    Direction: "outbound",
-    DedupeKey: "wps-xiezuo:wps-default:evt-20260827-002",
-    Payload: { text: "已为您查询到本周销售数据，华东区同比增长 12.3%。", sender_name: "Agent" },
-    Error: "",
-    RetryCount: 0,
-    NextRetryAt: null,
-    CreatedAt: "2026-08-27T09:01:05",
-  },
-  {
-    Id: "msg-003",
-    Channel: "feishu",
-    ChannelAccountId: "feishu-cs",
-    PlatformEventId: "evt-20260827-003",
-    Direction: "inbound",
-    DedupeKey: "feishu:feishu-cs:evt-20260827-003",
-    Payload: { text: "产品 A 的库存还有多少？", sender_name: "李四" },
-    Error: "",
-    RetryCount: 0,
-    NextRetryAt: null,
-    CreatedAt: "2026-08-27T09:10:00",
-  },
-  {
-    Id: "msg-004",
-    Channel: "feishu",
-    ChannelAccountId: "feishu-cs",
-    PlatformEventId: "evt-20260827-004",
-    Direction: "outbound",
-    DedupeKey: "feishu:feishu-cs:evt-20260827-004",
-    Payload: { text: "产品 A 当前库存 1,280 件，安全库存 500 件，库存充足。", sender_name: "Agent" },
-    Error: "",
-    RetryCount: 0,
-    NextRetryAt: null,
-    CreatedAt: "2026-08-27T09:10:08",
-  },
-  {
-    Id: "msg-005",
-    Channel: "wecom",
-    ChannelAccountId: "wecom-internal",
-    PlatformEventId: "evt-20260827-005",
-    Direction: "outbound",
-    DedupeKey: "wecom:wecom-internal:evt-20260827-005",
-    Payload: { text: "群聊消息推送异常，正在重试…", sender_name: "Agent" },
-    Error: "gateway timeout",
-    RetryCount: 2,
-    NextRetryAt: "2026-08-27T09:00:00",
-    CreatedAt: "2026-08-27T08:55:00",
-  },
-];
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatChannelDate(iso: string): string {
@@ -527,6 +296,7 @@ function messageSender(msg: ChannelMessage): string {
 }
 
 const EMPTY_FORM = {
+  ConnectorWorkspaceId: "",
   AgentId: "",
   Channel: "wps-xiezuo" as ChannelType,
   ChannelAccountId: "",
@@ -546,14 +316,16 @@ type Tab = "channels" | "pairings" | "bindings" | "messages";
 
 export function ChannelsPage({ refreshTick }: { refreshTick?: number } = {}) {
   const [tab, setTab] = useState<Tab>("channels");
+  const [channelWorkspaceId, setChannelWorkspaceId] = useState("");
+  const [channelError, setChannelError] = useState("");
   const [localRefreshTick, setLocalRefreshTick] = useState(0);
   // When rendered through the plugin workspace (no global refreshTick),
   // fall back to an internal refresh counter so the page still reloads on demand.
   const effectiveRefreshTick = refreshTick ?? localRefreshTick;
-  const [channels, setChannels] = useState<Channel[]>(SEED_CHANNELS);
-  const [pairings, setPairings] = useState<PairingRequest[]>(SEED_PAIRINGS);
-  const [bindings, setBindings] = useState<ChannelBinding[]>(SEED_BINDINGS);
-  const [messages, setMessages] = useState<ChannelMessage[]>(SEED_MESSAGES);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [pairings, setPairings] = useState<PairingRequest[]>([]);
+  const [bindings, setBindings] = useState<ChannelBinding[]>([]);
+  const [messages, setMessages] = useState<ChannelMessage[]>([]);
   const [agents, setAgents] = useState<StudioAgent[]>([]);
   const [cloudAgents, setCloudAgents] = useState<CloudAgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -598,7 +370,8 @@ const loadAll = useCallback(async () => {
       apiFetch("/api/v1/cloud-agents?size=100").then(r => r.ok ? r.json() : Promise.reject(new Error("cloud-agents"))),
       apiFetch("/api/v1/runs").then(r => r.ok ? r.json() : Promise.reject(new Error("runs"))),
     ]);
-    if (chRes.status === "fulfilled") setChannels(chRes.value.Items || []);
+    if (chRes.status === "fulfilled") { setChannels(chRes.value.Items || []); setChannelError(""); }
+    else { setChannels([]); setChannelError(chRes.reason instanceof Error ? chRes.reason.message : "渠道服务暂不可用"); }
     if (pairRes.status === "fulfilled") setPairings(pairRes.value.Items || []);
     if (bindRes.status === "fulfilled") setBindings(bindRes.value.Items || []);
     if (msgRes.status === "fulfilled") setMessages(msgRes.value.Items || []);
@@ -649,18 +422,23 @@ const loadAll = useCallback(async () => {
   );
 
   const agentOptions = useMemo(() => {
-    const local = agents.map(a => ({
-      value: a.metadata.id,
+    const local = channelWorkspaceId ? agents.map(a => ({
+      value: JSON.stringify([channelWorkspaceId, a.metadata.id]),
       label: `本地 · ${a.metadata.name}`,
-    }));
+    })) : [];
     const cloud = cloudAgents
       .filter(a => a.agentId && a.agentId.trim())
       .map(a => ({
-        value: a.agentId!.trim(),
+        value: JSON.stringify(["", a.agentId!.trim()]),
         label: `云端 · ${a.name || a.agentId}`,
       }));
-    return [...local, ...cloud];
-  }, [agents, cloudAgents]);
+    const options = [...local, ...cloud];
+    const selected = JSON.stringify([form.ConnectorWorkspaceId, form.AgentId]);
+    if (form.AgentId && !options.some(option => option.value === selected)) {
+      options.push({ value: selected, label: `${form.ConnectorWorkspaceId ? "其他工作区" : "云端"} · ${form.AgentId}` });
+    }
+    return options;
+  }, [agents, cloudAgents, channelWorkspaceId, form.AgentId, form.ConnectorWorkspaceId]);
 
   const sessionOptions = useMemo(() => {
     const opts = studioSessions.map(s => ({
@@ -683,6 +461,7 @@ const loadAll = useCallback(async () => {
     setEditingId(channel.Id);
     setForm({
       AgentId: channel.AgentId,
+      ConnectorWorkspaceId: channel.ConnectorWorkspaceId || "",
       Channel: channel.Channel,
       ChannelAccountId: channel.ChannelAccountId,
       AppId: "",
@@ -732,6 +511,7 @@ async function submitChannel(event: React.FormEvent) {
     try {
       const body: Record<string, unknown> = {
         AgentId: form.AgentId,
+        ConnectorWorkspaceId: form.ConnectorWorkspaceId,
         Channel: form.Channel,
         ChannelAccountId: form.ChannelAccountId.trim(),
         DmPolicy: form.DmPolicy,
@@ -1234,6 +1014,8 @@ async function submitChannel(event: React.FormEvent) {
         </button>
       </PageHeaderActions>
 
+      <ChannelConnectionPanel agents={agents} onWorkspace={setChannelWorkspaceId} onChange={() => setLocalRefreshTick(t => t + 1)} />
+      {channelError && <p role="alert">{channelError}</p>}
       <section className="channels-page__metrics" aria-label="渠道汇总">
         <div><span>渠道总数</span><strong>{channels.length}</strong></div>
         <div><span>已启用</span><strong>{enabledCount}</strong></div>
@@ -1517,9 +1299,12 @@ async function submitChannel(event: React.FormEvent) {
                       id="channel-agent"
                       ariaLabel="绑定 Agent"
                       options={agentOptions}
-                      value={form.AgentId}
+                      value={form.AgentId ? JSON.stringify([form.ConnectorWorkspaceId, form.AgentId]) : ""}
                       placeholder="选择要绑定的 Agent"
-                      onValueChange={value => setForm(prev => ({ ...prev, AgentId: value }))}
+                      onValueChange={value => {
+                        const [workspaceId, agentId] = JSON.parse(value) as [string, string];
+                        setForm(prev => ({ ...prev, AgentId: agentId, ConnectorWorkspaceId: workspaceId }));
+                      }}
                     />
                   </FormField>
                 </div>

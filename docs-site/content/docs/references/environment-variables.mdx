@@ -185,6 +185,7 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 | `KSADK_CHECKPOINT_BACKEND` | checkpoint backend：`local` / `sqlite` / `memory` / `postgres`，默认 `local`（0.6.7） |
 | `KSADK_CHECKPOINT_PATH` | 本地 SQLite checkpoint 路径，默认 `.agentengine/ui/checkpoints.sqlite`（0.6.7） |
 | `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph PostgreSQL checkpoint DSN；`postgres` backend 时必传（0.6.7） |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | 托管 LangGraph runner 是否注入受控 PostgreSQL saver；默认 `false`，启用时入口模块必须导出 `ksadk_graph_factory(*, checkpointer)` 和 `ksadk_prepare_state(payload, session_context)`，缺失时分别以 `LANGGRAPH_FACTORY_REQUIRED` 或 `PREPARE_STATE_HOOK_REQUIRED` fail-closed |
 
 本地 `agentengine web` 默认使用 local session backend，LangGraph checkpoint 默认走 SQLite，降低本地恢复链路对 PostgreSQL 的依赖（0.6.7）。
 
@@ -339,7 +340,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，0.8.4 默认 `0.3.7`；wheel 构建前必须先发布并验证新版本 |
+| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，当前默认 `0.3.10`；wheel 构建前必须先发布并验证新版本 |
 | `KSADK_WEB_PACKAGE` | 本地 UI static 同步使用的 npm 包名，默认 `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | 设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式使用 npm 返回的真实 tarball 文件名 |
 | `KSADK_WEB_RELEASE_URL` | 可选兜底；设置后跳过 npm pack，改从该 tarball URL 下载 |
@@ -353,9 +354,19 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_DSH_HOME` | 受管理 DSH Profile 的隔离目录；默认是工作区中的 `.agentkit/dsh-home`。显式设置后 Studio 不会改写该目录。 |
-| `KSADK_DSH_PROFILE` | 要使用的 DSH Profile 名称，默认 `studio`。 |
+| `KSADK_DSH_HOME` | 受管理 DSH Profile 的隔离目录；默认是工作区中的 `.agentkit/dsh-homes/<dsh-version>`，当前版本为 `0.1.5-rc.1`。显式设置后 Studio 不会改写该目录。 |
+| `KSADK_DSH_PROFILE` | 要使用的 DSH Profile 名称，默认 Studio `web` profile。 |
 | `KSADK_DSH_BIN` | 可选的 DSH 命令绝对路径，仅用于固定版本工具链的核心开发或 CI 验证；不匹配时拒绝执行。 |
+
+## 消息渠道
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_STUDIO_CHANNEL_DEFAULT` | Studio 是否在后台默认激活官方 Channel UI bundle；默认 `1`，设为 `0`、`false`、`no` 或 `off` 可关闭 |
+| `AGENTENGINE_CHANNEL_URL` | Channel 服务 HTTPS 地址的启动默认值 |
+| `KSYUN_ACCOUNT_ID` | Channel 账号标识的启动默认值 |
+| `KSADK_CHANNEL_WORKSPACE_ID` | Connector workspace 的启动默认值；不设置时由 Studio 工作区稳定生成 |
+| `KSADK_CHANNEL_API_TOKEN` | Channel API 管理 token；敏感值，只应通过受保护配置注入 |
 
 ## 可观测
 

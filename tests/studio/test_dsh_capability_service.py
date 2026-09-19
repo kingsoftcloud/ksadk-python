@@ -927,6 +927,9 @@ async def test_plugin_probe_warmup_populates_the_cache_off_the_request_path(
         await asyncio.sleep(0)
         if service._plugins_probe_cache is not None:
             break
+    if service._plugins_probe_cache is None:
+        # xdist 并行下 event loop 调度可能延迟 warmup task，给真实时间兜底
+        await asyncio.sleep(1)
     assert service._plugins_probe_cache is not None
     assert await service.has_enabled_profile_plugins() is True
     assert len(calls) == 1

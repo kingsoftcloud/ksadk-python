@@ -1,4 +1,0 @@
-- insert:
-    - id: ksadk-e2e-dsh-profile-plugin
-      name: '@ksadk-e2e/dsh-profile-plugin'
-      disabled: true

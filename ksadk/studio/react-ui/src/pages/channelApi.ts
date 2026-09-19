@@ -1,14 +1,12 @@
 // Shared channel control-plane helpers.
 // 契约: agentengine-channel-api-contract.md
 // 控制面 Base path: /agentengine/api/v1  全部 POST + JSON body
-// 请求头: X-Ksc-Account-Id (必填)
+// 租户和服务凭证由 Studio 后端从工作区配置解析。
 // 统一响应: { Code, Message, RequestId, Action, Data }  Code=0 表示成功
 
 import { apiFetch } from "../api";
 
 export const CHANNEL_API_BASE = "/agentengine/api/v1";
-// 测试租户 ID，正式环境应从 Studio session 获取
-export const CHANNEL_ACCOUNT_ID = "2000003485";
 
 export interface ChannelEnvelope<T> {
   Code: number;
@@ -28,7 +26,6 @@ export async function channelApi<T>(action: string, body: Record<string, unknown
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Ksc-Account-Id": CHANNEL_ACCOUNT_ID,
     },
     body: JSON.stringify(body),
   });
@@ -36,7 +33,7 @@ export async function channelApi<T>(action: string, body: Record<string, unknown
     let message = `HTTP ${response.status}`;
     try {
       const errorBody = await response.json();
-      message = errorBody.Message || errorBody.message || message;
+      message = errorBody.Message || errorBody.error?.message || errorBody.message || message;
     } catch { /* keep HTTP status fallback */ }
     throw new Error(message);
   }

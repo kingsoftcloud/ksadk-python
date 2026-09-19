@@ -6,7 +6,6 @@ LangGraphRunner - LangGraph 框架运行时
 
 import asyncio
 import base64
-import inspect
 import os
 import re
 import sqlite3
@@ -17,6 +16,11 @@ from langgraph.types import Command
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
+from ksadk.runners._langgraph_state_reader import (
+    interrupt_info_from_state,
+    known_subgraph_namespaces,
+    read_graph_state,
+)
 from ksadk.runners._session_identity import LangGraphSessionIdentityMixin
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.utils import load_agent_module
@@ -44,7 +48,6 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         self._managed_checkpoint_state = "uninitialized"
         self._managed_checkpoint_error: tuple[str, str] | None = None
         self._managed_checkpoint_pool: Any = None
-        self._managed_checkpoint_namespace = ""
         self._identity_thread_bindings: dict[str, str] = {}
         self._identity_thread_lock = asyncio.Lock()
 
@@ -330,16 +333,6 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             "on",
         }
 
-    @staticmethod
-    def _resolve_checkpoint_namespace() -> str:
-        session_namespace = str(os.getenv("KSADK_SESSION_NAMESPACE") or "").strip()
-        if session_namespace:
-            return session_namespace
-        agent_id = str(
-            os.getenv("AGENTENGINE_AGENT_ID") or os.getenv("KSADK_AGENT_ID") or "default"
-        ).strip()
-        return f"agent:{agent_id}"
-
     async def _create_managed_postgres_saver(self, dsn: str) -> tuple[Any, Any]:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from psycopg.rows import dict_row
@@ -459,14 +452,9 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
     ) -> bool:
         """Confirm one exact persisted checkpoint through the active graph."""
 
-        get_state = getattr(self._agent, "aget_state", None) or getattr(
-            self._agent, "get_state", None
-        )
-        if not callable(get_state):
+        state, _error = await self._read_graph_state(config)
+        if state is None:
             return False
-        state = get_state(config)
-        if inspect.isawaitable(state):
-            state = await state
         state_created_at = (
             state.get("created_at")
             if isinstance(state, Mapping)
@@ -505,7 +493,6 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             if checkpointer is None:
                 checkpointer = getattr(self._agent, "_checkpointer", None)
             if self._checkpoint_backend_from_saver(checkpointer) == "postgres":
-                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
                 self._managed_checkpoint_prepared = True
                 self._managed_checkpoint_state = "ready"
                 return
@@ -539,6 +526,23 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
                 self._managed_checkpoint_state = "terminal_failure"
                 return
 
+            # 托管 checkpointer 从 checkpoint 恢复 messages（append-only reducer）。
+            # 若接入方未导出 ksadk_prepare_state，runner 走 _to_state 把 history 再注入
+            # 一遍，与 checkpointer 恢复的 messages 双重叠加。托管 checkpoint 必须同时
+            # 提供 hook，否则 fail-closed，避免生产 auto checkpoint 下静默双重注入。
+            prepare_state_hook = getattr(self._module, "ksadk_prepare_state", None)
+            if not callable(prepare_state_hook):
+                self._managed_checkpoint_error = (
+                    "PREPARE_STATE_HOOK_REQUIRED",
+                    "Managed PostgreSQL checkpoint requires ksadk_prepare_state hook to "
+                    "avoid double history injection (checkpointer messages restore + "
+                    "_to_state history). Export ksadk_prepare_state(payload, "
+                    "session_context) in the agent module.",
+                )
+                self._managed_checkpoint_prepared = True
+                self._managed_checkpoint_state = "terminal_failure"
+                return
+
             pool = None
             try:
                 saver, pool = await self._create_managed_postgres_saver(checkpoint_target.dsn)
@@ -547,7 +551,6 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
                     raise TypeError("ksadk_graph_factory must return a compiled LangGraph graph")
                 self._agent = managed_graph
                 self._managed_checkpoint_pool = pool
-                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
                 self._managed_checkpoint_error = None
                 self._managed_checkpoint_state = "ready"
             except (ModuleNotFoundError, ImportError):
@@ -603,11 +606,14 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         await super().close()
 
     def _get_config(self, session_id: str) -> dict:
-        """获取运行配置"""
-        config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
-        if self._managed_checkpoint_namespace:
-            config["configurable"]["checkpoint_ns"] = self._managed_checkpoint_namespace
-        return config
+        """获取运行配置
+
+        只写 thread_id：checkpoint_ns 是 LangGraph 的子图寻址字段，不是租户
+        隔离字段。把租户/agent scope 塞进 configurable.checkpoint_ns 会让
+        Pregel 的 aget_state 走子图重定向并抛 "Subgraph <scope> not found"，
+        静默打掉流式路径的待审批探测。租户隔离由 thread_id 承担。
+        """
+        return {"configurable": {"thread_id": session_id}}
 
     @staticmethod
     def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
@@ -619,9 +625,12 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
             return {}
         return dict(langgraph_ref)
 
-    @classmethod
+    def _known_subgraph_namespaces(self) -> set[str]:
+        """当前图里真实存在的子图 namespace 集合（无法探测时返回空集）。"""
+        return known_subgraph_namespaces(self._agent)
+
     def _apply_checkpoint_resume_config(
-        cls,
+        self,
         config: dict[str, Any],
         *,
         session_id: str,
@@ -646,16 +655,23 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         next_config = dict(config)
         configurable = dict(next_config.get("configurable") or {})
         configurable["thread_id"] = thread_id
-        requested_namespace = str(checkpoint_ref.get("checkpoint_ns") or "")
-        bound_namespace = str(configurable.get("checkpoint_ns") or "")
-        if (
-            enforce_bound_thread
-            and requested_namespace
-            and bound_namespace
-            and requested_namespace != bound_namespace
-        ):
-            raise ValueError("checkpoint_resume namespace does not belong to this session")
-        configurable["checkpoint_ns"] = requested_namespace or bound_namespace
+        # checkpoint_ns 只承载 LangGraph 子图寻址语义。真实运行时 namespace 的
+        # 格式是 "<子图名>:<task_path>"（如 inner:<task-id>），get_subgraphs()
+        # 返回的是裸子图名——所以校验必须只比对首段，合法时保留原始完整
+        # namespace（带任务路径；否则 aget_state 定位不到对应 checkpoint）。
+        # 不匹配的地址（含历史租户/agent scope 残留）显性报错，绝不静默改写
+        # 成根地址——静默改写曾让恢复悄悄指向不存在的 checkpoint。
+        requested_namespace = str(checkpoint_ref.get("checkpoint_ns") or "").strip()
+        if requested_namespace:
+            known = self._known_subgraph_namespaces()
+            leading = requested_namespace.split(":", 1)[0]
+            if leading not in known:
+                raise ValueError(
+                    "checkpoint_resume checkpoint_ns does not address any subgraph "
+                    f"of this graph: {requested_namespace!r} "
+                    f"(known subgraphs: {sorted(known) or 'none'})"
+                )
+        configurable["checkpoint_ns"] = requested_namespace
         configurable["checkpoint_id"] = checkpoint_id
         next_config["configurable"] = configurable
         return next_config
@@ -760,13 +776,8 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         }
 
     async def _latest_checkpoint_metadata(self, config: dict[str, Any]) -> dict[str, Any]:
-        state = None
-        try:
-            if callable(getattr(self._agent, "aget_state", None)):
-                state = await self._agent.aget_state(config)
-            elif callable(getattr(self._agent, "get_state", None)):
-                state = self._agent.get_state(config)
-        except Exception:
+        state, _error = await self._read_graph_state(config)
+        if state is None:
             return {}
         framework_ref = self._checkpoint_ref_from_state(state)
         if not framework_ref:
@@ -802,13 +813,8 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
         }
 
     async def _latest_state_usage(self, config: dict[str, Any]) -> dict[str, Any]:
-        state = None
-        try:
-            if callable(getattr(self._agent, "aget_state", None)):
-                state = await self._agent.aget_state(config)
-            elif callable(getattr(self._agent, "get_state", None)):
-                state = self._agent.get_state(config)
-        except Exception:
+        state, _error = await self._read_graph_state(config)
+        if state is None:
             return {}
         values = getattr(state, "values", None)
         if values is not None:
@@ -1203,7 +1209,14 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
-                interrupt_info = self._get_interrupt_info(self._agent.get_state(config))
+                state, error = await self._read_graph_state(config, include_subgraphs=True)
+                if state is None:
+                    # 图已经抛出 interrupt，但状态读不回来：这里必须显性失败，
+                    # 不能返回空 interrupt_info，更不能伪装成正常完成。
+                    raise RuntimeError(
+                        "graph interrupted but its checkpoint state could not be read"
+                    ) from error
+                interrupt_info = self._get_interrupt_info(state)
                 return {
                     "type": "interrupt",
                     "interrupt_info": interrupt_info,
@@ -1238,35 +1251,20 @@ class LangGraphRunner(LangGraphSessionIdentityMixin, _LangGraphStreamMixin, Base
                     return str(content)
         return str(result) if result else ""
 
+    async def _read_graph_state(
+        self,
+        config: Mapping[str, Any],
+        *,
+        include_subgraphs: bool = False,
+    ) -> tuple[Any | None, Exception | None]:
+        """统一的图状态读取入口（实现在 `_langgraph_state_reader`，全仓唯一）。"""
+        return await read_graph_state(
+            self._agent, config, include_subgraphs=include_subgraphs
+        )
+
     def _get_interrupt_info(self, state) -> dict:
-        """从 state 中获取 interrupt 信息"""
-        if hasattr(state, "tasks") and state.tasks:
-            for task in state.tasks:
-                if hasattr(task, "interrupts") and task.interrupts:
-                    for intr in task.interrupts:
-                        if hasattr(intr, "value"):
-                            value = intr.value
-                            info = dict(value) if isinstance(value, Mapping) else {"value": value}
-                            interrupt_id = str(getattr(intr, "id", "") or "")
-                            if interrupt_id:
-                                info.setdefault("approval_request_id", interrupt_id)
-                            # HumanInTheLoopMiddleware 的 interrupt value 把
-                            # tool_name/arguments 嵌在 action_requests[0] 里；
-                            # 下游期望顶层字段，这里提取并保留原 action_requests。
-                            action_requests = info.get("action_requests")
-                            if isinstance(action_requests, list) and action_requests:
-                                first = action_requests[0]
-                                if isinstance(first, Mapping):
-                                    info.setdefault("tool_name", str(first.get("name") or ""))
-                                    raw_args = first.get("args") or first.get("arguments")
-                                    if raw_args is not None:
-                                        info.setdefault("arguments", raw_args)
-                                    if first.get("description") is not None:
-                                        info.setdefault(
-                                            "description", str(first.get("description"))
-                                        )
-                            return info
-        return {}
+        """从 state 中获取 interrupt 信息（含子图嵌套任务）。"""
+        return interrupt_info_from_state(state)
 
     async def _stream_checkpoint_resume_updates(
         self,

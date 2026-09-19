@@ -117,3 +117,7 @@ agentkit.yaml
 .agentkit/config.yaml
 .agentkit/settings.yaml
 offline-packages/
+
+# DMG 打包产物不入库（由 CI/本地构建生成）
+*.dmg
+dist/studio-app/

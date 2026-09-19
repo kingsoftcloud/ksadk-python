@@ -7,6 +7,6 @@
   "exports": { ".": "./index.mjs", "./cordis.patch.yml": "./cordis.patch.yml", "./client": "./client.js" },
   "files": ["index.mjs", "cordis.patch.yml", "client.js"],
   "engines": { "node": ">=22.19.0" },
-  "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@kingsoftcloud/dsh-app-studio": "0.1.0" },
+  "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "inject": ["@kingsoftcloud/dsh-app-studio"], "platform": "web" } }
 }
