@@ -415,7 +415,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     # Studio owns long-lived/polling surfaces, so browser readiness is the
     # rendered conversation contract rather than a global network-idle gap.
     page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
-    expect(page.get_by_role("button", name="切换对话 Agent")).to_contain_text(AGENT_NAME)
+    expect(page.get_by_role("combobox", name="切换会话目标")).to_contain_text(AGENT_NAME)
     composer = page.locator(".studio-composer-area textarea")
     expect(composer).to_be_enabled()
     composer.fill("展示 canonical 会话项目")
