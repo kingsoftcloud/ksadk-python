@@ -185,8 +185,22 @@ class LangGraphSessionIdentityMixin:
         return identity_session_is_legacy(context.identity, context.user_id)
 
     @staticmethod
-    def _identity_thread_id(session_id: str, owner_scope_ref: str) -> str:
-        digest = hashlib.sha256(f"{owner_scope_ref}\0{session_id}".encode()).hexdigest()
+    def _invocation_agent_scope_ref() -> str:
+        context = get_current_invocation_context()
+        if context is None:
+            return ""
+        return str(getattr(context, "agent_id", "") or "")
+
+    @classmethod
+    def _identity_thread_id(
+        cls, session_id: str, owner_scope_ref: str, agent_scope_ref: str = ""
+    ) -> str:
+        # 隔离口径：业务身份 + agent + 外部 session 共同决定 thread。
+        # agent 必须参与哈希——共享 checkpoint 库下，同租户的不同 agent 若复用
+        # 同一个 external_session_id，缺 agent 维度会落到同一个 thread 互相覆盖。
+        digest = hashlib.sha256(
+            f"{owner_scope_ref}\0{agent_scope_ref}\0{session_id}".encode()
+        ).hexdigest()
         return f"lgt_{digest}"
 
     async def _thread_has_checkpoint(self, thread_id: str) -> bool:
@@ -248,7 +262,11 @@ class LangGraphSessionIdentityMixin:
 
             thread_id = str(binding.get("thread_id") or "")
             if not thread_id:
-                thread_id = self._identity_thread_id(session_id, owner_scope_ref)
+                thread_id = self._identity_thread_id(
+                    session_id,
+                    owner_scope_ref,
+                    self._invocation_agent_scope_ref(),
+                )
                 if self._invocation_uses_legacy_session() and await self._thread_has_checkpoint(
                     session_id
                 ):
@@ -260,7 +278,6 @@ class LangGraphSessionIdentityMixin:
                 {
                     "external_session_id": session_id,
                     "thread_id": thread_id,
-                    "checkpoint_ns": self._managed_checkpoint_namespace,
                     "owner_scope_ref": owner_scope_ref,
                 },
             )

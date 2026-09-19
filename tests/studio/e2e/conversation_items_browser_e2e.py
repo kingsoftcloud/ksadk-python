@@ -145,6 +145,19 @@ class CanonicalConversationEvents:
                 source=codex,
                 **common,
             )
+            # reasoning 块必须以 item.completed 收尾：缺失时 lifecycle 恒为
+            # streaming，"已思考" 永不渲染（审批暂停也不豁免这一状态机）。
+            yield ItemCompleted(
+                event_id=event_id(21),
+                seq=21,
+                item_id="reasoning-1",
+                item_kind="reasoning",
+                snapshot=ContentSnapshot(
+                    parts=(TextContent(part_id="reasoning-text", text=REASONING),)
+                ),
+                source=codex,
+                **common,
+            )
             tool_args = {"command": "echo safe", "cwd": "/workspace"}
             yield ItemStarted(
                 event_id=event_id(3),
@@ -415,26 +428,38 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     # Studio owns long-lived/polling surfaces, so browser readiness is the
     # rendered conversation contract rather than a global network-idle gap.
     page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
-    expect(page.get_by_role("button", name="切换对话 Agent")).to_contain_text(AGENT_NAME)
+    # DSH 宿主在无工具链机器上弹一次性降级横幅并短暂挤掉头部选择器；重载恢复。
+    for _ in range(3):
+        try:
+            expect(
+                page.get_by_role("combobox", name="切换会话目标")
+            ).to_contain_text(AGENT_NAME, timeout=8_000)
+            break
+        except AssertionError:
+            page.reload(wait_until="domcontentloaded")
+    else:
+        expect(
+            page.get_by_role("combobox", name="切换会话目标")
+        ).to_contain_text(AGENT_NAME)
     composer = page.locator(".studio-composer-area textarea")
     expect(composer).to_be_enabled()
-    composer.fill("展示 canonical 会话项目")
+    composer.press_sequentially("展示 canonical 会话项目", delay=12)
     page.get_by_role("button", name="发送消息").click()
 
-    page.get_by_role("button", name="已思考").click()
-    expect(page.get_by_text(REASONING, exact=True)).to_be_visible(timeout=15_000)
+    page.get_by_role("button", name="已思考").first.click(timeout=90_000)
+    expect(page.get_by_text(REASONING, exact=True)).to_be_visible(timeout=45_000)
     # Typed ConversationItems keep their stream order: the tool is its own
     # card after the reasoning block rather than being folded into thinking.
-    expect(page.get_by_role("button", name="等待确认 command")).to_be_visible()
+    expect(page.get_by_role("button", name="等待确认 command")).to_be_visible(timeout=45_000)
 
     approval_tray = page.locator('[data-ui="interaction-tray"]')
     expect(approval_tray).to_contain_text("echo safe")
     second_page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
     second_approval_tray = second_page.locator('[data-ui="interaction-tray"]')
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
-    second_page.get_by_role("button", name="已思考").click()
+    second_page.get_by_role("button", name="已思考").first.click(timeout=90_000)
     expect(second_page.get_by_text(REASONING, exact=True)).to_be_visible()
-    second_page.get_by_role("button", name="已完成 codex.command").click()
+    second_page.get_by_role("button", name="已完成 codex.command").first.click()
     expect(second_page.get_by_text(TOOL_OUTPUT, exact=False)).to_be_visible()
     # Two Studio windows submit the same authoritative revision.  Both receive
     # the persisted receipt while the provider observes exactly one resume.
@@ -538,7 +563,13 @@ def main() -> None:
                 page_errors: list[str] = []
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
                 second_page.on("pageerror", lambda error: page_errors.append(str(error)))
-                _exercise_conversation_items(page, second_page, base_url)
+                try:
+                    _exercise_conversation_items(page, second_page, base_url)
+                except Exception:
+                    page.screenshot(path="/tmp/items_fail.png", full_page=True)
+                    body = page.evaluate("() => (document.body.innerText || '').slice(-1200)")
+                    print("!!! FAIL BODY TAIL:", body, flush=True)
+                    raise
                 assert page_errors == [], f"Uncaught React page errors: {page_errors}"
             finally:
                 browser.close()

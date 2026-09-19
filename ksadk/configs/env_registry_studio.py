@@ -4,11 +4,34 @@ from ksadk.configs.env_var_spec import EnvVarSpec
 
 STUDIO_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
+        "KSADK_CHANNEL_API_TOKEN",
+        "studio",
+        "Channel API management token saved in protected Studio configuration.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_CHANNEL_AGENT_",
+        "studio",
+        "Generated prefix for per-Agent Channel Connector credentials; not a user variable.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_CHANNEL_WORKSPACE_ID",
+        "studio",
+        "Default Channel Connector workspace identity.",
+    ),
+    EnvVarSpec(
         "KSADK_STUDIO_LAZY_START",
         "studio",
         "Internal desktop startup mode; keep the Studio window responsive while optional DSH warmup runs.",
         "0",
         documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_CHANNEL_DEFAULT",
+        "studio",
+        "Default-enable the wheel-owned Studio Channel UI bundle after HTTP startup (1=on, 0=off).",
+        "1",
     ),
     EnvVarSpec(
         "KSADK_STUDIO_TEAMS_DEFAULT",

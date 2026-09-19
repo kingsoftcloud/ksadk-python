@@ -3,6 +3,7 @@ const nativeFetch = window.fetch.bind(window);
 
 function isProtectedStudioPath(pathname: string): boolean {
   return pathname.startsWith("/api/v1/")
+    || pathname.startsWith("/agentengine/api/v1/")
     || pathname === "/v1/responses"
     || pathname.startsWith("/v1/responses/");
 }

@@ -2,12 +2,12 @@
 title: "Hosted UI 与事件回放"
 ---
 
-KsADK 0.8.3 将 Hosted UI 的 transport、交互展示和运行时审计分开：OpenAI Responses
+KsADK 0.8.5 将 Hosted UI 的 transport、交互展示和运行时审计分开：OpenAI Responses
 保持兼容基线，AG-UI 是可选 transport，A2UI 是结构化 activity 表示，`RuntimeEvent`
 则是唯一持久化和回放边界。这样前端能力演进不会改变模型调用的原始协议。
 
 <Callout type="warning" title="发布边界">
-本文说明 0.8.3 源码中的接口与边界，不代表 npm/PyPI 已完成正式发布。真实 hosted 环境仍应验证自身的网关、鉴权、runner、数据库和 provider 凭证。
+本文说明 0.8.5 候选源码中的接口与边界，不代表本候选已完成 npm/PyPI 正式发布。真实 hosted 环境仍应验证自身的网关、鉴权、runner、数据库和 provider 凭证。
 </Callout>
 
 ## 协议选择

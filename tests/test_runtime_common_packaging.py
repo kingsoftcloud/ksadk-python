@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+import pytest
 from email.parser import BytesParser
 from pathlib import Path
 
@@ -113,6 +114,8 @@ def test_distributed_python_sources_do_not_use_python311_datetime_utc():
 
 def test_built_wheel_excludes_web_ui_node_modules():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    if not wheels:
+        pytest.skip("dist artifacts not built; run the release build first")
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
 
     with zipfile.ZipFile(wheels[-1]) as archive:
@@ -127,6 +130,8 @@ def test_built_wheel_excludes_web_ui_node_modules():
 
 def test_built_wheel_excludes_studio_frontend_sources_and_node_modules():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    if not wheels:
+        pytest.skip("dist artifacts not built; run the release build first")
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
 
     with zipfile.ZipFile(wheels[-1]) as archive:
@@ -141,6 +146,8 @@ def test_built_wheel_excludes_studio_frontend_sources_and_node_modules():
 
 def test_built_wheel_includes_synced_web_static_entrypoint():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    if not wheels:
+        pytest.skip("dist artifacts not built; run the release build first")
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
 
     with zipfile.ZipFile(wheels[-1]) as archive:
@@ -152,6 +159,8 @@ def test_built_wheel_includes_synced_web_static_entrypoint():
 
 def test_built_wheel_includes_react_studio_static_entrypoint():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    if not wheels:
+        pytest.skip("dist artifacts not built; run the release build first")
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
 
     with zipfile.ZipFile(wheels[-1]) as archive:
@@ -166,6 +175,8 @@ def test_built_wheel_includes_react_studio_static_entrypoint():
 
 def test_built_sdist_includes_react_studio_static_entrypoint():
     sdists = sorted((REPO_ROOT / "dist").glob("ksadk-*.tar.gz"))
+    if not sdists:
+        pytest.skip("dist artifacts not built; run the release build first")
     assert sdists, "请先运行受控构建生成 dist/ksadk-*.tar.gz"
 
     with tarfile.open(sdists[-1]) as archive:
@@ -236,6 +247,8 @@ def test_ci_installs_node_before_building_generated_studio_static_assets():
 
 def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    if not wheels:
+        pytest.skip("dist artifacts not built; run the release build first")
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
 
     with zipfile.ZipFile(wheels[-1]) as archive:

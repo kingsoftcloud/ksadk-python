@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 DeploymentMode = Literal["local", "ksadk_managed_cloud", "external_managed"]
@@ -277,6 +277,48 @@ def capability_hash(caps: ContextCapabilities) -> str:
     return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _prepare_state_hook_exported(runner: Any) -> bool:
+    """runner 模块是否导出可调用的 ``ksadk_prepare_state`` hook。
+
+    hook 模式下 runner 不走 ``_to_state`` 注入历史，messages 单一来源是 checkpointer
+    恢复（append-only reducer），ksadk compaction 的输出无法进入最终模型输入。
+    """
+    module = getattr(runner, "_module", None)
+    hook = getattr(module, "ksadk_prepare_state", None)
+    return callable(hook)
+
+
+def _durable_checkpoint_active(runner: Any) -> bool:
+    """runner 图上是否已挂 durable checkpointer（托管重建 ready 或 capability 报告支持）。"""
+    describe = getattr(runner, "describe_checkpoint_capability", None)
+    if callable(describe):
+        try:
+            info = describe()
+        except Exception:
+            info = None
+        if isinstance(info, dict) and info.get("Supported"):
+            return True
+    return getattr(runner, "_managed_checkpoint_state", "") == "ready"
+
+
+def _downgrade_compaction_owner_for_checkpoint_hook(
+    runner: Any, caps: ContextCapabilities
+) -> ContextCapabilities:
+    """durable checkpointer + ``ksadk_prepare_state`` hook 同时存在时，compaction 降级 framework。
+
+    该组合下 checkpointer 独占 messages（framework 侧压缩/摘要直接作用于 checkpointer
+    状态），ksadk compaction 只能写 session event store 的 append-only
+    ``context_checkpoint`` 事件，对模型输入零贡献——继续声明 ``compaction_owner="ksadk"``
+    会让 compaction 门控在每个双阈值触发点白耗一次摘要 LLM 调用。降级后
+    ``_plan_compaction`` 落 ``none`` 带，不产生 LLM 调用。其余字段不变。
+    """
+    if caps.compaction_owner != "ksadk":
+        return caps
+    if not _prepare_state_hook_exported(runner) or not _durable_checkpoint_active(runner):
+        return caps
+    return replace(caps, compaction_owner="framework")
+
+
 def capabilities_for_runner(runner: Any | None) -> ContextCapabilities:
     """统一 lookup：优先 runner 自身的 ``describe_context_capabilities()``，否则按 detection
     type 显式分派，未知走 DEFAULT。
@@ -285,20 +327,26 @@ def capabilities_for_runner(runner: Any | None) -> ContextCapabilities:
     ``describe_context_capabilities``
     走 ``_capabilities_for_detection_type``，故本函数对 BaseRunner 子类不会递归。已被 compaction
     门控（``runtime_preparation`` proactive compaction）与 shadow plan / conformance 测试消费。
+    运行时证据覆盖：durable checkpointer + prepare_state hook 同时存在时，
+    ``compaction_owner`` 从 ``ksadk`` 降级为 ``framework``（见
+    ``_downgrade_compaction_owner_for_checkpoint_hook``）。
     """
     if runner is None:
         return DEFAULT_CONTEXT_CAPABILITIES()
 
+    caps: ContextCapabilities | None = None
     describe = getattr(runner, "describe_context_capabilities", None)
     if callable(describe):
         try:
             caps = describe()
         except Exception:
             caps = None
-        if isinstance(caps, ContextCapabilities):
-            return caps
+        if not isinstance(caps, ContextCapabilities):
+            caps = None
+    if caps is None:
+        caps = _capabilities_for_detection_type(_runner_type_value(runner))
 
-    return _capabilities_for_detection_type(_runner_type_value(runner))
+    return _downgrade_compaction_owner_for_checkpoint_hook(runner, caps)
 
 
 # ---- Capability Mismatch 检测与熔断（方案 §6.1 / §8.3）----

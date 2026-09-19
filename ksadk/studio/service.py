@@ -371,6 +371,9 @@ class StudioService:
         )
         self.plugin_runs.execution_policy_resolver = self.execution_host
         self.teams_installation = create_teams_installation(self)
+        from ksadk.studio.channel_connections import StudioChannelConnections
+
+        self.channel_connections = StudioChannelConnections(self)
         from ksadk.studio.scheduler_assistant import StudioScheduleAssistant
 
         self.run_service.schedule_assistant = StudioScheduleAssistant(self)
@@ -408,6 +411,7 @@ class StudioService:
                 await self.scheduler_runtimes.start()
                 self._started = True
                 self._dsh_startup_task = asyncio.create_task(self._initialize_dsh())
+                self.channel_connections.start_background()
             task = self._dsh_startup_task
         if wait_for_dsh and task is not None:
             await asyncio.shield(task)
@@ -445,7 +449,10 @@ class StudioService:
                 await self._refresh_dsh_catalog_resource(required=False)
                 safe_to_resume = True
             finally:
-                self._profile_maintenance = not safe_to_resume
+                # 维护窗标志是纯同步状态，无条件复位：任何异常/取消路径都不得
+                # 把整个会话面永久留在 503。admission 的恢复语义不变（恢复失败
+                # 仍按契约保持关闭，由测试 test_failed_profile_rebind_* 保障）。
+                self._profile_maintenance = False
                 await self.execution_host.set_admission_open(safe_to_resume)
                 await self.scheduler_runtimes.set_admission_open(safe_to_resume)
                 if safe_to_resume:
@@ -470,6 +477,10 @@ class StudioService:
                 await self.reset_dsh_capability_state()
                 try:
                     result = await operation()
+                except asyncio.CancelledError:
+                    # 取消中的任务做不了 recovery；维护窗标志在 finally 无条件
+                    # 复位，避免一次取消把会话面永久 503。
+                    raise
                 except BaseException as mutation_error:
                     if (
                         isinstance(mutation_error, StudioError)
@@ -491,7 +502,10 @@ class StudioService:
                 safe_to_resume = True
                 return result
             finally:
-                self._profile_maintenance = not safe_to_resume
+                # 维护窗标志是纯同步状态，无条件复位：任何异常/取消路径都不得
+                # 把整个会话面永久留在 503。admission 的恢复语义不变（恢复失败
+                # 仍按契约保持关闭，由测试 test_failed_profile_rebind_* 保障）。
+                self._profile_maintenance = False
                 await self.execution_host.set_admission_open(safe_to_resume)
                 await self.scheduler_runtimes.set_admission_open(safe_to_resume)
                 if safe_to_resume:
@@ -1400,6 +1414,7 @@ class StudioService:
         await detach_recovered_runs(self.run_service)
         first_error: BaseException | None = None
         owned = [
+            self.channel_connections.close,
             self.workspace_plugins.close, self.plugin_runs.aclose, self.dsh_capabilities.aclose,
             self.scheduler_runtimes.close, self.execution_host.close,
         ]

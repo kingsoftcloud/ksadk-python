@@ -47,9 +47,10 @@ KsADK converges framework adaptation into stable runtime layers while preserving
 - **Unified events**: `RuntimeEvent(schema_version=2)` is the event source of truth for storage, replay, APIs, Studio, and hosted surfaces; v1 is read-only compatibility projection only.
 - **Controlled plugins**: DSH Bundle/Profile uses a pinned toolchain, immutable source digests, and rollback on failed upgrades; official Codex plugins remain owned by Codex App Server.
 - **Platform resource plugins**: Studio can bind knowledge bases, long-term memory, and Skill Center. The Agent Revision stores the selection, the Build freezes connection references and plugin digests, and Runtime resolves platform authorization during Activation.
+- **Messaging channel connectivity**: Studio ships the official Channel UI; local and high-code Agents connect to an independently deployed Channel service through `ksadk.connector` outbound WSS, without a local listening port or an `agentengine-channel` install.
 - **Local development loop**: Studio covers authoring, builds, debugging, evaluation, and Scheduler Lite and reuses the independently released `@kingsoftcloud/ksadk-web` conversation package.
 
-Start with the [runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases) for version notes and artifact verification details.
+Start with the [runtime architecture](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/runtime-architecture/), [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/), [Channel Connector](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/channel-connector/), and [plugins and automations](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/plugins-and-automations/). See [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases) for version notes and artifact verification details.
 
 ### RuntimeEvent Schema v2 Contract
 

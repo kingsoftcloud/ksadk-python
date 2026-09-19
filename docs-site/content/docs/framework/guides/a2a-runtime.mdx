@@ -9,7 +9,7 @@ description: "在不削弱入站和出站安全边界的前提下使用平台托
 
 ## 协议兼容性与 Agent Card
 
-KsADK 0.8.3 的 A2A wire 合同固定为 A2A 1.0，并精确锁定 `a2a-sdk==1.1.0`。
+KsADK 0.8.5 的 A2A wire 合同固定为 A2A 1.0，并精确锁定 `a2a-sdk==1.1.0`。
 `AgentCard`、`AgentInterface`、`AgentCapabilities` 和 `SecurityRequirement` 均使用该 SDK
 提供的 protobuf 类型；兼容性以锁定依赖和仓内契约测试为准，不跟随上游 `main` 浮动。
 升级协议时必须同时升级 SDK、实现和契约测试，不能只改文档。

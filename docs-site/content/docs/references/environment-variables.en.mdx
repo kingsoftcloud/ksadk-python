@@ -188,6 +188,7 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 | `KSADK_CHECKPOINT_BACKEND` | checkpoint backend: `local` / `sqlite` / `memory` / `postgres`; default `local` (0.6.7) |
 | `KSADK_CHECKPOINT_PATH` | local SQLite checkpoint path, default `.agentengine/ui/checkpoints.sqlite` (0.6.7) |
 | `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph PostgreSQL checkpoint DSN; required when backend is `postgres` (0.6.7) |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | Whether the managed LangGraph runner injects a controlled PostgreSQL saver; defaults to `false`, and enabled entry modules must export `ksadk_graph_factory(*, checkpointer)` and `ksadk_prepare_state(payload, session_context)`, otherwise `LANGGRAPH_FACTORY_REQUIRED` or `PREPARE_STATE_HOOK_REQUIRED` fails closed |
 
 Local `agentengine web` defaults to local session backend and SQLite LangGraph checkpoints, reducing the local resume path's dependency on PostgreSQL (0.6.7).
 
@@ -342,7 +343,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.4 default is `0.3.7`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the current default is `0.3.11`. Publish and verify a new version before using it in a wheel build. |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |
@@ -356,9 +357,19 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_DSH_HOME` | Isolated managed DSH Profile directory; defaults to `.agentkit/dsh-home` in the workspace. Studio never mutates an explicitly configured directory. |
-| `KSADK_DSH_PROFILE` | DSH Profile name to use; defaults to `studio`. |
+| `KSADK_DSH_HOME` | Isolated managed DSH Profile directory; defaults to `.agentkit/dsh-homes/<dsh-version>` in the workspace, currently `0.1.5-rc.1`. Studio never mutates an explicitly configured directory. |
+| `KSADK_DSH_PROFILE` | DSH Profile name used by Studio; defaults to the `web` profile. |
 | `KSADK_DSH_BIN` | Optional absolute DSH command path for fixed-toolchain core development or CI verification; version mismatches fail closed. |
+
+## Messaging channels
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_STUDIO_CHANNEL_DEFAULT` | Whether Studio activates the official Channel UI bundle in the background; defaults to `1`, and `0`, `false`, `no`, or `off` disables it |
+| `AGENTENGINE_CHANNEL_URL` | Startup default for the Channel service HTTPS address |
+| `KSYUN_ACCOUNT_ID` | Startup default for the Channel account identity |
+| `KSADK_CHANNEL_WORKSPACE_ID` | Startup default for the Connector workspace; Studio derives a stable value from the workspace when unset |
+| `KSADK_CHANNEL_API_TOKEN` | Channel API management token; sensitive and should only be supplied through protected configuration |
 
 ## Observability
 
@@ -405,4 +416,4 @@ When one backend fails the other still works: primary failure keeps the secondar
   - Keep public docs on placeholders such as `sk-test`, `my-model`, and `https://api.example.com/v1`.
 </Callout>
 
-Current Hosted UI static asset version: `0.3.10`.
+Current Hosted UI static asset version: `0.3.11`.
