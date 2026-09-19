@@ -27,7 +27,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.8"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.10"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
@@ -216,8 +216,9 @@ studio-react-test: build-studio-static
 # 构建和发布
 # ============================================================
 
-# 获取当前版本
-VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)" 2>/dev/null || echo "0.0.0")
+# 获取当前版本 (grep from pyproject.toml so it works without a Python interpreter
+# on PATH — CI Windows Git Bash may not expose python3 to Make's $(shell)).
+VERSION := $(shell grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 
 # 版本管理
 version:
@@ -540,7 +541,7 @@ public-version-gate:
 
 release-preflight: public-build-check
 	@echo "==> Release compatibility, native host, browser, and artifact preflight"
-	@uv run --extra all python scripts/release_preflight.py --dist-dir dist
+	@uv run --extra all python scripts/release_preflight.py --dist-dir dist $(RELEASE_PREFLIGHT_FLAGS)
 
 RELEASE_FINAL_COMMIT ?= $(shell git rev-parse HEAD)
 RELEASE_LOCAL_EVIDENCE ?= dist/release-evidence.json
@@ -617,7 +618,7 @@ public-review: public-status public-preflight
 
 # 离线包输出目录
 OFFLINE_DIR = offline-packages
-VERSION := $(shell python3 -c "from ksadk.version import VERSION; print(VERSION)")
+VERSION := $(shell grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 
 # 平台参数
 LINUX_PLATFORM = manylinux2014_x86_64
@@ -865,11 +866,26 @@ studio-app-clean:
 	@rm -rf "$(STUDIO_APP_DIR)"
 	@echo "✅ Studio local bundle cleaned"
 
+# DMG:hdiutil UDZO(zlib 压缩只读镜像),含 Applications 软链接(拖拽安装)。
+# 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg
+STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(VERSION)-macos-arm64.dmg
+studio-app-dmg: studio-app-package
+	@test -d "$(STUDIO_APP_BUNDLE)" || (echo "ERROR: Studio bundle missing; run make studio-app-package first" >&2; exit 1)
+	@rm -f "$(STUDIO_APP_DMG)"
+	@staging="$$(mktemp -d)"; \
+	  ditto "$(STUDIO_APP_BUNDLE)" "$$staging/AgentKitStudio.app"; \
+	  ln -s /Applications "$$staging/Applications"; \
+	  hdiutil create -volname "AgentKit Studio" \
+	    -srcfolder "$$staging" \
+	    -ov -format UDZO \
+	    "$(STUDIO_APP_DMG)"; \
+	  rm -rf "$$staging"
+	@echo "✅ Studio DMG: $(STUDIO_APP_DMG)"
+
 # Windows x64 bundle. Built under Git Bash on a Windows runner (or locally on
 # Windows). Produces an UNSIGNED AgentKitStudio-Setup-x64.exe; SignPath signs
 # it in the release workflow. makensis must be on PATH (NSIS via chocolatey).
 studio-app-package-windows: build-wheel
-	@command -v makensis >/dev/null 2>&1 || (echo "ERROR: makensis (NSIS) not found; install NSIS first" >&2; exit 1)
 	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
 	  STUDIO_APP_PYTHON_VERSION="$(STUDIO_APP_PYTHON_VERSION)" \
 	  ELECTRON_VERSION="$(ELECTRON_VERSION)" \

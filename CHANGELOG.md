@@ -5,22 +5,39 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.8.5] - 2026-09-15
+## [0.8.5] - 2026-09-18
 
-### Added
-- harness 流式输出：透传 / 至全部 reasoner 包装层； live-tail canonical 事件并按 seq 去重
-- MCP 鉴权：harness envRefs 凭据回退（metaso 401 修复）；codex bearer env 合并；元调度工具（tool_search）从目录隐藏；mcp_tool_call 审批自动放行
-- 审批模式：composer 完全访问（tool_approval_mode=full）禁用 harness 审批门
-- 会话 UX：新建会话互斥；切 Agent 回欢迎页；流式中删除先取消再删；僵尸 RUNNING 回收；会话列表排序稳定
-- 运行时预热：prewarm 端点 + 跨轮复用激活（首 token -12s）
-- 打包瘦身：孤儿依赖 + 其他平台产物裁剪（1.5GB→1.1GB）
-- codex 运行时升级到 openai-codex 0.154.0
-- 默认模型 deepseek-v4.1-flash（原生 Responses），回退 glm-5.3-flash
+### 亮点
 
-### Fixed
-- 内置工具 digest 漂移自愈（runtime-generated builtin tools）
-- harness 文件工具写入用户工作区（而非哈希目录）
-- event store stat 缓存避免 SSE 投影循环全量重读
+- **Studio 内置消息渠道**：官方 `dsh-channels-client` 随 KsADK 制品分发，Studio HTTP 服务先可用，再在后台装配默认 Channel 页面；首次打开不等待插件工具链或远端 Channel 服务。ksadk 不安装也不依赖 `agentengine-channel` Python 服务。
+- **本地 Agent 与云端 Channel 闭环**：新增 Channel Connector Protocol v1（Agent Connector）。本地 ADK、LangGraph 等高代码 Agent 通过出站 WSS 接入云端 Channel，不需要开放本地端口；Studio 与独立高代码 Agent 使用同一套 Connector API。
+- **本地与云端 Agent 目标明确隔离**：Channel 绑定显式使用 `ConnectorWorkspaceId` 和 Agent 身份，本地目标离线时不会静默回退到云端 Runtime，避免消息误投。
+- **运行时安全边界收紧**：托管 checkpoint 缺少 `prepare_state` 时 fail-closed，hook 模式下 compaction 归属安全降级到 framework，避免恢复链路在不完整契约下继续执行。
+- **Studio 与运行时体验持续收敛**：延续流式输出、MCP 鉴权与审批、会话互斥/恢复、运行时预热、默认模型和 Codex Runtime 升级，减少首次响应和会话切换等待。
+
+### 新增与变更
+
+- Connector 支持 JWT 身份校验、`register` / `invoke` / `cancel`、deadline、idempotency key、心跳、指数退避重连、有限终态缓存和取消回收；连接断开且结果未知时不自动重放可能带副作用的 Agent 调用。
+- Channel API 支持多副本 owner/relay 路由和 workspace 隔离；跨副本 relay 使用 Redis Pub/Sub，不宣称 durable queue 或 exactly-once，业务重试由宿主按 `idempotency_key` 实现。
+- Channels 页面从 Studio 静态路由迁移为 DSH workspace 插件；公开协议参考为 `docs/connector/channel-connector-protocol-v1.md`。默认插件激活失败时只影响 Channel 页面，不阻塞 Studio 主服务。
+- 公开 `pyproject.toml` 移除未发布的 channel extra；wheel 构建不再解析 `agentengine-channel`。Web companion 固定使用 `@kingsoftcloud/ksadk-web@0.3.10`。
+- harness 流式输出透传到 reasoner 包装层，live-tail canonical 事件按 seq 去重；MCP envRefs 凭据回退、Codex bearer 合并、`tool_search` 目录隐藏和 `mcp_tool_call` 审批放行保持统一。
+- `tool_approval_mode=full` 时 composer 完全访问不再被 Harness 审批门重复拦截；新建会话互斥、切 Agent 回欢迎页、流式删除先取消、僵尸 RUNNING 回收和稳定排序继续生效。
+- 增加 prewarm 端点与跨轮激活复用；裁剪孤儿依赖和其他平台产物；默认模型为 `deepseek-v4.1-flash`，回退 `glm-5.3-flash`；Codex Runtime 升级至 `openai-codex==0.154.0`。
+- Studio 桌面打包补齐 Mach-O/Node 签名、DMG Applications 快捷方式和发布 workflow 的 Pillow、pnpm、secret 条件修复；这些是制品门禁改进，不改变 Python API。
+
+### 修复
+
+- 修复内置工具 digest 漂移自愈、Harness 文件工具写入用户工作区，以及 event store stat 缓存导致 SSE 投影循环全量重读的问题。
+- 修复 Connector 首次 heartbeat 窗口、重复投递终态回放、跨副本 owner fencing 和错误响应泄露；断线未知结果仍保持显式不确定，不伪造成功或自动重试。
+- 修复 Studio Channel 页面双路由和静态导航并存、插件发现 fan-out 阻塞首屏，以及 Vite/Teams 样式/xterm 构建测试不稳定的问题。
+- 修复托管 checkpoint hook 缺失时继续执行的风险；缺少 `prepare_state` 现在返回明确的 fail-closed 错误，已有 durable checkpointer 不再错误接管 compaction。
+
+### 验证与发布记录
+
+- KsADK 重点 Python、Studio connector、插件生命周期、前端 Vitest 与生产 Vite 构建已通过；完整发布门禁仍以最终 workflow 日志为准。
+- Channel Connector gateway、JWT、Redis 双副本、heartbeat、Studio inbound pipeline、真实 Harness 执行和浏览器 Channel workspace E2E 已在隔离临时环境通过；IM 投递和模型响应使用确定性替身，未宣称真实账号验收。
+- 当前 `0.8.5` 仍是候选版本；尚未创建 PyPI、GitHub Release 或 tag。正式发布必须经过完整 release workflow、制品审计和维护者批准。
 
 ## [0.8.4] - 2026-09-09
 

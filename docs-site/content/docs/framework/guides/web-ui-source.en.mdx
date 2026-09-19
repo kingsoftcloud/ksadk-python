@@ -32,7 +32,7 @@ Studio source is included in the public export. Static assets are generated at b
 # Default: pull the verified npm version
 make sync-ksadk-web-static
 
-# Pin the concrete 0.8.4 candidate version
+# Pin the concrete 0.8.5 candidate version
 make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.10
 ```
 
@@ -74,13 +74,13 @@ to exist before it is copied over `ksadk/server/static`.
 
 Each `ksadk-python` release note should record:
 
-- The `ksadk-python` version (e.g. `0.8.4`).
-- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.4` maps to `@kingsoftcloud/ksadk-web@0.3.10`).
+- The `ksadk-python` version (e.g. `0.8.5`).
+- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.5` maps to `@kingsoftcloud/ksadk-web@0.3.10`).
 - The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.10`).
 - The wheel / sdist audit result (`make public-build-check` / `twine check dist/*`).
 
-<Callout type="info" title="0.8.4 candidate record example">
-- `ksadk-python`: `0.8.4`
+<Callout type="info" title="0.8.5 candidate record example">
+- `ksadk-python`: `0.8.5`
 - npm package: `@kingsoftcloud/ksadk-web@0.3.10`
 - frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.10`
 - audit: `make public-build-check` passed, `twine check dist/*` passed

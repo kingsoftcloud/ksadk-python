@@ -3,8 +3,8 @@ title: AgentKit Local Studio
 description: 本地创作、构建、对话与云端生命周期工作区。
 ---
 
-<Callout type="info" title="0.8.3 当前能力">
-  AgentKit Local Studio 在浏览器中创建、构建并测试 Agent，并通过平台既有接口管理云端生命周期。0.8.3 同时提供受控插件入口、统一会话表面和本地 Scheduler Lite；这些能力仍遵守 Provider、权限和本地运行边界。
+<Callout type="info" title="0.8.5 当前能力">
+  AgentKit Local Studio 在浏览器中创建、构建并测试 Agent，并通过平台既有接口管理云端生命周期。0.8.5 同时提供受控插件入口、统一会话表面、本地 Scheduler Lite 和消息渠道工作区；这些能力仍遵守 Provider、权限和本地运行边界。
 </Callout>
 
 `agentengine studio` 是 KsADK 的本地优先工作区。它把 Agent 定义、构建记录、会话、资源、Trace 与任务编排放在同一个浏览器界面中；模型调用和构建仍由本机 KsADK 运行时执行。
@@ -75,7 +75,17 @@ agentengine web .
 
 普通聊天使用前台流式请求，不要求 Background 模式。断开页面后仍需继续的长任务才使用 Background session。当前会话支持增量正文、思考、工具、审批、附件、模型选择、三档审批以及 Goal / Plan；不单独展示一个“Loop”模式。
 
-## 0.8.3 插件与本地自动化
+## 消息渠道与本地 Agent 连接
+
+Studio 的官方 Channel 页面随 KsADK wheel 分发，并在 Studio 监听器启动后后台激活。首次页面渲染不等待 DSH 插件工具链或 Channel 服务；后台激活失败只影响消息渠道页面，不影响 Agent、会话和其他工作区。设置 `KSADK_STUDIO_CHANNEL_DEFAULT=0` 可以关闭默认激活。
+
+在 **消息渠道** 页面配置独立 Channel 服务的 HTTPS 地址、账号、workspace 和 API token，再为需要接入 IM 的本地 Agent 启用连接。Studio 只为明确启用的 Agent 建立出站 WSS；本地不需要启动 `agentengine-channel` 服务，也不需要开放本地监听端口。Channel service 的部署和凭证签发由服务端负责，ksadk 只提供客户端协议和 UI。
+
+ADK、LangGraph 等高代码 Agent 可以不使用 Studio，直接通过 `ksadk.connector.create_channel_connector` 注册到同一个 Channel 服务。Channel 负责 IM 与 Agent 的路由，A2A 负责 Agent 之间的互操作，两者可以同时使用但不是同一条协议。
+
+完整配置、故障边界和代码示例见 [Channel Connector](./channel-connector.mdx)。
+
+## 0.8.5 插件与本地自动化
 
 Studio 的插件页只展示两个明确的宿主边界：DSH Bundle/Profile 由受管理的 DSH 工具链接管生命周期；Codex 官方插件继续由 Codex App Server 管理。KsADK 不复制插件实现，也不把任意本地目录伪装成已安装能力。
 

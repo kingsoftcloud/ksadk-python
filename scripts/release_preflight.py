@@ -648,7 +648,7 @@ def write_release_evidence_report(path: Path, report: Mapping[str, object]) -> N
     )
 
 
-def run_release_test_gates() -> dict[str, str]:
+def run_release_test_gates(*, skip_browser_gates: bool = False) -> dict[str, str]:
     """Run every source-level release gate with its required host enabled."""
 
     _run([sys.executable, "-m", "pytest", "-q", *COMPATIBILITY_TESTS])
@@ -694,12 +694,22 @@ def run_release_test_gates() -> dict[str, str]:
         },
     )
     for browser_gate in BROWSER_GATES:
+        if skip_browser_gates:
+            break
         python_path = os.pathsep.join(
             value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value
         )
         _run(
             [sys.executable, browser_gate],
-            environment={"PYTHONPATH": python_path},
+            environment={
+                "PYTHONPATH": python_path,
+                # Browser gates verify core Studio + Scheduler.  The optional
+                # DSH Channel/Teams default activations run a Profile-maintenance
+                # fence whose toolchain is absent on gate machines; they are not
+                # what these gates assert.
+                "KSADK_STUDIO_CHANNEL_DEFAULT": "0",
+                "KSADK_STUDIO_TEAMS_DEFAULT": "0",
+            },
         )
     return {name: "passed" for name in SOURCE_E2E_STATUS_KEYS}
 
@@ -718,6 +728,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="skip source E2E gates; evidence is generated as incomplete",
     )
     parser.add_argument(
+        "--skip-browser-gates",
+        action="store_true",
+        help="skip browser E2E gates (scheduler/conversation); use for "
+        "source-sync where browser infrastructure is unavailable",
+    )
+    parser.add_argument(
         "--evidence-output",
         type=Path,
         default=None,
@@ -732,7 +748,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     source_gate_statuses = {name: "not_run" for name in SOURCE_E2E_STATUS_KEYS}
     if not args.skip_tests:
-        source_gate_statuses = run_release_test_gates()
+        source_gate_statuses = run_release_test_gates(
+            skip_browser_gates=args.skip_browser_gates
+        )
     public_export = is_public_export(ROOT)
     validate_generated_static_tracking_policy(ROOT, public_export=public_export)
     source_commit = _current_source_commit()

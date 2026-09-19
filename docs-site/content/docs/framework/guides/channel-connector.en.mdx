@@ -1,0 +1,86 @@
+---
+title: Channel Connector
+description: Connect local and high-code Agents to cloud messaging channels over outbound WSS.
+---
+
+Channel Connector routes IM messages to an Agent. The Agent opens an outbound WebSocket, so the cloud Channel service does not need to connect back into a local network. This works for desktop, NAT, and private-network runtimes.
+
+```text
+IM ──> Channel service ──> outbound WSS ──> local Agent
+```
+
+The Channel service is deployed separately. The KsADK wheel contains the Connector client and the official Studio Channel UI bundle; it does not install or start the `agentengine-channel` Python service. Local Studio also remains usable when the Channel service is unavailable because the first page does not wait for it.
+
+## Use it from Studio
+
+Start Studio after installing KsADK. The official DSH bundle activates the Channel page in the background by default. The listener starts first; a failed background installation only makes the Channel page unavailable and does not block the rest of Studio.
+
+Configure these fields on the **Channels** page:
+
+| Setting | Purpose |
+| --- | --- |
+| Service URL | HTTPS address of the Channel API; the Connector derives the matching WSS endpoint |
+| Account | Tenant or account identity used by the Channel service |
+| Workspace | Workspace that isolates local Connectors and bindings |
+| API token | Stored locally by Studio for Channel API management |
+| Agent credential | A separate short-lived Connector JWT for each explicitly selected local Agent |
+
+Studio opens an outbound connection only for an Agent that you explicitly enable. Each binding records both `agent_id` and `ConnectorWorkspaceId`; an offline local target is not silently replaced with a cloud Agent.
+
+These environment variables provide startup defaults or disable automatic UI activation:
+
+| Variable | Description |
+| --- | --- |
+| `AGENTENGINE_CHANNEL_URL` | HTTPS address of the Channel service |
+| `KSYUN_ACCOUNT_ID` | Default account identity |
+| `KSADK_CHANNEL_WORKSPACE_ID` | Default Connector workspace; Studio derives a stable value from the workspace when unset |
+| `KSADK_CHANNEL_API_TOKEN` | Channel API management token; treat it as a secret and do not commit it |
+| `KSADK_STUDIO_CHANNEL_DEFAULT` | Defaults to `1`; set `0`, `false`, `no`, or `off` to disable background activation |
+
+These variables only provide launch defaults. Values saved in Studio are stored in the protected `.agentkit/config.yaml` workspace configuration, and status responses never return tokens.
+
+## Connect a high-code Agent
+
+An ADK, LangGraph, or other Python Agent does not need Studio or a local Channel service. Wrap its runner as an `invoke` callback:
+
+```python
+import asyncio
+
+from ksadk.connector import InvokeRequest, create_channel_connector
+
+
+async def invoke(request: InvokeRequest) -> str:
+    # Call your ADK/LangGraph runner and keep request.session_id.
+    return await my_agent_runner(
+        request.message,
+        session_id=request.session_id,
+    )
+
+
+async def main() -> None:
+    connector = create_channel_connector(
+        url="wss://channel.example.com/agentengine/connector/v1",
+        token="<short-lived-jwt>",
+        tenant_id="tenant-example",
+        workspace_id="workspace-example",
+        agent_id="agent-example",
+        invoke=invoke,
+    )
+    try:
+        await connector.start()
+    finally:
+        await connector.stop()
+
+
+asyncio.run(main())
+```
+
+Production deployments use a JWT issued by the deployment owner. Its identity must match `tenant_id`, `workspace_id`, and `agent_id`; the Channel service or platform owns signing keys, refresh, and expiry policy. Do not put signing secrets in Agent code. The Connector handles registration, invocation, cancellation, heartbeats, exponential reconnect, and bounded terminal replay.
+
+When a connection drops and the outcome of an invocation is unknown, the Connector does not replay the callback automatically, avoiding duplicate side effects. Cross-replica relay is not a durable queue and does not promise exactly-once delivery; implement business retries with `idempotency_key` when needed.
+
+## Boundary with A2A
+
+Channel Connector is an **IM ↔ Agent** routing and session entry point. A2A is an **Agent ↔ Agent** interoperability protocol. An Agent can expose A2A and connect to a Channel at the same time, but their identities, task semantics, and failure handling remain separate. Connector v1 carries text invocations and terminal results; it is not a general A2A transport.
+
+See the repository's [Channel Connector Protocol v1](https://github.com/kingsoftcloud/ksadk-python/blob/main/docs/connector/channel-connector-protocol-v1.md) for the message envelope and compatibility rules.

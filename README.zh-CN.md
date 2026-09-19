@@ -46,9 +46,10 @@ KsADK 把“框架适配”收敛为稳定的运行时分层，同时保留各�
 - **统一事件**：`RuntimeEvent(schema_version=2)` 是存储、回放、API、Studio 与托管界面的事件事实来源；v1 仅作为只读兼容投影。
 - **受控插件化**：DSH Bundle/Profile 使用固定工具链、不可变来源摘要和失败回滚；Codex 官方插件仍由 Codex App Server 管理。
 - **平台资源插件**：Studio 可绑定知识库、长期记忆与 Skill Center；Agent Revision 保存资源选择，Build 固化连接引用和插件摘要，Runtime 在 Activation 时按平台授权装配。
+- **消息渠道连接**：Studio 内置官方 Channel UI；本地和高代码 Agent 可通过 `ksadk.connector` 出站 WSS 接入独立 Channel 服务，不需要开放本地端口或安装 `agentengine-channel`。
 - **本地开发闭环**：Studio 覆盖创建、构建、调试、评测与本地 Scheduler Lite，并复用独立发布的 `@kingsoftcloud/ksadk-web` 会话组件。
 
-从 [运行时架构](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/runtime-architecture/)、[AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/) 和[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)开始阅读。版本说明与制品校验信息见 [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases)。
+从 [运行时架构](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/runtime-architecture/)、[AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/)、[Channel Connector](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/channel-connector/) 和[插件与自动化](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/plugins-and-automations/)开始阅读。版本说明与制品校验信息见 [GitHub Releases](https://github.com/kingsoftcloud/ksadk-python/releases)。
 
 ### RuntimeEvent schema v2 契约
 

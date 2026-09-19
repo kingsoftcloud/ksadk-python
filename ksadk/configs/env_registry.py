@@ -7,6 +7,11 @@ from ksadk.configs.env_registry_studio import STUDIO_ENV_VAR_REGISTRY_ITEMS
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     *STUDIO_ENV_VAR_REGISTRY_ITEMS,
     EnvVarSpec(
+        "AGENTENGINE_CHANNEL_URL",
+        "studio",
+        "Channel service HTTPS base URL used by Studio and Channel Connector defaults.",
+    ),
+    EnvVarSpec(
         "KSADK_MEMORY_POSTGRES_DSN", "memory", "Harness memory PostgreSQL DSN.",
         sensitive=True, documented=False,
     ),
@@ -274,8 +279,8 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_DSH_PROFILE",
         "plugins",
-        "DSH Profile name used by Studio and the plugin bridge.",
-        "studio",
+        "DSH Profile name used by Studio and the plugin bridge; defaults to the web profile.",
+        "web",
     ),
     EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
