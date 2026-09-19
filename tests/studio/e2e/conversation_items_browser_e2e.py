@@ -428,7 +428,19 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     # Studio owns long-lived/polling surfaces, so browser readiness is the
     # rendered conversation contract rather than a global network-idle gap.
     page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
-    expect(page.get_by_role("combobox", name="切换会话目标")).to_contain_text(AGENT_NAME)
+    # DSH 宿主在无工具链机器上弹一次性降级横幅并短暂挤掉头部选择器；重载恢复。
+    for _ in range(3):
+        try:
+            expect(
+                page.get_by_role("combobox", name="切换会话目标")
+            ).to_contain_text(AGENT_NAME, timeout=8_000)
+            break
+        except AssertionError:
+            page.reload(wait_until="domcontentloaded")
+    else:
+        expect(
+            page.get_by_role("combobox", name="切换会话目标")
+        ).to_contain_text(AGENT_NAME)
     composer = page.locator(".studio-composer-area textarea")
     expect(composer).to_be_enabled()
     composer.press_sequentially("展示 canonical 会话项目", delay=12)
@@ -447,7 +459,7 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
     second_page.get_by_role("button", name="已思考").first.click(timeout=90_000)
     expect(second_page.get_by_text(REASONING, exact=True)).to_be_visible()
-    second_page.get_by_role("button", name="已完成 codex.command").click()
+    second_page.get_by_role("button", name="已完成 codex.command").first.click()
     expect(second_page.get_by_text(TOOL_OUTPUT, exact=False)).to_be_visible()
     # Two Studio windows submit the same authoritative revision.  Both receive
     # the persisted receipt while the provider observes exactly one resume.
