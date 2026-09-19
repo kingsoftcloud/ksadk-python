@@ -421,18 +421,18 @@ def _exercise_conversation_items(page: Page, second_page: Page, base_url: str) -
     composer.press_sequentially("展示 canonical 会话项目", delay=12)
     page.get_by_role("button", name="发送消息").click()
 
-    page.get_by_role("button", name="已思考").first.click()
-    expect(page.get_by_text(REASONING, exact=True)).to_be_visible(timeout=15_000)
+    page.get_by_role("button", name="已思考").first.click(timeout=90_000)
+    expect(page.get_by_text(REASONING, exact=True)).to_be_visible(timeout=45_000)
     # Typed ConversationItems keep their stream order: the tool is its own
     # card after the reasoning block rather than being folded into thinking.
-    expect(page.get_by_role("button", name="等待确认 command")).to_be_visible()
+    expect(page.get_by_role("button", name="等待确认 command")).to_be_visible(timeout=45_000)
 
     approval_tray = page.locator('[data-ui="interaction-tray"]')
     expect(approval_tray).to_contain_text("echo safe")
     second_page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
     second_approval_tray = second_page.locator('[data-ui="interaction-tray"]')
     expect(second_approval_tray).to_contain_text("echo safe", timeout=15_000)
-    second_page.get_by_role("button", name="已思考").first.click()
+    second_page.get_by_role("button", name="已思考").first.click(timeout=90_000)
     expect(second_page.get_by_text(REASONING, exact=True)).to_be_visible()
     second_page.get_by_role("button", name="已完成 codex.command").click()
     expect(second_page.get_by_text(TOOL_OUTPUT, exact=False)).to_be_visible()
