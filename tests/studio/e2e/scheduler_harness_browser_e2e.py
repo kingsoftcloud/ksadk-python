@@ -347,7 +347,7 @@ def _fill_composer(page: Page, text: str) -> None:
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
     send = page.get_by_role("button", name="发送消息")
     for _ in range(6):
-        composer.fill(text)
+        composer.press_sequentially(text, delay=12)
         try:
             expect(composer).to_have_value(text, timeout=1500)
             expect(send).to_be_enabled(timeout=1500)
