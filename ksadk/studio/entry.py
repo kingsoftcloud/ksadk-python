@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
+
 from ksadk.studio.errors import StudioError
 
 
@@ -20,7 +21,7 @@ async def studio_entry_response(
     # hides those pages. Select the host from Profile metadata, without
     # starting Core just to decide which entry to serve.
     use_core = False
-    if request.url.path == "/":
+    if request.url.path == "/" and os.environ.get("KSADK_STUDIO_LAZY_START") != "1":
         try:
             # 有界等待：探测可能触发 Node bridge 冷启动（可达数十秒），
             # 超时则先回 React shell，避免首屏长时间白屏；

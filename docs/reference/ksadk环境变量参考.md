@@ -393,20 +393,24 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.7` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.10` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
 | `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
+| `AGENTENGINE_CHANNEL_URL` | Studio / Channel Connector | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 独立 Channel 服务的 HTTPS 基地址；Studio 会据此建立管理 API 和出站 WSS 连接。 |
+| `KSADK_CHANNEL_WORKSPACE_ID` | Studio / Channel Connector | 否 | 由 Studio 工作区稳定生成 | 无 | 否 | 开发者 / Studio | 否 | 本地 Connector workspace 标识，用于隔离账号和 Agent 绑定。 |
+| `KSADK_CHANNEL_API_TOKEN` | Studio / Channel API | 条件必传 | 未设置 | 无 | 是 | 开发者 / Secret | 否 | Channel 管理 API 的 Bearer token；只通过受保护配置注入，不写入 Agent spec、日志或 Git。 |
 | `KSADK_CODEX_APPROVAL` | Codex runtime | 否 | 由沙箱策略决定 | 无 | 否 | 开发者 / Studio | 否 | Codex 审批模式；只读场景默认拒绝写操作，Studio 可按轮次传入审批等级。 |
 | `KSADK_CODEX_HOME` | Codex runtime | 否 | 自动隔离到工作区 | 无 | 否 | 开发者 | 否 | 显式覆盖原生 Codex 的 HOME 目录；普通用户无需设置。 |
 | `KSADK_CODEX_ISOLATE_HOME` | Codex runtime | 否 | `1` | 无 | 否 | 开发者 / 测试 | 否 | 默认隔离 Codex 状态；仅调试时可设为 `0` 复用进程 HOME。 |
 | `KSADK_CODEX_SANDBOX` | Codex runtime | 否 | `read_only` | 无 | 否 | 开发者 / Studio | 否 | Codex 沙箱模式：`read_only`、`workspace_write` 或 `full_access`。 |
 | `KSADK_CODEX_USE_PROXY` | Codex runtime | 否 | 自动探测 | 无 | 否 | 开发者 / 平台 | 否 | `1` 强制启用本地 Responses-to-Chat proxy，`0` 强制直连；未设置时仅对自定义上游进行保守探测。 |
-| `KSADK_DSH_HOME` | Studio 插件桥接 | 否 | `<workspace>/.agentkit/dsh-home` | 无 | 否 | 开发者 / Studio | 否 | 受管理 DSH Profile 的隔离目录。显式设置后 Studio 不会改写该目录。 |
-| `KSADK_DSH_PROFILE` | Studio 插件桥接 | 否 | `studio` | 无 | 否 | 开发者 / Studio | 否 | 选择 DSH Profile 名称；与 `KSADK_DSH_HOME` 一起用于发现已安装插件。 |
+| `KSADK_DSH_HOME` | Studio 插件桥接 | 否 | `<workspace>/.agentkit/dsh-homes/0.1.5-rc.1` | 无 | 否 | 开发者 / Studio | 否 | 受管理 DSH Profile 的隔离目录。显式设置后 Studio 不会改写该目录；旧版 `.agentkit/dsh-home` 目录会保留，不会原地升级。 |
+| `KSADK_DSH_PROFILE` | Studio 插件桥接 | 否 | `web` | 无 | 否 | 开发者 / Studio | 否 | 选择 DSH Profile 名称；Studio 默认使用 `web` profile，与 `KSADK_DSH_HOME` 一起用于发现已安装插件。 |
 | `KSADK_DSH_BIN` | Studio 插件桥接 | 否 | 受管理固定工具链 | 无 | 否 | DSH 核心开发 / CI | 否 | 显式指定 DSH 命令路径，仅用于验证固定版本工具链；版本不匹配会拒绝执行。 |
 | `KSADK_STUDIO_NO_SECURITY` | AgentKit Studio | 否 | `0` | 无 | 否 | 测试环境 | 否 | 仅受控自动化测试可设为 `1`；正常启动必须保留 loopback session 与 CSRF 校验。 |
+| `KSADK_STUDIO_CHANNEL_DEFAULT` | AgentKit Studio | 否 | `1` | 无 | 否 | 开发者 / Studio | 否 | Studio HTTP 服务可用后是否后台默认激活官方 Channel UI bundle；设为 `0`、`false`、`no` 或 `off` 可关闭。失败不会阻塞 Studio 主页面。 |
 | `KSADK_STUDIO_SESSION_TOKEN` | AgentKit Studio | 否 | 随机生成 | 无 | 是 | CLI / 测试 Secret | 否 | 显式指定本地浏览器 session token；正常启动由 CLI 随机生成并写入启动 URL。 |
 | `KSADK_STUDIO_TRACE_CONTENT` | AgentKit Studio | 否 | `1` | 无 | 否 | 开发者 / Studio 设置 | 否 | 是否保存 Trace 事件正文；设为 `0` 时只保留排障所需元数据。 |
 | `KSADK_TEAMS_SERVER_URL` | Studio Teams | 否 | 空，使用本地团队存储 | 无 | 否 | 开发者 / 工作区配置 | 否 | 显式连接兼容 Teams 协议的服务端；未设置时保留本地模式。 |

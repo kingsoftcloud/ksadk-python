@@ -1062,3 +1062,9 @@
     grid-template-columns: repeat(1, minmax(0, 1fr));
   }
 }
+.channels-connection { padding: 14px 18px; border: 1px solid var(--border-color, #dfe3e8); border-radius: 10px; margin-bottom: 12px; }
+.channels-connection summary { cursor: pointer; font-weight: 600; }
+.channels-connection__form { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.channels-connection__form label { display: flex; flex-direction: column; gap: 6px; min-width: 180px; flex: 1; }
+.channels-connection__form input, .channels-connection__form select { width: 100%; min-height: 34px; border: 1px solid var(--border-color, #dfe3e8); border-radius: 6px; padding: 6px 8px; background: var(--surface, #fff); color: inherit; }
+.channels-connection p { margin-top: 12px; }

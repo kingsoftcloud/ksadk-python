@@ -92,9 +92,11 @@ def _exercise_reconnect(page: Page, base_url: str) -> None:
     # Studio can keep background plugin/session requests open; readiness is the
     # rendered conversation surface, not a process-wide network-idle window.
     page.goto(f"{base_url}/#/conversations", wait_until="domcontentloaded")
-    expect(page.get_by_role("button", name="切换对话 Agent")).to_contain_text(
-        AGENT_NAME
-    )
+    # 会话页头部已是 StudioSelect 组合框（combobox "切换会话目标"），不再是
+    # 旧的 ChatAgentSelector 按钮；断言目标 Agent 已被选中。
+    expect(
+        page.get_by_role("combobox", name="切换会话目标")
+    ).to_contain_text(AGENT_NAME)
     composer = page.get_by_role("textbox", name="发送消息…", exact=True)
     expect(composer).to_be_enabled()
 
