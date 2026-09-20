@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-dmg-existing studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
 KERNEL_CANARY_NAMESPACE ?= agent-kernel
 # Kernel runtime drills must run beside real Agent workloads in the preprod
@@ -870,6 +870,12 @@ studio-app-clean:
 # 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg
 STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(VERSION)-macos-arm64.dmg
 studio-app-dmg: studio-app-package
+	@$(MAKE) --no-print-directory studio-app-dmg-existing
+
+# Package the DMG from the already-built bundle. Release CI calls this after
+# signing and notarizing; keeping it separate prevents the DMG target from
+# rebuilding the app and silently discarding its notarization ticket.
+studio-app-dmg-existing:
 	@test -d "$(STUDIO_APP_BUNDLE)" || (echo "ERROR: Studio bundle missing; run make studio-app-package first" >&2; exit 1)
 	@rm -f "$(STUDIO_APP_DMG)"
 	@staging="$$(mktemp -d)"; \
