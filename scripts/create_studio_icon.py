@@ -17,3 +17,5 @@ for size in (16,32,128,256,512):
     im=im.filter(ImageFilter.GaussianBlur(0.15*size/16))
     im.save(out/f'icon_{size}x{size}.png')
     if size <= 512: im.resize((size*2,size*2), Image.Resampling.LANCZOS).save(out/f'icon_{size}x{size}@2x.png')
+    if size == 256:
+        im.save('scripts/studio_icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])

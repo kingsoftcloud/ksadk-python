@@ -229,6 +229,12 @@ PUBLIC_TEST_FILES = {
     "tests/runners/test_codex_runner.py",
     "tests/runners/test_hitl_resume_envelopes.py",
     "tests/runtime/test_semantic_tool_scope.py",
+    "tests/test_runner.py",
+    "tests/test_langgraph_runner_resume.py",
+    "tests/runners/test_langchain_hitl_langgraph.py",
+    "tests/runners/test_langgraph_session_identity.py",
+    "tests/architecture/test_python_module_size.py",
+    "tests/context_engine/test_capabilities.py",
     "tests/studio/test_e2e_server_readiness.py",
     "tests/test_resilient_canonical_authority.py",
 }
