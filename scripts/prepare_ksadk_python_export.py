@@ -43,8 +43,13 @@ ROOT_EXPORT_FILES = {
     ".github/ISSUE_TEMPLATE/feature_request.md",
     ".github/dependabot.yml",
     ".github/pull_request_template.md",
+    ".github/codeql/codeql-config.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
+    ".github/workflows/release-studio-app.yml",
+    "electron-main.js",
+    "preload.js",
+    "desktop-runtime.js",
     ".github/workflows/pages.yml",
     ".github/workflows/publish-pypi.yml",
     ".github/workflows/release-check.yml",
@@ -104,6 +109,12 @@ SCRIPT_EXPORT_FILES = {
     "scripts/public_secret_audit.py",
     "scripts/verify_ksadk_web_static.py",
     "scripts/write_build_provenance.py",
+    "scripts/package_studio_app.sh",
+    "scripts/package_studio_app_windows.sh",
+    "scripts/create_studio_icon.py",
+    "scripts/studio.entitlements",
+    "scripts/node.entitlements",
+    "scripts/write_studio_update_manifest.py",
 }
 
 PUBLIC_TEST_FILES = {
