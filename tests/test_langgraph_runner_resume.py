@@ -1,0 +1,2155 @@
+import base64
+from types import SimpleNamespace
+
+import pytest
+from langgraph.types import Command
+
+from ksadk.runners.langgraph_runner import LangGraphRunner
+from ksadk.runtime.adapter import RunHandle
+
+
+class _DummyAgent:
+    def __init__(self):
+        self.last_ainvoke_state = None
+        self.last_astream_state = None
+        self.last_ainvoke_context = None
+        self.last_ainvoke_config = None
+        self.last_astream_config = None
+        self.state_config = None
+
+    async def ainvoke(self, state, config=None, context=None):
+        self.last_ainvoke_state = state
+        self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
+        return {"messages": [{"content": "ok"}]}
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(config=self.state_config)
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        if False:
+            yield {}
+
+
+class _AsyncStateAgent(_DummyAgent):
+    async def aget_state(self, config):
+        del config
+        return SimpleNamespace(
+            config=self.state_config,
+            values={"messages": []},
+            next=(),
+            metadata={"source": "loop", "step": 1},
+            created_at="2026-09-02T00:00:00+00:00",
+            parent_config=None,
+            tasks=(),
+        )
+
+    get_state = None
+
+
+class _MissingCheckpointAgent(_DummyAgent):
+    async def aget_state(self, config):
+        return SimpleNamespace(
+            config=config,
+            values={},
+            next=(),
+            metadata=None,
+            created_at=None,
+            parent_config=None,
+            tasks=(),
+        )
+
+    get_state = None
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_attaches_persisted_checkpoint_with_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch restarted RuntimeExecutor failing before LangGraph sees its checkpoint."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    runner._agent = _AsyncStateAgent()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "session-1:run-1",
+            "checkpoint_id": "checkpoint-1",
+        }
+    }
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "known_checkpoint_ids": ["checkpoint-1"],
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rejects_checkpoint_missing_from_shared_backend(
+    monkeypatch, tmp_path
+):
+    """Catch attach accepting a durable address that the graph cannot resolve."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    runner._agent = _MissingCheckpointAgent()
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rejects_incomplete_persisted_checkpoint(
+    monkeypatch, tmp_path
+):
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Durable": True,
+            "SharedAcrossPods": True,
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={"checkpoint_id": "checkpoint-1"},
+    )
+
+    assert await runner.attach_runtime_handle(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_lazy_checkpoint_capability_owns_attach(
+    monkeypatch, tmp_path
+):
+    """Catch base managed-graph errors masking a custom runner's lazy saver."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = None
+    lazy_agent = _AsyncStateAgent()
+    lazy_agent.state_config = {
+        "configurable": {
+            "thread_id": "session-1:run-1",
+            "checkpoint_id": "checkpoint-1",
+        }
+    }
+
+    async def with_graph(callback):
+        runner._agent = lazy_agent
+        try:
+            return await callback()
+        finally:
+            runner._agent = None
+
+    monkeypatch.setattr(runner, "_with_graph", with_graph, raising=False)
+    runner._managed_checkpoint_error = (
+        "LANGGRAPH_FACTORY_REQUIRED",
+        "base managed graph factory is not used by this custom runner",
+    )
+
+    async def prepare_capabilities():
+        return None
+
+    monkeypatch.setattr(runner, "prepare_runtime_capabilities", prepare_capabilities)
+    monkeypatch.setattr(
+        runner,
+        "describe_lazy_checkpoint_capability",
+        lambda: {
+            "Supported": True,
+            "Backend": "postgres",
+            "Scope": "shared",
+            "Durable": True,
+            "SharedAcrossPods": True,
+            "ResumeMode": "time_travel",
+            "Reason": "",
+        },
+    )
+    handle = RunHandle(
+        run_id="run-1",
+        session_id="session-1",
+        runtime_type="langgraph",
+        native_ref={
+            "checkpoint_id": "checkpoint-1",
+            "thread_id": "session-1:run-1",
+        },
+    )
+
+    assert await runner.attach_runtime_handle(handle) is True
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(
+    monkeypatch, tmp_path
+):
+    """Catch a managed saver opening the Session database despite a dedicated target."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    captured_dsns = []
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    async def create_saver(dsn):
+        captured_dsns.append(dsn)
+        return SimpleNamespace(), _Pool()
+
+    def graph_factory(*, checkpointer):
+        assert checkpointer is not None
+        return SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=graph_factory,
+        # managed 流程要求 prepare_state 钩子（避免双重历史注入）。
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
+    )
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://session.example.test/session_db")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert captured_dsns == ["postgresql://checkpoint.example.test/checkpoint_db"]
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_reports_target_unreachable(
+    monkeypatch, tmp_path
+):
+    """Catch collapsing managed checkpoint setup failures into a generic DB error."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(invoke=lambda: checkpointer),
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
+    )
+
+    async def fail_to_create_saver(_dsn):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", fail_to_create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner.describe_checkpoint_capability()["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_retries_transient_initialization_failure(
+    monkeypatch, tmp_path
+):
+    """A startup network failure must not pin capability false until restart."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
+            invoke=lambda *_args, **_kwargs: None,
+            checkpointer=checkpointer,
+        ),
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
+    )
+    attempts = 0
+
+    class PostgresSaver:
+        pass
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    async def create_saver(_dsn):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("database network unavailable")
+        return PostgresSaver(), _Pool()
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+    first = runner.describe_checkpoint_capability()
+    await runner.refresh_runtime_capabilities()
+    second = runner.describe_checkpoint_capability()
+
+    assert attempts == 2
+    assert first["Supported"] is False
+    assert first["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
+    assert second["Supported"] is True
+    assert second["Backend"] == "postgres"
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_does_not_retry_authentication_failure(
+    monkeypatch, tmp_path
+):
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
+            invoke=lambda *_args, **_kwargs: None,
+            checkpointer=checkpointer,
+        ),
+        ksadk_prepare_state=lambda payload, session_context: {"messages": []},
+    )
+    attempts = 0
+
+    class InvalidPasswordError(Exception):
+        pass
+
+    async def create_saver(_dsn):
+        nonlocal attempts
+        attempts += 1
+        raise InvalidPasswordError("invalid password")
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_CHECKPOINT_DSN", "postgresql://placeholder.invalid/db")
+
+    await runner.prepare_runtime_capabilities()
+    await runner.refresh_runtime_capabilities()
+
+    capability = runner.describe_checkpoint_capability()
+    assert attempts == 1
+    assert capability["Supported"] is False
+    assert capability["ReasonCode"] == "AUTH_FAILED"
+
+
+class _Chunk:
+    def __init__(self, content="", reasoning_content=None, usage_metadata=None):
+        self.content = content
+        self.additional_kwargs = {}
+        if reasoning_content is not None:
+            self.additional_kwargs["reasoning_content"] = reasoning_content
+        if usage_metadata is not None:
+            self.usage_metadata = usage_metadata
+
+
+class _StreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(reasoning_content="先分析需求。")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="这是最终回复。")},
+        }
+
+
+class _WhitespaceStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        for content in ("第一行", "\n", "第二行"):
+            yield {
+                "event": "on_chat_model_stream",
+                "data": {"chunk": _Chunk(content=content)},
+            }
+
+
+class _DuplicatedReasoningStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {
+                "chunk": _Chunk(
+                    content="先分析需求。",
+                    reasoning_content="先分析需求。",
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="这是最终回复。")},
+        }
+
+
+class _ToolDictOutputStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_tool_end",
+            "name": "write_workspace_file",
+            "run_id": "run-approval",
+            "data": {
+                "output": {
+                    "ok": False,
+                    "type": "approval_required",
+                    "approval_request": {
+                        "id": "appr_write",
+                        "tool_name": "write_workspace_file",
+                    },
+                }
+            },
+        }
+
+
+class _ToolThenAnswerStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_tool_start",
+            "name": "list_skills",
+            "run_id": "run-list-skills",
+            "data": {"input": {}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "list_skills",
+            "run_id": "run-list-skills",
+            "data": {"output": {"ok": True, "skills": [{"name": "ppt-translator"}]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {
+                "output": {
+                    "answer": "已真实调用 `list_skills`。\n当前返回的 Skill：\n- ppt-translator",
+                    "messages": [{"content": ""}],
+                }
+            },
+        }
+
+
+class _InlineThinkTagStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="<think>先分析需求。</think>这是最终回复。")},
+        }
+
+
+class _SplitInlineThinkTagStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="<think>先")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="分析需求。</think>这是")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="最终回复。")},
+        }
+
+
+class _UsageMessage:
+    def __init__(
+        self,
+        *,
+        input_tokens: int = 8,
+        output_tokens: int = 13,
+        reasoning_tokens: int = 5,
+    ):
+        self.content = "ok"
+        self.usage_metadata = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": reasoning_tokens},
+        }
+
+
+class _UsageAgent(_DummyAgent):
+    async def ainvoke(self, state, config=None, context=None):
+        self.last_ainvoke_state = state
+        self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
+        return {"messages": [_UsageMessage()]}
+
+
+class _UsageStateStreamingAgent(_StreamingAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [_UsageMessage()]}, config=self.state_config)
+
+
+class _FinalOutputUsageStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {"output": {"answer": "final only", "messages": [_UsageMessage()]}},
+        }
+
+
+class _DroppedFinalStateUsageStreamingAgent(_DummyAgent):
+    async def ainvoke(self, state, config=None, context=None):
+        self.last_ainvoke_state = state
+        self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
+        return {
+            "answer": "这是最终回复。",
+            "messages": [SimpleNamespace(content="final without usage")],
+        }
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(
+            values={"messages": [SimpleNamespace(content="final without usage")]}
+        )
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "llm-1",
+            "data": {"chunk": _Chunk(content="这是")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "llm-1",
+            "data": {"chunk": _Chunk(content="最终回复。")},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "run_id": "llm-1",
+            "data": {"output": _UsageMessage()},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {
+                "output": {
+                    "answer": "这是最终回复。",
+                    "messages": [SimpleNamespace(content="final without usage")],
+                }
+            },
+        }
+
+
+class _MultipleModelUsageStreamingAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(
+            values={"messages": [SimpleNamespace(content="final without usage")]}
+        )
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_end",
+            "run_id": "llm-1",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=4,
+                    output_tokens=6,
+                    reasoning_tokens=2,
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "llm-2",
+            "data": {"chunk": _Chunk(content="final")},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "run_id": "llm-2",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=8,
+                    output_tokens=10,
+                    reasoning_tokens=3,
+                )
+            },
+        }
+
+
+class _MissingRunIdCumulativeStreamUsageAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "parent_ids": ["chain-1", "chunk-a"],
+            "data": {
+                "chunk": _Chunk(
+                    content="fi",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 1,
+                        "total_tokens": 101,
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "parent_ids": ["chain-1", "chunk-b"],
+            "data": {
+                "chunk": _Chunk(
+                    content="nal",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 2,
+                        "total_tokens": 102,
+                    },
+                )
+            },
+        }
+
+
+class _InflatedEndUsageAfterStreamUsageAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "chunk": _Chunk(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 2873,
+                        "output_tokens": 55,
+                        "total_tokens": 2928,
+                        "input_token_details": {},
+                        "output_token_details": {"reasoning": 55},
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "chunk": _Chunk(
+                    content="final",
+                    usage_metadata={
+                        "input_tokens": 2873,
+                        "output_tokens": 99,
+                        "total_tokens": 2972,
+                        "input_token_details": {},
+                        "output_token_details": {"reasoning": 55},
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=109174,
+                    output_tokens=1835,
+                    reasoning_tokens=1455,
+                )
+            },
+        }
+
+
+class _CheckpointResumeUpdatesAgent(_DummyAgent):
+    def __init__(self):
+        super().__init__()
+        self.last_astream_stream_mode = None
+        self.astream_events_called = False
+
+    async def astream(self, state, config=None, stream_mode=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        self.last_astream_stream_mode = stream_mode
+        yield {"search": {"answer": "resumed via updates"}}
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.astream_events_called = True
+        if False:
+            yield {}
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(
+            values={"answer": "resumed via updates"},
+            config={
+                "configurable": {
+                    "thread_id": "sess-1",
+                    "checkpoint_id": "ckpt-after",
+                }
+            },
+            next=("report",),
+        )
+
+
+class _CheckpointResumeLatestStateAgent(_CheckpointResumeUpdatesAgent):
+    def __init__(self):
+        super().__init__()
+        self.state_configs = []
+
+    async def aget_state(self, config):
+        self.state_configs.append(config)
+        checkpoint_id = (config.get("configurable") or {}).get("checkpoint_id")
+        if checkpoint_id:
+            return SimpleNamespace(values={"answer": "a,b"})
+        return SimpleNamespace(
+            values={"answer": "a,b,c"},
+            config={
+                "configurable": {
+                    "thread_id": "thread-1",
+                    "checkpoint_id": "checkpoint-after",
+                }
+            },
+            next=(),
+        )
+
+
+def _make_runner(module=None) -> LangGraphRunner:
+    detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
+    runner = LangGraphRunner(detection, ".")
+    runner._agent = _DummyAgent()
+    if module is not None:
+        runner._module = module
+    return runner
+
+
+def _make_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _StreamingAgent()
+    return runner
+
+
+def _make_whitespace_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _WhitespaceStreamingAgent()
+    return runner
+
+
+def _make_duplicated_reasoning_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _DuplicatedReasoningStreamingAgent()
+    return runner
+
+
+def _make_tool_dict_output_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _ToolDictOutputStreamingAgent()
+    return runner
+
+
+def _make_tool_then_answer_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _ToolThenAnswerStreamingAgent()
+    return runner
+
+
+def _make_inline_think_tag_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _InlineThinkTagStreamingAgent()
+    return runner
+
+
+def _make_split_inline_think_tag_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _SplitInlineThinkTagStreamingAgent()
+    return runner
+
+
+def _make_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _UsageAgent()
+    return runner
+
+
+def _make_usage_state_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _UsageStateStreamingAgent()
+    return runner
+
+
+def _make_final_output_usage_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _FinalOutputUsageStreamingAgent()
+    return runner
+
+
+def _make_dropped_final_state_usage_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _DroppedFinalStateUsageStreamingAgent()
+    return runner
+
+
+def _make_multiple_model_usage_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _MultipleModelUsageStreamingAgent()
+    return runner
+
+
+def _make_missing_run_id_cumulative_stream_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _MissingRunIdCumulativeStreamUsageAgent()
+    return runner
+
+
+def _make_inflated_end_usage_after_stream_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _InflatedEndUsageAfterStreamUsageAgent()
+    return runner
+
+
+def _make_checkpoint_resume_updates_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _CheckpointResumeUpdatesAgent()
+    return runner
+
+
+def _make_checkpoint_resume_latest_state_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _CheckpointResumeLatestStateAgent()
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_invoke_simplified_input_preserves_extra_state():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "hello",
+            "history": [{"role": "user", "content": "prev"}],
+            "files": [{"name": "resume.txt"}],
+        }
+    )
+
+    state = runner._agent.last_ainvoke_state
+    assert "messages" in state
+    assert "files" in state
+    assert state["files"] == [{"name": "resume.txt"}]
+    assert len(state["messages"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_invoke_simplified_input_deduplicates_user_message_from_history():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "hello",
+            "history": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    messages = runner._agent.last_ainvoke_state["messages"]
+    user_messages = [
+        message
+        for message in messages
+        if message.__class__.__name__ == "HumanMessage" and message.content == "hello"
+    ]
+    assert len(user_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_simplified_input_preserves_attachment_contract_fields():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请分析附件",
+            "history": [{"role": "user", "content": "上一轮"}],
+            "input_parts": [{"text": "请分析附件"}],
+            "attachments": [{"display_name": "resume.pdf"}],
+            "attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+        }
+    )
+
+    state = runner._agent.last_ainvoke_state
+    assert state["input_parts"] == [{"text": "请分析附件"}]
+    assert state["attachments"] == [{"display_name": "resume.pdf"}]
+    assert state["attachment_results"] == [{"display_name": "resume.pdf", "kind": "document"}]
+    assert len(state["messages"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_resume_uses_command():
+    runner = _make_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "resume": True,
+                "input": {"approved": True},
+            }
+        )
+    ]
+
+    assert isinstance(runner._agent.last_astream_state, Command)
+    assert runner._agent.last_astream_state.resume == {"approved": True}
+    assert isinstance(runner._agent.last_ainvoke_state, Command)
+    assert runner._agent.last_ainvoke_state.resume == {"approved": True}
+    assert chunks and chunks[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_uses_checkpoint_id_and_none_input():
+    runner = _make_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert result["output"] == "ok"
+    assert runner._agent.last_ainvoke_state is None
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_preserves_checkpoint_namespace_when_present():
+    runner = _make_runner()
+    # 只有真实存在的子图 namespace 才允许透传（子图寻址语义）。
+    runner._agent.get_subgraphs = lambda: [("subgraph-ns", object())]
+
+    await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_ns": "subgraph-ns",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_rejects_non_subgraph_namespace():
+    """非子图寻址的 checkpoint_ns（含历史租户/agent scope 残留）必须显性报错。
+
+    绝不静默改写成根地址——静默改写曾让恢复悄悄指向不存在的 checkpoint
+    （原地址 next=('pause',)，改写后 next=()），排查极难。
+    """
+    runner = _make_runner()
+    # 图没有子图：任何 namespace 都不是合法子图寻址。
+    runner._agent.get_subgraphs = lambda: []
+
+    with pytest.raises(ValueError, match="does not address any subgraph"):
+        await runner.invoke(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant-a:agent-b:sess-1",
+                        "checkpoint_ns": "tenant:acct-1",
+                        "checkpoint_id": "ckpt-123",
+                    }
+                },
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_keeps_full_subgraph_task_namespace():
+    """真实运行时子图 ns 带 task 路径（inner:<task-id>）：必须原样保留。
+
+    get_subgraphs() 返回裸名 inner，但 checkpoint 真实地址是
+    inner:<task-id>；按裸名校验、保留完整 ns，恢复才能定位到 checkpoint。
+    """
+    runner = _make_runner()
+    runner._agent.get_subgraphs = lambda: [("inner", object())]
+
+    await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_ns": "inner:1f2e3d4c-5b6a-4789-9abc-def012345678",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "inner:1f2e3d4c-5b6a-4789-9abc-def012345678",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_state_config():
+    runner = _make_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_id": "ckpt-after",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
+
+    agentengine_metadata = result["metadata"]["agentengine"]
+    assert agentengine_metadata["framework"] == "langgraph"
+    assert agentengine_metadata["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_id": "ckpt-after",
+    }
+    assert agentengine_metadata["is_terminal"] is True
+    assert agentengine_metadata["is_resumable"] is False
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_checkpoint_namespace_from_state_config_when_present():
+    runner = _make_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_ns": "subgraph-ns",
+            "checkpoint_id": "ckpt-after",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
+
+    assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-after",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_async_state_config():
+    runner = _make_runner()
+    runner._agent = _AsyncStateAgent()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-async",
+            "checkpoint_id": "ckpt-async",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-async", "input": "hello"})
+
+    agentengine_metadata = result["metadata"]["agentengine"]
+    assert agentengine_metadata["framework"] == "langgraph"
+    assert agentengine_metadata["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-async",
+        "checkpoint_id": "ckpt-async",
+    }
+    assert agentengine_metadata["is_terminal"] is True
+    assert agentengine_metadata["is_resumable"] is False
+
+
+@pytest.mark.asyncio
+async def test_invoke_extracts_usage_from_langchain_message_metadata():
+    runner = _make_usage_runner()
+
+    result = await runner.invoke({"session_id": "sess-usage", "input": "hello"})
+
+    assert result["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 5},
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_final_usage_from_graph_state_after_text_stream():
+    runner = _make_usage_state_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-usage-stream",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "这是最终回复。",
+        "type": "final",
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_final_output_chunk_includes_usage_from_chain_end_output():
+    runner = _make_final_output_usage_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-final-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final only",
+        "type": "final",
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_model_event_usage_when_final_state_drops_usage_metadata():
+    runner = _make_dropped_final_state_usage_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-dropped-final-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "这是最终回复。",
+        "type": "final",
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_preserves_model_event_usage_when_final_state_drops_usage_metadata():
+    runner = _make_dropped_final_state_usage_streaming_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-dropped-final-usage-invoke",
+            "input": "hello",
+        }
+    )
+
+    assert result["output"] == "这是最终回复。"
+    assert result["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 5},
+    }
+    assert result["metadata"]["last_usage"] == result["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_accumulates_model_event_usage_across_agent_loop():
+    runner = _make_multiple_model_usage_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-agent-loop-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 16,
+            "total_tokens": 28,
+            "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 10,
+                "total_tokens": 18,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 3},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_accumulate_cumulative_usage_chunks_without_run_id():
+    runner = _make_missing_run_id_cumulative_stream_usage_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-missing-run-id-stream-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 2,
+            "total_tokens": 102,
+            "input_token_details": {},
+            "output_token_details": {},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 100,
+                "output_tokens": 2,
+                "total_tokens": 102,
+                "input_token_details": {},
+                "output_token_details": {},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_prefers_latest_stream_usage_when_end_usage_is_inflated():
+    runner = _make_inflated_end_usage_after_stream_usage_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-inflated-end-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 2873,
+            "output_tokens": 99,
+            "total_tokens": 2972,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 55},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 2873,
+                "output_tokens": 99,
+                "total_tokens": 2972,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 55},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_prefers_latest_stream_usage_when_end_usage_is_inflated():
+    runner = _make_inflated_end_usage_after_stream_usage_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-inflated-end-usage-invoke",
+            "input": "hello",
+        }
+    )
+
+    assert result["output"] == "final"
+    assert result["usage"] == {
+        "input_tokens": 2873,
+        "output_tokens": 99,
+        "total_tokens": 2972,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 55},
+    }
+    assert result["metadata"]["last_usage"] == result["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
+    runner = _make_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "ckpt-456",
+                    }
+                },
+            }
+        )
+    ]
+
+    assert chunks and chunks[-1]["type"] == "final"
+    assert runner._agent.last_astream_state is None
+    assert runner._agent.last_astream_config["configurable"] == {
+        "thread_id": "sess-1",
+        "checkpoint_ns": "",
+        "checkpoint_id": "ckpt-456",
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_prefers_astream_updates_over_events():
+    runner = _make_checkpoint_resume_updates_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "ckpt-before",
+                    }
+                },
+            }
+        )
+    ]
+
+    assert runner._agent.last_astream_state is None
+    assert runner._agent.last_astream_stream_mode == "updates"
+    assert runner._agent.astream_events_called is False
+    assert {"type": "final", "output": "resumed via updates"} in chunks
+    checkpoint = chunks[-1]
+    assert checkpoint["type"] == "checkpoint"
+    assert (
+        checkpoint["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"]
+        == "ckpt-after"
+    )
+    assert checkpoint["metadata"]["agentengine"]["next_node"] == "report"
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_reads_latest_state_after_continuation():
+    runner = _make_checkpoint_resume_latest_state_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "thread-1",
+                        "checkpoint_id": "checkpoint-before",
+                    }
+                },
+            }
+        )
+    ]
+
+    final = next(chunk for chunk in chunks if chunk["type"] == "final")
+    assert final["output"] == "a,b,c"
+    assert runner._agent.last_astream_config["configurable"]["checkpoint_id"] == "checkpoint-before"
+    assert runner._agent.state_configs
+    assert all(
+        "checkpoint_id" not in (config.get("configurable") or {})
+        for config in runner._agent.state_configs
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_latest_langgraph_checkpoint_ref_from_state_config():
+    runner = _make_streaming_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_id": "ckpt-stream",
+        }
+    }
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "tenant-a:agent-b:sess-1",
+                "input": "hello",
+            }
+        )
+    ]
+
+    checkpoint = chunks[-1]
+    assert checkpoint["type"] == "checkpoint"
+    agentengine_metadata = checkpoint["metadata"]["agentengine"]
+    assert agentengine_metadata["framework"] == "langgraph"
+    assert agentengine_metadata["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_id": "ckpt-stream",
+    }
+    assert agentengine_metadata["is_terminal"] is True
+    assert agentengine_metadata["is_resumable"] is False
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_mix_reasoning_into_final_text():
+    runner = _make_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    assert chunks[:-1] == [
+        {"delta": "先分析需求。", "type": "thinking"},
+        {"delta": "这是最终回复。", "type": "text"},
+    ]
+    assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
+    assert all(
+        "先分析需求。" not in chunk.get("delta", "") for chunk in chunks if chunk["type"] == "text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_whitespace_only_text_chunks():
+    runner = _make_whitespace_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "每行输出一个词",
+            }
+        )
+    ]
+
+    assert chunks[:-1] == [
+        {"delta": "第一行", "type": "text"},
+        {"delta": "\n", "type": "text"},
+        {"delta": "第二行", "type": "text"},
+    ]
+    assert chunks[-1] == {"output": "第一行\n第二行", "type": "final"}
+
+
+@pytest.mark.asyncio
+async def test_stream_ignores_content_when_chunk_duplicates_reasoning():
+    runner = _make_duplicated_reasoning_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    assert chunks[:-1] == [
+        {"delta": "先分析需求。", "type": "thinking"},
+        {"delta": "这是最终回复。", "type": "text"},
+    ]
+    assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
+
+
+@pytest.mark.asyncio
+async def test_stream_extracts_inline_think_tags_from_content():
+    runner = _make_inline_think_tag_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    assert chunks[:-1] == [
+        {"delta": "先分析需求。", "type": "thinking"},
+        {"delta": "这是最终回复。", "type": "text"},
+    ]
+    assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
+
+
+@pytest.mark.asyncio
+async def test_stream_extracts_split_inline_think_tags_from_content():
+    runner = _make_split_inline_think_tag_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    thinking_deltas = [chunk["delta"] for chunk in chunks if chunk["type"] == "thinking"]
+    text_deltas = [chunk["delta"] for chunk in chunks if chunk["type"] == "text"]
+
+    assert thinking_deltas == ["先分析需求。"]
+    assert "".join(text_deltas) == "这是最终回复。"
+    assert all("<think" not in chunk.get("delta", "") for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_dict_tool_output_for_gateway_approval_bridge():
+    runner = _make_tool_dict_output_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写文件",
+            }
+        )
+    ]
+
+    assert chunks == [
+        {
+            "type": "tool_result",
+            "tool_name": "write_workspace_file",
+            "tool_args": {},
+            "tool_output": {
+                "ok": False,
+                "type": "approval_required",
+                "approval_request": {
+                    "id": "appr_write",
+                    "tool_name": "write_workspace_file",
+                },
+            },
+            "run_id": "run-approval",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_final_answer_after_tool_events_without_text_stream():
+    runner = _make_tool_then_answer_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "你有哪些 skill",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "type": "final",
+        "output": "已真实调用 `list_skills`。\n当前返回的 Skill：\n- ppt-translator",
+    }
+    assert [chunk["type"] for chunk in chunks] == ["tool_call", "tool_result", "final"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_binary_attachment_does_not_convert_reference_to_image_url():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "分析压缩包",
+            "attachments": [
+                {
+                    "display_name": "bundle.zip",
+                    "mime_type": "application/zip",
+                    "transport": "reference",
+                    "file_uri": "ksadk-upload://abc123",
+                    "storage_path": "/tmp/abc123.zip",
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    if isinstance(content, list):
+        assert not any(
+            item.get("type") == "image_url" for item in content if isinstance(item, dict)
+        )
+    else:
+        assert content == "分析压缩包"
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_image_attachment_converts_to_multimodal_human_message(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    runner = _make_runner()
+    image_path = tmp_path / ".agentengine" / "ui" / "files" / "img123.png"
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(image_bytes)
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请分析这张图片",
+            "model_metadata": {
+                "id": "kimi-k2.6",
+                "architecture": {"input_modalities": ["文字", "图片"]},
+            },
+            "attachments": [
+                {
+                    "display_name": "diagram.png",
+                    "mime_type": "image/png",
+                    "transport": "reference",
+                    "file_uri": "ksadk-upload://img123",
+                    "storage_path": str(image_path),
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请分析这张图片"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    )
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_inline_image_attachment_converts_to_multimodal_human_message():
+    runner = _make_runner()
+    image_b64 = base64.b64encode(b"fake-inline-image").decode("ascii")
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请看图",
+            "model_metadata": {
+                "id": "kimi-k2.6",
+                "architecture": {"input_modalities": ["文字", "图片"]},
+            },
+            "attachments": [
+                {
+                    "display_name": "photo.jpg",
+                    "mime_type": "image/jpeg",
+                    "transport": "inline",
+                    "data": image_b64,
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请看图"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_remote_image_attachment_preserves_image_url_for_multimodal_model():
+    runner = _make_runner()
+    image_url = "https://example.com/photo.png"
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请看图",
+            "model_metadata": {
+                "id": "kimi-k2.6",
+                "architecture": {"input_modalities": ["文字", "图片"]},
+            },
+            "attachments": [
+                {
+                    "display_name": "photo.png",
+                    "mime_type": "image/*",
+                    "transport": "reference",
+                    "file_uri": image_url,
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请看图"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": image_url},
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_image_attachment_keeps_image_block_even_when_catalog_is_stale(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    runner = _make_runner()
+    image_path = tmp_path / ".agentengine" / "ui" / "files" / "img123.png"
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(image_bytes)
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请分析这张图片",
+            "model_metadata": {
+                "id": "glm-5.1",
+                "architecture": {"input_modalities": ["文字"]},
+            },
+            "attachments": [
+                {
+                    "display_name": "diagram.png",
+                    "mime_type": "image/png",
+                    "transport": "reference",
+                    "file_uri": "ksadk-upload://img123",
+                    "storage_path": str(image_path),
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请分析这张图片"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    )
+
+
+def test_extract_output_prefers_explicit_output_over_messages_tail():
+    runner = _make_runner()
+
+    output = runner._extract_output(
+        {
+            "output": "业务最终回答",
+            "messages": [{"role": "system", "content": "系统提示词"}],
+        }
+    )
+
+    assert output == "业务最终回答"
+
+
+def test_extract_output_uses_langgraph_answer_field():
+    runner = _make_runner()
+
+    output = runner._extract_output(
+        {
+            "answer": "业务最终回答",
+            "messages": [{"role": "assistant", "content": ""}],
+        }
+    )
+
+    assert output == "业务最终回答"
+
+
+@pytest.mark.asyncio
+async def test_invoke_simplified_input_prepends_ambient_kb_and_memory_context():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "继续回答",
+            "kb_context": {"formatted_text": "知识库: 当前支持标准型实例"},
+            "memory_context": {"formatted_text": "记忆: 用户关注机型价格"},
+            "platform_context": {"agent_id": "demo-agent", "user_id": "user-1"},
+        }
+    )
+
+    state = runner._agent.last_ainvoke_state
+    assert "messages" in state
+    assert state["messages"][0].__class__.__name__ == "SystemMessage"
+    assert "知识库: 当前支持标准型实例" in state["messages"][0].content
+    assert "记忆: 用户关注机型价格" in state["messages"][0].content
+    assert state["messages"][-1].content == "继续回答"
+    assert runner._agent.last_ainvoke_context == {
+        "agent_id": "demo-agent",
+        "user_id": "user-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_messages_payload_injects_system_context_message():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "messages": [],
+            "kb_context": {"formatted_text": "KB facts"},
+            "memory_context": {"formatted_text": "Memory facts"},
+        }
+    )
+
+    state = runner._agent.last_ainvoke_state
+    assert len(state["messages"]) == 1
+    first = state["messages"][0]
+    assert first.__class__.__name__ == "SystemMessage"
+    assert "KB facts" in first.content
+    assert "Memory facts" in first.content
+
+
+# ---- ksadk_prepare_state hook tests ----
+
+
+@pytest.mark.asyncio
+async def test_invoke_uses_ksadk_prepare_state_hook():
+    def ksadk_prepare_state(payload, session_context):
+        return {
+            "query": payload["input"],
+            "results": [],
+            "session_id": session_context["session_id"],
+        }
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke({"session_id": "s1", "input": "hello"})
+
+    state = runner._agent.last_ainvoke_state
+    assert state == {"query": "hello", "results": [], "session_id": "s1"}
+    assert "messages" not in state
+
+
+@pytest.mark.asyncio
+async def test_prepare_state_hook_preserves_agui_and_copilotkit_protocol_state():
+    def ksadk_prepare_state(payload, session_context):
+        return {"query": payload["input"], "session_id": session_context["session_id"]}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "show status card",
+            "ag-ui": {"inject_a2ui_tool": True, "a2ui_schema": "{}"},
+            "copilotkit": {"actions": [{"name": "frontend_action"}]},
+        }
+    )
+
+    assert runner._agent.last_ainvoke_state == {
+        "query": "show status card",
+        "session_id": "s1",
+        "ag-ui": {"inject_a2ui_tool": True, "a2ui_schema": "{}"},
+        "copilotkit": {"actions": [{"name": "frontend_action"}]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_prepare_state_hook_receives_kb_and_memory_context():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append((payload, session_context))
+        return {"query": payload["input"]}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "search",
+            "kb_context": {"formatted_text": "KB facts"},
+            "memory_context": {"formatted_text": "Memory facts"},
+            "platform_context": {
+                "agent_id": "a1",
+                "user_id": "u1",
+                "metadata": {"tenant": "acme", "biz": {"order_id": "o-9"}},
+            },
+        }
+    )
+
+    payload, session_context = captured[0]
+    assert payload == {"input": "search"}
+    assert session_context["kb_context"] == {"formatted_text": "KB facts"}
+    assert session_context["memory_context"] == {"formatted_text": "Memory facts"}
+    assert session_context["platform_context"] == {
+        "agent_id": "a1",
+        "user_id": "u1",
+        "metadata": {"tenant": "acme", "biz": {"order_id": "o-9"}},
+    }
+    assert session_context["is_resume"] is False
+    state = runner._agent.last_ainvoke_state
+    assert state == {"query": "search"}
+
+
+@pytest.mark.asyncio
+async def test_invoke_prepare_state_hook_receives_full_normalized_payload():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append((payload, session_context))
+        return {"query": payload["input"], "files": payload["files"]}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "search",
+            "history": [{"role": "user", "content": "old"}],
+            "files": [{"name": "a.txt"}],
+            "attachments": [{"display_name": "a.txt"}],
+            "platform_context": {"agent_id": "a1"},
+        }
+    )
+
+    payload, session_context = captured[0]
+    assert payload["input"] == "search"
+    assert payload["files"] == [{"name": "a.txt"}]
+    assert payload["attachments"] == [{"display_name": "a.txt"}]
+    assert "session_id" not in payload
+    assert "history" not in payload
+    assert "platform_context" not in payload
+    assert session_context["history"] == [{"role": "user", "content": "old"}]
+    assert runner._agent.last_ainvoke_state == {"query": "search", "files": [{"name": "a.txt"}]}
+
+
+@pytest.mark.asyncio
+async def test_invoke_resume_with_prepare_state_hook_preserves_raw_resume_value():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append(session_context)
+        return {
+            "approved": payload["input"].get("approved", False),
+            "comment": payload["input"].get("comment", ""),
+        }
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "resume": True,
+            "input": {"approved": True, "comment": "looks good"},
+        }
+    )
+
+    state = runner._agent.last_ainvoke_state
+    assert isinstance(state, Command)
+    assert state.resume == {"approved": True, "comment": "looks good"}
+    # Resume values belong to the graph interrupt, not application state. A
+    # state hook may reshape normal user input but must never turn an approval
+    # into a different Command(resume=...) payload.
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_stream_resume_with_prepare_state_hook_preserves_raw_resume_value():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append((payload, session_context))
+        return {"rewritten": True}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "resume": True,
+                "input": {"approve": True, "request_id": "appr-1"},
+            }
+        )
+    ]
+
+    assert isinstance(runner._agent.last_astream_state, Command)
+    assert runner._agent.last_astream_state.resume == {
+        "approve": True,
+        "request_id": "appr-1",
+    }
+    assert captured == []
+    assert chunks and chunks[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_invoke_without_hook_uses_to_state():
+    runner = _make_runner()
+    await runner.invoke({"session_id": "s1", "input": "hello"})
+    state = runner._agent.last_ainvoke_state
+    assert "messages" in state
+    assert state["messages"][-1].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_invoke_hook_returns_non_dict_raises_type_error():
+    def ksadk_prepare_state(payload, session_context):
+        return "not a dict"
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    with pytest.raises(TypeError, match="ksadk_prepare_state"):
+        await runner.invoke({"session_id": "s1", "input": "hello"})

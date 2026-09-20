@@ -236,7 +236,19 @@ jobs:
         run: uv build
 
       - name: Run local_process_heavy tests
-        run: uv run --no-sync pytest tests/ -q -m local_process_heavy
+        # 公开导出树不含 local_process_heavy 标记的私有测试（fork 子进程
+        # sandbox/skill/browser 用例留在内部 master）；零收集时 pytest 退出码
+        # 5 是预期状态，不能当作失败。
+        run: |
+          set +e
+          uv run --no-sync pytest tests/ -q -m local_process_heavy
+          code=$?
+          set -e
+          if [ "$code" -eq 5 ]; then
+            echo "No local_process_heavy tests in the public export tree; skipping."
+            exit 0
+          fi
+          exit "$code"
 
   # goal-16: Windows a2a 命令 bug 回归(用户首报:"No such command 'a2a'")。
   # 在本机 macOS 无法闭环 Windows,故 CI 加 Windows runner 跑 CLI smoke:
