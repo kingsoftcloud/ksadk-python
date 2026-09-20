@@ -95,7 +95,7 @@ if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2
       [ -f "$interpreter" ] || continue
       case "$interpreter" in
         */lib/Resources/Python.app/Contents/MacOS/Python)
-          python_load_path="@loader_path/../../../../lib/$bundled_python_name"
+          python_load_path="@loader_path/../../../../$bundled_python_name"
           ;;
         *)
           python_load_path="@loader_path/../lib/$bundled_python_name"
