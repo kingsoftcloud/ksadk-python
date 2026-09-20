@@ -108,6 +108,18 @@ if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2
     # Give the copied library a bundle-local identity instead of retaining the
     # framework path from the build machine.
     install_name_tool -id "@rpath/$bundled_python_name" "$python_library"
+    # install_name_tool invalidates the Python.org signature.  Re-sign the
+    # modified interpreter just long enough for uv pip to execute it; the
+    # distribution Developer ID pass below replaces these ad-hoc signatures
+    # before notarization.
+    if command -v codesign >/dev/null 2>&1; then
+      for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
+                         "$STUDIO_APP_RUNTIME/Resources/Python.app/Contents/MacOS/Python"; do
+        [ -f "$interpreter" ] || continue
+        codesign --force --sign - "$interpreter"
+      done
+      codesign --force --sign - "$python_library"
+    fi
   fi
 fi
 
