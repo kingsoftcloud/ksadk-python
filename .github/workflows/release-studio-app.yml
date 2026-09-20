@@ -9,6 +9,11 @@ on:
       tag:
         description: Release tag to attach assets to (e.g. v0.8.4). Release must already exist.
         required: false
+      platform:
+        description: Platform to validate or release
+        type: choice
+        default: all
+        options: [all, macos, windows]
 
 permissions:
   contents: write  # upload release assets
@@ -22,6 +27,7 @@ jobs:
   # macOS arm64: self-contained .app, signed with Developer ID + notarized.
   # ────────────────────────────────────────────────────────────────────
   build-macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'windows' }}
     runs-on: macos-14
     environment: studio-signing
     timeout-minutes: 45
@@ -147,6 +153,19 @@ jobs:
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
 
+      - name: Verify the app inside the final DMG
+        run: |
+          set -euo pipefail
+          mountpoint="$(mktemp -d)"
+          hdiutil attach "dist/studio-app/AgentKitStudio-${STUDIO_APP_VERSION}-macos-arm64.dmg" -readonly -nobrowse -mountpoint "$mountpoint"
+          trap 'hdiutil detach "$mountpoint"; rmdir "$mountpoint"' EXIT
+          app="$mountpoint/AgentKitStudio.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          actual=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
+          test "$actual" = "$STUDIO_APP_VERSION"
+
       - name: Zip the .app bundle
         run: |
           cd dist/studio-app
@@ -157,7 +176,7 @@ jobs:
         # version = release tag, files[].url = bare zip name, sha512 = base64.
         run: |
           python3 scripts/write_studio_update_manifest.py \
-            --version "${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}" \
+            --version "${{ env.STUDIO_APP_VERSION }}" \
             --artifact dist/studio-app/AgentKitStudio-macos-arm64.zip \
             --release-date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --channel mac \
@@ -181,6 +200,7 @@ jobs:
   # Windows x64: NSIS installer, signed via SignPath (HSM-held key).
   # ────────────────────────────────────────────────────────────────────
   build-windows:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'macos' }}
     runs-on: windows-latest
     environment: studio-signing
     timeout-minutes: 45

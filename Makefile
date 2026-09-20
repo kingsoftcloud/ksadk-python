@@ -839,13 +839,14 @@ STUDIO_APP_BUNDLE ?= $(STUDIO_APP_DIR)/AgentKitStudio.app
 STUDIO_APP_RUNTIME ?= $(STUDIO_APP_BUNDLE)/Contents/Resources/runtime
 STUDIO_APP_PYTHON ?= 3.13
 STUDIO_APP_WORKSPACE ?= .
+STUDIO_APP_VERSION ?= $(VERSION)
 
 studio-app-package: build-wheel
 	@test "$(STUDIO_APP_PLATFORM)" = "macos" || (echo "ERROR: only STUDIO_APP_PLATFORM=macos is supported locally" >&2; exit 1)
 	@test "$(STUDIO_APP_ARCH)" = "arm64" || (echo "ERROR: only STUDIO_APP_ARCH=arm64 is supported locally" >&2; exit 1)
 	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
 	@command -v sw_vers >/dev/null 2>&1 || (echo "ERROR: this target must run on macOS" >&2; exit 1)
-	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION)" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
 	@PYTHONDONTWRITEBYTECODE=1 $(MAKE) --no-print-directory studio-app-check
 	@echo "✅ Studio macOS arm64 bundle: $(STUDIO_APP_BUNDLE)"
 
@@ -868,7 +869,7 @@ studio-app-clean:
 
 # DMG:hdiutil UDZO(zlib 压缩只读镜像),含 Applications 软链接(拖拽安装)。
 # 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg
-STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(VERSION)-macos-arm64.dmg
+STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(STUDIO_APP_VERSION)-macos-arm64.dmg
 studio-app-dmg: studio-app-package
 	@$(MAKE) --no-print-directory studio-app-dmg-existing
 
@@ -878,7 +879,8 @@ studio-app-dmg: studio-app-package
 studio-app-dmg-existing:
 	@test -d "$(STUDIO_APP_BUNDLE)" || (echo "ERROR: Studio bundle missing; run make studio-app-package first" >&2; exit 1)
 	@rm -f "$(STUDIO_APP_DMG)"
-	@staging="$$(mktemp -d)"; \
+	@set -eu; staging="$$(mktemp -d)"; \
+	  trap 'rm -rf "$$staging"' EXIT; \
 	  ditto "$(STUDIO_APP_BUNDLE)" "$$staging/AgentKitStudio.app"; \
 	  ln -s /Applications "$$staging/Applications"; \
 	  hdiutil create -volname "AgentKit Studio" \
@@ -892,7 +894,7 @@ studio-app-dmg-existing:
 # Windows). Produces an UNSIGNED AgentKitStudio-Setup-x64.exe; SignPath signs
 # it in the release workflow. makensis must be on PATH (NSIS via chocolatey).
 studio-app-package-windows: build-wheel
-	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION)" \
 	  STUDIO_APP_PYTHON_VERSION="$(STUDIO_APP_PYTHON_VERSION)" \
 	  ELECTRON_VERSION="$(ELECTRON_VERSION)" \
 	  STUDIO_APP_NODE_VERSION="$(STUDIO_APP_NODE_VERSION)" \

@@ -48,15 +48,15 @@ test -n "$python_home"
 mkdir -p "$STUDIO_APP_RUNTIME/lib/python3.13"
 cp -R "$python_home/lib/python3.13/." "$STUDIO_APP_RUNTIME/lib/python3.13/"
 rm -f "$STUDIO_APP_RUNTIME/lib/python3.13/EXTERNALLY-MANAGED"
-# python-build-standalone carries build-only links from its config directory
-# to a top-level ``Python`` file. That file is not part of the relocatable
-# runtime, so copying the links verbatim leaves a bundle that codesign/spctl
-# rejects as an invalid symlink destination.
-find "$STUDIO_APP_RUNTIME" -type l ! -exec test -e {} \; -delete
-if find "$STUDIO_APP_RUNTIME" -type l ! -exec test -e {} \; -print -quit | grep -q .; then
-  echo "ERROR: bundled Python runtime contains a broken symlink" >&2
-  exit 1
-fi
+# The framework interpreter's build-only library links target a top-level
+# Python binary that is not shipped. Remove only these known broken links;
+# strict verification below must reject other malformed bundle resources.
+for build_link in "$STUDIO_APP_RUNTIME"/lib/python3.13/config-*/libpython3.13.a \
+                  "$STUDIO_APP_RUNTIME"/lib/python3.13/config-*/libpython3.13.dylib; do
+  if [ -L "$build_link" ] && [ ! -e "$build_link" ] && [ "$(readlink "$build_link")" = "../../../Python" ]; then
+    rm "$build_link"
+  fi
+done
 for dylib in "$python_home"/lib/libpython*.dylib; do
   test -f "$dylib" && cp "$dylib" "$STUDIO_APP_RUNTIME/lib/"
 done
@@ -324,9 +324,8 @@ if [ -n "${STUDIO_APP_CODESIGN_IDENTITY:-}" ]; then
   done
   # Top-level app last, with entitlements.
   sign_with --entitlements "$ENTITLEMENTS" "$STUDIO_APP_BUNDLE"
-  # --deep is deprecated and unreliable across codesign versions; verify the
-  # top-level bundle only. Nested components are signed individually above.
-  codesign --verify --verbose=2 "$STUDIO_APP_BUNDLE"
+  # Verify nested code and resource links before spending time on notarization.
+  codesign --verify --deep --strict --verbose=2 "$STUDIO_APP_BUNDLE"
 else
   echo "==> STUDIO_APP_CODESIGN_IDENTITY not set; leaving bundle unsigned" >&2
 fi
