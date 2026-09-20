@@ -853,6 +853,7 @@ studio-app-package: build-wheel
 studio-app-check:
 	@test -x "$(STUDIO_APP_BUNDLE)/Contents/MacOS/AgentKitStudio" || (echo "ERROR: Studio bundle is missing; run make studio-app-package" >&2; exit 1)
 	@test -x "$(STUDIO_APP_RUNTIME)/bin/python" || (echo "ERROR: bundled Python runtime is missing" >&2; exit 1)
+	@test -f "$(STUDIO_APP_RUNTIME)/lib/pyvenv.cfg" || (echo "ERROR: relocatable Python prefix config is missing" >&2; exit 1)
 	@if strings "$(STUDIO_APP_RUNTIME)/bin/python3" | grep -q 'Resources/Python.app'; then test -x "$(STUDIO_APP_RUNTIME)/lib/Resources/Python.app/Contents/MacOS/Python" || (echo "ERROR: bundled Python framework executable is missing" >&2; exit 1); fi
 	@test -x "$(STUDIO_APP_RUNTIME)/bin/agentengine" || (echo "ERROR: bundled agentengine entrypoint is missing" >&2; exit 1)
 	@for interpreter in "$(STUDIO_APP_RUNTIME)"/bin/python* "$(STUDIO_APP_RUNTIME)/lib/Resources/Python.app/Contents/MacOS/Python"; do test ! -f "$$interpreter" || ! otool -L "$$interpreter" | grep -F '/Library/Frameworks/Python.framework/Versions/3.13/Python' >/dev/null || (echo "ERROR: non-portable Python framework load path: $$interpreter" >&2; exit 1); done

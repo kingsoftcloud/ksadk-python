@@ -152,7 +152,8 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
-          "$app/Contents/Resources/runtime/bin/python3" -I -B -c 'import sys; assert sys.version_info[:2] == (3, 13); print("embedded-python", sys.executable)'
+          runtime="$app/Contents/Resources/runtime"
+          "$runtime/bin/python3" -I -B -c 'import pathlib, sys, sysconfig; root = pathlib.Path(sys.argv[1]).resolve(); assert pathlib.Path(sys.prefix).resolve() == root, (sys.prefix, root); assert pathlib.Path(sysconfig.get_paths()["stdlib"]).resolve().is_relative_to(root), sysconfig.get_paths(); assert sys.version_info[:2] == (3, 13); print("embedded-python", sys.executable)' "$runtime"
 
       - name: Verify the app inside the final DMG
         run: |
@@ -166,7 +167,8 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
           actual=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
           test "$actual" = "$STUDIO_APP_VERSION"
-          "$app/Contents/Resources/runtime/bin/python3" -I -B -c 'import sys; assert sys.version_info[:2] == (3, 13); print("mounted-embedded-python", sys.executable)'
+          runtime="$app/Contents/Resources/runtime"
+          "$runtime/bin/python3" -I -B -c 'import pathlib, sys, sysconfig; root = pathlib.Path(sys.argv[1]).resolve(); assert pathlib.Path(sys.prefix).resolve() == root, (sys.prefix, root); assert pathlib.Path(sysconfig.get_paths()["stdlib"]).resolve().is_relative_to(root), sysconfig.get_paths(); assert sys.version_info[:2] == (3, 13); print("mounted-embedded-python", sys.executable)' "$runtime"
 
       - name: Save verified DMG for manual validation
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}

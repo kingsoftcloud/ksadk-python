@@ -123,6 +123,19 @@ if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2
   fi
 fi
 
+# CPython resolves its standard-library prefix from the nearest pyvenv.cfg.
+# Keep a second config beside libpython (the framework launcher resolves the
+# real executable from that directory) and make both configs bundle-relative;
+# otherwise a clean Mac falls back to the build host's Python.framework even
+# after all Mach-O load commands have been relocated.
+if [ -f "$STUDIO_APP_RUNTIME/pyvenv.cfg" ]; then
+  pyvenv_tmp="$STUDIO_APP_RUNTIME/pyvenv.cfg.tmp"
+  awk 'BEGIN { replaced = 0 } /^home[[:space:]]*=/ { print "home = ."; replaced = 1; next } { print } END { if (!replaced) print "home = ." }' \
+    "$STUDIO_APP_RUNTIME/pyvenv.cfg" > "$pyvenv_tmp"
+  mv "$pyvenv_tmp" "$STUDIO_APP_RUNTIME/pyvenv.cfg"
+  cp "$STUDIO_APP_RUNTIME/pyvenv.cfg" "$STUDIO_APP_RUNTIME/lib/pyvenv.cfg"
+fi
+
 uv pip install --python "$STUDIO_APP_RUNTIME/bin/python" "$wheel[codex]"
 
 # The wheel intentionally keeps the complete SDK dependency set for published
