@@ -19,6 +19,11 @@ runs:
         npm pack --pack-destination "$RUNNER_TEMP/ksadk-web-candidate"
         version=$(node -p 'require("./package.json").version')
         tarball="$RUNNER_TEMP/ksadk-web-candidate/kingsoftcloud-ksadk-web-$version.tgz"
+        if [ "$RUNNER_OS" = Windows ]; then tarball="$(cygpath -u "$tarball")"; fi
         test -f "$tarball"
         echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
         echo 'Shared Web source: aibuilder-leo/ksadk-web@607c5d49caccaa54cb0ad8822bbca46d947e7be4 (0.3.11). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
+      env:
+        # The candidate's build:ksadk script uses POSIX VAR=value syntax.
+        # npm invokes scripts through cmd.exe on Windows unless this is set.
+        npm_config_script_shell: ${{ runner.os == 'Windows' && 'C:\\Program Files\\Git\\bin\\bash.exe' || '' }}
