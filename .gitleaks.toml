@@ -9,6 +9,20 @@ title = "ksadk-python gitleaks config"
 [extend]
 useDefault = true
 
+# Deterministic EffectRequest.effect_key from generate_teams_extended_fixtures.py.
+# This is a SHA-256 operation identity, not an authentication credential. Require
+# both the exact fixture path and exact generated value; do not exempt the file.
+[[allowlists]]
+description = "Deterministic Teams effect identity in contract fixtures"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+    '''^effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a$''',
+]
+paths = [
+    '''^tests/contracts/fixtures/teams-cloud-v1\.json$''',
+]
+
 # ---- allowlist 统一用 [[allowlists]] 新语法 (gitleaks 8.21+), 不能与 [allowlist] 旧语法混用 ----
 
 # 测试 fixture 假 key (命中当前 tree 与历史 commit)
