@@ -273,27 +273,32 @@ jobs:
             "https://files.certum.cn/SimplySignDesktop-2.9.12-9.3.2.0-x86_64-prod-ubuntu.bin" \
             -o /tmp/simplysign-ubuntu.bin
           chmod +x /tmp/simplysign-ubuntu.bin
-          # The .bin is a makeself archive; extract instead of GUI-install.
+          # The .bin is a makeself self-extracting installer. Extract its
+          # payload — the client binary and PKCS#11 module live in there, so
+          # no system install is needed; osslsigncode loads the module
+          # directly from the extracted tree.
           /tmp/simplysign-ubuntu.bin --target /tmp/simplysign-extract --noexec
-          ls -la /tmp/simplysign-extract
-          # Install the deb/rpm payload if present, else run its installer.
-          cd /tmp/simplysign-extract
-          if ls *.deb >/dev/null 2>&1; then
-            sudo dpkg -i *.deb || sudo apt-get install -f -y
-          elif ls *.rpm >/dev/null 2>&1; then
-            sudo rpm -ivh --force *.rpm || true
-          else
-            sudo sh ./*.sh || sudo sh install.sh || true
+          echo "── extract tree ──"
+          find /tmp/simplysign-extract -type f 2>/dev/null | head -60
+          CLIENT=$(find /tmp/simplysign-extract -type f -executable 2>/dev/null \
+            | grep -iE 'simplysign' | head -1)
+          PKCS11=$(find /tmp/simplysign-extract -type f -name '*.so*' 2>/dev/null \
+            | grep -iE 'simplysign|pkcs11' | head -1)
+          # Fallback: run the self-extracting installer itself (it may install
+          # to /opt) if the payload does not carry the files directly.
+          if [ -z "$CLIENT" ] || [ -z "$PKCS11" ]; then
+            echo "── fallback: run the installer directly ──"
+            sudo /tmp/simplysign-ubuntu.bin 2>&1 | tail -20 || true
+            CLIENT=$(find /opt /usr/local /usr/bin -name 'SimplySignDesktop' -type f 2>/dev/null | head -1)
+            PKCS11=$(find /opt /usr/local /usr/lib -type f -name '*.so' 2>/dev/null \
+              | grep -iE 'simplysign|pkcs11' | head -1)
           fi
-          # Locate the client binary and PKCS#11 module for later steps.
-          echo "── client / pkcs11 discovery ──"
-          find /opt /usr/local /usr/lib -iname '*simplysign*' -o -iname '*SimplySign*' 2>/dev/null | head -20
-          CLIENT=$(find /opt /usr/local -name 'SimplySignDesktop' -type f 2>/dev/null | head -1)
-          PKCS11=$(find /opt /usr/local /usr/lib -name '*.so' 2>/dev/null | grep -i simplysign | head -1)
-          [ -n "$CLIENT" ] || { echo "ERROR: SimplySignDesktop binary not found"; exit 1; }
+          [ -n "$CLIENT" ] || { echo "ERROR: SimplySign client binary not found"; exit 1; }
           [ -n "$PKCS11" ] || { echo "ERROR: SimplySign PKCS#11 module not found"; exit 1; }
           echo "SIMPLYSIGN_CLIENT=$CLIENT" >> "$GITHUB_ENV"
           echo "SIMPLYSIGN_PKCS11=$PKCS11" >> "$GITHUB_ENV"
+          echo "client: $CLIENT"
+          echo "pkcs11: $PKCS11"
 
       - name: Log in to SimplySign (headless, TOTP from secret)
         env:
