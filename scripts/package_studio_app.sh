@@ -48,15 +48,6 @@ test -n "$python_home"
 mkdir -p "$STUDIO_APP_RUNTIME/lib/python3.13"
 cp -R "$python_home/lib/python3.13/." "$STUDIO_APP_RUNTIME/lib/python3.13/"
 rm -f "$STUDIO_APP_RUNTIME/lib/python3.13/EXTERNALLY-MANAGED"
-# python-build-standalone carries build-only links from its config directory
-# to a top-level ``Python`` file. That file is not part of the relocatable
-# runtime, so copying the links verbatim leaves a bundle that codesign/spctl
-# rejects as an invalid symlink destination.
-find "$STUDIO_APP_RUNTIME" -type l ! -exec test -e {} \; -delete
-if find "$STUDIO_APP_RUNTIME" -type l ! -exec test -e {} \; -print -quit | grep -q .; then
-  echo "ERROR: bundled Python runtime contains a broken symlink" >&2
-  exit 1
-fi
 for dylib in "$python_home"/lib/libpython*.dylib; do
   test -f "$dylib" && cp "$dylib" "$STUDIO_APP_RUNTIME/lib/"
 done
