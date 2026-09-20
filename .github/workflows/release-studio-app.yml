@@ -100,6 +100,12 @@ jobs:
         run: |
           echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
+      # PR #90's Studio UI consumes the companion Web source candidate. The
+      # published 0.3.11 package predates those exports, so release builds
+      # must use the reviewed source tarball until the Web PR is published.
+      - name: Prepare shared Web source candidate
+        uses: ./.github/actions/prepare-web-candidate
+
       # package_studio_app.sh copies the DSH toolchain from
       # ~/.agentengine/plugin-toolchains/dsh/<ver>. CI runners are clean, so
       # install it first via the ksadk CLI (pnpm install of @deepseek-ai/dsh).
@@ -117,6 +123,7 @@ jobs:
         run: make studio-app-package
         env:
           KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
           STUDIO_APP_NOTARIZE: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' && '1' || '0' }}
@@ -209,6 +216,7 @@ jobs:
           make build-wheel
         env:
           KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
 
       - name: Prepare DSH toolchain (win32-x64 prebuilds)
         shell: bash
@@ -229,6 +237,9 @@ jobs:
         run: |
           echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
+      - name: Prepare shared Web source candidate
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Package Windows zip
         # studio-app-package-windows depends on build-wheel → build-frontend
         # (sync + build-studio-static). Ships a zip (not NSIS) because DSH
@@ -238,6 +249,7 @@ jobs:
         run: make studio-app-package-windows
         env:
           KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 
