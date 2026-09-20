@@ -349,3 +349,227 @@ async def test_signer_failure_detail_is_not_exposed_to_the_browser():
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "signing_failed"
     assert "private signer fixture detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_new_server_never_uses_legacy_node_registration_when_host_unmounted():
+    value = installation({})
+    value.client = SimpleNamespace(
+        request=AsyncMock(
+            return_value={
+                "mode": "cloud",
+                "apiVersion": "teams.ksadk.io/v1",
+                "authorityId": "test-authority",
+                "ownerScopeRef": "test-owner",
+                "features": [],
+                "health": "degraded",
+                "services": {"nodeTransport": True},
+            }
+        )
+    )
+    await value.enable()
+    assert value.authority_ref == "test-authority"
+    assert value.node is None
+    assert value.status()["reason"] == "node_host_bootstrap_required"
+    assert value.client.request.await_count == 1
+
+
+def cloud_status(**changes):
+    return {
+        "mode": "cloud",
+        "apiVersion": "teams.ksadk.io/v1",
+        "authorityId": "authority-one",
+        "ownerScopeRef": "owner-one",
+        "features": ["workspace-projection.v1"],
+        "health": "degraded",
+        "services": {"nodeTransport": False},
+        **changes,
+    }
+
+
+def scoped_headers():
+    return {"X-Teams-Authority-Id": "authority-one", "X-Teams-Owner-Scope-Ref": "owner-one"}
+
+
+@pytest.mark.asyncio
+async def test_proxy_maps_receipt_lookup_preserves_scope_and_discards_browser_credentials():
+    from ksadk.plugins.teams.transport import TeamsHTTPClient
+
+    captured = []
+
+    def handler(request):
+        if request.url.path.endswith("/lifecycle"):
+            return httpx.Response(200, json=cloud_status())
+        captured.append(request)
+        return httpx.Response(
+            200, json={"status": "missing"}, headers={"X-Teams-Request-Id": "request-one"}
+        )
+
+    value = installation({})
+    value.client = TeamsHTTPClient(
+        value.base_url,
+        access_token="trusted-server-credential",
+        transport=httpx.MockTransport(handler),
+    )
+    app = FastAPI()
+    app.include_router(value._router())
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            body = {"idempotencyKey": "original", "operation": "groups", "targetId": ""}
+            response = await client.post(
+                "/teams/operations/lookup",
+                headers={
+                    **scoped_headers(),
+                    "Authorization": "Bearer forged",
+                    "X-Teams-Node-Token": "forged",
+                    "X-Ksc-Account-Id": "forged",
+                },
+                json=body,
+            )
+            assert response.status_code == 200 and response.json() == {"status": "missing"}
+            assert response.headers["cache-control"] == "no-store"
+            assert captured[0].url.path == "/teams/operations/lookup"
+            assert captured[0].headers["authorization"] == "Bearer trusted-server-credential"
+            assert captured[0].headers["x-teams-owner-scope-ref"] == "owner-one"
+            assert "x-teams-node-token" not in captured[0].headers
+            assert "x-ksc-account-id" not in captured[0].headers
+            assert (await client.post("/teams/nodes/register", json={})).status_code == 404
+    finally:
+        await value.client.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_scope_duplicate_scope_and_oversized_body_never_reach_mutation():
+    from ksadk.plugins.teams.transport import TeamsHTTPClient
+
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        assert request.url.path.endswith("/lifecycle")
+        return httpx.Response(200, json=cloud_status(ownerScopeRef="owner-two"))
+
+    value = installation({})
+    value.client = TeamsHTTPClient(value.base_url, transport=httpx.MockTransport(handler))
+    app = FastAPI()
+    app.include_router(value._router())
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/groups", headers=scoped_headers(), json={"idempotencyKey": "stable"}
+            )
+            assert response.status_code == 403
+            assert calls == ["/teams/lifecycle"]
+            duplicate = list(scoped_headers().items()) + [("X-Teams-Owner-Scope-Ref", "owner-two")]
+            assert (await client.post("/groups", headers=duplicate, json={})).status_code == 403
+            assert (await client.post("/groups", content=b"x" * 262145)).status_code == 413
+            assert (await client.post("/groups", content=b"\xff")).status_code == 400
+            assert calls == ["/teams/lifecycle"]
+    finally:
+        await value.client.close()
+
+
+@pytest.mark.asyncio
+async def test_status_refresh_removes_write_capability_on_disconnect_and_restores_verified_scope():
+    value = installation({})
+    value._enabled = True
+    value.client = SimpleNamespace(
+        request=AsyncMock(
+            side_effect=[
+                cloud_status(
+                    health="ready", features=["workspace-projection.v1", "durable-operations.v1"]
+                ),
+                TeamsError("teams_transport_unavailable", "offline", status=503),
+                cloud_status(authorityId="authority-two", ownerScopeRef="owner-two"),
+            ]
+        )
+    )
+    assert (await value.refresh_status())["health"] == "ready"
+    offline = await value.refresh_status()
+    assert offline["health"] == "degraded" and offline["features"] == []
+    node = SimpleNamespace(close=AsyncMock(), last_error=None)
+    value.node = node
+    changed = await value.refresh_status()
+    assert changed["authorityId"] == "authority-two"
+    assert changed["ownerScopeRef"] == "owner-two"
+    node.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_material_binary_proxy_signs_original_bytes_and_only_allows_owner_routes():
+    import hashlib
+
+    from ksadk.common.auth import AWSV4Auth
+    from ksadk.plugins.teams.transport import TeamsHTTPClient
+
+    binary = b"\xff\x00\xfe" * 100_000
+    auth = AWSV4Auth("fixture-ak", "fixture-sk", allow_env_fallback=False)
+    captured = []
+
+    async def sign(method, url, body):
+        return auth.sign_headers(
+            method,
+            url,
+            {
+                "Content-Type": "application/octet-stream"
+                if isinstance(body, bytes)
+                else "application/json"
+            },
+            body,
+        )
+
+    def handler(request):
+        if request.url.path.endswith("/lifecycle"):
+            return httpx.Response(200, json=cloud_status())
+        captured.append(request)
+        assert request.content == binary
+        assert request.headers["x-amz-content-sha256"] == hashlib.sha256(binary).hexdigest()
+        assert request.headers["content-type"] == "application/octet-stream"
+        return httpx.Response(200, json={"state": "ready"})
+
+    value = installation({})
+    value.client = TeamsHTTPClient(
+        value.base_url, headers=sign, transport=httpx.MockTransport(handler)
+    )
+    app = FastAPI()
+    app.include_router(value._router())
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                "/teams/materials/tm_original/blobs/sha256:" + hashlib.sha256(binary).hexdigest(),
+                headers=scoped_headers(),
+                content=binary,
+            )
+            assert response.status_code == 200, response.text
+            for path in (
+                "/teams/runtime/artifacts",
+                "/teams/nodes/tn_x/materials",
+                "/teams/materials/../../runtime",
+            ):
+                assert (await client.put(path, content=binary)).status_code == 404
+            assert len(captured) == 1
+    finally:
+        await value.client.close()
+
+
+def test_auth_text_and_binary_payloads_have_exact_wire_digest():
+    import hashlib
+
+    from ksadk.common.auth import AWSV4Auth
+
+    auth = AWSV4Auth("fixture-ak", "fixture-sk", allow_env_fallback=False)
+    for body in ("中文 JSON", b"\xff\x00\xfe", b"", ""):
+        wire = body.encode() if isinstance(body, str) else body
+        headers = auth.sign_headers(
+            "PUT",
+            "https://teams.example.test/material",
+            {"Content-Type": "application/octet-stream"},
+            body,
+        )
+        assert headers["x-amz-content-sha256"] == hashlib.sha256(wire).hexdigest()

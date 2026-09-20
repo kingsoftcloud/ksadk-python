@@ -29,6 +29,7 @@ class WorkspacePlugin:
     status: Callable[[], dict[str, Any]]
     shutdown: Callable[[], Awaitable[None]] | None = None
     repair: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    refresh_status: Callable[[], Awaitable[dict[str, Any]]] | None = None
 
 
 class LifecycleInput(BaseModel):
@@ -51,7 +52,8 @@ class WorkspacePluginRegistry:
                     {"error": {"code": "plugin_not_installed", "message": "工作区插件未安装"}},
                     status_code=404,
                 )
-            return {"apiVersion": plugin.api_version, **plugin.status()}
+            state = await plugin.refresh_status() if plugin.refresh_status else plugin.status()
+            return {"apiVersion": plugin.api_version, **state}
 
         @self.api.post("/plugins/{plugin_id}/lifecycle")
         async def lifecycle(plugin_id: str, payload: LifecycleInput):

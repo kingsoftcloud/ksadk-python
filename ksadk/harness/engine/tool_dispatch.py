@@ -19,6 +19,16 @@ async def invoke_tool(
     mcp_cursors: McpDisclosureCursors | None = None,
     call_id: str = "",
 ) -> Any:
+    exclusive = bool(run is not None and run.exclusive_tools)
+    if exclusive:
+        from ksadk.harness.engine.policy_runtime import revalidate_policy
+
+        # Check before all dispatch branches, including built-in, MCP and
+        # dynamically disclosed tools. A model calling a hidden name gets no
+        # authority from that name, even if it shadows a trusted host tool.
+        await revalidate_policy(self, run)
+        if name not in run.tools:
+            raise PermissionError("tool is outside the trusted execution policy")
     if run is not None:
         from ksadk.harness.engine import budgets
 
@@ -57,9 +67,9 @@ async def invoke_tool(
             call_id=call_id,
         )
         return text
-    if self._skill_disclosure.is_tool(name):
+    if not exclusive and self._skill_disclosure.is_tool(name):
         return self._invoke_skill_tool(name, arguments, run=run)
-    if self._mcp_disclosure.is_tool(name):
+    if not exclusive and self._mcp_disclosure.is_tool(name):
         if mcp_cursors is None:
             mcp_cursors = McpDisclosureCursors()
         return await self._invoke_mcp_tool(
@@ -69,11 +79,18 @@ async def invoke_tool(
             cursors=mcp_cursors,
             call_id=call_id,
         )
-    if self._delegation_runtime is not None and self._delegation_runtime.is_tool(name):
+    if (
+        not exclusive
+        and self._delegation_runtime is not None
+        and self._delegation_runtime.is_tool(name)
+    ):
         if run is None:
             raise RuntimeError("dynamic delegation requires an active parent run")
         result, child_events = await self._delegation_runtime.invoke(
-            engine=self, parent_run=run, arguments=arguments, call_id=call_id or name,
+            engine=self,
+            parent_run=run,
+            arguments=arguments,
+            call_id=call_id or name,
         )
         self._pending_subagent_events.setdefault(run.handle.run_id, {})[call_id or name] = (
             child_events

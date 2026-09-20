@@ -78,7 +78,7 @@ from ksadk.sessions._local_tables import KSADK_EVENTS_TABLE, KSADK_SESSIONS_TABL
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.local_service import LocalSessionService
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kernel_inbox (
@@ -204,8 +204,14 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         async with self._write_lock:
             # CREATE ... IF NOT EXISTS + 整数 user_version，重复启动幂等。
             await connection.executescript(_SCHEMA + EXECUTION_GRANT_SCHEMA)
-            await connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            await connection.commit()
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await self._migrate_execution_grants(connection)
+                await connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
 
     async def close(self) -> None:
         if self._connection is not None:
@@ -221,10 +227,12 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
 
     @staticmethod
     async def _fetchone(connection: aiosqlite.Connection, sql: str, params: tuple) -> Any:
-        cursor = await connection.execute(sql, params)
-        row = await cursor.fetchone()
-        await cursor.close()
-        return row
+        # Consume the cursor in one SQLite worker call. An unfinished SELECT on
+        # this shared connection can otherwise overlap another coroutine's
+        # BEGIN IMMEDIATE and fail with SQLITE_BUSY_SNAPSHOT after an event-log
+        # writer commits. No authorization/transaction retry is involved.
+        rows = await connection.execute_fetchall(sql, params)
+        return rows[0] if rows else None
 
     @staticmethod
     def _activation_row(row: aiosqlite.Row | None) -> dict[str, Any] | None:
@@ -233,7 +241,10 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         return dict(row)
 
     async def _check_fence(
-        self, connection: aiosqlite.Connection, agent_instance_id: str, session_id: str,
+        self,
+        connection: aiosqlite.Connection,
+        agent_instance_id: str,
+        session_id: str,
         expected_fence: int,
     ) -> dict[str, Any]:
         row = await self._fetchone(
@@ -258,8 +269,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         return activation
 
     async def _emit_admission(
-        self, envelope: SessionEventEnvelope, command: AgentControlCommand,
-        *, connection: aiosqlite.Connection | None = None,
+        self,
+        envelope: SessionEventEnvelope,
+        command: AgentControlCommand,
+        *,
+        connection: aiosqlite.Connection | None = None,
     ) -> None:
         # admission 事实的 guard 绑定提交方 permit 引用与 command_id。
         guard = AdmissionWriteGuard(
@@ -267,8 +281,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
             command_id=command.command_id,
         )
         service = getattr(self._events, "session_service", None)
-        if (connection is not None and isinstance(service, LocalSessionService)
-                and service.db_path == self.db_path):
+        if (
+            connection is not None
+            and isinstance(service, LocalSessionService)
+            and service.db_path == self.db_path
+        ):
             await self._append_interaction_event_on(connection, envelope, guard)
         else:
             await self._events.append(envelope, guard=guard)
@@ -336,9 +353,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                             "rejected",
                             error=ControlError(
                                 code="idempotency_conflict",
-                                message=(
-                                    "idempotency key reused with a different request digest"
-                                ),
+                                message=("idempotency key reused with a different request digest"),
                                 retryable=False,
                             ),
                         )
@@ -354,7 +369,10 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                 if grant_error:
                     await connection.commit()
                     return await self.reject_command(
-                        command, status="rejected", code=grant_error, message=grant_error,
+                        command,
+                        status="rejected",
+                        code=grant_error,
+                        message=grant_error,
                     )
 
                 depth_row = await self._fetchone(
@@ -439,9 +457,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
             except BaseException:
                 await connection.rollback()
                 raise
-        return self._receipt(
-            command, "accepted", message_id=message_id, accepted_seq=accepted_seq
-        )
+        return self._receipt(command, "accepted", message_id=message_id, accepted_seq=accepted_seq)
 
     async def load_message(self, message_id: str) -> InboxMessage | None:
         connection = await self._connect()
@@ -468,8 +484,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         connection = await self._connect()
         row = await self._fetchone(
             connection,
-            "SELECT message_id FROM kernel_inbox "
-            "WHERE session_id=? AND idempotency_key=?",
+            "SELECT message_id FROM kernel_inbox WHERE session_id=? AND idempotency_key=?",
             (session_id, idempotency_key),
         )
         return await self.load_message(row["message_id"]) if row is not None else None
@@ -514,9 +529,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
             sql += " AND session_id=?"
             params += (session_id,)
         sql += " ORDER BY accepted_seq"
-        cursor = await connection.execute(sql, params)
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await connection.execute_fetchall(sql, params)
         messages = [await self.load_message(row["message_id"]) for row in rows]
         return [message for message in messages if message is not None]
 
@@ -545,15 +558,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         else:
             sql += " AND status IN ('accepted','claimed')"
         sql += " ORDER BY accepted_seq"
-        cursor = await connection.execute(sql, params)
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await connection.execute_fetchall(sql, params)
         messages = [await self.load_message(row["message_id"]) for row in rows]
         return [message for message in messages if message is not None]
 
-    async def claim_message(
-        self, message_id: str, fencing_token: int
-    ) -> InboxMessage:
+    async def claim_message(self, message_id: str, fencing_token: int) -> InboxMessage:
         """Claim one selected message, idempotently for the same fence."""
 
         message_id = str(message_id)
@@ -574,9 +583,8 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     fencing_token,
                 )
                 await self._sqlite_require_claim_grant(connection, row)
-                if (
-                    row["status"] == InboxState.CLAIMED.value
-                    and row["claimed_fence"] == int(fencing_token)
+                if row["status"] == InboxState.CLAIMED.value and row["claimed_fence"] == int(
+                    fencing_token
                 ):
                     await connection.commit()
                     message = await self.load_message(message_id)
@@ -587,16 +595,12 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     InboxState.CLAIMED.value,
                 ):
                     raise InvalidCommandError(
-                        f"message {message_id!r} is not claimable at status "
-                        f"{row['status']}"
+                        f"message {message_id!r} is not claimable at status {row['status']}"
                     )
                 if row["status"] == InboxState.ACCEPTED.value:
-                    assert_inbox_transition(
-                        InboxState(row["status"]), InboxState.CLAIMED
-                    )
+                    assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
                 await connection.execute(
-                    "UPDATE kernel_inbox SET status='claimed', claimed_fence=? "
-                    "WHERE message_id=?",
+                    "UPDATE kernel_inbox SET status='claimed', claimed_fence=? WHERE message_id=?",
                     (int(fencing_token), message_id),
                 )
                 await connection.commit()
@@ -620,9 +624,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         assert message is not None
         return message
 
-    async def discard_claim(
-        self, message_id: str, *, expected_fence: int
-    ) -> None:
+    async def discard_claim(self, message_id: str, *, expected_fence: int) -> None:
         """Settle a typed rejection as ``claimed -> discarded``."""
 
         message_id = str(message_id)
@@ -642,17 +644,13 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     row["session_id"],
                     expected_fence,
                 )
-                if (
-                    row["status"] != InboxState.CLAIMED.value
-                    or row["claimed_fence"] != int(expected_fence)
+                if row["status"] != InboxState.CLAIMED.value or row["claimed_fence"] != int(
+                    expected_fence
                 ):
                     raise StaleFenceError(
-                        f"message {message_id!r} is not claimed at fence "
-                        f"{expected_fence}"
+                        f"message {message_id!r} is not claimed at fence {expected_fence}"
                     )
-                assert_inbox_transition(
-                    InboxState(row["status"]), InboxState.DISCARDED
-                )
+                assert_inbox_transition(InboxState(row["status"]), InboxState.DISCARDED)
                 await connection.execute(
                     "UPDATE kernel_inbox SET status='discarded' WHERE message_id=?",
                     (message_id,),
@@ -674,9 +672,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
             expected_fence,
         )
 
-    async def inbox_depth(
-        self, agent_instance_id: str, session_id: str | None = None
-    ) -> int:
+    async def inbox_depth(self, agent_instance_id: str, session_id: str | None = None) -> int:
         connection = await self._connect()
         sql = (
             "SELECT COUNT(*) AS depth FROM kernel_inbox "
@@ -695,11 +691,14 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         async with self._write_lock:
             connection = await self._begin()
             try:
-                activation = self._activation_row(await self._fetchone(
-                    connection,
-                    "SELECT * FROM kernel_activations WHERE agent_instance_id=? AND session_id=?",
-                    (agent_instance_id, session_id),
-                ))
+                activation = self._activation_row(
+                    await self._fetchone(
+                        connection,
+                        "SELECT * FROM kernel_activations "
+                        "WHERE agent_instance_id=? AND session_id=?",
+                        (agent_instance_id, session_id),
+                    )
+                )
                 if (
                     activation is None
                     or activation["lease_expires_at"] <= time.time()
@@ -758,9 +757,8 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                 activation = await self._check_fence(
                     connection, row["agent_instance_id"], row["session_id"], expected_fence
                 )
-                if (
-                    row["status"] != InboxState.CLAIMED.value
-                    or row["claimed_fence"] != int(expected_fence)
+                if row["status"] != InboxState.CLAIMED.value or row["claimed_fence"] != int(
+                    expected_fence
                 ):
                     raise StaleFenceError(
                         f"message {message_id!r} is not claimed at fence {expected_fence}"
@@ -968,9 +966,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
 
         presentation = None
         if row["presentation_json"]:
-            presentation = InteractionPresentation.model_validate_json(
-                row["presentation_json"]
-            )
+            presentation = InteractionPresentation.model_validate_json(row["presentation_json"])
         return InteractionRecord(
             interaction_id=row["interaction_id"],
             tenant_id=row["tenant_id"],
@@ -986,14 +982,10 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
             presentation=presentation,
             provider_id=row["provider_id"] or "",
             native_target=(
-                json.loads(row["native_target_json"])
-                if row["native_target_json"]
-                else None
+                json.loads(row["native_target_json"]) if row["native_target_json"] else None
             ),
             continuation_metadata=(
-                json.loads(row["continuation_json"])
-                if row["continuation_json"]
-                else None
+                json.loads(row["continuation_json"]) if row["continuation_json"] else None
             ),
         )
 
@@ -1006,11 +998,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
             record.run_id,
             record.kind,
             json.dumps(record.request_schema, ensure_ascii=False),
-            (
-                record.presentation.model_dump_json()
-                if record.presentation is not None
-                else None
-            ),
+            (record.presentation.model_dump_json() if record.presentation is not None else None),
             record.revision,
             record.status,
             record.created_at,
@@ -1106,17 +1094,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                             submission.idempotency_key,
                         ),
                     )
-                    if (
-                        existing_sub is not None
-                        and existing_sub["submission_digest"] == sub_digest
-                    ):
+                    if existing_sub is not None and existing_sub["submission_digest"] == sub_digest:
                         await connection.commit()
-                        return InteractionReceipt.model_validate_json(
-                            existing_sub["receipt_json"]
-                        )
+                        return InteractionReceipt.model_validate_json(existing_sub["receipt_json"])
                     raise InvalidCommandError(
-                        "interaction already reached terminal status"
-                        f" {current.status!r}",
+                        f"interaction already reached terminal status {current.status!r}",
                         details={
                             "reason": ALREADY_RESOLVED,
                             "interaction_id": current.interaction_id,
@@ -1204,13 +1186,9 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         async with self._write_lock:
             connection = await self._begin()
             try:
-                row = await self._interaction_row_for_guard(
-                    connection, interaction_id, guard
-                )
+                row = await self._interaction_row_for_guard(connection, interaction_id, guard)
                 if row is None:
-                    raise InvalidCommandError(
-                        f"unknown interaction_id {interaction_id!r}"
-                    )
+                    raise InvalidCommandError(f"unknown interaction_id {interaction_id!r}")
                 await self._check_interaction_guard(
                     connection, row["agent_instance_id"], row["session_id"], guard
                 )
@@ -1218,8 +1196,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                 assert current is not None
                 if is_terminal(current.status):
                     raise InvalidCommandError(
-                        f"interaction already reached terminal status"
-                        f" {current.status!r}",
+                        f"interaction already reached terminal status {current.status!r}",
                         details={
                             "reason": ALREADY_RESOLVED,
                             "interaction_id": current.interaction_id,
@@ -1239,9 +1216,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                     update={"status": status, "revision": current.revision + 1}
                 )
                 event_type = (
-                    "interaction.cancelled"
-                    if status == "cancelled"
-                    else "interaction.expired"
+                    "interaction.cancelled" if status == "cancelled" else "interaction.expired"
                 )
                 stored = await self._append_interaction_event_on(
                     connection,
@@ -1336,12 +1311,10 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
                 (interaction_id, tenant_id, agent_instance_id, session_id, run_id),
             )
             return self._row_to_record(row)
-        cursor = await connection.execute(
+        rows = await connection.execute_fetchall(
             "SELECT * FROM kernel_interactions WHERE interaction_id=? LIMIT 2",
             (interaction_id,),
         )
-        rows = await cursor.fetchall()
-        await cursor.close()
         if len(rows) > 1:
             raise InvalidCommandError(
                 f"interaction_id {interaction_id!r} is ambiguous without trusted scope",
@@ -1350,17 +1323,23 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         return self._row_to_record(rows[0]) if rows else None
 
     async def get_terminal_receipt(
-        self, interaction_id: str, *, tenant_id: str, agent_instance_id: str,
-        session_id: str, run_id: str,
+        self,
+        interaction_id: str,
+        *,
+        tenant_id: str,
+        agent_instance_id: str,
+        session_id: str,
+        run_id: str,
     ) -> InteractionReceipt | None:
         """Read the committed outcome inside a complete trusted scope.
 
         Resolved alone does not mean approved. Pending/resolving records never
         yield an authorization receipt; callers must still match the request.
         """
-        if not all(isinstance(value, str) and value for value in (
-            interaction_id, tenant_id, agent_instance_id, session_id, run_id
-        )):
+        if not all(
+            isinstance(value, str) and value
+            for value in (interaction_id, tenant_id, agent_instance_id, session_id, run_id)
+        ):
             raise InvalidCommandError("interaction receipt requires a complete trusted scope")
         row = await self._fetchone(
             await self._connect(),
@@ -1371,8 +1350,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         if row is None or not is_terminal(row["status"]):
             return None
         return InteractionReceipt(
-            interaction_id=row["interaction_id"], revision=int(row["revision"]),
-            status=row["status"], outcome=row["outcome"], event_id=row["event_id"],
+            interaction_id=row["interaction_id"],
+            revision=int(row["revision"]),
+            status=row["status"],
+            outcome=row["outcome"],
+            event_id=row["event_id"],
             accepted_seq=row["accepted_seq"],
         )
 
@@ -1380,13 +1362,11 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         self, tenant_id: str, session_id: str
     ) -> list[InteractionRecord]:
         connection = await self._connect()
-        cursor = await connection.execute(
+        rows = await connection.execute_fetchall(
             "SELECT * FROM kernel_interactions WHERE tenant_id=? AND session_id=?"
             " AND status='pending' ORDER BY created_at",
             (tenant_id, session_id),
         )
-        rows = await cursor.fetchall()
-        await cursor.close()
         records = [self._row_to_record(row) for row in rows]
         return [r for r in records if r is not None]
 
@@ -1578,23 +1558,24 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
     ) -> dict[str, Any]:
         connection = await self._connect()
         if agent_instance_id is not None:
-            row = self._activation_row(await self._fetchone(
-                connection,
-                "SELECT * FROM kernel_activations WHERE agent_instance_id=? AND session_id=?",
-                (agent_instance_id, session_id),
-            ))
+            row = self._activation_row(
+                await self._fetchone(
+                    connection,
+                    "SELECT * FROM kernel_activations WHERE agent_instance_id=? AND session_id=?",
+                    (agent_instance_id, session_id),
+                )
+            )
             if row is None:
                 raise StaleFenceError(
                     "no active activation lease",
                     details={"agent_instance_id": agent_instance_id, "session_id": session_id},
                 )
             return row
-        cursor = await connection.execute(
+        records = await connection.execute_fetchall(
             "SELECT * FROM kernel_activations WHERE session_id=? AND released=0",
             (session_id,),
         )
-        rows = [self._activation_row(row) for row in await cursor.fetchall()]
-        await cursor.close()
+        rows = [self._activation_row(row) for row in records]
         rows = [row for row in rows if row is not None]
         if len(rows) != 1:
             raise StaleFenceError(
@@ -1638,9 +1619,7 @@ class SQLiteAgentKernelStore(SQLiteExecutionGrantMixin):
         row = await self._fetchone(connection, sql, params)
         return await self.load_run(row["run_id"]) if row is not None else None
 
-    async def save_run_transition(
-        self, run: RunRecord, *, expected_fence: int
-    ) -> RunRecord:
+    async def save_run_transition(self, run: RunRecord, *, expected_fence: int) -> RunRecord:
         async with self._write_lock:
             connection = await self._begin()
             try:
