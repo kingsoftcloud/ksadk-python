@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import Actor, TaskCreateInput, TERMINAL
+from .contracts import TERMINAL, Actor, TaskCreateInput
 from .domain_values import public
 from .errors import TeamsError
 from .store import Transaction, digest, new_id, now
@@ -244,6 +244,11 @@ class TaskDecisions:
             raise TeamsError("invalid_result", "结果不能为空或超过大小限制", status=422)
 
         def submit(tx: Transaction) -> dict[str, Any]:
+            member = self.run_member(tx, actor.team_run_id, actor.member_id)
+            if member["binding"].get("memberClass") == "task_worker":
+                raise TeamsError(
+                    "candidate_mode_mismatch", "该成员的结果由可信宿主投影", status=403
+                )
             task = tx.get("task", task_id)
             if (
                 task["groupId"] != actor.group_id
@@ -260,13 +265,14 @@ class TaskDecisions:
                 raise TeamsError("stale_attempt", "该执行已失去提交资格")
             # Artifacts must already be resolved by the trusted Host; raw model
             # paths/URLs never become downloadable artifacts here.
-            attempt["_candidate"] = {
-                "result": result.strip(),
-                "runId": actor.run_id,
-                "artifacts": artifacts or [],
-            }
-            task["revision"] += 1
-            tx.put("task", task_id, task)
+            self._record_task_candidate(
+                tx,
+                task,
+                attempt,
+                result=result,
+                run_id=actor.run_id,
+                artifacts=artifacts or [],
+            )
             return {
                 "status": "candidate_received",
                 "taskId": task_id,
@@ -285,6 +291,13 @@ class TaskDecisions:
             },
             submit,
         )
+
+    @staticmethod
+    def _record_task_candidate(tx, task, attempt, *, result, run_id, artifacts):
+        """Internal helper: caller authorizes invocation or canonical Host evidence."""
+        attempt["_candidate"] = {"result": result.strip(), "runId": run_id, "artifacts": artifacts}
+        task["revision"] += 1
+        tx.put("task", task["taskId"], task)
 
     def wait_for_tasks(self, actor: Actor, task_ids: list[str], key: str) -> dict[str, Any]:
         if actor.kind != "member" or not actor.group_id or not actor.team_run_id:

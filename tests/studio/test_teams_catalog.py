@@ -66,3 +66,29 @@ async def test_chat_only_cloud_agent_is_visible_but_not_executable():
     assert item["kind"] == "cloud"
     assert item["capabilities"]["enqueue"] is False
     assert item["availability"]["code"] == "server_authority_required"
+
+
+def test_node_catalog_requires_explicit_host_descriptor_instead_of_provider_name():
+    from ksadk.plugins.teams.cloud_contracts import digest
+
+    source = studio()
+    builds = source.builds.list()
+    for build in builds:
+        build.bundle_digest = digest("bundle")
+    source.builds.list = lambda: builds
+    catalog = StudioTeamsCatalog(source, authority_ref="test")
+    assert catalog.node_advertisements({}) == []
+    result = catalog.node_advertisements(
+        {
+            "local-build:new": {
+                "bundleDigest": digest("bundle"),
+                "contractDigest": digest("contract"),
+                "capabilitiesDigest": digest("capabilities"),
+                "capabilities": {"idempotentLookup": True},
+            }
+        }
+    )
+    assert len(result) == 1
+    assert result[0]["capabilities"]["idempotentLookup"] is True
+    assert result[0]["capabilities"]["enqueue"] is False
+    assert result[0]["capabilities"]["toolPolicy"] is False

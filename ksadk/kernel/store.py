@@ -200,21 +200,57 @@ class AgentKernelStore(Protocol):
     ) -> AgentControlReceipt: ...
 
     async def ensure_execution_grant(
-        self, spec: ExecutionGrantSpec
+        self,
+        spec: ExecutionGrantSpec,
+        *,
+        expires_at: str | None = None,
+        remaining_ttl_seconds: float | None = None,
     ) -> ExecutionGrantRecord: ...
+
+    async def require_execution_grant(self, spec: ExecutionGrantSpec) -> ExecutionGrantRecord: ...
+
+    async def renew_execution_grant(
+        self,
+        spec: ExecutionGrantSpec,
+        *,
+        expected_revision: int,
+        expires_at: str,
+        renewal_id: str,
+        remaining_ttl_seconds: float | None = None,
+    ) -> ExecutionGrantBarrier: ...
+
+    async def lookup_execution_grant_operation(
+        self,
+        spec: ExecutionGrantSpec,
+        *,
+        idempotency_key: str,
+    ) -> ExecutionGrantBarrier | None: ...
 
     async def get_execution_grant(
         self, spec: ExecutionGrantSpec
     ) -> ExecutionGrantBarrier | None: ...
 
     async def set_execution_grant_state(
-        self, spec: ExecutionGrantSpec, state: GrantState, *,
-        expected_revision: int, idempotency_key: str,
+        self,
+        spec: ExecutionGrantSpec,
+        state: GrantState,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
     ) -> ExecutionGrantBarrier: ...
 
     async def claim_next(
         self, agent_instance_id: str, session_id: str, fencing_token: int
     ) -> InboxMessage | None: ...
+
+    async def set_execution_admission(
+        self,
+        spec: ExecutionGrantSpec,
+        allowed: bool,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> ExecutionGrantBarrier: ...
 
     async def list_messages(
         self, agent_instance_id: str, session_id: str | None = None
@@ -228,13 +264,9 @@ class AgentKernelStore(Protocol):
         fencing_token: int | None = None,
     ) -> list[InboxMessage]: ...
 
-    async def claim_message(
-        self, message_id: str, fencing_token: int
-    ) -> InboxMessage: ...
+    async def claim_message(self, message_id: str, fencing_token: int) -> InboxMessage: ...
 
-    async def discard_claim(
-        self, message_id: str, *, expected_fence: int
-    ) -> None: ...
+    async def discard_claim(self, message_id: str, *, expected_fence: int) -> None: ...
 
     async def complete_claim(self, message_id: str, *, expected_fence: int) -> None: ...
 
@@ -256,9 +288,7 @@ class AgentKernelStore(Protocol):
 
     async def load_run(self, run_id: str) -> RunRecord | None: ...
 
-    async def save_run_transition(
-        self, run: RunRecord, *, expected_fence: int
-    ) -> RunRecord: ...
+    async def save_run_transition(self, run: RunRecord, *, expected_fence: int) -> RunRecord: ...
 
     async def load_message(self, message_id: str) -> InboxMessage | None: ...
 
@@ -276,9 +306,7 @@ class AgentKernelStore(Protocol):
         retryable: bool = False,
     ) -> AgentControlReceipt: ...
 
-    async def inbox_depth(
-        self, agent_instance_id: str, session_id: str | None = None
-    ) -> int: ...
+    async def inbox_depth(self, agent_instance_id: str, session_id: str | None = None) -> int: ...
 
     async def find_active_run(
         self, agent_instance_id: str, session_id: str | None = None

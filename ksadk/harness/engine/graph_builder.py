@@ -56,8 +56,11 @@ def build_graph(engine, run):
         if event.event_type == EventType.USAGE_REPORTED:
             input_tokens = int(event.payload.get("input_tokens") or 0)
             output_tokens = int(event.payload.get("output_tokens") or 0)
-            budgets.spend(run, "tokens", int(event.payload.get("total_tokens") or
-                                             input_tokens + output_tokens))
+            budgets.spend(
+                run,
+                "tokens",
+                int(event.payload.get("total_tokens") or input_tokens + output_tokens),
+            )
             budgets.spend(run, "input_tokens", input_tokens)
             budgets.spend(run, "output_tokens", output_tokens)
         if event.event_type == EventType.ARTIFACT_CREATED:
@@ -227,15 +230,15 @@ def build_graph(engine, run):
                 )
             synthesis_tools = (
                 list(run.tools.values())
-                + engine._skill_disclosure.tools(run.skill_catalog)
-                + engine._mcp_disclosure.tools(run.mcp_catalog)
+                + ([] if run.exclusive_tools else engine._skill_disclosure.tools(run.skill_catalog))
+                + ([] if run.exclusive_tools else engine._mcp_disclosure.tools(run.mcp_catalog))
             )
             available_tools = (
                 synthesis_tools
                 + list(run.sub_agents.values())
                 + (
                     [engine._delegation_runtime]
-                    if engine._delegation_runtime is not None
+                    if engine._delegation_runtime is not None and not run.exclusive_tools
                     else []
                 )
             )
@@ -255,7 +258,9 @@ def build_graph(engine, run):
                 tools=(
                     []
                     if closing_turn
-                    else synthesis_tools if delegation_synthesis else available_tools
+                    else synthesis_tools
+                    if delegation_synthesis
+                    else available_tools
                 ),
                 reasoner=engine._reasoner,
                 agent_id=run.state.agent_id,
@@ -308,8 +313,7 @@ def build_graph(engine, run):
             if message.get("role") == "assistant"
         ).strip()
         unfinished_delegation_answer = bool(
-            state.get("delegation_synthesis_pending")
-            and _DELEGATION_PREFACE.search(assistant_text)
+            state.get("delegation_synthesis_pending") and _DELEGATION_PREFACE.search(assistant_text)
         )
         if (
             out.route == "final"
@@ -387,6 +391,7 @@ def build_graph(engine, run):
         _restore_controller(state)
         run.child_approval_decision = state.get("child_approval_decision")
         state["child_approval_decision"] = {}
+
         class _GraphApprovalResolver:
             # LangGraph interrupt 同步语义：首次抛 GraphInterrupt，resume 后返回审批决定。
             def request(self, *, call_id, name, arguments):  # type: ignore[no-untyped-def]
@@ -424,8 +429,7 @@ def build_graph(engine, run):
                 missing = [
                     str(field)
                     for field in required
-                    if str(field) not in arguments
-                    or arguments.get(str(field)) is None
+                    if str(field) not in arguments or arguments.get(str(field)) is None
                 ]
                 if missing:
                     return "missing required fields: " + ", ".join(missing)
@@ -470,11 +474,15 @@ def build_graph(engine, run):
         pending_tool_calls = order_subagent_tool_calls(
             list(state["pending_tool_calls"]), run.sub_agents
         )
+
         def _parallel_safe(name, arguments):
             sub = run.sub_agents.get(name)
             if sub is not None:
-                return not (sub.tools or (sub.inherit_skills and run.skill_catalog)
-                            or (sub.inherit_mcp and run.mcp_catalog))
+                return not (
+                    sub.tools
+                    or (sub.inherit_skills and run.skill_catalog)
+                    or (sub.inherit_mcp and run.mcp_catalog)
+                )
             return bool(
                 engine._delegation_runtime is not None
                 and engine._delegation_runtime.is_tool(name)
@@ -487,12 +495,18 @@ def build_graph(engine, run):
 
         # Commit sequential siblings at separate checkpoint boundaries. Only
         # children proven unable to request approval may share a parallel node.
-        parallel = len(pending_tool_calls) > 1 and engine._capability_runtime is None and all(
-            _parallel_safe(p["name"], p["arguments"])
-            and p["name"] not in run.approval_required
-            and not (run.sub_agents.get(p["name"]) and run.sub_agents[p["name"]].depends_on)
-            for p in pending_tool_calls
-        ) and spec.execution_strategy.config.get("subagent_failure_mode", "partial") != "fail_fast"
+        parallel = (
+            len(pending_tool_calls) > 1
+            and engine._capability_runtime is None
+            and all(
+                _parallel_safe(p["name"], p["arguments"])
+                and p["name"] not in run.approval_required
+                and not (run.sub_agents.get(p["name"]) and run.sub_agents[p["name"]].depends_on)
+                for p in pending_tool_calls
+            )
+            and spec.execution_strategy.config.get("subagent_failure_mode", "partial")
+            != "fail_fast"
+        )
         remaining_calls = [] if parallel else pending_tool_calls[1:]
         pending_tool_calls = pending_tool_calls if parallel else pending_tool_calls[:1]
         # Chat only needs an aggregate lifecycle signal. Provider selection,
@@ -598,9 +612,12 @@ def build_graph(engine, run):
         subagent_failure_mode = str(
             run.compiled.spec.execution_strategy.config.get("subagent_failure_mode", "partial")
         )
+
         def _live_tool_event(event):
-            if (event.event_type == EventType.TOOL_CALL_BEGIN
-                    and str(event.payload.get("call_id") or "") in run.budget_tool_calls):
+            if (
+                event.event_type == EventType.TOOL_CALL_BEGIN
+                and str(event.payload.get("call_id") or "") in run.budget_tool_calls
+            ):
                 return  # The same pending delegate resumes; it does not start twice.
             run.seq += 1
             event.seq_id = run.seq
@@ -616,7 +633,8 @@ def build_graph(engine, run):
                     parallel_safe_decider=(
                         lambda name, _arguments: (
                             (
-                                name in run.sub_agents and _parallel_safe(name, _arguments)
+                                name in run.sub_agents
+                                and _parallel_safe(name, _arguments)
                                 or (
                                     engine._delegation_runtime is not None
                                     and engine._delegation_runtime.is_tool(name)
@@ -846,9 +864,15 @@ def build_graph(engine, run):
         if src == "reason":
             continue  # 已由条件边覆盖。
         if src == "tool_calls":
-            builder.add_conditional_edges("tool_calls", route, {
-                "tool_calls": "tool_calls", "child_approval": "child_approval", "reason": dst,
-            })
+            builder.add_conditional_edges(
+                "tool_calls",
+                route,
+                {
+                    "tool_calls": "tool_calls",
+                    "child_approval": "child_approval",
+                    "reason": dst,
+                },
+            )
             continue
         if dst == "final":
             if src in node_impls and src != "reason":

@@ -58,6 +58,9 @@ class EnqueuePayload(WireModel):
     # Optional execution-grants/v1 extension. AgentControlCommand retains the
     # caller's original payload, so old command digests are unchanged.
     execution_grant_id: str | None = Field(default=None, min_length=1, max_length=512, strict=True)
+    execution_grant_attempt_epoch: int | None = Field(default=None, ge=1, strict=True)
+    execution_policy_ref: str | None = Field(default=None, min_length=1, strict=True)
+    teams_context_ref: str | None = Field(default=None, min_length=1, strict=True)
 
 
 class SteerPayload(WireModel):

@@ -137,6 +137,9 @@ class StudioExecutionHost:
                 "restore": matrix.durable_restore.supported,
                 "steer": matrix.steer.supported,
                 "interaction": matrix.submit_interaction.supported,
+                "admissionBarrier": callable(
+                    getattr(runtime.kernel, "set_execution_admission", None)
+                ),
             },
             "capabilitySnapshot": matrix.model_dump(mode="json"),
         }
@@ -170,9 +173,11 @@ class StudioExecutionHost:
             )
 
     def is_reserved_run(self, run_id: str) -> bool:
-        return bool(self._db.execute(
-            "SELECT 1 FROM execution_policy_refs WHERE run_id=?", (run_id,)
-        ).fetchone())
+        return bool(
+            self._db.execute(
+                "SELECT 1 FROM execution_policy_refs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        )
 
     @staticmethod
     def _grant(scope: PluginExecutionScope, target: Any, grant_id: str) -> ExecutionGrantSpec:
@@ -360,6 +365,47 @@ class StudioExecutionHost:
             queued=barrier.queued_message_ids,
             discarded=barrier.discarded_message_ids,
             details={"commands": [item.model_dump() for item in barrier.commands]},
+        )
+
+    async def set_admission(self, scope, grant_id, allowed, idempotency_key):
+        # Same trusted authorization as grant management; a browser cannot
+        # construct a PluginExecutionScope to bypass plugin admission.
+        target, runtime = await self._target(scope, "set_grant")
+        spec = self._grant(scope, target, grant_id)
+        async with self._grant_lock:
+            record = await runtime.kernel.ensure_execution_grant(spec)
+            operation_id = _hash([asdict(scope), idempotency_key])
+            operation_digest = _hash(["admission", spec.model_dump(), allowed])
+            self._db.execute(
+                "INSERT OR IGNORE INTO plugin_grant_operations VALUES(?,?,?)",
+                (operation_id, operation_digest, record.admission_revision),
+            )
+            row = self._db.execute(
+                "SELECT digest,expected_revision FROM plugin_grant_operations WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            if row[0] != operation_digest:
+                raise ExecutionHostError(
+                    "grant_idempotency_conflict", "原队列控制内容已改变", status=409
+                )
+            barrier = await runtime.kernel.set_execution_admission(
+                spec,
+                allowed,
+                expected_revision=row[1],
+                idempotency_key=operation_id,
+            )
+        return ExecutionBarrier(
+            barrier.grant.state,
+            barrier.grant.admission_revision,
+            in_flight=barrier.in_flight_message_ids,
+            queued=barrier.queued_message_ids,
+            discarded=barrier.discarded_message_ids,
+            details={
+                "admissionAllowed": barrier.grant.admission_allowed,
+                "admissionRevision": barrier.grant.admission_revision,
+                "grantRevision": barrier.grant.revision,
+                "commands": [item.model_dump() for item in barrier.commands],
+            },
         )
 
     async def cancel(self, scope, run_id, idempotency_key):

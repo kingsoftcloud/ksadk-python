@@ -26,6 +26,19 @@
       "minLength": 1,
       "title": "Owner Ref",
       "type": "string"
+    },
+    "attempt_epoch": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attempt Epoch"
     }
   },
   "required": [

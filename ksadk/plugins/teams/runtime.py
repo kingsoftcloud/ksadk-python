@@ -121,9 +121,7 @@ class TeamsRuntime:
         if background:
             self._task = asyncio.create_task(self._run(), name="teams-plugin-outbox")
 
-    def _migrate_compatible_artifact(
-        self, store: TeamsStore, installed: dict[str, Any]
-    ) -> None:
+    def _migrate_compatible_artifact(self, store: TeamsStore, installed: dict[str, Any]) -> None:
         if (
             installed.get("pluginVersion") != PLUGIN_VERSION
             or installed.get("apiVersion") != API_VERSION
@@ -296,9 +294,12 @@ class TeamsRuntime:
                 ):
                     await self._submit(domain, candidate["deliveryId"])
 
-    async def _member_controls(self, domain):
-        with domain.store.transaction() as tx:
-            pending = [item for item in tx.list("member_control") if item["status"] == "pending"]
+    async def _member_controls(self, domain, pending=None):
+        if pending is None:
+            with domain.store.transaction() as tx:
+                pending = [
+                    item for item in tx.list("member_control") if item["status"] == "pending"
+                ]
         for control in pending:
             with domain.store.transaction() as tx:
                 delivery = tx.get("delivery", control["deliveryId"])
@@ -510,6 +511,8 @@ class TeamsRuntime:
                 return
             current.update(
                 status="uncertain",
+                _grantId=current.get("_grantId")
+                or self.grant_id(run["teamRunId"], member["memberId"]),
                 _tokenLimit=token_limit,
                 reason=None,
                 revision=current["revision"] + 1,
@@ -520,7 +523,7 @@ class TeamsRuntime:
                 scope,
                 content=delivery["_payload"],
                 idempotency_key=delivery_id,
-                grant_id=self.grant_id(run["teamRunId"], member["memberId"]),
+                grant_id=current["_grantId"],
                 causation=delivery["_decisionId"],
                 policy_context=policy_context,
             )
@@ -532,9 +535,10 @@ class TeamsRuntime:
             return
         self._receipt(domain, delivery_id, receipt)
 
-    def _watchdog(self, domain: TeamsDomain) -> None:
-        with domain.store.transaction() as tx:
-            runs = tx.list("team_run")
+    def _watchdog(self, domain: TeamsDomain, runs=None) -> None:
+        if runs is None:
+            with domain.store.transaction() as tx:
+                runs = tx.list("team_run")
         for run in runs:
             if run["status"] in TERMINAL | {"cancel_requested", "awaiting_acceptance"}:
                 continue
@@ -594,6 +598,26 @@ class TeamsRuntime:
         if receipt.run_id and receipt.run_status:
             with domain.store.transaction() as tx:
                 current = tx.get("delivery", delivery["deliveryId"])
+                if current.get("_candidateMode") == "canonical_terminal" and receipt.run_status in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                }:
+                    # The legacy Host receipt lacks canonical result evidence.
+                    # A cloud/native adapter must call project_execution_completion;
+                    # plain output text cannot manufacture a task-worker candidate.
+                    if (
+                        not current.get("_completionEvidence")
+                        and current.get("reason") != "completion_evidence_required"
+                    ):
+                        current.update(
+                            resultState="pending",
+                            reason="completion_evidence_required",
+                            revision=current["revision"] + 1,
+                        )
+                        domain.publish(tx, "delivery", current["deliveryId"], current)
+                    return
             if current.get("_runStatus") == receipt.run_status:
                 return
             # A run may return to running after offline/approval waits. The
@@ -622,7 +646,11 @@ class TeamsRuntime:
                 "commandId": receipt.command_id,
                 "runId": receipt.run_id,
                 "_kernelMessageId": receipt.message_id,
-                "reason": receipt.reason,
+                "reason": (
+                    delivery.get("reason")
+                    if delivery.get("resultState") == "pending" and receipt.reason is None
+                    else receipt.reason
+                ),
             }
             if all(delivery.get(key) == value for key, value in update.items()):
                 return
@@ -659,9 +687,12 @@ class TeamsRuntime:
                     domain.publish_run_member(tx, member)
                 domain._advance(tx, run)
 
-    async def _controls(self, domain: TeamsDomain) -> None:
-        with domain.store.transaction() as tx:
-            controls = [control for control in tx.list("control") if control["status"] == "pending"]
+    async def _controls(self, domain: TeamsDomain, controls=None) -> None:
+        if controls is None:
+            with domain.store.transaction() as tx:
+                controls = [
+                    control for control in tx.list("control") if control["status"] == "pending"
+                ]
         for control in controls:
             with domain.store.transaction() as tx:
                 group = tx.get("group", control["groupId"])
@@ -670,41 +701,68 @@ class TeamsRuntime:
                     control["status"] = "superseded"
                     tx.put("control", control["controlId"], control)
                     continue
-                members = run["_roster"]
-            state = {
-                "stop": "revoked",
-                "suspend_dispatch": "suspended",
-                "resume_dispatch": "active",
-            }[control["action"]]
-            for member in members:
-                if member["memberId"] in control["barriers"]:
+                targets = control.get("targets")
+                if targets is None:  # durable pre-upgrade controls
+                    targets = [
+                        {
+                            "targetId": member["memberId"],
+                            "memberId": member["memberId"],
+                            "member": member,
+                            "grantId": self.grant_id(run["teamRunId"], member["memberId"]),
+                        }
+                        for member in run["_roster"]
+                    ]
+            for target in targets:
+                target_id = target["targetId"]
+                if target_id in control["barriers"]:
                     continue
                 with domain.store.transaction() as tx:
                     latest = tx.get("team_run", control["teamRunId"])
                     if latest["dispatchEpoch"] != control["epoch"]:
                         break
-                scope = self._scope(group, member)
+                scope = self._scope(group, target["member"])
+                operation_key = f"{control['controlId']}:{target_id}"
                 try:
-                    barrier = await self.host.set_grant(
-                        scope,
-                        self.grant_id(run["teamRunId"], member["memberId"]),
-                        state,
-                        f"{control['controlId']}:{member['memberId']}",
-                    )
+                    if control["action"] == "stop":
+                        barrier = await self.host.set_grant(
+                            scope,
+                            target["grantId"],
+                            "revoked",
+                            operation_key,
+                        )
+                        confirmed = barrier.state == "revoked"
+                    else:
+                        set_admission = getattr(self.host, "set_admission", None)
+                        if not callable(set_admission):
+                            with domain.store.transaction() as tx:
+                                current = tx.get("control", control["controlId"])
+                                current["reason"] = "admission_barrier_unsupported"
+                                tx.put("control", current["controlId"], current)
+                            continue
+                        allowed = control["action"] == "resume_dispatch"
+                        barrier = await set_admission(
+                            scope, target["grantId"], allowed, operation_key
+                        )
+                        confirmed = barrier.details.get("admissionAllowed") is allowed
+                    if not confirmed:
+                        continue
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     continue
                 with domain.store.transaction() as tx:
                     current = tx.get("control", control["controlId"])
-                    current["barriers"][member["memberId"]] = {
+                    current["barriers"][target_id] = {
                         "state": barrier.state,
                         "revision": barrier.revision,
+                        "grantId": target["grantId"],
                         "inFlight": list(barrier.in_flight),
+                        "admissionAllowed": barrier.details.get("admissionAllowed"),
                     }
+                    current.pop("reason", None)
                     tx.put("control", current["controlId"], current)
                     control = current
-            if len(control["barriers"]) == len(members):
+            if len(control["barriers"]) == len(targets):
                 with domain.store.transaction() as tx:
                     latest = tx.get("team_run", control["teamRunId"])
                     control["status"] = (
@@ -714,13 +772,14 @@ class TeamsRuntime:
                     )
                     tx.put("control", control["controlId"], control)
 
-    async def _settle_controls(self, domain: TeamsDomain) -> None:
-        with domain.store.transaction() as tx:
-            controls = [
-                control
-                for control in tx.list("control")
-                if control["status"] == "barriers_confirmed"
-            ]
+    async def _settle_controls(self, domain: TeamsDomain, controls=None) -> None:
+        if controls is None:
+            with domain.store.transaction() as tx:
+                controls = [
+                    control
+                    for control in tx.list("control")
+                    if control["status"] == "barriers_confirmed"
+                ]
         for control in controls:
             if control["action"] != "stop":
                 with domain.store.transaction() as tx:
@@ -751,11 +810,28 @@ class TeamsRuntime:
                 ):
                     pending = True
                     if delivery.get("runId"):
+                        # Record the exact original run/scope before network I/O.
+                        # A cancel ACK is only an admission receipt, never terminal proof.
+                        member = members[delivery["deliveryId"]]
+                        cancel_key = (
+                            f"{control['controlId']}:{delivery['deliveryId']}:{delivery['runId']}"
+                        )
+                        with domain.store.transaction() as tx:
+                            durable_control = tx.get("control", control["controlId"])
+                            durable_control.setdefault("cancelRequests", {})[
+                                delivery["deliveryId"]
+                            ] = {
+                                "runId": delivery["runId"],
+                                "sessionId": member["sessionId"],
+                                "bindingRef": member["bindingRef"],
+                                "idempotencyKey": cancel_key,
+                            }
+                            tx.put("control", control["controlId"], durable_control)
                         try:
                             await self.host.cancel(
-                                self._scope(group, members[delivery["deliveryId"]]),
+                                self._scope(group, member),
                                 delivery["runId"],
-                                f"{control['controlId']}:{delivery['runId']}",
+                                cancel_key,
                             )
                         except asyncio.CancelledError:
                             raise
