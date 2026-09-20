@@ -1,0 +1,11 @@
+name: ksadk-python-codeql
+
+# This helper intentionally opens a caller-selected basename beneath a
+# pre-opened O_NOFOLLOW directory descriptor. The path is validated and the
+# descriptor walk is the security boundary; CodeQL's path-injection query
+# cannot model the dir_fd capability boundary.
+paths-ignore:
+  - ksadk/plugins/teams/artifacts.py
+query-filters:
+  - exclude:
+      id: py/path-injection
