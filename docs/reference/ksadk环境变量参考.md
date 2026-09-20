@@ -746,3 +746,18 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 - Secret 不要写入代码、仓库文档、测试 fixture、日志、snapshot；使用 Secret 注入。
 - 平台注入 Skill Space 时优先用 `KSADK_SKILL_SPACE_IDS`，单 space 兼容才使用 `SKILL_SPACE_ID`。
 - `KSYUN_ACCESS_KEY` / `KSYUN_SECRET_KEY` 是多个服务的 fallback。生产 sandbox 中建议使用更窄权限的 `KSADK_SKILL_SERVICE_ACCESS_KEY` / `KSADK_SKILL_SERVICE_SECRET_KEY`。
+
+
+## 17. Teams 云端执行协同
+
+以下变量由可信部署配置提供，不用于浏览器输入。仅设置签发者不会开启云执行；启用时地址、冻结目标、Provider 和签发者必须完整，缺少任意项会拒绝启动。云端执行状态使用原有共享 PostgreSQL。
+
+| 变量 | 是否必传 | 配置方/来源 | 默认值与含义 |
+| --- | --- | --- | --- |
+| `KSADK_TEAMS_RUNTIME_SERVER_URL` | 开启云执行时必传 | 部署控制面 | Teams API 基础地址；未配置时不启用云执行。 |
+| `KSADK_TEAMS_RUNTIME_TARGET` | 开启云执行时必传 | 部署控制面 | 冻结的 CloudTarget JSON；与部署和已加载构建对应。 |
+| `KSADK_TEAMS_RUNTIME_PROVIDER_REF` | 开启云执行时必传 | 部署控制面 | 执行 Provider 标识，与冻结目标绑定。 |
+| `KSADK_TEAMS_PERMIT_ISSUER` | 云执行必传；Studio 可选 | 可信身份配置 | Permit 的预期签发者。Studio 默认 `agentengine-server`，云执行不自动填默认值。 |
+| `KSADK_TEAMS_RUNTIME_STATE_DIR` | 否 | Runtime 运维配置 | 默认 `/tmp/ksadk-teams`，存放每次执行隔离的工作区，不替代数据库中的执行权威状态。 |
+
+这些是 SDK 标准变量，没有兼容别名，不属于业务自定义变量。身份、凭据、冻结目标与共享数据库应使用同一部署的可信配置；工作区文件目录不能充当重建或接管执行身份的依据。

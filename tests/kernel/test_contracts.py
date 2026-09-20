@@ -21,11 +21,7 @@ from ksadk.kernel.contracts import (
 )
 
 FIXTURES_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "contracts"
-    / "agent-kernel"
-    / "v1"
-    / "fixtures"
+    Path(__file__).resolve().parents[2] / "contracts" / "agent-kernel" / "v1" / "fixtures"
 )
 
 
@@ -92,6 +88,26 @@ def test_enqueue_requires_content():
     raw["payload"] = {"reply_to": "q-1"}
     with pytest.raises(ValidationError):
         AgentControlCommand.model_validate(raw)
+
+
+@pytest.mark.parametrize("field", ["execution_policy_ref", "teams_context_ref"])
+@pytest.mark.parametrize("value", ["", 123, False, {}])
+def test_governed_enqueue_references_are_nonempty_strings(field, value):
+    raw = load_fixture("agent-control-enqueue.json")
+    raw["payload"][field] = value
+    with pytest.raises(ValidationError):
+        AgentControlCommand.model_validate(raw)
+
+
+def test_teams_payload_extension_preserves_original_command_bytes():
+    raw = load_fixture("agent-control-enqueue.json")
+    parsed = AgentControlCommand.model_validate(raw)
+    assert parsed.payload == raw["payload"]
+    assert "teams_context_ref" not in parsed.payload
+    raw["payload"].update(
+        teams_context_ref="context-example", execution_policy_ref="policy-example"
+    )
+    assert AgentControlCommand.model_validate(raw).payload == raw["payload"]
 
 
 def test_resume_requires_target():
@@ -201,9 +217,7 @@ def test_tampered_permit_signature_does_not_match_claims():
 def test_lease_fixtures_cover_acquire_renew_takeover():
     leases = load_fixture_list("activation-lease.json")
     assert len(leases) == 3
-    takeovers = [
-        lease for lease in leases if lease["activation_id"] != leases[0]["activation_id"]
-    ]
+    takeovers = [lease for lease in leases if lease["activation_id"] != leases[0]["activation_id"]]
     assert takeovers, "takeover 必须换 activation_id"
     fences = [lease["fencing_token"] for lease in leases]
     assert fences == sorted(fences)
@@ -226,9 +240,7 @@ def test_capability_fixtures_cover_native_and_unavailable():
 
 
 def test_legacy_capability_fixture_may_omit_execution_modes():
-    matrix = RuntimeCapabilityMatrix.model_validate(
-        load_fixture_list("runtime-capability.json")[1]
-    )
+    matrix = RuntimeCapabilityMatrix.model_validate(load_fixture_list("runtime-capability.json")[1])
 
     assert matrix.goal is None
     assert matrix.loop is None

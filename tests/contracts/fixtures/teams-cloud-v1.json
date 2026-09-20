@@ -1,0 +1,3444 @@
+{
+  "fixtureVersion": "teams-cloud/v1",
+  "valid": [
+    {
+      "name": "node-execution-reference",
+      "model": "execution-reference",
+      "value": {
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "memberId": "member-example",
+        "runMemberId": "runmember-example",
+        "taskId": null,
+        "attemptId": "attempt-example",
+        "deliveryId": "delivery-example",
+        "bindingRef": "binding-example",
+        "providerRef": "provider-example",
+        "sessionId": "session-example",
+        "commandId": "11111111-1111-4111-8111-111111111111",
+        "idempotencyKey": "enqueue-example",
+        "schedulerEpoch": 1,
+        "leaderEpoch": 1,
+        "dispatchEpoch": 1,
+        "attemptEpoch": 1,
+        "target": {
+          "kind": "node",
+          "nodeId": "node-example",
+          "nodeGeneration": 1
+        },
+        "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeRunId": null
+      }
+    },
+    {
+      "name": "prepare-node-command",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "operationKey": "prepare-example",
+        "operation": "prepare",
+        "lane": "execution",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "execute",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "contextRef": "context-example",
+          "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "materialManifestRef": null
+        }
+      }
+    },
+    {
+      "name": "selected-files",
+      "model": "material-manifest",
+      "value": {
+        "kind": "files",
+        "entries": [
+          {
+            "path": "说明.md",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 20,
+            "mediaType": "text/markdown"
+          },
+          {
+            "path": "inputs/data.csv",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 100,
+            "mediaType": "text/csv"
+          }
+        ]
+      },
+      "manifestDigest": "sha256:78c1d046497c8cc94b9b1a21c103d84072c64e23f3d9adb29ba88ead5d03b8be"
+    },
+    {
+      "name": "unicode-path-codepoint-order",
+      "model": "material-manifest",
+      "value": {
+        "kind": "files",
+        "entries": [
+          {
+            "path": "😀.txt",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 1,
+            "mediaType": "text/plain"
+          },
+          {
+            "path": ".txt",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 1,
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "a.txt",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 1,
+            "mediaType": "text/plain"
+          }
+        ]
+      },
+      "manifestDigest": "sha256:da33ab0eacf1202da59b6fb2832f05d1be844b9873dd75c7253ffbae7ccc63a2"
+    },
+    {
+      "name": "pause-admission",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "operationKey": "pause-admission",
+        "operation": "set_admission",
+        "lane": "control",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:36e7ccaadae3133d541afd71f98a02b12b854b1099f3e072d67a15282f1cbbd8",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "execute",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "grantId": "grant-example",
+          "expectedAdmissionRevision": 1,
+          "admissionAllowed": false,
+          "attemptEpoch": 1,
+          "controlId": "pause-admission"
+        }
+      }
+    },
+    {
+      "name": "durable-prepared-report",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "resultRevision": 1,
+        "phase": "prepared",
+        "operationResult": {
+          "operation": "prepare",
+          "contextRef": "context-example",
+          "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "storeIncarnation": "store-example",
+            "grant": {
+              "grantId": "grant-example",
+              "state": "active",
+              "revision": 2,
+              "attemptEpoch": 1,
+              "expiresAt": "2026-09-18T08:00:30.000Z",
+              "admissionAllowed": false,
+              "admissionRevision": 2
+            },
+            "barrier": {
+              "queuedMessageIds": [
+                "message-example"
+              ],
+              "inFlightMessageIds": [],
+              "discardedMessageIds": [],
+              "settledMessageIds": [],
+              "commands": [
+                {
+                  "messageId": "message-example",
+                  "commandId": "11111111-1111-4111-8111-111111111111",
+                  "idempotencyKey": "enqueue-example",
+                  "inboxState": "accepted",
+                  "runId": null,
+                  "runState": null
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "admission-mutation-report",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "resultRevision": 1,
+        "phase": "control_applied",
+        "operationResult": {
+          "operation": "set_admission",
+          "mutationReceipt": {
+            "operationId": "pause-admission",
+            "status": "applied",
+            "snapshot": {
+              "storeIncarnation": "store-example",
+              "grant": {
+                "grantId": "grant-example",
+                "state": "active",
+                "revision": 2,
+                "attemptEpoch": 1,
+                "expiresAt": "2026-09-18T08:00:30.000Z",
+                "admissionAllowed": false,
+                "admissionRevision": 2
+              },
+              "barrier": {
+                "queuedMessageIds": [
+                  "message-example"
+                ],
+                "inFlightMessageIds": [],
+                "discardedMessageIds": [],
+                "settledMessageIds": [],
+                "commands": [
+                  {
+                    "messageId": "message-example",
+                    "commandId": "11111111-1111-4111-8111-111111111111",
+                    "idempotencyKey": "enqueue-example",
+                    "inboxState": "accepted",
+                    "runId": null,
+                    "runState": null
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "grant-operation-lookup-report",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "resultRevision": 1,
+        "phase": "control_applied",
+        "operationResult": {
+          "operation": "get_grant",
+          "storeIncarnation": "store-example",
+          "current": {
+            "storeIncarnation": "store-example",
+            "grant": {
+              "grantId": "grant-example",
+              "state": "active",
+              "revision": 2,
+              "attemptEpoch": 1,
+              "expiresAt": "2026-09-18T08:00:30.000Z",
+              "admissionAllowed": false,
+              "admissionRevision": 2
+            },
+            "barrier": {
+              "queuedMessageIds": [
+                "message-example"
+              ],
+              "inFlightMessageIds": [],
+              "discardedMessageIds": [],
+              "settledMessageIds": [],
+              "commands": [
+                {
+                  "messageId": "message-example",
+                  "commandId": "11111111-1111-4111-8111-111111111111",
+                  "idempotencyKey": "enqueue-example",
+                  "inboxState": "accepted",
+                  "runId": null,
+                  "runState": null
+                }
+              ]
+            }
+          },
+          "lookupOperationId": "pause-admission",
+          "mutationReceipt": {
+            "operationId": "pause-admission",
+            "status": "applied",
+            "snapshot": {
+              "storeIncarnation": "store-example",
+              "grant": {
+                "grantId": "grant-example",
+                "state": "active",
+                "revision": 2,
+                "attemptEpoch": 1,
+                "expiresAt": "2026-09-18T08:00:30.000Z",
+                "admissionAllowed": false,
+                "admissionRevision": 2
+              },
+              "barrier": {
+                "queuedMessageIds": [
+                  "message-example"
+                ],
+                "inFlightMessageIds": [],
+                "discardedMessageIds": [],
+                "settledMessageIds": [],
+                "commands": [
+                  {
+                    "messageId": "message-example",
+                    "commandId": "11111111-1111-4111-8111-111111111111",
+                    "idempotencyKey": "enqueue-example",
+                    "inboxState": "accepted",
+                    "runId": null,
+                    "runState": null
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "canonical-completion-terminal",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "33333333-3333-4333-8333-333333333333",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:f6a2f97af0a411d28a473a90b7ba003584b06390ac35591308ab829afbc9bdef",
+        "resultRevision": 1,
+        "phase": "terminal",
+        "receipt": {
+          "status": "accepted",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "payloadDigest": "sha256:fd05e7b1b4c78cf703a9ff297564d4716eb194d2084296703c3acb8c977d97e2",
+          "storeIncarnation": "original-store",
+          "acceptedSeq": 1,
+          "runId": "run-example",
+          "nativeStatus": "succeeded",
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          }
+        },
+        "executionResult": {
+          "status": "succeeded",
+          "candidate": {
+            "result": "Canonical team result",
+            "artifacts": []
+          },
+          "usage": {
+            "totalTokens": 11
+          },
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          },
+          "completionDigest": "sha256:48ed4d9d3c11736508d7710e5d79388bc23e88df6130188fe39ac8f6ede03cac"
+        }
+      }
+    },
+    {
+      "name": "node-probe-command",
+      "model": "node-probe-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "44444444-4444-4444-8444-444444444444",
+        "operation": "describe",
+        "lane": "control",
+        "operationKey": "probe-example",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nodeId": "node-example",
+        "bindingRef": "binding-example",
+        "localBindingRef": "local-build:build-example",
+        "expectedDigests": {
+          "bundle": "sha256:4c522949265daa3973b2389b594a235b5c6e47c70d2af6e23bd14f8173f56280",
+          "contract": "sha256:304aeb6aeb9281204cf0b2723b2d0d855d70719de14de5aa270752aa275e307b",
+          "capabilities": "sha256:ccd001b1caf465b6f4dcfc35c88d33b55b7b78e9f749508cd4e2ac76daeed9e7"
+        },
+        "nodeGeneration": 1,
+        "claimLeaseUntil": "2026-09-19T00:00:30.000Z",
+        "authorization": {
+          "permitKind": "probe",
+          "permit": "signed-probe-fixture"
+        },
+        "commandDigest": "sha256:bfd03fa450315459f01dccd3af69f9ffe76498ba3d11e90ccccff3b40c88b8fd"
+      }
+    },
+    {
+      "name": "node-probe-report",
+      "model": "node-probe-report",
+      "value": {
+        "reportKind": "probe",
+        "nodeCommandId": "44444444-4444-4444-8444-444444444444",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:bfd03fa450315459f01dccd3af69f9ffe76498ba3d11e90ccccff3b40c88b8fd",
+        "resultRevision": 1,
+        "phase": "described",
+        "probeResult": {
+          "bindingRef": "binding-example",
+          "localBindingRef": "local-build:build-example",
+          "agentInstanceId": "instance-example",
+          "storeIncarnation": "original-store",
+          "capabilities": {
+            "teamsReady": false
+          },
+          "capabilitiesDigest": "sha256:ccd001b1caf465b6f4dcfc35c88d33b55b7b78e9f749508cd4e2ac76daeed9e7",
+          "bundleDigest": "sha256:4c522949265daa3973b2389b594a235b5c6e47c70d2af6e23bd14f8173f56280",
+          "contractDigest": "sha256:304aeb6aeb9281204cf0b2723b2d0d855d70719de14de5aa270752aa275e307b"
+        }
+      }
+    },
+    {
+      "name": "extended-effect-request",
+      "model": "effect-request",
+      "value": {
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "context_ref": "context-original",
+        "store_incarnation": "kernel-original",
+        "journal_incarnation": "journal-original",
+        "native_run_id": "native-original",
+        "tool_call_id": "call-original",
+        "effect_index": 0,
+        "tool_name": "send-approved",
+        "adapter_version": "adapter/v1",
+        "effect_class": "external_idempotent",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+      }
+    },
+    {
+      "name": "extended-effect-completed",
+      "model": "effect-outcome",
+      "value": {
+        "phase": "completed",
+        "external_ref": "provider-operation",
+        "evidence_ref": "verified-evidence",
+        "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+        "definitively_not_applied": false
+      }
+    },
+    {
+      "name": "extended-effect-not-applied",
+      "model": "effect-outcome",
+      "value": {
+        "phase": "failed",
+        "external_ref": "provider-operation",
+        "evidence_ref": "verified-evidence",
+        "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+        "definitively_not_applied": true
+      }
+    },
+    {
+      "name": "extended-effect-record",
+      "model": "effect-record",
+      "value": {
+        "request": {
+          "ref": {
+            "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "groupId": "group-example",
+            "teamRunId": "teamrun-example",
+            "memberId": "member-example",
+            "runMemberId": "runmember-example",
+            "taskId": null,
+            "attemptId": "attempt-example",
+            "deliveryId": "delivery-example",
+            "bindingRef": "binding-example",
+            "providerRef": "provider-example",
+            "sessionId": "session-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "idempotencyKey": "enqueue-example",
+            "schedulerEpoch": 1,
+            "leaderEpoch": 1,
+            "dispatchEpoch": 1,
+            "attemptEpoch": 1,
+            "target": {
+              "kind": "node",
+              "nodeId": "node-example",
+              "nodeGeneration": 1
+            },
+            "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nativeRunId": null
+          },
+          "context_ref": "context-original",
+          "store_incarnation": "kernel-original",
+          "journal_incarnation": "journal-original",
+          "native_run_id": "native-original",
+          "tool_call_id": "call-original",
+          "effect_index": 0,
+          "tool_name": "send-approved",
+          "adapter_version": "adapter/v1",
+          "effect_class": "external_idempotent",
+          "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+        },
+        "phase": "completed",
+        "revision": 3,
+        "evidence_digest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+        "outcome": {
+          "phase": "completed",
+          "external_ref": "provider-operation",
+          "evidence_ref": "verified-evidence",
+          "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+          "definitively_not_applied": false
+        }
+      }
+    },
+    {
+      "name": "extended-effect-prepared",
+      "model": "effect-prepared-receipt",
+      "value": {
+        "effect_key": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f",
+        "request_digest": "sha256:c827bebc6a3dc4c29680fa3f9bb50c670ed560b906909ab94fce15f2413906bc",
+        "revision": 1,
+        "phase": "prepared"
+      }
+    },
+    {
+      "name": "extended-effect-report",
+      "model": "effect-report-receipt",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "journalRevision": 3,
+        "evidenceDigest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+        "authorityRevision": 3,
+        "phase": "completed"
+      }
+    },
+    {
+      "name": "extended-effect-reconcile",
+      "model": "effect-reconcile-input",
+      "value": {
+        "expectedRevision": 2,
+        "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "decision": "accept_risk",
+        "evidenceRef": "owner-explanation",
+        "reason": "人工确认风险范围",
+        "idempotencyKey": "resolve-original-key"
+      }
+    },
+    {
+      "name": "extended-effect-projection",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "send-approved",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-effect-unicode-id",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-effect-projection-page",
+      "model": "effect-projection-page",
+      "value": {
+        "scope": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "ownerScopeRef": "scope-original",
+          "groupId": "group-example"
+        },
+        "teamRunId": "teamrun-example",
+        "items": [
+          {
+            "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+            "groupId": "group-example",
+            "teamRunId": "teamrun-example",
+            "toolName": "send-approved",
+            "effectClass": "external_idempotent",
+            "phase": "resolved",
+            "revision": 3,
+            "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+            "resolution": {
+              "resolutionId": "resolution-original",
+              "expectedRevision": 2,
+              "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+              "decision": "accept_risk",
+              "evidenceRef": "owner-explanation",
+              "reason": "人工确认风险范围",
+              "kind": "manual_risk_acceptance",
+              "actorSubject": "owner-original",
+              "ownerScopeRef": "scope-original",
+              "verifiedOutcome": null
+            },
+            "resolutionConflict": false,
+            "outcome": null
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "name": "extended-execution-effects-page",
+      "model": "execution-effects-page",
+      "value": {
+        "contextRef": "context-original",
+        "storeIncarnation": "kernel-original",
+        "nativeRunId": "native-original",
+        "journalIncarnation": "journal-original",
+        "items": [
+          {
+            "request": {
+              "ref": {
+                "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "groupId": "group-example",
+                "teamRunId": "teamrun-example",
+                "memberId": "member-example",
+                "runMemberId": "runmember-example",
+                "taskId": null,
+                "attemptId": "attempt-example",
+                "deliveryId": "delivery-example",
+                "bindingRef": "binding-example",
+                "providerRef": "provider-example",
+                "sessionId": "session-example",
+                "commandId": "11111111-1111-4111-8111-111111111111",
+                "idempotencyKey": "enqueue-example",
+                "schedulerEpoch": 1,
+                "leaderEpoch": 1,
+                "dispatchEpoch": 1,
+                "attemptEpoch": 1,
+                "target": {
+                  "kind": "node",
+                  "nodeId": "node-example",
+                  "nodeGeneration": 1
+                },
+                "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "nativeRunId": null
+              },
+              "context_ref": "context-original",
+              "store_incarnation": "kernel-original",
+              "journal_incarnation": "journal-original",
+              "native_run_id": "native-original",
+              "tool_call_id": "call-original",
+              "effect_index": 0,
+              "tool_name": "send-approved",
+              "adapter_version": "adapter/v1",
+              "effect_class": "external_idempotent",
+              "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+            },
+            "phase": "completed",
+            "revision": 3,
+            "evidence_digest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+            "outcome": {
+              "phase": "completed",
+              "external_ref": "provider-operation",
+              "evidence_ref": "verified-evidence",
+              "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+              "definitively_not_applied": false
+            }
+          }
+        ],
+        "nextCursor": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a:3"
+      }
+    },
+    {
+      "name": "extended-execution-effects-request",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "observe"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100
+      }
+    },
+    {
+      "name": "extended-execution-permit-execute",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "execute",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "enqueue",
+            "ensure_session",
+            "invoke",
+            "prepare",
+            "renew_grant",
+            "respond_interaction",
+            "set_admission",
+            "set_grant"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100
+      }
+    },
+    {
+      "name": "extended-execution-permit-recovery",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "cancel",
+            "get_grant",
+            "get_result",
+            "lookup",
+            "observe",
+            "revoke"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100
+      }
+    },
+    {
+      "name": "extended-effect-non-whitespace-separator",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "tool\u001cname",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-build-manifest",
+      "model": "build-manifest",
+      "value": {
+        "schemaVersion": "teams-build/v1",
+        "entrypoint": "entrypoint.py",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "materialContractVersion": "materials/v1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "files": [
+          {
+            "path": ".teams/agent-definition.json",
+            "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+            "sizeBytes": 18
+          },
+          {
+            "path": ".teams/behavior-config.json",
+            "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+            "sizeBytes": 19
+          },
+          {
+            "path": ".teams/dependency.lock",
+            "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+            "sizeBytes": 10
+          },
+          {
+            "path": ".teams/tools-policy.json",
+            "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+            "sizeBytes": 12
+          },
+          {
+            "path": "entrypoint.py",
+            "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+            "sizeBytes": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "extended-loaded-build",
+      "model": "loaded-build-evidence",
+      "value": {
+        "schemaVersion": "teams-loaded-build/v1",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "materialContractVersion": "materials/v1",
+        "immutableWorkspace": true,
+        "externalMutableInputs": false
+      }
+    },
+    {
+      "name": "extended-build-receipt",
+      "model": "build-artifact-receipt",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "state": "verified",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "sizeBytes": 1304,
+        "manifest": {
+          "schemaVersion": "teams-build/v1",
+          "entrypoint": "entrypoint.py",
+          "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+          "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+          "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+          "materialContractVersion": "materials/v1",
+          "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+          "files": [
+            {
+              "path": ".teams/agent-definition.json",
+              "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+              "sizeBytes": 18
+            },
+            {
+              "path": ".teams/behavior-config.json",
+              "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+              "sizeBytes": 19
+            },
+            {
+              "path": ".teams/dependency.lock",
+              "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+              "sizeBytes": 10
+            },
+            {
+              "path": ".teams/tools-policy.json",
+              "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+              "sizeBytes": 12
+            },
+            {
+              "path": "entrypoint.py",
+              "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+              "sizeBytes": 17
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extended-build-lookup-input",
+      "model": "build-artifact-lookup-input",
+      "value": {
+        "idempotencyKey": "original-upload"
+      }
+    },
+    {
+      "name": "extended-build-lookup-missing",
+      "model": "build-artifact-lookup-result",
+      "value": {
+        "status": "missing"
+      }
+    },
+    {
+      "name": "extended-build-lookup-recorded",
+      "model": "build-artifact-lookup-result",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "state": "verified",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "sizeBytes": 1304,
+        "manifest": {
+          "schemaVersion": "teams-build/v1",
+          "entrypoint": "entrypoint.py",
+          "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+          "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+          "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+          "materialContractVersion": "materials/v1",
+          "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+          "files": [
+            {
+              "path": ".teams/agent-definition.json",
+              "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+              "sizeBytes": 18
+            },
+            {
+              "path": ".teams/behavior-config.json",
+              "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+              "sizeBytes": 19
+            },
+            {
+              "path": ".teams/dependency.lock",
+              "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+              "sizeBytes": 10
+            },
+            {
+              "path": ".teams/tools-policy.json",
+              "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+              "sizeBytes": 12
+            },
+            {
+              "path": "entrypoint.py",
+              "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+              "sizeBytes": 17
+            }
+          ]
+        },
+        "status": "recorded"
+      }
+    },
+    {
+      "name": "extended-deployment-receipt",
+      "model": "deployment-artifact-receipt",
+      "value": {
+        "agentId": "agent-original",
+        "versionId": "version-original",
+        "instanceId": "instance-original",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "bundleDigest": "sha256:8af518a3872bb00194b36b582439ee33ecf665ef68e63063e2b5c253bb05a315",
+        "contractDigest": "sha256:3516ea095563dc844795f8079187dd7ad1ffdd33911b4ecbd4b81ee4414f9b69",
+        "deployedAt": "2026-09-19T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "extended-release-input",
+      "model": "release-verify-input",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "idempotencyKey": "verify-original"
+      }
+    },
+    {
+      "name": "extended-release-receipt",
+      "model": "release-verification-receipt",
+      "value": {
+        "releaseRef": "trelease_original",
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "evidenceDigest": "sha256:b5a666eb4586fa4015f3c37018c0e6d6f37d28297d8484dd74150d488b0a4338",
+        "verifiedAt": "2026-09-19T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "extended-release-unicode-id",
+      "model": "release-verify-input",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "idempotencyKey": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unsafe-sequence",
+      "model": "execution-reference",
+      "value": {
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "memberId": "member-example",
+        "runMemberId": "runmember-example",
+        "taskId": null,
+        "attemptId": "attempt-example",
+        "deliveryId": "delivery-example",
+        "bindingRef": "binding-example",
+        "providerRef": "provider-example",
+        "sessionId": "session-example",
+        "commandId": "11111111-1111-4111-8111-111111111111",
+        "idempotencyKey": "enqueue-example",
+        "schedulerEpoch": 1,
+        "leaderEpoch": 1,
+        "dispatchEpoch": 1,
+        "attemptEpoch": 9007199254740992,
+        "target": {
+          "kind": "node",
+          "nodeId": "node-example",
+          "nodeGeneration": 1
+        },
+        "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeRunId": null
+      }
+    },
+    {
+      "name": "boolean-sequence",
+      "model": "execution-reference",
+      "value": {
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "memberId": "member-example",
+        "runMemberId": "runmember-example",
+        "taskId": null,
+        "attemptId": "attempt-example",
+        "deliveryId": "delivery-example",
+        "bindingRef": "binding-example",
+        "providerRef": "provider-example",
+        "sessionId": "session-example",
+        "commandId": "11111111-1111-4111-8111-111111111111",
+        "idempotencyKey": "enqueue-example",
+        "schedulerEpoch": 1,
+        "leaderEpoch": true,
+        "dispatchEpoch": 1,
+        "attemptEpoch": 1,
+        "target": {
+          "kind": "node",
+          "nodeId": "node-example",
+          "nodeGeneration": 1
+        },
+        "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeRunId": null
+      }
+    },
+    {
+      "name": "missing-epoch",
+      "model": "execution-reference",
+      "value": {
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "memberId": "member-example",
+        "runMemberId": "runmember-example",
+        "taskId": null,
+        "attemptId": "attempt-example",
+        "deliveryId": "delivery-example",
+        "bindingRef": "binding-example",
+        "providerRef": "provider-example",
+        "sessionId": "session-example",
+        "commandId": "11111111-1111-4111-8111-111111111111",
+        "idempotencyKey": "enqueue-example",
+        "schedulerEpoch": 1,
+        "leaderEpoch": 1,
+        "dispatchEpoch": 1,
+        "target": {
+          "kind": "node",
+          "nodeId": "node-example",
+          "nodeGeneration": 1
+        },
+        "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeRunId": null
+      }
+    },
+    {
+      "name": "node-identity-reused",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "11111111-1111-4111-8111-111111111111",
+        "operationKey": "prepare-example",
+        "operation": "prepare",
+        "lane": "execution",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "execute",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "contextRef": "context-example",
+          "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "materialManifestRef": null
+        }
+      }
+    },
+    {
+      "name": "tampered-operation",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "operationKey": "prepare-example",
+        "operation": "prepare",
+        "lane": "execution",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "execute",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "contextRef": "other-context",
+          "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "materialManifestRef": null
+        }
+      }
+    },
+    {
+      "name": "recovery-enqueue",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "operationKey": "prepare-example",
+        "operation": "prepare",
+        "lane": "execution",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "recovery",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "contextRef": "context-example",
+          "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "materialManifestRef": null
+        }
+      }
+    },
+    {
+      "name": "future-protocol",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v99",
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "operationKey": "prepare-example",
+        "operation": "prepare",
+        "lane": "execution",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "execute",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "contextRef": "context-example",
+          "contextDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "materialManifestRef": null
+        }
+      }
+    },
+    {
+      "name": "path-escape",
+      "model": "material-manifest",
+      "value": {
+        "kind": "files",
+        "entries": [
+          {
+            "path": "../private",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 20,
+            "mediaType": "text/markdown"
+          },
+          {
+            "path": "inputs/data.csv",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 100,
+            "mediaType": "text/csv"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate-path",
+      "model": "material-manifest",
+      "value": {
+        "kind": "files",
+        "entries": [
+          {
+            "path": "说明.md",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 20,
+            "mediaType": "text/markdown"
+          },
+          {
+            "path": "inputs/data.csv",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 100,
+            "mediaType": "text/csv"
+          },
+          {
+            "path": "说明.md",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 20,
+            "mediaType": "text/markdown"
+          }
+        ]
+      }
+    },
+    {
+      "name": "wrong-admission-attempt",
+      "model": "node-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "operationKey": "pause-admission",
+        "operation": "set_admission",
+        "lane": "control",
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "commandDigest": "sha256:36e7ccaadae3133d541afd71f98a02b12b854b1099f3e072d67a15282f1cbbd8",
+        "issuedAt": "2026-09-18T08:00:00.000Z",
+        "claimLeaseUntil": "2026-09-18T08:00:25.000Z",
+        "authorization": {
+          "permitKind": "execute",
+          "permit": "fake-test-transport-only",
+          "grantRevision": 1
+        },
+        "payload": {
+          "grantId": "grant-example",
+          "expectedAdmissionRevision": 1,
+          "admissionAllowed": false,
+          "attemptEpoch": 2,
+          "controlId": "pause-admission"
+        }
+      }
+    },
+    {
+      "name": "prepared-without-durable-proof",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "resultRevision": 1,
+        "phase": "prepared"
+      }
+    },
+    {
+      "name": "wrong-grant-operation-receipt",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "22222222-2222-4222-8222-222222222222",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:e196bad1e3c8740dbafddd575e0a4eb8690832eb1ef37b5b18b97f372701c14f",
+        "resultRevision": 1,
+        "phase": "control_applied",
+        "operationResult": {
+          "operation": "get_grant",
+          "storeIncarnation": "store-example",
+          "current": {
+            "storeIncarnation": "store-example",
+            "grant": {
+              "grantId": "grant-example",
+              "state": "active",
+              "revision": 2,
+              "attemptEpoch": 1,
+              "expiresAt": "2026-09-18T08:00:30.000Z",
+              "admissionAllowed": false,
+              "admissionRevision": 2
+            },
+            "barrier": {
+              "queuedMessageIds": [
+                "message-example"
+              ],
+              "inFlightMessageIds": [],
+              "discardedMessageIds": [],
+              "settledMessageIds": [],
+              "commands": [
+                {
+                  "messageId": "message-example",
+                  "commandId": "11111111-1111-4111-8111-111111111111",
+                  "idempotencyKey": "enqueue-example",
+                  "inboxState": "accepted",
+                  "runId": null,
+                  "runState": null
+                }
+              ]
+            }
+          },
+          "lookupOperationId": "another-operation",
+          "mutationReceipt": {
+            "operationId": "pause-admission",
+            "status": "applied",
+            "snapshot": {
+              "storeIncarnation": "store-example",
+              "grant": {
+                "grantId": "grant-example",
+                "state": "active",
+                "revision": 2,
+                "attemptEpoch": 1,
+                "expiresAt": "2026-09-18T08:00:30.000Z",
+                "admissionAllowed": false,
+                "admissionRevision": 2
+              },
+              "barrier": {
+                "queuedMessageIds": [
+                  "message-example"
+                ],
+                "inFlightMessageIds": [],
+                "discardedMessageIds": [],
+                "settledMessageIds": [],
+                "commands": [
+                  {
+                    "messageId": "message-example",
+                    "commandId": "11111111-1111-4111-8111-111111111111",
+                    "idempotencyKey": "enqueue-example",
+                    "inboxState": "accepted",
+                    "runId": null,
+                    "runState": null
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "canonical-completion-missing-result",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "33333333-3333-4333-8333-333333333333",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:f6a2f97af0a411d28a473a90b7ba003584b06390ac35591308ab829afbc9bdef",
+        "resultRevision": 1,
+        "phase": "terminal",
+        "receipt": {
+          "status": "accepted",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "payloadDigest": "sha256:fd05e7b1b4c78cf703a9ff297564d4716eb194d2084296703c3acb8c977d97e2",
+          "storeIncarnation": "original-store",
+          "acceptedSeq": 1,
+          "runId": "run-example",
+          "nativeStatus": "succeeded",
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          }
+        }
+      }
+    },
+    {
+      "name": "canonical-completion-changed-usage",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "33333333-3333-4333-8333-333333333333",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:f6a2f97af0a411d28a473a90b7ba003584b06390ac35591308ab829afbc9bdef",
+        "resultRevision": 1,
+        "phase": "terminal",
+        "receipt": {
+          "status": "accepted",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "payloadDigest": "sha256:fd05e7b1b4c78cf703a9ff297564d4716eb194d2084296703c3acb8c977d97e2",
+          "storeIncarnation": "original-store",
+          "acceptedSeq": 1,
+          "runId": "run-example",
+          "nativeStatus": "succeeded",
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          }
+        },
+        "executionResult": {
+          "status": "succeeded",
+          "candidate": {
+            "result": "Canonical team result",
+            "artifacts": []
+          },
+          "usage": {
+            "totalTokens": 12
+          },
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          },
+          "completionDigest": "sha256:48ed4d9d3c11736508d7710e5d79388bc23e88df6130188fe39ac8f6ede03cac"
+        }
+      }
+    },
+    {
+      "name": "canonical-completion-changed-candidate-evidence",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "33333333-3333-4333-8333-333333333333",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:f6a2f97af0a411d28a473a90b7ba003584b06390ac35591308ab829afbc9bdef",
+        "resultRevision": 1,
+        "phase": "terminal",
+        "receipt": {
+          "status": "accepted",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "payloadDigest": "sha256:fd05e7b1b4c78cf703a9ff297564d4716eb194d2084296703c3acb8c977d97e2",
+          "storeIncarnation": "original-store",
+          "acceptedSeq": 1,
+          "runId": "run-example",
+          "nativeStatus": "succeeded",
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          }
+        },
+        "executionResult": {
+          "status": "succeeded",
+          "candidate": {
+            "result": "Different candidate",
+            "artifacts": []
+          },
+          "usage": {
+            "totalTokens": 11
+          },
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          },
+          "completionDigest": "sha256:8f0233aca0feba6d600c3ff70e10fe0db1c80ee530797582540bf832d4d70442"
+        }
+      }
+    },
+    {
+      "name": "canonical-completion-changed-receipt-terminal",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "33333333-3333-4333-8333-333333333333",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:f6a2f97af0a411d28a473a90b7ba003584b06390ac35591308ab829afbc9bdef",
+        "resultRevision": 1,
+        "phase": "terminal",
+        "receipt": {
+          "status": "accepted",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "payloadDigest": "sha256:fd05e7b1b4c78cf703a9ff297564d4716eb194d2084296703c3acb8c977d97e2",
+          "storeIncarnation": "original-store",
+          "acceptedSeq": 1,
+          "runId": "run-example",
+          "nativeStatus": "succeeded",
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 13,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          }
+        },
+        "executionResult": {
+          "status": "succeeded",
+          "candidate": {
+            "result": "Canonical team result",
+            "artifacts": []
+          },
+          "usage": {
+            "totalTokens": 11
+          },
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          },
+          "completionDigest": "sha256:48ed4d9d3c11736508d7710e5d79388bc23e88df6130188fe39ac8f6ede03cac"
+        }
+      }
+    },
+    {
+      "name": "canonical-completion-nonterminal-result",
+      "model": "node-report",
+      "value": {
+        "nodeCommandId": "33333333-3333-4333-8333-333333333333",
+        "nodeGeneration": 1,
+        "commandDigest": "sha256:f6a2f97af0a411d28a473a90b7ba003584b06390ac35591308ab829afbc9bdef",
+        "resultRevision": 1,
+        "phase": "waiting",
+        "receipt": {
+          "status": "accepted",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "payloadDigest": "sha256:fd05e7b1b4c78cf703a9ff297564d4716eb194d2084296703c3acb8c977d97e2",
+          "storeIncarnation": "original-store",
+          "acceptedSeq": 1,
+          "runId": "run-example",
+          "nativeStatus": "succeeded",
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          }
+        },
+        "executionResult": {
+          "status": "succeeded",
+          "candidate": {
+            "result": "Canonical team result",
+            "artifacts": []
+          },
+          "usage": {
+            "totalTokens": 11
+          },
+          "terminalEvidence": {
+            "sessionId": "session-example",
+            "runId": "run-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "terminalSeq": 12,
+            "terminalEventDigest": "sha256:cd5b7517e9a5b9e7ada12ebd2550f9197bd58d1459d1697cd8117949ee23c0ba",
+            "resultDigest": "sha256:159d275e29daaa2e1833bdefd74f9c83ed85e120fe27db9b58cb547c432ab51d"
+          },
+          "completionDigest": "sha256:48ed4d9d3c11736508d7710e5d79388bc23e88df6130188fe39ac8f6ede03cac"
+        }
+      }
+    },
+    {
+      "name": "node-probe-missing-bundle",
+      "model": "node-probe-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "44444444-4444-4444-8444-444444444444",
+        "operation": "describe",
+        "lane": "control",
+        "operationKey": "probe-example",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nodeId": "node-example",
+        "bindingRef": "binding-example",
+        "localBindingRef": "local-build:build-example",
+        "expectedDigests": {
+          "contract": "sha256:304aeb6aeb9281204cf0b2723b2d0d855d70719de14de5aa270752aa275e307b",
+          "capabilities": "sha256:ccd001b1caf465b6f4dcfc35c88d33b55b7b78e9f749508cd4e2ac76daeed9e7"
+        },
+        "nodeGeneration": 1,
+        "claimLeaseUntil": "2026-09-19T00:00:30.000Z",
+        "authorization": {
+          "permitKind": "probe",
+          "permit": "signed-probe-fixture"
+        },
+        "commandDigest": "sha256:bfd03fa450315459f01dccd3af69f9ffe76498ba3d11e90ccccff3b40c88b8fd"
+      }
+    },
+    {
+      "name": "node-probe-missing-contract",
+      "model": "node-probe-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "44444444-4444-4444-8444-444444444444",
+        "operation": "describe",
+        "lane": "control",
+        "operationKey": "probe-example",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nodeId": "node-example",
+        "bindingRef": "binding-example",
+        "localBindingRef": "local-build:build-example",
+        "expectedDigests": {
+          "bundle": "sha256:4c522949265daa3973b2389b594a235b5c6e47c70d2af6e23bd14f8173f56280",
+          "capabilities": "sha256:ccd001b1caf465b6f4dcfc35c88d33b55b7b78e9f749508cd4e2ac76daeed9e7"
+        },
+        "nodeGeneration": 1,
+        "claimLeaseUntil": "2026-09-19T00:00:30.000Z",
+        "authorization": {
+          "permitKind": "probe",
+          "permit": "signed-probe-fixture"
+        },
+        "commandDigest": "sha256:bfd03fa450315459f01dccd3af69f9ffe76498ba3d11e90ccccff3b40c88b8fd"
+      }
+    },
+    {
+      "name": "node-probe-missing-capabilities",
+      "model": "node-probe-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "44444444-4444-4444-8444-444444444444",
+        "operation": "describe",
+        "lane": "control",
+        "operationKey": "probe-example",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nodeId": "node-example",
+        "bindingRef": "binding-example",
+        "localBindingRef": "local-build:build-example",
+        "expectedDigests": {
+          "bundle": "sha256:4c522949265daa3973b2389b594a235b5c6e47c70d2af6e23bd14f8173f56280",
+          "contract": "sha256:304aeb6aeb9281204cf0b2723b2d0d855d70719de14de5aa270752aa275e307b"
+        },
+        "nodeGeneration": 1,
+        "claimLeaseUntil": "2026-09-19T00:00:30.000Z",
+        "authorization": {
+          "permitKind": "probe",
+          "permit": "signed-probe-fixture"
+        },
+        "commandDigest": "sha256:bfd03fa450315459f01dccd3af69f9ffe76498ba3d11e90ccccff3b40c88b8fd"
+      }
+    },
+    {
+      "name": "node-probe-extra-digest",
+      "model": "node-probe-command",
+      "value": {
+        "protocolVersion": "teams-node/v1",
+        "nodeCommandId": "44444444-4444-4444-8444-444444444444",
+        "operation": "describe",
+        "lane": "control",
+        "operationKey": "probe-example",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nodeId": "node-example",
+        "bindingRef": "binding-example",
+        "localBindingRef": "local-build:build-example",
+        "expectedDigests": {
+          "bundle": "sha256:4c522949265daa3973b2389b594a235b5c6e47c70d2af6e23bd14f8173f56280",
+          "contract": "sha256:304aeb6aeb9281204cf0b2723b2d0d855d70719de14de5aa270752aa275e307b",
+          "capabilities": "sha256:ccd001b1caf465b6f4dcfc35c88d33b55b7b78e9f749508cd4e2ac76daeed9e7",
+          "unknown": "sha256:eb8bf0d80db323992f6b634aab492b1e6d9e96a8e87a511c2a0db75ab929452c"
+        },
+        "nodeGeneration": 1,
+        "claimLeaseUntil": "2026-09-19T00:00:30.000Z",
+        "authorization": {
+          "permitKind": "probe",
+          "permit": "signed-probe-fixture"
+        },
+        "commandDigest": "sha256:bfd03fa450315459f01dccd3af69f9ffe76498ba3d11e90ccccff3b40c88b8fd"
+      }
+    },
+    {
+      "name": "extended-effect-request-extra-field",
+      "model": "effect-request",
+      "value": {
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "context_ref": "context-original",
+        "store_incarnation": "kernel-original",
+        "journal_incarnation": "journal-original",
+        "native_run_id": "native-original",
+        "tool_call_id": "call-original",
+        "effect_index": 0,
+        "tool_name": "send-approved",
+        "adapter_version": "adapter/v1",
+        "effect_class": "external_idempotent",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-completed-extra-field",
+      "model": "effect-outcome",
+      "value": {
+        "phase": "completed",
+        "external_ref": "provider-operation",
+        "evidence_ref": "verified-evidence",
+        "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+        "definitively_not_applied": false,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-not-applied-extra-field",
+      "model": "effect-outcome",
+      "value": {
+        "phase": "failed",
+        "external_ref": "provider-operation",
+        "evidence_ref": "verified-evidence",
+        "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+        "definitively_not_applied": true,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-record-extra-field",
+      "model": "effect-record",
+      "value": {
+        "request": {
+          "ref": {
+            "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "groupId": "group-example",
+            "teamRunId": "teamrun-example",
+            "memberId": "member-example",
+            "runMemberId": "runmember-example",
+            "taskId": null,
+            "attemptId": "attempt-example",
+            "deliveryId": "delivery-example",
+            "bindingRef": "binding-example",
+            "providerRef": "provider-example",
+            "sessionId": "session-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "idempotencyKey": "enqueue-example",
+            "schedulerEpoch": 1,
+            "leaderEpoch": 1,
+            "dispatchEpoch": 1,
+            "attemptEpoch": 1,
+            "target": {
+              "kind": "node",
+              "nodeId": "node-example",
+              "nodeGeneration": 1
+            },
+            "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nativeRunId": null
+          },
+          "context_ref": "context-original",
+          "store_incarnation": "kernel-original",
+          "journal_incarnation": "journal-original",
+          "native_run_id": "native-original",
+          "tool_call_id": "call-original",
+          "effect_index": 0,
+          "tool_name": "send-approved",
+          "adapter_version": "adapter/v1",
+          "effect_class": "external_idempotent",
+          "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+        },
+        "phase": "completed",
+        "revision": 3,
+        "evidence_digest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+        "outcome": {
+          "phase": "completed",
+          "external_ref": "provider-operation",
+          "evidence_ref": "verified-evidence",
+          "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+          "definitively_not_applied": false
+        },
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-prepared-extra-field",
+      "model": "effect-prepared-receipt",
+      "value": {
+        "effect_key": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f",
+        "request_digest": "sha256:c827bebc6a3dc4c29680fa3f9bb50c670ed560b906909ab94fce15f2413906bc",
+        "revision": 1,
+        "phase": "prepared",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-report-extra-field",
+      "model": "effect-report-receipt",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "journalRevision": 3,
+        "evidenceDigest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+        "authorityRevision": 3,
+        "phase": "completed",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-reconcile-extra-field",
+      "model": "effect-reconcile-input",
+      "value": {
+        "expectedRevision": 2,
+        "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "decision": "accept_risk",
+        "evidenceRef": "owner-explanation",
+        "reason": "人工确认风险范围",
+        "idempotencyKey": "resolve-original-key",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-projection-extra-field",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "send-approved",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-unicode-id-extra-field",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-projection-page-extra-field",
+      "model": "effect-projection-page",
+      "value": {
+        "scope": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "ownerScopeRef": "scope-original",
+          "groupId": "group-example"
+        },
+        "teamRunId": "teamrun-example",
+        "items": [
+          {
+            "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+            "groupId": "group-example",
+            "teamRunId": "teamrun-example",
+            "toolName": "send-approved",
+            "effectClass": "external_idempotent",
+            "phase": "resolved",
+            "revision": 3,
+            "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+            "resolution": {
+              "resolutionId": "resolution-original",
+              "expectedRevision": 2,
+              "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+              "decision": "accept_risk",
+              "evidenceRef": "owner-explanation",
+              "reason": "人工确认风险范围",
+              "kind": "manual_risk_acceptance",
+              "actorSubject": "owner-original",
+              "ownerScopeRef": "scope-original",
+              "verifiedOutcome": null
+            },
+            "resolutionConflict": false,
+            "outcome": null
+          }
+        ],
+        "nextCursor": null,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-execution-effects-page-extra-field",
+      "model": "execution-effects-page",
+      "value": {
+        "contextRef": "context-original",
+        "storeIncarnation": "kernel-original",
+        "nativeRunId": "native-original",
+        "journalIncarnation": "journal-original",
+        "items": [
+          {
+            "request": {
+              "ref": {
+                "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "groupId": "group-example",
+                "teamRunId": "teamrun-example",
+                "memberId": "member-example",
+                "runMemberId": "runmember-example",
+                "taskId": null,
+                "attemptId": "attempt-example",
+                "deliveryId": "delivery-example",
+                "bindingRef": "binding-example",
+                "providerRef": "provider-example",
+                "sessionId": "session-example",
+                "commandId": "11111111-1111-4111-8111-111111111111",
+                "idempotencyKey": "enqueue-example",
+                "schedulerEpoch": 1,
+                "leaderEpoch": 1,
+                "dispatchEpoch": 1,
+                "attemptEpoch": 1,
+                "target": {
+                  "kind": "node",
+                  "nodeId": "node-example",
+                  "nodeGeneration": 1
+                },
+                "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "nativeRunId": null
+              },
+              "context_ref": "context-original",
+              "store_incarnation": "kernel-original",
+              "journal_incarnation": "journal-original",
+              "native_run_id": "native-original",
+              "tool_call_id": "call-original",
+              "effect_index": 0,
+              "tool_name": "send-approved",
+              "adapter_version": "adapter/v1",
+              "effect_class": "external_idempotent",
+              "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+            },
+            "phase": "completed",
+            "revision": 3,
+            "evidence_digest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+            "outcome": {
+              "phase": "completed",
+              "external_ref": "provider-operation",
+              "evidence_ref": "verified-evidence",
+              "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+              "definitively_not_applied": false
+            }
+          }
+        ],
+        "nextCursor": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a:3",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-execution-effects-request-extra-field",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "observe"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-execution-permit-execute-extra-field",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "execute",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "enqueue",
+            "ensure_session",
+            "invoke",
+            "prepare",
+            "renew_grant",
+            "respond_interaction",
+            "set_admission",
+            "set_grant"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-execution-permit-recovery-extra-field",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "cancel",
+            "get_grant",
+            "get_result",
+            "lookup",
+            "observe",
+            "revoke"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effect-run-changed",
+      "model": "effect-request",
+      "value": {
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": "other"
+        },
+        "context_ref": "context-original",
+        "store_incarnation": "kernel-original",
+        "journal_incarnation": "journal-original",
+        "native_run_id": "native-original",
+        "tool_call_id": "call-original",
+        "effect_index": 0,
+        "tool_name": "send-approved",
+        "adapter_version": "adapter/v1",
+        "effect_class": "external_idempotent",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+      }
+    },
+    {
+      "name": "extended-effect-class-unsafe",
+      "model": "effect-request",
+      "value": {
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "context_ref": "context-original",
+        "store_incarnation": "kernel-original",
+        "journal_incarnation": "journal-original",
+        "native_run_id": "native-original",
+        "tool_call_id": "call-original",
+        "effect_index": 0,
+        "tool_name": "send-approved",
+        "adapter_version": "adapter/v1",
+        "effect_class": "shell",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+      }
+    },
+    {
+      "name": "extended-effect-index-negative",
+      "model": "effect-request",
+      "value": {
+        "ref": {
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "groupId": "group-example",
+          "teamRunId": "teamrun-example",
+          "memberId": "member-example",
+          "runMemberId": "runmember-example",
+          "taskId": null,
+          "attemptId": "attempt-example",
+          "deliveryId": "delivery-example",
+          "bindingRef": "binding-example",
+          "providerRef": "provider-example",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "idempotencyKey": "enqueue-example",
+          "schedulerEpoch": 1,
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "target": {
+            "kind": "node",
+            "nodeId": "node-example",
+            "nodeGeneration": 1
+          },
+          "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nativeRunId": null
+        },
+        "context_ref": "context-original",
+        "store_incarnation": "kernel-original",
+        "journal_incarnation": "journal-original",
+        "native_run_id": "native-original",
+        "tool_call_id": "call-original",
+        "effect_index": -1,
+        "tool_name": "send-approved",
+        "adapter_version": "adapter/v1",
+        "effect_class": "external_idempotent",
+        "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+      }
+    },
+    {
+      "name": "extended-effect-failure-unproven",
+      "model": "effect-outcome",
+      "value": {
+        "phase": "failed",
+        "external_ref": "provider-operation",
+        "evidence_ref": "verified-evidence",
+        "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+        "definitively_not_applied": false
+      }
+    },
+    {
+      "name": "extended-effect-completed-no-outcome",
+      "model": "effect-record",
+      "value": {
+        "request": {
+          "ref": {
+            "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "groupId": "group-example",
+            "teamRunId": "teamrun-example",
+            "memberId": "member-example",
+            "runMemberId": "runmember-example",
+            "taskId": null,
+            "attemptId": "attempt-example",
+            "deliveryId": "delivery-example",
+            "bindingRef": "binding-example",
+            "providerRef": "provider-example",
+            "sessionId": "session-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "idempotencyKey": "enqueue-example",
+            "schedulerEpoch": 1,
+            "leaderEpoch": 1,
+            "dispatchEpoch": 1,
+            "attemptEpoch": 1,
+            "target": {
+              "kind": "node",
+              "nodeId": "node-example",
+              "nodeGeneration": 1
+            },
+            "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nativeRunId": null
+          },
+          "context_ref": "context-original",
+          "store_incarnation": "kernel-original",
+          "journal_incarnation": "journal-original",
+          "native_run_id": "native-original",
+          "tool_call_id": "call-original",
+          "effect_index": 0,
+          "tool_name": "send-approved",
+          "adapter_version": "adapter/v1",
+          "effect_class": "external_idempotent",
+          "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+        },
+        "phase": "completed",
+        "revision": 3,
+        "evidence_digest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-effect-unknown-has-outcome",
+      "model": "effect-record",
+      "value": {
+        "request": {
+          "ref": {
+            "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "groupId": "group-example",
+            "teamRunId": "teamrun-example",
+            "memberId": "member-example",
+            "runMemberId": "runmember-example",
+            "taskId": null,
+            "attemptId": "attempt-example",
+            "deliveryId": "delivery-example",
+            "bindingRef": "binding-example",
+            "providerRef": "provider-example",
+            "sessionId": "session-example",
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "idempotencyKey": "enqueue-example",
+            "schedulerEpoch": 1,
+            "leaderEpoch": 1,
+            "dispatchEpoch": 1,
+            "attemptEpoch": 1,
+            "target": {
+              "kind": "node",
+              "nodeId": "node-example",
+              "nodeGeneration": 1
+            },
+            "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "capabilitiesDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nativeRunId": null
+          },
+          "context_ref": "context-original",
+          "store_incarnation": "kernel-original",
+          "journal_incarnation": "journal-original",
+          "native_run_id": "native-original",
+          "tool_call_id": "call-original",
+          "effect_index": 0,
+          "tool_name": "send-approved",
+          "adapter_version": "adapter/v1",
+          "effect_class": "external_idempotent",
+          "payload_digest": "sha256:a6128ab44e0148a1d65f2e23bc3cc9d6ca8a93bf5ce4c806f42869a2580c269f"
+        },
+        "phase": "unknown",
+        "revision": 3,
+        "evidence_digest": "sha256:0d728775b3d1ee5a42cbf9ad8d95669ed5ec571135b275d2c20088bdd59cfbf3",
+        "outcome": {
+          "phase": "completed",
+          "external_ref": "provider-operation",
+          "evidence_ref": "verified-evidence",
+          "result_digest": "sha256:52889d429ac466039412e21eabb01c77d7b3915a60e2db50261a4e98a97f52f3",
+          "definitively_not_applied": false
+        }
+      }
+    },
+    {
+      "name": "extended-effect-resolution-unverified",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "send-approved",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "confirmed_applied",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "resolutionId": "resolution-original",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-effect-projection-missing-resolution",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "send-approved",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": null,
+        "resolutionConflict": false,
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-effect-whitespace-id",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "toolname",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null
+      }
+    },
+    {
+      "name": "extended-effect-non-whitespace-separator-extra-field",
+      "model": "effect-projection",
+      "value": {
+        "effectKey": "effect_8d165359e4da2f355bb700be8a531b5f4c8d20109cf54056f5d7249f7918a87a",
+        "groupId": "group-example",
+        "teamRunId": "teamrun-example",
+        "toolName": "tool\u001cname",
+        "effectClass": "external_idempotent",
+        "phase": "resolved",
+        "revision": 3,
+        "evidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+        "resolution": {
+          "resolutionId": "resolution-original",
+          "expectedRevision": 2,
+          "expectedEvidenceDigest": "sha256:ce0373b351da6cbf2fec1584a4ddfa40c931615a188c82f3c1aac29bace768e5",
+          "decision": "accept_risk",
+          "evidenceRef": "owner-explanation",
+          "reason": "人工确认风险范围",
+          "kind": "manual_risk_acceptance",
+          "actorSubject": "owner-original",
+          "ownerScopeRef": "scope-original",
+          "verifiedOutcome": null
+        },
+        "resolutionConflict": false,
+        "outcome": null,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-effects-limit",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "schemaVersion": 1,
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "signature": "",
+          "audience": "agentengine-teams-runtime",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "observe"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 101
+      }
+    },
+    {
+      "name": "extended-effects-permit-wrong-kind",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "enqueue"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100
+      }
+    },
+    {
+      "name": "extended-effects-permit-too-long",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:02:00.000Z",
+          "nonce": "fixture-nonce",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "observe"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100
+      }
+    },
+    {
+      "name": "extended-effects-permit-duplicates",
+      "model": "execution-effects-request",
+      "value": {
+        "contextRef": "context-original",
+        "expectedIncarnation": "kernel-original",
+        "permit": {
+          "issuer": "fixture-server",
+          "kid": "fixture-key",
+          "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "issuedAt": "2026-09-19T00:00:00.000Z",
+          "expiresAt": "2026-09-19T00:00:30.000Z",
+          "nonce": "fixture-nonce",
+          "permitKind": "recovery",
+          "subjectRef": "owner-original",
+          "agentInstanceId": "instance-original",
+          "sessionId": "session-example",
+          "commandId": "11111111-1111-4111-8111-111111111111",
+          "allowedOperations": [
+            "observe",
+            "observe"
+          ],
+          "payloadDigest": "sha256:d212c312cbe793d3a5dd23dfb92707d59eb8ef7927e4add84fe4701f4a1d74cf",
+          "policyDigest": "sha256:17ad92e63c962393c0329c658937d16eccaea13036412a3d1d0a5b6b8f29d738",
+          "leaderEpoch": 1,
+          "dispatchEpoch": 1,
+          "attemptEpoch": 1,
+          "grantRevision": 1
+        },
+        "after": "",
+        "limit": 100
+      }
+    },
+    {
+      "name": "extended-build-manifest-extra-field",
+      "model": "build-manifest",
+      "value": {
+        "schemaVersion": "teams-build/v1",
+        "entrypoint": "entrypoint.py",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "materialContractVersion": "materials/v1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "files": [
+          {
+            "path": ".teams/agent-definition.json",
+            "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+            "sizeBytes": 18
+          },
+          {
+            "path": ".teams/behavior-config.json",
+            "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+            "sizeBytes": 19
+          },
+          {
+            "path": ".teams/dependency.lock",
+            "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+            "sizeBytes": 10
+          },
+          {
+            "path": ".teams/tools-policy.json",
+            "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+            "sizeBytes": 12
+          },
+          {
+            "path": "entrypoint.py",
+            "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+            "sizeBytes": 17
+          }
+        ],
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-loaded-build-extra-field",
+      "model": "loaded-build-evidence",
+      "value": {
+        "schemaVersion": "teams-loaded-build/v1",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "materialContractVersion": "materials/v1",
+        "immutableWorkspace": true,
+        "externalMutableInputs": false,
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-build-receipt-extra-field",
+      "model": "build-artifact-receipt",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "state": "verified",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "sizeBytes": 1304,
+        "manifest": {
+          "schemaVersion": "teams-build/v1",
+          "entrypoint": "entrypoint.py",
+          "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+          "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+          "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+          "materialContractVersion": "materials/v1",
+          "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+          "files": [
+            {
+              "path": ".teams/agent-definition.json",
+              "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+              "sizeBytes": 18
+            },
+            {
+              "path": ".teams/behavior-config.json",
+              "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+              "sizeBytes": 19
+            },
+            {
+              "path": ".teams/dependency.lock",
+              "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+              "sizeBytes": 10
+            },
+            {
+              "path": ".teams/tools-policy.json",
+              "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+              "sizeBytes": 12
+            },
+            {
+              "path": "entrypoint.py",
+              "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+              "sizeBytes": 17
+            }
+          ]
+        },
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-build-lookup-input-extra-field",
+      "model": "build-artifact-lookup-input",
+      "value": {
+        "idempotencyKey": "original-upload",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-build-lookup-missing-extra-field",
+      "model": "build-artifact-lookup-result",
+      "value": {
+        "status": "missing",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-build-lookup-recorded-extra-field",
+      "model": "build-artifact-lookup-result",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "state": "verified",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "sizeBytes": 1304,
+        "manifest": {
+          "schemaVersion": "teams-build/v1",
+          "entrypoint": "entrypoint.py",
+          "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+          "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+          "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+          "materialContractVersion": "materials/v1",
+          "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+          "files": [
+            {
+              "path": ".teams/agent-definition.json",
+              "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+              "sizeBytes": 18
+            },
+            {
+              "path": ".teams/behavior-config.json",
+              "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+              "sizeBytes": 19
+            },
+            {
+              "path": ".teams/dependency.lock",
+              "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+              "sizeBytes": 10
+            },
+            {
+              "path": ".teams/tools-policy.json",
+              "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+              "sizeBytes": 12
+            },
+            {
+              "path": "entrypoint.py",
+              "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+              "sizeBytes": 17
+            }
+          ]
+        },
+        "status": "recorded",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-deployment-receipt-extra-field",
+      "model": "deployment-artifact-receipt",
+      "value": {
+        "agentId": "agent-original",
+        "versionId": "version-original",
+        "instanceId": "instance-original",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "bundleDigest": "sha256:8af518a3872bb00194b36b582439ee33ecf665ef68e63063e2b5c253bb05a315",
+        "contractDigest": "sha256:3516ea095563dc844795f8079187dd7ad1ffdd33911b4ecbd4b81ee4414f9b69",
+        "deployedAt": "2026-09-19T00:00:00.000Z",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-release-input-extra-field",
+      "model": "release-verify-input",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "idempotencyKey": "verify-original",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-release-receipt-extra-field",
+      "model": "release-verification-receipt",
+      "value": {
+        "releaseRef": "trelease_original",
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "evidenceDigest": "sha256:b5a666eb4586fa4015f3c37018c0e6d6f37d28297d8484dd74150d488b0a4338",
+        "verifiedAt": "2026-09-19T00:00:00.000Z",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-release-unicode-id-extra-field",
+      "model": "release-verify-input",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "idempotencyKey": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "unrecognized": true
+      }
+    },
+    {
+      "name": "extended-build-entrypoint-absent",
+      "model": "build-manifest",
+      "value": {
+        "schemaVersion": "teams-build/v1",
+        "entrypoint": "absent.py",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "materialContractVersion": "materials/v1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "files": [
+          {
+            "path": ".teams/agent-definition.json",
+            "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+            "sizeBytes": 18
+          },
+          {
+            "path": ".teams/behavior-config.json",
+            "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+            "sizeBytes": 19
+          },
+          {
+            "path": ".teams/dependency.lock",
+            "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+            "sizeBytes": 10
+          },
+          {
+            "path": ".teams/tools-policy.json",
+            "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+            "sizeBytes": 12
+          },
+          {
+            "path": "entrypoint.py",
+            "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+            "sizeBytes": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "extended-build-files-unsorted",
+      "model": "build-manifest",
+      "value": {
+        "schemaVersion": "teams-build/v1",
+        "entrypoint": "entrypoint.py",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "materialContractVersion": "materials/v1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "files": [
+          {
+            "path": "entrypoint.py",
+            "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+            "sizeBytes": 17
+          },
+          {
+            "path": ".teams/tools-policy.json",
+            "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+            "sizeBytes": 12
+          },
+          {
+            "path": ".teams/dependency.lock",
+            "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+            "sizeBytes": 10
+          },
+          {
+            "path": ".teams/behavior-config.json",
+            "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+            "sizeBytes": 19
+          },
+          {
+            "path": ".teams/agent-definition.json",
+            "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+            "sizeBytes": 18
+          }
+        ]
+      }
+    },
+    {
+      "name": "extended-build-descriptor-different",
+      "model": "build-manifest",
+      "value": {
+        "schemaVersion": "teams-build/v1",
+        "entrypoint": "entrypoint.py",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:9abf9994927acc503ec87e4433239aee75bb937357616bf8cca0290a1f3aa60a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "materialContractVersion": "materials/v1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "files": [
+          {
+            "path": ".teams/agent-definition.json",
+            "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+            "sizeBytes": 18
+          },
+          {
+            "path": ".teams/behavior-config.json",
+            "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+            "sizeBytes": 19
+          },
+          {
+            "path": ".teams/dependency.lock",
+            "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+            "sizeBytes": 10
+          },
+          {
+            "path": ".teams/tools-policy.json",
+            "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+            "sizeBytes": 12
+          },
+          {
+            "path": "entrypoint.py",
+            "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+            "sizeBytes": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "extended-build-path-traversal",
+      "model": "build-manifest",
+      "value": {
+        "schemaVersion": "teams-build/v1",
+        "entrypoint": "../entrypoint.py",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "materialContractVersion": "materials/v1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "files": [
+          {
+            "path": ".teams/agent-definition.json",
+            "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+            "sizeBytes": 18
+          },
+          {
+            "path": ".teams/behavior-config.json",
+            "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+            "sizeBytes": 19
+          },
+          {
+            "path": ".teams/dependency.lock",
+            "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+            "sizeBytes": 10
+          },
+          {
+            "path": ".teams/tools-policy.json",
+            "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+            "sizeBytes": 12
+          },
+          {
+            "path": "entrypoint.py",
+            "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+            "sizeBytes": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "extended-loaded-workspace-writable",
+      "model": "loaded-build-evidence",
+      "value": {
+        "schemaVersion": "teams-loaded-build/v1",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "materialContractVersion": "materials/v1",
+        "immutableWorkspace": false,
+        "externalMutableInputs": false
+      }
+    },
+    {
+      "name": "extended-loaded-inputs-mutable",
+      "model": "loaded-build-evidence",
+      "value": {
+        "schemaVersion": "teams-loaded-build/v1",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+        "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+        "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+        "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+        "materialContractVersion": "materials/v1",
+        "immutableWorkspace": true,
+        "externalMutableInputs": true
+      }
+    },
+    {
+      "name": "extended-build-oversized",
+      "model": "build-artifact-receipt",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "state": "verified",
+        "authorityId": "ta_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "codeArtifactDigest": "sha256:808e5d04192654ea48e6f17e53afd4bf17e651b84deb2cf5f51bb05696034076",
+        "buildManifestDigest": "sha256:66deb5fe4aed25451ce3ec4b18a5598de7769938b5e1e3102fb02f4a590bc6cc",
+        "sizeBytes": 20971521,
+        "manifest": {
+          "schemaVersion": "teams-build/v1",
+          "entrypoint": "entrypoint.py",
+          "agentDefinitionDigest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+          "toolsPolicyDigest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+          "dependencyLockDigest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+          "materialContractVersion": "materials/v1",
+          "behaviorConfigDigest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+          "files": [
+            {
+              "path": ".teams/agent-definition.json",
+              "digest": "sha256:c04ab18e6ea42f6580a0a9f8da5d560d5e5a5ee13c45d27263e242befa64671d",
+              "sizeBytes": 18
+            },
+            {
+              "path": ".teams/behavior-config.json",
+              "digest": "sha256:c083976164c1b2dd91d7051d9a295d00ad5bd8300e3bc89407b0021e6df8fa79",
+              "sizeBytes": 19
+            },
+            {
+              "path": ".teams/dependency.lock",
+              "digest": "sha256:b26b3bd873c715cef628c060cf5d438065e5f7f1b582cc2caf50c2730f01c5f1",
+              "sizeBytes": 10
+            },
+            {
+              "path": ".teams/tools-policy.json",
+              "digest": "sha256:fe2f3b4ef49492d81cb350fb689bf9f9dff6cfd1817d72d6ff9fe3350e3d5e6a",
+              "sizeBytes": 12
+            },
+            {
+              "path": "entrypoint.py",
+              "digest": "sha256:bb1cf29ae07365ab3920df3457ea5ddfec2eac1363158657f1c771fb3a5aefa2",
+              "sizeBytes": 17
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extended-release-caller-verification",
+      "model": "release-verify-input",
+      "value": {
+        "buildArtifactRef": "tbuild_original",
+        "localBindingRef": "local-fixed",
+        "cloudBindingRef": "cloud-fixed",
+        "idempotencyKey": "verify-original",
+        "verified": true
+      }
+    }
+  ],
+  "canonicalVectors": [
+    {
+      "name": "ecmascript-numbers",
+      "value": {
+        "one": 1.0,
+        "zero": -0.0,
+        "fraction": 333333333.3333333,
+        "small": 1e-07,
+        "fixed": 1e-06,
+        "safe": 9007199254740991
+      },
+      "canonical": "{\"fixed\":0.000001,\"fraction\":333333333.3333333,\"one\":1,\"safe\":9007199254740991,\"small\":1e-7,\"zero\":0}",
+      "digest": "sha256:5d2bb0ebfa8735d03ddeeb775f1d1ab8c513383fb80812983398163971f26de2"
+    },
+    {
+      "name": "utf16-key-order",
+      "value": {
+        "": "bmp",
+        "😀": "astral",
+        "a": "ascii",
+        "é": "composed",
+        "é": "decomposed"
+      },
+      "canonical": "{\"a\":\"ascii\",\"é\":\"decomposed\",\"é\":\"composed\",\"😀\":\"astral\",\"\":\"bmp\"}",
+      "digest": "sha256:f28810b5d8c81b38fa56f9634db0fe642b643e12bebe83fb093b6b93632d28e5"
+    },
+    {
+      "name": "escaped-strings",
+      "value": {
+        "text": "\b\n\t\"\\/",
+        "nul": "\u0000",
+        "array": [
+          true,
+          false,
+          null,
+          1.25
+        ]
+      },
+      "canonical": "{\"array\":[true,false,null,1.25],\"nul\":\"\\u0000\",\"text\":\"\\b\\n\\t\\\"\\\\/\"}",
+      "digest": "sha256:aa8c0c7c02c4b2c7aa2938d75b8df50f4ea280bedc67972918fe5d047c6d8922"
+    },
+    {
+      "name": "outbox-envelope",
+      "value": {
+        "operation": "groups/group-example/messages",
+        "payload": {
+          "expectedRevision": 1,
+          "ratio": 0.125,
+          "tiny": 1e-07,
+          "😀": "astral",
+          "": "bmp"
+        }
+      },
+      "canonical": "{\"operation\":\"groups/group-example/messages\",\"payload\":{\"expectedRevision\":1,\"ratio\":0.125,\"tiny\":1e-7,\"😀\":\"astral\",\"\":\"bmp\"}}",
+      "digest": "sha256:2c29e82f3d7f6e251051b47e9455b1455eb52811253560eee40187818e0b9d9a"
+    }
+  ],
+  "canonicalInvalidVectors": [
+    {
+      "name": "unsafe-integer",
+      "json": "{\"value\":9007199254740992}"
+    },
+    {
+      "name": "unsafe-integral-float",
+      "json": "{\"value\":1e20}"
+    },
+    {
+      "name": "lone-surrogate",
+      "json": "{\"value\":\"\\ud800\"}"
+    },
+    {
+      "name": "nesting-limit",
+      "json": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+    }
+  ]
+}

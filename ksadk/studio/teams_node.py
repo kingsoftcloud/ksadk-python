@@ -543,3 +543,7 @@ class TeamsExecutionNode:
             self._dispose = None
         self.db.close()
         self._node_lock.close()
+
+
+# Explicit versioned entry; the legacy class remains for existing local integrations.
+from ksadk.studio.teams_node_v1 import TeamsNodeV1 as TeamsNodeV1  # noqa: E402

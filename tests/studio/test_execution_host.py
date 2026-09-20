@@ -95,6 +95,34 @@ async def terminal(host, scope, key="delivery-one"):
 
 
 @pytest.mark.asyncio
+async def test_admission_barrier_queues_original_command_without_revoking(runtime):
+    host, scope, registry, sessions, reasoner, _ = runtime
+    await host.ensure_session(scope)
+    paused = await host.set_admission(scope, "grant-one", False, "pause-queue")
+    assert paused.state == "active"
+    assert paused.details["admissionAllowed"] is False
+    assert paused.details["grantRevision"] == 1
+    accepted = await submit(host, scope)
+    # Kernel poll has a chance to claim the queued message while paused.
+    await asyncio.sleep(0.05)
+    assert not reasoner.calls
+    queued = await host.lookup(scope, "delivery-one")
+    assert queued.status == "accepted"
+    assert queued.run_id is None
+    assert queued.message_id == accepted.message_id
+    resumed = await host.set_admission(scope, "grant-one", True, "resume-queue")
+    assert resumed.details["grantRevision"] == 1
+    assert resumed.details["admissionAllowed"] is True
+    result = await terminal(host, scope)
+    assert result.run_id
+    assert result.message_id == accepted.message_id
+    assert result.run_status == "succeeded"
+    assert len(reasoner.calls) == 1
+    assert await host.set_admission(scope, "grant-one", False, "pause-queue") == paused
+    assert (await host.describe(scope))["capabilities"]["admissionBarrier"] is True
+
+
+@pytest.mark.asyncio
 async def test_host_submits_through_real_kernel_and_observes_without_starting(runtime):
     host, scope, registry, sessions, reasoner, _ = runtime
     first = await submit(host, scope)

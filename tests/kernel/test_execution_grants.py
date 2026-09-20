@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,6 +21,7 @@ from ksadk.kernel.contracts import AgentControlCommand, ControlSource
 from ksadk.kernel.errors import InvalidCommandError, StaleFenceError
 from ksadk.kernel.execution_grants import (
     ExecutionGrantBlocked,
+    ExecutionGrantRecord,
     ExecutionGrantSpec,
     execution_grant_run_id,
 )
@@ -337,6 +342,169 @@ async def test_suspended_queue_resumes_same_command_once(harness):
     assert len(adapter.started) == 1
 
 
+async def test_admission_pause_blocks_claim_but_keeps_grant_active(harness):
+    store = harness.store
+    record = await store.ensure_execution_grant(SPEC)
+    submitted = command("pause-queue")
+    accepted = await store.accept_command(submitted, queue_limit=10)
+    paused = await store.set_execution_admission(
+        SPEC, False, expected_revision=1, idempotency_key="pause-admission"
+    )
+    assert paused.grant.state == "active"
+    assert paused.grant.revision == record.revision
+    assert paused.grant.admission_revision == 2
+    assert not paused.grant.admission_allowed
+    assert (await store.require_execution_grant(SPEC)).state == "active"
+    adapter = FixtureAdapter()
+    executor, lease = worker(harness, adapter), await harness.lease()
+    assert (await run_once(executor, lease)).outcome == "idle"
+    assert not adapter.started
+    assert (await store.load_message(accepted.message_id)).status == InboxState.ACCEPTED
+    await store.set_execution_admission(
+        SPEC, True, expected_revision=2, idempotency_key="resume-admission"
+    )
+    result = await run_once(executor, lease)
+    assert result.run_id == execution_grant_run_id(submitted)
+    await wait_settled(harness)
+    assert len(adapter.started) == 1
+
+
+async def test_governed_enqueue_carries_opaque_context_to_runtime(harness):
+    await harness.store.ensure_execution_grant(SPEC)
+    submitted = command("context-forward")
+    submitted = submitted.model_copy(
+        update={
+            "payload": {
+                **submitted.payload,
+                "teams_context_ref": "context-example",
+                "execution_policy_ref": "policy-example",
+            }
+        }
+    )
+    await harness.store.accept_command(submitted, queue_limit=10)
+    adapter = FixtureAdapter()
+    await run_once(worker(harness, adapter), await harness.lease())
+    await wait_settled(harness)
+    assert adapter.started[0].metadata["teams_context_ref"] == "context-example"
+    assert adapter.started[0].metadata["execution_policy_ref"] == "policy-example"
+
+
+async def test_admission_pause_claim_race_uses_kernel_transaction(harness, monkeypatch):
+    store = harness.store
+    await store.ensure_execution_grant(SPEC)
+    await store.accept_command(command("race-pause"), queue_limit=10)
+    lease = await harness.lease()
+    listed, release = asyncio.Event(), asyncio.Event()
+    original = store.list_pending
+
+    async def delayed_list(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        listed.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(store, "list_pending", delayed_list)
+    adapter = FixtureAdapter()
+    running = asyncio.create_task(run_once(worker(harness, adapter), lease))
+    await asyncio.wait_for(listed.wait(), 2)
+    await store.set_execution_admission(
+        SPEC, False, expected_revision=1, idempotency_key="pause-race"
+    )
+    release.set()
+    assert (await asyncio.wait_for(running, 2)).outcome == "idle"
+    assert not adapter.started
+
+
+async def test_inflight_keeps_tool_eligibility_after_admission_pause(harness):
+    store = harness.store
+    await store.ensure_execution_grant(SPEC)
+    accepted = await store.accept_command(command("running-before-pause"), queue_limit=10)
+    entered, release, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    adapter = FixtureAdapter(start_entered=entered, start_release=release, finish=finish)
+    running = asyncio.create_task(run_once(worker(harness, adapter), await harness.lease()))
+    await asyncio.wait_for(entered.wait(), 2)
+    barrier = await store.set_execution_admission(
+        SPEC, False, expected_revision=1, idempotency_key="pause-inflight"
+    )
+    assert barrier.in_flight_message_ids == (str(accepted.message_id),)
+    assert (await store.require_execution_grant(SPEC)).state == "active"
+    release.set()
+    assert (await asyncio.wait_for(running, 2)).outcome == "completed"
+    finish.set()
+    await wait_settled(harness)
+
+
+async def test_admission_pause_and_grant_renewal_have_independent_revisions(harness):
+    store = harness.store
+    spec = SPEC.model_copy(update={"attempt_epoch": 1})
+    now = datetime.now(timezone.utc)
+    await store.ensure_execution_grant(spec, expires_at=(now + timedelta(seconds=20)).isoformat())
+    paused = await store.set_execution_admission(
+        spec, False, expected_revision=1, idempotency_key="pause-expiring"
+    )
+    renewed = await store.renew_execution_grant(
+        spec,
+        expected_revision=1,
+        expires_at=(now + timedelta(seconds=30)).isoformat(),
+        renewal_id="renew-while-paused",
+    )
+    assert renewed.grant.revision == 2
+    assert renewed.grant.admission_revision == 2
+    assert renewed.grant.admission_allowed is False
+    assert (
+        await store.set_execution_admission(
+            spec, False, expected_revision=1, idempotency_key="pause-expiring"
+        )
+        == paused
+    )  # Response loss returns original evidence, not current state.
+    assert await store.require_execution_grant(spec)
+    resumed = await store.set_execution_admission(
+        spec, True, expected_revision=2, idempotency_key="resume-expiring"
+    )
+    assert resumed.grant.revision == 2
+    assert resumed.grant.admission_revision == 3
+
+
+async def test_admission_scope_cas_and_replay_cannot_revive_stopped_grant(harness):
+    store = harness.store
+    await store.ensure_execution_grant(SPEC)
+    paused = await store.set_execution_admission(
+        SPEC, False, expected_revision=1, idempotency_key="pause-persisted"
+    )
+    if harness.backend == "sqlite":
+        await harness.reopen()
+        store = harness.store
+    assert not (await store.get_execution_grant(SPEC)).grant.admission_allowed
+    with pytest.raises(InvalidCommandError, match="revision conflict"):
+        await store.set_execution_admission(
+            SPEC, True, expected_revision=1, idempotency_key="stale-admission"
+        )
+    with pytest.raises(InvalidCommandError, match="idempotency conflict"):
+        await store.set_execution_admission(
+            SPEC, True, expected_revision=1, idempotency_key="pause-persisted"
+        )
+    with pytest.raises(InvalidCommandError, match="scope|tenant"):
+        await store.set_execution_admission(
+            SPEC.model_copy(update={"owner_ref": "other"}),
+            True,
+            expected_revision=2,
+            idempotency_key="other-owner",
+        )
+    await store.set_execution_grant_state(
+        SPEC, "revoked", expected_revision=1, idempotency_key="stop-after-pause"
+    )
+    assert (
+        await store.set_execution_admission(
+            SPEC, False, expected_revision=1, idempotency_key="pause-persisted"
+        )
+        == paused
+    )
+    with pytest.raises(ExecutionGrantBlocked, match="revoked"):
+        await store.set_execution_admission(
+            SPEC, True, expected_revision=2, idempotency_key="resume-stopped"
+        )
+
+
 async def test_revocation_between_list_and_claim_prevents_start(harness, monkeypatch):
     store = harness.store
     await store.ensure_execution_grant(SPEC)
@@ -618,6 +786,7 @@ async def test_concurrent_grant_updates_have_one_cas_winner(harness):
 
 
 @pytest.mark.parametrize("harness", ["sqlite"], indirect=True)
+@pytest.mark.local_process_heavy
 async def test_sqlite_process_death_before_barrier_commit_preserves_queue(harness):
     await harness.store.ensure_execution_grant(SPEC)
     accepted = await harness.store.accept_command(command("one"), queue_limit=10)
@@ -702,3 +871,450 @@ async def test_sqlite_cross_connection_claim_and_revoke_have_one_transaction_ord
     finally:
         release.set()
         await second.close()
+
+
+TIMED_SPEC = SPEC.model_copy(update={"attempt_epoch": 7})
+
+
+def deadline(seconds: int = 60) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def timed_command(key: str, epoch=7):
+    return command(
+        key,
+        payload={
+            "content": key,
+            "execution_grant_id": SPEC.grant_id,
+            "execution_grant_attempt_epoch": epoch,
+        },
+    )
+
+
+def advance_grant_clock(harness, monkeypatch, instant):
+    import ksadk.kernel.execution_grants as grants
+
+    monkeypatch.setattr(grants, "grant_now", lambda: instant)
+    if harness.backend == "postgres":
+
+        async def database_now(connection):
+            return instant
+
+        monkeypatch.setattr(harness.store, "_postgres_grant_now", database_now)
+
+
+@pytest.mark.parametrize("already_claimed", [False, True])
+async def test_expiry_is_checked_at_claim_and_tool_boundary(harness, monkeypatch, already_claimed):
+    store = harness.store
+    expires = deadline()
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=expires)
+    submitted = timed_command("original")
+    receipt = await store.accept_command(submitted, queue_limit=10)
+    lease = await harness.lease()
+    if already_claimed:
+        await store.claim_message(receipt.message_id, lease.fencing_token)
+    advance_grant_clock(harness, monkeypatch, expires)
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.claim_message(receipt.message_id, lease.fencing_token)
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.require_execution_grant(TIMED_SPEC)
+    rejected = await store.accept_command(timed_command("new"), queue_limit=10)
+    assert rejected.error.code == "execution_grant_expired"
+    # A read/retry still returns the original accepted receipt after expiry.
+    duplicate = await store.accept_command(submitted, queue_limit=10)
+    assert duplicate.status == "duplicate" and duplicate.message_id == receipt.message_id
+    current = await store.get_execution_grant(TIMED_SPEC)
+    assert current.grant.expires_at == expires
+    assert (current.in_flight_message_ids if already_claimed else current.queued_message_ids) == (
+        str(receipt.message_id),
+    )
+
+
+async def test_attempt_epoch_required_and_is_immutable(harness):
+    store = harness.store
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=deadline())
+    for submitted in (command("missing"), timed_command("stale", 6)):
+        receipt = await store.accept_command(submitted, queue_limit=10)
+        assert receipt.error.code == "execution_grant_attempt_epoch_mismatch"
+    wrong_epoch = TIMED_SPEC.model_copy(update={"attempt_epoch": 8})
+    with pytest.raises(InvalidCommandError, match="scope or owner mismatch"):
+        await store.ensure_execution_grant(wrong_epoch, expires_at=deadline())
+    with pytest.raises(InvalidCommandError, match="scope or owner mismatch"):
+        await store.require_execution_grant(wrong_epoch)
+    assert (await store.accept_command(timed_command("right"), queue_limit=10)).status == "accepted"
+
+
+async def test_renewal_cas_lost_ack_lookup_and_revoke(harness):
+    store = harness.store
+    initial, extended = deadline(), deadline(120)
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=initial)
+    receipt = await store.renew_execution_grant(
+        TIMED_SPEC,
+        expected_revision=1,
+        expires_at=extended,
+        renewal_id="renew-1",
+    )
+    assert receipt.grant.revision == 2 and receipt.grant.expires_at == extended
+    assert (
+        await store.lookup_execution_grant_operation(TIMED_SPEC, idempotency_key="absent") is None
+    )
+    assert (
+        await store.lookup_execution_grant_operation(TIMED_SPEC, idempotency_key="renew-1")
+        == receipt
+    )
+    with pytest.raises(InvalidCommandError, match="idempotency conflict"):
+        await store.renew_execution_grant(
+            TIMED_SPEC,
+            expected_revision=1,
+            expires_at=deadline(180),
+            renewal_id="renew-1",
+        )
+    with pytest.raises(InvalidCommandError, match="revision mismatch"):
+        await store.renew_execution_grant(
+            TIMED_SPEC,
+            expected_revision=1,
+            expires_at=deadline(180),
+            renewal_id="stale",
+        )
+    await store.set_execution_grant_state(
+        TIMED_SPEC, "revoked", expected_revision=2, idempotency_key="stop"
+    )
+    assert (
+        await store.renew_execution_grant(
+            TIMED_SPEC,
+            expected_revision=1,
+            expires_at=extended,
+            renewal_id="renew-1",
+        )
+        == receipt
+    )
+    with pytest.raises(ExecutionGrantBlocked, match="revoked"):
+        await store.renew_execution_grant(
+            TIMED_SPEC,
+            expected_revision=3,
+            expires_at=deadline(180),
+            renewal_id="revive",
+        )
+    assert (await store.get_execution_grant(TIMED_SPEC)).grant.state == "revoked"
+
+
+async def test_renewal_race_has_one_winner(harness):
+    store = harness.store
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=deadline())
+    results = await asyncio.gather(
+        *(
+            store.renew_execution_grant(
+                TIMED_SPEC,
+                expected_revision=1,
+                expires_at=deadline(120 + index),
+                renewal_id=f"renew-{index}",
+            )
+            for index in range(2)
+        ),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, InvalidCommandError) for result in results) == 1
+    assert (await store.get_execution_grant(TIMED_SPEC)).grant.revision == 2
+
+
+async def test_expired_or_suspended_grant_cannot_be_renewed(harness):
+    store = harness.store
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=deadline(-1))
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.renew_execution_grant(
+            TIMED_SPEC,
+            expected_revision=1,
+            expires_at=deadline(120),
+            renewal_id="late",
+        )
+    other = TIMED_SPEC.model_copy(update={"grant_id": "suspended"})
+    await store.ensure_execution_grant(other, expires_at=deadline())
+    await store.set_execution_grant_state(
+        other, "suspended", expected_revision=1, idempotency_key="pause"
+    )
+    with pytest.raises(ExecutionGrantBlocked, match="suspended"):
+        await store.renew_execution_grant(
+            other, expected_revision=2, expires_at=deadline(120), renewal_id="paused"
+        )
+
+
+@pytest.mark.parametrize("harness", ["memory", "sqlite"], indirect=True)
+async def test_monotonic_expiry_survives_wall_clock_rollback(harness, monkeypatch):
+    import ksadk.kernel.execution_grants as grants
+
+    store = harness.store
+    expires = deadline()
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=expires)
+    receipt = await store.accept_command(timed_command("one"), queue_limit=10)
+    lease = await harness.lease()
+    store._grant_deadlines[TIMED_SPEC.grant_id] = (expires, time.monotonic() - 1)
+    monkeypatch.setattr(grants, "grant_now", lambda: deadline(-3600))
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.claim_message(receipt.message_id, lease.fencing_token)
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.require_execution_grant(TIMED_SPEC)
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.renew_execution_grant(
+            TIMED_SPEC, expected_revision=1, expires_at=deadline(120), renewal_id="late"
+        )
+
+
+@pytest.mark.parametrize("harness", ["sqlite"], indirect=True)
+async def test_restart_and_old_renewal_replay_cannot_reanchor_local_expiry(harness):
+    expires, renewed = deadline(), deadline(120)
+    await harness.store.ensure_execution_grant(TIMED_SPEC, expires_at=expires)
+    receipt = await harness.store.renew_execution_grant(
+        TIMED_SPEC, expected_revision=1, expires_at=renewed, renewal_id="lost-ack"
+    )
+    accepted = await harness.store.accept_command(timed_command("one"), queue_limit=10)
+    await harness.reopen()
+    store = harness.store
+    # Neither idempotent ensure nor an old renewal ACK constitutes fresh permission.
+    assert (await store.ensure_execution_grant(TIMED_SPEC)).expires_at == renewed
+    assert (
+        await store.lookup_execution_grant_operation(TIMED_SPEC, idempotency_key="lost-ack")
+        == receipt
+    )
+    assert (
+        await store.renew_execution_grant(
+            TIMED_SPEC, expected_revision=1, expires_at=renewed, renewal_id="lost-ack"
+        )
+        == receipt
+    )
+    lease = await harness.lease()
+    for operation in (
+        store.require_execution_grant(TIMED_SPEC),
+        store.claim_message(accepted.message_id, lease.fencing_token),
+    ):
+        with pytest.raises(ExecutionGrantBlocked, match="clock_unverified"):
+            await operation
+    await store.renew_execution_grant(
+        TIMED_SPEC,
+        expected_revision=2,
+        expires_at=deadline(180),
+        renewal_id="fresh-authorized-renewal",
+    )
+    assert (await store.require_execution_grant(TIMED_SPEC)).revision == 3
+    assert (
+        await store.claim_message(accepted.message_id, lease.fencing_token)
+    ).status == InboxState.CLAIMED
+
+
+@pytest.mark.parametrize("harness", ["sqlite"], indirect=True)
+async def test_renewal_failure_rolls_back_expiry_and_receipt(harness, monkeypatch):
+    store = harness.store
+    initial = await store.ensure_execution_grant(TIMED_SPEC, expires_at=deadline())
+    original = store._sqlite_grant_barrier
+
+    async def crash(*args):
+        raise RuntimeError("before commit")
+
+    monkeypatch.setattr(store, "_sqlite_grant_barrier", crash)
+    with pytest.raises(RuntimeError, match="before commit"):
+        await store.renew_execution_grant(
+            TIMED_SPEC, expected_revision=1, expires_at=deadline(120), renewal_id="retry"
+        )
+    monkeypatch.setattr(store, "_sqlite_grant_barrier", original)
+    assert (await store.get_execution_grant(TIMED_SPEC)).grant == initial
+    assert await store.lookup_execution_grant_operation(TIMED_SPEC, idempotency_key="retry") is None
+    assert (await store.require_execution_grant(TIMED_SPEC)).revision == 1
+
+
+def test_expiring_grant_requires_epoch_and_absolute_time():
+    from pydantic import ValidationError
+
+    for spec, expires in (
+        (SPEC, deadline()),
+        (TIMED_SPEC, None),
+        (TIMED_SPEC, "2026-09-18T12:00:00"),
+    ):
+        with pytest.raises(ValidationError):
+            ExecutionGrantRecord(
+                **spec.model_dump(), expires_at=expires, created_at=now_iso(), updated_at=now_iso()
+            )
+    for epoch in (True, 0, "7"):
+        with pytest.raises(ValidationError):
+            timed_command("invalid", epoch)
+
+
+@pytest.mark.parametrize("harness", ["sqlite"], indirect=True)
+async def test_sqlite_upgrade_preserves_legacy_record_and_operation_digest(harness):
+    from ksadk.kernel.execution_grants import ExecutionGrantBarrier
+
+    store = harness.store
+    await store.close()
+    # Recreate the exact old table/receipt shape, not the new schema minus values.
+    old_record = ExecutionGrantRecord(
+        **SPEC.model_dump(), created_at=now_iso(), updated_at=now_iso()
+    )
+    old_grant = old_record.model_dump(
+        exclude={"expires_at", "attempt_epoch", "admission_allowed", "admission_revision"}
+    )
+    old_receipt = ExecutionGrantBarrier(grant=old_record).model_dump()
+    old_receipt["grant"] = old_grant
+    original_spec = SPEC.model_dump(exclude={"attempt_epoch"})
+    old_digest = hashlib.sha256(
+        json.dumps(
+            {"spec": original_spec, "state": "active", "expected_revision": 1},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    with sqlite3.connect(harness.path) as connection:
+        connection.execute("DROP TABLE kernel_execution_grants")
+        connection.execute("""CREATE TABLE kernel_execution_grants (
+          grant_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, agent_instance_id TEXT NOT NULL,
+          session_id TEXT NOT NULL, owner_ref TEXT NOT NULL, state TEXT NOT NULL,
+          revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        connection.execute(
+            "INSERT INTO kernel_execution_grants VALUES (?,?,?,?,?,?,?,?,?)",
+            tuple(old_grant.values()),
+        )
+        connection.execute(
+            "INSERT INTO kernel_execution_grant_operations VALUES (?,?,?,?)",
+            (SPEC.grant_id, "old-key", old_digest, json.dumps(old_receipt)),
+        )
+    await harness.reopen()
+    store = harness.store
+    assert (await store.ensure_execution_grant(SPEC)).expires_at is None
+    assert await store.set_execution_grant_state(
+        SPEC, "active", expected_revision=1, idempotency_key="old-key"
+    ) == ExecutionGrantBarrier(grant=old_record)
+    assert (await store.require_execution_grant(SPEC)).revision == 1
+    await store.ensure_schema()  # migration is repeatable
+
+
+async def test_facade_expiry_renewal_lookup_and_tool_guard(harness):
+    from ksadk.kernel.control import AgentKernel
+    from ksadk.kernel.ingress import InProcessPermitIssuer
+
+    kernel = AgentKernel(harness.store, harness.events, InProcessPermitIssuer().verifier())
+    await kernel.ensure_execution_grant(TIMED_SPEC, expires_at=deadline())
+    receipt = await kernel.renew_execution_grant(
+        TIMED_SPEC, expected_revision=1, expires_at=deadline(120), renewal_id="renew"
+    )
+    assert (
+        await kernel.lookup_execution_grant_operation(TIMED_SPEC, idempotency_key="renew")
+        == receipt
+    )
+    assert await kernel.require_execution_grant(TIMED_SPEC) == receipt.grant
+
+
+@pytest.mark.parametrize("harness", ["memory", "sqlite"], indirect=True)
+@pytest.mark.parametrize("clock_skew", [-3600, 3600])
+async def test_trusted_remaining_ttl_never_extends_expiry_on_clock_skew(
+    harness,
+    monkeypatch,
+    clock_skew,
+):
+    import ksadk.kernel.execution_grants as grants
+
+    expires = deadline(60)
+    clock = [100.0]
+    local_now = deadline(clock_skew)
+    monkeypatch.setattr(grants, "grant_now", lambda: local_now)
+    monkeypatch.setattr(grants, "grant_monotonic", lambda: clock[0])
+    store = harness.store
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=expires, remaining_ttl_seconds=5)
+    assert store._grant_deadlines[TIMED_SPEC.grant_id][1] <= 105
+    if clock_skew > 0:
+        with pytest.raises(ExecutionGrantBlocked, match="expired"):
+            await store.require_execution_grant(TIMED_SPEC)
+    else:
+        await store.require_execution_grant(TIMED_SPEC)
+        clock[0] = 105
+        with pytest.raises(ExecutionGrantBlocked, match="expired"):
+            await store.require_execution_grant(TIMED_SPEC)
+
+
+@pytest.mark.parametrize("harness", ["memory", "sqlite"], indirect=True)
+async def test_remaining_ttl_counts_transaction_wait_and_does_not_reanchor_replay(
+    harness, monkeypatch
+):
+    import ksadk.kernel.execution_grants as grants
+
+    store, clock = harness.store, [100.0]
+    monkeypatch.setattr(grants, "grant_monotonic", lambda: clock[0])
+    lock = (
+        store._lock(TIMED_SPEC.agent_instance_id, TIMED_SPEC.session_id)
+        if harness.backend == "memory"
+        else store._write_lock
+    )
+    async with lock:
+        delayed = asyncio.create_task(
+            store.ensure_execution_grant(
+                TIMED_SPEC,
+                expires_at=deadline(60),
+                remaining_ttl_seconds=2,
+            )
+        )
+        await asyncio.sleep(0)
+        assert not delayed.done()
+        clock[0] = 103
+    await delayed
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.require_execution_grant(TIMED_SPEC)
+
+    second = TIMED_SPEC.model_copy(update={"grant_id": "second"})
+    await store.ensure_execution_grant(second, expires_at=deadline(60), remaining_ttl_seconds=30)
+    renewed = deadline(120)
+    receipt = await store.renew_execution_grant(
+        second,
+        expected_revision=1,
+        expires_at=renewed,
+        renewal_id="renew",
+        remaining_ttl_seconds=5,
+    )
+    anchor = store._grant_deadlines[second.grant_id]
+    clock[0] += 6
+    assert (
+        await store.renew_execution_grant(
+            second,
+            expected_revision=1,
+            expires_at=renewed,
+            renewal_id="renew",
+            remaining_ttl_seconds=30,
+        )
+        == receipt
+    )
+    assert store._grant_deadlines[second.grant_id] == anchor
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await store.require_execution_grant(second)
+
+
+@pytest.mark.parametrize("harness", ["postgres"], indirect=True)
+@pytest.mark.skipif(not os.environ.get("KSADK_TEST_GRANTS_POSTGRES_DSN"), reason="live PG opt-in")
+async def test_postgres_uses_database_time_and_checks_after_grant_row_lock(harness, monkeypatch):
+    import ksadk.kernel.execution_grants as grants
+
+    store = harness.store
+    await store.ensure_execution_grant(TIMED_SPEC, expires_at=deadline(60))
+    # A bad host UTC clock cannot expire or extend a database-owned grant.
+    monkeypatch.setattr(grants, "grant_now", lambda: deadline(3600))
+    await store.require_execution_grant(TIMED_SPEC)
+    receipt = await store.accept_command(timed_command("one"), queue_limit=10)
+    assert receipt.status == "accepted"
+    lease = await harness.lease()
+    async with store._connection() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                "UPDATE kernel_execution_grants SET expires_at=$1 WHERE grant_id=$2",
+                deadline(0),
+                TIMED_SPEC.grant_id,
+            )
+            claiming = asyncio.create_task(
+                store.claim_message(receipt.message_id, lease.fencing_token)
+            )
+            await asyncio.sleep(0.02)
+            assert not claiming.done()
+    with pytest.raises(ExecutionGrantBlocked, match="expired"):
+        await claiming
+    assert (await store.load_message(receipt.message_id)).status == InboxState.ACCEPTED
+
+
+def test_remaining_ttl_rejects_nonfinite_or_invalid_values():
+    from ksadk.kernel.execution_grants import grant_deadline_budget
+
+    for value in (float("inf"), float("nan"), -1, True, "5"):
+        with pytest.raises(InvalidCommandError):
+            grant_deadline_budget(value)

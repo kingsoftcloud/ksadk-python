@@ -34,6 +34,8 @@ class Host:
         self.commands = {}
         self.submitted = []
         self.grants = {}
+        self.admissions = {}
+        self.grant_scopes = []
         self.cancelled = []
         self.lose_ack = False
         self.fail_barrier = False
@@ -67,7 +69,15 @@ class Host:
         if self.fail_barrier:
             raise ConnectionError("injected barrier transport failure")
         self.grants[grant_id] = state
+        self.grant_scopes.append((scope, grant_id, state))
         return ExecutionBarrier(state, 1)
+
+    async def set_admission(self, scope, grant_id, allowed, idempotency_key):
+        if self.fail_barrier:
+            raise ConnectionError("injected admission barrier failure")
+        self.admissions[grant_id] = allowed
+        self.grants.setdefault(grant_id, "active")
+        return ExecutionBarrier(self.grants[grant_id], 1, details={"admissionAllowed": allowed})
 
     async def cancel(self, scope, run_id, idempotency_key):
         self.cancelled.append(run_id)
@@ -559,6 +569,141 @@ async def test_real_source_refs_project_children_once_and_survive_replay(tmp_pat
         replay = runtime.require_domain().execution(OWNER, gid, run_id)
         assert replay["watermark"] == watermark
         assert replay["nodes"] == execution["nodes"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_pause_blocks_admission_but_running_completion_and_budget_continue(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    host = Host()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, run_id = setup(runtime)
+        await runtime.tick()
+        await runtime.tick()  # reconcile the canonical running fact
+        with domain.store.transaction() as tx:
+            run = tx.get("team_run", run_id)
+            run["_activeSince"] = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+            tx.put("team_run", run_id, run)
+        control(domain, gid, run_id, "suspend_dispatch", "pause")
+        await runtime.tick()
+        assert current(domain, gid)["dispatchSuspended"] is True
+        assert current(domain, gid)["activeDurationSeconds"] >= 2
+        assert set(host.admissions.values()) == {False}
+        assert set(host.grants.values()) == {"active"}
+        assert not host.cancelled
+        key = host.submitted[0]
+        host.commands[key] = replace(
+            host.commands[key], run_status="succeeded", output="done", tokens=11
+        )
+        await runtime.tick()
+        assert current(domain, gid)["budget"]["tokensUsed"] == 11
+        assert current(domain, gid)["dispatchSuspended"] is True
+        assert set(host.grants.values()) == {"active"}
+        # The original member grant can be reused after completion. Resume
+        # must reopen its admission even though the old delivery is terminal.
+        control(domain, gid, run_id, "resume_dispatch", "resume-after-completion")
+        await runtime.tick()
+        assert set(host.admissions.values()) == {True}
+        assert current(domain, gid)["dispatchSuspended"] is False
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_admission_capability_does_not_pretend_pause_completed(tmp_path):
+    host = Host()
+    host.set_admission = None
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, run_id = setup(runtime)
+        control(domain, gid, run_id, "suspend_dispatch", "pause")
+        await runtime.tick()
+        with domain.store.transaction() as tx:
+            pending = tx.list("control", gid)[0]
+        assert pending["status"] == "pending"
+        assert pending["reason"] == "admission_barrier_unsupported"
+        assert not host.grants and not host.submitted
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_host_terminal_without_evidence_cannot_create_task_worker_result(tmp_path):
+    host = Host()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, run_id = setup(runtime)
+        await runtime.tick()
+        key = host.submitted[0]
+        with domain.store.transaction() as tx:
+            delivery = tx.get("delivery", key)
+            delivery["_candidateMode"] = "canonical_terminal"
+            tx.put("delivery", key, delivery)
+        host.commands[key] = replace(
+            host.commands[key], run_status="succeeded", output="unproven", tokens=40
+        )
+        await runtime.tick()
+        with domain.store.transaction() as tx:
+            pending = tx.get("delivery", key)
+        assert pending["reason"] == "completion_evidence_required"
+        assert pending["resultState"] == "pending"
+        assert not pending.get("_terminalState")
+        assert current(domain, gid)["budget"]["tokensUsed"] == 0
+        watermark = domain.snapshot(OWNER, gid)["watermark"]
+        await runtime.tick()
+        assert domain.snapshot(OWNER, gid)["watermark"] == watermark
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_freezes_exact_attempt_grants_and_original_cancel_scope(tmp_path):
+    from ksadk.plugins.teams.contracts import TaskCreateInput
+
+    host = Host()
+    runtime = TeamsRuntime(path=tmp_path / "teams.sqlite", authority_ref="local", host=host)
+    await runtime.start(background=False)
+    try:
+        domain, gid, run_id = setup(runtime)
+        await runtime.tick()
+        domain.create_task(
+            OWNER, gid, run_id, TaskCreateInput(title="next", ownerMemberId="leader"), "task"
+        )
+        with domain.store.transaction() as tx:
+            deliveries = tx.list("delivery", gid)
+            original = deliveries[0]
+            queued = deliveries[1]
+            queued["_grantId"] = "attempt-specific-grant"
+            tx.put("delivery", queued["deliveryId"], queued)
+        control(domain, gid, run_id, "stop", "stop")
+        await runtime.tick()
+        with domain.store.transaction() as tx:
+            saved = tx.list("control", gid)[0]
+        assert {target["grantId"] for target in saved["targets"]} == {
+            original["_grantId"],
+            "attempt-specific-grant",
+        }
+        assert set(host.grants) == {original["_grantId"], "attempt-specific-grant"}
+        assert all(state == "revoked" for _, _, state in host.grant_scopes)
+        intent = saved["cancelRequests"][original["deliveryId"]]
+        assert intent["runId"] == original["runId"]
+        assert intent["sessionId"] == original["_sessionId"]
+        assert host.cancelled == [original["runId"]]
+        assert current(domain, gid)["status"] == "cancel_requested"
+        key = host.submitted[0]
+        host.commands[key] = replace(host.commands[key], run_status="interrupted")
+        await runtime.tick()
+        assert current(domain, gid)["status"] == "cancelled"
+        with domain.store.transaction() as tx:
+            terminal = tx.get("delivery", original["deliveryId"])
+        assert terminal["_terminalState"] == "interrupted"
+        assert len(host.submitted) == 1
     finally:
         await runtime.close()
 

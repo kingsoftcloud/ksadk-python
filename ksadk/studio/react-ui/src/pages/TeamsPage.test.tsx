@@ -97,15 +97,12 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Studio Teams API integration", () => {
-  it("keeps server teams usable when the local node fails", async () => {
-    const original = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
-      if (url.endsWith("/lifecycle")) return json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "degraded", mode: "server", authorityRef: "fixture-local", authorityLocation: "server", failure: { code: "local_node_unavailable", reason: "本地节点暂时不可用" } });
-      return original(url, init);
-    });
+  it("does not fall back to local snapshots when cloud projection support is missing", async () => {
+    fetchMock.mockResolvedValue(json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "degraded", mode: "server", authorityRef: "fixture-local", authorityLocation: "server", failure: { code: "local_node_unavailable", reason: "本地节点暂时不可用" } }));
     render(<TeamsPage />);
-    expect(await screen.findByRole("heading", { name: snapshot.group.name })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "给团队的消息" })).toBeEnabled();
+    expect(await screen.findByRole("heading", { name: "云端团队正在准备" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "给团队的消息" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/lifecycle"))).toBe(true);
   });
 
   it("requires original terminal evidence and preserves reconciliation input after a conflict", async () => {
@@ -471,29 +468,12 @@ describe("independent team tasks and recovery", () => {
 });
 
 describe("task execution configuration", () => {
-  it("checks a selected cloud standby as part of team creation and preserves it on failure", async () => {
-    const original = fetchMock.getMockImplementation()!;
-    const cloud = { ...snapshot.members[0].binding, bindingRef: "cloud-copy", agentId: "cloud-copy", kind: "cloud", name: "云端副本", availability: { state: "unchecked" } };
-    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
-      if (url.endsWith("/lifecycle")) return json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "ready", authorityRef: "fixture-local", mode: "server" });
-      if (url.endsWith("/bindings")) return json({ items: [...snapshot.members.map(member => ({ ...member.binding, name: member.name })), cloud] });
-      if (url === "/api/v1/groups" && init.method === "POST") { requests.push({ url, init }); return json({ error: { code: "standby_incompatible", message: "备用版本不兼容，请选择同一构建" } }, 422); }
-      return original(url, init);
-    });
+  it("does not expose legacy standby creation just because cloud lifecycle says ready", async () => {
+    fetchMock.mockResolvedValue(json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "ready", mode: "server", authorityId: "cloud-authority", ownerScopeRef: "cloud-owner", features: [] }));
     render(<TeamsPage />);
-    await screen.findByRole("heading", { name: snapshot.group.name });
-    await userEvent.click(screen.getByRole("button", { name: "创建团队" }));
-    await userEvent.click(await screen.findByRole("checkbox", { name: /协调助手/ }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /工程师/ }));
-    await userEvent.type(screen.getByRole("textbox", { name: "团队名称" }), "带备用的团队");
-    await userEvent.click(screen.getByText("本地离线时继续协作"));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Leader 云端备用" }), "cloud-copy");
-    await userEvent.click(within(screen.getByRole("dialog", { name: "组建团队" })).getByRole("button", { name: "创建团队" }));
-    expect(await screen.findByText("备用版本不兼容，请选择同一构建")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "团队名称" })).toHaveValue("带备用的团队");
-    expect(screen.getByRole("combobox", { name: "Leader 云端备用" })).toHaveValue("cloud-copy");
-    const sent = requests.find(row => row.url === "/api/v1/groups" && row.init.method === "POST")!;
-    expect(JSON.parse(String(sent.init.body))).toMatchObject({ leaderStandbyBindingRef: "cloud-copy", members: expect.any(Array) });
+    expect(await screen.findByRole("heading", { name: "云端团队正在准备" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "创建团队" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/lifecycle"))).toBe(true);
   });
 
   it("sends workspace options and only the explicitly selected cross-task artifact", async () => {
@@ -522,25 +502,11 @@ describe("task execution configuration", () => {
     expect(screen.getByText("请求格式已验证，兼容性测试通过。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "本轮进展" })).not.toBeInTheDocument();
   });
-  it("distinguishes an armed cloud standby from an active takeover", async () => {
-    const original = fetchMock.getMockImplementation()!;
-    const standby = { groupId: snapshot.group.groupId, teamRunId: "team-run", state: "armed", primaryNodeId: "local-node", primarySessionId: "primary-session", primaryBindingRef: "binding-leader", standbyNodeId: "cloud-node", standbyBindingRef: "cloud-leader", buildDigest: "fixture-build-digest", epoch: 1, reason: null, automaticFailback: false };
-    fetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
-      if (url.endsWith("/lifecycle")) return json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "ready", authorityRef: "fixture-local", mode: "server", authorityLocation: "server" });
-      if (url.endsWith("/bindings")) return json({ items: [{ ...snapshot.members[0].binding, bindingRef: "cloud-leader", kind: "cloud", name: "云端备用 Leader", availability: { state: "ready" } }] });
-      if (url.endsWith("/leader-standby")) { requests.push({ url, init }); return json(standby); }
-      return original(url, init);
-    });
+  it("requires trusted owner scope even when workspace and write features are advertised", async () => {
+    fetchMock.mockResolvedValue(json({ enabled: true, apiVersion: TEAMS_API_VERSION, health: "ready", mode: "server", authorityRef: "fixture-local", authorityLocation: "server", features: ["workspace-projection.v1", "durable-operations.v1"] }));
     render(<TeamsPage />);
-    await screen.findByRole("heading", { name: snapshot.group.name });
-    await userEvent.click(screen.getByRole("button", { name: "查看任务详情" }));
-    await userEvent.click(await screen.findByText("云端接管设置"));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Leader 备用节点" }), "cloud-leader");
-    await userEvent.click(screen.getByRole("button", { name: "配置备用节点" }));
-    expect(await screen.findByText("兼容的备用节点已配置；接管前会保存进度并核对原执行。")).toBeInTheDocument();
-    expect(screen.queryByText("云端 Leader 已接管当前任务。")).not.toBeInTheDocument();
-    const request = requests.find(row => row.url.endsWith("/leader-standby"))!;
-    expect(request.url).toBe("/api/v1/groups/fixture-group/team-runs/team-run/leader-standby");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({ bindingRef: "cloud-leader", idempotencyKey: expect.any(String) });
+    expect(await screen.findByRole("heading", { name: "云端团队正在准备" })).toBeInTheDocument();
+    expect(screen.queryByText("云端接管设置")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/lifecycle"))).toBe(true);
   });
 });

@@ -12,6 +12,9 @@ export type TeamsLifecycle = {
   apiVersion: string;
   health: string;
   authorityRef: string;
+  authorityId?: string | null;
+  ownerScopeRef?: string | null;
+  features?: string[];
   stage?: string;
   reason?: string;
   failure?: TeamsFailure | null;

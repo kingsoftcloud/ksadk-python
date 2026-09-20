@@ -200,6 +200,7 @@ class RuntimeAppConfig:
         kernel_adapter_provider: Callable[[], RuntimeAdapter] | None = None,
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
+        teams_host_factory: Any | None = None,
     ) -> None:
         self.runtime_type = runtime_type
         self.route_groups: set[str] = (
@@ -217,6 +218,7 @@ class RuntimeAppConfig:
         self.kernel_adapter_provider = kernel_adapter_provider
         self.session_service_provider = session_service_provider
         self.session_backend_provider = session_backend_provider
+        self.teams_host_factory = teams_host_factory
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +361,9 @@ def create_runtime_app(
         session_service_provider=config.session_service_provider,
         session_backend_provider=config.session_backend_provider,
     )
+    from ksadk.kernel.teams_runtime_bootstrap import CloudTeamsRuntimeHost
+
+    teams_host = config.teams_host_factory or CloudTeamsRuntimeHost.from_env()
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -372,19 +377,32 @@ def create_runtime_app(
         from ksadk.runtime.factory import kernel_start_request_defaults
 
         adapter_provider = _kernel_adapter_provider(config)
+        if teams_host is not None:
+            adapter_provider = teams_host.wrap_adapter_provider(adapter_provider)
         request_defaults = (
             kernel_start_request_defaults(config.launch_context)
             if config.launch_context is not None
             else {}
         )
-        kernel_runtime = await bootstrap_agent_kernel_runtime_from_env(
-            adapter_provider=adapter_provider,
-            runtime_executor=config.runtime_executor,
-            launch_context=config.launch_context,
-            start_request_defaults=request_defaults,
-            session_service=state.resolve_session_service(),
-        )
+        try:
+            kernel_runtime = await bootstrap_agent_kernel_runtime_from_env(
+                adapter_provider=adapter_provider,
+                runtime_executor=config.runtime_executor,
+                launch_context=config.launch_context,
+                start_request_defaults=request_defaults,
+                session_service=state.resolve_session_service(),
+                **({"before_start": teams_host.before_start} if teams_host is not None else {}),
+            )
+        except BaseException:
+            if teams_host is not None:
+                await teams_host.close()
+                _kernel_ingress.set_teams_ingress_gate(None)
+            await shutdown_runtime_resources(state)
+            raise
         app.state.agent_kernel_runtime = kernel_runtime
+        if teams_host is not None and kernel_runtime is None:
+            await teams_host.close()
+            raise RuntimeError("Teams Host requires an enabled durable Kernel")
         if kernel_runtime is not None:
             # Kernel canonical events are the replay authority for the normal
             # Session APIs as well.  In memory/ephemeral mode bootstrap reuses
@@ -405,6 +423,9 @@ def create_runtime_app(
                 await state.a2a_bootstrap.stop()
             if kernel_runtime is not None:
                 await kernel_runtime.close()
+            if teams_host is not None:
+                await teams_host.close()
+                _kernel_ingress.set_teams_ingress_gate(None)
             clear_agent_kernel_runtime()
             _kernel_ingress.clear_agent_kernel()
             await shutdown_runtime_resources(state)
@@ -417,6 +438,11 @@ def create_runtime_app(
     )
     state.app = app
     app.state.runtime = state
+    if teams_host is not None:
+        from ksadk.kernel.teams_host_http import create_teams_host_router
+
+        app.include_router(create_teams_host_router(teams_host.resolve_host))
+        app.state.teams_host = teams_host
 
     # 中间件:把当前 app 的 state 写入请求级 contextvar(handler 经 get_state() 取)。
     @app.middleware("http")

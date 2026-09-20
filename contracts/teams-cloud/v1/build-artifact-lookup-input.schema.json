@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"idempotencyKey":{"maxLength":200,"minLength":1,"title":"Idempotencykey","type":"string"}},"required":["idempotencyKey"],"title":"BuildArtifactLookupInput","type":"object"}

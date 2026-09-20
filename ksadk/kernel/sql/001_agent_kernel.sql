@@ -134,6 +134,11 @@ CREATE TABLE IF NOT EXISTS kernel_execution_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_kernel_execution_grants_scope
   ON kernel_execution_grants (tenant_id, agent_instance_id, session_id);
+-- Additive upgrade: existing non-expiring grants retain their old semantics.
+ALTER TABLE kernel_execution_grants ADD COLUMN IF NOT EXISTS attempt_epoch BIGINT CHECK (attempt_epoch > 0);
+ALTER TABLE kernel_execution_grants ADD COLUMN IF NOT EXISTS expires_at TEXT;
+ALTER TABLE kernel_execution_grants ADD COLUMN IF NOT EXISTS admission_allowed BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE kernel_execution_grants ADD COLUMN IF NOT EXISTS admission_revision BIGINT NOT NULL DEFAULT 1 CHECK (admission_revision > 0);
 CREATE TABLE IF NOT EXISTS kernel_execution_grant_operations (
   grant_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,

@@ -117,7 +117,9 @@ async def test_policy_ref_without_resolver_fails_closed():
 async def test_untrusted_parent_metadata_cannot_skip_host_limits():
     resolver = Resolver({"one": ExecutionPolicy(limits={"max_tool_calls": 0})})
     adapter = ManagedHarnessRuntimeAdapter(
-        spec(), engine=ManagedLangGraphEngine(), execution_policy_resolver=resolver,
+        spec(),
+        engine=ManagedLangGraphEngine(),
+        execution_policy_resolver=resolver,
     )
     incoming = request("one")
     incoming.metadata["parent_run_id"] = "forged-parent"
@@ -146,9 +148,11 @@ async def test_withdrawn_policy_tool_cannot_execute_inside_child():
                 call = HarnessToolCall("delegate", "child", {"task": "write"})
             return HarnessReasoningTurn(tool_calls=(call,))
 
-    parent_spec = spec().model_copy(update={
-        "sub_agents": (SubAgentBinding(name="child", instructions="child", tools=("write",)),),
-    })
+    parent_spec = spec().model_copy(
+        update={
+            "sub_agents": (SubAgentBinding(name="child", instructions="child", tools=("write",)),),
+        }
+    )
     adapter = ManagedHarnessRuntimeAdapter(
         parent_spec,
         engine=ManagedLangGraphEngine(reasoner=ChildReasoner(), checkpointer=memory_checkpointer()),
@@ -156,9 +160,11 @@ async def test_withdrawn_policy_tool_cannot_execute_inside_child():
     )
     handle = await adapter.start(request("one"))
     events = [e async for e in adapter.stream(handle)]
-    assert any(e.event_type == "tool.failed" or (
-        e.event_type == "tool.completed" and e.model_dump().get("status") == "failed"
-    ) for e in events) or any("unknown" in str(e.model_dump()).lower() for e in events)
+    assert any(
+        e.event_type == "tool.failed"
+        or (e.event_type == "tool.completed" and e.model_dump().get("status") == "failed")
+        for e in events
+    ) or any("unknown" in str(e.model_dump()).lower() for e in events)
 
 
 @pytest.mark.asyncio
@@ -469,3 +475,57 @@ async def test_explicit_child_context_changes_prompt_without_weakening_governanc
     assert root.budget_usage["tools"] == 2 and child_run.budget_usage["tools"] == 1
     assert root.state.status.value == "completed"
     assert root.budget_usage["tokens"] == 12
+
+
+@pytest.mark.asyncio
+async def test_exclusive_host_policy_isolates_teams_ordinary_and_dynamic_dispatch():
+    """One reused engine never lends ordinary shell/MCP authority to Teams."""
+    from ksadk.harness.engine.tool_dispatch import invoke_tool
+
+    calls = []
+
+    async def invoke(arguments, call_id):
+        calls.append(call_id)
+        return "ok"
+
+    class Reasoner:
+        async def complete(self, *, tools, messages, **kwargs):
+            names = [t.name for t in tools]
+            assert names in (["trusted"], ["shell"])
+            if any(m["role"] == "tool" for m in messages):
+                return HarnessReasoningTurn(final_text="done")
+            return HarnessReasoningTurn(tool_calls=(HarnessToolCall(names[0], names[0], {}),))
+
+    resolver = Resolver(
+        {
+            name: ExecutionPolicy(tools={"trusted": tool("trusted", invoke)}, exclusive_tools=True)
+            for name in ("teams-one", "teams-two")
+        }
+    )
+    engine = ManagedLangGraphEngine(
+        reasoner=Reasoner(),
+        checkpointer=memory_checkpointer(),
+        tools={"shell": tool("shell", invoke)},
+    )
+    adapter = ManagedHarnessRuntimeAdapter(
+        spec(), engine=engine, execution_policy_resolver=resolver
+    )
+    handles = []
+    for name in ("teams-one", "ordinary", "teams-two"):
+        incoming = request(name)
+        if name == "ordinary":
+            incoming.metadata.pop("execution_policy_ref")
+        handle = await adapter.start(incoming)
+        handles.append(handle)
+        assert [e async for e in adapter.stream(handle)]
+    assert calls == ["trusted", "shell", "trusted"]
+    assert list(engine._tools) == ["shell"]
+    run = engine._runs[handles[-1].run_id]
+    for name in ("shell", "mcp_call_tool", "skill_read", "delegate", "new_dynamic_tool"):
+        with pytest.raises(PermissionError, match="outside"):
+            await invoke_tool(engine, name, {}, run=run, call_id=name)
+    assert calls == ["trusted", "shell", "trusted"]
+    # A refresh cannot weaken an already admitted exclusive invocation.
+    resolver.policies["teams-two"] = ExecutionPolicy()
+    with pytest.raises(PermissionError, match="outside"):
+        await invoke_tool(engine, "shell", {}, run=run, call_id="late")

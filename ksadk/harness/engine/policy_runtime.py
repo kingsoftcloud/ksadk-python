@@ -15,7 +15,8 @@ def configure_run(engine, run, *, policy=None, resolver=None, request=None):
     run.execution_policy = policy
     run.execution_policy_resolver = resolver
     run.execution_policy_request = request
-    run.tools = dict(engine._tools)
+    run.exclusive_tools = bool(policy and policy.exclusive_tools)
+    run.tools = {} if run.exclusive_tools and inherited is None else dict(engine._tools)
     run.policy_tool_names = set(inherited or ())
     if policy is not None and inherited is None:
         run.tools.update(policy.tools)
@@ -29,6 +30,8 @@ def configure_run(engine, run, *, policy=None, resolver=None, request=None):
         **engine._sub_agents,
         **{b.name: SubAgentSpec.from_binding(b) for b in run.compiled.spec.sub_agents},
     }
+    if run.exclusive_tools:
+        run.sub_agents = {}
     run.controller = engine._new_run_controller(run.compiled)
 
 
@@ -40,10 +43,17 @@ async def revalidate_policy(engine, run):
     if not isinstance(policy, ExecutionPolicy):
         raise TypeError("host resolver must return ExecutionPolicy")
     # A refreshed grant can narrow an admitted run, never grow its tool surface.
-    allowed = {name: tool for name, tool in engine._tools.items()
-               if name not in run.policy_tool_names}
-    allowed.update({name: tool for name, tool in policy.tools.items()
-                    if name in run.policy_tool_names})
+    run.exclusive_tools = run.exclusive_tools or policy.exclusive_tools
+    if run.exclusive_tools:
+        run.sub_agents = {}
+    allowed = {
+        name: tool
+        for name, tool in engine._tools.items()
+        if name not in run.policy_tool_names and not run.exclusive_tools
+    }
+    allowed.update(
+        {name: tool for name, tool in policy.tools.items() if name in run.policy_tool_names}
+    )
     run.tools = {name: allowed[name] for name in run.tools if name in allowed}
     run.approval_required.update(policy.approval_required)
     limits_only = ExecutionPolicy(limits=policy.limits)
@@ -51,6 +61,7 @@ async def revalidate_policy(engine, run):
         run.compiled, spec=apply_execution_policy(run.compiled.spec, limits_only)
     )
     run.execution_policy = policy
+
 
 def _apply_request_approval_mode(run, request) -> None:
     """回合级审批档位（composer 的 完全访问/严格/询问）覆盖静态合同。
@@ -65,6 +76,4 @@ def _apply_request_approval_mode(run, request) -> None:
     if mode == "full":
         run.approval_required = set()
     elif mode == "ask":
-        run.approval_required.update(
-            name for name in getattr(run, "tools", {}) or {}
-        )
+        run.approval_required.update(name for name in getattr(run, "tools", {}) or {})
