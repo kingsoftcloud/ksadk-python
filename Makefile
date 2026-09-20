@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
+.PHONY: public-release-version-gate public-preflight-publish help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check release-preflight release-candidate-gate public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance studio-app-package studio-app-dmg-existing studio-app-package-windows studio-app-check studio-app-run studio-app-clean studio-app-reopen kernel-canary-build kernel-canary-push kernel-canary-deploy kernel-canary-matrix kernel-canary-status kernel-canary-delete
 
 KERNEL_CANARY_NAMESPACE ?= agent-kernel
 # Kernel runtime drills must run beside real Agent workloads in the preprod
@@ -839,13 +839,14 @@ STUDIO_APP_BUNDLE ?= $(STUDIO_APP_DIR)/AgentKitStudio.app
 STUDIO_APP_RUNTIME ?= $(STUDIO_APP_BUNDLE)/Contents/Resources/runtime
 STUDIO_APP_PYTHON ?= 3.13
 STUDIO_APP_WORKSPACE ?= .
+STUDIO_APP_VERSION ?= $(VERSION)
 
 studio-app-package: build-wheel
 	@test "$(STUDIO_APP_PLATFORM)" = "macos" || (echo "ERROR: only STUDIO_APP_PLATFORM=macos is supported locally" >&2; exit 1)
 	@test "$(STUDIO_APP_ARCH)" = "arm64" || (echo "ERROR: only STUDIO_APP_ARCH=arm64 is supported locally" >&2; exit 1)
 	@command -v uv >/dev/null 2>&1 || (echo "ERROR: uv is required" >&2; exit 1)
 	@command -v sw_vers >/dev/null 2>&1 || (echo "ERROR: this target must run on macOS" >&2; exit 1)
-	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_RUNTIME="$(STUDIO_APP_RUNTIME)" STUDIO_APP_BUNDLE="$(STUDIO_APP_BUNDLE)" STUDIO_APP_PYTHON="$(STUDIO_APP_PYTHON)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION)" STUDIO_APP_CODESIGN_IDENTITY="$(STUDIO_APP_CODESIGN_IDENTITY)" STUDIO_APP_NOTARIZE="$(STUDIO_APP_NOTARIZE)" STUDIO_APP_ENTITLEMENTS="$(STUDIO_APP_ENTITLEMENTS)" sh scripts/package_studio_app.sh
 	@PYTHONDONTWRITEBYTECODE=1 $(MAKE) --no-print-directory studio-app-check
 	@echo "✅ Studio macOS arm64 bundle: $(STUDIO_APP_BUNDLE)"
 
@@ -868,11 +869,18 @@ studio-app-clean:
 
 # DMG:hdiutil UDZO(zlib 压缩只读镜像),含 Applications 软链接(拖拽安装)。
 # 输出 dist/studio-app/AgentKitStudio-<version>-macos-arm64.dmg
-STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(VERSION)-macos-arm64.dmg
+STUDIO_APP_DMG ?= $(STUDIO_APP_DIR)/AgentKitStudio-$(STUDIO_APP_VERSION)-macos-arm64.dmg
 studio-app-dmg: studio-app-package
+	@$(MAKE) --no-print-directory studio-app-dmg-existing
+
+# Package the DMG from the already-built bundle. Release CI calls this after
+# signing and notarizing; keeping it separate prevents the DMG target from
+# rebuilding the app and silently discarding its notarization ticket.
+studio-app-dmg-existing:
 	@test -d "$(STUDIO_APP_BUNDLE)" || (echo "ERROR: Studio bundle missing; run make studio-app-package first" >&2; exit 1)
 	@rm -f "$(STUDIO_APP_DMG)"
-	@staging="$$(mktemp -d)"; \
+	@set -eu; staging="$$(mktemp -d)"; \
+	  trap 'rm -rf "$$staging"' EXIT; \
 	  ditto "$(STUDIO_APP_BUNDLE)" "$$staging/AgentKitStudio.app"; \
 	  ln -s /Applications "$$staging/Applications"; \
 	  hdiutil create -volname "AgentKit Studio" \
@@ -886,7 +894,7 @@ studio-app-dmg: studio-app-package
 # Windows). Produces an UNSIGNED AgentKitStudio-Setup-x64.exe; SignPath signs
 # it in the release workflow. makensis must be on PATH (NSIS via chocolatey).
 studio-app-package-windows: build-wheel
-	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION:=$(VERSION))" \
+	@STUDIO_APP_DIR="$(STUDIO_APP_DIR)" STUDIO_APP_VERSION="$(STUDIO_APP_VERSION)" \
 	  STUDIO_APP_PYTHON_VERSION="$(STUDIO_APP_PYTHON_VERSION)" \
 	  ELECTRON_VERSION="$(ELECTRON_VERSION)" \
 	  STUDIO_APP_NODE_VERSION="$(STUDIO_APP_NODE_VERSION)" \

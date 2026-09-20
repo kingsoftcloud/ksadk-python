@@ -9,6 +9,11 @@ on:
       tag:
         description: Release tag to attach assets to (e.g. v0.8.4). Release must already exist.
         required: false
+      platform:
+        description: Platform to validate or release
+        type: choice
+        default: all
+        options: [all, macos, windows]
 
 permissions:
   contents: write  # upload release assets
@@ -22,6 +27,7 @@ jobs:
   # macOS arm64: self-contained .app, signed with Developer ID + notarized.
   # ────────────────────────────────────────────────────────────────────
   build-macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'windows' }}
     runs-on: macos-14
     environment: studio-signing
     timeout-minutes: 45
@@ -100,6 +106,12 @@ jobs:
         run: |
           echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
 
+      # PR #90's Studio UI consumes the companion Web source candidate. The
+      # published 0.3.11 package predates those exports, so release builds
+      # must use the reviewed source tarball until the Web PR is published.
+      - name: Prepare shared Web source candidate
+        uses: ./.github/actions/prepare-web-candidate
+
       # package_studio_app.sh copies the DSH toolchain from
       # ~/.agentengine/plugin-toolchains/dsh/<ver>. CI runners are clean, so
       # install it first via the ksadk CLI (pnpm install of @deepseek-ai/dsh).
@@ -117,6 +129,7 @@ jobs:
         run: make studio-app-package
         env:
           KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
           STUDIO_APP_NOTARIZE: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' && '1' || '0' }}
@@ -125,9 +138,33 @@ jobs:
           TEAM_ID: ${{ secrets.STUDIO_APPLE_TEAM_ID }}
 
       - name: Build DMG (with Applications shortcut)
-        run: make studio-app-dmg
+        # Use the already notarized bundle. studio-app-dmg has a package
+        # dependency for local convenience; invoking it here would rebuild
+        # the app without notarization credentials and discard its ticket.
+        run: make studio-app-dmg-existing
         env:
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
+
+      - name: Verify notarized app before upload
+        run: |
+          set -euo pipefail
+          app="dist/studio-app/AgentKitStudio.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+
+      - name: Verify the app inside the final DMG
+        run: |
+          set -euo pipefail
+          mountpoint="$(mktemp -d)"
+          hdiutil attach "dist/studio-app/AgentKitStudio-${STUDIO_APP_VERSION}-macos-arm64.dmg" -readonly -nobrowse -mountpoint "$mountpoint"
+          trap 'hdiutil detach "$mountpoint"; rmdir "$mountpoint"' EXIT
+          app="$mountpoint/AgentKitStudio.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          actual=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
+          test "$actual" = "$STUDIO_APP_VERSION"
 
       - name: Zip the .app bundle
         run: |
@@ -139,7 +176,7 @@ jobs:
         # version = release tag, files[].url = bare zip name, sha512 = base64.
         run: |
           python3 scripts/write_studio_update_manifest.py \
-            --version "${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}" \
+            --version "${{ env.STUDIO_APP_VERSION }}" \
             --artifact dist/studio-app/AgentKitStudio-macos-arm64.zip \
             --release-date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --channel mac \
@@ -163,6 +200,7 @@ jobs:
   # Windows x64: NSIS installer, signed via SignPath (HSM-held key).
   # ────────────────────────────────────────────────────────────────────
   build-windows:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'macos' }}
     runs-on: windows-latest
     environment: studio-signing
     timeout-minutes: 45
@@ -190,6 +228,9 @@ jobs:
         shell: bash
         run: python -m pip install --quiet pillow
 
+      - name: Prepare shared Web source candidate
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build wheel + sync static assets
         shell: bash
         run: |
@@ -198,6 +239,7 @@ jobs:
           make build-wheel
         env:
           KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
 
       - name: Prepare DSH toolchain (win32-x64 prebuilds)
         shell: bash
@@ -227,6 +269,7 @@ jobs:
         run: make studio-app-package-windows
         env:
           KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_TARBALL: ${{ env.KSADK_WEB_TARBALL }}
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 
