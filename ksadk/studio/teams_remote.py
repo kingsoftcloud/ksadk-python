@@ -13,6 +13,7 @@ import socket
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import anyio
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -22,6 +23,22 @@ from ksadk.plugins.teams.transport import TeamsHTTPClient
 from ksadk.studio.teams_catalog import StudioTeamsCatalog
 from ksadk.studio.teams_node import TeamsExecutionNode
 from ksadk.studio.workspace_plugins import WorkspacePlugin
+
+_MAX_PROXY_REQUEST_BYTES = 256 * 1024
+_MAX_PROXY_RESPONSE_BYTES = 2 * 1024 * 1024
+_PROXY_FAILURES = {
+    "request_too_large": (413, "请求内容超过大小限制"),
+    "invalid_request": (400, "请求编码无效"),
+    "teams_redirect_forbidden": (502, "团队服务返回了意外重定向"),
+    "teams_response_too_large": (502, "团队响应超过大小限制"),
+}
+
+
+async def _close_proxy_response(response):
+    # Starlette cancels the response task group when the browser disconnects.
+    # Let the HTTP stream release its connection even inside that cancel scope.
+    with anyio.CancelScope(shield=True):
+        await response.aclose()
 
 
 class RemoteStudioTeamsInstallation:
@@ -67,21 +84,20 @@ class RemoteStudioTeamsInstallation:
 
     def _client(self):
         if self.client is None:
-            environment = self.studio.configuration.environment()
-            token = environment.get("KSADK_TEAMS_ACCESS_TOKEN") or None
-            gateway_client = getattr(
-                getattr(getattr(self.studio, "cloud", None), "gateway", None), "client", None
-            )
 
             async def signed(method, url, body):
+                # The HTTP client survives Studio configuration updates. Resolve
+                # credentials per request instead of retaining the first owner.
+                token = self.studio.configuration.environment().get("KSADK_TEAMS_ACCESS_TOKEN")
                 if token:
-                    return {}
+                    return {"Authorization": "Bearer " + token}
+                gateway_client = getattr(
+                    getattr(getattr(self.studio, "cloud", None), "gateway", None), "client", None
+                )
                 if gateway_client is None:
-                    if not token:
-                        raise TeamsError(
-                            "teams_credentials_required", "请配置团队服务连接凭据", status=401
-                        )
-                    return {}
+                    raise TeamsError(
+                        "teams_credentials_required", "请配置团队服务连接凭据", status=401
+                    )
 
                 def create():
                     headers = gateway_client._build_headers()
@@ -92,7 +108,7 @@ class RemoteStudioTeamsInstallation:
 
                 return await asyncio.to_thread(create)
 
-            self.client = TeamsHTTPClient(self.base_url, access_token=token, headers=signed)
+            self.client = TeamsHTTPClient(self.base_url, headers=signed)
         return self.client
 
     async def enable(self):
@@ -192,15 +208,25 @@ class RemoteStudioTeamsInstallation:
                 return JSONResponse(
                     {"error": {"code": "teams_path_forbidden", "message": "团队接口路径无效"}},
                     status_code=400,
+                    headers={"Cache-Control": "no-store"},
                 )
             path = "/groups" + ("/" + rest if rest else "")
             if request.url.query:
                 path += "?" + request.url.query
             client = self._client()
-            body = await request.body()
-            text = body.decode("utf-8") if body else ""
             upstream = None
             try:
+                parts, size = [], 0
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > _MAX_PROXY_REQUEST_BYTES:
+                        raise TeamsError("request_too_large", "请求内容超过大小限制", status=413)
+                    parts.append(chunk)
+                body = b"".join(parts)
+                try:
+                    text = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise TeamsError("invalid_request", "请求编码无效", status=400) from None
                 headers = await client.request_headers(request.method, path, text)
                 upstream = await client.http.send(
                     client.http.build_request(
@@ -208,44 +234,71 @@ class RemoteStudioTeamsInstallation:
                     ),
                     stream=True,
                 )
+                if upstream.is_redirect:
+                    raise TeamsError(
+                        "teams_redirect_forbidden", "团队服务返回了意外重定向", status=502
+                    )
                 media = upstream.headers.get("content-type", "application/json")
-                if "text/event-stream" in media:
+                output_headers = {
+                    key: value
+                    for key, value in upstream.headers.items()
+                    if key.lower() in {"content-disposition", "etag"}
+                }
+                output_headers["Cache-Control"] = "no-store"
+                if "text/event-stream" in media or (
+                    "content-disposition" in upstream.headers and upstream.is_success
+                ):
 
                     async def stream():
                         try:
                             async for chunk in upstream.aiter_bytes():
                                 yield chunk
                         finally:
-                            await upstream.aclose()
+                            await _close_proxy_response(upstream)
 
                     return StreamingResponse(
-                        stream(), status_code=upstream.status_code, media_type="text/event-stream"
+                        stream(),
+                        status_code=upstream.status_code,
+                        media_type=media,
+                        headers={**output_headers, "X-Accel-Buffering": "no"},
                     )
-                content = await upstream.aread()
-                await upstream.aclose()
+                chunks, size = [], 0
+                async for chunk in upstream.aiter_bytes():
+                    size += len(chunk)
+                    if size > _MAX_PROXY_RESPONSE_BYTES:
+                        raise TeamsError(
+                            "teams_response_too_large", "团队响应超过大小限制", status=502
+                        )
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+                await _close_proxy_response(upstream)
                 return Response(
                     content,
                     status_code=upstream.status_code,
                     media_type=media,
-                    headers={
-                        key: value
-                        for key, value in upstream.headers.items()
-                        if key.lower() in {"content-disposition", "etag"}
-                    },
+                    headers=output_headers,
                 )
+            except asyncio.CancelledError:
+                if upstream is not None:
+                    await _close_proxy_response(upstream)
+                raise
             except Exception as error:
-                if upstream:
-                    await upstream.aclose()
+                if upstream is not None:
+                    await _close_proxy_response(upstream)
+                failure = _PROXY_FAILURES.get(error.code) if isinstance(error, TeamsError) else None
                 return JSONResponse(
                     {
                         "error": {
                             "code": error.code
                             if isinstance(error, TeamsError)
                             else "teams_transport_unavailable",
-                            "message": "团队服务连接中断，请重试核对原操作",
+                            "message": failure[1]
+                            if failure
+                            else "团队服务连接中断，请重试核对原操作",
                         }
                     },
-                    status_code=503,
+                    status_code=failure[0] if failure else 503,
+                    headers={"Cache-Control": "no-store"},
                 )
 
         return router
