@@ -235,7 +235,6 @@ PUBLIC_TEST_FILES = {
     "tests/runners/test_langgraph_session_identity.py",
     "tests/architecture/test_python_module_size.py",
     "tests/context_engine/test_capabilities.py",
-    "tests/kernel/preprod/test_kernel_gate.py",
     "tests/studio/test_e2e_server_readiness.py",
     "tests/test_resilient_canonical_authority.py",
 }
