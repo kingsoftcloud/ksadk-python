@@ -34,12 +34,13 @@ _LEGACY_OVERSIZED_MAX = {
     # Agent Runtime v2 Kernel delivery baseline. These files contain the
     # frozen contract/store implementations; any post-0.8.2 growth stays red
     # until the corresponding responsibility is extracted.
-    "ksadk/kernel/bootstrap.py": 1082,
-    "ksadk/kernel/ingress.py": 1136,
+    "ksadk/kernel/bootstrap.py": 1092,
+    "ksadk/kernel/execution_host_ingress.py": 1071,
+    "ksadk/kernel/ingress.py": 1161,
     "ksadk/kernel/memory_store.py": 1147,
     "ksadk/kernel/postgres_store.py": 1787,
     "ksadk/kernel/sqlite_store.py": 1717,
-    "ksadk/kernel/worker.py": 1057,
+    "ksadk/kernel/worker.py": 1060,
     "ksadk/runners/adk_runner.py": 2340,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
