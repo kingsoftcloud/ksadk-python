@@ -208,6 +208,9 @@ jobs:
         shell: bash
         run: python -m pip install --quiet pillow
 
+      - name: Prepare shared Web source candidate
+        uses: ./.github/actions/prepare-web-candidate
+
       - name: Build wheel + sync static assets
         shell: bash
         run: |
@@ -236,9 +239,6 @@ jobs:
         shell: bash
         run: |
           echo "STUDIO_APP_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = \"\(.*\)\"/\1/')" >> "$GITHUB_ENV"
-
-      - name: Prepare shared Web source candidate
-        uses: ./.github/actions/prepare-web-candidate
 
       - name: Package Windows zip
         # studio-app-package-windows depends on build-wheel → build-frontend
