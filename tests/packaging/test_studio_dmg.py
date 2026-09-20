@@ -46,3 +46,22 @@ def test_packaging_uses_requested_version_once():
     )
     assert 'STUDIO_APP_VERSION="0.8.5"' in result.stdout
     assert 'STUDIO_APP_VERSION="0.8.50.8.5"' not in result.stdout
+
+
+def test_macos_runtime_relocates_python_framework_and_checks_startup():
+    script = (ROOT / "scripts" / "package_studio_app.sh").read_text()
+    makefile = (ROOT / "Makefile").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "release-studio-app.yml").read_text()
+    assert "install_name_tool -change" in script
+    assert '"@loader_path/../lib/$bundled_python_name"' in script
+    assert '"@loader_path/../../../../$bundled_python_name"' in script
+    assert 'lib/Resources/Python.app' in script
+    assert 'codesign --force --sign - "$python_library"' in script
+    assert 'for stdlib_tree in test idlelib turtledemo tkinter ensurepip' in script
+    assert "install_name_tool -id" in script
+    assert "otool -L" in makefile
+    assert '$(STUDIO_APP_RUNTIME)"/bin/python*' in makefile
+    macos_job = workflow.split("# Windows x64:", 1)[0]
+    assert '"$app/Contents/Resources/runtime/bin/python3"' in macos_job
+    assert "AgentKitStudio-macos-arm64.zip" not in macos_job
+    assert "Save verified DMG for manual validation" in macos_job

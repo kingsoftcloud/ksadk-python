@@ -152,6 +152,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
+          "$app/Contents/Resources/runtime/bin/python3" -I -B -c 'import sys; assert sys.version_info[:2] == (3, 13); print("embedded-python", sys.executable)'
 
       - name: Verify the app inside the final DMG
         run: |
@@ -165,22 +166,17 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
           actual=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
           test "$actual" = "$STUDIO_APP_VERSION"
+          "$app/Contents/Resources/runtime/bin/python3" -I -B -c 'import sys; assert sys.version_info[:2] == (3, 13); print("mounted-embedded-python", sys.executable)'
 
-      - name: Zip the .app bundle
-        run: |
-          cd dist/studio-app
-          ditto -c -k --keepParent AgentKitStudio.app AgentKitStudio-macos-arm64.zip
-
-      - name: Generate latest-mac.yml
-        # electron-updater reads this from the release to discover updates.
-        # version = release tag, files[].url = bare zip name, sha512 = base64.
-        run: |
-          python3 scripts/write_studio_update_manifest.py \
-            --version "${{ env.STUDIO_APP_VERSION }}" \
-            --artifact dist/studio-app/AgentKitStudio-macos-arm64.zip \
-            --release-date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --channel mac \
-            --out dist/studio-app/latest-mac.yml
+      - name: Save verified DMG for manual validation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentKitStudio-macos-arm64-validated
+          path: dist/studio-app/AgentKitStudio-*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Upload to GitHub Release
         # Only upload when triggered by a real release publish. workflow_dispatch
@@ -192,8 +188,6 @@ jobs:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           files: |
             dist/studio-app/AgentKitStudio-*.dmg
-            dist/studio-app/AgentKitStudio-macos-arm64.zip
-            dist/studio-app/latest-mac.yml
           fail_on_unmatched_files: true
 
   # ────────────────────────────────────────────────────────────────────
