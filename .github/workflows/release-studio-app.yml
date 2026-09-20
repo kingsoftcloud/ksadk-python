@@ -230,38 +230,157 @@ jobs:
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 
-      # Always expose the built zip as a workflow artifact so manual signing
-      # (Certum SimplySign on a Windows machine) can download it without
-      # creating a release.
+      # Always expose the built zip as a workflow artifact so the signing job
+      # (and manual fallback) can pick it up without creating a release.
       - name: Upload Windows zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AgentKitStudio-windows-x64
+          name: windows-bundle-unsigned
           path: dist/studio-app/AgentKitStudio-windows-x64.zip
           if-no-files-found: error
 
-      - name: Generate latest.yml
-        # electron-updater reads this from the release to discover Windows
-        # updates. version = release tag, files[].url = bare zip name,
-        # sha512 = base64.
-        shell: bash
+  # ────────────────────────────────────────────────────────────────────
+  # Sign the Windows bundle on Linux: Certum SimplySign cloud cert.
+  # The private key never leaves Certum's cloud; the SimplySign Linux client
+  # logs in headlessly (account + TOTP generated from the stored secret) and
+  # exposes the certificate via a PKCS#11 module for osslsigncode.
+  # ────────────────────────────────────────────────────────────────────
+  sign-windows:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    environment: studio-signing
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download unsigned bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-bundle-unsigned
+          path: work/
+
+      - name: Install signing tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osslsigncode xvfb unzip
+          osslsigncode --version
+
+      - name: Install SimplySign Linux client
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            "https://files.certum.cn/SimplySignDesktop-2.9.12-9.3.2.0-x86_64-prod-ubuntu.bin" \
+            -o /tmp/simplysign-ubuntu.bin
+          chmod +x /tmp/simplysign-ubuntu.bin
+          # The .bin is a makeself archive; extract instead of GUI-install.
+          /tmp/simplysign-ubuntu.bin --target /tmp/simplysign-extract --noexec
+          ls -la /tmp/simplysign-extract
+          # Install the deb/rpm payload if present, else run its installer.
+          cd /tmp/simplysign-extract
+          if ls *.deb >/dev/null 2>&1; then
+            sudo dpkg -i *.deb || sudo apt-get install -f -y
+          elif ls *.rpm >/dev/null 2>&1; then
+            sudo rpm -ivh --force *.rpm || true
+          else
+            sudo sh ./*.sh || sudo sh install.sh || true
+          fi
+          # Locate the client binary and PKCS#11 module for later steps.
+          echo "── client / pkcs11 discovery ──"
+          find /opt /usr/local /usr/lib -iname '*simplysign*' -o -iname '*SimplySign*' 2>/dev/null | head -20
+          CLIENT=$(find /opt /usr/local -name 'SimplySignDesktop' -type f 2>/dev/null | head -1)
+          PKCS11=$(find /opt /usr/local /usr/lib -name '*.so' 2>/dev/null | grep -i simplysign | head -1)
+          [ -n "$CLIENT" ] || { echo "ERROR: SimplySignDesktop binary not found"; exit 1; }
+          [ -n "$PKCS11" ] || { echo "ERROR: SimplySign PKCS#11 module not found"; exit 1; }
+          echo "SIMPLYSIGN_CLIENT=$CLIENT" >> "$GITHUB_ENV"
+          echo "SIMPLYSIGN_PKCS11=$PKCS11" >> "$GITHUB_ENV"
+
+      - name: Log in to SimplySign (headless, TOTP from secret)
+        env:
+          CERTUM_ACCOUNT: ${{ secrets.CERTUM_ACCOUNT }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+        run: |
+          set -euo pipefail
+          # Generate the current 6-digit TOTP (SHA256, 30s window) from the
+          # stored secret — the same algorithm the SimplySign mobile app uses.
+          TOTP=$(python3 - "$CERTUM_TOTP_SECRET" <<'PY'
+          import hmac, hashlib, struct, time, base64, sys
+          secret = sys.argv[1]
+          pad = (8 - len(secret) % 8) % 8
+          key = base64.b32decode(secret + "=" * pad)
+          counter = int(time.time()) // 30
+          h = hmac.new(key, struct.pack(">Q", counter), hashlib.sha256).digest()
+          offset = h[-1] & 0x0F
+          code = (struct.unpack(">I", h[offset:offset+4])[0] & 0x7FFFFFFF) % 10**6
+          print(f"{code:06d}")
+          PY
+          )
+          # Headless login: the client runs under a virtual display and stays
+          # alive as a daemon holding the cloud signing session.
+          xvfb-run -a "$SIMPLYSIGN_CLIENT" -n "$CERTUM_ACCOUNT" -p "$TOTP" &
+          sleep 15
+          # Confirm the client process survived login (a login failure exits it).
+          pgrep -f SimplySignDesktop >/dev/null || {
+            echo "ERROR: SimplySign client exited — login likely failed" >&2
+            exit 1
+          }
+          echo "SimplySign session established"
+
+      - name: Sign all PE files in the bundle
+        env:
+          CERTUM_THUMBPRINT: ${{ secrets.CERTUM_THUMBPRINT }}
+        run: |
+          set -euo pipefail
+          mkdir -p bundle work/extract
+          unzip -q work/AgentKitStudio-windows-x64.zip -d work/extract
+          BUNDLE_DIR=$(find work/extract -maxdepth 2 -name 'AgentKitStudio' -type d | head -1)
+          [ -n "$BUNDLE_DIR" ] || { echo "ERROR: AgentKitStudio dir not found in zip"; exit 1; }
+          # Sign every PE file; osslsigncode picks the cert via the SimplySign
+          # PKCS#11 module. Timestamping goes to Sectigo per the Certum guide.
+          SIGNED=0
+          while IFS= read -r file; do
+            if osslsigncode sign \
+                -pkcs11provider "$SIMPLYSIGN_PKCS11" \
+                -h sha256 \
+                -t "http://timestamp.sectigo.com" \
+                -in "$file" -out "$file.signed" 2>/dev/null; then
+              mv "$file.signed" "$file"
+              SIGNED=$((SIGNED+1))
+            else
+              rm -f "$file.signed"
+              echo "skip (not signable or unsigned failure): $file"
+            fi
+          done < <(find "$BUNDLE_DIR" -type f \( -name '*.exe' -o -name '*.dll' -o -name '*.node' -o -name '*.pyd' \) | grep -v app.asar)
+          echo "signed $SIGNED files"
+          [ "$SIGNED" -gt 0 ] || { echo "ERROR: no files were signed"; exit 1; }
+          # Re-zip preserving the bundle root folder.
+          cd "$(dirname "$BUNDLE_DIR")"
+          zip -qr "$GITHUB_WORKSPACE/work/AgentKitStudio-windows-x64.zip" "$(basename "$BUNDLE_DIR")"
+
+      - name: Generate latest.yml (signed zip)
         run: |
           python3 scripts/write_studio_update_manifest.py \
-            --version "${{ env.STUDIO_APP_VERSION }}" \
-            --artifact dist/studio-app/AgentKitStudio-windows-x64.zip \
+            --version "${STUDIO_APP_VERSION:-0.8.5}" \
+            --artifact work/AgentKitStudio-windows-x64.zip \
             --release-date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --channel win \
-            --out dist/studio-app/latest.yml
+            --out work/latest.yml
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentKitStudio-windows-x64-signed
+          path: |
+            work/AgentKitStudio-windows-x64.zip
+            work/latest.yml
+          if-no-files-found: error
 
       - name: Upload to GitHub Release
-        # Only upload when triggered by a real release publish. workflow_dispatch
-        # (manual testing) would otherwise create spurious releases tagged with
-        # the branch name.
         if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           files: |
-            dist/studio-app/AgentKitStudio-windows-x64.zip
-            dist/studio-app/latest.yml
+            work/AgentKitStudio-windows-x64.zip
+            work/latest.yml
           fail_on_unmatched_files: true
