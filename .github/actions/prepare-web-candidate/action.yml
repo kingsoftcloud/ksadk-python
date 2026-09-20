@@ -6,8 +6,8 @@ runs:
     - name: Check out the companion source
       uses: actions/checkout@v7
       with:
-        repository: aibuilder-leo/ksadk-web
-        ref: 607c5d49caccaa54cb0ad8822bbca46d947e7be4
+        repository: kingsoftcloud/ksadk-web
+        ref: e6ad58bf5d04c3b3797a405521c5368fc033a1dd
         path: .cache/ksadk-web-candidate
         persist-credentials: false
     - name: Pack the companion source
@@ -21,8 +21,4 @@ runs:
         tarball="$RUNNER_TEMP/ksadk-web-candidate/kingsoftcloud-ksadk-web-$version.tgz"
         test -f "$tarball"
         echo "KSADK_WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
-        echo 'Shared Web source: aibuilder-leo/ksadk-web@607c5d49caccaa54cb0ad8822bbca46d947e7be4 (0.3.11). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
-      env:
-        # The candidate's build:ksadk script uses POSIX VAR=value syntax.
-        # npm invokes scripts through cmd.exe on Windows unless this is set.
-        npm_config_script_shell: ${{ runner.os == 'Windows' && 'C:\\Program Files\\Git\\bin\\bash.exe' || '' }}
+        echo 'Shared Web source: kingsoftcloud/ksadk-web@e6ad58bf5d04c3b3797a405521c5368fc033a1dd (0.3.11). This is source verification, not npm release evidence.' >> "$GITHUB_STEP_SUMMARY"
