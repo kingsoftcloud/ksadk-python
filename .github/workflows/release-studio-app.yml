@@ -230,6 +230,16 @@ jobs:
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 
+      # Always expose the built zip as a workflow artifact so manual signing
+      # (Certum SimplySign on a Windows machine) can download it without
+      # creating a release.
+      - name: Upload Windows zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentKitStudio-windows-x64
+          path: dist/studio-app/AgentKitStudio-windows-x64.zip
+          if-no-files-found: error
+
       - name: Generate latest.yml
         # electron-updater reads this from the release to discover Windows
         # updates. version = release tag, files[].url = bare zip name,
