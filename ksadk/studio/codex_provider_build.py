@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from pydantic import Field
 
@@ -218,6 +220,10 @@ class CodexProviderBuildManager:
             and record.provider_bundle.bundle_digest == bundle.bundle_digest
             and record.provider_bundle.registration_digest == registration_digest
         ]
+        if not matches:
+            repaired = self._repair_registration(bundle, marker, registration_digest)
+            if repaired is not None:
+                matches = [repaired]
         if len(matches) != 1:
             raise StudioError(
                 "CODEX_PROVIDER_BUILD_MISMATCH",
@@ -229,3 +235,72 @@ class CodexProviderBuildManager:
         # Retain native bootstrap, credentials, exact build HOME and workspace
         # from the existing resolver. No cloud schema or second launch policy.
         return self.studio.codex_runs.resolve(record.id).launch_context
+
+    def _repair_registration(self, bundle, marker: str, registration_digest: str):
+        """Re-register a rebuilt Provider Bundle after a code-only upgrade.
+
+        A Studio upgrade may change the plugin composition, so
+        ``ensure_current_build`` rebuilds the Agent Bundle with a fresh digest.
+        The rebuilt bundle still carries the AgentProvider marker of the same
+        Agent manifest, but no Codex Build record references it, so every
+        conversation would fail until the Agent was manually rebuilt.
+
+        Repair is allowed only when the consent anchor is unchanged: a prior
+        record exists for the same Agent manifest
+        (``manifest_sha256 == marker``) under the same provider registration
+        digest, and its build fingerprint matches the bundle's embedded
+        fingerprint (same model profiles / plugin lock). The repair then
+        registers the rebuilt bundle under that unchanged consent. If the
+        provider registration itself changed, the caller keeps failing into
+        the explicit re-authorization flow.
+        """
+        records = self.studio.codex_builds.list()
+        prior = [
+            record
+            for record in records
+            if record.provider_bundle is not None
+            and record.manifest_sha256 == marker
+            and record.provider_bundle.registration_digest == registration_digest
+        ]
+        if not prior:
+            return None
+        fingerprint = bundle.composition.profile.agent_provider.config.get(
+            "studioBuildFingerprint"
+        )
+        build_id = self._build_id_for_bundle(bundle)
+        if build_id is None:
+            return None
+        for old in prior:
+            current_fingerprint = _digest(
+                {
+                    "manifest": old.manifest_sha256,
+                    "profiles": old.model_profiles or {},
+                    "resourceIds": sorted(old.model_profile_ids or []),
+                    "pluginLockDigest": old.plugin_lock_digest,
+                }
+            )
+            if fingerprint is not None and current_fingerprint != fingerprint:
+                continue
+            reference = CodexProviderBuildReference(
+                provider_ref=CODEX_PROVIDER_REF,
+                registration_digest=registration_digest,
+                bundle_build_id=build_id,
+                bundle_digest=bundle.bundle_digest,
+            )
+            repaired = old.model_copy(
+                update={
+                    "id": f"build_{uuid4().hex}",
+                    "provider_bundle": reference,
+                    "created_at": datetime.now(tz=timezone.utc),
+                }
+            )
+            return self.studio.codex_builds.save(repaired)
+        return None
+
+    def _build_id_for_bundle(self, bundle) -> str | None:
+        """Resolve the Build id that produced this bundle root."""
+
+        for build in self.studio.builds.list():
+            if build.bundle_digest == bundle.bundle_digest:
+                return build.id
+        return None
