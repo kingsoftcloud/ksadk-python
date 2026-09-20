@@ -19,18 +19,17 @@ from .contracts import (
     GroupCreateInput,
     MemberInput,
     MessageInput,
-    TaskCreateInput,
     plain_text,
 )
-from .errors import TeamsError
-from .store import TeamsStore, Transaction, digest, new_id, now
-
-
 from .domain_values import member_key, public, run_member_key
+from .errors import TeamsError
+from .execution_projection import ExecutionCompletionProjection
+from .leader_decisions import LeaderDecisions
+from .store import TeamsStore, Transaction, digest, new_id, now
 from .task_decisions import TaskDecisions
 
 
-class TeamsDomain(TaskDecisions):
+class TeamsDomain(TaskDecisions, ExecutionCompletionProjection, LeaderDecisions):
     def __init__(self, store: TeamsStore, *, authority_ref: str) -> None:
         self.store = store
         self.authority_ref = authority_ref
@@ -156,15 +155,14 @@ class TeamsDomain(TaskDecisions):
             total = previous + run.get("_activeRemainderSeconds", 0) + max(0, elapsed)
             run["activeDurationSeconds"] = int(total)
             run["_activeRemainderSeconds"] = total - int(total)
-        executing = (
-            run["status"] not in TERMINAL | {"cancel_requested", "awaiting_acceptance"}
-            and not run["dispatchSuspended"]
-            and any(
-                d.get("_runStatus") == "running"
-                and not d.get("_terminalState")
-                and not d.get("_fenced")
-                for d in tx.list("delivery", run["groupId"], team_run_id=run["teamRunId"])
-            )
+        executing = run["status"] not in TERMINAL | {
+            "cancel_requested",
+            "awaiting_acceptance",
+        } and any(
+            d.get("_runStatus") == "running"
+            and not d.get("_terminalState")
+            and not d.get("_fenced")
+            for d in tx.list("delivery", run["groupId"], team_run_id=run["teamRunId"])
         )
         run["_activeSince"] = timestamp if executing else None
         if run.get("activeDurationSeconds", 0) != previous:
@@ -450,6 +448,7 @@ class TeamsDomain(TaskDecisions):
             "updatedAt": timestamp,
             "_roster": roster,
             "_leaderStandbyBindingRef": group.get("_leaderStandbyBindingRef"),
+            "_leaderStandbyReleaseRef": group.get("_leaderStandbyReleaseRef"),
             "_policy": deepcopy(group["_policy"]),
             "activeDurationSeconds": 0,
             "workspace": deepcopy(message.get("workspace")),
@@ -632,8 +631,23 @@ class TeamsDomain(TaskDecisions):
             for delivery in tx.list("delivery", run["groupId"], team_run_id=run["teamRunId"])
         )
         reason = None
+        takeover = (
+            tx.get("leader_takeover", run["_leaderTakeoverId"])
+            if member["role"] == "leader" and run.get("_leaderTakeoverId")
+            else None
+        )
         if run["status"] in TERMINAL or run["status"] == "cancel_requested":
             reason = "team_run_closed"
+        elif takeover and takeover["phase"] != "active" and not (
+            purpose == "leader_takeover"
+            and source == takeover["takeoverId"]
+            and member["sessionId"] == takeover["newSessionId"]
+        ):
+            # Preserve the public message for the confirmed checkpoint while
+            # preventing a new epoch from granting the old Leader a new run.
+            reason = "leader_takeover_pending"
+        elif member["binding"].get("memberClass") == "task_worker" and not task_id:
+            reason = "task_worker_requires_task"
         elif hop > run["budget"]["maxHops"]:
             reason = "hop_limit"
         elif run["budget"]["startsUsed"] >= run["budget"]["maxStarts"]:
@@ -680,6 +694,11 @@ class TeamsDomain(TaskDecisions):
             "_parts": message["parts"],
             "_taskId": task_id,
             "_attemptId": attempt_id,
+            "_candidateMode": (
+                "canonical_terminal"
+                if member["binding"].get("memberClass") == "task_worker"
+                else "team_tool"
+            ),
             "_nextRetryAt": 0,
             "_createdAt": now(),
         }
@@ -725,8 +744,8 @@ class TeamsDomain(TaskDecisions):
             if run["status"] == "cancel_requested" and action != "stop":
                 raise TeamsError("stop_in_progress", "已请求停止，不能恢复旧命令")
             run["dispatchEpoch"] += 1
-            # Resume is an asynchronous barrier operation too. Do not admit
-            # dispatch until all frozen member scopes are confirmed active.
+            # Only admission changes here. Running members retain execution and
+            # tool authority; resume waits for the independent admission barrier.
             run["dispatchSuspended"] = True
             if action == "stop":
                 run["status"] = "cancel_requested"
@@ -741,8 +760,8 @@ class TeamsDomain(TaskDecisions):
                         _dispatchEpoch=run["dispatchEpoch"], revision=delivery["revision"] + 1
                     )
                     self.publish(tx, "delivery", delivery["deliveryId"], delivery)
-            # Durable control outbox: the runtime must obtain EVERY member's
-            # Kernel barrier before acknowledging a completed stop/pause.
+            # Freeze exact historical scopes before a Leader changes sessions.
+            targets = self._control_targets(tx, run, include_terminal=action == "resume_dispatch")
             control_id = new_id("gc")
             tx.put(
                 "control",
@@ -755,6 +774,7 @@ class TeamsDomain(TaskDecisions):
                     "epoch": run["dispatchEpoch"],
                     "status": "pending",
                     "barriers": {},
+                    "targets": targets,
                 },
             )
             return public(run)
@@ -808,141 +828,174 @@ class TeamsDomain(TaskDecisions):
         }:
             raise TeamsError("invalid_run_state", "无法识别执行状态", status=422)
 
-        def project(tx: Transaction) -> dict[str, Any]:
-            delivery = tx.get("delivery", delivery_id)
-            run = tx.get("team_run", delivery["teamRunId"])
-            member = self.delivery_member(tx, delivery)
-            if delivery.get("runId") and delivery["runId"] != run_id:
-                raise TeamsError("run_identity_conflict", "投递与执行引用不一致")
-            if delivery.get("_terminalState"):
-                return {"status": delivery["_terminalState"]}
-            delivery.update(runId=run_id, status="accepted", revision=delivery["revision"] + 1)
-            delivery["_runStatus"] = status
-            terminal = status in {"succeeded", "failed", "cancelled", "interrupted"}
-            if terminal:
-                delivery["_terminalState"] = status
-            self.publish(tx, "delivery", delivery_id, delivery)
-            self.update_active_clock(tx, run)
-            tx.put("team_run", run["teamRunId"], run)
-            source = {
-                "authorityRef": self.authority_ref,
-                "groupId": run["groupId"],
-                "memberId": member["memberId"],
-                "bindingRef": member["bindingRef"],
-                "providerRef": member["binding"]["providerRef"],
-                "sessionId": member["sessionId"],
-                "runId": run_id,
-            }
-            member.update(
-                activeRunId=None if terminal else run_id,
-                executionStatus="idle"
-                if terminal
-                else "waiting"
-                if status in {"awaiting_approval", "waiting_for_node"}
-                else "running",
-                revision=member["revision"] + 1,
-            )
-            current_member = self.run_member(tx, run["teamRunId"], delivery["memberId"])
-            if current_member["sessionId"] == member["sessionId"]:
-                member["revision"] = current_member["revision"] + 1
-                self.publish_run_member(tx, member)
-            if status == "running" and run["status"] == "planning":
-                run.update(status="running", revision=run["revision"] + 1, updatedAt=now())
-                self.publish(tx, "team_run", run["teamRunId"], run)
-            if delivery.get("_taskId"):
-                task = tx.get("task", delivery["_taskId"])
-                attempt = task["attempts"][-1]
-                if attempt["attemptId"] == delivery.get("_attemptId"):
-                    attempt["source"] = source
-                    if run_id not in attempt["_runIds"]:
-                        attempt["_runIds"].append(run_id)
-                    attempt.setdefault("startedAt", now())
-                    if terminal:
-                        attempt["endedAt"] = now()
-                        candidate = attempt.get("_candidate")
-                        if (
-                            status == "succeeded"
-                            and candidate
-                            and candidate["runId"] == run_id
-                            and not delivery.get("_fenced")
-                        ):
-                            attempt.update(
-                                result=candidate["result"], artifacts=candidate["artifacts"]
-                            )
-                            task["status"] = (
-                                "succeeded"
-                                if task["_acceptancePolicy"] == "result"
-                                else "awaiting_acceptance"
-                            )
-                        else:
-                            task["status"] = "cancelled" if status == "cancelled" else "failed"
-                            task["reason"] = (
-                                "执行结束但未提交可核验结果" if status == "succeeded" else status
-                            )
-                        attempt["status"] = task["status"]
-                    else:
-                        task["status"] = attempt["status"] = "running"
-                        if status == "awaiting_approval":
-                            task["reason"] = "等待人工审批"
-                        elif status == "waiting_for_node":
-                            task["reason"] = "等待设备上线"
-                        elif task.get("reason") in {"等待人工审批", "等待设备上线"}:
-                            task.pop("reason", None)
-                    task["revision"] += 1
-                    self.publish(tx, "task", task["taskId"], task)
-            if terminal:
-                run = tx.get("team_run", run["teamRunId"])
-                run["budget"]["tokensUsed"] += max(0, tokens)
-                if (
-                    member["memberId"] == run["leaderMemberId"]
-                    and not delivery.get("_fenced")
-                    and status in {"failed", "cancelled", "interrupted"}
-                    and run["status"] not in TERMINAL | {"cancel_requested"}
-                ):
-                    run.update(
-                        status="needs_attention", dispatchSuspended=True, reason=f"leader_{status}"
-                    )
-                if (
-                    run["budget"]["tokensUsed"] >= run["budget"]["maxTokens"]
-                    and run["status"] not in TERMINAL
-                    and run["status"] != "cancel_requested"
-                ):
-                    run.update(
-                        status="needs_attention",
-                        dispatchSuspended=True,
-                        reason="token_budget_exhausted",
-                    )
-                run.update(revision=run["revision"] + 1, updatedAt=now())
-                self.publish(tx, "team_run", run["teamRunId"], run)
-                if output.strip():
-                    message = {
-                        "messageId": "result_" + digest([delivery_id, run_id])[7:],
-                        "groupId": run["groupId"],
-                        "teamRunId": run["teamRunId"],
-                        "revision": 1,
-                        "createdAt": now(),
-                        "senderPrincipal": f"member:{member['memberId']}",
-                        "senderName": member["name"],
-                        "groupRole": member["role"],
-                        "memberId": member["memberId"],
-                        "parts": [{"kind": "text", "text": output}],
-                        "mentions": [],
-                        "intent": "result",
-                        "visibility": "public",
-                        "sourceRefs": [source],
-                    }
-                    self.publish(tx, "message", message["messageId"], message, created=True)
-                self._advance(tx, run)
-                if not delivery.get("_fenced"):
-                    self.finalize_if_ready(tx, run["teamRunId"])
-            return {"status": status}
-
         return self.store.mutate(
             f"projection:{delivery_id}",
             event_id,
             {"runId": run_id, "status": status, "output": output, "tokens": tokens},
-            project,
+            lambda tx: self._project_run(
+                tx,
+                delivery_id=delivery_id,
+                run_id=run_id,
+                status=status,
+                output=output,
+                tokens=tokens,
+            ),
         )
+
+    def _project_run(
+        self,
+        tx: Transaction,
+        *,
+        delivery_id: str,
+        run_id: str,
+        status: str,
+        output: str = "",
+        tokens: int = 0,
+        completion_projection: bool = False,
+    ) -> dict[str, Any]:
+        delivery = tx.get("delivery", delivery_id)
+        run = tx.get("team_run", delivery["teamRunId"])
+        member = self.delivery_member(tx, delivery)
+        if delivery.get("runId") and delivery["runId"] != run_id:
+            raise TeamsError("run_identity_conflict", "投递与执行引用不一致")
+        if delivery.get("_terminalState"):
+            return {"status": delivery["_terminalState"]}
+        if (
+            delivery.get("_candidateMode") == "canonical_terminal"
+            and status
+            in {
+                "succeeded",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }
+            and not completion_projection
+        ):
+            raise TeamsError(
+                "completion_projection_required",
+                "此成员需要完整的终态结果投影",
+                status=409,
+            )
+        if delivery.get("resultState") == "pending" and not completion_projection:
+            return {"status": "result_pending"}
+        delivery.update(runId=run_id, status="accepted", revision=delivery["revision"] + 1)
+        delivery["_runStatus"] = status
+        terminal = status in {"succeeded", "failed", "cancelled", "interrupted"}
+        if terminal:
+            delivery["_terminalState"] = status
+        self.publish(tx, "delivery", delivery_id, delivery)
+        self.update_active_clock(tx, run)
+        tx.put("team_run", run["teamRunId"], run)
+        source = {
+            "authorityRef": self.authority_ref,
+            "groupId": run["groupId"],
+            "memberId": member["memberId"],
+            "bindingRef": member["bindingRef"],
+            "providerRef": member["binding"]["providerRef"],
+            "sessionId": member["sessionId"],
+            "runId": run_id,
+        }
+        member.update(
+            activeRunId=None if terminal else run_id,
+            executionStatus="idle"
+            if terminal
+            else "waiting"
+            if status in {"awaiting_approval", "waiting_for_node"}
+            else "running",
+            revision=member["revision"] + 1,
+        )
+        current_member = self.run_member(tx, run["teamRunId"], delivery["memberId"])
+        if current_member["sessionId"] == member["sessionId"]:
+            member["revision"] = current_member["revision"] + 1
+            self.publish_run_member(tx, member)
+        if status == "running" and run["status"] == "planning":
+            run.update(status="running", revision=run["revision"] + 1, updatedAt=now())
+            self.publish(tx, "team_run", run["teamRunId"], run)
+        if delivery.get("_taskId"):
+            task = tx.get("task", delivery["_taskId"])
+            attempt = task["attempts"][-1]
+            if attempt["attemptId"] == delivery.get("_attemptId"):
+                attempt["source"] = source
+                if run_id not in attempt["_runIds"]:
+                    attempt["_runIds"].append(run_id)
+                attempt.setdefault("startedAt", now())
+                if terminal:
+                    attempt["endedAt"] = now()
+                    candidate = attempt.get("_candidate")
+                    if (
+                        status == "succeeded"
+                        and candidate
+                        and candidate["runId"] == run_id
+                        and not delivery.get("_fenced")
+                    ):
+                        attempt.update(result=candidate["result"], artifacts=candidate["artifacts"])
+                        task["status"] = (
+                            "succeeded"
+                            if task["_acceptancePolicy"] == "result"
+                            else "awaiting_acceptance"
+                        )
+                    else:
+                        task["status"] = "cancelled" if status == "cancelled" else "failed"
+                        task["reason"] = (
+                            "执行结束但未提交可核验结果" if status == "succeeded" else status
+                        )
+                    attempt["status"] = task["status"]
+                else:
+                    task["status"] = attempt["status"] = "running"
+                    if status == "awaiting_approval":
+                        task["reason"] = "等待人工审批"
+                    elif status == "waiting_for_node":
+                        task["reason"] = "等待设备上线"
+                    elif task.get("reason") in {"等待人工审批", "等待设备上线"}:
+                        task.pop("reason", None)
+                task["revision"] += 1
+                self.publish(tx, "task", task["taskId"], task)
+        if terminal:
+            run = tx.get("team_run", run["teamRunId"])
+            run["budget"]["tokensUsed"] += max(0, tokens)
+            if (
+                member["memberId"] == run["leaderMemberId"]
+                and not delivery.get("_fenced")
+                and status in {"failed", "cancelled", "interrupted"}
+                and run["status"] not in TERMINAL | {"cancel_requested"}
+            ):
+                run.update(
+                    status="needs_attention", dispatchSuspended=True, reason=f"leader_{status}"
+                )
+            if (
+                run["budget"]["tokensUsed"] >= run["budget"]["maxTokens"]
+                and run["status"] not in TERMINAL
+                and run["status"] != "cancel_requested"
+            ):
+                run.update(
+                    status="needs_attention",
+                    dispatchSuspended=True,
+                    reason="token_budget_exhausted",
+                )
+            run.update(revision=run["revision"] + 1, updatedAt=now())
+            self.publish(tx, "team_run", run["teamRunId"], run)
+            if output.strip():
+                message = {
+                    "messageId": "result_" + digest([delivery_id, run_id])[7:],
+                    "groupId": run["groupId"],
+                    "teamRunId": run["teamRunId"],
+                    "revision": 1,
+                    "createdAt": now(),
+                    "senderPrincipal": f"member:{member['memberId']}",
+                    "senderName": member["name"],
+                    "groupRole": member["role"],
+                    "memberId": member["memberId"],
+                    "parts": [{"kind": "text", "text": output}],
+                    "mentions": [],
+                    "intent": "result",
+                    "visibility": "public",
+                    "sourceRefs": [source],
+                }
+                self.publish(tx, "message", message["messageId"], message, created=True)
+            self._advance(tx, run)
+            if not delivery.get("_fenced"):
+                self.finalize_if_ready(tx, run["teamRunId"])
+        return {"status": status}
 
     def finalize_if_ready(self, tx, run_id):
         run = tx.get("team_run", run_id)

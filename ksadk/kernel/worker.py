@@ -275,7 +275,7 @@ class AgentKernelWorker:
                 # transaction. A prior list/read is never start authorization.
                 claimed = await self._store.claim_message(message.message_id, fence)
             except ExecutionGrantBlocked as error:
-                if error.grant_state in {"suspended", "queued", "busy"}:
+                if error.grant_state in {"suspended", "admission_paused", "queued", "busy"}:
                     # Preserve enqueue FIFO while still letting cancel/resume
                     # controls behind the suspended command reach active work.
                     suspended_enqueue = True
@@ -310,9 +310,7 @@ class AgentKernelWorker:
             await self._store.discard_claim(message_id, expected_fence=fence)
             return WorkResult(outcome="completed", message_id=message_id)
         except StaleFenceError as error:
-            return WorkResult(
-                outcome="terminal_failure", message_id=message_id, error=error
-            )
+            return WorkResult(outcome="terminal_failure", message_id=message_id, error=error)
         except AgentKernelError as error:
             if error.code == RUNTIME_INTERACTION_UNAVAILABLE:
                 # typed rejection：provider 诚实声明无法原生送达回包，
@@ -333,9 +331,7 @@ class AgentKernelWorker:
                 await self._store.discard_claim(message_id, expected_fence=fence)
                 return WorkResult(outcome="completed", message_id=message_id)
             if error.retryable:
-                return WorkResult(
-                    outcome="retryable_failure", message_id=message_id, error=error
-                )
+                return WorkResult(outcome="retryable_failure", message_id=message_id, error=error)
             logger.error(
                 "agent kernel command failed permanently: "
                 "agent_instance_id=%s session_id=%s command_id=%s "
@@ -347,9 +343,7 @@ class AgentKernelWorker:
                 type(error).__name__,
                 error,
             )
-            return WorkResult(
-                outcome="terminal_failure", message_id=message_id, error=error
-            )
+            return WorkResult(outcome="terminal_failure", message_id=message_id, error=error)
         except Exception as error:
             # 未知异常绝不 ack 为成功：消息保持 claimed。
             logger.exception(
@@ -363,16 +357,12 @@ class AgentKernelWorker:
                 type(error).__name__,
                 error,
             )
-            return WorkResult(
-                outcome="terminal_failure", message_id=message_id, error=error
-            )
+            return WorkResult(outcome="terminal_failure", message_id=message_id, error=error)
 
         try:
             await self._store.complete_claim(message_id, expected_fence=fence)
         except StaleFenceError as error:
-            return WorkResult(
-                outcome="terminal_failure", message_id=message_id, error=error
-            )
+            return WorkResult(outcome="terminal_failure", message_id=message_id, error=error)
         return WorkResult(outcome="completed", message_id=message_id, run_id=run_id)
 
     async def _message_id_for(self, command: AgentControlCommand) -> str:
@@ -406,10 +396,15 @@ class AgentKernelWorker:
                 # attaches durable handles; a handle-less pending start is
                 # uncertain and requires attention, never an automatic replay.
                 if previous.state == RunState.PENDING:
-                    await self._store.save_run_transition(previous.model_copy(update={
-                        "state": RunState.INTERRUPTED,
-                        "reason": "execution_start_uncertain",
-                    }), expected_fence=fence)
+                    await self._store.save_run_transition(
+                        previous.model_copy(
+                            update={
+                                "state": RunState.INTERRUPTED,
+                                "reason": "execution_start_uncertain",
+                            }
+                        ),
+                        expected_fence=fence,
+                    )
                 return run_id
         adapter = self._adapter_factory()
         pending = RunRecord(
@@ -470,7 +465,9 @@ class AgentKernelWorker:
 
             conversation_metadata[CONVERSATION_PREPROCESSING_METADATA_KEY] = {
                 "messages": await harness_conversation_messages(
-                    command, store=self._store, session_events=self._session_events,
+                    command,
+                    store=self._store,
+                    session_events=self._session_events,
                 ),
             }
 
@@ -505,6 +502,14 @@ class AgentKernelWorker:
                     **(
                         {"execution_policy_ref": command.payload["execution_policy_ref"]}
                         if isinstance(command.payload.get("execution_policy_ref"), str)
+                        else {}
+                    ),
+                    # An opaque Teams reference carries no permissions by
+                    # itself. Trusted host policy resolution must match the
+                    # prepared command/session/run before exposing tools.
+                    **(
+                        {"teams_context_ref": command.payload["teams_context_ref"]}
+                        if isinstance(command.payload.get("teams_context_ref"), str)
                         else {}
                     ),
                 },
@@ -831,9 +836,7 @@ class AgentKernelWorker:
             # the provider target or SubmitInteraction can find the durable
             # record but cannot wake the blocked Codex callback.
             native_call_id = (
-                event.source.native_event_id
-                or event.source.native_item_id
-                or event.interaction_id
+                event.source.native_event_id or event.source.native_item_id or event.interaction_id
             )
             native_target = {"call_id": native_call_id}
         for key in ("checkpoint_id", "thread_id"):

@@ -10,6 +10,7 @@
   matrix，不创建 Run。
 - ``subscribe``：直接委托 SessionEventStore cursor（replay 后 live）。
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -95,21 +96,75 @@ class AgentKernel:
 
         return self._capabilities()
 
-    async def ensure_execution_grant(self, spec: ExecutionGrantSpec) -> ExecutionGrantRecord:
+    async def ensure_execution_grant(
+        self,
+        spec: ExecutionGrantSpec,
+        *,
+        expires_at: str | None = None,
+        remaining_ttl_seconds: float | None = None,
+    ) -> ExecutionGrantRecord:
         """Trusted host port; the host MUST authorize the owner and exact scope.
 
         A grant does not replace AgentControlPermit. Existing sessions may have
         several independent grants, e.g. distinct scheduled occurrences.
         """
-        return await self._store.ensure_execution_grant(spec)
+        if expires_at is None and remaining_ttl_seconds is None:
+            return await self._store.ensure_execution_grant(spec)
+        return await self._store.ensure_execution_grant(
+            spec,
+            expires_at=expires_at,
+            remaining_ttl_seconds=remaining_ttl_seconds,
+        )
 
     async def get_execution_grant(self, spec: ExecutionGrantSpec) -> ExecutionGrantBarrier | None:
         """Read current durable state for an already-authorized host scope."""
         return await self._store.get_execution_grant(spec)
 
+    async def require_execution_grant(self, spec: ExecutionGrantSpec) -> ExecutionGrantRecord:
+        """Trusted tool port: check exact scope/epoch and current active deadline.
+
+        The caller still authorizes the host, tool policy and effect. This check
+        cannot undo a previously started external effect or replace its ledger.
+        """
+        return await self._store.require_execution_grant(spec)
+
+    async def renew_execution_grant(
+        self,
+        spec: ExecutionGrantSpec,
+        *,
+        expected_revision: int,
+        expires_at: str,
+        renewal_id: str,
+        remaining_ttl_seconds: float | None = None,
+    ) -> ExecutionGrantBarrier:
+        """Trusted host renewal with an absolute deadline and durable CAS receipt."""
+        return await self._store.renew_execution_grant(
+            spec,
+            expected_revision=expected_revision,
+            expires_at=expires_at,
+            renewal_id=renewal_id,
+            remaining_ttl_seconds=remaining_ttl_seconds,
+        )
+
+    async def lookup_execution_grant_operation(
+        self,
+        spec: ExecutionGrantSpec,
+        *,
+        idempotency_key: str,
+    ) -> ExecutionGrantBarrier | None:
+        """Return the original receipt, not a guess based on current grant state."""
+        return await self._store.lookup_execution_grant_operation(
+            spec,
+            idempotency_key=idempotency_key,
+        )
+
     async def set_execution_grant_state(
-        self, spec: ExecutionGrantSpec, state: GrantState, *,
-        expected_revision: int, idempotency_key: str,
+        self,
+        spec: ExecutionGrantSpec,
+        state: GrantState,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
     ) -> ExecutionGrantBarrier:
         """Serialize suspension/revocation with start qualification.
 
@@ -117,7 +172,30 @@ class AgentKernel:
         irreversible; qualified commands still require normal Run control.
         """
         return await self._store.set_execution_grant_state(
-            spec, state, expected_revision=expected_revision, idempotency_key=idempotency_key,
+            spec,
+            state,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    async def set_execution_admission(
+        self,
+        spec: ExecutionGrantSpec,
+        allowed: bool,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> ExecutionGrantBarrier:
+        """Pause new claims without changing active grants or tool eligibility.
+
+        expected_revision is the independent admission_revision. The durable
+        receipt uses the same lookup port as other grant operations.
+        """
+        return await self._store.set_execution_admission(
+            spec,
+            allowed,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
         )
 
     # ---------------------------------------------------------------- submit
@@ -126,9 +204,7 @@ class AgentKernel:
         self, command: AgentControlCommand, *, permit: AgentControlPermit
     ) -> AgentControlReceipt:
         try:
-            await self._permit_verifier.verify(
-                permit, command, command.command_type, self._clock()
-            )
+            await self._permit_verifier.verify(permit, command, command.command_type, self._clock())
         except PermitExpiredError:
             return await self._expired_permit_receipt(command)
         except InvalidPermitError as error:
@@ -149,13 +225,9 @@ class AgentKernel:
                 message=f"runtime capability {field} is unavailable",
             )
 
-        return await self._store.accept_command(
-            command, queue_limit=self._queue_limit
-        )
+        return await self._store.accept_command(command, queue_limit=self._queue_limit)
 
-    async def _expired_permit_receipt(
-        self, command: AgentControlCommand
-    ) -> AgentControlReceipt:
+    async def _expired_permit_receipt(self, command: AgentControlCommand) -> AgentControlReceipt:
         """permit 过期：只有 Store 已有完全相同请求（同 digest/幂等域）才 duplicate。"""
 
         existing = await self._store.load_by_idempotency(
@@ -181,9 +253,7 @@ class AgentKernel:
         self, query: AgentStatusQuery, *, permit: AgentControlPermit
     ) -> AgentStatusSnapshot:
         try:
-            await self._permit_verifier.verify(
-                permit, query, "get_status", self._clock()
-            )
+            await self._permit_verifier.verify(permit, query, "get_status", self._clock())
         except (InvalidPermitError, PermitExpiredError):
             return AgentStatusSnapshot(
                 agent_instance_id=query.agent_instance_id,
@@ -192,21 +262,15 @@ class AgentKernel:
                 inbox_depth=0,
                 capability=self._capabilities(),
             )
-        active = await self._store.find_active_run(
-            query.agent_instance_id, query.session_id
-        )
-        lease = await self._store.current_lease(
-            query.agent_instance_id, query.session_id
-        )
+        active = await self._store.find_active_run(query.agent_instance_id, query.session_id)
+        lease = await self._store.current_lease(query.agent_instance_id, query.session_id)
         return AgentStatusSnapshot(
             agent_instance_id=query.agent_instance_id,
             instance_state="ready" if lease is not None else "degraded",
             session_id=query.session_id or (active.session_id if active else None),
             active_run_id=active.run_id if active else None,
             active_run_state=active.state.value if active else None,
-            inbox_depth=await self._store.inbox_depth(
-                query.agent_instance_id, query.session_id
-            ),
+            inbox_depth=await self._store.inbox_depth(query.agent_instance_id, query.session_id),
             activation_id=lease.activation_id if lease else None,
             lease_expires_at=lease.lease_expires_at if lease else None,
             capability=self._capabilities(),
@@ -222,9 +286,7 @@ class AgentKernel:
         should_stop: Callable[[], Awaitable[bool]] | None = None,
         timeout: float | None = None,
     ) -> AsyncIterator[SessionEventEnvelope]:
-        await self._permit_verifier.verify(
-            permit, subscription, "subscribe_events", self._clock()
-        )
+        await self._permit_verifier.verify(permit, subscription, "subscribe_events", self._clock())
         subscribe = self._events.subscribe
         kwargs: dict[str, Any] = {}
         try:
@@ -236,9 +298,7 @@ class AgentKernel:
             kwargs["should_stop"] = should_stop
         if timeout is not None and "timeout" in parameters:
             kwargs["timeout"] = timeout
-        async for envelope in subscribe(
-            subscription.session_id, subscription.after_seq, **kwargs
-        ):
+        async for envelope in subscribe(subscription.session_id, subscription.after_seq, **kwargs):
             yield envelope
 
 
