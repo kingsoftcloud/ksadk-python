@@ -49,12 +49,12 @@ mkdir -p "$STUDIO_APP_RUNTIME/lib/python3.13"
 cp -R "$python_home/lib/python3.13/." "$STUDIO_APP_RUNTIME/lib/python3.13/"
 rm -f "$STUDIO_APP_RUNTIME/lib/python3.13/EXTERNALLY-MANAGED"
 # Python.org's macOS `bin/python3` is a thin launcher.  It starts the real
-# interpreter at ../Resources/Python.app, so ship that app too; copying only
-# bin/python3 and libpython makes the launcher resolve a path that does not
-# exist inside the bundle.
+# interpreter at Resources/Python.app relative to the bundled libpython, so
+# ship that app too; copying only bin/python3 and libpython makes the launcher
+# resolve a path that does not exist inside the bundle.
 if [ -d "$python_home/Resources/Python.app" ]; then
-  mkdir -p "$STUDIO_APP_RUNTIME/Resources"
-  cp -R "$python_home/Resources/Python.app" "$STUDIO_APP_RUNTIME/Resources/"
+  mkdir -p "$STUDIO_APP_RUNTIME/lib/Resources"
+  cp -R "$python_home/Resources/Python.app" "$STUDIO_APP_RUNTIME/lib/Resources/"
 fi
 # The framework interpreter's build-only library links target a top-level
 # Python binary that is not shipped. Remove only these known broken links;
@@ -83,7 +83,7 @@ if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2
   }
   python_framework_path=""
   for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
-                     "$STUDIO_APP_RUNTIME/Resources/Python.app/Contents/MacOS/Python"; do
+                     "$STUDIO_APP_RUNTIME/lib/Resources/Python.app/Contents/MacOS/Python"; do
     [ -f "$interpreter" ] || continue
     python_framework_path="$(otool -L "$interpreter" | awk '$1 ~ /Python\.framework\/Versions/ && $1 ~ /\/Python$/ { print $1; exit }')"
     [ -n "$python_framework_path" ] && break
@@ -91,10 +91,10 @@ if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2
   if [ -n "$python_framework_path" ]; then
     bundled_python_name="$(basename "$python_library")"
     for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
-                       "$STUDIO_APP_RUNTIME/Resources/Python.app/Contents/MacOS/Python"; do
+                       "$STUDIO_APP_RUNTIME/lib/Resources/Python.app/Contents/MacOS/Python"; do
       [ -f "$interpreter" ] || continue
       case "$interpreter" in
-        */Resources/Python.app/Contents/MacOS/Python)
+        */lib/Resources/Python.app/Contents/MacOS/Python)
           python_load_path="@loader_path/../../../../lib/$bundled_python_name"
           ;;
         *)
@@ -114,7 +114,7 @@ if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2
     # before notarization.
     if command -v codesign >/dev/null 2>&1; then
       for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
-                         "$STUDIO_APP_RUNTIME/Resources/Python.app/Contents/MacOS/Python"; do
+                         "$STUDIO_APP_RUNTIME/lib/Resources/Python.app/Contents/MacOS/Python"; do
         [ -f "$interpreter" ] || continue
         codesign --force --sign - "$interpreter"
       done

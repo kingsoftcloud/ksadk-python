@@ -55,7 +55,7 @@ def test_macos_runtime_relocates_python_framework_and_checks_startup():
     assert "install_name_tool -change" in script
     assert '"@loader_path/../lib/$bundled_python_name"' in script
     assert '"@loader_path/../../../../lib/$bundled_python_name"' in script
-    assert 'Resources/Python.app' in script
+    assert 'lib/Resources/Python.app' in script
     assert 'codesign --force --sign - "$python_library"' in script
     assert 'for stdlib_tree in test idlelib turtledemo tkinter ensurepip' in script
     assert "install_name_tool -id" in script
