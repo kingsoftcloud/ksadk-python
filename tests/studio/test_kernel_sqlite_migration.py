@@ -45,7 +45,9 @@ def legacy(tmp_path: Path):
         )
         connection.execute("INSERT INTO kernel_accepted_seq VALUES (?,?)", ("session", 3))
         connection.execute(
-            "INSERT INTO kernel_execution_grants VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO kernel_execution_grants "
+            "(grant_id, tenant_id, agent_instance_id, session_id, owner_ref, state, "
+            "revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
             ("grant", "tenant", "build-a", "session", "host", "suspended", 2, "created", "updated"),
         )
         connection.execute(
