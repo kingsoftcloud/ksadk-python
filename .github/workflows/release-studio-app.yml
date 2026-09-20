@@ -125,9 +125,20 @@ jobs:
           TEAM_ID: ${{ secrets.STUDIO_APPLE_TEAM_ID }}
 
       - name: Build DMG (with Applications shortcut)
-        run: make studio-app-dmg
+        # Use the already notarized bundle. studio-app-dmg has a package
+        # dependency for local convenience; invoking it here would rebuild
+        # the app without notarization credentials and discard its ticket.
+        run: make studio-app-dmg-existing
         env:
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
+
+      - name: Verify notarized app before upload
+        run: |
+          set -euo pipefail
+          app="dist/studio-app/AgentKitStudio.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
 
       - name: Zip the .app bundle
         run: |
