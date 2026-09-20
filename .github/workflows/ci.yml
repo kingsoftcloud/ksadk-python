@@ -240,8 +240,10 @@ jobs:
         # sandbox/skill/browser 用例留在内部 master）；零收集时 pytest 退出码
         # 5 是预期状态，不能当作失败。
         run: |
+          set +e
           uv run --no-sync pytest tests/ -q -m local_process_heavy
           code=$?
+          set -e
           if [ "$code" -eq 5 ]; then
             echo "No local_process_heavy tests in the public export tree; skipping."
             exit 0
