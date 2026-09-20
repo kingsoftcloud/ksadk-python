@@ -29,9 +29,12 @@ def create_teams_installation(studio: Any):
     """Choose the explicitly configured authority before registering routes."""
     server_url = studio.configuration.environment().get("KSADK_TEAMS_SERVER_URL", "").strip()
     if server_url:
+        from ksadk.studio.teams_node_factory import create_studio_teams_node
         from ksadk.studio.teams_remote import RemoteStudioTeamsInstallation
 
-        return RemoteStudioTeamsInstallation(studio, server_url)
+        return RemoteStudioTeamsInstallation(
+            studio, server_url, node_v1_factory=create_studio_teams_node
+        )
     return StudioTeamsInstallation(studio)
 
 

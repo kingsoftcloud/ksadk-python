@@ -18,6 +18,7 @@ async def run_node(
     name: str | None = None,
     stop: asyncio.Event | None = None,
     service_factory=None,
+    node_v1_factory=None,
 ):
     from ksadk.studio.service import StudioService
 
@@ -25,6 +26,8 @@ async def run_node(
     if name:
         settings["KSADK_TEAMS_NODE_NAME"] = name
     service = (service_factory or StudioService)(workspace, configuration_overrides=settings)
+    if node_v1_factory is not None:
+        service.teams_installation.node_v1_factory = node_v1_factory
     stopped = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
     installed = []

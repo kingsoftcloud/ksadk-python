@@ -11,7 +11,7 @@ import httpx
 
 from .errors import TeamsError
 
-Headers = Callable[[str, str, str], Awaitable[dict[str, str]]]
+Headers = Callable[[str, str, str | bytes], Awaitable[dict[str, str]]]
 
 
 class TeamsHTTPClient:
@@ -41,8 +41,13 @@ class TeamsHTTPClient:
             trust_env=False,
         )
 
-    async def request_headers(self, method: str, path: str, body: str = ""):
-        result = {"Accept": "application/json", "Content-Type": "application/json"}
+    async def request_headers(self, method: str, path: str, body: str | bytes = ""):
+        result = {
+            "Accept": "application/json",
+            "Content-Type": "application/octet-stream"
+            if isinstance(body, bytes)
+            else "application/json",
+        }
         if self.access_token:
             result["Authorization"] = "Bearer " + self.access_token
         if self.node_token:

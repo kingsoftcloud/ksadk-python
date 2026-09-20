@@ -1,0 +1,78 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "content": {
+      "title": "Content"
+    },
+    "reply_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reply To"
+    },
+    "execution_grant_id": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Grant Id"
+    },
+    "execution_grant_attempt_epoch": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Grant Attempt Epoch"
+    },
+    "execution_policy_ref": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Policy Ref"
+    },
+    "teams_context_ref": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Teams Context Ref"
+    }
+  },
+  "required": [
+    "content"
+  ],
+  "title": "EnqueuePayload",
+  "type": "object"
+}
