@@ -166,6 +166,16 @@ jobs:
           actual=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
           test "$actual" = "$STUDIO_APP_VERSION"
 
+      - name: Save verified DMG for manual validation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentKitStudio-macos-arm64-validated
+          path: dist/studio-app/AgentKitStudio-*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
       - name: Zip the .app bundle
         run: |
           cd dist/studio-app
