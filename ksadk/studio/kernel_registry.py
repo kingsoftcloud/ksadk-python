@@ -80,6 +80,8 @@ class StudioBuildKernelRegistry:
         workspace_id: str = "studio-scheduler",
         poll_interval: float = 0.05,
         lease_ttl_seconds: float = 30.0,
+        configure_runtime=None,
+        instance_namespace: str | None = None,
     ) -> None:
         self._resolve_build = resolve_build
         self._resolve_adapter_provider = resolve_adapter_provider
@@ -90,6 +92,8 @@ class StudioBuildKernelRegistry:
         self._workspace_id = workspace_id
         self._poll_interval = poll_interval
         self._lease_ttl_seconds = lease_ttl_seconds
+        self._configure_runtime = configure_runtime
+        self._instance_namespace = instance_namespace
         self._owner_id = uuid4().hex
         self._entries_by_build: dict[str, _RuntimeEntry] = {}
         self._build_by_instance: dict[str, str] = {}
@@ -247,6 +251,10 @@ class StudioBuildKernelRegistry:
             )
             runtime = build_agent_kernel_runtime(config)
             try:
+                if self._configure_runtime is not None:
+                    # Complete authority/policy wiring before workers can claim
+                    # persisted messages, including process-restart recovery.
+                    await self._configure_runtime(runtime, spec, normalized)
                 await runtime.start()
             except Exception:
                 await runtime.close()
@@ -384,7 +392,10 @@ class StudioBuildKernelRegistry:
         return entry
 
     def _instance_id(self, build_id: str) -> str:
-        digest = hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:24]
+        identity = (
+            f"{self._instance_namespace}:{build_id}" if self._instance_namespace else build_id
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
         # Preserve existing Scheduler SQLite/AgentInstance identities when
         # its registry is shared by additional trusted Studio consumers.
         return f"studio-schedule-{digest}"

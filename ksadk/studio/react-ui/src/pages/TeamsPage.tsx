@@ -16,12 +16,14 @@ import {
   type TeamMemberCandidate,
 } from "@kingsoftcloud/ksadk-web/teams/components";
 import { apiFetch } from "../api";
+import { StudioCloudTeamsPage } from "./StudioCloudTeamsPage";
 import { TeamsGroupSettings } from "./TeamsGroupSettings";
 import { TeamsMemberObserver } from "./TeamsMemberObserver";
 import {
   readTeamsLifecycle,
   teamRequest,
   TeamsAvailability,
+  TeamRequestError,
   type TeamsLifecycle,
 } from "./TeamsAvailability";
 
@@ -51,20 +53,42 @@ export function TeamsPage() {
   const [lifecycle, setLifecycle] = useState<TeamsLifecycle | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const lifecycleGeneration = useRef(0);
   useEffect(() => {
     const controller = new AbortController();
+    const generation = ++lifecycleGeneration.current;
     setError("");
     void readTeamsLifecycle(controller.signal)
       .then((state) => {
+        if (controller.signal.aborted || generation !== lifecycleGeneration.current) return;
         if (state.apiVersion !== TEAMS_API_VERSION)
           throw new Error("团队插件版本与当前界面不兼容，请更新插件。");
         setLifecycle(state);
       })
       .catch((cause) => {
-        if (!controller.signal.aborted) setError(messageOf(cause));
+        if (!controller.signal.aborted && generation === lifecycleGeneration.current) setError(messageOf(cause));
       });
     return () => controller.abort();
   }, [retry]);
+  // A changed authenticated owner must unmount all cloud observers and drains.
+  useEffect(() => {
+    if (lifecycle?.mode !== "server" && lifecycle?.authorityLocation !== "server") return;
+    const controller = new AbortController();
+    const refreshCloud = () => {
+      if (document.visibilityState !== "visible") return;
+      const generation = ++lifecycleGeneration.current;
+      void readTeamsLifecycle(controller.signal).then(next => {
+        if (!controller.signal.aborted && generation === lifecycleGeneration.current) setLifecycle(next);
+      }).catch((cause) => {
+        if (controller.signal.aborted || generation !== lifecycleGeneration.current) return;
+        if (cause instanceof TeamRequestError && [401, 403].includes(cause.status || 0)) { setLifecycle(null); setError("登录状态已失效，请重新连接团队服务。"); return; }
+        if (!controller.signal.aborted) setLifecycle(previous => previous ? { ...previous, health: "degraded" } : previous);
+      });
+    };
+    const timer = window.setInterval(refreshCloud, 15_000);
+    window.addEventListener("focus", refreshCloud);
+    return () => { controller.abort(); clearInterval(timer); window.removeEventListener("focus", refreshCloud); };
+  }, [lifecycle?.mode, lifecycle?.authorityLocation]);
   if (error)
     return (
       <div className="studio-plugin-empty">
@@ -85,6 +109,7 @@ export function TeamsPage() {
       </p>
     );
   const remote = lifecycle.mode === "server" || lifecycle.authorityLocation === "server";
+  if (remote) return <StudioCloudTeamsPage lifecycle={lifecycle} onRetry={() => setRetry(value => value + 1)} />;
   if (!lifecycle.enabled || (lifecycle.health !== "ready" && !(remote && lifecycle.health === "degraded"))) return <TeamsAvailability />;
   return (
     <TeamsBrowser

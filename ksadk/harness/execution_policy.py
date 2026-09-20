@@ -28,8 +28,13 @@ class ExecutionPolicy:
     # None preserves the parent's context; an explicit empty string suppresses
     # that prompt suffix. This changes model context, never execution authority.
     child_system_context: str | None = None
+    # A trusted host may replace the entire tool surface for this invocation.
+    # Default remains additive for existing non-Teams integrations.
+    exclusive_tools: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.exclusive_tools) is not bool:
+            raise ValueError("exclusive_tools must be a bool")
         if self.child_system_context is not None and not isinstance(self.child_system_context, str):
             raise ValueError("child_system_context must be a string or None")
         allowed = {"max_total_tokens", "max_tool_calls", "max_artifacts", "max_model_calls"}

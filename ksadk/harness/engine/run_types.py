@@ -65,6 +65,7 @@ class _EngineRun:
     sub_agents: dict[str, Any] = field(default_factory=dict)
     tools: dict[str, Any] = field(default_factory=dict)
     policy_tool_names: set[str] = field(default_factory=set)
+    exclusive_tools: bool = False
     approval_required: set[str] = field(default_factory=set)
     execution_policy: Any = None
     execution_policy_resolver: Any = None
