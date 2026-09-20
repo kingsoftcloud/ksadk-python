@@ -48,6 +48,14 @@ test -n "$python_home"
 mkdir -p "$STUDIO_APP_RUNTIME/lib/python3.13"
 cp -R "$python_home/lib/python3.13/." "$STUDIO_APP_RUNTIME/lib/python3.13/"
 rm -f "$STUDIO_APP_RUNTIME/lib/python3.13/EXTERNALLY-MANAGED"
+# Python.org's macOS `bin/python3` is a thin launcher.  It starts the real
+# interpreter at Resources/Python.app relative to the bundled libpython, so
+# ship that app too; copying only bin/python3 and libpython makes the launcher
+# resolve a path that does not exist inside the bundle.
+if [ -d "$python_home/Resources/Python.app" ]; then
+  mkdir -p "$STUDIO_APP_RUNTIME/lib/Resources"
+  cp -R "$python_home/Resources/Python.app" "$STUDIO_APP_RUNTIME/lib/Resources/"
+fi
 # The framework interpreter's build-only library links target a top-level
 # Python binary that is not shipped. Remove only these known broken links;
 # strict verification below must reject other malformed bundle resources.
@@ -60,6 +68,60 @@ done
 for dylib in "$python_home"/lib/libpython*.dylib; do
   test -f "$dylib" && cp "$dylib" "$STUDIO_APP_RUNTIME/lib/"
 done
+
+# A Python.org/framework interpreter records its framework path in the Mach-O
+# load commands.  Copying the executable and libpython is not enough: on a
+# clean Mac dyld would still look for the build host's
+# /Library/Frameworks/Python.framework/... path and abort before Python starts.
+# Relocate both sides of that pair before any code signing so the bundled
+# interpreter can start without a system Python installation.
+if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2>&1; then
+  python_library="$(find "$STUDIO_APP_RUNTIME/lib" -maxdepth 1 -type f -name 'libpython*.dylib' -print -quit)"
+  test -n "$python_library" || {
+    echo "ERROR: bundled libpython dylib is missing" >&2
+    exit 1
+  }
+  python_framework_path=""
+  for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
+                     "$STUDIO_APP_RUNTIME/lib/Resources/Python.app/Contents/MacOS/Python"; do
+    [ -f "$interpreter" ] || continue
+    python_framework_path="$(otool -L "$interpreter" | awk '$1 ~ /Python\.framework\/Versions/ && $1 ~ /\/Python$/ { print $1; exit }')"
+    [ -n "$python_framework_path" ] && break
+  done
+  if [ -n "$python_framework_path" ]; then
+    bundled_python_name="$(basename "$python_library")"
+    for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
+                       "$STUDIO_APP_RUNTIME/lib/Resources/Python.app/Contents/MacOS/Python"; do
+      [ -f "$interpreter" ] || continue
+      case "$interpreter" in
+        */lib/Resources/Python.app/Contents/MacOS/Python)
+          python_load_path="@loader_path/../../../../$bundled_python_name"
+          ;;
+        *)
+          python_load_path="@loader_path/../lib/$bundled_python_name"
+          ;;
+      esac
+      install_name_tool -change "$python_framework_path" \
+        "$python_load_path" "$interpreter"
+    done
+    # The first entry reported by otool -L for a dylib is its install ID.
+    # Give the copied library a bundle-local identity instead of retaining the
+    # framework path from the build machine.
+    install_name_tool -id "@rpath/$bundled_python_name" "$python_library"
+    # install_name_tool invalidates the Python.org signature.  Re-sign the
+    # modified interpreter just long enough for uv pip to execute it; the
+    # distribution Developer ID pass below replaces these ad-hoc signatures
+    # before notarization.
+    if command -v codesign >/dev/null 2>&1; then
+      for interpreter in "$STUDIO_APP_RUNTIME"/bin/python* \
+                         "$STUDIO_APP_RUNTIME/lib/Resources/Python.app/Contents/MacOS/Python"; do
+        [ -f "$interpreter" ] || continue
+        codesign --force --sign - "$interpreter"
+      done
+      codesign --force --sign - "$python_library"
+    fi
+  fi
+fi
 
 uv pip install --python "$STUDIO_APP_RUNTIME/bin/python" "$wheel[codex]"
 
@@ -82,6 +144,14 @@ uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" -y \
 uv pip uninstall --python "$STUDIO_APP_RUNTIME/bin/python" -y \
   shapely numpy numpydoc pip \
   2>/dev/null || true
+
+# Studio never runs Python's bundled test harness, interactive IDLE, Tk demo,
+# or ensurepip bootstrap.  Drop these development-only stdlib trees after all
+# package installation is complete; they account for roughly 35 MiB in the
+# shipped image without changing application imports.
+for stdlib_tree in test idlelib turtledemo tkinter ensurepip; do
+  rm -rf "$STUDIO_APP_RUNTIME/lib/python3.13/$stdlib_tree"
+done
 
 # DSH toolchain node_modules 只服务本机 arm64 运行：清理其他平台预编译
 # 产物、调试符号与类型/源码映射（运行时永不读取），约减 ~100 MiB。
