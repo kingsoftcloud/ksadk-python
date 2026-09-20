@@ -5,7 +5,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.8.5] - 2026-09-18
+## [0.8.5] - 2026-09-19
 
 ### 亮点
 
@@ -13,6 +13,7 @@
 - **本地 Agent 与云端 Channel 闭环**：新增 Channel Connector Protocol v1（Agent Connector）。本地 ADK、LangGraph 等高代码 Agent 通过出站 WSS 接入云端 Channel，不需要开放本地端口；Studio 与独立高代码 Agent 使用同一套 Connector API。
 - **本地与云端 Agent 目标明确隔离**：Channel 绑定显式使用 `ConnectorWorkspaceId` 和 Agent 身份，本地目标离线时不会静默回退到云端 Runtime，避免消息误投。
 - **运行时安全边界收紧**：托管 checkpoint 缺少 `prepare_state` 时 fail-closed，hook 模式下 compaction 归属安全降级到 framework，避免恢复链路在不完整契约下继续执行。
+- **LangGraph 审批恢复修复**：`checkpoint_ns` 恢复为子图寻址语义，租户和 Agent 隔离改由稳定的 `thread_id` 承担；审批状态读取统一走异步入口，读取失败不再伪装成正常完成。
 - **Studio 与运行时体验持续收敛**：延续流式输出、MCP 鉴权与审批、会话互斥/恢复、运行时预热、默认模型和 Codex Runtime 升级，减少首次响应和会话切换等待。
 
 ### 新增与变更
@@ -32,12 +33,15 @@
 - 修复 Connector 首次 heartbeat 窗口、重复投递终态回放、跨副本 owner fencing 和错误响应泄露；断线未知结果仍保持显式不确定，不伪造成功或自动重试。
 - 修复 Studio Channel 页面双路由和静态导航并存、插件发现 fan-out 阻塞首屏，以及 Vite/Teams 样式/xterm 构建测试不稳定的问题。
 - 修复托管 checkpoint hook 缺失时继续执行的风险；缺少 `prepare_state` 现在返回明确的 fail-closed 错误，已有 durable checkpointer 不再错误接管 compaction。
+- 修复 LangGraph/LangChain 使用托管 PostgreSQL checkpoint 时审批卡不弹的问题：移除租户 namespace 注入，保留合法子图的完整 namespace，支持嵌套子图 interrupt，并让状态读取错误显性失败。
+- 修复共享 checkpoint 库中同一租户不同 Agent 复用 session ID 造成 thread 冲突的问题；thread identity 现在包含 Agent 维度。
 
 ### 验证与发布记录
 
 - KsADK 重点 Python、Studio connector、插件生命周期、前端 Vitest 与生产 Vite 构建已通过；完整发布门禁仍以最终 workflow 日志为准。
 - Channel Connector gateway、JWT、Redis 双副本、heartbeat、Studio inbound pipeline、真实 Harness 执行和浏览器 Channel workspace E2E 已在隔离临时环境通过；IM 投递和模型响应使用确定性替身，未宣称真实账号验收。
-- 当前 `0.8.5` 仍是候选版本；尚未创建 PyPI、GitHub Release 或 tag。正式发布必须经过完整 release workflow、制品审计和维护者批准。
+- 正式版本：`v0.8.5`，GitHub Release 已发布，PyPI 已发布 `ksadk==0.8.5`；`@kingsoftcloud/ksadk-web@0.3.11` 与本版本配套。
+- 发布源：GitHub commit [`5128ff1e`](https://github.com/kingsoftcloud/ksadk-python/commit/5128ff1e57d1c37bc16f780028698da433c12a7e)，对应 tag [`v0.8.5`](https://github.com/kingsoftcloud/ksadk-python/releases/tag/v0.8.5)。wheel/sdist 均包含生成后的 Studio/Web 静态资源；发布制品应以 PyPI 文件和 Release 中同校验和的附件为准。
 
 ## [0.8.4] - 2026-09-09
 
