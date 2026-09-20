@@ -120,7 +120,7 @@ class AWSV4Auth:
         method: str,
         url: str,
         headers: Dict[str, str],
-        body: str = "",
+        body: str | bytes = "",
     ) -> Dict[str, str]:
         """手动签名并返回带签名的 headers
 
@@ -145,7 +145,7 @@ class AWSV4Auth:
             method=method,
             url=url,
             headers=headers,
-            data=body.encode("utf-8") if body else None,
+            data=(body.encode("utf-8") if isinstance(body, str) else body) if body else None,
         )
         prepared = req.prepare()
 

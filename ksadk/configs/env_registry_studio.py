@@ -23,7 +23,8 @@ STUDIO_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_STUDIO_LAZY_START",
         "studio",
-        "Internal desktop startup mode; keep the Studio window responsive while optional DSH warmup runs.",
+        "Internal desktop startup mode; keep the Studio window responsive "
+        "while optional DSH warmup runs.",
         "0",
         documented=False,
     ),
@@ -72,7 +73,8 @@ STUDIO_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec(
         "KSADK_TEAMS_ACCESS_TOKEN", "studio",
-        "Bearer credential for the configured Teams authority; unset uses configured request signing.",
+        "Bearer credential for the configured Teams authority; "
+        "unset uses configured request signing.",
         sensitive=True,
     ),
     EnvVarSpec(
@@ -80,7 +82,31 @@ STUDIO_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "local",
     ),
     EnvVarSpec(
-        "KSADK_TEAMS_NODE_NAME", "studio", "Execution node display name sent to the Teams authority.",
+        "KSADK_TEAMS_NODE_NAME", "studio",
+        "Execution node display name sent to the Teams authority.",
         "system hostname",
+    ),
+    EnvVarSpec(
+        "KSADK_TEAMS_PERMIT_ISSUER", "studio",
+        "Trusted Teams permit issuer; Studio defaults to agentengine-server; "
+        "cloud hosts require it.",
+        "agentengine-server (Studio only)",
+    ),
+    EnvVarSpec(
+        "KSADK_TEAMS_RUNTIME_SERVER_URL", "studio",
+        "Trusted Teams API base URL supplied to the cloud runtime host.",
+    ),
+    EnvVarSpec(
+        "KSADK_TEAMS_RUNTIME_TARGET", "studio",
+        "Frozen CloudTarget JSON supplied by the deployment control plane.",
+    ),
+    EnvVarSpec(
+        "KSADK_TEAMS_RUNTIME_PROVIDER_REF", "studio",
+        "Provider identity bound to the cloud runtime host's frozen target.",
+    ),
+    EnvVarSpec(
+        "KSADK_TEAMS_RUNTIME_STATE_DIR", "studio",
+        "Per-attempt workspace directory; authoritative execution state remains in PostgreSQL.",
+        "/tmp/ksadk-teams",
     ),
 )

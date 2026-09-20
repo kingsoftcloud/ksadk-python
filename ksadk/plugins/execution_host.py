@@ -79,6 +79,14 @@ class PluginExecutionHost(Protocol):
         self, scope: PluginExecutionScope, run_id: str, idempotency_key: str
     ) -> ExecutionReceipt: ...
 
+    async def set_admission(
+        self,
+        scope: PluginExecutionScope,
+        grant_id: str,
+        allowed: bool,
+        idempotency_key: str,
+    ) -> ExecutionBarrier: ...
+
     async def interactions(self, scope: PluginExecutionScope) -> list[dict[str, Any]]: ...
 
     async def get_interaction(

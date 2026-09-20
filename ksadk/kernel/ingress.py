@@ -63,6 +63,14 @@ _TRUTHY = {"1", "true", "yes", "on"}
 logger = logging.getLogger(__name__)
 
 _kernel: Any | None = None
+_teams_ingress_gate: Any | None = None
+
+
+def set_teams_ingress_gate(gate: Any | None) -> None:
+    """Install the trusted Teams gate alongside its actual Kernel runtime."""
+    global _teams_ingress_gate
+    _teams_ingress_gate = gate
+
 
 
 def kernel_ingress_enabled() -> bool:
@@ -910,6 +918,23 @@ def _build_kernel_router() -> Any:
                     "authorization_ref": permit.permit_id,
                 }
             )
+        # Teams authorization is separate from native AgentControl admission.
+        # No local self-signed compatibility path may grant Teams execution.
+        if body.get("teams") is not None or command.payload.get("teams_context_ref"):
+            if permit_data is None or _teams_ingress_gate is None:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": {"Code": "teams_authorization_required",
+                                       "Message": "Teams Host authorization is required"}},
+                )
+        if _teams_ingress_gate is not None:
+            from ksadk.kernel.execution_grants import ExecutionGrantBlocked
+            from ksadk.kernel.teams_host_http import host_error
+            try:
+                await _teams_ingress_gate(command=command, teams=body.get("teams"), kernel=kernel,
+                                          native_permit=permit)
+            except (ValueError, ExecutionGrantBlocked) as error:
+                return host_error(error)
         await _ensure_shared_log_session(command)
         receipt = await kernel.submit(command, permit=permit)
         status = receipt_http_status(receipt)

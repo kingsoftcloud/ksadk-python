@@ -81,6 +81,31 @@
           "title": "Owner Ref",
           "type": "string"
         },
+        "attempt_epoch": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempt Epoch"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
         "state": {
           "default": "active",
           "enum": [
@@ -95,6 +120,17 @@
           "default": 1,
           "minimum": 1,
           "title": "Revision",
+          "type": "integer"
+        },
+        "admission_allowed": {
+          "default": true,
+          "title": "Admission Allowed",
+          "type": "boolean"
+        },
+        "admission_revision": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Admission Revision",
           "type": "integer"
         },
         "created_at": {
@@ -168,7 +204,5 @@
     "grant"
   ],
   "title": "ExecutionGrantBarrier",
-  "type": "object",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.ksadk.io/agent-kernel/execution-grants/v1/barrier.schema.json"
+  "type": "object"
 }

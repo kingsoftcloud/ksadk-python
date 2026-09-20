@@ -272,6 +272,9 @@ class AgentKernelReadiness:
         # 诊断字段（additive，runtime 内部端点非 wire 冻结合同）：
         # degraded 时必须能从 health 直接回答 "为什么降级、何时降级"，
         # 出问题的 session 明细同样可见，运维不必再对着布尔值猜。
+        teams_descriptor = getattr(self.runtime, "teams_host_descriptor", None)
+        if teams_descriptor is not None:
+            health["teams_host"] = await teams_descriptor()
         if quarantined:
             health["quarantined_session_ids"] = sorted(quarantined)
         if degraded:
@@ -927,6 +930,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
     launch_context: Any | None = None,
     start_request_defaults: dict[str, Any] | None = None,
     session_service: Any | None = None,
+    before_start: Any | None = None,
 ) -> AgentKernelRuntime | None:
     """Operator env 投影 -> 生产 runtime（AGENT_KERNEL_ENABLED=1 时）。
 
@@ -1063,7 +1067,13 @@ async def bootstrap_agent_kernel_runtime_from_env(
         lease_ttl_seconds=float(os.environ.get("AGENT_KERNEL_LEASE_TTL_SECONDS", "60") or "60"),
     )
     runtime = build_agent_kernel_runtime(config)
-    await runtime.start()
+    try:
+        if before_start is not None:
+            await before_start(runtime)
+        await runtime.start()
+    except BaseException:
+        await runtime.close()
+        raise
     set_agent_kernel(runtime.kernel)
     set_agent_kernel_runtime(runtime)
     return runtime

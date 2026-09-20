@@ -90,6 +90,39 @@ class StudioTeamsCatalog:
                 )
         return items
 
+    def node_advertisements(
+        self, host_descriptors: dict[str, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Advertise only fixed builds with explicit trusted Host descriptors.
+
+        A provider name (including Harness) is not proof that this process has
+        mounted grant expiry, policy enforcement or canonical event storage.
+        Bootstrap/probe supplies descriptors; reading the directory starts no runtime.
+        """
+        from ksadk.studio.teams_node_v1 import normalized_node_bindings
+
+        items = []
+        for binding in self._local():
+            descriptor = host_descriptors.get(binding["bindingRef"])
+            if not descriptor or binding.get("buildId") is None:
+                continue
+            if descriptor.get("bundleDigest") != binding.get("buildDigest"):
+                continue
+            items.append(
+                {
+                    "localBindingRef": binding["bindingRef"],
+                    "agentId": binding["agentId"],
+                    "buildId": binding["buildId"],
+                    "providerRef": binding["providerRef"],
+                    "name": binding["name"],
+                    "bundleDigest": descriptor["bundleDigest"],
+                    "contractDigest": descriptor["contractDigest"],
+                    "capabilitiesDigest": descriptor["capabilitiesDigest"],
+                    "capabilities": descriptor.get("capabilities", {}),
+                }
+            )
+        return normalized_node_bindings(items)
+
     async def list_bindings(self) -> list[dict[str, Any]]:
         items = self._local()
         gateway = getattr(getattr(self.studio, "cloud", None), "gateway", None)
