@@ -308,7 +308,7 @@ def test_docs_versioned_facts_match_084_source():
     web_version_match = re.search(r"^KSADK_WEB_VERSION \?= (\S+)$", makefile, re.MULTILINE)
     assert web_version_match is not None
     web_version = web_version_match.group(1)
-    assert web_version == "0.3.11"
+    assert web_version == "0.3.12"
 
     versioned_docs = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx"))
@@ -506,10 +506,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.11"' in workflow
+    assert 'default: "0.3.12"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.11' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.12' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -527,9 +527,9 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.11"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.12"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.11" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.12" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_check_release_version.py "
         "tests/studio/test_scheduler_runtime.py "
@@ -576,7 +576,7 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         '"$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)")' in makefile
     )
     assert 'npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))"' not in makefile
-    assert "KSADK_WEB_VERSION ?= 0.3.11" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.12" in makefile
 
     sync_dry_run = subprocess.run(
         [
@@ -591,8 +591,8 @@ def test_ksadk_web_npm_consumers_use_the_configured_registry():
         text=True,
         stdout=subprocess.PIPE,
     ).stdout
-    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.11"' in sync_dry_run
-    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.11"' in sync_dry_run
+    assert f'npm --registry="{registry}" pack "@kingsoftcloud/ksadk-web@0.3.12"' in sync_dry_run
+    assert f'curl -fsSL "{registry}/@kingsoftcloud/ksadk-web/0.3.12"' in sync_dry_run
 
     studio_dry_run = subprocess.run(
         ["make", "-n", "build-studio-static", f"KSADK_WEB_REGISTRY={registry}"],

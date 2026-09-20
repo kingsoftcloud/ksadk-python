@@ -116,7 +116,7 @@ jobs:
         # make invocation produces the full signed .app bundle.
         run: make studio-app-package
         env:
-          KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_VERSION: "0.3.12"
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_CODESIGN_IDENTITY: ${{ env.STUDIO_APP_CODESIGN_IDENTITY }}
           STUDIO_APP_NOTARIZE: ${{ secrets.STUDIO_APPLE_P12_BASE64 != '' && '1' || '0' }}
@@ -197,7 +197,7 @@ jobs:
           make build-studio-static
           make build-wheel
         env:
-          KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_VERSION: "0.3.12"
 
       - name: Prepare DSH toolchain (win32-x64 prebuilds)
         shell: bash
@@ -226,7 +226,7 @@ jobs:
         shell: bash
         run: make studio-app-package-windows
         env:
-          KSADK_WEB_VERSION: "0.3.11"
+          KSADK_WEB_VERSION: "0.3.12"
           STUDIO_APP_VERSION: ${{ env.STUDIO_APP_VERSION }}
           STUDIO_APP_PYTHON_VERSION: "3.13.1"
 

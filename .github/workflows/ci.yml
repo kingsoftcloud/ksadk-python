@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     steps:
       - uses: actions/checkout@v7
 
@@ -126,7 +126,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -189,7 +189,7 @@ jobs:
     name: local-process heavy tests (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.11"
+      KSADK_WEB_VERSION: "0.3.12"
     strategy:
       fail-fast: false
       matrix:
