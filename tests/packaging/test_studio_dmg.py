@@ -56,12 +56,13 @@ def test_macos_runtime_relocates_python_framework_and_checks_startup():
     assert '"@loader_path/../lib/$bundled_python_name"' in script
     assert '"@loader_path/../../../../$bundled_python_name"' in script
     assert 'lib/Resources/Python.app' in script
+    assert 'cp "$STUDIO_APP_RUNTIME/pyvenv.cfg" "$STUDIO_APP_RUNTIME/lib/pyvenv.cfg"' in script
     assert 'codesign --force --sign - "$python_library"' in script
     assert 'for stdlib_tree in test idlelib turtledemo tkinter ensurepip' in script
     assert "install_name_tool -id" in script
     assert "otool -L" in makefile
     assert '$(STUDIO_APP_RUNTIME)"/bin/python*' in makefile
     macos_job = workflow.split("# Windows x64:", 1)[0]
-    assert '"$app/Contents/Resources/runtime/bin/python3"' in macos_job
+    assert '"$runtime/bin/python3"' in macos_job
     assert "AgentKitStudio-macos-arm64.zip" not in macos_job
     assert "Save verified DMG for manual validation" in macos_job
