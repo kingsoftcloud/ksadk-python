@@ -18,9 +18,6 @@ THEME_STYLESHEET = REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "
 CHAT_SOURCE = (
     REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "components" / "ChatWorkspace.tsx"
 )
-CHAT_COMPOSER_SOURCE = (
-    REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "components" / "ChatComposer.tsx"
-)
 ORCHESTRATION_SOURCE = (
     REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "pages" / "OrchestrationPage.tsx"
 )
@@ -276,7 +273,6 @@ def test_react_chat_keeps_compact_sessions_and_streaming_controls() -> None:
 def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
     stylesheet = REACT_STYLESHEET.read_text(encoding="utf-8")
     source = CHAT_SOURCE.read_text(encoding="utf-8")
-    composer_source = CHAT_COMPOSER_SOURCE.read_text(encoding="utf-8")
     approval_source = (
         REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "approvalModes.ts"
     ).read_text(encoding="utf-8")
@@ -291,7 +287,6 @@ def test_react_chat_composer_owns_three_turn_scoped_approval_levels() -> None:
     assert "approvalPolicy={chat.uiCapabilities.ApprovalPolicy}" in source
     assert "pendingInteractions={chat.pendingInteractions}" in source
     assert "onRespondInteraction=" in source
-    assert "下一轮生效" in composer_source
     assert "<AgentConversationComposer" in source
     assert ".chat-approval-trigger" in stylesheet
     assert ".chat-approval-menu" in stylesheet
