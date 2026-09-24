@@ -183,7 +183,7 @@ jobs:
         # (manual testing) would otherwise create spurious releases tagged with
         # the branch name.
         if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           files: |
@@ -285,7 +285,7 @@ jobs:
         # (manual testing) would otherwise create spurious releases tagged with
         # the branch name.
         if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           files: |
