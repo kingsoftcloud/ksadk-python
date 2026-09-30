@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from ksadk.sessions._postgres_tables import KSADK_PG_EVENTS_TABLE
+from ksadk.sessions.base import SessionEvent, checkpoint_resume_identity
 
 
 async def get_checkpoint_stats(
@@ -48,7 +49,18 @@ async def get_checkpoint_stats(
                      )
                      ORDER BY event_row.id
                    ) FILTER (WHERE event_row.event_type='continuation.resumed')
-                   AS canonical_timestamps
+                   AS canonical_timestamps,
+                   ARRAY_AGG(
+                     COALESCE(
+                       event_row.content_json->'runtime_event',
+                       event_row.content_json->'session_event'->'payload'
+                     )
+                     ORDER BY event_row.id
+                   ) FILTER (WHERE event_row.event_type='continuation.resumed')
+                   AS canonical_payloads,
+                   COUNT(event_row.id) FILTER (
+                     WHERE event_row.event_type='run_resume'
+                   ) AS legacy_resume_count
             FROM requested
             LEFT JOIN {KSADK_PG_EVENTS_TABLE} event_row
               ON event_row.namespace=$1
@@ -119,39 +131,79 @@ async def get_checkpoint_stats(
         if owns_connection:
             await service._pool.release(connection)
     for row in audit_rows:
-        # Keep payload timestamp parsing outside SQL.  Canonical rows are
+        # Keep payload parsing outside SQL.  Canonical rows are
         # user-provided JSON and may carry malformed values (including
         # overflowed exponents); attempting a direct PostgreSQL float cast
         # would abort the whole stats query.  Legacy carrier timestamps
-        # remain covered by the aggregate above.
-        last_resumed_at = row["legacy_last_resumed_at"]
-        try:
-            last_resumed_at = float(last_resumed_at)
-        except (TypeError, ValueError):
-            last_resumed_at = None
-        if last_resumed_at is not None and not math.isfinite(last_resumed_at):
-            last_resumed_at = None
-        carrier_timestamps = row["canonical_carrier_timestamps"] or ()
-        for carrier_timestamp, raw_timestamp in zip(
-            carrier_timestamps, row["canonical_timestamps"] or ()
-        ):
+        # remain covered by the aggregate above.  Strict parsing here also
+        # keeps backend stats fail-loud with REST projection for malformed
+        # known canonical events.
+        canonical_payloads = row.get("canonical_payloads")
+        if canonical_payloads is None:
+            # Compatibility for lightweight/fake connections that predate the
+            # payload aggregate; production SQL always returns this column.
+            resume_count = int(row["resume_count"] or 0)
+            last_resumed_at = row["legacy_last_resumed_at"]
             try:
-                carrier = float(carrier_timestamp)
+                last_resumed_at = float(last_resumed_at)
             except (TypeError, ValueError):
-                carrier = None
-            if carrier is not None and not math.isfinite(carrier):
-                carrier = None
+                last_resumed_at = None
+            if last_resumed_at is not None and not math.isfinite(last_resumed_at):
+                last_resumed_at = None
+            carrier_timestamps = row["canonical_carrier_timestamps"] or ()
+            for carrier_timestamp, raw_timestamp in zip(
+                carrier_timestamps, row["canonical_timestamps"] or ()
+            ):
+                try:
+                    carrier = float(carrier_timestamp)
+                except (TypeError, ValueError):
+                    carrier = None
+                if carrier is not None and not math.isfinite(carrier):
+                    carrier = None
+                try:
+                    candidate = float(raw_timestamp)
+                except (TypeError, ValueError):
+                    candidate = carrier
+                if candidate is None or not math.isfinite(candidate):
+                    candidate = carrier
+                if candidate is None:
+                    continue
+                last_resumed_at = max(last_resumed_at or candidate, candidate)
+        else:
+            legacy_count = int(row.get("legacy_resume_count") or 0)
+            resume_count = legacy_count
+            last_resumed_at = row["legacy_last_resumed_at"]
             try:
-                candidate = float(raw_timestamp)
+                last_resumed_at = float(last_resumed_at)
             except (TypeError, ValueError):
-                candidate = carrier
-            if candidate is None or not math.isfinite(candidate):
-                candidate = carrier
-            if candidate is None:
-                continue
-            last_resumed_at = max(last_resumed_at or candidate, candidate)
+                last_resumed_at = None
+            if last_resumed_at is not None and not math.isfinite(last_resumed_at):
+                last_resumed_at = None
+            carrier_timestamps = row["canonical_carrier_timestamps"] or ()
+            for carrier_timestamp, payload in zip(carrier_timestamps, canonical_payloads):
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    carrier = float(carrier_timestamp)
+                except (TypeError, ValueError):
+                    carrier = 0.0
+                if not math.isfinite(carrier):
+                    carrier = 0.0
+                identity = checkpoint_resume_identity(
+                    SessionEvent(
+                        event_type="continuation.resumed",
+                        content={"runtime_event": payload},
+                        timestamp=carrier,
+                        seq_id=int(payload.get("seq") or 0),
+                    )
+                )
+                if identity is None:
+                    continue
+                resume_count += 1
+                candidate = identity[2]
+                last_resumed_at = max(last_resumed_at or candidate, candidate)
         audits[(row["session_id"], row["run_id"], row["checkpoint_id"])] = {
-            "resume_count": int(row["resume_count"] or 0),
+            "resume_count": resume_count,
             "last_resumed_at": last_resumed_at,
         }
     for row in latest_rows:
