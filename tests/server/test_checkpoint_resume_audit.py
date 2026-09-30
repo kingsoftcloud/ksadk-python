@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
+
 from ksadk.events.canonical import ContinuationCreated, ContinuationResumed, SourceRef
-from ksadk.events.canonical_store import runtime_event_to_session_event
+from ksadk.events.canonical_store import RuntimeEventStore, runtime_event_to_session_event
+from ksadk.runtime_context import PlatformIdentityContext
+from ksadk.server.routes import dependencies
+from ksadk.server.routes.models import ListSessionCheckpointsActionRequest
 from ksadk.server.routes.projection import (
     _apply_checkpoint_resume_audit,
     _checkpoint_event_to_action_payload,
     _record_resume_audit,
 )
+from ksadk.server.routes.sessions import _list_checkpoints_payload
+from ksadk.sessions.base import SessionEvent
+from ksadk.sessions.in_memory import InMemorySessionService
+from ksadk.sessions.local_service import LocalSessionService
+
+pytest_plugins = ("tests.kernel.teams_host_harness",)
 
 
 def _continuation_created() -> ContinuationCreated:
@@ -59,3 +73,232 @@ def test_canonical_continuation_resumed_updates_checkpoint_audit() -> None:
     assert checkpoint["ResumeCount"] == 1
     assert checkpoint["LastResumedAt"] == 101.0
     assert checkpoint["CheckpointStatus"] == "resumed"
+    assert checkpoint["Durable"] is True
+
+
+def test_resume_audit_uses_monotonic_timestamp_and_skips_unknown_events() -> None:
+    resumed = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"timestamp": 101.0})
+    )
+    older = runtime_event_to_session_event(
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "event-checkpoint-resumed-older", "timestamp": 99.0}
+        ),
+    )
+    unknown = SessionEvent(
+        id="future-event",
+        session_id="session-1",
+        event_type="continuation.future",
+        content={
+            "runtime_event": {
+                "schema_version": 2,
+                "event_id": "future-event",
+                "event_type": "continuation.future",
+                "seq": 3,
+                "timestamp": 102.0,
+                "run_id": "run-1",
+                "scope_id": "run:run-1",
+                "source": {"framework": "langgraph"},
+                "continuation_id": "checkpoint-1",
+            }
+        },
+        metadata={"ksadk_canonical_runtime_event": True, "schema_version": 2},
+        seq_id=3,
+    )
+    audit: dict[str, dict[tuple[str, str], dict[str, object]]] = {}
+
+    _record_resume_audit(audit, resumed)
+    _record_resume_audit(audit, older)
+    _record_resume_audit(audit, unknown)
+
+    assert _checkpoint_event_to_action_payload(unknown) is None
+    assert audit["session-1"][("run-1", "checkpoint-1")] == {
+        "resume_count": 2,
+        "last_resumed_at": 101.0,
+    }
+
+
+def test_malformed_known_resume_event_remains_fail_loud() -> None:
+    malformed = SessionEvent(
+        id="malformed-resume",
+        session_id="session-1",
+        event_type="continuation.resumed",
+        content={
+            "runtime_event": {
+                "schema_version": 2,
+                "event_id": "malformed-resume",
+                "event_type": "continuation.resumed",
+                "seq": 4,
+                "timestamp": 103.0,
+                "run_id": "run-1",
+                "scope_id": "run:run-1",
+                "source": {"framework": "langgraph"},
+                "continuation_id": "checkpoint-1",
+                "continuation_kind": "graph_checkpoint",
+            }
+        },
+        metadata={"ksadk_canonical_runtime_event": True, "schema_version": 2},
+        seq_id=4,
+    )
+
+    with pytest.raises(ValidationError):
+        _checkpoint_event_to_action_payload(malformed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: str) -> None:
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    store = RuntimeEventStore(service)
+    await store.append(
+        "session-1",
+        [
+            _continuation_created(),
+            _continuation_resumed(),
+            _continuation_resumed(),  # same event id: idempotent replay
+        ],
+    )
+
+    stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+    audit = stats["audits"][("session-1", "run-1", "checkpoint-1")]
+
+    assert audit == {"resume_count": 1, "last_resumed_at": 101.0}
+    assert stats["latest_seq_ids"][("session-1", "run-1")] == 1
+
+    await store.append(
+        "session-1",
+        [
+            _continuation_resumed().model_copy(
+                update={"event_id": "event-checkpoint-resumed-older", "timestamp": 99.0}
+            )
+        ],
+    )
+    stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+    audit = stats["audits"][("session-1", "run-1", "checkpoint-1")]
+    assert audit == {"resume_count": 2, "last_resumed_at": 101.0}
+
+    mismatched = runtime_event_to_session_event(
+        "session-1",
+        _continuation_resumed().model_copy(
+            update={"event_id": "event-checkpoint-resumed-mismatch", "timestamp": 102.0}
+        ),
+    )
+    mismatched.timestamp = 50.0  # carrier timestamp must not override canonical v2 time
+    await service.append_event("session-1", mismatched)
+    stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+    audit = stats["audits"][("session-1", "run-1", "checkpoint-1")]
+    assert audit == {"resume_count": 3, "last_resumed_at": 102.0}
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_listing_rest_projects_canonical_audit_and_skips_unknown() -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    store = RuntimeEventStore(service)
+    created = _continuation_created()
+    resumed = _continuation_resumed()
+    await store.append("session-1", [created, resumed])
+    await service.append_event(
+        "session-1",
+        SessionEvent(
+            id="future-event",
+            session_id="session-1",
+            event_type="continuation.future",
+            content={
+                "runtime_event": {
+                    "schema_version": 2,
+                    "event_id": "future-event",
+                    "event_type": "continuation.future",
+                    "seq": 3,
+                    "timestamp": 102.0,
+                    "run_id": "run-1",
+                    "scope_id": "run:run-1",
+                    "source": {"framework": "langgraph"},
+                }
+            },
+            metadata={"ksadk_canonical_runtime_event": True, "schema_version": 2},
+        ),
+    )
+
+    request = ListSessionCheckpointsActionRequest(
+        AgentId="agent-1", SessionId="session-1", Limit=10
+    )
+    with dependencies.bind_session_service(service):
+        payload = await _list_checkpoints_payload(request, PlatformIdentityContext())
+
+    assert payload["Total"] == 1
+    checkpoint = payload["Checkpoints"][0]
+    assert checkpoint["CheckpointId"] == "checkpoint-1"
+    assert checkpoint["ResumeCount"] == 1
+    assert checkpoint["LastResumedAt"] == 101.0
+    assert checkpoint["Durable"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_stats_ignores_malformed_canonical_timestamp(
+    tmp_path, backend: str
+) -> None:
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    malformed = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed"})
+    )
+    malformed.content["runtime_event"]["timestamp"] = "1e999999999999999999999"
+    malformed.timestamp = 50.0
+    await service.append_event("session-1", malformed)
+
+    stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+    assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
+        "resume_count": 1,
+        "last_resumed_at": 50.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
+    temporary_postgres,
+) -> None:
+    """The production SQL path must survive malformed canonical timestamp text."""
+
+    import asyncpg
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    database = f"checkpoint_audit_{uuid4().hex}"
+    admin = await asyncpg.connect(temporary_postgres.get_uri())
+    await admin.execute(f'CREATE DATABASE "{database}"')
+    await admin.close()
+    service = PostgresSessionService(dsn=temporary_postgres.get_uri(database))
+    try:
+        await service.create_session("agent-1", "user-1", session_id="session-1")
+        malformed = runtime_event_to_session_event(
+            "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed-pg"})
+        )
+        malformed.content["runtime_event"]["timestamp"] = "1e999999999999999999999"
+        malformed.timestamp = 50.0
+        await service.append_event("session-1", malformed)
+
+        stats = await service.get_checkpoint_stats(
+            [("session-1", "run-1", "checkpoint-1")]
+        )
+        assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
+            "resume_count": 1,
+            "last_resumed_at": 50.0,
+        }
+    finally:
+        if service._pool is not None:
+            await service._pool.close()
+        admin = await asyncpg.connect(temporary_postgres.get_uri())
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
+        await admin.close()

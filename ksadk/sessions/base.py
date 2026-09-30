@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import math
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -185,6 +186,74 @@ class SessionEvent:
         if self.event_type:
             payload["eventType"] = self.event_type
         return payload
+
+
+def checkpoint_resume_identity(event: SessionEvent) -> tuple[str, str, float] | None:
+    """Return ``(run_id, checkpoint_id, timestamp)`` for resume audit facts.
+
+    ``run_resume`` is the legacy carrier.  Canonical RuntimeEvent/v2 stores
+    the same fact as ``continuation.resumed`` inside ``content.runtime_event``.
+    Keeping the wire-shape check here lets every session backend apply the same
+    idempotent checkpoint statistics without importing the canonical store.
+    """
+
+    metadata = event.metadata or {}
+    # Session backends normalize carrier timestamps, but old rows and direct
+    # imports can still contain non-finite values.  Treat those as missing so
+    # one malformed audit row cannot poison ``MAX(last_resumed_at)``.
+    try:
+        timestamp = float(event.timestamp)
+    except (TypeError, ValueError):
+        timestamp = 0.0
+    if not math.isfinite(timestamp):
+        timestamp = 0.0
+    if event.event_type == "run_resume":
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    elif event.event_type == "continuation.resumed":
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict) or payload.get("continuation_kind") != "graph_checkpoint":
+            return None
+        run_id = str(payload.get("run_id") or "").strip()
+        checkpoint_id = str(payload.get("continuation_id") or "").strip()
+        payload_timestamp = payload.get("timestamp")
+        if isinstance(payload_timestamp, (int, float)) and not isinstance(
+            payload_timestamp, bool
+        ):
+            candidate = float(payload_timestamp)
+            if math.isfinite(candidate):
+                timestamp = candidate
+    else:
+        return None
+    if not run_id or not checkpoint_id:
+        return None
+    return run_id, checkpoint_id, timestamp
+
+
+def checkpoint_creation_identity(event: SessionEvent) -> tuple[str, str] | None:
+    """Return ``(run_id, checkpoint_id)`` for checkpoint creation facts."""
+
+    metadata = event.metadata or {}
+    if event.event_type == "run_checkpoint":
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    elif event.event_type == "continuation.created":
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict) or payload.get("continuation_kind") != "graph_checkpoint":
+            return None
+        run_id = str(payload.get("run_id") or "").strip()
+        checkpoint_id = str(payload.get("continuation_id") or "").strip()
+    else:
+        return None
+    if not run_id or not checkpoint_id:
+        return None
+    return run_id, checkpoint_id
 
 
 @dataclass(frozen=True)

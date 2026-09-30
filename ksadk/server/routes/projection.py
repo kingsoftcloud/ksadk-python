@@ -16,8 +16,12 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.events.canonical import ContinuationCreated, ContinuationResumed
-from ksadk.events.canonical_store import session_event_to_runtime_event
+from ksadk.events.canonical import (
+    ContinuationCreated,
+    ContinuationResumed,
+    UnknownCanonicalEvent,
+    parse_runtime_event_lenient,
+)
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import Session, SessionEvent
 
@@ -435,7 +439,15 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     if event.event_type == "run_checkpoint":
         metadata = event.metadata or {}
     else:
-        canonical = session_event_to_runtime_event(event)
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        canonical = parse_runtime_event_lenient(payload)
+        if isinstance(canonical, UnknownCanonicalEvent):
+            return None
         if not isinstance(canonical, ContinuationCreated):
             return None
         if canonical.continuation_kind != "graph_checkpoint":
@@ -462,7 +474,7 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             return default
         durable_raw = capability.get("durable")
         if durable_raw is None:
-            durable_raw = event_meta.get("durable", False)
+            durable_raw = event_meta.get("durable", source_metadata.get("durable", False))
         def _cap_val(key: str, default: Any = None) -> Any:
             value = capability.get(key)
             if value is not None:
@@ -614,19 +626,20 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
 def _resume_audit_by_checkpoint(
     events: list[SessionEvent],
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    audit: dict[tuple[str, str], dict[str, Any]] = {}
+    by_session: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
     for event in events:
-        if event.event_type != "run_resume":
-            continue
-        metadata = event.metadata or {}
-        run_id = str(metadata.get("run_id") or "").strip()
-        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-        if not run_id or not checkpoint_id:
-            continue
-        key = (run_id, checkpoint_id)
-        item = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
-        item["resume_count"] = int(item["resume_count"]) + 1
-        item["last_resumed_at"] = event.timestamp
+        _record_resume_audit(by_session, event)
+    audit: dict[tuple[str, str], dict[str, Any]] = {}
+    for session_audit in by_session.values():
+        for key, item in session_audit.items():
+            merged = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
+            merged["resume_count"] = int(merged["resume_count"]) + int(item["resume_count"])
+            timestamp = item.get("last_resumed_at")
+            if timestamp is not None:
+                merged["last_resumed_at"] = max(
+                    merged["last_resumed_at"] or timestamp,
+                    timestamp,
+                )
     return audit
 
 
@@ -1074,7 +1087,15 @@ def _record_resume_audit(
         # Canonical v2 resume facts supersede the legacy ``run_resume`` carrier.
         # Keep both shapes in one audit map so checkpoint listing and resume
         # resolution apply the same replay policy during the migration window.
-        canonical = session_event_to_runtime_event(event)
+        payload = (event.content or {}).get("runtime_event")
+        if not isinstance(payload, dict):
+            envelope = (event.content or {}).get("session_event")
+            payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict):
+            return
+        canonical = parse_runtime_event_lenient(payload)
+        if isinstance(canonical, UnknownCanonicalEvent):
+            return
         if not isinstance(canonical, ContinuationResumed):
             return
         if canonical.continuation_kind != "graph_checkpoint":
@@ -1090,7 +1111,7 @@ def _record_resume_audit(
         {"resume_count": 0, "last_resumed_at": None},
     )
     item["resume_count"] = int(item["resume_count"]) + 1
-    item["last_resumed_at"] = timestamp
+    item["last_resumed_at"] = max(item["last_resumed_at"] or timestamp, timestamp)
 
 
 def _apply_latest_checkpoint_policy(

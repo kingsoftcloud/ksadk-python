@@ -15,6 +15,8 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    checkpoint_creation_identity,
+    checkpoint_resume_identity,
     generate_id,
 )
 
@@ -416,19 +418,23 @@ class InMemorySessionService(BaseSessionService):
             last_resumed_at = None
             for event in session.events if session else []:
                 metadata = event.metadata or {}
-                if str(metadata.get("run_id") or "") != run_id:
-                    continue
                 if event.event_type == "run_checkpoint":
+                    if str(metadata.get("run_id") or "") != run_id:
+                        continue
                     max_seq_id = max(max_seq_id, int(event.seq_id or 0))
                     if str(metadata.get("checkpoint_id") or "") == checkpoint_id and (
                         candidate is None or event.seq_id > candidate.seq_id
                     ):
                         candidate = copy.deepcopy(event)
-                elif event.event_type == "run_resume" and str(
-                    metadata.get("checkpoint_id") or ""
-                ) == checkpoint_id:
+                elif (creation := checkpoint_creation_identity(event)) is not None:
+                    if creation == (run_id, checkpoint_id):
+                        max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+                else:
+                    identity = checkpoint_resume_identity(event)
+                    if identity is None or identity[:2] != (run_id, checkpoint_id):
+                        continue
                     resume_count += 1
-                    last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
+                    last_resumed_at = max(last_resumed_at or identity[2], identity[2])
             return {
                 "candidate": candidate,
                 "max_seq_id": max_seq_id,
@@ -527,21 +533,31 @@ class InMemorySessionService(BaseSessionService):
                 if snapshot_generation is not None and generation > snapshot_generation:
                     continue
                 metadata = event.metadata or {}
-                run_id = str(metadata.get("run_id") or "")
+                identity = checkpoint_resume_identity(event)
+                creation = checkpoint_creation_identity(event)
+                run_id = str(metadata.get("run_id") or "") or (
+                    identity[0]
+                    if identity is not None
+                    else (creation[0] if creation is not None else "")
+                )
                 run_key = (session_id, run_id)
                 if run_key not in run_keys:
                     continue
+                if creation is not None:
+                    latest_seq_ids[(session_id, creation[0])] = max(
+                        latest_seq_ids[(session_id, creation[0])], int(event.seq_id or 0)
+                    )
                 if event.event_type == "run_checkpoint":
                     latest_seq_ids[run_key] = max(
                         latest_seq_ids[run_key], int(event.seq_id or 0)
                     )
-                elif event.event_type == "run_resume":
-                    key = (session_id, run_id, str(metadata.get("checkpoint_id") or ""))
+                elif identity is not None:
+                    key = (session_id, identity[0], identity[1])
                     if key in audits:
                         audit = audits[key]
                         audit["resume_count"] = int(audit["resume_count"]) + 1
                         audit["last_resumed_at"] = max(
-                            audit["last_resumed_at"] or event.timestamp, event.timestamp
+                            audit["last_resumed_at"] or identity[2], identity[2]
                         )
         return {"audits": audits, "latest_seq_ids": latest_seq_ids}
 

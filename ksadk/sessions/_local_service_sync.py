@@ -23,6 +23,8 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    checkpoint_creation_identity,
+    checkpoint_resume_identity,
     generate_id,
 )
 
@@ -229,7 +231,7 @@ class _LocalServiceSyncMixin:
         snapshot_rowid: int | None = None,
     ) -> dict[str, object]:
         where, params = self._event_query_where(
-            SessionEventQuery(session_ids=[session_id], run_id=run_id)
+            SessionEventQuery(session_ids=[session_id])
         )
         if snapshot_rowid is not None:
             where += " AND e.rowid <= ?"
@@ -250,14 +252,20 @@ class _LocalServiceSyncMixin:
         for event in events:
             metadata = event.metadata or {}
             if event.event_type == "run_checkpoint":
+                if str(metadata.get("run_id") or "") != run_id:
+                    continue
                 max_seq_id = max(max_seq_id, event.seq_id)
                 if str(metadata.get("checkpoint_id") or "") == checkpoint_id:
                     candidate = event
-            elif event.event_type == "run_resume" and str(
-                metadata.get("checkpoint_id") or ""
-            ) == checkpoint_id:
+            elif (creation := checkpoint_creation_identity(event)) is not None:
+                if creation == (run_id, checkpoint_id):
+                    max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+            else:
+                identity = checkpoint_resume_identity(event)
+                if identity is None or identity[:2] != (run_id, checkpoint_id):
+                    continue
                 resume_count += 1
-                last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
+                last_resumed_at = max(last_resumed_at or identity[2], identity[2])
         return {
             "candidate": candidate,
             "max_seq_id": max_seq_id,

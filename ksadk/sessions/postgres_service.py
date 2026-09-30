@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -26,6 +27,8 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    checkpoint_creation_identity,
+    checkpoint_resume_identity,
     generate_id,
 )
 from ksadk.sessions.errors import SessionBackendUnavailable
@@ -753,9 +756,7 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         self, session_id: str, run_id: str, checkpoint_id: str
     ) -> dict[str, object]:
         events = await self.query_events(
-            SessionEventQuery(
-                session_ids=[session_id], run_id=run_id, limit=2**31 - 1, from_start=True
-            )
+            SessionEventQuery(session_ids=[session_id], limit=2**31 - 1, from_start=True)
         )
         candidate = None
         max_seq_id = 0
@@ -764,14 +765,20 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         for event in events:
             metadata = event.metadata or {}
             if event.event_type == "run_checkpoint":
+                if str(metadata.get("run_id") or "") != run_id:
+                    continue
                 max_seq_id = max(max_seq_id, event.seq_id)
                 if str(metadata.get("checkpoint_id") or "") == checkpoint_id:
                     candidate = event
-            elif event.event_type == "run_resume" and str(
-                metadata.get("checkpoint_id") or ""
-            ) == checkpoint_id:
+            elif (creation := checkpoint_creation_identity(event)) is not None:
+                if creation == (run_id, checkpoint_id):
+                    max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+            else:
+                identity = checkpoint_resume_identity(event)
+                if identity is None or identity[:2] != (run_id, checkpoint_id):
+                    continue
                 resume_count += 1
-                last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
+                last_resumed_at = max(last_resumed_at or identity[2], identity[2])
         return {"candidate": candidate, "max_seq_id": max_seq_id, "resume_count": resume_count,
                 "last_resumed_at": last_resumed_at}
 
@@ -802,14 +809,41 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
                 )
                 SELECT requested.session_id,requested.run_id,requested.checkpoint_id,
                        COUNT(event_row.id) AS resume_count,
-                       MAX(event_row.timestamp) AS last_resumed_at
+                       MAX(event_row.timestamp) AS last_resumed_at,
+                       ARRAY_AGG(
+                         COALESCE(
+                           event_row.content_json->'runtime_event'->>'timestamp',
+                           event_row.content_json->'session_event'->'payload'->>'timestamp'
+                         )
+                       ) FILTER (WHERE event_row.event_type='continuation.resumed')
+                       AS canonical_timestamps
                 FROM requested
                 LEFT JOIN {KSADK_PG_EVENTS_TABLE} event_row
                   ON event_row.namespace=$1
                  AND event_row.session_id=requested.session_id
-                 AND event_row.event_type='run_resume'
-                 AND event_row.metadata_json->>'run_id'=requested.run_id
-                 AND event_row.metadata_json->>'checkpoint_id'=requested.checkpoint_id
+                 AND (
+                   (
+                     event_row.event_type='run_resume'
+                     AND event_row.metadata_json->>'run_id'=requested.run_id
+                     AND event_row.metadata_json->>'checkpoint_id'=requested.checkpoint_id
+                   )
+                   OR (
+                     event_row.event_type='continuation.resumed'
+                     AND COALESCE(
+                       event_row.metadata_json->>'run_id',
+                       event_row.content_json->'runtime_event'->>'run_id',
+                       event_row.content_json->'session_event'->'payload'->>'run_id'
+                     )=requested.run_id
+                     AND COALESCE(
+                       event_row.content_json->'runtime_event'->>'continuation_id',
+                       event_row.content_json->'session_event'->'payload'->>'continuation_id'
+                     )=requested.checkpoint_id
+                     AND COALESCE(
+                       event_row.content_json->'runtime_event'->>'continuation_kind',
+                       event_row.content_json->'session_event'->'payload'->>'continuation_kind'
+                     )='graph_checkpoint'
+                   )
+                 )
                 GROUP BY requested.session_id,requested.run_id,requested.checkpoint_id""",
                 self.namespace,
                 [key[0] for key in unique_keys],
@@ -826,8 +860,24 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
                 LEFT JOIN {KSADK_PG_EVENTS_TABLE} event_row
                   ON event_row.namespace=$1
                  AND event_row.session_id=requested.session_id
-                 AND event_row.event_type='run_checkpoint'
-                 AND event_row.metadata_json->>'run_id'=requested.run_id
+                 AND (
+                   (
+                     event_row.event_type='run_checkpoint'
+                     AND event_row.metadata_json->>'run_id'=requested.run_id
+                   )
+                   OR (
+                     event_row.event_type='continuation.created'
+                     AND COALESCE(
+                       event_row.metadata_json->>'run_id',
+                       event_row.content_json->'runtime_event'->>'run_id',
+                       event_row.content_json->'session_event'->'payload'->>'run_id'
+                     )=requested.run_id
+                     AND COALESCE(
+                       event_row.content_json->'runtime_event'->>'continuation_kind',
+                       event_row.content_json->'session_event'->'payload'->>'continuation_kind'
+                     )='graph_checkpoint'
+                   )
+                 )
                 GROUP BY requested.session_id,requested.run_id""",
                 self.namespace,
                 [key[0] for key in run_keys],
@@ -837,9 +887,29 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
             if owns_connection:
                 await self._pool.release(connection)
         for row in audit_rows:
+            # Keep payload timestamp parsing outside SQL.  Canonical rows are
+            # user-provided JSON and may carry malformed values (including
+            # overflowed exponents); attempting a direct PostgreSQL float cast
+            # would abort the whole stats query.  Legacy carrier timestamps
+            # remain covered by the aggregate above.
+            last_resumed_at = row["last_resumed_at"]
+            try:
+                last_resumed_at = float(last_resumed_at)
+            except (TypeError, ValueError):
+                last_resumed_at = None
+            if last_resumed_at is not None and not math.isfinite(last_resumed_at):
+                last_resumed_at = None
+            for raw_timestamp in row["canonical_timestamps"] or ():
+                try:
+                    candidate = float(raw_timestamp)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(candidate):
+                    continue
+                last_resumed_at = max(last_resumed_at or candidate, candidate)
             audits[(row["session_id"], row["run_id"], row["checkpoint_id"])] = {
                 "resume_count": int(row["resume_count"] or 0),
-                "last_resumed_at": row["last_resumed_at"],
+                "last_resumed_at": last_resumed_at,
             }
         for row in latest_rows:
             latest[(row["session_id"], row["run_id"])] = int(
