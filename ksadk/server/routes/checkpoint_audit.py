@@ -13,6 +13,9 @@ from ksadk.events.canonical import (
 from ksadk.events.canonical_store import canonical_storage_id
 from ksadk.sessions import SessionEvent
 
+_CANONICAL_RUNTIME_MARKER = "ksadk_canonical_runtime_event"
+_SESSION_EVENT_ENVELOPE_MARKER = "ksadk_session_event_envelope"
+
 
 def _finite_audit_timestamp(value: Any) -> float:
     """Normalize audit timestamps without allowing NaN/Infinity to poison max."""
@@ -67,9 +70,33 @@ def _parse_canonical_payload(
         raise ValueError("canonical SessionEvent invocation does not match content")
     metadata = event.metadata or {}
     canonical_event_id = str(metadata.get("canonical_event_id") or "")
-    if canonical_event_id and canonical_event_id != canonical.event_id:
-        raise ValueError("canonical SessionEvent event id metadata does not match content")
-    expected_storage_id = canonical_storage_id(event.session_id, canonical.event_id)
+    # Legacy RuntimeEvent carriers use the producer event id as both their
+    # metadata identity and physical storage key.  The typed SessionEvent
+    # envelope has a distinct UUID identity, however: its nested
+    # ``session_event.event_id`` is the value hashed into ``event.id`` while
+    # the runtime payload keeps the producer's free-form ``event_id``.
+    # Validate the two identities independently instead of conflating them.
+    is_typed_runtime_envelope = bool(
+        metadata.get(_SESSION_EVENT_ENVELOPE_MARKER)
+        and metadata.get("family") == "runtime"
+    )
+    if is_typed_runtime_envelope:
+        envelope_content = (event.content or {}).get("session_event")
+        if not isinstance(envelope_content, dict):
+            raise ValueError("canonical SessionEvent is missing session_event content")
+        envelope_event_id = str(envelope_content.get("event_id") or "")
+        if not envelope_event_id:
+            raise ValueError("canonical SessionEvent envelope is missing event id")
+        if canonical_event_id != envelope_event_id:
+            raise ValueError(
+                "canonical SessionEvent event id metadata does not match envelope content"
+            )
+        storage_event_id = envelope_event_id
+    else:
+        if canonical_event_id and canonical_event_id != canonical.event_id:
+            raise ValueError("canonical SessionEvent event id metadata does not match content")
+        storage_event_id = canonical.event_id
+    expected_storage_id = canonical_storage_id(event.session_id, storage_event_id)
     if event.id != expected_storage_id:
         raise ValueError("canonical SessionEvent storage id does not match content")
     return canonical
