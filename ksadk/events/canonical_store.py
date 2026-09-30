@@ -10,6 +10,7 @@ enforce the canonical idempotency domain before a session cursor is allocated.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import uuid
@@ -396,18 +397,21 @@ class RuntimeEventStore:
         poll_interval: float = 0.25,
         timeout: float = 5 * 60,
     ) -> AsyncIterator[RuntimeEvent]:
-        if self._event_store is not None:
+        if self._event_store is not None and self._service is None:
             # The typed view may be backed by a fenced SessionEventStore rather
             # than a BaseSessionService.  In that mode ``_service`` is
             # intentionally None, so consume the store's envelope subscription
             # instead of reaching for the legacy ``get_events`` API.
-            async for event in self._subscribe_typed(
-                session_id,
-                after_seq=after_seq,
-                poll_interval=poll_interval,
-                timeout=timeout,
-            ):
-                yield event
+            async with contextlib.aclosing(
+                self._subscribe_typed(
+                    session_id,
+                    after_seq=after_seq,
+                    poll_interval=poll_interval,
+                    timeout=timeout,
+                )
+            ) as stream:
+                async for event in stream:
+                    yield event
             return
         cursor = int(after_seq or 0)
         deadline = asyncio.get_running_loop().time() + timeout
@@ -432,18 +436,21 @@ class RuntimeEventStore:
         poll_interval: float = 0.25,
         timeout: float = 5 * 60,
     ) -> AsyncIterator[RuntimeEvent]:
-        if self._event_store is not None:
-            async for event in self._subscribe_typed(
-                session_id,
-                after_seq=after_seq,
-                poll_interval=poll_interval,
-                timeout=timeout,
-            ):
-                if event.run_id != run_id:
-                    continue
-                yield event
-                if event.event_type in _TERMINAL_EVENT_TYPES:
-                    return
+        if self._event_store is not None and self._service is None:
+            async with contextlib.aclosing(
+                self._subscribe_typed(
+                    session_id,
+                    after_seq=after_seq,
+                    poll_interval=poll_interval,
+                    timeout=timeout,
+                )
+            ) as stream:
+                async for event in stream:
+                    if event.run_id != run_id:
+                        continue
+                    yield event
+                    if event.event_type in _TERMINAL_EVENT_TYPES:
+                        return
             return
         cursor = int(after_seq or 0)
         deadline = asyncio.get_running_loop().time() + timeout
@@ -471,20 +478,58 @@ class RuntimeEventStore:
     ) -> AsyncIterator[RuntimeEvent]:
         """Bridge a generic envelope subscription into canonical RuntimeEvents.
 
-        ``SessionEventStore.subscribe`` owns replay-to-live cursor semantics.
-        ``wait_for`` keeps the RuntimeEventStore timeout contract even when a
-        custom typed backend does not expose a timeout argument of its own.
-        ``poll_interval`` is accepted for API parity with the legacy path; the
-        typed backend controls its own polling cadence.
+        The typed backend owns replay-to-live ordering; this bridge reads the
+        committed prefix first and then continues from its last physical
+        cursor.  ``poll_interval`` remains part of the public API for parity
+        with the service-backed path; the typed backend controls its cadence.
         """
 
-        del poll_interval
         if self._event_store is None:  # pragma: no cover - guarded by callers
             return
         from ksadk.events.session_event import envelope_to_session_event
 
-        iterator = self._event_store.subscribe(session_id, int(after_seq)).__aiter__()
+        cursor = int(after_seq)
         deadline = asyncio.get_running_loop().time() + timeout
+
+        def runtime_event_from_envelope(envelope: Any) -> RuntimeEvent | None:
+            row = envelope_to_session_event(envelope)
+            # ``envelope_to_session_event`` prepares a write carrier and
+            # therefore leaves its transient binding at seq=0.  The
+            # envelope stream is post-commit, so copy its physical cursor
+            # before validating the runtime payload.
+            row.seq_id = int(envelope.seq)
+            row.seq_binding = None
+            return session_event_to_runtime_event(row)
+
+        # A timeout bounds waiting for live events, while already-committed
+        # replay rows remain observable even when timeout=0.  Read pages before
+        # opening the live iterator, then resume from the last physical cursor
+        # so rows committed during the handoff are not duplicated or dropped.
+        while True:
+            envelopes = await self._event_store.read(session_id, cursor, 1000)
+            if not envelopes:
+                break
+            previous_cursor = cursor
+            envelopes.sort(key=lambda envelope: int(envelope.seq))
+            for envelope in envelopes:
+                sequence = int(envelope.seq)
+                if sequence <= cursor:
+                    continue
+                cursor = sequence
+                runtime_event = runtime_event_from_envelope(envelope)
+                if runtime_event is not None:
+                    yield runtime_event
+            if len(envelopes) < 1000:
+                break
+            if cursor == previous_cursor:
+                # A broken backend must not make the bridge spin forever on a
+                # page that contains only duplicate/out-of-order rows.
+                break
+
+        if timeout <= 0:
+            return
+
+        iterator = self._event_store.subscribe(session_id, cursor).__aiter__()
         try:
             while True:
                 remaining = deadline - asyncio.get_running_loop().time()
@@ -501,14 +546,11 @@ class RuntimeEventStore:
                 # SessionEventStore shares one physical session log, and
                 # failing to consume control/workflow rows would replay them on
                 # every poll of a runtime-only view.
-                row = envelope_to_session_event(envelope)
-                # ``envelope_to_session_event`` prepares a write carrier and
-                # therefore leaves its transient binding at seq=0.  The
-                # envelope subscription is already post-commit, so copy its
-                # physical cursor before validating the runtime payload.
-                row.seq_id = int(envelope.seq)
-                row.seq_binding = None
-                runtime_event = session_event_to_runtime_event(row)
+                sequence = int(envelope.seq)
+                if sequence <= cursor:
+                    continue
+                cursor = sequence
+                runtime_event = runtime_event_from_envelope(envelope)
                 if runtime_event is not None:
                     yield runtime_event
         finally:
