@@ -449,10 +449,24 @@ async def test_postgres_stats_prefers_payload_timestamp_over_stale_carrier() -> 
                         "session_id": "session-1",
                         "run_id": "run-1",
                         "checkpoint_id": "checkpoint-1",
-                        "resume_count": 1,
                         "legacy_last_resumed_at": None,
                         "canonical_carrier_timestamps": [1000.0],
-                        "canonical_timestamps": ["101.0"],
+                        "canonical_payloads": [
+                            {
+                                "schema_version": 2,
+                                "event_id": "resume-1",
+                                "event_type": "continuation.resumed",
+                                "seq": 2,
+                                "timestamp": 101.0,
+                                "run_id": "run-1",
+                                "scope_id": "run:run-1",
+                                "source": {"framework": "langgraph"},
+                                "continuation_id": "checkpoint-1",
+                                "continuation_kind": "graph_checkpoint",
+                                "resume_attempt_id": "attempt-1",
+                            }
+                        ],
+                        "legacy_resume_count": 0,
                     }
                 ]
             return [
