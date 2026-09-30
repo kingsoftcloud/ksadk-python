@@ -13,7 +13,6 @@ from ksadk.events.canonical import (
 from ksadk.events.canonical_store import canonical_storage_id
 from ksadk.sessions import SessionEvent
 
-_CANONICAL_RUNTIME_MARKER = "ksadk_canonical_runtime_event"
 _SESSION_EVENT_ENVELOPE_MARKER = "ksadk_session_event_envelope"
 
 
