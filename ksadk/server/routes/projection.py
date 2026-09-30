@@ -18,14 +18,17 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.events.canonical import (
     ContinuationCreated,
-    ContinuationResumed,
     UnknownCanonicalEvent,
-    parse_runtime_event_lenient,
 )
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import Session, SessionEvent
 
 from . import dependencies as deps
+from .checkpoint_audit import (  # noqa: F401
+    _parse_canonical_payload,
+    _record_resume_audit,
+    _resume_audit_by_checkpoint,
+)
 from .common import _sanitize_session_state_for_action
 from .models import (
     _EVENT_SCAN_PAGE_SIZE,
@@ -445,7 +448,7 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
             payload = envelope.get("payload") if isinstance(envelope, dict) else None
         if not isinstance(payload, dict):
             return None
-        canonical = parse_runtime_event_lenient(payload)
+        canonical = _parse_canonical_payload(event, payload)
         if isinstance(canonical, UnknownCanonicalEvent):
             return None
         if not isinstance(canonical, ContinuationCreated):
@@ -621,26 +624,6 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     if status:
         payload["Status"] = status
     return payload
-
-
-def _resume_audit_by_checkpoint(
-    events: list[SessionEvent],
-) -> dict[tuple[str, str], dict[str, Any]]:
-    by_session: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
-    for event in events:
-        _record_resume_audit(by_session, event)
-    audit: dict[tuple[str, str], dict[str, Any]] = {}
-    for session_audit in by_session.values():
-        for key, item in session_audit.items():
-            merged = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
-            merged["resume_count"] = int(merged["resume_count"]) + int(item["resume_count"])
-            timestamp = item.get("last_resumed_at")
-            if timestamp is not None:
-                merged["last_resumed_at"] = max(
-                    merged["last_resumed_at"] or timestamp,
-                    timestamp,
-                )
-    return audit
 
 
 def _apply_checkpoint_resume_audit(
@@ -1072,46 +1055,6 @@ async def _oldest_unconsumed_session_events(
         after_seq_id=after_seq_id,
     )
     return list(events)
-
-
-def _record_resume_audit(
-    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]],
-    event: SessionEvent,
-) -> None:
-    if event.event_type == "run_resume":
-        metadata = event.metadata or {}
-        run_id = str(metadata.get("run_id") or "").strip()
-        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-        timestamp = event.timestamp
-    else:
-        # Canonical v2 resume facts supersede the legacy ``run_resume`` carrier.
-        # Keep both shapes in one audit map so checkpoint listing and resume
-        # resolution apply the same replay policy during the migration window.
-        payload = (event.content or {}).get("runtime_event")
-        if not isinstance(payload, dict):
-            envelope = (event.content or {}).get("session_event")
-            payload = envelope.get("payload") if isinstance(envelope, dict) else None
-        if not isinstance(payload, dict):
-            return
-        canonical = parse_runtime_event_lenient(payload)
-        if isinstance(canonical, UnknownCanonicalEvent):
-            return
-        if not isinstance(canonical, ContinuationResumed):
-            return
-        if canonical.continuation_kind != "graph_checkpoint":
-            return
-        run_id = canonical.run_id.strip()
-        checkpoint_id = canonical.continuation_id.strip()
-        timestamp = canonical.timestamp
-    if not run_id or not checkpoint_id:
-        return
-    session_audit = audit_by_session.setdefault(event.session_id, {})
-    item = session_audit.setdefault(
-        (run_id, checkpoint_id),
-        {"resume_count": 0, "last_resumed_at": None},
-    )
-    item["resume_count"] = int(item["resume_count"]) + 1
-    item["last_resumed_at"] = max(item["last_resumed_at"] or timestamp, timestamp)
 
 
 def _apply_latest_checkpoint_policy(

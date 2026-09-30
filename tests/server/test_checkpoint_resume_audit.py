@@ -119,6 +119,28 @@ def test_resume_audit_uses_monotonic_timestamp_and_skips_unknown_events() -> Non
     }
 
 
+def test_resume_audit_ignores_nan_and_accepts_numeric_string_timestamp() -> None:
+    nan_event = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "nan"})
+    )
+    nan_event.content["runtime_event"]["timestamp"] = float("nan")
+    nan_event.timestamp = 50.0
+    numeric_event = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "numeric"})
+    )
+    numeric_event.content["runtime_event"]["timestamp"] = "102.5"
+    numeric_event.timestamp = 50.0
+    audit: dict[str, dict[tuple[str, str], dict[str, object]]] = {}
+
+    _record_resume_audit(audit, nan_event)
+    _record_resume_audit(audit, numeric_event)
+
+    assert audit["session-1"][("run-1", "checkpoint-1")] == {
+        "resume_count": 2,
+        "last_resumed_at": 102.5,
+    }
+
+
 def test_malformed_known_resume_event_remains_fail_loud() -> None:
     malformed = SessionEvent(
         id="malformed-resume",
@@ -146,6 +168,17 @@ def test_malformed_known_resume_event_remains_fail_loud() -> None:
         _checkpoint_event_to_action_payload(malformed)
 
 
+def test_known_canonical_carrier_mismatch_fails_loud() -> None:
+    mismatched = runtime_event_to_session_event("session-1", _continuation_resumed())
+    mismatched.id = "wrong-storage-id"
+    audit: dict[str, dict[tuple[str, str], dict[str, object]]] = {}
+
+    with pytest.raises(ValueError, match="storage id"):
+        _record_resume_audit(audit, mismatched)
+    with pytest.raises(ValueError, match="storage id"):
+        _checkpoint_event_to_action_payload(mismatched)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["memory", "local"])
 async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: str) -> None:
@@ -170,6 +203,13 @@ async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: 
 
     assert audit == {"resume_count": 1, "last_resumed_at": 101.0}
     assert stats["latest_seq_ids"][("session-1", "run-1")] == 1
+    lookup = await service.get_checkpoint_lookup_stats(
+        "session-1", "run-1", "checkpoint-1"
+    )
+    assert lookup["candidate"] is not None
+    assert lookup["candidate"].event_type == "continuation.created"
+    assert lookup["candidate"].seq_id == 1
+    assert lookup["max_seq_id"] == 1
 
     await store.append(
         "session-1",
@@ -257,11 +297,23 @@ async def test_checkpoint_stats_ignores_malformed_canonical_timestamp(
     malformed.content["runtime_event"]["timestamp"] = "1e999999999999999999999"
     malformed.timestamp = 50.0
     await service.append_event("session-1", malformed)
+    numeric = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "numeric"})
+    )
+    numeric.content["runtime_event"]["timestamp"] = "102.5"
+    numeric.timestamp = 50.0
+    await service.append_event("session-1", numeric)
+    stale_carrier = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "stale-carrier"})
+    )
+    stale_carrier.content["runtime_event"]["timestamp"] = 101.0
+    stale_carrier.timestamp = 1000.0
+    await service.append_event("session-1", stale_carrier)
 
     stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
     assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
-        "resume_count": 1,
-        "last_resumed_at": 50.0,
+        "resume_count": 3,
+        "last_resumed_at": 102.5,
     }
 
 
@@ -282,23 +334,100 @@ async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
     service = PostgresSessionService(dsn=temporary_postgres.get_uri(database))
     try:
         await service.create_session("agent-1", "user-1", session_id="session-1")
+        await RuntimeEventStore(service).append("session-1", [_continuation_created()])
         malformed = runtime_event_to_session_event(
             "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed-pg"})
         )
         malformed.content["runtime_event"]["timestamp"] = "1e999999999999999999999"
         malformed.timestamp = 50.0
         await service.append_event("session-1", malformed)
+        numeric = runtime_event_to_session_event(
+            "session-1", _continuation_resumed().model_copy(update={"event_id": "numeric-pg"})
+        )
+        numeric.content["runtime_event"]["timestamp"] = "102.5"
+        numeric.timestamp = 50.0
+        await service.append_event("session-1", numeric)
+        stale_carrier = runtime_event_to_session_event(
+            "session-1", _continuation_resumed().model_copy(update={"event_id": "stale-pg"})
+        )
+        stale_carrier.content["runtime_event"]["timestamp"] = 101.0
+        stale_carrier.timestamp = 1000.0
+        await service.append_event("session-1", stale_carrier)
 
         stats = await service.get_checkpoint_stats(
             [("session-1", "run-1", "checkpoint-1")]
         )
         assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
-            "resume_count": 1,
-            "last_resumed_at": 50.0,
+            "resume_count": 3,
+            "last_resumed_at": 102.5,
         }
+        lookup = await service.get_checkpoint_lookup_stats(
+            "session-1", "run-1", "checkpoint-1"
+        )
+        assert lookup["candidate"] is not None
+        assert lookup["candidate"].event_type == "continuation.created"
+        assert lookup["candidate"].seq_id == 1
+        assert lookup["max_seq_id"] == 1
     finally:
         if service._pool is not None:
             await service._pool.close()
         admin = await asyncpg.connect(temporary_postgres.get_uri())
         await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
         await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_stats_prefers_payload_timestamp_over_stale_carrier() -> None:
+    from ksadk.sessions._postgres_checkpoint_stats import get_checkpoint_stats
+
+    class FakeConnection:
+        async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
+            if "canonical_carrier_timestamps" in query:
+                return [
+                    {
+                        "session_id": "session-1",
+                        "run_id": "run-1",
+                        "checkpoint_id": "checkpoint-1",
+                        "resume_count": 1,
+                        "legacy_last_resumed_at": None,
+                        "canonical_carrier_timestamps": [1000.0],
+                        "canonical_timestamps": ["101.0"],
+                    }
+                ]
+            return [
+                {
+                    "session_id": "session-1",
+                    "run_id": "run-1",
+                    "latest_seq_id": 1,
+                }
+            ]
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.connection = FakeConnection()
+
+        async def acquire(self) -> FakeConnection:
+            return self.connection
+
+        async def release(self, connection: FakeConnection) -> None:
+            return None
+
+    class FakeSnapshot:
+        def get(self):
+            return None
+
+    class FakeService:
+        namespace = "default"
+        _pool = FakePool()
+        _checkpoint_snapshot_connection = FakeSnapshot()
+
+        async def _ensure_schema(self) -> None:
+            return None
+
+    stats = await get_checkpoint_stats(
+        FakeService(), [("session-1", "run-1", "checkpoint-1")]
+    )
+    assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
+        "resume_count": 1,
+        "last_resumed_at": 101.0,
+    }

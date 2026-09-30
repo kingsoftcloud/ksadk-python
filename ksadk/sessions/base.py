@@ -220,11 +220,12 @@ def checkpoint_resume_identity(event: SessionEvent) -> tuple[str, str, float] | 
         run_id = str(payload.get("run_id") or "").strip()
         checkpoint_id = str(payload.get("continuation_id") or "").strip()
         payload_timestamp = payload.get("timestamp")
-        if isinstance(payload_timestamp, (int, float)) and not isinstance(
-            payload_timestamp, bool
-        ):
-            candidate = float(payload_timestamp)
-            if math.isfinite(candidate):
+        if not isinstance(payload_timestamp, bool):
+            try:
+                candidate = float(payload_timestamp)
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and math.isfinite(candidate):
                 timestamp = candidate
     else:
         return None

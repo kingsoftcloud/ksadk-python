@@ -429,6 +429,8 @@ class InMemorySessionService(BaseSessionService):
                 elif (creation := checkpoint_creation_identity(event)) is not None:
                     if creation == (run_id, checkpoint_id):
                         max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+                        if candidate is None or event.seq_id > candidate.seq_id:
+                            candidate = copy.deepcopy(event)
                 else:
                     identity = checkpoint_resume_identity(event)
                     if identity is None or identity[:2] != (run_id, checkpoint_id):
