@@ -217,16 +217,39 @@ def checkpoint_resume_identity(event: SessionEvent) -> tuple[str, str, float] | 
             payload = envelope.get("payload") if isinstance(envelope, dict) else None
         if not isinstance(payload, dict) or payload.get("continuation_kind") != "graph_checkpoint":
             return None
-        run_id = str(payload.get("run_id") or "").strip()
-        checkpoint_id = str(payload.get("continuation_id") or "").strip()
-        payload_timestamp = payload.get("timestamp")
-        if not isinstance(payload_timestamp, bool):
+        # Known canonical event types are strict at the projection boundary.
+        # Keep checkpoint stats on the same fail-loud policy so malformed
+        # ``continuation.resumed`` facts (for example a missing
+        # ``resume_attempt_id``) cannot be counted as valid audit rows.
+        from ksadk.events.canonical import (
+            ContinuationResumed,
+            UnknownCanonicalEvent,
+            parse_runtime_event_lenient,
+        )
+
+        normalized_payload = dict(payload)
+        payload_timestamp = normalized_payload.get("timestamp")
+        if isinstance(payload_timestamp, bool):
+            normalized_payload["timestamp"] = timestamp
+        else:
             try:
                 candidate = float(payload_timestamp)
             except (TypeError, ValueError):
                 candidate = None
-            if candidate is not None and math.isfinite(candidate):
-                timestamp = candidate
+            if candidate is None or not math.isfinite(candidate):
+                normalized_payload["timestamp"] = timestamp
+            else:
+                normalized_payload["timestamp"] = candidate
+        canonical = parse_runtime_event_lenient(normalized_payload)
+        if isinstance(canonical, UnknownCanonicalEvent):
+            return None
+        if not isinstance(canonical, ContinuationResumed):
+            return None
+        if canonical.continuation_kind != "graph_checkpoint":
+            return None
+        run_id = canonical.run_id.strip()
+        checkpoint_id = canonical.continuation_id.strip()
+        timestamp = canonical.timestamp
     else:
         return None
     if not run_id or not checkpoint_id:
