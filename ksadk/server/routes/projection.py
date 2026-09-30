@@ -16,7 +16,7 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.events.canonical import ContinuationCreated
+from ksadk.events.canonical import ContinuationCreated, ContinuationResumed
 from ksadk.events.canonical_store import session_event_to_runtime_event
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import Session, SessionEvent
@@ -1065,11 +1065,23 @@ def _record_resume_audit(
     audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]],
     event: SessionEvent,
 ) -> None:
-    if event.event_type != "run_resume":
-        return
-    metadata = event.metadata or {}
-    run_id = str(metadata.get("run_id") or "").strip()
-    checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    if event.event_type == "run_resume":
+        metadata = event.metadata or {}
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+        timestamp = event.timestamp
+    else:
+        # Canonical v2 resume facts supersede the legacy ``run_resume`` carrier.
+        # Keep both shapes in one audit map so checkpoint listing and resume
+        # resolution apply the same replay policy during the migration window.
+        canonical = session_event_to_runtime_event(event)
+        if not isinstance(canonical, ContinuationResumed):
+            return
+        if canonical.continuation_kind != "graph_checkpoint":
+            return
+        run_id = canonical.run_id.strip()
+        checkpoint_id = canonical.continuation_id.strip()
+        timestamp = canonical.timestamp
     if not run_id or not checkpoint_id:
         return
     session_audit = audit_by_session.setdefault(event.session_id, {})
@@ -1078,7 +1090,7 @@ def _record_resume_audit(
         {"resume_count": 0, "last_resumed_at": None},
     )
     item["resume_count"] = int(item["resume_count"]) + 1
-    item["last_resumed_at"] = event.timestamp
+    item["last_resumed_at"] = timestamp
 
 
 def _apply_latest_checkpoint_policy(
