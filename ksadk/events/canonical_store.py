@@ -396,6 +396,19 @@ class RuntimeEventStore:
         poll_interval: float = 0.25,
         timeout: float = 5 * 60,
     ) -> AsyncIterator[RuntimeEvent]:
+        if self._event_store is not None:
+            # The typed view may be backed by a fenced SessionEventStore rather
+            # than a BaseSessionService.  In that mode ``_service`` is
+            # intentionally None, so consume the store's envelope subscription
+            # instead of reaching for the legacy ``get_events`` API.
+            async for event in self._subscribe_typed(
+                session_id,
+                after_seq=after_seq,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            ):
+                yield event
+            return
         cursor = int(after_seq or 0)
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
@@ -419,6 +432,19 @@ class RuntimeEventStore:
         poll_interval: float = 0.25,
         timeout: float = 5 * 60,
     ) -> AsyncIterator[RuntimeEvent]:
+        if self._event_store is not None:
+            async for event in self._subscribe_typed(
+                session_id,
+                after_seq=after_seq,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            ):
+                if event.run_id != run_id:
+                    continue
+                yield event
+                if event.event_type in _TERMINAL_EVENT_TYPES:
+                    return
+            return
         cursor = int(after_seq or 0)
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
@@ -434,6 +460,61 @@ class RuntimeEventStore:
             if asyncio.get_running_loop().time() >= deadline:
                 return
             await asyncio.sleep(poll_interval)
+
+    async def _subscribe_typed(
+        self,
+        session_id: str,
+        *,
+        after_seq: int,
+        poll_interval: float,
+        timeout: float,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Bridge a generic envelope subscription into canonical RuntimeEvents.
+
+        ``SessionEventStore.subscribe`` owns replay-to-live cursor semantics.
+        ``wait_for`` keeps the RuntimeEventStore timeout contract even when a
+        custom typed backend does not expose a timeout argument of its own.
+        ``poll_interval`` is accepted for API parity with the legacy path; the
+        typed backend controls its own polling cadence.
+        """
+
+        del poll_interval
+        if self._event_store is None:  # pragma: no cover - guarded by callers
+            return
+        from ksadk.events.session_event import envelope_to_session_event
+
+        iterator = self._event_store.subscribe(session_id, int(after_seq)).__aiter__()
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return
+                try:
+                    envelope = await asyncio.wait_for(iterator.__anext__(), remaining)
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError:
+                    return
+
+                # Advance the cursor for non-runtime families too.  The typed
+                # SessionEventStore shares one physical session log, and
+                # failing to consume control/workflow rows would replay them on
+                # every poll of a runtime-only view.
+                row = envelope_to_session_event(envelope)
+                # ``envelope_to_session_event`` prepares a write carrier and
+                # therefore leaves its transient binding at seq=0.  The
+                # envelope subscription is already post-commit, so copy its
+                # physical cursor before validating the runtime payload.
+                row.seq_id = int(envelope.seq)
+                row.seq_binding = None
+                runtime_event = session_event_to_runtime_event(row)
+                if runtime_event is not None:
+                    yield runtime_event
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
 
     @staticmethod
     def _assert_same_fact(existing: RuntimeEvent, candidate: RuntimeEvent) -> None:
