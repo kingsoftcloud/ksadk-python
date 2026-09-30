@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from ksadk.events.canonical import ContinuationCreated, ContinuationResumed, SourceRef
 from ksadk.events.canonical_store import RuntimeEventStore, runtime_event_to_session_event
+from ksadk.events.session_event import SessionServiceEventStore
+from ksadk.kernel.contracts import ActivationWriteGuard
 from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.routes import dependencies
 from ksadk.server.routes.models import ListSessionCheckpointsActionRequest
@@ -74,6 +76,33 @@ def test_canonical_continuation_resumed_updates_checkpoint_audit() -> None:
     assert checkpoint["LastResumedAt"] == 101.0
     assert checkpoint["CheckpointStatus"] == "resumed"
     assert checkpoint["Durable"] is True
+
+
+@pytest.mark.asyncio
+async def test_typed_envelope_checkpoint_projection_uses_envelope_identity() -> None:
+    """Typed runtime envelopes keep producer and carrier event ids distinct."""
+
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    store = RuntimeEventStore(
+        SessionServiceEventStore(service),
+        session_id="session-1",
+    )
+    guard = ActivationWriteGuard(activation_id="activation-1", fencing_token=1)
+    await store.append(_continuation_created(), guard=guard)
+    await store.append(_continuation_resumed(), guard=guard)
+
+    request = ListSessionCheckpointsActionRequest(
+        AgentId="agent-1", SessionId="session-1", Limit=10
+    )
+    with dependencies.bind_session_service(service):
+        payload = await _list_checkpoints_payload(request, PlatformIdentityContext())
+
+    assert payload["Total"] == 1
+    checkpoint = payload["Checkpoints"][0]
+    assert checkpoint["CheckpointId"] == "checkpoint-1"
+    assert checkpoint["ResumeCount"] == 1
+    assert checkpoint["LastResumedAt"] == 101.0
 
 
 def test_resume_audit_uses_monotonic_timestamp_and_skips_unknown_events() -> None:
@@ -177,6 +206,15 @@ def test_known_canonical_carrier_mismatch_fails_loud() -> None:
         _record_resume_audit(audit, mismatched)
     with pytest.raises(ValueError, match="storage id"):
         _checkpoint_event_to_action_payload(mismatched)
+
+    mismatched_metadata = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "metadata"})
+    )
+    mismatched_metadata.metadata["canonical_event_id"] = "wrong-event-id"
+    with pytest.raises(ValueError, match="event id metadata"):
+        _record_resume_audit(audit, mismatched_metadata)
+    with pytest.raises(ValueError, match="event id metadata"):
+        _checkpoint_event_to_action_payload(mismatched_metadata)
 
 
 @pytest.mark.asyncio
@@ -315,6 +353,29 @@ async def test_checkpoint_stats_ignores_malformed_canonical_timestamp(
         "resume_count": 3,
         "last_resumed_at": 102.5,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_stats_rejects_malformed_known_resume(
+    tmp_path, backend: str
+) -> None:
+    """Stats must fail loud like projection for broken known canonical facts."""
+
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    malformed = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed"})
+    )
+    malformed.content["runtime_event"].pop("resume_attempt_id")
+    await service.append_event("session-1", malformed)
+
+    with pytest.raises(ValidationError):
+        await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
 
 
 @pytest.mark.asyncio
