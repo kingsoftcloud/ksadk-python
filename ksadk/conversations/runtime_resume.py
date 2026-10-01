@@ -488,6 +488,16 @@ async def _execute_approved_builtin_tool_resume(
     if existing_events is None:
         existing_events = await service.get_events(session_id)
     checkpoint_metadata = _latest_checkpoint_metadata_for_run(existing_events, run_id)
+    # An explicit resume targets this checkpoint even when the durable event
+    # history has a newer checkpoint row (or the test/recovery ledger only
+    # carries the resume payload). Keep the side-effect receipt key aligned
+    # with the request's semantic target.
+    requested_checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
+    if requested_checkpoint_id:
+        checkpoint_metadata = {
+            **checkpoint_metadata,
+            "checkpoint_id": requested_checkpoint_id,
+        }
     receipt = _tool_receipt_metadata(
         session_id=session_id,
         run_id=run_id,
