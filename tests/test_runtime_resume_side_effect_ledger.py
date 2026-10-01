@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ksadk.conversations import runtime_resume
+from ksadk.conversations.runtime_persistence import append_conversation_event
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -119,3 +120,47 @@ async def test_rejected_or_cancelled_resume_has_no_builtin_side_effect(
     assert result is None
     assert calls == []
     assert await service.get_events("session-1") == []
+
+
+@pytest.mark.asyncio
+async def test_corrupt_persisted_receipt_fails_loud_without_replaying_output(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = _resume_input("checkpoint-corrupt")
+    tool_args = dict(resume_input["tool_args"])
+    receipt = runtime_resume._tool_receipt_metadata(
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="write_workspace_file",
+        tool_args=tool_args,
+        tool_call_id="run-1",
+        checkpoint_id="checkpoint-corrupt",
+    )
+    await append_conversation_event(
+        session_id="session-1",
+        author="tool",
+        role="user",
+        text="tampered",
+        invocation_id="invocation-old",
+        event_type="tool_result",
+        session_service_provider=lambda: service,
+        metadata={
+            "tool_name": "write_workspace_file",
+            "tool_args": {"path": "other.txt", "content": "tampered"},
+            "tool_output": {"ok": True, "content": "tampered"},
+            "tool_receipt": receipt,
+        },
+    )
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("corrupt receipt must not execute builtin"),
+    )
+
+    with pytest.raises(ValueError, match="tool_args"):
+        await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-new",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
