@@ -281,9 +281,31 @@ def _canonical_resume_payload(event: SessionEvent) -> dict[str, Any] | None:
         raise ValueError("canonical SessionEvent invocation does not match content")
     metadata = event.metadata or {}
     canonical_event_id = str(metadata.get("canonical_event_id") or "")
-    if canonical_event_id and canonical_event_id != canonical.event_id:
-        raise ValueError("canonical SessionEvent event id metadata does not match content")
-    expected_storage_id = canonical_storage_id(event.session_id, canonical.event_id)
+    # Legacy RuntimeEvent carriers use the producer event id as both their
+    # metadata identity and physical storage key. Typed SessionEvent
+    # envelopes have a distinct envelope event id; validate that identity
+    # independently instead of conflating it with the nested runtime payload.
+    is_typed_runtime_envelope = bool(
+        metadata.get("ksadk_session_event_envelope")
+        and metadata.get("family") == "runtime"
+    )
+    if is_typed_runtime_envelope:
+        envelope_content = (event.content or {}).get("session_event")
+        if not isinstance(envelope_content, dict):
+            raise ValueError("canonical SessionEvent is missing session_event content")
+        envelope_event_id = str(envelope_content.get("event_id") or "")
+        if not envelope_event_id:
+            raise ValueError("canonical SessionEvent envelope is missing event id")
+        if canonical_event_id != envelope_event_id:
+            raise ValueError(
+                "canonical SessionEvent event id metadata does not match envelope content"
+            )
+        storage_event_id = envelope_event_id
+    else:
+        if canonical_event_id and canonical_event_id != canonical.event_id:
+            raise ValueError("canonical SessionEvent event id metadata does not match content")
+        storage_event_id = canonical.event_id
+    expected_storage_id = canonical_storage_id(event.session_id, storage_event_id)
     if event.id != expected_storage_id:
         raise ValueError("canonical SessionEvent storage id does not match content")
     return normalized
@@ -298,7 +320,7 @@ def validate_canonical_resume_payload(event: SessionEvent, payload: dict[str, An
         id=event.id,
         session_id=event.session_id,
         event_type=event.event_type,
-        content={"runtime_event": payload},
+        content=dict(event.content),
         timestamp=event.timestamp,
         seq_id=event.seq_id,
         invocation_id=event.invocation_id,

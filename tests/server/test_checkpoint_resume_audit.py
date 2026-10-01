@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from ksadk.events.canonical import ContinuationCreated, ContinuationResumed, SourceRef
 from ksadk.events.canonical_store import RuntimeEventStore, runtime_event_to_session_event
+from ksadk.events.session_event import SessionServiceEventStore
+from ksadk.kernel.contracts import ActivationWriteGuard
 from ksadk.runtime_context import PlatformIdentityContext
 from ksadk.server.routes import dependencies
 from ksadk.server.routes.models import ListSessionCheckpointsActionRequest
@@ -74,6 +76,33 @@ def test_canonical_continuation_resumed_updates_checkpoint_audit() -> None:
     assert checkpoint["LastResumedAt"] == 101.0
     assert checkpoint["CheckpointStatus"] == "resumed"
     assert checkpoint["Durable"] is True
+
+
+@pytest.mark.asyncio
+async def test_typed_envelope_checkpoint_projection_uses_envelope_identity() -> None:
+    """Typed runtime envelopes keep producer and carrier event ids distinct."""
+
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    store = RuntimeEventStore(
+        SessionServiceEventStore(service),
+        session_id="session-1",
+    )
+    guard = ActivationWriteGuard(activation_id="activation-1", fencing_token=1)
+    await store.append(_continuation_created(), guard=guard)
+    await store.append(_continuation_resumed(), guard=guard)
+
+    request = ListSessionCheckpointsActionRequest(
+        AgentId="agent-1", SessionId="session-1", Limit=10
+    )
+    with dependencies.bind_session_service(service):
+        payload = await _list_checkpoints_payload(request, PlatformIdentityContext())
+
+    assert payload["Total"] == 1
+    checkpoint = payload["Checkpoints"][0]
+    assert checkpoint["CheckpointId"] == "checkpoint-1"
+    assert checkpoint["ResumeCount"] == 1
+    assert checkpoint["LastResumedAt"] == 101.0
 
 
 def test_resume_audit_uses_monotonic_timestamp_and_skips_unknown_events() -> None:
@@ -178,6 +207,15 @@ def test_known_canonical_carrier_mismatch_fails_loud() -> None:
     with pytest.raises(ValueError, match="storage id"):
         _checkpoint_event_to_action_payload(mismatched)
 
+    mismatched_metadata = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "metadata"})
+    )
+    mismatched_metadata.metadata["canonical_event_id"] = "wrong-event-id"
+    with pytest.raises(ValueError, match="event id metadata"):
+        _record_resume_audit(audit, mismatched_metadata)
+    with pytest.raises(ValueError, match="event id metadata"):
+        _checkpoint_event_to_action_payload(mismatched_metadata)
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["memory", "local"])
@@ -203,7 +241,9 @@ async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: 
 
     assert audit == {"resume_count": 1, "last_resumed_at": 101.0}
     assert stats["latest_seq_ids"][("session-1", "run-1")] == 1
-    lookup = await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
+    lookup = await service.get_checkpoint_lookup_stats(
+        "session-1", "run-1", "checkpoint-1"
+    )
     assert lookup["candidate"] is not None
     assert lookup["candidate"].event_type == "continuation.created"
     assert lookup["candidate"].seq_id == 1
@@ -232,76 +272,6 @@ async def test_checkpoint_stats_count_canonical_resume_facts(tmp_path, backend: 
     stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
     audit = stats["audits"][("session-1", "run-1", "checkpoint-1")]
     assert audit == {"resume_count": 3, "last_resumed_at": 102.0}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["memory", "local"])
-async def test_checkpoint_stats_fails_loud_on_canonical_event_type_mismatch(
-    tmp_path, backend: str
-) -> None:
-    """All checkpoint audit paths reject a carrier/payload type mismatch."""
-
-    service = (
-        InMemorySessionService()
-        if backend == "memory"
-        else LocalSessionService(tmp_path / "sessions.sqlite")
-    )
-    await service.create_session("agent-1", "user-1", session_id="session-1")
-    mismatched = runtime_event_to_session_event("session-1", _continuation_resumed())
-    mismatched.content["runtime_event"]["event_type"] = "continuation.created"
-    await service.append_event("session-1", mismatched)
-
-    with pytest.raises(ValueError, match="event type"):
-        await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
-    with pytest.raises(ValueError, match="event type"):
-        await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["memory", "local"])
-@pytest.mark.parametrize("corruption", ["storage", "metadata", "sequence"])
-async def test_checkpoint_stats_fails_loud_on_canonical_identity_corruption(
-    tmp_path, backend: str, corruption: str
-) -> None:
-    service = (
-        InMemorySessionService()
-        if backend == "memory"
-        else LocalSessionService(tmp_path / "sessions.sqlite")
-    )
-    await service.create_session("agent-1", "user-1", session_id="session-1")
-    event = runtime_event_to_session_event("session-1", _continuation_resumed())
-    if corruption == "storage":
-        event.id = "wrong-storage-id"
-    elif corruption == "metadata":
-        event.metadata["canonical_event_id"] = "wrong-event-id"
-    else:
-        event.seq_binding = None
-        event.content["runtime_event"]["seq"] = 99
-    await service.append_event("session-1", event)
-
-    with pytest.raises(ValueError):
-        await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
-    with pytest.raises(ValueError):
-        await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["memory", "local"])
-async def test_checkpoint_lookup_fails_loud_on_corrupt_creation_carrier(
-    tmp_path, backend: str
-) -> None:
-    service = (
-        InMemorySessionService()
-        if backend == "memory"
-        else LocalSessionService(tmp_path / "sessions.sqlite")
-    )
-    await service.create_session("agent-1", "user-1", session_id="session-1")
-    event = runtime_event_to_session_event("session-1", _continuation_created())
-    event.id = "wrong-storage-id"
-    await service.append_event("session-1", event)
-
-    with pytest.raises(ValueError):
-        await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
 
 
 @pytest.mark.asyncio
@@ -386,6 +356,29 @@ async def test_checkpoint_stats_ignores_malformed_canonical_timestamp(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_stats_rejects_malformed_known_resume(
+    tmp_path, backend: str
+) -> None:
+    """Stats must fail loud like projection for broken known canonical facts."""
+
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    malformed = runtime_event_to_session_event(
+        "session-1", _continuation_resumed().model_copy(update={"event_id": "malformed"})
+    )
+    malformed.content["runtime_event"].pop("resume_attempt_id")
+    await service.append_event("session-1", malformed)
+
+    with pytest.raises(ValidationError):
+        await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
     temporary_postgres,
 ) -> None:
@@ -422,12 +415,16 @@ async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
         stale_carrier.timestamp = 1000.0
         await service.append_event("session-1", stale_carrier)
 
-        stats = await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+        stats = await service.get_checkpoint_stats(
+            [("session-1", "run-1", "checkpoint-1")]
+        )
         assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
             "resume_count": 3,
             "last_resumed_at": 102.5,
         }
-        lookup = await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
+        lookup = await service.get_checkpoint_lookup_stats(
+            "session-1", "run-1", "checkpoint-1"
+        )
         assert lookup["candidate"] is not None
         assert lookup["candidate"].event_type == "continuation.created"
         assert lookup["candidate"].seq_id == 1
@@ -452,10 +449,24 @@ async def test_postgres_stats_prefers_payload_timestamp_over_stale_carrier() -> 
                         "session_id": "session-1",
                         "run_id": "run-1",
                         "checkpoint_id": "checkpoint-1",
-                        "resume_count": 1,
                         "legacy_last_resumed_at": None,
                         "canonical_carrier_timestamps": [1000.0],
-                        "canonical_timestamps": ["101.0"],
+                        "canonical_payloads": [
+                            {
+                                "schema_version": 2,
+                                "event_id": "resume-1",
+                                "event_type": "continuation.resumed",
+                                "seq": 2,
+                                "timestamp": 101.0,
+                                "run_id": "run-1",
+                                "scope_id": "run:run-1",
+                                "source": {"framework": "langgraph"},
+                                "continuation_id": "checkpoint-1",
+                                "continuation_kind": "graph_checkpoint",
+                                "resume_attempt_id": "attempt-1",
+                            }
+                        ],
+                        "legacy_resume_count": 0,
                     }
                 ]
             return [
@@ -488,11 +499,81 @@ async def test_postgres_stats_prefers_payload_timestamp_over_stale_carrier() -> 
         async def _ensure_schema(self) -> None:
             return None
 
-    stats = await get_checkpoint_stats(FakeService(), [("session-1", "run-1", "checkpoint-1")])
+    stats = await get_checkpoint_stats(
+        FakeService(), [("session-1", "run-1", "checkpoint-1")]
+    )
     assert stats["audits"][("session-1", "run-1", "checkpoint-1")] == {
         "resume_count": 1,
         "last_resumed_at": 101.0,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_stats_fails_loud_on_canonical_event_type_mismatch(
+    tmp_path, backend: str
+) -> None:
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    mismatched = runtime_event_to_session_event("session-1", _continuation_resumed())
+    mismatched.content["runtime_event"]["event_type"] = "continuation.created"
+    await service.append_event("session-1", mismatched)
+
+    with pytest.raises(ValueError, match="event type"):
+        await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+    with pytest.raises(ValueError, match="event type"):
+        await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+@pytest.mark.parametrize("corruption", ["storage", "metadata", "sequence"])
+async def test_checkpoint_stats_fails_loud_on_canonical_identity_corruption(
+    tmp_path, backend: str, corruption: str
+) -> None:
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    event = runtime_event_to_session_event("session-1", _continuation_resumed())
+    if corruption == "storage":
+        event.id = "wrong-storage-id"
+    elif corruption == "metadata":
+        event.metadata["canonical_event_id"] = "wrong-event-id"
+    else:
+        event.seq_binding = None
+        event.content["runtime_event"]["seq"] = 99
+    await service.append_event("session-1", event)
+
+    with pytest.raises(ValueError):
+        await service.get_checkpoint_stats([("session-1", "run-1", "checkpoint-1")])
+    with pytest.raises(ValueError):
+        await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_lookup_fails_loud_on_corrupt_creation_carrier(
+    tmp_path, backend: str
+) -> None:
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(tmp_path / "sessions.sqlite")
+    )
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    event = runtime_event_to_session_event("session-1", _continuation_created())
+    event.id = "wrong-storage-id"
+    await service.append_event("session-1", event)
+
+    with pytest.raises(ValueError):
+        await service.get_checkpoint_lookup_stats("session-1", "run-1", "checkpoint-1")
 
 
 @pytest.mark.asyncio
@@ -519,7 +600,7 @@ async def test_postgres_stats_fails_loud_on_corrupt_canonical_carrier() -> None:
                         "session_id": "session-1",
                         "run_id": "run-1",
                         "checkpoint_id": "checkpoint-1",
-                        "resume_count": 0,
+                        "legacy_resume_count": 0,
                         "legacy_last_resumed_at": None,
                         "canonical_carrier_timestamps": [],
                         "canonical_timestamps": [],

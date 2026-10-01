@@ -54,12 +54,14 @@ async def get_checkpoint_stats(
                 SELECT * FROM unnest($2::text[],$3::text[],$4::text[])
             )
             SELECT requested.session_id,requested.run_id,requested.checkpoint_id,
-                   COUNT(event_row.id) AS resume_count,
                    MAX(event_row.timestamp) FILTER (
                      WHERE event_row.event_type='run_resume'
                        AND event_row.timestamp > '-Infinity'::double precision
                        AND event_row.timestamp < 'Infinity'::double precision
                    ) AS legacy_last_resumed_at,
+                   COUNT(event_row.id) FILTER (
+                     WHERE event_row.event_type='run_resume'
+                   ) AS legacy_resume_count,
                    ARRAY_AGG(event_row.timestamp ORDER BY event_row.id) FILTER (
                      WHERE event_row.event_type='continuation.resumed'
                    ) AS canonical_carrier_timestamps,
@@ -186,9 +188,19 @@ async def get_checkpoint_stats(
         # narrows counts to the requested checkpoint, but that must not hide a
         # corrupt known carrier from the same fail-loud policy used by REST,
         # in-memory, and SQLite paths.
-        for raw_event in row.get("canonical_resume_rows") or ():
+        canonical_rows = row.get("canonical_resume_rows")
+        resume_count = int(
+            row.get("legacy_resume_count", row.get("resume_count", 0)) or 0
+        )
+        for raw_event in canonical_rows or ():
             event = _raw_session_event(str(row["session_id"]), raw_event)
-            checkpoint_resume_identity(event)
+            identity = checkpoint_resume_identity(event)
+            if identity is None or identity[:2] != (
+                str(row["run_id"]),
+                str(row["checkpoint_id"]),
+            ):
+                continue
+            resume_count += 1
         # Keep payload timestamp parsing outside SQL.  Canonical rows are
         # user-provided JSON and may carry malformed values (including
         # overflowed exponents); attempting a direct PostgreSQL float cast
@@ -201,10 +213,58 @@ async def get_checkpoint_stats(
             last_resumed_at = None
         if last_resumed_at is not None and not math.isfinite(last_resumed_at):
             last_resumed_at = None
-        carrier_timestamps = row["canonical_carrier_timestamps"] or ()
-        for carrier_timestamp, raw_timestamp in zip(
-            carrier_timestamps, row["canonical_timestamps"] or ()
-        ):
+        # Older fake/compatibility rows may not expose canonical_resume_rows;
+        # retain their payload-timestamp precedence fallback. Live PostgreSQL
+        # always returns canonical_resume_rows from the correlated subquery.
+        fallback_pairs = (
+            zip(
+                row.get("canonical_carrier_timestamps") or (),
+                row.get("canonical_timestamps")
+                or row.get("canonical_payloads")
+                or (),
+            )
+            if canonical_rows is None
+            else ()
+        )
+        for carrier_timestamp, raw_value in fallback_pairs:
+            counted_identity = False
+            # Compatibility fakes from the pre-integrity SQL shape return
+            # canonical payload objects rather than extracted timestamps.
+            # Reconstruct a complete carrier identity before validating it.
+            if isinstance(raw_value, str):
+                import json
+
+                try:
+                    raw_value = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    raw_value = None
+            if isinstance(raw_value, dict):
+                from ksadk.events.canonical_store import canonical_storage_id
+
+                payload = dict(raw_value)
+                raw_timestamp = payload.get("timestamp")
+                event = SessionEvent(
+                    id=canonical_storage_id(
+                        str(row["session_id"]), str(payload.get("event_id") or "")
+                    ),
+                    session_id=str(row["session_id"]),
+                    event_type=str(payload.get("event_type") or ""),
+                    content={"runtime_event": payload},
+                    timestamp=carrier_timestamp,
+                    seq_id=int(payload.get("seq") or 0),
+                    metadata={"canonical_event_id": str(payload.get("event_id") or "")},
+                )
+                identity = checkpoint_resume_identity(event)
+                if identity is None or identity[:2] != (
+                    str(row["run_id"]),
+                    str(row["checkpoint_id"]),
+                ):
+                    continue
+                resume_count += 1
+                counted_identity = True
+                raw_timestamp = identity[2]
+            else:
+                raw_timestamp = raw_value
             try:
                 carrier = float(carrier_timestamp)
             except (TypeError, ValueError):
@@ -219,9 +279,11 @@ async def get_checkpoint_stats(
                 candidate = carrier
             if candidate is None:
                 continue
+            if not counted_identity:
+                resume_count += 1
             last_resumed_at = max(last_resumed_at or candidate, candidate)
         audits[(row["session_id"], row["run_id"], row["checkpoint_id"])] = {
-            "resume_count": int(row["resume_count"] or 0),
+            "resume_count": resume_count,
             "last_resumed_at": last_resumed_at,
         }
     for row in latest_rows:
