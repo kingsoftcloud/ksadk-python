@@ -164,3 +164,51 @@ async def test_corrupt_persisted_receipt_fails_loud_without_replaying_output(mon
             resume_input=resume_input,
             session_service_provider=lambda: service,
         )
+
+
+@pytest.mark.asyncio
+async def test_legacy_unscoped_receipt_replays_once_after_checkpoint_key_upgrade(
+    monkeypatch,
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = _resume_input("checkpoint-upgraded")
+    tool_args = dict(resume_input["tool_args"])
+    legacy_receipt = runtime_resume._tool_receipt_metadata(
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="write_workspace_file",
+        tool_args=tool_args,
+        tool_call_id="run-1",
+    )
+    await append_conversation_event(
+        session_id="session-1",
+        author="tool",
+        role="user",
+        text="legacy",
+        invocation_id="invocation-old",
+        event_type="tool_result",
+        session_service_provider=lambda: service,
+        metadata={
+            "tool_name": "write_workspace_file",
+            "tool_args": tool_args,
+            "tool_output": {"ok": True, "legacy": True},
+            "tool_receipt": legacy_receipt,
+        },
+    )
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("legacy receipt should replay without executing builtin"),
+    )
+
+    result = await runtime_resume._execute_approved_builtin_tool_resume(
+        session_id="session-1",
+        invocation_id="invocation-new",
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+
+    assert result["output"] == {"ok": True, "legacy": True, "replayed": True}
+    events = await service.get_events("session-1")
+    assert events[-1].metadata["tool_receipt"]["legacy_key_fallback"] is True

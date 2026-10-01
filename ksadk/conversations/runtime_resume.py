@@ -529,6 +529,26 @@ async def _execute_approved_builtin_tool_resume(
         expected_receipt=receipt,
         expected_tool_args=call_args,
     )
+    legacy_receipt_fallback = False
+    if existing_event is None and requested_checkpoint_id:
+        # Receipts written before checkpoint-scoped keys used the same
+        # session/run/tool/args key with an empty checkpoint field. Reuse that
+        # immutable ledger entry once, but keep strict identity validation for
+        # every field that legacy rows carry.
+        legacy_receipt = _tool_receipt_metadata(
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            tool_args=call_args,
+            tool_call_id=run_id,
+        )
+        existing_event = _find_tool_receipt_event_by_key(
+            existing_events,
+            legacy_receipt["idempotency_key"],
+            expected_receipt=legacy_receipt,
+            expected_tool_args=call_args,
+        )
+        legacy_receipt_fallback = existing_event is not None
     if existing_event is not None:
         existing_metadata = existing_event.metadata or {}
         output = existing_metadata.get("tool_output", "")
@@ -539,6 +559,8 @@ async def _execute_approved_builtin_tool_resume(
             "replayed": True,
             "replayed_from_event_id": existing_event.id,
         }
+        if legacy_receipt_fallback:
+            replayed_receipt["legacy_key_fallback"] = True
         await append_conversation_event(
             session_id=session_id,
             author="tool",
