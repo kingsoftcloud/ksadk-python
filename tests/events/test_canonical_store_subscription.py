@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from ksadk.events.canonical import RunCompleted, RunStarted, SourceRef
-from ksadk.events.canonical_store import RuntimeEventStore
+from ksadk.events.canonical import RunCompleted, RunStarted, SourceRef, dump_runtime_event
+from ksadk.events.canonical_store import RuntimeEventStore, runtime_event_envelope
 from ksadk.events.session_event import SessionServiceEventStore
 from ksadk.kernel.contracts import ActivationWriteGuard
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -52,6 +52,34 @@ class _TrackingEnvelopeStore(_EnvelopeOnlyStore):
                 self._wake.clear()
         finally:
             self.closed.set()
+
+
+class _ReplayPageStore:
+    """Minimal typed store that exposes replay page/cursor behavior directly."""
+
+    def __init__(self, pages: dict[int, list]) -> None:
+        self.pages = pages
+        self.read_cursors: list[int] = []
+
+    async def append(self, envelope, *, guard):  # pragma: no cover - not under test
+        raise AssertionError("replay fixture is read-only")
+
+    async def read(self, session_id: str, after_seq: int, limit: int) -> list:
+        self.read_cursors.append(int(after_seq))
+        return list(self.pages.get(int(after_seq), ()))[:limit]
+
+    async def subscribe(self, session_id: str, after_seq: int):
+        if False:  # pragma: no cover - keeps this an async generator
+            yield None
+
+
+def _envelope_for_seq(seq: int):
+    event = _run_started(f"event-{seq}")
+    payload = dump_runtime_event(event)
+    payload["seq"] = seq
+    return runtime_event_envelope("session-1", event).model_copy(
+        update={"seq": seq, "payload": payload}
+    )
 
 
 def _run_started(event_id: str, *, run_id: str = "run-1") -> RunStarted:
@@ -206,3 +234,46 @@ async def test_envelope_only_run_subscription_closes_backend_at_terminal() -> No
 
     await asyncio.wait_for(backend.closed.wait(), timeout=1)
     assert [event.event_type for event in events] == ["run.completed"]
+
+
+async def test_typed_handoff_advances_past_exact_page_with_duplicate_out_of_order_rows() -> None:
+    envelopes = [_envelope_for_seq(seq) for seq in range(1, 1001)]
+    # A full page contains 1..999, a duplicate 999, and omits 1000 for the
+    # next page. The bridge must not stop merely because len(page) == 1000.
+    first_page = list(reversed(envelopes[:999] + [envelopes[998]]))
+    backend = _ReplayPageStore({0: first_page, 999: [envelopes[999]]})
+    runtime_events = RuntimeEventStore(backend, session_id="session-1")
+
+    events = [
+        event
+        async for event in runtime_events.subscribe_session("session-1", timeout=0)
+    ]
+
+    assert [event.seq for event in events] == list(range(1, 1001))
+    assert backend.read_cursors == [0, 999]
+
+
+async def test_typed_handoff_rejects_runtime_payload_type_mismatch() -> None:
+    envelope = _envelope_for_seq(1)
+    envelope.payload["event_type"] = "run.completed"
+    backend = _ReplayPageStore({0: [envelope]})
+    runtime_events = RuntimeEventStore(backend, session_id="session-1")
+
+    with pytest.raises(ValueError, match="event type"):
+        [
+            event
+            async for event in runtime_events.subscribe_session("session-1", timeout=0)
+        ]
+
+
+async def test_typed_handoff_rejects_malformed_runtime_payload() -> None:
+    envelope = _envelope_for_seq(1)
+    envelope.payload.pop("status")
+    backend = _ReplayPageStore({0: [envelope]})
+    runtime_events = RuntimeEventStore(backend, session_id="session-1")
+
+    with pytest.raises(ValueError):
+        [
+            event
+            async for event in runtime_events.subscribe_session("session-1", timeout=0)
+        ]

@@ -113,6 +113,8 @@ def session_event_to_runtime_event(event: SessionEvent) -> RuntimeEvent | None:
             raise ValueError("runtime family SessionEvent is missing runtime_event content")
         if payload.get("seq") != event.seq_id:
             raise ValueError("canonical RuntimeEvent seq does not match physical seq")
+        if payload.get("event_type") != event.event_type:
+            raise ValueError("canonical RuntimeEvent event type does not match envelope")
         return parse_runtime_event(payload)
     if not metadata.get(_CANONICAL_RUNTIME_MARKER):
         return None
