@@ -395,6 +395,43 @@ def _tool_receipt_status_from_output(output: Any) -> str:
     return "completed" if output.get("ok") is not False else "failed"
 
 
+_KNOWN_TOOL_RECEIPT_STATUSES = frozenset({"completed", "failed", "succeeded"})
+
+
+def _validate_tool_receipt_event(event: SessionEvent) -> str:
+    """Validate the immutable output/status pair carried by a tool receipt.
+
+    A receipt is an idempotency ledger entry: once one is found, replay must
+    never execute the builtin again.  Treat malformed entries as a hard
+    failure instead of silently replaying an empty or contradictory result.
+    ``succeeded`` is a legacy alias for ``completed``.  For non-mapping
+    outputs, retain the producer-specific status semantics (the stream path
+    writes ``completed`` while the builtin helper historically wrote
+    ``failed``), so only mapping outputs are checked against ``ok``.
+    """
+
+    metadata = event.metadata or {}
+    if "tool_output" not in metadata:
+        raise ValueError("tool receipt is missing tool_output")
+
+    receipt = metadata.get("tool_receipt")
+    if not isinstance(receipt, Mapping):
+        raise ValueError("tool receipt is missing receipt metadata")
+    status = str(receipt.get("status") or "").strip().lower()
+    if status not in _KNOWN_TOOL_RECEIPT_STATUSES:
+        raise ValueError(f"tool receipt has unknown status {status!r}")
+
+    output = metadata["tool_output"]
+    if isinstance(output, Mapping):
+        expected = "failed" if output.get("ok") is False else "completed"
+        normalized_status = "completed" if status == "succeeded" else status
+        if normalized_status != expected:
+            raise ValueError(
+                "tool receipt status does not match mapping tool_output ok value"
+            )
+    return status
+
+
 def _tool_resume_run_id(resume_input: Mapping[str, Any]) -> str:
     return str(
         resume_input.get("run_id")
@@ -593,7 +630,8 @@ async def _execute_approved_builtin_tool_resume(
             raise LegacyToolReceiptCheckpointAmbiguityError()
     if existing_event is not None:
         existing_metadata = existing_event.metadata or {}
-        output = existing_metadata.get("tool_output", "")
+        _validate_tool_receipt_event(existing_event)
+        output = existing_metadata["tool_output"]
         if isinstance(output, Mapping):
             output = {**dict(output), "replayed": True}
         replayed_receipt = {

@@ -70,6 +70,7 @@ from ksadk.conversations.runtime_resume import (
     _normalize_checkpoint_resume_input,
     _raise_if_legacy_tool_receipt_checkpoint_ambiguous,
     _tool_receipt_idempotency_key_for_resume,
+    _validate_tool_receipt_event,
 )
 from ksadk.ids import new_run_id
 from ksadk.model_policy import model_policy_options_for_model
@@ -285,7 +286,18 @@ async def build_run_input(
                     existing_events,
                     receipt_key,
                 )
+            replay_decision = replay_candidate.get("approval")
+            if not isinstance(replay_decision, Mapping):
+                replay_decision = _approval_decision_from_resume(replay_candidate)
+            replay_is_approved = bool(
+                replay_decision.get("approved") or replay_decision.get("approve")
+            )
             if existing_tool_receipt_event is not None:
+                if replay_is_approved:
+                    # Validate before appending the approval response.  A
+                    # malformed newest receipt must fail closed and must not
+                    # create another approval/tool-result pair.
+                    _validate_tool_receipt_event(existing_tool_receipt_event)
                 normalized_resume_input = replay_candidate
             else:
                 raise ValueError("Responses resume input requires a pending approval_request")
@@ -303,6 +315,31 @@ async def build_run_input(
                 governance_state.consecutive_approval_denials = (
                     _consecutive_approval_denials_from_events(existing_events)
                 )
+
+            # A pending approval can still race with a persisted receipt (for
+            # example, after a retry that restored the approval request but
+            # retained its tool-result ledger entry).  Resolve and validate
+            # the newest matching receipt before appending approval_response.
+            # Rejections remain a harmless no-op even if an unrelated old
+            # receipt is malformed, so only approved decisions are replayed.
+            approval_decision = normalized_resume_input.get("approval")
+            if not isinstance(approval_decision, Mapping):
+                approval_decision = _approval_decision_from_resume(normalized_resume_input)
+            approval_is_approved = bool(
+                approval_decision.get("approved") or approval_decision.get("approve")
+            )
+            if approval_is_approved and existing_tool_receipt_event is None:
+                receipt_key = _tool_receipt_idempotency_key_for_resume(
+                    session_id=resolved_session_id,
+                    resume_input=normalized_resume_input,
+                )
+                if receipt_key:
+                    existing_tool_receipt_event = _find_tool_receipt_event_by_key(
+                        existing_events,
+                        receipt_key,
+                    )
+                    if existing_tool_receipt_event is not None:
+                        _validate_tool_receipt_event(existing_tool_receipt_event)
 
         resume_text = _format_resume_response_text(normalized_resume_input)
         resume_event_metadata: dict[str, Any] = {"resume_input": normalized_resume_input}

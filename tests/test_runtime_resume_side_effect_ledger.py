@@ -23,6 +23,42 @@ def _resume_input(checkpoint_id: str) -> dict[str, object]:
     }
 
 
+async def _append_receipt(
+    service: InMemorySessionService,
+    resume_input: dict[str, object],
+    *,
+    output: object = None,
+    status: str = "completed",
+    include_output: bool = True,
+    invocation_id: str = "invocation-old",
+) -> None:
+    receipt = runtime_resume._tool_receipt_metadata(
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="write_workspace_file",
+        tool_args=dict(resume_input["tool_args"]),
+        tool_call_id="run-1",
+        checkpoint_id=str(resume_input["checkpoint_id"]),
+        status=status,
+    )
+    metadata: dict[str, object] = {
+        "tool_name": "write_workspace_file",
+        "tool_args": dict(resume_input["tool_args"]),
+        "tool_receipt": receipt,
+    }
+    if include_output:
+        metadata["tool_output"] = output
+    await append_conversation_event(
+        session_id="session-1",
+        author="tool",
+        role="user",
+        text=str(output),
+        invocation_id=invocation_id,
+        event_type="tool_result",
+        session_service_provider=lambda: service,
+        metadata=metadata,
+    )
+
 @pytest.mark.asyncio
 async def test_approved_builtin_resume_replays_receipt_without_reexecuting(monkeypatch) -> None:
     service = InMemorySessionService()
@@ -437,3 +473,328 @@ async def test_openai_responses_route_rejects_ambiguous_legacy_checkpoint_resume
     events = await service.get_events("session-1")
     assert len(events) == 2
     assert [event.event_type for event in events] == ["approval_request", "tool_result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "output"),
+    [
+        ("completed", {"ok": False, "error": "failed"}),
+        ("failed", {"ok": True, "value": "done"}),
+        ("unknown", {"ok": True, "value": "done"}),
+    ],
+)
+async def test_corrupt_receipt_output_integrity_fails_before_builtin(
+    monkeypatch, status: str, output: object
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = _resume_input("checkpoint-invalid")
+    await _append_receipt(service, resume_input, output=output, status=status)
+    before = await service.get_events("session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("invalid receipt must not execute builtin"),
+    )
+
+    with pytest.raises(ValueError, match="receipt"):
+        await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-new",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
+
+    assert await service.get_events("session-1") == before
+
+
+@pytest.mark.asyncio
+async def test_missing_receipt_output_fails_before_replay_append(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = _resume_input("checkpoint-missing-output")
+    await _append_receipt(service, resume_input, include_output=False)
+    before = await service.get_events("session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("missing output must not execute builtin"),
+    )
+
+    with pytest.raises(ValueError, match="missing tool_output"):
+        await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-new",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
+
+    assert await service.get_events("session-1") == before
+
+
+@pytest.mark.asyncio
+async def test_failed_receipt_replays_failure_without_reexecuting(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = _resume_input("checkpoint-failed")
+    output = {"ok": False, "error_type": "RuntimeError", "error_message": "denied"}
+    await _append_receipt(service, resume_input, output=output, status="failed")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("failed receipt must replay without executing builtin"),
+    )
+
+    result = await runtime_resume._execute_approved_builtin_tool_resume(
+        session_id="session-1",
+        invocation_id="invocation-new",
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+
+    assert result["output"] == {**output, "replayed": True}
+    events = await service.get_events("session-1")
+    assert len(events) == 2
+    assert events[-1].metadata["tool_receipt"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_non_mapping_and_legacy_success_statuses_replay(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("receipt replay must not execute builtin"),
+    )
+
+    for index, (status, output) in enumerate(
+        (("completed", "ok"), ("succeeded", None)),
+        start=1,
+    ):
+        resume_input = _resume_input(f"checkpoint-scalar-{index}")
+        await _append_receipt(service, resume_input, output=output, status=status)
+        result = await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id=f"invocation-new-{index}",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
+        assert result["output"] == output
+
+
+@pytest.mark.asyncio
+async def test_newest_malformed_receipt_wins_over_older_valid_receipt(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = _resume_input("checkpoint-newest")
+    await _append_receipt(
+        service,
+        resume_input,
+        output={"ok": True, "value": "old"},
+        status="completed",
+        invocation_id="invocation-old",
+    )
+    await _append_receipt(
+        service,
+        resume_input,
+        output={"ok": False, "error": "tampered"},
+        status="completed",
+        invocation_id="invocation-newest",
+    )
+    before = await service.get_events("session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("malformed newest receipt must not execute builtin"),
+    )
+
+    with pytest.raises(ValueError, match="status"):
+        await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-replay",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
+    assert await service.get_events("session-1") == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "output", "include_output", "error_match"),
+    [
+        ("completed", {"ok": False}, True, "status"),
+        ("failed", {"ok": True}, True, "status"),
+        ("unknown", {"ok": True}, True, "unknown status"),
+        ("completed", None, False, "missing tool_output"),
+    ],
+)
+async def test_build_run_input_rejects_corrupt_receipt_before_approval_append(
+    monkeypatch,
+    status: str,
+    output: object,
+    include_output: bool,
+    error_match: str,
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = {
+        **_resume_input("checkpoint-public-invalid"),
+        "type": "mcp_approval_response",
+    }
+    await _append_receipt(
+        service,
+        resume_input,
+        output=output,
+        status=status,
+        include_output=include_output,
+    )
+    before = await service.get_events("session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("invalid receipt must not execute builtin"),
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        await build_run_input(
+            agent_id="agent-1",
+            user_id="user-1",
+            session_id="session-1",
+            messages=[],
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
+
+    # The route preflight runs before the approval response append and the
+    # direct executor, so the malformed ledger entry remains the only event.
+    assert await service.get_events("session-1") == before
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_rejects_corrupt_receipt_before_approval_append_for_pending_resume(
+    monkeypatch,
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = {
+        **_resume_input("checkpoint-public-pending-invalid"),
+        "type": "mcp_approval_response",
+    }
+    await append_conversation_event(
+        session_id="session-1",
+        author="model",
+        role="model",
+        text="approval requested",
+        invocation_id="invocation-request",
+        event_type="approval_request",
+        session_service_provider=lambda: service,
+        metadata={
+            "interrupt_info": {
+                "approval_request_id": "approval-checkpoint-public-pending-invalid",
+                "tool_name": "write_workspace_file",
+                "arguments": '{"path":"result.txt","content":"done"}',
+                "run_id": "run-1",
+            }
+        },
+    )
+    await _append_receipt(
+        service,
+        {
+            **resume_input,
+            "tool_args": {
+                **dict(resume_input["tool_args"]),
+                "approval": resume_input["approval"],
+            },
+        },
+        output={"ok": False},
+        status="completed",
+    )
+    before = await service.get_events("session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("invalid receipt must not execute builtin"),
+    )
+
+    with pytest.raises(ValueError, match="status"):
+        await build_run_input(
+            agent_id="agent-1",
+            user_id="user-1",
+            session_id="session-1",
+            messages=[],
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        )
+    assert await service.get_events("session-1") == before
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_rejection_skips_corrupt_receipt_preflight(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = {
+        **_resume_input("checkpoint-public-reject"),
+        "type": "mcp_approval_response",
+        "approval": {"approved": False, "reason": "no thanks"},
+    }
+    await _append_receipt(
+        service,
+        resume_input,
+        output={"ok": False},
+        status="completed",
+    )
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("rejected receipt must not execute builtin"),
+    )
+
+    result = await build_run_input(
+        agent_id="agent-1",
+        user_id="user-1",
+        session_id="session-1",
+        messages=[],
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+
+    events = await service.get_events("session-1")
+    assert [event.event_type for event in events] == ["tool_result", "approval_response"]
+    assert result.resume_input == resume_input
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_replays_valid_failed_receipt_without_builtin(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    resume_input = {
+        **_resume_input("checkpoint-public-failed"),
+        "type": "mcp_approval_response",
+    }
+    output = {"ok": False, "error_type": "PermissionError", "error_message": "denied"}
+    await _append_receipt(service, resume_input, output=output, status="failed")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("valid failed receipt must not execute builtin"),
+    )
+
+    prepared = await build_run_input(
+        agent_id="agent-1",
+        user_id="user-1",
+        session_id="session-1",
+        messages=[],
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+
+    assert prepared.resume_input["output"] == {**output, "replayed": True}
+    events = await service.get_events("session-1")
+    assert [event.event_type for event in events] == [
+        "tool_result",
+        "approval_response",
+        "tool_result",
+    ]
+    assert events[-1].metadata["tool_output"] == {**output, "replayed": True}
