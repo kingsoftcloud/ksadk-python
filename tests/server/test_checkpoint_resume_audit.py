@@ -379,6 +379,46 @@ async def test_checkpoint_stats_rejects_malformed_known_resume(
 
 
 @pytest.mark.asyncio
+async def test_postgres_typed_runtime_envelope_persists_and_replays(temporary_postgres) -> None:
+    """The typed runtime view must use the durable PostgreSQL event cursor."""
+
+    import asyncpg
+
+    from ksadk.events.canonical_store import RuntimeEventStore
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    database = f"typed_envelope_{uuid4().hex}"
+    admin = await asyncpg.connect(temporary_postgres.get_uri())
+    await admin.execute(f'CREATE DATABASE "{database}"')
+    await admin.close()
+    service = PostgresSessionService(dsn=temporary_postgres.get_uri(database))
+    try:
+        await service.create_session("agent-1", "user-1", session_id="session-1")
+        view = RuntimeEventStore(
+            SessionServiceEventStore(service),
+            session_id="session-1",
+        )
+        persisted = await view.append(
+            _continuation_created(),
+            guard=ActivationWriteGuard(activation_id="activation-1", fencing_token=1),
+        )
+        assert persisted.event_id == "event-checkpoint-created"
+        assert persisted.seq == 1
+
+        replayed = await view.page("session-1", limit=10)
+        assert [event.event_id for event in replayed] == ["event-checkpoint-created"]
+        assert replayed[0].seq == 1
+        assert replayed[0].event_type == "continuation.created"
+    finally:
+        await service.aclose()
+        admin = await asyncpg.connect(temporary_postgres.get_uri())
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
+        await admin.close()
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
     temporary_postgres,
 ) -> None:

@@ -9,6 +9,61 @@ on:
       - "open-source/**"
 
 jobs:
+  test-postgres:
+    name: PostgreSQL persistence gates
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ksadk_ci
+          POSTGRES_PASSWORD: ksadk_ci_password
+          POSTGRES_DB: ksadk_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ksadk_ci -d ksadk_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      KSADK_TEST_POSTGRES_DSN: postgresql://ksadk_ci:ksadk_ci_password@127.0.0.1:5432/ksadk_ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: uv sync --extra dev
+
+      - name: Run live PostgreSQL persistence tests
+        run: |
+          set +e
+          uv run --no-sync pytest \
+            tests/server/test_checkpoint_resume_audit.py \
+            tests/server/test_postgres_jsonb_codec_guard.py \
+            -q --junitxml="$RUNNER_TEMP/postgres-junit.xml"
+          test_code=$?
+          set -e
+          TEST_REPORT="$RUNNER_TEMP/postgres-junit.xml" python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = ET.parse(os.environ["TEST_REPORT"])
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in report.findall(".//testsuite"))
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in report.findall(".//testsuite"))
+          print(f"PostgreSQL persistence tests executed: {tests}; skipped: {skipped}")
+          if skipped:
+              raise SystemExit("PostgreSQL persistence tests unexpectedly skipped")
+          PY
+          exit "$test_code"
+
   test:
     runs-on: ubuntu-latest
     env:

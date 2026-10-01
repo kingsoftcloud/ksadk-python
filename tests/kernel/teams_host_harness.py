@@ -5,6 +5,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import pytest
@@ -39,8 +40,31 @@ from tests.kernel.control_harness import PermitAuthority as NativePermitAuthorit
 from tests.kernel.control_harness import command, default_matrix, native
 
 
+class _ExternalPostgres:
+    """Small pgserver-compatible view over an explicitly opted-in test DSN."""
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn.strip()
+
+    def get_uri(self, database: str | None = None) -> str:
+        if not database:
+            return self._dsn
+        parsed = urlsplit(self._dsn)
+        return urlunsplit(parsed._replace(path=f"/{database}"))
+
+    def cleanup(self) -> None:
+        # The CI service container owns its lifecycle; tests only create/drop
+        # temporary databases through the administrative connection.
+        return None
+
+
 @pytest.fixture(scope="module")
 def temporary_postgres(tmp_path_factory):
+    configured_dsn = os.environ.get("KSADK_TEST_POSTGRES_DSN")
+    if configured_dsn:
+        yield _ExternalPostgres(configured_dsn)
+        return
+
     pgserver = pytest.importorskip("pgserver")
     previous = {key: os.environ.get(key) for key in ("LC_ALL", "LANG")}
     os.environ.update(LC_ALL="C", LANG="C")
