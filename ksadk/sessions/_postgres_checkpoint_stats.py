@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -14,6 +15,11 @@ from ksadk.sessions.base import (
 
 
 def _raw_session_event(session_id: str, raw_event: object) -> SessionEvent:
+    if isinstance(raw_event, str):
+        try:
+            raw_event = json.loads(raw_event)
+        except (TypeError, ValueError):
+            raw_event = None
     if not isinstance(raw_event, dict):
         raise ValueError("canonical checkpoint carrier row is not an object")
     return SessionEvent(
@@ -26,6 +32,21 @@ def _raw_session_event(session_id: str, raw_event: object) -> SessionEvent:
         invocation_id=raw_event.get("invocation_id"),
         metadata=dict(raw_event.get("metadata") or {}),
     )
+
+
+def _json_rows(value: object) -> tuple[object, ...]:
+    """Decode asyncpg JSONB aggregates whether codecs return text or lists."""
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("canonical checkpoint carrier aggregate is not valid JSON") from error
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("canonical checkpoint carrier aggregate is not an array")
+    return tuple(value)
 
 
 async def get_checkpoint_stats(
@@ -188,10 +209,14 @@ async def get_checkpoint_stats(
         # narrows counts to the requested checkpoint, but that must not hide a
         # corrupt known carrier from the same fail-loud policy used by REST,
         # in-memory, and SQLite paths.
-        canonical_rows = row.get("canonical_resume_rows")
+        canonical_rows_value = row.get("canonical_resume_rows")
+        canonical_rows = (
+            _json_rows(canonical_rows_value) if canonical_rows_value is not None else None
+        )
         resume_count = int(
             row.get("legacy_resume_count", row.get("resume_count", 0)) or 0
         )
+        canonical_timestamps: list[float] = []
         for raw_event in canonical_rows or ():
             event = _raw_session_event(str(row["session_id"]), raw_event)
             identity = checkpoint_resume_identity(event)
@@ -201,6 +226,7 @@ async def get_checkpoint_stats(
             ):
                 continue
             resume_count += 1
+            canonical_timestamps.append(identity[2])
         # Keep payload timestamp parsing outside SQL.  Canonical rows are
         # user-provided JSON and may carry malformed values (including
         # overflowed exponents); attempting a direct PostgreSQL float cast
@@ -213,6 +239,8 @@ async def get_checkpoint_stats(
             last_resumed_at = None
         if last_resumed_at is not None and not math.isfinite(last_resumed_at):
             last_resumed_at = None
+        for candidate in canonical_timestamps:
+            last_resumed_at = max(last_resumed_at or candidate, candidate)
         # Older fake/compatibility rows may not expose canonical_resume_rows;
         # retain their payload-timestamp precedence fallback. Live PostgreSQL
         # always returns canonical_resume_rows from the correlated subquery.
@@ -287,7 +315,7 @@ async def get_checkpoint_stats(
             "last_resumed_at": last_resumed_at,
         }
     for row in latest_rows:
-        for raw_event in row.get("canonical_creation_rows") or ():
+        for raw_event in _json_rows(row.get("canonical_creation_rows")):
             event = _raw_session_event(str(row["session_id"]), raw_event)
             checkpoint_creation_identity(event)
         latest[(row["session_id"], row["run_id"])] = int(
