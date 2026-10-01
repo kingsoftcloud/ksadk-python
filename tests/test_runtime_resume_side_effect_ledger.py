@@ -80,3 +80,42 @@ async def test_approved_builtin_resume_isolated_by_checkpoint(monkeypatch) -> No
     assert calls == ["done", "new"]
     assert first["output"] == {"ok": True, "content": "done"}
     assert second["output"] == {"ok": True, "content": "new"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resume_input",
+    [
+        {
+            **_resume_input("checkpoint-reject"),
+            "approval": {"approved": False, "reason": "user rejected"},
+        },
+        {
+            **_resume_input("checkpoint-cancel"),
+            "type": "cancel",
+            "approval": None,
+        },
+    ],
+)
+async def test_rejected_or_cancelled_resume_has_no_builtin_side_effect(
+    monkeypatch, resume_input
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    calls: list[dict[str, object]] = []
+
+    def write_workspace_file(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime_resume, "_builtin_tool_callable", lambda _: write_workspace_file)
+    result = await runtime_resume._execute_approved_builtin_tool_resume(
+        session_id="session-1",
+        invocation_id="invocation-rejected",
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+
+    assert result is None
+    assert calls == []
+    assert await service.get_events("session-1") == []
