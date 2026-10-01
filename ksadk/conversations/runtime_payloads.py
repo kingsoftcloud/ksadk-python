@@ -217,6 +217,8 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
             approval_resume: dict[str, Any] = {"type": "mcp_approval_response"}
             if item.get("id"):
                 approval_resume["id"] = str(item.get("id"))
+            if item.get("checkpoint_id"):
+                approval_resume["checkpoint_id"] = str(item.get("checkpoint_id"))
             approval_request_id = item.get("approval_request_id")
             if approval_request_id:
                 approval_resume["approval_request_id"] = str(approval_request_id)
@@ -243,6 +245,8 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
 
         if item_type in {"ksadk_resume", "ksadk.approval_response"}:
             ksadk_resume: dict[str, Any] = {"type": "ksadk_resume"}
+            if item.get("checkpoint_id"):
+                ksadk_resume["checkpoint_id"] = str(item.get("checkpoint_id"))
             interrupt_id = (
                 item.get("interrupt_id") or item.get("approval_request_id") or item.get("id")
             )

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from ksadk.conversations import runtime_resume
 from ksadk.conversations.runtime_persistence import append_conversation_event
 from ksadk.conversations.runtime_preparation import build_run_input
+from ksadk.runtime_context import PlatformIdentityContext
+from ksadk.server.routes import openai_compat
+from ksadk.server.routes.models import ResponsesRequest
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -341,6 +346,93 @@ async def test_build_run_input_rejects_ambiguous_legacy_receipt_before_approval_
             resume_input=resume_input,
             session_service_provider=lambda: service,
         )
+
+    events = await service.get_events("session-1")
+    assert len(events) == 2
+    assert [event.event_type for event in events] == ["approval_request", "tool_result"]
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_route_rejects_ambiguous_legacy_checkpoint_resume(
+    monkeypatch,
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    approval = {"approved": True, "approval_request_id": "approval-route"}
+    tool_args = {"path": "result.txt", "content": "done"}
+    legacy_tool_args = {**tool_args, "approval": approval}
+    await append_conversation_event(
+        session_id="session-1",
+        author="tool",
+        role="model",
+        text="approval requested",
+        invocation_id="invocation-old",
+        event_type="approval_request",
+        session_service_provider=lambda: service,
+        metadata={
+            "interrupt_info": {
+                "approval_request_id": "approval-route",
+                "id": "approval-route",
+                "tool_name": "write_workspace_file",
+                "arguments": tool_args,
+                "run_id": "run-route",
+            }
+        },
+    )
+    legacy_receipt = runtime_resume._tool_receipt_metadata(
+        session_id="session-1",
+        run_id="run-route",
+        tool_name="write_workspace_file",
+        tool_args=legacy_tool_args,
+        tool_call_id="run-route",
+    )
+    await append_conversation_event(
+        session_id="session-1",
+        author="tool",
+        role="user",
+        text="legacy",
+        invocation_id="invocation-old",
+        event_type="tool_result",
+        session_service_provider=lambda: service,
+        metadata={
+            "tool_name": "write_workspace_file",
+            "tool_args": legacy_tool_args,
+            "tool_output": {"ok": True, "legacy": True},
+            "tool_receipt": legacy_receipt,
+        },
+    )
+    monkeypatch.setattr(
+        openai_compat,
+        "get_runtime_execution",
+        lambda: (
+            object(),
+            SimpleNamespace(runtime_type="", detection=SimpleNamespace(name="agent-1")),
+        ),
+    )
+    monkeypatch.setattr(openai_compat.deps, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: pytest.fail("ambiguous legacy receipt must not execute builtin"),
+    )
+
+    request = ResponsesRequest(
+        input=[
+            {
+                "type": "mcp_approval_response",
+                "approval_request_id": "approval-route",
+                "approve": True,
+                "checkpoint_id": "checkpoint-route",
+            }
+        ],
+        session_id="session-1",
+        user="user-1",
+    )
+    with pytest.raises(
+        runtime_resume.LegacyToolReceiptCheckpointAmbiguityError,
+        match=runtime_resume.LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE,
+    ):
+        await openai_compat.responses(request, PlatformIdentityContext())
 
     events = await service.get_events("session-1")
     assert len(events) == 2
