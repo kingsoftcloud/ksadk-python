@@ -211,50 +211,121 @@ def checkpoint_resume_identity(event: SessionEvent) -> tuple[str, str, float] | 
         run_id = str(metadata.get("run_id") or "").strip()
         checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
     elif event.event_type == "continuation.resumed":
-        payload = (event.content or {}).get("runtime_event")
-        if not isinstance(payload, dict):
-            envelope = (event.content or {}).get("session_event")
-            payload = envelope.get("payload") if isinstance(envelope, dict) else None
-        if not isinstance(payload, dict) or payload.get("continuation_kind") != "graph_checkpoint":
+        payload = _canonical_resume_payload(event)
+        if payload is None:
             return None
-        # Known canonical event types are strict at the projection boundary.
-        # Keep checkpoint stats on the same fail-loud policy so malformed
-        # ``continuation.resumed`` facts (for example a missing
-        # ``resume_attempt_id``) cannot be counted as valid audit rows.
-        from ksadk.events.canonical import (
-            ContinuationResumed,
-            UnknownCanonicalEvent,
-            parse_runtime_event_lenient,
-        )
-
-        normalized_payload = dict(payload)
-        payload_timestamp = normalized_payload.get("timestamp")
-        if isinstance(payload_timestamp, bool):
-            normalized_payload["timestamp"] = timestamp
-        else:
+        if payload.get("continuation_kind") != "graph_checkpoint":
+            return None
+        run_id = str(payload.get("run_id") or "").strip()
+        checkpoint_id = str(payload.get("continuation_id") or "").strip()
+        payload_timestamp = payload.get("timestamp")
+        if not isinstance(payload_timestamp, bool):
             try:
                 candidate = float(payload_timestamp)
             except (TypeError, ValueError):
                 candidate = None
-            if candidate is None or not math.isfinite(candidate):
-                normalized_payload["timestamp"] = timestamp
-            else:
-                normalized_payload["timestamp"] = candidate
-        canonical = parse_runtime_event_lenient(normalized_payload)
-        if isinstance(canonical, UnknownCanonicalEvent):
-            return None
-        if not isinstance(canonical, ContinuationResumed):
-            return None
-        if canonical.continuation_kind != "graph_checkpoint":
-            return None
-        run_id = canonical.run_id.strip()
-        checkpoint_id = canonical.continuation_id.strip()
-        timestamp = canonical.timestamp
+            if candidate is not None and math.isfinite(candidate):
+                timestamp = candidate
     else:
         return None
     if not run_id or not checkpoint_id:
         return None
     return run_id, checkpoint_id, timestamp
+
+
+def _canonical_resume_payload(event: SessionEvent) -> dict[str, Any] | None:
+    """Validate a known canonical resume carrier and return its payload.
+
+    REST projection and every storage backend share this fail-loud integrity
+    policy.  Timestamp normalization remains deliberately lenient for legacy
+    rows, while identity, sequence, type, and storage-id mismatches are
+    corruption and must never be silently counted as zero resumes.
+    """
+
+    payload = (event.content or {}).get("runtime_event")
+    if not isinstance(payload, dict):
+        envelope = (event.content or {}).get("session_event")
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    payload_event_type = payload.get("event_type")
+    if not isinstance(payload_event_type, str) or not payload_event_type:
+        raise ValueError("canonical SessionEvent event type is missing from content")
+    if payload_event_type != event.event_type:
+        raise ValueError("canonical SessionEvent event type does not match content")
+    from ksadk.events.canonical import UnknownCanonicalEvent, parse_runtime_event_lenient
+    from ksadk.events.canonical_store import canonical_storage_id
+
+    def _finite(value: Any, fallback: float = 0.0) -> float:
+        try:
+            candidate = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return candidate if math.isfinite(candidate) else fallback
+
+    normalized = dict(payload)
+    if "timestamp" in normalized:
+        raw_timestamp = normalized.get("timestamp")
+        candidate = _finite(raw_timestamp, _finite(event.timestamp))
+        if isinstance(raw_timestamp, bool) or not math.isfinite(candidate):
+            candidate = _finite(event.timestamp)
+        normalized["timestamp"] = candidate
+    canonical = parse_runtime_event_lenient(normalized)
+    if isinstance(canonical, UnknownCanonicalEvent):
+        return None
+    if canonical.event_type != event.event_type:
+        raise ValueError("canonical SessionEvent event type does not match content")
+    if int(canonical.seq) != int(event.seq_id or 0):
+        raise ValueError("canonical SessionEvent sequence does not match content")
+    if event.invocation_id and canonical.run_id != event.invocation_id:
+        raise ValueError("canonical SessionEvent invocation does not match content")
+    metadata = event.metadata or {}
+    canonical_event_id = str(metadata.get("canonical_event_id") or "")
+    if canonical_event_id and canonical_event_id != canonical.event_id:
+        raise ValueError("canonical SessionEvent event id metadata does not match content")
+    expected_storage_id = canonical_storage_id(event.session_id, canonical.event_id)
+    if event.id != expected_storage_id:
+        raise ValueError("canonical SessionEvent storage id does not match content")
+    return normalized
+
+
+def validate_canonical_resume_payload(event: SessionEvent, payload: dict[str, Any]) -> Any:
+    """Parse and validate a canonical payload for REST and backend callers."""
+
+    # Reuse the same checks as checkpoint_resume_identity while preserving the
+    # parsed RuntimeEvent object expected by projection code.
+    event_copy = SessionEvent(
+        id=event.id,
+        session_id=event.session_id,
+        event_type=event.event_type,
+        content={"runtime_event": payload},
+        timestamp=event.timestamp,
+        seq_id=event.seq_id,
+        invocation_id=event.invocation_id,
+        metadata=event.metadata,
+    )
+    _canonical_resume_payload(event_copy)
+    from ksadk.events.canonical import parse_runtime_event_lenient
+
+    normalized = dict(payload)
+    if "timestamp" in normalized:
+        raw_timestamp = normalized.get("timestamp")
+        try:
+            candidate = float(raw_timestamp)
+        except (TypeError, ValueError):
+            try:
+                candidate = float(event.timestamp)
+            except (TypeError, ValueError):
+                candidate = 0.0
+        if isinstance(raw_timestamp, bool) or not math.isfinite(candidate):
+            try:
+                candidate = float(event.timestamp)
+            except (TypeError, ValueError):
+                candidate = 0.0
+            if not math.isfinite(candidate):
+                candidate = 0.0
+        normalized["timestamp"] = candidate
+    return parse_runtime_event_lenient(normalized)
 
 
 def checkpoint_creation_identity(event: SessionEvent) -> tuple[str, str] | None:
@@ -269,10 +340,13 @@ def checkpoint_creation_identity(event: SessionEvent) -> tuple[str, str] | None:
         if not isinstance(payload, dict):
             envelope = (event.content or {}).get("session_event")
             payload = envelope.get("payload") if isinstance(envelope, dict) else None
-        if not isinstance(payload, dict) or payload.get("continuation_kind") != "graph_checkpoint":
+        if not isinstance(payload, dict):
             return None
-        run_id = str(payload.get("run_id") or "").strip()
-        checkpoint_id = str(payload.get("continuation_id") or "").strip()
+        canonical = validate_canonical_resume_payload(event, payload)
+        if getattr(canonical, "continuation_kind", None) != "graph_checkpoint":
+            return None
+        run_id = str(getattr(canonical, "run_id", "") or "").strip()
+        checkpoint_id = str(getattr(canonical, "continuation_id", "") or "").strip()
     else:
         return None
     if not run_id or not checkpoint_id:

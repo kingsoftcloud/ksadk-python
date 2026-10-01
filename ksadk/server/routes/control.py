@@ -19,7 +19,10 @@ from ksadk.conversations.run_kinds import (
     RUN_TRIGGER_CHECKPOINT_RESUME,
 )
 from ksadk.conversations.runtime_payloads import build_responses_payload
-from ksadk.conversations.runtime_persistence import require_conversation_session
+from ksadk.conversations.runtime_persistence import (
+    find_resume_attempt_event,
+    require_conversation_session,
+)
 from ksadk.conversations.runtime_streaming import stream_runtime_responses_conversation_turn
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.runtime_context import PlatformIdentityContext
@@ -185,6 +188,44 @@ async def resume_run_action(
     )
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    # Resolve an explicit attempt before resumability/lease gates. A network
+    # retry may arrive after the checkpoint has become non-resumable; returning
+    # the prior receipt is idempotent, while a new attempt still gets the
+    # normal 409 gate below. Requests that omit ResumeAttemptId intentionally
+    # retain the existing fresh-attempt behavior.
+    requested_resume_attempt_id = str(request.ResumeAttemptId or "").strip()
+    if requested_resume_attempt_id:
+        try:
+            existing_resume = await find_resume_attempt_event(
+                service,
+                request.SessionId,
+                resume_attempt_id=requested_resume_attempt_id,
+                run_id=str(request.RunId),
+                checkpoint_id=str(request.CheckpointId),
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "resume_attempt_conflict",
+                    "message": str(error),
+                    "resume_attempt_id": requested_resume_attempt_id,
+                },
+            ) from error
+        if existing_resume is not None:
+            return _action_response(
+                "ResumeRun",
+                {
+                    "SessionId": request.SessionId,
+                    "RunId": str(request.RunId),
+                    "CheckpointId": str(request.CheckpointId),
+                    "ResumeAttemptId": requested_resume_attempt_id,
+                    "InvocationId": existing_resume.invocation_id or requested_resume_attempt_id,
+                    "Status": "already_processed",
+                    "AlreadyProcessed": True,
+                },
+            )
     disabled_detail = _checkpoint_resume_disabled_detail(checkpoint)
     if disabled_detail is not None:
         if disabled_detail.get("IsTerminal"):
