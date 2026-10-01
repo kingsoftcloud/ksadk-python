@@ -410,9 +410,11 @@ def _tool_receipt_idempotency_key_for_resume(
     run_id = _tool_resume_run_id(resume_input)
     if not run_id:
         return None
+    checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip() or None
     idempotency_key = build_tool_receipt_idempotency_key(
         session_id=session_id,
         run_id=run_id,
+        checkpoint_id=checkpoint_id,
         tool_call_id=run_id,
         tool_name=tool_name,
         tool_args=dict(tool_args),
