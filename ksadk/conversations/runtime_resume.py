@@ -15,6 +15,7 @@ from ksadk.conversations.run_kinds import (
     validate_run_mode,
 )
 from ksadk.conversations.runtime_persistence import append_conversation_event
+from ksadk.conversations.tool_receipts import _validate_tool_receipt_event
 from ksadk.events.v1_compat import EventTypeV1 as EventType
 from ksadk.sessions import SessionEvent
 from ksadk.tools.gateway import (
@@ -393,43 +394,6 @@ def _tool_receipt_status_from_output(output: Any) -> str:
     if status == "accepted_not_extracted":
         return "completed"
     return "completed" if output.get("ok") is not False else "failed"
-
-
-_KNOWN_TOOL_RECEIPT_STATUSES = frozenset({"completed", "failed", "succeeded"})
-
-
-def _validate_tool_receipt_event(event: SessionEvent) -> str:
-    """Validate the immutable output/status pair carried by a tool receipt.
-
-    A receipt is an idempotency ledger entry: once one is found, replay must
-    never execute the builtin again.  Treat malformed entries as a hard
-    failure instead of silently replaying an empty or contradictory result.
-    ``succeeded`` is a legacy alias for ``completed``.  For non-mapping
-    outputs, retain the producer-specific status semantics (the stream path
-    writes ``completed`` while the builtin helper historically wrote
-    ``failed``), so only mapping outputs are checked against ``ok``.
-    """
-
-    metadata = event.metadata or {}
-    if "tool_output" not in metadata:
-        raise ValueError("tool receipt is missing tool_output")
-
-    receipt = metadata.get("tool_receipt")
-    if not isinstance(receipt, Mapping):
-        raise ValueError("tool receipt is missing receipt metadata")
-    status = str(receipt.get("status") or "").strip().lower()
-    if status not in _KNOWN_TOOL_RECEIPT_STATUSES:
-        raise ValueError(f"tool receipt has unknown status {status!r}")
-
-    output = metadata["tool_output"]
-    if isinstance(output, Mapping):
-        expected = "failed" if output.get("ok") is False else "completed"
-        normalized_status = "completed" if status == "succeeded" else status
-        if normalized_status != expected:
-            raise ValueError(
-                "tool receipt status does not match mapping tool_output ok value"
-            )
-    return status
 
 
 def _tool_resume_run_id(resume_input: Mapping[str, Any]) -> str:
