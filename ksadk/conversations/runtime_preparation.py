@@ -49,7 +49,6 @@ from ksadk.conversations.runtime_metadata import (
 )
 from ksadk.conversations.runtime_observability import _latest_deferred_tool_names
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
-from ksadk.session_context import split_session_context
 from ksadk.conversations.runtime_persistence import (
     append_conversation_event,
     append_run_resume_event,
@@ -69,6 +68,7 @@ from ksadk.conversations.runtime_resume import (
     _is_checkpoint_resume_input,
     _normalize_approval_resume_input,
     _normalize_checkpoint_resume_input,
+    _raise_if_legacy_tool_receipt_checkpoint_ambiguous,
     _tool_receipt_idempotency_key_for_resume,
 )
 from ksadk.ids import new_run_id
@@ -245,13 +245,37 @@ async def build_run_input(
 
         existing_events = await service.get_events(resolved_session_id)
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
-        existing_tool_receipt_event = None
-        if is_approval_resume and not _has_pending_approval(existing_events):
+        replay_candidate = normalized_resume_input
+        if is_approval_resume:
             replay_candidate = _normalize_approval_resume_input(
                 normalized_resume_input,
                 existing_events,
-                include_resolved=True,
+                include_resolved=not _has_pending_approval(existing_events),
             )
+            decision = replay_candidate.get("approval")
+            if not isinstance(decision, Mapping):
+                decision = _approval_decision_from_resume(replay_candidate)
+            if bool(decision.get("approved") or decision.get("approve")):
+                # Do this before persisting approval_response. An unscoped
+                # legacy receipt cannot safely be attributed to an explicit
+                # checkpoint and must never reach replay or builtin execution.
+                receipt_key = _tool_receipt_idempotency_key_for_resume(
+                    session_id=resolved_session_id,
+                    resume_input=replay_candidate,
+                )
+                scoped_receipt_event = (
+                    _find_tool_receipt_event_by_key(existing_events, receipt_key)
+                    if receipt_key
+                    else None
+                )
+                if scoped_receipt_event is None:
+                    _raise_if_legacy_tool_receipt_checkpoint_ambiguous(
+                        session_id=resolved_session_id,
+                        resume_input=replay_candidate,
+                        events=existing_events,
+                    )
+        existing_tool_receipt_event = None
+        if is_approval_resume and not _has_pending_approval(existing_events):
             receipt_key = _tool_receipt_idempotency_key_for_resume(
                 session_id=resolved_session_id,
                 resume_input=replay_candidate,

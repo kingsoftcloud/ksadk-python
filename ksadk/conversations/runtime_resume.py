@@ -21,6 +21,15 @@ from ksadk.tools.gateway import (
     build_tool_receipt_idempotency_key,
 )
 
+LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE = (
+    "legacy tool receipt checkpoint identity is ambiguous; reconciliation required"
+)
+
+
+class LegacyToolReceiptCheckpointAmbiguityError(ValueError):
+    def __init__(self) -> None:
+        super().__init__(LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE)
+
 
 def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
     pending = 0
@@ -457,6 +466,48 @@ def _find_tool_receipt_event_by_key(
     return None
 
 
+def _find_legacy_tool_receipt_event_for_resume(
+    *,
+    session_id: str,
+    resume_input: Mapping[str, Any],
+    events: Sequence[SessionEvent],
+) -> SessionEvent | None:
+    tool_name = str(resume_input.get("tool_name") or "").strip()
+    tool_args = resume_input.get("tool_args")
+    run_id = _tool_resume_run_id(resume_input)
+    if not tool_name or not isinstance(tool_args, Mapping) or not run_id:
+        return None
+    legacy_receipt = _tool_receipt_metadata(
+        session_id=session_id,
+        run_id=run_id,
+        tool_name=tool_name,
+        tool_args=dict(tool_args),
+        tool_call_id=run_id,
+    )
+    return _find_tool_receipt_event_by_key(
+        events,
+        legacy_receipt["idempotency_key"],
+        expected_receipt=legacy_receipt,
+        expected_tool_args=tool_args,
+    )
+
+
+def _raise_if_legacy_tool_receipt_checkpoint_ambiguous(
+    *,
+    session_id: str,
+    resume_input: Mapping[str, Any],
+    events: Sequence[SessionEvent],
+) -> None:
+    if not str(resume_input.get("checkpoint_id") or "").strip():
+        return
+    if _find_legacy_tool_receipt_event_for_resume(
+        session_id=session_id,
+        resume_input=resume_input,
+        events=events,
+    ) is not None:
+        raise LegacyToolReceiptCheckpointAmbiguityError()
+
+
 def _latest_checkpoint_metadata_for_run(
     events: Sequence[SessionEvent],
     run_id: str,
@@ -529,26 +580,17 @@ async def _execute_approved_builtin_tool_resume(
         expected_receipt=receipt,
         expected_tool_args=call_args,
     )
-    legacy_receipt_fallback = False
     if existing_event is None and requested_checkpoint_id:
-        # Receipts written before checkpoint-scoped keys used the same
-        # session/run/tool/args key with an empty checkpoint field. Reuse that
-        # immutable ledger entry once, but keep strict identity validation for
-        # every field that legacy rows carry.
-        legacy_receipt = _tool_receipt_metadata(
+        # Receipts written before checkpoint-scoped keys used an empty
+        # checkpoint field. They cannot be attributed safely to this explicit
+        # checkpoint, so require reconciliation before any replay or tool call.
+        legacy_event = _find_legacy_tool_receipt_event_for_resume(
             session_id=session_id,
-            run_id=run_id,
-            tool_name=tool_name,
-            tool_args=call_args,
-            tool_call_id=run_id,
+            resume_input=resume_input,
+            events=existing_events,
         )
-        existing_event = _find_tool_receipt_event_by_key(
-            existing_events,
-            legacy_receipt["idempotency_key"],
-            expected_receipt=legacy_receipt,
-            expected_tool_args=call_args,
-        )
-        legacy_receipt_fallback = existing_event is not None
+        if legacy_event is not None:
+            raise LegacyToolReceiptCheckpointAmbiguityError()
     if existing_event is not None:
         existing_metadata = existing_event.metadata or {}
         output = existing_metadata.get("tool_output", "")
@@ -559,8 +601,6 @@ async def _execute_approved_builtin_tool_resume(
             "replayed": True,
             "replayed_from_event_id": existing_event.id,
         }
-        if legacy_receipt_fallback:
-            replayed_receipt["legacy_key_fallback"] = True
         await append_conversation_event(
             session_id=session_id,
             author="tool",
