@@ -385,7 +385,7 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
             arguments_digest=str(row["arguments_digest"]),
             state=state,
             claim_id=str(row["claim_id"]),
-            output=row["output_json"],
+            output=PostgresSessionService._json_from_value(row["output_json"]),
             acquired=acquired,
         )
 
@@ -1332,6 +1332,15 @@ class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
         if isinstance(value, str):
             return dict(json.loads(value or "{}"))
         return dict(value)
+
+    @staticmethod
+    def _json_from_value(value: Any) -> Any:
+        """Decode asyncpg JSONB text while preserving scalar/list outputs."""
+        if value is None or not isinstance(value, (str, bytes, bytearray)):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        return json.loads(value or "null")
 
 
 def create_postgres_session_service(

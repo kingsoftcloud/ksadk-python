@@ -6,6 +6,7 @@ import pytest
 
 from ksadk.events.canonical_store import runtime_event_to_session_event
 from ksadk.sessions._postgres_checkpoint_stats import get_checkpoint_stats
+from ksadk.sessions.postgres_service import PostgresSessionService
 from tests.server.test_checkpoint_resume_audit import (
     _continuation_created,
     _continuation_resumed,
@@ -82,3 +83,18 @@ async def test_postgres_jsonb_aggregate_text_is_decoded() -> None:
         "last_resumed_at": 101.0,
     }
     assert stats["latest_seq_ids"][("session-1", "run-1")] == 1
+
+
+def test_postgres_tool_receipt_jsonb_text_is_decoded() -> None:
+    claim = PostgresSessionService._tool_receipt_from_row(
+        {
+            "session_id": "session-1",
+            "idempotency_key": "receipt-1",
+            "tool_name": "write_workspace_file",
+            "arguments_digest": "args-1",
+            "state": "completed",
+            "claim_id": "claim-1",
+            "output_json": '{"ok": true}',
+        }
+    )
+    assert claim.output == {"ok": True}
