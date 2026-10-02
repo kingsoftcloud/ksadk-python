@@ -17,10 +17,10 @@ from ksadk.sessions._local_tables import (
     KSADK_EVENTS_TABLE,
     KSADK_SESSIONS_TABLE,
     KSADK_STATES_TABLE,
-    KSADK_TOOL_RECEIPTS_TABLE,
     LEGACY_EVENTS_TABLE,
     LEGACY_SESSIONS_TABLE,
     LEGACY_STATES_TABLE,
+    tool_receipts_table,
 )
 from ksadk.sessions.base import (
     CANONICAL_EVENT_STORAGE_CAPABILITIES,
@@ -595,7 +595,7 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
                     PRIMARY KEY (scope, agent_id, user_id, session_id)
                     );
 
-                CREATE TABLE IF NOT EXISTS {KSADK_TOOL_RECEIPTS_TABLE} (
+                CREATE TABLE IF NOT EXISTS {tool_receipts_table} (
                     session_id TEXT NOT NULL,
                     idempotency_key TEXT NOT NULL,
                     tool_name TEXT NOT NULL,
@@ -644,7 +644,7 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
     @staticmethod
     def _validate_tool_receipt_schema(connection: sqlite3.Connection) -> None:
         columns = connection.execute(
-            f"PRAGMA table_info({KSADK_TOOL_RECEIPTS_TABLE})"
+            f"PRAGMA table_info({tool_receipts_table})"
         ).fetchall()
         required = {
             "session_id",
@@ -661,7 +661,7 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
         if primary_key != ["session_id", "idempotency_key"]:
             raise RuntimeError("tool receipt schema primary key is invalid")
         foreign_keys = connection.execute(
-            f"PRAGMA foreign_key_list({KSADK_TOOL_RECEIPTS_TABLE})"
+            f"PRAGMA foreign_key_list({tool_receipts_table})"
         ).fetchall()
         if not any(
             str(row["table"]) == KSADK_SESSIONS_TABLE
@@ -671,7 +671,7 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
             raise RuntimeError("tool receipt schema foreign key is invalid")
         schema_row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (KSADK_TOOL_RECEIPTS_TABLE,),
+            (tool_receipts_table,),
         ).fetchone()
         schema_sql = str(schema_row["sql"] if schema_row else "").lower()
         if "check" not in schema_sql or "unknown" not in schema_sql:

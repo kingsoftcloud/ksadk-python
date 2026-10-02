@@ -3,7 +3,7 @@
 KSADK_SESSIONS_TABLE = "ksadk_sessions"
 KSADK_EVENTS_TABLE = "ksadk_events"
 KSADK_STATES_TABLE = "ksadk_states"
-KSADK_TOOL_RECEIPTS_TABLE = "ksadk_tool_receipts"
+tool_receipts_table = "ksadk_tool_receipts"
 
 LEGACY_SESSIONS_TABLE = "sessions"
 LEGACY_EVENTS_TABLE = "events"
@@ -16,7 +16,7 @@ __all__ = [
     "KSADK_EVENTS_TABLE",
     "KSADK_SESSIONS_TABLE",
     "KSADK_STATES_TABLE",
-    "KSADK_TOOL_RECEIPTS_TABLE",
+    "tool_receipts_table",
     "LEGACY_EVENTS_TABLE",
     "LEGACY_SESSIONS_TABLE",
     "LEGACY_STATES_TABLE",

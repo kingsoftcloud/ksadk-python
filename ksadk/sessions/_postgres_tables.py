@@ -3,7 +3,7 @@
 KSADK_PG_SESSIONS_TABLE = "ksadk_sessions"
 KSADK_PG_EVENTS_TABLE = "ksadk_events"
 KSADK_PG_STATES_TABLE = "ksadk_states"
-KSADK_PG_TOOL_RECEIPTS_TABLE = "ksadk_tool_receipts"
+pg_tool_receipts_table = "ksadk_tool_receipts"
 PG_READABLE_EVENTS_VIEW = "ksadk_session_events_readable"
 _PG_SCHEMA_ADVISORY_LOCK_KEY = 0x4B5341444B53444B
 
@@ -11,7 +11,7 @@ __all__ = [
     "KSADK_PG_EVENTS_TABLE",
     "KSADK_PG_SESSIONS_TABLE",
     "KSADK_PG_STATES_TABLE",
-    "KSADK_PG_TOOL_RECEIPTS_TABLE",
+    "pg_tool_receipts_table",
     "PG_READABLE_EVENTS_VIEW",
     "_PG_SCHEMA_ADVISORY_LOCK_KEY",
 ]
