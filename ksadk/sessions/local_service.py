@@ -17,6 +17,7 @@ from ksadk.sessions._local_tables import (
     KSADK_EVENTS_TABLE,
     KSADK_SESSIONS_TABLE,
     KSADK_STATES_TABLE,
+    KSADK_TOOL_RECEIPTS_TABLE,
     LEGACY_EVENTS_TABLE,
     LEGACY_SESSIONS_TABLE,
     LEGACY_STATES_TABLE,
@@ -29,6 +30,7 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    ToolReceiptClaim,
 )
 
 
@@ -141,6 +143,28 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         async with self._lock:
             return await asyncio.to_thread(self._append_event_sync, session_id, event)
+
+    async def claim_tool_receipt(self, session_id: str, **kwargs) -> ToolReceiptClaim:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._claim_tool_receipt_sync, session_id, **kwargs
+            )
+
+    async def settle_tool_receipt(self, session_id: str, **kwargs) -> ToolReceiptClaim:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._settle_tool_receipt_sync, session_id, **kwargs
+            )
+
+    async def get_tool_receipt_claim(
+        self, session_id: str, *, idempotency_key: str
+    ) -> ToolReceiptClaim | None:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_tool_receipt_claim_sync,
+                session_id,
+                idempotency_key=idempotency_key,
+            )
 
     async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
         async with self._lock:
@@ -569,8 +593,21 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
                     version INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (scope, agent_id, user_id, session_id)
+                    );
+
+                CREATE TABLE IF NOT EXISTS {KSADK_TOOL_RECEIPTS_TABLE} (
+                    session_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments_digest TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('unknown', 'completed', 'failed')),
+                    claim_id TEXT NOT NULL,
+                    output_json TEXT,
+                    PRIMARY KEY (session_id, idempotency_key),
+                    FOREIGN KEY(session_id) REFERENCES {KSADK_SESSIONS_TABLE}(id) ON DELETE CASCADE
                 );
                 """)
+            self._validate_tool_receipt_schema(connection)
             self._ensure_columns(
                 connection,
                 KSADK_SESSIONS_TABLE,
@@ -603,6 +640,42 @@ class LocalSessionService(_LocalServiceSyncMixin, BaseSessionService):
             )
             self._ensure_event_seq_unique_index(connection)
             connection.commit()
+
+    @staticmethod
+    def _validate_tool_receipt_schema(connection: sqlite3.Connection) -> None:
+        columns = connection.execute(
+            f"PRAGMA table_info({KSADK_TOOL_RECEIPTS_TABLE})"
+        ).fetchall()
+        required = {
+            "session_id",
+            "idempotency_key",
+            "tool_name",
+            "arguments_digest",
+            "state",
+            "claim_id",
+            "output_json",
+        }
+        if {str(row["name"]) for row in columns} != required:
+            raise RuntimeError("tool receipt schema is incomplete")
+        primary_key = [str(row["name"]) for row in columns if int(row["pk"] or 0)]
+        if primary_key != ["session_id", "idempotency_key"]:
+            raise RuntimeError("tool receipt schema primary key is invalid")
+        foreign_keys = connection.execute(
+            f"PRAGMA foreign_key_list({KSADK_TOOL_RECEIPTS_TABLE})"
+        ).fetchall()
+        if not any(
+            str(row["table"]) == KSADK_SESSIONS_TABLE
+            and str(row["on_delete"]).upper() == "CASCADE"
+            for row in foreign_keys
+        ):
+            raise RuntimeError("tool receipt schema foreign key is invalid")
+        schema_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (KSADK_TOOL_RECEIPTS_TABLE,),
+        ).fetchone()
+        schema_sql = str(schema_row["sql"] if schema_row else "").lower()
+        if "check" not in schema_sql or "unknown" not in schema_sql:
+            raise RuntimeError("tool receipt schema state check is invalid")
 
 
 def create_local_session_service(*, project_dir: Optional[str] = None) -> BaseSessionService:

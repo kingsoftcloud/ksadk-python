@@ -29,6 +29,26 @@ CANONICAL_EVENT_STORAGE_CAPABILITIES = SessionServiceStorageCapabilities(
 )
 
 
+@dataclass(frozen=True)
+class ToolReceiptClaim:
+    """Durable claim state for an approval-triggered builtin side effect.
+
+    ``unknown`` is written before the builtin is called.  An unknown claim is
+    therefore never eligible for automatic re-execution after a crash; callers
+    must reconcile it explicitly.  ``acquired`` is true only for the process
+    that created the claim.
+    """
+
+    session_id: str
+    idempotency_key: str
+    tool_name: str
+    arguments_digest: str
+    state: Literal["unknown", "completed", "failed"]
+    claim_id: str
+    output: Any = None
+    acquired: bool = False
+
+
 def generate_id() -> str:
     return uuid.uuid4().hex[:16]
 
@@ -600,6 +620,41 @@ class BaseSessionService(abc.ABC):
         """Indexed physical-id lookup for idempotent event insertion."""
 
         raise NotImplementedError("session backend does not support indexed event lookup")
+
+    async def claim_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+    ) -> ToolReceiptClaim:
+        """Atomically claim a builtin side-effect key before invoking it."""
+
+        raise NotImplementedError("session backend does not support durable tool receipt claims")
+
+    async def get_tool_receipt_claim(
+        self, session_id: str, *, idempotency_key: str
+    ) -> ToolReceiptClaim | None:
+        """Read a durable claim for operator reconciliation/status checks."""
+
+        raise NotImplementedError("session backend does not support durable tool receipt claims")
+
+    async def settle_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+        state: Literal["completed", "failed"],
+        output: Any,
+    ) -> ToolReceiptClaim:
+        """Persist a terminal builtin result for later replay."""
+
+        raise NotImplementedError("session backend does not support durable tool receipt claims")
 
     async def get_events_by_invocation_id(
         self,

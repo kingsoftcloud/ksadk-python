@@ -478,6 +478,67 @@ async def test_checkpoint_stats_postgres_ignores_malformed_canonical_timestamp(
 
 
 @pytest.mark.asyncio
+async def test_postgres_tool_receipt_claim_is_atomic_across_service_instances(
+    temporary_postgres,
+) -> None:
+    """Two PG-backed workers cannot both acquire one builtin side effect."""
+
+    import asyncio
+
+    import asyncpg
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    database = f"tool_receipt_{uuid4().hex}"
+    admin = await asyncpg.connect(temporary_postgres.get_uri())
+    await admin.execute(f'CREATE DATABASE "{database}"')
+    await admin.close()
+    first = PostgresSessionService(dsn=temporary_postgres.get_uri(database))
+    second = PostgresSessionService(dsn=temporary_postgres.get_uri(database))
+    try:
+        await first.create_session("agent-1", "user-1", session_id="session-1")
+
+        async def claim(service, claim_id):
+            return await service.claim_tool_receipt(
+                "session-1",
+                idempotency_key="tool_receipt:atomic",
+                tool_name="write_workspace_file",
+                arguments_digest="args-digest",
+                claim_id=claim_id,
+            )
+
+        claims = await asyncio.gather(claim(first, "claim-1"), claim(second, "claim-2"))
+        assert sum(item.acquired for item in claims) == 1
+        winner = next(item for item in claims if item.acquired)
+        settled = await first.settle_tool_receipt(
+            "session-1",
+            idempotency_key="tool_receipt:atomic",
+            tool_name="write_workspace_file",
+            arguments_digest="args-digest",
+            claim_id=winner.claim_id,
+            state="completed",
+            output={"ok": True},
+        )
+        assert settled.state == "completed"
+        replay = await second.claim_tool_receipt(
+            "session-1",
+            idempotency_key="tool_receipt:atomic",
+            tool_name="write_workspace_file",
+            arguments_digest="args-digest",
+            claim_id="claim-3",
+        )
+        assert not replay.acquired
+        assert replay.state == "completed"
+        assert replay.output == {"ok": True}
+    finally:
+        await first.aclose()
+        await second.aclose()
+        admin = await asyncpg.connect(temporary_postgres.get_uri())
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
+        await admin.close()
+
+
+@pytest.mark.asyncio
 async def test_postgres_stats_prefers_payload_timestamp_over_stale_carrier() -> None:
     from ksadk.sessions._postgres_checkpoint_stats import get_checkpoint_stats
 

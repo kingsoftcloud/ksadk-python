@@ -21,7 +21,11 @@ def _validate_tool_receipt_event(event: SessionEvent) -> str:
         raise ValueError(f"tool receipt has unknown status {status!r}")
     output = metadata["tool_output"]
     if isinstance(output, Mapping):
-        expected = "failed" if output.get("ok") is False else "completed"
+        expected = (
+            "completed"
+            if output.get("status") == "accepted_not_extracted"
+            else ("failed" if output.get("ok") is False else "completed")
+        )
         normalized_status = "completed" if status == "succeeded" else status
         if normalized_status != expected:
             raise ValueError("tool receipt status does not match mapping tool_output ok value")

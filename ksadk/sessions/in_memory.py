@@ -4,7 +4,7 @@ import asyncio
 import bisect
 import copy
 import time
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
@@ -15,6 +15,7 @@ from ksadk.sessions.base import (
     SessionEvent,
     SessionEventQuery,
     SessionState,
+    ToolReceiptClaim,
     checkpoint_creation_identity,
     checkpoint_resume_identity,
     generate_id,
@@ -40,6 +41,7 @@ class InMemorySessionService(BaseSessionService):
         self._events_by_id: dict[str, SessionEvent] = {}
         self._events_by_invocation: dict[tuple[str, str], list[SessionEvent]] = {}
         self._states: dict[tuple[str, str, str, str], SessionState] = {}
+        self._tool_receipts: dict[tuple[str, str], ToolReceiptClaim] = {}
         self._event_order: list[tuple[float, str, int, str, int, SessionEvent]] = []
         self._event_generation = 0
         self._checkpoint_snapshot_by_task: dict[asyncio.Task[object], int] = {}
@@ -136,9 +138,15 @@ class InMemorySessionService(BaseSessionService):
     async def delete_session(self, session_id: str) -> bool:
         async with self._checkpoint_scan_lock:
             async with self._lock:
-                session = self._sessions.pop(session_id, None)
+                session = self._sessions.get(session_id)
                 if not session:
                     return False
+                if any(
+                    key[0] == session_id and claim.state == "unknown"
+                    for key, claim in self._tool_receipts.items()
+                ):
+                    raise ValueError("session has durable tool receipt claims")
+                self._sessions.pop(session_id, None)
                 for event in session.events:
                     self._events_by_id.pop(event.id, None)
                     if event.invocation_id is not None:
@@ -150,6 +158,8 @@ class InMemorySessionService(BaseSessionService):
                     ),
                     None,
                 )
+                for key in [key for key in self._tool_receipts if key[0] == session_id]:
+                    self._tool_receipts.pop(key, None)
                 return True
 
     async def update_session_metadata(
@@ -239,6 +249,97 @@ class InMemorySessionService(BaseSessionService):
                 )
 
             return copy.deepcopy(stored)
+
+    async def claim_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+    ) -> ToolReceiptClaim:
+        async with self._lock:
+            if session_id not in self._sessions:
+                raise ValueError(f"Session {session_id} not found")
+            key = (session_id, idempotency_key)
+            existing = self._tool_receipts.get(key)
+            if existing is not None:
+                if (
+                    existing.tool_name != tool_name
+                    or existing.arguments_digest != arguments_digest
+                ):
+                    raise ValueError("tool receipt idempotency key conflict")
+                if existing.state not in {"unknown", "completed", "failed"}:
+                    raise ValueError("tool receipt state is invalid")
+                return ToolReceiptClaim(
+                    session_id=existing.session_id,
+                    idempotency_key=existing.idempotency_key,
+                    tool_name=existing.tool_name,
+                    arguments_digest=existing.arguments_digest,
+                    state=existing.state,
+                    claim_id=existing.claim_id,
+                    output=copy.deepcopy(existing.output),
+                    acquired=False,
+                )
+            claim = ToolReceiptClaim(
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                arguments_digest=arguments_digest,
+                state="unknown",
+                claim_id=claim_id,
+                acquired=True,
+            )
+            self._tool_receipts[key] = claim
+            return copy.deepcopy(claim)
+
+    async def settle_tool_receipt(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str,
+        tool_name: str,
+        arguments_digest: str,
+        claim_id: str,
+        state: Literal["completed", "failed"],
+        output: Any,
+    ) -> ToolReceiptClaim:
+        async with self._lock:
+            key = (session_id, idempotency_key)
+            existing = self._tool_receipts.get(key)
+            if existing is None:
+                raise ValueError("tool receipt claim not found")
+            if (
+                existing.tool_name != tool_name
+                or existing.arguments_digest != arguments_digest
+            ):
+                raise ValueError("tool receipt idempotency key conflict")
+            if existing.claim_id != claim_id:
+                return copy.deepcopy(existing)
+            if existing.state != "unknown":
+                if existing.state != state or existing.output != output:
+                    raise ValueError("tool receipt terminal result conflict")
+                return copy.deepcopy(existing)
+            settled = ToolReceiptClaim(
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                arguments_digest=arguments_digest,
+                state=state,
+                claim_id=claim_id,
+                output=copy.deepcopy(output),
+                acquired=False,
+            )
+            self._tool_receipts[key] = settled
+            return copy.deepcopy(settled)
+
+    async def get_tool_receipt_claim(
+        self, session_id: str, *, idempotency_key: str
+    ) -> ToolReceiptClaim | None:
+        async with self._lock:
+            claim = self._tool_receipts.get((session_id, idempotency_key))
+            return copy.deepcopy(claim) if claim is not None else None
 
     async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
         async with self._lock:

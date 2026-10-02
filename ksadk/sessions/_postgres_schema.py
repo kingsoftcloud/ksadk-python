@@ -14,6 +14,7 @@ from ksadk.sessions._postgres_tables import (
     KSADK_PG_EVENTS_TABLE,
     KSADK_PG_SESSIONS_TABLE,
     KSADK_PG_STATES_TABLE,
+    KSADK_PG_TOOL_RECEIPTS_TABLE,
     PG_READABLE_EVENTS_VIEW,
 )
 
@@ -122,6 +123,7 @@ class _PostgresSchemaMixin:
                         AND to_regclass('idx_ksadk_pg_events_session_invocation_seq') IS NOT NULL
                         AND to_regclass('idx_ksadk_pg_events_session_ts') IS NOT NULL
                         AND to_regclass('idx_ksadk_pg_sessions_agent_updated') IS NOT NULL
+                        AND to_regclass('{KSADK_PG_TOOL_RECEIPTS_TABLE}') IS NOT NULL
                         AND NOT EXISTS (
                             SELECT 1
                             FROM (
@@ -163,7 +165,17 @@ class _PostgresSchemaMixin:
                                     ('{KSADK_PG_STATES_TABLE}', 'session_id'),
                                     ('{KSADK_PG_STATES_TABLE}', 'state_json'),
                                     ('{KSADK_PG_STATES_TABLE}', 'version'),
-                                    ('{KSADK_PG_STATES_TABLE}', 'updated_at')
+                                    ('{KSADK_PG_STATES_TABLE}', 'updated_at'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'namespace'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'tenant_id'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'workspace_id'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'session_id'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'idempotency_key'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'tool_name'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'arguments_digest'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'state'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'claim_id'),
+                                    ('{KSADK_PG_TOOL_RECEIPTS_TABLE}', 'output_json')
                             ) AS required(table_name, column_name)
                             WHERE NOT EXISTS (
                                 SELECT 1
@@ -196,6 +208,16 @@ class _PostgresSchemaMixin:
                               AND constraint_row.contype = 'p'
                               AND pg_get_constraintdef(constraint_row.oid)
                                   = 'PRIMARY KEY (namespace, scope, agent_id, user_id, session_id)'
+                        )
+                        AND EXISTS (
+                            SELECT 1
+                            FROM pg_constraint AS constraint_row
+                            WHERE constraint_row.conrelid = to_regclass(
+                                '{KSADK_PG_TOOL_RECEIPTS_TABLE}'
+                            )
+                              AND constraint_row.contype = 'p'
+                              AND pg_get_constraintdef(constraint_row.oid)
+                                  = 'PRIMARY KEY (namespace, session_id, idempotency_key)'
                         )
                         AND EXISTS (
                             SELECT 1
@@ -286,6 +308,26 @@ class _PostgresSchemaMixin:
                     updated_at DOUBLE PRECISION NOT NULL,
                     PRIMARY KEY (namespace, scope, agent_id, user_id, session_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS {KSADK_PG_TOOL_RECEIPTS_TABLE} (
+                    namespace TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    session_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments_digest TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('unknown', 'completed', 'failed')),
+                    claim_id TEXT NOT NULL,
+                    output_json JSONB,
+                    PRIMARY KEY (namespace, session_id, idempotency_key),
+                    FOREIGN KEY (namespace, session_id)
+                        REFERENCES {KSADK_PG_SESSIONS_TABLE}(namespace, id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ksadk_pg_tool_receipts_session
+                ON {KSADK_PG_TOOL_RECEIPTS_TABLE} (namespace, session_id, idempotency_key);
 
                 ALTER TABLE {KSADK_PG_SESSIONS_TABLE}
                 ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';

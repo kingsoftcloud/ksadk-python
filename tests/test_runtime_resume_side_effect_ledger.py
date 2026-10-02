@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -94,6 +95,173 @@ async def test_approved_builtin_resume_replays_receipt_without_reexecuting(monke
 
 
 @pytest.mark.asyncio
+async def test_concurrent_builtin_resumes_claim_once(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    calls: list[dict[str, object]] = []
+    def run_command(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime_resume, "_builtin_tool_callable", lambda _: run_command)
+    resume_input = {**_resume_input("checkpoint-concurrent"), "tool_name": "run_command"}
+    results = await asyncio.gather(
+        runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-1",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        ),
+        runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-2",
+            resume_input=resume_input,
+            session_service_provider=lambda: service,
+        ),
+        return_exceptions=True,
+    )
+
+    assert len(calls) == 1
+    assert (
+        sum(isinstance(result, runtime_resume.ToolReceiptUncertainError) for result in results)
+        == 1
+    )
+    assert sum(isinstance(result, dict) for result in results) == 1
+    receipts = [
+        event
+        for event in await service.get_events("session-1")
+        if event.event_type == "tool_result"
+    ]
+    assert len(receipts) == 1
+
+
+@pytest.mark.asyncio
+async def test_crash_after_builtin_leaves_unknown_without_reexecution(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    calls: list[dict[str, object]] = []
+
+    def write_workspace_file(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime_resume, "_builtin_tool_callable", lambda _: write_workspace_file)
+    original_settle = service.settle_tool_receipt
+    failed_once = True
+
+    async def fail_settle(*args, **kwargs):
+        nonlocal failed_once
+        if failed_once:
+            failed_once = False
+            raise RuntimeError("injected crash before receipt settlement")
+        return await original_settle(*args, **kwargs)
+
+    monkeypatch.setattr(service, "settle_tool_receipt", fail_settle)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-1",
+            resume_input=_resume_input("checkpoint-crash"),
+            session_service_provider=lambda: service,
+        )
+
+    with pytest.raises(runtime_resume.ToolReceiptUncertainError):
+        await runtime_resume._execute_approved_builtin_tool_resume(
+            session_id="session-1",
+            invocation_id="invocation-2",
+            resume_input=_resume_input("checkpoint-crash"),
+            session_service_provider=lambda: service,
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_responses_retry_unknown_claim_does_not_append_duplicate_approval(
+    monkeypatch,
+) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    await append_conversation_event(
+        session_id="session-1",
+        author="model",
+        role="model",
+        text="approval requested",
+        invocation_id="invocation-request",
+        event_type="approval_request",
+        session_service_provider=lambda: service,
+        metadata={
+            "interrupt_info": {
+                "approval_request_id": "approval-route-retry",
+                "tool_name": "write_workspace_file",
+                "arguments": '{"path":"result.txt","content":"done"}',
+                "run_id": "run-1",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        openai_compat,
+        "get_runtime_execution",
+        lambda: (
+            object(),
+            SimpleNamespace(runtime_type="", detection=SimpleNamespace(name="agent-1")),
+        ),
+    )
+    monkeypatch.setattr(openai_compat.deps, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        runtime_resume, "_builtin_tool_callable", lambda _: lambda **_: {"ok": True}
+    )
+
+    async def fake_invoke(**kwargs):
+        prepared = await build_run_input(
+            agent_id=kwargs["agent_id"],
+            user_id=kwargs["user_id"],
+            session_id=kwargs["session_id"],
+            messages=kwargs["messages"],
+            model=kwargs.get("model"),
+            model_metadata=kwargs.get("model_metadata"),
+            model_options=kwargs.get("model_options"),
+            instructions=kwargs.get("instructions"),
+            request_metadata=kwargs.get("request_metadata"),
+            custom_metadata=kwargs.get("custom_metadata"),
+            resume_input=kwargs["resume_input"],
+            invocation_id=kwargs.get("invocation_id"),
+            session_service_provider=kwargs["session_service_provider"],
+        )
+        return prepared.session_id, {"output_text": "ok"}
+
+    monkeypatch.setattr(openai_compat, "invoke_runtime_conversation_once", fake_invoke)
+    original_settle = service.settle_tool_receipt
+    failed_once = True
+
+    async def fail_settle(*args, **kwargs):
+        nonlocal failed_once
+        if failed_once:
+            failed_once = False
+            raise RuntimeError("injected settle crash")
+        return await original_settle(*args, **kwargs)
+
+    monkeypatch.setattr(service, "settle_tool_receipt", fail_settle)
+    request = ResponsesRequest(
+        input=[
+            {
+                "type": "mcp_approval_response",
+                "approval_request_id": "approval-route-retry",
+                "approve": True,
+            }
+        ],
+        session_id="session-1",
+        user="user-1",
+    )
+    with pytest.raises(RuntimeError, match="injected settle crash"):
+        await openai_compat.responses(request, PlatformIdentityContext())
+    before_retry = await service.get_events("session-1")
+    with pytest.raises(runtime_resume.ToolReceiptUncertainError) as retry_error:
+        await openai_compat.responses(request, PlatformIdentityContext())
+    assert "idempotency_key=tool_receipt:" in str(retry_error.value)
+    assert await service.get_events("session-1") == before_retry
+
+
+@pytest.mark.asyncio
 async def test_approved_builtin_resume_isolated_by_checkpoint(monkeypatch) -> None:
     service = InMemorySessionService()
     await service.create_session("agent-1", "user-1", session_id="session-1")
@@ -123,6 +291,31 @@ async def test_approved_builtin_resume_isolated_by_checkpoint(monkeypatch) -> No
     assert calls == ["done", "new"]
     assert first["output"] == {"ok": True, "content": "done"}
     assert second["output"] == {"ok": True, "content": "new"}
+
+
+@pytest.mark.asyncio
+async def test_accepted_not_extracted_receipt_replays_as_completed(monkeypatch) -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", session_id="session-1")
+    monkeypatch.setattr(
+        runtime_resume,
+        "_builtin_tool_callable",
+        lambda _: lambda **_: {"ok": False, "status": "accepted_not_extracted"},
+    )
+    resume_input = _resume_input("checkpoint-accepted-not-extracted")
+    await runtime_resume._execute_approved_builtin_tool_resume(
+        session_id="session-1",
+        invocation_id="invocation-1",
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+    replay = await runtime_resume._execute_approved_builtin_tool_resume(
+        session_id="session-1",
+        invocation_id="invocation-2",
+        resume_input=resume_input,
+        session_service_provider=lambda: service,
+    )
+    assert replay["output"] == {"ok": False, "status": "accepted_not_extracted", "replayed": True}
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -17,7 +18,7 @@ from ksadk.conversations.run_kinds import (
 from ksadk.conversations.runtime_persistence import append_conversation_event
 from ksadk.conversations.tool_receipts import _validate_tool_receipt_event
 from ksadk.events.v1_compat import EventTypeV1 as EventType
-from ksadk.sessions import SessionEvent
+from ksadk.sessions import SessionEvent, ToolReceiptClaim
 from ksadk.tools.gateway import (
     build_tool_receipt_idempotency_key,
 )
@@ -30,6 +31,37 @@ LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE = (
 class LegacyToolReceiptCheckpointAmbiguityError(ValueError):
     def __init__(self) -> None:
         super().__init__(LEGACY_TOOL_RECEIPT_CHECKPOINT_AMBIGUITY_MESSAGE)
+
+
+class ToolReceiptUncertainError(ValueError):
+    """A durable receipt exists without a safely replayable terminal result."""
+
+    def __init__(self, idempotency_key: str | None = None) -> None:
+        self.idempotency_key = str(idempotency_key or "")
+        detail = "tool receipt execution is uncertain; reconciliation required"
+        if self.idempotency_key:
+            detail += f"; idempotency_key={self.idempotency_key}"
+        super().__init__(detail)
+
+
+def _validate_tool_receipt_claim_state(state: str, idempotency_key: str = "") -> str:
+    normalized = str(state or "").strip().lower()
+    if normalized not in {"unknown", "completed", "failed"}:
+        raise ToolReceiptUncertainError(idempotency_key)
+    return normalized
+
+
+def _validate_tool_receipt_claim(claim: ToolReceiptClaim) -> ToolReceiptClaim:
+    state = _validate_tool_receipt_claim_state(claim.state, claim.idempotency_key)
+    if isinstance(claim.output, Mapping) and state in {"completed", "failed"}:
+        expected = (
+            "completed"
+            if claim.output.get("status") == "accepted_not_extracted"
+            else ("failed" if claim.output.get("ok") is False else "completed")
+        )
+        if state != expected:
+            raise ToolReceiptUncertainError(claim.idempotency_key)
+    return claim
 
 
 def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
@@ -432,6 +464,14 @@ def _tool_receipt_idempotency_key_for_resume(
     return str(idempotency_key) if idempotency_key else None
 
 
+def _tool_receipt_arguments_digest(tool_args: Mapping[str, Any]) -> str:
+    try:
+        encoded = json.dumps(tool_args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        encoded = json.dumps(str(tool_args), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _find_tool_receipt_event_by_key(
     events: Sequence[SessionEvent],
     idempotency_key: str,
@@ -465,6 +505,71 @@ def _find_tool_receipt_event_by_key(
                         )
             return event
     return None
+
+
+async def _claim_approved_builtin_tool_resume(
+    *,
+    session_id: str,
+    invocation_id: str,
+    resume_input: Mapping[str, Any],
+    session_service_provider: Callable[[], Any],
+    existing_events: Sequence[SessionEvent],
+) -> tuple[dict[str, Any] | None, ToolReceiptClaim | None]:
+    """Reserve an approved builtin before consuming its approval response."""
+
+    approval = resume_input.get("approval")
+    if not isinstance(approval, Mapping) or not bool(approval.get("approved")):
+        return None, None
+    tool_name = str(resume_input.get("tool_name") or "").strip()
+    tool_args = resume_input.get("tool_args")
+    if not tool_name or not isinstance(tool_args, Mapping):
+        return None, None
+    call_args = dict(tool_args)
+    run_id = _tool_resume_run_id(resume_input)
+    if not run_id:
+        return None, None
+    checkpoint_metadata = _latest_checkpoint_metadata_for_run(existing_events, run_id)
+    requested_checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
+    if requested_checkpoint_id:
+        checkpoint_metadata = {**checkpoint_metadata, "checkpoint_id": requested_checkpoint_id}
+    receipt = _tool_receipt_metadata(
+        session_id=session_id,
+        run_id=run_id,
+        tool_call_id=run_id,
+        tool_name=tool_name,
+        tool_args=call_args,
+        checkpoint_id=checkpoint_metadata.get("checkpoint_id"),
+        framework=checkpoint_metadata.get("framework"),
+        framework_ref=checkpoint_metadata.get("framework_ref"),
+    )
+    existing_event = _find_tool_receipt_event_by_key(
+        existing_events,
+        receipt["idempotency_key"],
+        expected_receipt=receipt,
+        expected_tool_args=call_args,
+    )
+    if existing_event is not None:
+        _validate_tool_receipt_event(existing_event)
+        return receipt, None
+    if requested_checkpoint_id:
+        legacy_event = _find_legacy_tool_receipt_event_for_resume(
+            session_id=session_id,
+            resume_input=resume_input,
+            events=existing_events,
+        )
+        if legacy_event is not None:
+            raise LegacyToolReceiptCheckpointAmbiguityError()
+    if _builtin_tool_callable(tool_name) is None:
+        return None, None
+    claim = await session_service_provider().claim_tool_receipt(
+        session_id,
+        idempotency_key=str(receipt["idempotency_key"]),
+        tool_name=tool_name,
+        arguments_digest=_tool_receipt_arguments_digest(call_args),
+        claim_id=f"{invocation_id}:{uuid.uuid4().hex}",
+    )
+    _validate_tool_receipt_claim(claim)
+    return receipt, claim
 
 
 def _find_legacy_tool_receipt_event_for_resume(
@@ -541,6 +646,7 @@ async def _execute_approved_builtin_tool_resume(
     resume_input: Mapping[str, Any],
     session_service_provider: Callable[[], Any],
     existing_events: Sequence[SessionEvent] | None = None,
+    preclaimed_receipt: tuple[dict[str, Any], ToolReceiptClaim] | None = None,
 ) -> dict[str, Any] | None:
     approval = resume_input.get("approval")
     if not isinstance(approval, Mapping) or not bool(approval.get("approved")):
@@ -632,6 +738,59 @@ async def _execute_approved_builtin_tool_resume(
     if tool_func is None:
         return None
 
+    # The event ledger is an append-only replay record, so it cannot reserve
+    # the side effect while another process is between its read and builtin
+    # call.  Backends with a durable receipt store claim the key first and
+    # persist ``unknown`` before crossing the side-effect boundary.
+    claim = (
+        preclaimed_receipt[1]
+        if preclaimed_receipt is not None
+        else await service.claim_tool_receipt(
+            session_id,
+            idempotency_key=str(receipt["idempotency_key"]),
+            tool_name=tool_name,
+            arguments_digest=_tool_receipt_arguments_digest(call_args),
+            claim_id=f"{invocation_id}:{uuid.uuid4().hex}",
+        )
+    )
+    _validate_tool_receipt_claim(claim)
+    if not claim.acquired:
+        if claim.state == "unknown":
+            raise ToolReceiptUncertainError(claim.idempotency_key)
+        output = claim.output
+        if isinstance(output, Mapping):
+            output = {**dict(output), "replayed": True}
+        replayed_receipt = {
+            **dict(receipt),
+            "status": claim.state,
+            "replayed": True,
+            "replayed_from_claim": True,
+        }
+        await append_conversation_event(
+            session_id=session_id,
+            author="tool",
+            role="user",
+            text=str(output),
+            invocation_id=invocation_id,
+            event_type="tool_result",
+            session_service_provider=session_service_provider,
+            metadata={
+                "tool_name": tool_name,
+                "tool_args": call_args,
+                "tool_output": output,
+                "run_id": run_id,
+                "approval_request_id": resume_input.get("approval_request_id")
+                or resume_input.get("interrupt_id"),
+                "tool_receipt": replayed_receipt,
+                "replayed": True,
+            },
+        )
+        return {
+            "type": "function_call_output",
+            "call_id": run_id,
+            "output": output,
+        }
+
     try:
         if tool_name in {"run_command", "run_code"}:
             output = await asyncio.to_thread(tool_func, **call_args)
@@ -641,6 +800,17 @@ async def _execute_approved_builtin_tool_resume(
         output = {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
     receipt["status"] = _tool_receipt_status_from_output(output)
+    settled = await service.settle_tool_receipt(
+        session_id,
+        idempotency_key=str(receipt["idempotency_key"]),
+        tool_name=tool_name,
+        arguments_digest=_tool_receipt_arguments_digest(call_args),
+        claim_id=claim.claim_id,
+        state="failed" if receipt["status"] == "failed" else "completed",
+        output=output,
+    )
+    if settled.claim_id != claim.claim_id or settled.state == "unknown":
+        raise ToolReceiptUncertainError(claim.idempotency_key)
     await append_conversation_event(
         session_id=session_id,
         author="tool",

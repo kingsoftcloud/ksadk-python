@@ -56,9 +56,11 @@ from ksadk.conversations.runtime_persistence import (
     ensure_conversation_session,
 )
 from ksadk.conversations.runtime_resume import (
+    ToolReceiptUncertainError,
     _agentengine_resume_metadata,
     _approval_decision_from_resume,
     _approval_resume_run_mode,
+    _claim_approved_builtin_tool_resume,
     _consecutive_approval_denials_from_events,
     _execute_approved_builtin_tool_resume,
     _find_tool_receipt_event_by_key,
@@ -246,6 +248,7 @@ async def build_run_input(
 
         existing_events = await service.get_events(resolved_session_id)
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
+        preclaimed_receipt = None
         replay_candidate = normalized_resume_input
         if is_approval_resume:
             replay_candidate = _normalize_approval_resume_input(
@@ -299,8 +302,14 @@ async def build_run_input(
                     # create another approval/tool-result pair.
                     _validate_tool_receipt_event(existing_tool_receipt_event)
                 normalized_resume_input = replay_candidate
-            else:
+            elif not replay_is_approved:
                 raise ValueError("Responses resume input requires a pending approval_request")
+            else:
+                # A prior request may have consumed approval_response before a
+                # crash left only the durable unknown claim. Discover that
+                # claim before appending another response; unknown never runs
+                # the builtin again and remains available for reconciliation.
+                normalized_resume_input = replay_candidate
         if is_approval_resume:
             normalized_resume_input = _normalize_approval_resume_input(
                 normalized_resume_input,
@@ -329,17 +338,19 @@ async def build_run_input(
                 approval_decision.get("approved") or approval_decision.get("approve")
             )
             if approval_is_approved and existing_tool_receipt_event is None:
-                receipt_key = _tool_receipt_idempotency_key_for_resume(
-                    session_id=resolved_session_id,
-                    resume_input=normalized_resume_input,
-                )
-                if receipt_key:
-                    existing_tool_receipt_event = _find_tool_receipt_event_by_key(
-                        existing_events,
-                        receipt_key,
+                _preclaimed_receipt, preclaimed_claim = (
+                    await _claim_approved_builtin_tool_resume(
+                        session_id=resolved_session_id,
+                        invocation_id=resolved_invocation_id,
+                        resume_input=normalized_resume_input,
+                        session_service_provider=provider,
+                        existing_events=existing_events,
                     )
-                    if existing_tool_receipt_event is not None:
-                        _validate_tool_receipt_event(existing_tool_receipt_event)
+                )
+                if preclaimed_claim is not None and _preclaimed_receipt is not None:
+                    if not preclaimed_claim.acquired and preclaimed_claim.state == "unknown":
+                        raise ToolReceiptUncertainError(preclaimed_claim.idempotency_key)
+                    preclaimed_receipt = (_preclaimed_receipt, preclaimed_claim)
 
         resume_text = _format_resume_response_text(normalized_resume_input)
         resume_event_metadata: dict[str, Any] = {"resume_input": normalized_resume_input}
@@ -370,6 +381,7 @@ async def build_run_input(
                 resume_input=normalized_resume_input,
                 session_service_provider=provider,
                 existing_events=existing_events,
+                preclaimed_receipt=preclaimed_receipt,
             )
         effective_resume_input = tool_resume_input or normalized_resume_input
         if tool_resume_input is not None:

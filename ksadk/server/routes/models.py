@@ -151,6 +151,18 @@ class ListToolReceiptsActionRequest(BaseModel):
     Limit: int = Field(200, ge=1, le=500)
 
 
+class GetToolReceiptClaimActionRequest(BaseModel):
+    AgentId: str
+    UserId: Optional[str] = None
+    SessionId: str
+    IdempotencyKey: str
+
+
+class ReconcileToolReceiptClaimActionRequest(GetToolReceiptClaimActionRequest):
+    ClaimId: str
+    Reason: str = Field(..., min_length=1, max_length=1000)
+
+
 class ResumeRunActionRequest(BaseModel):
     AgentId: str
     UserId: Optional[str] = None
