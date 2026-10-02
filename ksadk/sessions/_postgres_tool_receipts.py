@@ -11,6 +11,15 @@ from ksadk.sessions.base import ToolReceiptClaim
 
 class _PostgresToolReceiptMixin:
     @staticmethod
+    def _json_from_value(value: Any) -> Any:
+        """Decode asyncpg JSONB text while preserving scalar/list outputs."""
+        if value is None or not isinstance(value, (str, bytes, bytearray)):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        return json.loads(value or "null")
+
+    @staticmethod
     def _tool_receipt_from_row(row, *, acquired: bool = False) -> ToolReceiptClaim:
         state = str(row["state"])
         if state not in {"unknown", "completed", "failed"}:

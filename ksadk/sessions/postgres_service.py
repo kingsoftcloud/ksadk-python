@@ -1195,16 +1195,6 @@ class PostgresSessionService(_PostgresToolReceiptMixin, _PostgresSchemaMixin, Ba
             return dict(json.loads(value or "{}"))
         return dict(value)
 
-    @staticmethod
-    def _json_from_value(value: Any) -> Any:
-        """Decode asyncpg JSONB text while preserving scalar/list outputs."""
-        if value is None or not isinstance(value, (str, bytes, bytearray)):
-            return value
-        if isinstance(value, (bytes, bytearray)):
-            value = value.decode("utf-8")
-        return json.loads(value or "null")
-
-
 def create_postgres_session_service(
     *,
     dsn: str,

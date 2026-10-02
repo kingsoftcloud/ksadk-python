@@ -534,7 +534,7 @@ async def test_postgres_tool_receipt_claim_is_atomic_across_service_instances(
         await first.aclose()
         await second.aclose()
         admin = await asyncpg.connect(temporary_postgres.get_uri())
-        await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
         await admin.close()
 
 
