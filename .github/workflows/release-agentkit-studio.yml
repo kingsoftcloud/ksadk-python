@@ -412,7 +412,7 @@ jobs:
           retention-days: 30
 
   qualify-installed-update:
-    if: ${{ always() && inputs.qualify_installed_update && (needs.publish-mac-arm64.result == 'success' || needs.publish-mac-arm64.result == 'skipped') }}
+    if: ${{ always() && inputs.qualify_installed_update && needs.macos-arm64.result == 'success' && (needs.publish-mac-arm64.result == 'success' || needs.publish-mac-arm64.result == 'skipped') }}
     needs: [macos-arm64, publish-mac-arm64]
     runs-on: macos-14
     timeout-minutes: 30
