@@ -84,10 +84,10 @@ jobs:
             exit 1
           }
           test "$(git -C studio rev-parse HEAD)" = "$STUDIO_REF_VALUE"
-          case "$UPDATE_ORIGIN_VALUE" in
-            https://*/*) ;;
-            *) echo "update_origin must be an HTTPS origin" >&2; exit 1 ;;
-          esac
+          [[ "$UPDATE_ORIGIN_VALUE" =~ ^https://[^/[:space:]]+(/[^[:space:]]*)?$ ]] || {
+            echo "update_origin must be an HTTPS origin with a host" >&2
+            exit 1
+          }
 
       - name: Prepare temporary Apple signing keychain
         shell: bash
