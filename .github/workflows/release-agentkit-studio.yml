@@ -144,6 +144,7 @@ jobs:
             printf '%s\n' \
               'DSH_DESKTOP_APP_ID=com.kingsoftcloud.agentkit-studio' \
               'DSH_DESKTOP_AUTO_UPDATE_ENV=production' \
+              "DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN=$UPDATE_ORIGIN_VALUE" \
               "DSH_DESKTOP_UPDATE_ORIGIN=$UPDATE_ORIGIN_VALUE" \
               "DSH_DESKTOP_UPDATE_CHANNEL=$UPDATE_CHANNEL_VALUE" \
               "DSH_DESKTOP_MACOS_SIGNING_IDENTITY=$identity" \
