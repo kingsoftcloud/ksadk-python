@@ -271,15 +271,19 @@ jobs:
         shell: bash
         run: |
           set +e
-          if [ -f "${STUDIO_EXISTING_KEYCHAINS_PATH:-}" ]; then
+          existing_keychains_path="${STUDIO_EXISTING_KEYCHAINS_PATH:-}"
+          if [ -n "$existing_keychains_path" ] && [ -f "$existing_keychains_path" ]; then
             existing_keychains=()
             while IFS= read -r existing_keychain; do
               [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
-            done < "$STUDIO_EXISTING_KEYCHAINS_PATH"
+            done < "$existing_keychains_path"
             if [ "${#existing_keychains[@]}" -gt 0 ]; then
               security list-keychains -d user -s "${existing_keychains[@]}"
             fi
-            rm -f "$STUDIO_EXISTING_KEYCHAINS_PATH"
+            rm -f "$existing_keychains_path"
           fi
-          rm -f "$STUDIO_CERTIFICATE_PATH" "$GITHUB_WORKSPACE/dsh-source/apps/desktop/.env.macos"
-          security delete-keychain "$STUDIO_KEYCHAIN_PATH"
+          certificate_path="${STUDIO_CERTIFICATE_PATH:-}"
+          [ -z "$certificate_path" ] || rm -f "$certificate_path"
+          rm -f "$GITHUB_WORKSPACE/dsh-source/apps/desktop/.env.macos"
+          keychain_path="${STUDIO_KEYCHAIN_PATH:-}"
+          [ -z "$keychain_path" ] || security delete-keychain "$keychain_path"
