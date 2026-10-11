@@ -27,6 +27,29 @@ on:
         description: "HTTPS origin that will serve the Studio feed"
         required: true
         type: string
+      build_version:
+        description: "Semver build version; use a higher test suffix for update and rollback qualification"
+        required: true
+        default: 0.2.0-rc.2
+        type: string
+      publish_feed:
+        description: "Upload immutable binaries and publish channel metadata after signing"
+        required: true
+        default: false
+        type: boolean
+      expected_previous_version:
+        description: "Existing feed version required before publishing; empty skips the precondition"
+        required: false
+        type: string
+      installed_dmg_url:
+        description: "HTTPS URL of the installed baseline DMG for real macOS update qualification"
+        required: false
+        type: string
+      qualify_installed_update:
+        description: "Install the baseline DMG and drive the real updater through macOS UI"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -86,6 +109,7 @@ jobs:
           EXPECTED_DSH_COMMIT: ${{ inputs.dsh_commit }}
           STUDIO_REF_VALUE: ${{ inputs.studio_ref }}
           UPDATE_ORIGIN_VALUE: ${{ inputs.update_origin }}
+          BUILD_VERSION_VALUE: ${{ inputs.build_version }}
         run: |
           set -euo pipefail
           actual_dsh_commit="$(git -C dsh-source rev-parse HEAD)"
@@ -97,6 +121,41 @@ jobs:
           test "$(git -C studio rev-parse HEAD)" = "$STUDIO_REF_VALUE"
           [[ "$UPDATE_ORIGIN_VALUE" =~ ^https://[^/[:space:]]+$ ]] || {
             echo "update_origin must be an HTTPS origin with a host" >&2
+            exit 1
+          }
+          [[ "$UPDATE_ORIGIN_VALUE" != *example.com ]] || {
+            echo "update_origin cannot use the example placeholder" >&2
+            exit 1
+          }
+          [[ "$BUILD_VERSION_VALUE" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "build_version must be a semantic version" >&2
+            exit 1
+          }
+
+      - name: Verify feed publication credentials
+        if: ${{ inputs.publish_feed }}
+        shell: bash
+        env:
+          PROD_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_BUCKET }}
+          PROD_SECRET_ID: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_ID }}
+          PROD_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_KEY }}
+          BASELINE_DMG_URL: ${{ inputs.installed_dmg_url }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_BUCKET" -a -n "$PROD_SECRET_ID" -a -n "$PROD_SECRET_KEY" || {
+            echo 'studio-signing requires STUDIO_DOWNLOAD_PROD_COS_BUCKET, STUDIO_DOWNLOAD_PROD_COS_SECRET_ID, and STUDIO_DOWNLOAD_PROD_COS_SECRET_KEY for feed publication' >&2
+            exit 1
+          }
+
+      - name: Verify installed-update qualification URL
+        if: ${{ inputs.qualify_installed_update }}
+        shell: bash
+        env:
+          BASELINE_DMG_URL: ${{ inputs.installed_dmg_url }}
+        run: |
+          set -euo pipefail
+          [[ "$BASELINE_DMG_URL" =~ ^https://[^/[:space:]]+$ ]] || {
+            echo 'qualify_installed_update requires an HTTPS installed_dmg_url' >&2
             exit 1
           }
 
@@ -164,15 +223,16 @@ jobs:
           DSH_ROOT: ${{ github.workspace }}/dsh-source
           DSH_COMMIT: ${{ inputs.dsh_commit }}
           DSH_VERSION: 0.2.0-rc.2
+          BUILD_VERSION: ${{ inputs.build_version }}
           PACK_DIR: ${{ github.workspace }}/studio/.artifacts
           EXPECTED_APP_ID: com.kingsoftcloud.agentkit-studio
           EXPECTED_UPDATE_ORIGIN: ${{ inputs.update_origin }}
           EXPECTED_UPDATE_CHANNEL: ${{ inputs.channel }}
-          EXPECTED_RELEASE_VERSION: 0.2.0-rc.2
+          EXPECTED_RELEASE_VERSION: ${{ inputs.build_version }}
         run: |
           set -euo pipefail
           pnpm install --frozen-lockfile
-          make desktop-package-mac-arm64 DSH_ROOT="$DSH_ROOT" DSH_COMMIT="$DSH_COMMIT" DSH_VERSION="$DSH_VERSION" PACK_DIR="$PACK_DIR"
+          DSH_DESKTOP_BUILD_VERSION="$BUILD_VERSION" make desktop-package-mac-arm64 DSH_ROOT="$DSH_ROOT" DSH_COMMIT="$DSH_COMMIT" DSH_VERSION="$DSH_VERSION" PACK_DIR="$PACK_DIR"
 
       - name: Verify signed and notarized artifacts
         shell: bash
@@ -181,11 +241,12 @@ jobs:
           DSH_ROOT: ${{ github.workspace }}/dsh-source
           DSH_COMMIT: ${{ inputs.dsh_commit }}
           DSH_VERSION: 0.2.0-rc.2
+          BUILD_VERSION: ${{ inputs.build_version }}
           PACK_DIR: ${{ github.workspace }}/studio/.artifacts
           EXPECTED_APP_ID: com.kingsoftcloud.agentkit-studio
           EXPECTED_UPDATE_ORIGIN: ${{ inputs.update_origin }}
           EXPECTED_UPDATE_CHANNEL: ${{ inputs.channel }}
-          EXPECTED_RELEASE_VERSION: 0.2.0-rc.2
+          EXPECTED_RELEASE_VERSION: ${{ inputs.build_version }}
         run: |
           set -euo pipefail
           artifacts="$(find "$PACK_DIR/desktop-checkouts" -type d -path '*/source/apps/desktop/.desktop-build/targets/mac-arm64/artifacts' -print -quit)"
@@ -251,11 +312,12 @@ jobs:
           zip="$(find "$artifacts" -maxdepth 1 -name '*.zip' -type f ! -name '*.zip.blockmap' -print -quit)"
           blockmap="$(find "$artifacts" -maxdepth 1 -name '*.zip.blockmap' -type f -print -quit)"
           metadata="$artifacts/${CHANNEL}-mac.yml"
-          test -n "$dmg" -a -n "$zip" -a -n "$blockmap" -a -f "$metadata"
+          release_record="$artifacts/mac-arm64-release.json"
+          test -n "$dmg" -a -n "$zip" -a -n "$blockmap" -a -f "$metadata" -a -f "$release_record"
           staging="$GITHUB_WORKSPACE/release-candidate"
           rm -rf "$staging"
           mkdir -p "$staging"
-          cp "$dmg" "$zip" "$blockmap" "$metadata" "$staging/"
+          cp "$dmg" "$zip" "$blockmap" "$metadata" "$release_record" "$staging/"
           (cd "$staging" && shasum -a 256 ./* > SHA256SUMS)
           printf 'staging=%s\n' "$staging" >> "$GITHUB_STEP_SUMMARY"
 
@@ -289,3 +351,99 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/dsh-source/apps/desktop/.env.macos"
           keychain_path="${STUDIO_KEYCHAIN_PATH:-}"
           [ -z "$keychain_path" ] || security delete-keychain "$keychain_path"
+
+  publish-mac-arm64:
+    if: ${{ inputs.publish_feed }}
+    needs: macos-arm64
+    runs-on: macos-14
+    environment: studio-signing
+    timeout-minutes: 60
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+      - name: Checkout AgentKit Studio release tools
+        uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/agentkit-studio
+          ref: ${{ inputs.studio_ref }}
+          path: studio
+          fetch-depth: 1
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+      - name: Checkout pinned DSH
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ inputs.dsh_ref }}
+          path: dsh-source
+          fetch-depth: 1
+      - name: Download signed candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-mac-arm64
+          path: candidate
+      - name: Set up Node and pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - name: Publish via official DSH COS uploader and verify public feed
+        working-directory: studio
+        env:
+          DOWNLOAD_PROD_COS_BUCKET: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_BUCKET }}
+          DOWNLOAD_PROD_COS_SECRET_ID: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_ID }}
+          DOWNLOAD_PROD_COS_SECRET_KEY: ${{ secrets.STUDIO_DOWNLOAD_PROD_COS_SECRET_KEY }}
+          EXPECTED_PREVIOUS: ${{ inputs.expected_previous_version }}
+        run: |
+          set -euo pipefail
+          args=(publish --candidate "$GITHUB_WORKSPACE/candidate" --origin '${{ inputs.update_origin }}'
+            --channel '${{ inputs.channel }}' --dsh-root "$GITHUB_WORKSPACE/dsh-source"
+            --dsh-commit '${{ inputs.dsh_commit }}' --dsh-version '0.2.0-rc.2')
+          if [[ -n "$EXPECTED_PREVIOUS" ]]; then args+=(--expected-previous-version "$EXPECTED_PREVIOUS"); fi
+          node scripts/desktop-release.mjs "${args[@]}"
+      - name: Upload publication evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-publication
+          path: candidate/.desktop-release/**
+          if-no-files-found: ignore
+          retention-days: 30
+
+  qualify-installed-update:
+    if: ${{ always() && inputs.qualify_installed_update && (needs.publish-mac-arm64.result == 'success' || needs.publish-mac-arm64.result == 'skipped') }}
+    needs: [macos-arm64, publish-mac-arm64]
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout AgentKit Studio release tools
+        uses: actions/checkout@v4
+        with:
+          repository: kingsoftcloud/agentkit-studio
+          ref: ${{ inputs.studio_ref }}
+          path: studio
+          fetch-depth: 1
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+      - name: Download signed baseline DMG
+        working-directory: studio
+        run: curl --fail --location --proto '=https' --output "$RUNNER_TEMP/baseline.dmg" '${{ inputs.installed_dmg_url }}'
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify real installed update and retained data
+        working-directory: studio
+        run: node scripts/verify-desktop-installed-update.mjs \
+          --dmg "$RUNNER_TEMP/baseline.dmg" \
+          --origin '${{ inputs.update_origin }}' \
+          --channel '${{ inputs.channel }}' \
+          --version '${{ inputs.build_version }}'
+      - name: Upload installed-update evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentkit-studio-${{ inputs.studio_ref }}-${{ inputs.channel }}-installed-update
+          path: studio/.artifacts/desktop-release/installed-*/**
+          if-no-files-found: ignore
+          retention-days: 30
