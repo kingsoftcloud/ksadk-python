@@ -152,10 +152,15 @@ jobs:
         shell: bash
         env:
           BASELINE_DMG_URL: ${{ inputs.installed_dmg_url }}
+          BUILD_VERSION_VALUE: ${{ inputs.build_version }}
         run: |
           set -euo pipefail
           [[ "$BASELINE_DMG_URL" =~ ^https://[^/[:space:]]+$ ]] || {
             echo 'qualify_installed_update requires an HTTPS installed_dmg_url' >&2
+            exit 1
+          }
+          test "$BUILD_VERSION_VALUE" != '0.2.0-rc.2' || {
+            echo 'qualify_installed_update requires a higher build_version than the product baseline' >&2
             exit 1
           }
 
