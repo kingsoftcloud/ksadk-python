@@ -44,6 +44,17 @@ jobs:
       - name: Checkout workflow repository
         uses: actions/checkout@v4
 
+      - name: Verify private Studio checkout token is configured
+        shell: bash
+        env:
+          STUDIO_SOURCE_TOKEN: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$STUDIO_SOURCE_TOKEN" || {
+            echo 'studio-signing is missing AGENTKIT_STUDIO_SOURCE_TOKEN (read-only Contents token for kingsoftcloud/agentkit-studio)' >&2
+            exit 1
+          }
+
       - name: Checkout AgentKit Studio
         uses: actions/checkout@v4
         with:
@@ -170,6 +181,10 @@ jobs:
           DSH_COMMIT: ${{ inputs.dsh_commit }}
           DSH_VERSION: 0.2.0-rc.2
           PACK_DIR: ${{ github.workspace }}/studio/.artifacts
+          EXPECTED_APP_ID: com.kingsoftcloud.agentkit-studio
+          EXPECTED_UPDATE_ORIGIN: ${{ inputs.update_origin }}
+          EXPECTED_UPDATE_CHANNEL: ${{ inputs.channel }}
+          EXPECTED_RELEASE_VERSION: 0.2.0-rc.2
         run: |
           set -euo pipefail
           artifacts="$(find "$PACK_DIR/desktop-checkouts" -type d -path '*/source/apps/desktop/.desktop-build/targets/mac-arm64/artifacts' -print -quit)"
