@@ -46,6 +46,7 @@ ROOT_EXPORT_FILES = {
     ".github/codeql/codeql-config.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
+    ".github/workflows/release-agentkit-studio.yml",
     ".github/workflows/release-studio-app.yml",
     "electron-main.js",
     "preload.js",
