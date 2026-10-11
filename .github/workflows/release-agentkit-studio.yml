@@ -214,8 +214,9 @@ jobs:
           import YAML from 'yaml'
 
           const appUpdate = YAML.parse(await readFile(process.env.APP_UPDATE_PATH, 'utf8'))
-          if (appUpdate?.provider !== 'generic' || appUpdate.url !== process.env.EXPECTED_UPDATE_ORIGIN || appUpdate.channel !== process.env.EXPECTED_UPDATE_CHANNEL) {
-            throw new Error('packaged app-update.yml does not match the requested Studio feed')
+          const expectedFeedUrl = `${process.env.EXPECTED_UPDATE_ORIGIN}/dsh-desk/feeds/mac-arm64/`
+          if (appUpdate?.provider !== 'generic' || appUpdate.url !== expectedFeedUrl || appUpdate.channel !== process.env.EXPECTED_UPDATE_CHANNEL) {
+            throw new Error(`packaged app-update.yml does not match the requested Studio feed: expected ${expectedFeedUrl} (${process.env.EXPECTED_UPDATE_CHANNEL}), got ${appUpdate?.url} (${appUpdate?.channel})`)
           }
           const metadata = YAML.parse(await readFile(process.env.METADATA_PATH, 'utf8'))
           const zipName = basename(process.env.ZIP_PATH)
