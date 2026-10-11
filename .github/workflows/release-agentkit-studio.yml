@@ -51,6 +51,7 @@ jobs:
           ref: ${{ inputs.studio_ref }}
           path: studio
           fetch-depth: 1
+          token: ${{ secrets.AGENTKIT_STUDIO_SOURCE_TOKEN }}
 
       - name: Checkout pinned DSH
         uses: actions/checkout@v4
