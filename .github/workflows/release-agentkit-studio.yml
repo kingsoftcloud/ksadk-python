@@ -66,9 +66,13 @@ jobs:
         env:
           STUDIO_SHA: ${{ inputs.studio_ref }}
           VERSION: ${{ inputs.build_version }}
+          TOOLS_SHA: ${{ inputs.release_tools_ref || inputs.studio_ref }}
         run: |
           if ($env:STUDIO_SHA -notmatch '^[0-9a-f]{40}$') { throw 'studio_ref must be a full commit SHA' }
           if ($env:VERSION -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') { throw 'Invalid desktop build version' }
+          if ($env:TOOLS_SHA -notmatch '^[0-9a-f]{40}$') { throw 'release_tools_ref must be a full commit SHA' }
+          git merge-base --is-ancestor $env:TOOLS_SHA HEAD
+          if ($LASTEXITCODE) { throw 'Qualification tools are outside the selected branch' }
           git merge-base --is-ancestor $env:STUDIO_SHA HEAD
           if ($LASTEXITCODE) { throw 'Source commit is outside the selected branch' }
           git checkout --detach $env:STUDIO_SHA
