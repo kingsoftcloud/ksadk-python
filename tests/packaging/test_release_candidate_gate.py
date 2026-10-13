@@ -43,7 +43,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "status": "published",
         "registry": "https://registry.npmjs.org",
         "package": "@kingsoftcloud/ksadk-web",
-        "version": "0.3.10",
+        "version": "0.3.12",
         "npmIntegrity": INTEGRITY,
         "sourceCommit": WEB_COMMIT,
     }
@@ -54,7 +54,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "helmRevision": 60,
         "webPackage": {
             "package": "@kingsoftcloud/ksadk-web",
-            "version": "0.3.10",
+            "version": "0.3.12",
             "npmIntegrity": INTEGRITY,
         },
     }
@@ -74,7 +74,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "hostedUiImage": IMAGE,
         "webPackage": {
             "package": "@kingsoftcloud/ksadk-web",
-            "version": "0.3.10",
+            "version": "0.3.12",
             "npmIntegrity": INTEGRITY,
         },
         "scenarios": {
@@ -111,7 +111,7 @@ def test_final_gate_binds_every_release_surface(tmp_path: Path) -> None:
 
     assert report["overallStatus"] == "passed"
     assert report["sourceCommit"] == COMMIT
-    assert report["webPackage"]["version"] == "0.3.10"
+    assert report["webPackage"]["version"] == "0.3.12"
     assert report["webPackage"]["npmIntegrity"] == INTEGRITY
     assert report["hostedUi"]["image"] == IMAGE
     assert report["scenarios"] == {
@@ -119,6 +119,17 @@ def test_final_gate_binds_every_release_surface(tmp_path: Path) -> None:
         "historical082Agent": "passed",
     }
     assert all(value.startswith("sha256:") for value in report["inputs"].values())
+
+
+def test_final_gate_rejects_consistent_but_obsolete_web_version(tmp_path: Path) -> None:
+    paths = _evidence(tmp_path)
+    for index in (1, 2, 3):
+        payload = json.loads(paths[index].read_text())
+        identity = payload if index == 1 else payload["webPackage"]
+        identity["version"] = "0.3.10"
+        _write(paths[index], payload)
+    with pytest.raises(ReleaseCandidateGateError, match="Web package identity is invalid"):
+        _build(paths)
 
 
 @pytest.mark.parametrize(
