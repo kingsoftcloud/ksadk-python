@@ -30,6 +30,7 @@ def _project_interleaved_blocks(
     events: Sequence[Mapping[str, Any]],
     *,
     tool_events: Sequence[Mapping[str, Any]],
+    expected_text: str | None = None,
 ) -> list[dict[str, Any]]:
     """Reconstruct ordered chat blocks from persisted streaming events.
 
@@ -122,5 +123,13 @@ def _project_interleaved_blocks(
                 append_text(text, seq_id)
 
     if saw_reasoning_after_stream_text:
+        return []
+    # A run can contain multiple message items, and a terminal snapshot can
+    # replace streamed text. Without reliable boundaries, use the existing
+    # Content/Reasoning/ToolEvents projection instead of displaying stale or
+    # whole-run text for one message.
+    if expected_text is not None and "".join(
+        block["Content"] for block in blocks if block["Type"] == "text"
+    ) != expected_text:
         return []
     return blocks

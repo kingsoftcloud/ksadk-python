@@ -149,7 +149,11 @@ def _project_event_group(
             if include_tool_events and post_assistant_tool_events:
                 message["ToolEvents"] = post_assistant_tool_events
             if include_reasoning:
-                blocks = _project_interleaved_blocks(events, tool_events=post_assistant_tool_events)
+                blocks = _project_interleaved_blocks(
+                    events,
+                    tool_events=post_assistant_tool_events,
+                    expected_text=message["Content"]["text"],
+                )
                 if blocks:
                     message["Blocks"] = blocks
             projected.append(message)
@@ -192,7 +196,11 @@ def _project_event_group(
         if all_tool_events:
             message["ToolEvents"] = all_tool_events
         if include_reasoning:
-            blocks = _project_interleaved_blocks(events, tool_events=all_tool_events)
+            blocks = _project_interleaved_blocks(
+                events,
+                tool_events=all_tool_events,
+                expected_text=message["Content"]["text"],
+            )
             if blocks:
                 message["Blocks"] = blocks
         projected.append(message)

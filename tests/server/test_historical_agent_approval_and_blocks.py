@@ -114,3 +114,31 @@ def test_distinct_items_with_identical_text_remain_visible():
     ]
     messages = project_session_messages(events, include_reasoning=True, include_tool_events=True)
     assert [message["Content"]["text"] for message in messages] == ["same", "same"]
+    assert [_visible_text(message) for message in messages] == ["same", "same"]
+
+
+def _visible_text(message):
+    blocks = message.get("Blocks")
+    if blocks:
+        return "".join(block["Content"] for block in blocks if block["Type"] == "text")
+    return message["Content"]["text"]
+
+
+@pytest.mark.parametrize("terminal", ["item.completed", "assistant_stream_snapshot"])
+def test_authoritative_replacement_text_is_visible(terminal):
+    events = [message_event(1, "item.updated", "draft")]
+    events.append(
+        message_event(2, terminal, "corrected")
+        if terminal == "item.completed"
+        else {
+            "EventId": "event-2",
+            "SeqId": 2,
+            "InvocationId": "run-1",
+            "EventType": terminal,
+            "Author": "assistant",
+            "Content": {"parts": [{"text": "corrected"}]},
+        }
+    )
+    messages = project_session_messages(events, include_reasoning=True, include_tool_events=True)
+    assert len(messages) == 1
+    assert _visible_text(messages[0]) == "corrected"
